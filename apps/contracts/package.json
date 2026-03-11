@@ -1,0 +1,13 @@
+{
+  "name": "tx-lifecycle-demo-app-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "forge build",
+    "lint": "forge fmt --check"
+  },
+  "dependencies": {
+    "forge-std": "^1.1.2"
+  }
+}
