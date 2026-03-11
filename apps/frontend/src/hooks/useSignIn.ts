@@ -18,8 +18,7 @@ export function useSignIn() {
 
   return useMutation({
     mutationFn: async (accounts: readonly AvailableAccount[]) => {
-      const picked = accounts[Math.floor(Math.random() * accounts.length)];
-      if (!picked) throw new Error("No available accounts to sign in with");
+      const picked = accounts[Math.floor(Math.random() * accounts.length)]!;
       const walletClient = createWalletClient({
         account: privateKeyToAccount(picked.privateKey),
         transport: http(RPC_URL),

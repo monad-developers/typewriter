@@ -47,9 +47,6 @@ function AppInner() {
                 ? "Loading..."
                 : "Sign In"}
           </button>
-          {signInMutation.isError && (
-            <p className="text-sm text-red-500">Mint failed. Try again.</p>
-          )}
         </main>
       )}
     </div>
