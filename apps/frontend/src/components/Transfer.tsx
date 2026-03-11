@@ -24,8 +24,8 @@ export function Transfer() {
           onChange={(e) => setAmount(Number(e.target.value))}
           disabled
           className="w-16 border px-1"
-        />
-        {" "}to{" "}
+        />{" "}
+        to{" "}
         <select value={to} onChange={(e) => setTo(e.target.value)} disabled>
           {ADDRESSES.map((addr) => (
             <option key={addr} value={addr}>
@@ -34,7 +34,12 @@ export function Transfer() {
           ))}
         </select>
       </code>
-      <button className="border px-3 py-1 text-sm bg-green-500 text-white rounded-md">send</button>
+      <button
+        type="button"
+        className="border px-3 py-1 text-sm bg-green-500 text-white rounded-md"
+      >
+        send
+      </button>
     </section>
   );
 }
