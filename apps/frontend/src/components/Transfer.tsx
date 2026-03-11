@@ -1,18 +1,19 @@
 import { useState } from "react";
+import type { Address } from "viem";
+import { ANVIL_ACCOUNTS } from "../constants";
+import { useAccountContext } from "../contexts/AccountContext";
 
 const AMOUNT = 1;
 
-const ADDRESSES = [
-  "0xAbCdEf1234567890AbCdEf1234567890AbCdEf12",
-  "0x1111111111111111111111111111111111111111",
-  "0x2222222222222222222222222222222222222222",
-  "0x3333333333333333333333333333333333333333",
-  "0x4444444444444444444444444444444444444444",
-];
-
 export function Transfer() {
-  const [to, setTo] = useState(ADDRESSES[0]);
+  const { account } = useAccountContext();
+  const addresses = ANVIL_ACCOUNTS.filter(
+    (a) => a.address !== account?.address,
+  ).map((a) => a.address as Address);
+  const [to, setTo] = useState<Address>(addresses[0] ?? ("" as Address));
   const [amount, setAmount] = useState(AMOUNT);
+
+  if (!account) return null;
 
   return (
     <section className="w-full border-b px-4 h-12 flex items-center gap-4 overflow-hidden">
@@ -23,11 +24,15 @@ export function Transfer() {
           value={amount}
           onChange={(e) => setAmount(Number(e.target.value))}
           disabled
-          className="w-16 border px-1"
+          className="w-16 border px-1 cursor-not-allowed"
         />{" "}
         to{" "}
-        <select value={to} onChange={(e) => setTo(e.target.value)} disabled>
-          {ADDRESSES.map((addr) => (
+        <select
+          value={to}
+          onChange={(e) => setTo(e.target.value as Address)}
+          disabled
+        >
+          {addresses.map((addr) => (
             <option key={addr} value={addr}>
               {addr}
             </option>
