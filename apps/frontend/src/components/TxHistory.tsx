@@ -1,7 +1,16 @@
-const COLUMNS = ["status", "amount", "to", "cost", "preflight latency", "submission latency", "when"];
+const COLUMNS = [
+  "status",
+  "amount",
+  "to",
+  "cost",
+  "preflight latency",
+  "submission latency",
+  "when",
+];
 
 const MOCK_TXS = [
   {
+    id: "0x1a2b3c",
     status: "confirmed",
     amount: 1,
     to: "0xAbCd...Ef12",
@@ -11,6 +20,7 @@ const MOCK_TXS = [
     when: "2s ago",
   },
   {
+    id: "0x4d5e6f",
     status: "pending",
     amount: 1,
     to: "0x1111...1111",
@@ -20,6 +30,7 @@ const MOCK_TXS = [
     when: "8s ago",
   },
   {
+    id: "0x7g8h9i",
     status: "failed",
     amount: 1,
     to: "0x2222...2222",
@@ -44,15 +55,29 @@ export function TxHistory() {
           </tr>
         </thead>
         <tbody>
-          {MOCK_TXS.map((tx, i) => (
-            <tr key={i} className="border-b last:border-0">
-              <td className="py-2 pr-6"><code>{tx.status}</code></td>
-              <td className="py-2 pr-6"><code>{tx.amount}</code></td>
-              <td className="py-2 pr-6"><code>{tx.to}</code></td>
-              <td className="py-2 pr-6"><code>{tx.cost}</code></td>
-              <td className="py-2 pr-6"><code>{tx.preflightLatency}</code></td>
-              <td className="py-2 pr-6"><code>{tx.submissionLatency}</code></td>
-              <td className="py-2 pr-6"><code>{tx.when}</code></td>
+          {MOCK_TXS.map((tx) => (
+            <tr key={tx.id} className="border-b last:border-0">
+              <td className="py-2 pr-6">
+                <code>{tx.status}</code>
+              </td>
+              <td className="py-2 pr-6">
+                <code>{tx.amount}</code>
+              </td>
+              <td className="py-2 pr-6">
+                <code>{tx.to}</code>
+              </td>
+              <td className="py-2 pr-6">
+                <code>{tx.cost}</code>
+              </td>
+              <td className="py-2 pr-6">
+                <code>{tx.preflightLatency}</code>
+              </td>
+              <td className="py-2 pr-6">
+                <code>{tx.submissionLatency}</code>
+              </td>
+              <td className="py-2 pr-6">
+                <code>{tx.when}</code>
+              </td>
             </tr>
           ))}
         </tbody>

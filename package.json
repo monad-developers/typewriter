@@ -7,6 +7,11 @@
     "packages/*",
     "apps/*"
   ],
+  "scripts": {
+    "lint": "biome check .",
+    "typecheck": "bun run --filter '*' typecheck",
+    "build": "bun run --filter '*' build"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.6",
     "@types/bun": "latest"
