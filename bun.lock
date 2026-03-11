@@ -15,6 +15,10 @@
     "apps/contracts": {
       "name": "tx-lifecycle-demo-app-contracts",
       "version": "0.1.0",
+      "dependencies": {
+        "ds-test": "github:dapphub/ds-test",
+        "forge-std": "github:foundry-rs/forge-std",
+      },
     },
     "apps/frontend": {
       "name": "tx-lifecycle-demo-app-frontend",
@@ -168,6 +172,10 @@
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 
     "detect-node-es": ["detect-node-es@1.1.0", "", {}, "sha512-ypdmJU/TbBby2Dxibuv7ZLW3Bs1QEmM7nHjEANfohJLvE0XVujisn1qPJcZxg+qDucsr+bP6fLD1rPS3AhJ7EQ=="],
+
+    "ds-test": ["ds-test@github:dapphub/ds-test#e282159", {}, "dapphub-ds-test-e282159", "sha512-t5YxJ/Fsh+/yh2OpipuRbmjdpvhdlTSCivuOuA3Z2ENvuzOFBXjfqP1SORQc04mHkou3FlZ1DQNlQ49druw9pg=="],
+
+    "forge-std": ["forge-std@github:foundry-rs/forge-std#04ee608", {}, "foundry-rs-forge-std-04ee608", "sha512-av8UlNvPnRRVLKnuwk+2M0PyOmaHhJ4pvF0/Nj11iX2xWJrT/36f/Sz6fvWQXB283HwRzdymJtO2pC8zk7+hZw=="],
 
     "get-nonce": ["get-nonce@1.0.1", "", {}, "sha512-FJhYRoDaiatfEkUK8HKlicmu/3SGFD51q3itKDGoSTysQJBnfOcxU5GxnhE1E6soB76MbT0MBtnKJuXyAx+96Q=="],
 
