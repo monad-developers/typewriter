@@ -8,6 +8,7 @@
     "lint": "forge fmt --check"
   },
   "dependencies": {
-    "forge-std": "^1.1.2"
+    "ds-test": "github:dapphub/ds-test",
+    "forge-std": "github:foundry-rs/forge-std"
   }
 }
