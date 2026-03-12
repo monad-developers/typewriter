@@ -1,13 +1,22 @@
 import { useAccountContext } from "../contexts/AccountContext";
 import { useAddressInfo } from "../hooks/useAddressInfo";
+import { Tooltip } from "./ui/tooltip";
 
 function Toggle({ label, disabled }: { label: string; disabled: boolean }) {
-  return (
-    <div className="flex items-center gap-2 cursor-not-allowed">
+  const inner = (
+    <div
+      className={`flex items-center gap-2 ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+    >
       <code>{label}:</code>
       <input type="checkbox" disabled={disabled} />
     </div>
   );
+
+  if (disabled) {
+    return <Tooltip content="Coming soon">{inner}</Tooltip>;
+  }
+
+  return inner;
 }
 
 const STATE_VIEWS = [
@@ -44,20 +53,22 @@ export function Header({
         <Toggle label="gas sponsorship" disabled />
         <Toggle label="session keys" disabled />
         <Toggle label="preflight optimizations" disabled />
-        <code className="cursor-not-allowed">
-          state view:{" "}
-          <select
-            value={stateView}
-            onChange={(e) => onStateViewChange(e.target.value as StateView)}
-            disabled
-          >
-            {STATE_VIEWS.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </code>
+        <Tooltip content="Coming soon">
+          <code className="cursor-not-allowed opacity-50">
+            state view:{" "}
+            <select
+              value={stateView}
+              onChange={(e) => onStateViewChange(e.target.value as StateView)}
+              disabled
+            >
+              {STATE_VIEWS.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </code>
+        </Tooltip>
       </div>
     </header>
   );

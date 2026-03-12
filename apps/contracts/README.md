@@ -1,66 +1,67 @@
-## Foundry
+# contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+ERC20 token contract built with [Foundry](https://book.getfoundry.sh/) and [Solmate](https://github.com/transmissions11/solmate).
 
-Foundry consists of:
+## Environment Variables
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
+| Variable | Required | Description |
+|---|---|---|
+| `RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
+| `TOKEN_NAME` | Yes (for deploy) | Name of the ERC20 token |
+| `TOKEN_SYMBOL` | Yes (for deploy) | Symbol of the ERC20 token |
+| `TOKEN_DECIMALS` | Yes (for deploy) | Decimals for the ERC20 token |
 
 ## Usage
 
 ### Build
 
 ```shell
-$ forge build
+forge build
 ```
 
 ### Test
 
 ```shell
-$ forge test
+forge test
 ```
 
 ### Format
 
 ```shell
-$ forge fmt
+forge fmt
+```
+
+### Local Development
+
+Start a local Anvil node and auto-deploy the token:
+
+```shell
+bun run dev
+```
+
+This runs Anvil with a 0.4s block time and deploys the token using the first Anvil account.
+
+### Deploy
+
+Deploy to a custom RPC endpoint:
+
+```shell
+TOKEN_NAME="Hi Kevin" TOKEN_SYMBOL="HK" TOKEN_DECIMALS=18 \
+  forge script script/Token.s.sol:TokenScript \
+  --broadcast --rpc-url $RPC_URL \
+  --private-key <your_private_key>
 ```
 
 ### Gas Snapshots
 
 ```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
+forge snapshot
 ```
 
 ### Help
 
 ```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+forge --help
+anvil --help
+cast --help
 ```

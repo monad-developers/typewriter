@@ -1,4 +1,6 @@
-export const RPC_URL = "https://anvil-production-4f30.up.railway.app";
+// @ts-ignore
+export const RPC_URL =
+  process.env.BUN_PUBLIC_RPC_URL ?? "http://localhost:8545";
 
 export const ANVIL_ACCOUNTS = [
   // The first account is the deployer

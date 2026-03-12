@@ -24,7 +24,8 @@ export function Transfer() {
         <input
           type="number"
           value={amount}
-          onChange={(e) => setAmount(Number(e.target.value))}
+          min={0}
+          onChange={(e) => setAmount(Math.max(0, Number(e.target.value)))}
           className="w-16 border px-1"
         />{" "}
         to{" "}
