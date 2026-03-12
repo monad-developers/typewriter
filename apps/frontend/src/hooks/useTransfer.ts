@@ -1,9 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Address } from "viem";
-import { parseEther } from "viem";
+import { type Address, encodeFunctionData, parseEther } from "viem";
+import { sendRawTransactionSync } from "viem/actions";
 import { useAccountContext } from "@/contexts/AccountContext";
 import { TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
-import { publicClient } from "../lib/client";
 
 type TransferParams = {
   to: Address;
@@ -11,7 +10,7 @@ type TransferParams = {
 };
 
 export function useTransfer() {
-  const { account, addTx, updateTx } = useAccountContext();
+  const { account, addTx } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -20,40 +19,44 @@ export function useTransfer() {
 
       let start = performance.now();
 
-      const hash = await account.walletClient.writeContract({
-        address: TOKEN_ADDRESS,
+      const data = encodeFunctionData({
         abi: TOKEN_ABI,
         functionName: "transfer",
         args: [to, parseEther(amount.toString())],
-        account: account.address,
-        chain: account.walletClient.chain,
+      });
+
+      const request = await account.walletClient.prepareTransactionRequest({
+        to: TOKEN_ADDRESS,
+        data,
       });
 
       const preflightLatency = performance.now() - start;
+
+      const serializedTx = await account.walletClient.signTransaction(request);
+
       start = performance.now();
 
-      addTx({
-        hash,
-        status: "pending",
-        amount: parseEther(amount.toString()),
-        to,
-        cost: null,
-        preflightLatency,
-        submissionLatency: null,
-        timestamp: Date.now(),
+      const receipt = await sendRawTransactionSync(account.walletClient, {
+        serializedTransaction: serializedTx,
       });
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
       const submissionLatency = performance.now() - start;
 
-      updateTx(hash, {
+      addTx({
+        hash: receipt.transactionHash,
         status: "proposed",
-        submissionLatency,
+        amount: parseEther(amount.toString()),
+        to,
         cost: receipt.gasUsed * 102n * 10n ** 9n,
+        preflightLatency,
+        submissionLatency,
+        timestamp: Date.now(),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["addressInfo", account?.address] });
+      queryClient.invalidateQueries({
+        queryKey: ["addressInfo", account?.address],
+      });
     },
   });
 }

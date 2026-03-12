@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
-import { createWalletClient, http, parseEther } from "viem";
+import { createWalletClient, encodeFunctionData, http, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
 import { useAccountContext } from "@/contexts/AccountContext";
 import {
@@ -9,12 +10,11 @@ import {
   TOKEN_ABI,
   TOKEN_ADDRESS,
 } from "../constants";
-import { publicClient } from "../lib/client";
 
 type AvailableAccount = (typeof ANVIL_ACCOUNTS)[number];
 
 export function useSignIn() {
-  const { setAccount, addTx, updateTx } = useAccountContext();
+  const { setAccount, addTx } = useAccountContext();
 
   return useMutation({
     mutationFn: async (accounts: readonly AvailableAccount[]) => {
@@ -30,40 +30,39 @@ export function useSignIn() {
 
       let start = performance.now();
 
-      // TODO(kyle) eth_sendRawTransactionSync
-      const hash = await walletClient.writeContract({
-        address: TOKEN_ADDRESS,
+      const data = encodeFunctionData({
         abi: TOKEN_ABI,
         functionName: "mint",
         args: [picked.address, parseEther("100")],
       });
 
+      const request = await walletClient.prepareTransactionRequest({
+        to: TOKEN_ADDRESS,
+        data,
+      });
+
       const preflightLatency = performance.now() - start;
+
+      const serializedTx = await walletClient.signTransaction(request);
+
       start = performance.now();
+
+      const receipt = await sendRawTransactionSync(walletClient, {
+        serializedTransaction: serializedTx,
+      });
+
+      const submissionLatency = performance.now() - start;
 
       addTx(
         {
-          hash,
-          status: "pending",
+          hash: receipt.transactionHash,
+          status: "proposed",
           amount: parseEther("100"),
           to: picked.address,
-          cost: null,
-          preflightLatency,
-          submissionLatency: null,
-          timestamp: Date.now(),
-        },
-        picked.address,
-      );
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      const submissionLatency = performance.now() - start;
-
-      updateTx(
-        hash,
-        {
-          status: "proposed",
-          submissionLatency,
           cost: receipt.gasUsed * 102n * 10n ** 9n,
+          preflightLatency,
+          submissionLatency,
+          timestamp: Date.now(),
         },
         picked.address,
       );

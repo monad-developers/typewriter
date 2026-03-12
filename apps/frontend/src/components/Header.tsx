@@ -44,11 +44,12 @@ export function Header({
         <Toggle label="gas sponsorship" disabled />
         <Toggle label="session keys" disabled />
         <Toggle label="preflight optimizations" disabled />
-        <code>
+        <code className="cursor-not-allowed">
           state view:{" "}
           <select
             value={stateView}
             onChange={(e) => onStateViewChange(e.target.value as StateView)}
+            disabled
           >
             {STATE_VIEWS.map((v) => (
               <option key={v} value={v}>
