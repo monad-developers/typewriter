@@ -1,4 +1,6 @@
-export const RPC_URL = "http://localhost:8545" as const;
+export const RPC_URL =
+  // @ts-ignore
+  process.env.RPC_URL ?? ("http://localhost:8545" as const);
 
 export const ANVIL_ACCOUNTS = [
   // The first account is the deployer
