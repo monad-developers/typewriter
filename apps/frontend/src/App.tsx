@@ -8,8 +8,6 @@ import { useAvailableAccounts } from "./hooks/useAvailableAccounts";
 import { useSignIn } from "./hooks/useSignIn";
 import "./index.css";
 
-const queryClient = new QueryClient();
-
 function AppInner() {
   const { account } = useAccountContext();
   const signInMutation = useSignIn();
@@ -54,6 +52,8 @@ function AppInner() {
 }
 
 export function App() {
+  const [queryClient] = useState(() => new QueryClient());
+
   return (
     <QueryClientProvider client={queryClient}>
       <AccountProvider>
