@@ -28,10 +28,7 @@ export function Transfer() {
           className="w-16 border px-1"
         />{" "}
         to{" "}
-        <select
-          value={to}
-          onChange={(e) => setTo(e.target.value as Address)}
-        >
+        <select value={to} onChange={(e) => setTo(e.target.value as Address)}>
           {addresses.map((addr) => (
             <option key={addr} value={addr}>
               {addr}
