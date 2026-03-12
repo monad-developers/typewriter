@@ -14,7 +14,7 @@ import { publicClient } from "../lib/client";
 type AvailableAccount = (typeof ANVIL_ACCOUNTS)[number];
 
 export function useSignIn() {
-  const { setAccount } = useAccountContext();
+  const { setAccount, addTx, updateTx } = useAccountContext();
 
   return useMutation({
     mutationFn: async (accounts: readonly AvailableAccount[]) => {
@@ -25,6 +25,12 @@ export function useSignIn() {
         chain: anvil,
       });
 
+      const account = { ...picked, walletClient };
+      setAccount(account);
+
+      let start = performance.now();
+
+      // TODO(kyle) eth_sendRawTransactionSync
       const hash = await walletClient.writeContract({
         address: TOKEN_ADDRESS,
         abi: TOKEN_ABI,
@@ -32,15 +38,40 @@ export function useSignIn() {
         args: [picked.address, parseEther("100")],
       });
 
-      await publicClient.waitForTransactionReceipt({ hash });
+      const preflightLatency = performance.now() - start;
+      start = performance.now();
+
+      addTx(
+        {
+          hash,
+          status: "pending",
+          amount: parseEther("100"),
+          to: picked.address,
+          cost: null,
+          preflightLatency,
+          submissionLatency: null,
+          timestamp: Date.now(),
+        },
+        picked.address,
+      );
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const submissionLatency = performance.now() - start;
+
+      updateTx(
+        hash,
+        {
+          status: "proposed",
+          submissionLatency,
+          cost: receipt.gasUsed * 102n * 10n ** 9n,
+        },
+        picked.address,
+      );
 
       localStorage.setItem("address", picked.address);
       localStorage.setItem("privateKey", picked.privateKey);
 
-      const account = { ...picked, walletClient };
-      setAccount(account);
       return account;
     },
-    onSuccess: () => {},
   });
 }
