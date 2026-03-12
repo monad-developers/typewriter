@@ -3,10 +3,10 @@ import { type Address, formatEther } from "viem";
 import { TOKEN_ABI, TOKEN_ADDRESS } from "@/constants";
 import { publicClient } from "../lib/client";
 
-export function useAddressInfo(address: Address | undefined) {
+export function useAddressInfo(address: Address | undefined, signedIn = false) {
   return useQuery({
     queryKey: ["addressInfo", address],
-    enabled: !!address,
+    enabled: signedIn && !!address,
     queryFn: async () => {
       const [balance, txCount] = await Promise.all([
         publicClient.readContract({

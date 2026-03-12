@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Address } from "viem";
 import { ANVIL_ACCOUNTS } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
+import { useTransfer } from "../hooks/useTransfer";
 
 const AMOUNT = 1;
 
@@ -12,6 +13,7 @@ export function Transfer() {
   ).map((a) => a.address as Address);
   const [to, setTo] = useState<Address>(addresses[0] ?? ("" as Address));
   const [amount, setAmount] = useState(AMOUNT);
+  const transfer = useTransfer();
 
   if (!account) return null;
 
@@ -23,14 +25,12 @@ export function Transfer() {
           type="number"
           value={amount}
           onChange={(e) => setAmount(Number(e.target.value))}
-          disabled
-          className="w-16 border px-1 cursor-not-allowed"
+          className="w-16 border px-1"
         />{" "}
         to{" "}
         <select
           value={to}
           onChange={(e) => setTo(e.target.value as Address)}
-          disabled
         >
           {addresses.map((addr) => (
             <option key={addr} value={addr}>
@@ -41,7 +41,9 @@ export function Transfer() {
       </code>
       <button
         type="button"
-        className="border px-3 py-1 text-sm bg-green-500 text-white rounded-md"
+        disabled={transfer.isPending}
+        onClick={() => transfer.mutate({ to, amount })}
+        className="border px-3 py-1 text-sm bg-green-500 text-white rounded-md disabled:opacity-50"
       >
         send
       </button>

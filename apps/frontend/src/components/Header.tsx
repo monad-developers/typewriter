@@ -27,7 +27,7 @@ export function Header({
   onStateViewChange: (v: StateView) => void;
 }) {
   const { account } = useAccountContext();
-  const { data } = useAddressInfo(account?.address);
+  const { data } = useAddressInfo(account?.address, !!account);
 
   return (
     <header className="w-full border-b p-4 h-60 flex justify-between">
