@@ -1,5 +1,5 @@
 import { createContext, useContext, useState } from "react";
-import type { Address, Hash, Hex, WalletClient } from "viem";
+import type { Address, Hash, Hex, LocalAccount, Transport, WalletClient } from "viem";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { anvil } from "viem/chains";
@@ -39,7 +39,7 @@ function saveTxs(address: Address, txs: Tx[]) {
 export type Account = {
   address: Address;
   privateKey: Hex;
-  walletClient: WalletClient;
+  walletClient: WalletClient<Transport, typeof anvil, LocalAccount>;
 };
 
 export type TxStatus =
