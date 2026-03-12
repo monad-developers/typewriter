@@ -1,5 +1,14 @@
 import { formatEther } from "viem";
+import type { TxStatus } from "../contexts/AccountContext";
 import { useAccountContext } from "../contexts/AccountContext";
+import { useBlockNumber } from "../hooks/useBlockNumber";
+
+function getStatus(confirmations: bigint): TxStatus {
+  if (confirmations >= 7n) return "verified";
+  if (confirmations >= 2n) return "finalized";
+  if (confirmations >= 1n) return "voted";
+  return "proposed";
+}
 
 const COLUMNS = [
   "status",
@@ -24,6 +33,7 @@ function shortAddr(addr: string) {
 
 export function TxHistory() {
   const { txs } = useAccountContext();
+  const blockNumber = useBlockNumber();
 
   return (
     <section className="w-full p-4">
@@ -41,7 +51,11 @@ export function TxHistory() {
           {txs.map((tx) => (
             <tr key={tx.hash} className="border-b last:border-0">
               <td className="py-2 pr-6">
-                <code>{tx.status}</code>
+                <code>
+                  {blockNumber != null
+                    ? getStatus(blockNumber - tx.blockNumber)
+                    : tx.status}
+                </code>
               </td>
               <td className="py-2 pr-6">
                 <code>{formatEther(tx.amount)} MON</code>

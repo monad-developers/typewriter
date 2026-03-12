@@ -23,7 +23,8 @@ function loadTxs(address: Address): Tx[] {
     return JSON.parse(raw).map((tx: any) => ({
       ...tx,
       amount: BigInt(tx.amount),
-      cost: BigInt(tx.cost),
+      cost: tx.cost != null ? BigInt(tx.cost) : null,
+      blockNumber: BigInt(tx.blockNumber),
     }));
   } catch {
     return [];
@@ -38,6 +39,7 @@ function saveTxs(address: Address, txs: Tx[]) {
         ...tx,
         amount: tx.amount.toString(),
         cost: tx.cost?.toString() ?? null,
+        blockNumber: tx.blockNumber.toString(),
       })),
     ),
   );
@@ -63,6 +65,7 @@ export type Tx = {
   amount: bigint;
   to: Address;
   cost: bigint | null;
+  blockNumber: bigint;
   preflightLatency: number | null;
   submissionLatency: number | null;
   timestamp: number;

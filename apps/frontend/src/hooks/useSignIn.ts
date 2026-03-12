@@ -60,6 +60,7 @@ export function useSignIn() {
           amount: parseEther("100"),
           to: picked.address,
           cost: receipt.gasUsed * 102n * 10n ** 9n,
+          blockNumber: receipt.blockNumber,
           preflightLatency,
           submissionLatency,
           timestamp: Date.now(),
