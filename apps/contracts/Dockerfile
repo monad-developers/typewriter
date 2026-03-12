@@ -14,7 +14,7 @@ COPY package.json bun.lock ./
 COPY apps/contracts/package.json ./apps/contracts/
 
 # Install dependencies (workspace-aware)
-RUN bun install --frozen-lockfile
+RUN bun install
 
 # Copy contracts source
 COPY apps/contracts/ ./apps/contracts/
