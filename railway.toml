@@ -1,0 +1,7 @@
+[build]
+dockerfilePath = "apps/contracts/Dockerfile"
+
+[deploy]
+startCommand = "bun run start"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
