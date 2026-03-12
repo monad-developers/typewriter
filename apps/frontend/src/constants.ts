@@ -1,4 +1,4 @@
-export const RPC_URL = "http://localhost:8545" as const;
+export const RPC_URL = "https://anvil.railway.internal:8545";
 
 export const ANVIL_ACCOUNTS = [
   // The first account is the deployer
