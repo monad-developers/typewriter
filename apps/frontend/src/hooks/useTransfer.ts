@@ -48,6 +48,7 @@ export function useTransfer() {
         amount: parseEther(amount.toString()),
         to,
         cost: receipt.gasUsed * 102n * 10n ** 9n,
+        blockNumber: receipt.blockNumber,
         preflightLatency,
         submissionLatency,
         timestamp: Date.now(),
