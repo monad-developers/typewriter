@@ -78,6 +78,8 @@ type AccountContextValue = {
   txs: Tx[];
   addTx: (tx: Tx, address?: Address) => void;
   updateTx: (hash: Hash, update: Partial<Tx>, address?: Address) => void;
+  accessListEnabled: boolean;
+  setAccessListEnabled: (v: boolean) => void;
 };
 
 const AccountContext = createContext<AccountContextValue | null>(null);
@@ -106,6 +108,8 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
     account ? loadTxs(account.address) : [],
   );
 
+  const [accessListEnabled, setAccessListEnabled] = useState(false);
+
   function addTx(tx: Tx, address?: Address) {
     const addr = address ?? account?.address;
     setTxs((prev) => {
@@ -128,7 +132,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AccountContext.Provider
-      value={{ account, setAccount, txs, addTx, updateTx }}
+      value={{ account, setAccount, txs, addTx, updateTx, accessListEnabled, setAccessListEnabled }}
     >
       {children}
     </AccountContext.Provider>

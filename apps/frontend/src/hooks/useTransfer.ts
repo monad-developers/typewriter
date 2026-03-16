@@ -11,8 +11,8 @@ type TransferParams = {
   amount: number;
 };
 
-export function useTransfer({ accessListEnabled }: { accessListEnabled: boolean }) {
-  const { account, addTx } = useAccountContext();
+export function useTransfer() {
+  const { account, addTx, accessListEnabled } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({

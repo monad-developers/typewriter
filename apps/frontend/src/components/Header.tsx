@@ -32,15 +32,11 @@ export type StateView = (typeof STATE_VIEWS)[number];
 export function Header({
   stateView,
   onStateViewChange,
-  accessListEnabled,
-  onAccessListToggle,
 }: {
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
-  accessListEnabled: boolean;
-  onAccessListToggle: (v: boolean) => void;
 }) {
-  const { account } = useAccountContext();
+  const { account, accessListEnabled, setAccessListEnabled } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
@@ -63,7 +59,7 @@ export function Header({
           <input
             type="checkbox"
             checked={accessListEnabled}
-            onChange={(e) => onAccessListToggle(e.target.checked)}
+            onChange={(e) => setAccessListEnabled(e.target.checked)}
           />
         </div>
         <Toggle label="preflight optimizations" disabled />

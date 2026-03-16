@@ -6,9 +6,9 @@ import { useTransfer } from "../hooks/useTransfer";
 
 const AMOUNT = 1;
 
-export function Transfer({ accessListEnabled }: { accessListEnabled: boolean }) {
+export function Transfer() {
   const { account } = useAccountContext();
-  const transfer = useTransfer({ accessListEnabled });
+  const transfer = useTransfer();
   const [amount, setAmount] = useState(AMOUNT);
 
   const { data: addresses } = useQuery({
