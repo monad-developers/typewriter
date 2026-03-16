@@ -25,7 +25,7 @@ export function Transfer() {
 
   useEffect(() => {
     if (to === ("" as Address) && recipients.length > 0) {
-      setTo(recipients[0]!);
+      setTo(recipients[0]);
     }
   }, [recipients, to]);
 

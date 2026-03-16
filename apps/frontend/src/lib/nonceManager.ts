@@ -5,7 +5,10 @@ class NonceManager {
   private nonces = new Map<Address, number>();
 
   async prefetch(address: Address): Promise<void> {
-    const nonce = await publicClient.getTransactionCount({ address, blockTag: "pending" });
+    const nonce = await publicClient.getTransactionCount({
+      address,
+      blockTag: "pending",
+    });
     this.nonces.set(address, nonce);
   }
 
@@ -13,7 +16,7 @@ class NonceManager {
     if (!this.nonces.has(address)) {
       await this.prefetch(address);
     }
-    const nonce = this.nonces.get(address)!;
+    const nonce = this.nonces.get(address) ?? 0;
     this.nonces.set(address, nonce + 1);
     return nonce;
   }
