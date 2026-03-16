@@ -36,7 +36,7 @@ export function Header({
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
 }) {
-  const { account } = useAccountContext();
+  const { account, setAccount } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
@@ -71,7 +71,20 @@ export function Header({
           </code>
         </Tooltip>
       </div>
-      <RpcLog />
+      <div className="flex flex-col items-end gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            localStorage.removeItem("address");
+            localStorage.removeItem("privateKey");
+            setAccount(null);
+          }}
+          className="border px-3 py-1 text-sm rounded hover:bg-gray-50"
+        >
+          Sign Out
+        </button>
+        <RpcLog />
+      </div>
     </header>
   );
 }
