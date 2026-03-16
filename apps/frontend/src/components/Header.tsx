@@ -36,7 +36,7 @@ export function Header({
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
 }) {
-  const { account } = useAccountContext();
+  const { account, setAccount } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
