@@ -1,32 +1,32 @@
 import { useMutation } from "@tanstack/react-query";
 import { createWalletClient, encodeFunctionData, parseEther } from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
 import { useAccountContext } from "@/contexts/AccountContext";
-import {
-  type ANVIL_ACCOUNTS,
-  RPC_URL,
-  TOKEN_ABI,
-  TOKEN_ADDRESS,
-} from "../constants";
+import { RPC_URL, TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
 import { loggingTransport } from "../lib/loggingTransport";
-
-type AvailableAccount = (typeof ANVIL_ACCOUNTS)[number];
 
 export function useSignIn() {
   const { setAccount, addTx } = useAccountContext();
 
   return useMutation({
-    mutationFn: async (accounts: readonly AvailableAccount[]) => {
-      const picked = accounts[Math.floor(Math.random() * accounts.length)]!;
+    mutationFn: async () => {
+      const res = await fetch("/sign-in", { method: "POST" });
+      if (!res.ok) throw new Error("Sign-in failed");
+      const { address, privateKey } = (await res.json()) as {
+        address: Address;
+        privateKey: Hex;
+      };
+
       const walletClient = createWalletClient({
-        account: privateKeyToAccount(picked.privateKey),
+        account: privateKeyToAccount(privateKey),
         transport: loggingTransport(RPC_URL),
         chain: anvil,
       });
 
-      const account = { ...picked, walletClient };
+      const account = { address, privateKey, walletClient };
       setAccount(account);
 
       let start = performance.now();
@@ -34,7 +34,7 @@ export function useSignIn() {
       const data = encodeFunctionData({
         abi: TOKEN_ABI,
         functionName: "mint",
-        args: [picked.address, parseEther("100")],
+        args: [address, parseEther("100")],
       });
 
       const request = await walletClient.prepareTransactionRequest({
@@ -59,18 +59,18 @@ export function useSignIn() {
           hash: receipt.transactionHash,
           status: "proposed",
           amount: parseEther("100"),
-          to: picked.address,
+          to: address,
           cost: receipt.gasUsed * 102n * 10n ** 9n,
           blockNumber: receipt.blockNumber,
           preflightLatency,
           submissionLatency,
           timestamp: Date.now(),
         },
-        picked.address,
+        address,
       );
 
-      localStorage.setItem("address", picked.address);
-      localStorage.setItem("privateKey", picked.privateKey);
+      localStorage.setItem("address", address);
+      localStorage.setItem("privateKey", privateKey);
 
       return account;
     },
