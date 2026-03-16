@@ -7,10 +7,11 @@ import type {
   Transport,
   WalletClient,
 } from "viem";
-import { createWalletClient, http } from "viem";
+import { createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { anvil } from "viem/chains";
 import { ANVIL_ACCOUNTS, RPC_URL } from "../constants";
+import { loggingTransport } from "../lib/loggingTransport";
 
 function txStorageKey(address: Address) {
   return `txs:${address}`;
@@ -94,7 +95,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
         ...valid,
         walletClient: createWalletClient({
           account: privateKeyToAccount(valid.privateKey),
-          transport: http(RPC_URL),
+          transport: loggingTransport(RPC_URL),
           chain: anvil,
         }),
       };
