@@ -1,8 +1,6 @@
-import { nonceManager } from "viem/nonce";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useAddressInfo } from "../hooks/useAddressInfo";
-import { CHAIN_ID } from "../constants";
-import { publicClient } from "../lib/client";
+import { nonceManager } from "../lib/nonceManager";
 import { RpcLog } from "./RpcLog";
 import { Tooltip } from "./ui/tooltip";
 
@@ -72,7 +70,7 @@ export function Header({
             checked={preflightOptimizationsEnabled}
             onChange={(e) => {
               setPreflightOptimizationsEnabled(e.target.checked);
-              if (e.target.checked && account) nonceManager.get({ address: account.address, chainId: CHAIN_ID, client: publicClient });
+              if (e.target.checked && account) nonceManager.prefetch(account.address);
             }}
           />
         </div>
