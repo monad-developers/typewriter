@@ -79,8 +79,10 @@ export function useTransfer() {
             ...monadGasParams,
           });
 
-          const serializedTx =
-            await account.walletClient.signTransaction(request);
+          const serializedTx = await account.walletClient.account.signTransaction(
+            { ...request, chainId: CHAIN_ID },
+            { serializer: account.walletClient.chain?.serializers?.transaction },
+          );
 
           return serializedTx;
         },
