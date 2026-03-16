@@ -6,10 +6,10 @@ ERC20 token contract built with [Foundry](https://book.getfoundry.sh/) and [Solm
 
 | Variable | Required | Description |
 |---|---|---|
+| `DEPLOYER_PRIVATE_KEY` | Yes (for deploy) | Private key used to deploy the contract |
 | `RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
-| `TOKEN_NAME` | Yes (for deploy) | Name of the ERC20 token |
-| `TOKEN_SYMBOL` | Yes (for deploy) | Symbol of the ERC20 token |
-| `TOKEN_DECIMALS` | Yes (for deploy) | Decimals for the ERC20 token |
+
+Copy `.env.example.local` or `.env.example.testnet` to `.env`. The deploy script sources `.env` automatically.
 
 ## Usage
 
@@ -39,17 +39,14 @@ Start a local Anvil node and auto-deploy the token:
 bun run dev
 ```
 
-This runs Anvil with a 0.4s block time and deploys the token using the first Anvil account.
+This runs Anvil and deploys the token using the deployer key from `.env`.
 
 ### Deploy
 
-Deploy to a custom RPC endpoint:
+Deploy to a custom RPC endpoint (set `DEPLOYER_PRIVATE_KEY` and `RPC_URL` in `.env`):
 
 ```shell
-TOKEN_NAME="Hi Kevin" TOKEN_SYMBOL="HK" TOKEN_DECIMALS=18 \
-  forge script script/Token.s.sol:TokenScript \
-  --broadcast --rpc-url $RPC_URL \
-  --private-key <your_private_key>
+bun run deploy
 ```
 
 ### Gas Snapshots

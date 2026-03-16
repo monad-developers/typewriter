@@ -1,12 +1,12 @@
 import { custom, http } from "viem";
-import { anvil } from "viem/chains";
+import { CHAIN } from "../constants";
 import { getCurrentScope } from "./rpcScope";
 import { pushEntry } from "./rpcStore";
 
 export function loggingTransport(url: string, options?: { silent?: string[] }) {
   const silentMethods = new Set(options?.silent);
   const httpTransport = http(url)({
-    chain: anvil,
+    chain: CHAIN,
     retryCount: 0,
     timeout: 10_000,
   });
