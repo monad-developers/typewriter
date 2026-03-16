@@ -1,10 +1,17 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { type AccessList, type Address, encodeFunctionData, parseEther } from "viem";
+import { type AccessList, type Address, encodeFunctionData, parseEther, parseGwei } from "viem";
+import { monadTestnet } from "viem/chains";
 import { sendRawTransactionSync } from "viem/actions";
 import { useAccountContext } from "@/contexts/AccountContext";
-import { TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
+import { nonceManager } from "viem/nonce";
+import { CHAIN_ID, TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
 import { publicClient } from "../lib/client";
 import { withRpcScope } from "../lib/rpcScope";
+
+// On Monad, baseFeePerGas has a minimum of 100 gwei and maxPriorityFeePerGas
+// is effectively 0 — hardcode these to skip the corresponding RPC calls.
+const MONAD_MAX_FEE_PER_GAS = parseGwei("100");
+const MONAD_MAX_PRIORITY_FEE_PER_GAS = 0n;
 
 type TransferParams = {
   to: Address;
@@ -12,7 +19,7 @@ type TransferParams = {
 };
 
 export function useTransfer() {
-  const { account, addTx, accessListEnabled } = useAccountContext();
+  const { account, addTx, accessListEnabled, preflightOptimizationsEnabled } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -41,16 +48,33 @@ export function useTransfer() {
             accessList = result.accessList;
           }
 
+          // Preflight optimizations: use a local nonce manager to skip
+          // eth_getTransactionCount, and on Monad hardcode gas params to skip
+          // eth_maxPriorityFeePerGas and eth_getBlockByNumber.
+          const nonce = preflightOptimizationsEnabled
+            ? await nonceManager.consume({ address: account.address, chainId: CHAIN_ID, client: publicClient })
+            : undefined;
+
+          const monadGasParams =
+            preflightOptimizationsEnabled && CHAIN_ID === monadTestnet.id
+              ? {
+                  maxFeePerGas: MONAD_MAX_FEE_PER_GAS,
+                  maxPriorityFeePerGas: MONAD_MAX_PRIORITY_FEE_PER_GAS,
+                }
+              : {};
+
           const request = await account.walletClient.prepareTransactionRequest({
             to: TOKEN_ADDRESS,
             data,
             ...(accessList ? { accessList } : {}),
+            ...(nonce !== undefined ? { nonce } : {}),
+            ...monadGasParams,
           });
 
           const serializedTx =
             await account.walletClient.signTransaction(request);
 
-          return serializedTx ;
+          return serializedTx;
         },
       );
 
@@ -81,6 +105,9 @@ export function useTransfer() {
       queryClient.invalidateQueries({
         queryKey: ["addressInfo", account?.address],
       });
+    },
+    onError: () => {
+      if (account) nonceManager.reset({ address: account.address, chainId: CHAIN_ID });
     },
   });
 }
