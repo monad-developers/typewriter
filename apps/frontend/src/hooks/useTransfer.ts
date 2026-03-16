@@ -79,10 +79,14 @@ export function useTransfer() {
             ...monadGasParams,
           });
 
-          const serializedTx = await account.walletClient.account.signTransaction(
-            { ...request, chainId: CHAIN_ID },
-            { serializer: account.walletClient.chain?.serializers?.transaction },
-          );
+          const serializedTx =
+            await account.walletClient.account.signTransaction(
+              { ...request, chainId: CHAIN_ID },
+              {
+                serializer:
+                  account.walletClient.chain?.serializers?.transaction,
+              },
+            );
 
           return serializedTx;
         },
@@ -116,7 +120,8 @@ export function useTransfer() {
         queryKey: ["addressInfo", account?.address],
       });
     },
-    onError: () => {
+    onError: (error) => {
+      console.log(error);
       if (account) nonceManager.reset(account.address);
     },
   });
