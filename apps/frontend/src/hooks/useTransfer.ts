@@ -29,11 +29,10 @@ export function useTransfer() {
             args: [to, parseEther(amount.toString())],
           });
 
-          const request =
-            await account.walletClient.prepareTransactionRequest({
-              to: TOKEN_ADDRESS,
-              data,
-            });
+          const request = await account.walletClient.prepareTransactionRequest({
+            to: TOKEN_ADDRESS,
+            data,
+          });
 
           const serializedTx =
             await account.walletClient.signTransaction(request);
@@ -45,9 +44,11 @@ export function useTransfer() {
       const preflightLatency = performance.now() - start;
       start = performance.now();
 
-      const receipt = await sendRawTransactionSync(account.walletClient, {
-        serializedTransaction: serializedTx,
-      });
+      const receipt = await withRpcScope("transfer", () =>
+        sendRawTransactionSync(account.walletClient, {
+          serializedTransaction: serializedTx,
+        }),
+      );
 
       const submissionLatency = performance.now() - start;
 
