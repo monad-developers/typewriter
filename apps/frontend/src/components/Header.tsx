@@ -36,7 +36,7 @@ export function Header({
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
 }) {
-  const { account, setAccount } = useAccountContext();
+  const { account } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
@@ -71,17 +71,6 @@ export function Header({
             </select>
           </code>
         </Tooltip>
-        <button
-          type="button"
-          onClick={() => {
-            localStorage.removeItem("address");
-            localStorage.removeItem("privateKey");
-            setAccount(null);
-          }}
-          className="border px-3 py-1 text-sm rounded hover:bg-gray-50 self-start"
-        >
-          Sign Out
-        </button>
       </div>
       <div className="border-l -my-4" />
       <div className="flex-1 min-w-0 -mr-4 -mb-4 -ml-4 pl-4">
