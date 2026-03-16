@@ -1,11 +1,11 @@
 import { createContext, useContext, useState } from "react";
 import type {
   Address,
+  Chain,
   Hash,
   Hex,
   LocalAccount,
   Transport,
-  Chain,
   WalletClient,
 } from "viem";
 import { createWalletClient } from "viem";
@@ -21,7 +21,7 @@ function loadTxs(address: Address): Tx[] {
   try {
     const raw = localStorage.getItem(txStorageKey(address));
     if (!raw) return [];
-    return JSON.parse(raw).map((tx: any) => ({
+    return JSON.parse(raw).map((tx: Record<string, string>) => ({
       ...tx,
       amount: BigInt(tx.amount),
       cost: tx.cost != null ? BigInt(tx.cost) : null,
@@ -111,7 +111,8 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
   );
 
   const [accessListEnabled, setAccessListEnabled] = useState(false);
-  const [preflightOptimizationsEnabled, setPreflightOptimizationsEnabled] = useState(false);
+  const [preflightOptimizationsEnabled, setPreflightOptimizationsEnabled] =
+    useState(false);
 
   function addTx(tx: Tx, address?: Address) {
     const addr = address ?? account?.address;
@@ -135,7 +136,17 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AccountContext.Provider
-      value={{ account, setAccount, txs, addTx, updateTx, accessListEnabled, setAccessListEnabled, preflightOptimizationsEnabled, setPreflightOptimizationsEnabled }}
+      value={{
+        account,
+        setAccount,
+        txs,
+        addTx,
+        updateTx,
+        accessListEnabled,
+        setAccessListEnabled,
+        preflightOptimizationsEnabled,
+        setPreflightOptimizationsEnabled,
+      }}
     >
       {children}
     </AccountContext.Provider>

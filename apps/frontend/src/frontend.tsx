@@ -9,7 +9,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 
-const elem = document.getElementById("root")!;
+const elem = document.getElementById("root") as HTMLElement;
 const app = (
   <StrictMode>
     <App />
@@ -18,7 +18,7 @@ const app = (
 
 if (import.meta.hot) {
   // With hot module reloading, `import.meta.hot.data` is persisted.
-  // biome-ignore lint/suspicious/noAssignInExpressions: <explanation>
+  // biome-ignore lint/suspicious/noAssignInExpressions: HMR root persistence requires assignment in expression
   const root = (import.meta.hot.data.root ??= createRoot(elem));
   root.render(app);
 } else {

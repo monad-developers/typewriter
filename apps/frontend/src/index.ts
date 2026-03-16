@@ -6,11 +6,11 @@ import { sendRawTransactionSync } from "viem/actions";
 import { CHAIN, RPC_URL, TOKEN_ABI, TOKEN_ADDRESS } from "./constants";
 import index from "./index.html";
 
-// @ts-ignore
-if (!process.env.DEPLOYER_PRIVATE_KEY){
+// @ts-expect-error
+if (!process.env.DEPLOYER_PRIVATE_KEY) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
 }
-// @ts-ignore
+// @ts-expect-error
 const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
 
 const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);

@@ -37,7 +37,13 @@ export function Header({
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
 }) {
-  const { account, accessListEnabled, setAccessListEnabled, preflightOptimizationsEnabled, setPreflightOptimizationsEnabled } = useAccountContext();
+  const {
+    account,
+    accessListEnabled,
+    setAccessListEnabled,
+    preflightOptimizationsEnabled,
+    setPreflightOptimizationsEnabled,
+  } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
@@ -70,7 +76,8 @@ export function Header({
             checked={preflightOptimizationsEnabled}
             onChange={(e) => {
               setPreflightOptimizationsEnabled(e.target.checked);
-              if (e.target.checked && account) nonceManager.prefetch(account.address);
+              if (e.target.checked && account)
+                nonceManager.prefetch(account.address);
             }}
           />
         </div>
