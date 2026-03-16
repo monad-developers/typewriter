@@ -73,6 +73,7 @@ export function useTransfer() {
           const request = await account.walletClient.prepareTransactionRequest({
             to: TOKEN_ADDRESS,
             data,
+            chainId: CHAIN_ID,
             ...(accessList ? { accessList } : {}),
             ...(nonce !== undefined ? { nonce } : {}),
             ...monadGasParams,
