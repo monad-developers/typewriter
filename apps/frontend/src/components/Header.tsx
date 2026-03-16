@@ -1,5 +1,8 @@
+import { nonceManager } from "viem/nonce";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useAddressInfo } from "../hooks/useAddressInfo";
+import { CHAIN_ID } from "../constants";
+import { publicClient } from "../lib/client";
 import { RpcLog } from "./RpcLog";
 import { Tooltip } from "./ui/tooltip";
 
@@ -67,7 +70,10 @@ export function Header({
           <input
             type="checkbox"
             checked={preflightOptimizationsEnabled}
-            onChange={(e) => setPreflightOptimizationsEnabled(e.target.checked)}
+            onChange={(e) => {
+              setPreflightOptimizationsEnabled(e.target.checked);
+              if (e.target.checked && account) nonceManager.get({ address: account.address, chainId: CHAIN_ID, client: publicClient });
+            }}
           />
         </div>
         <Tooltip content="Coming soon">
