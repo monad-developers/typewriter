@@ -5,6 +5,7 @@ import type {
   Hex,
   LocalAccount,
   Transport,
+  Chain,
   WalletClient,
 } from "viem";
 import { createWalletClient } from "viem";
@@ -48,7 +49,7 @@ function saveTxs(address: Address, txs: Tx[]) {
 export type Account = {
   address: Address;
   privateKey: Hex;
-  walletClient: WalletClient<Transport, typeof CHAIN, LocalAccount>;
+  walletClient: WalletClient<Transport, Chain, LocalAccount>;
 };
 
 export type TxStatus =
