@@ -3,22 +3,19 @@ import type { Address } from "viem";
 import { createWalletClient, encodeFunctionData, http, parseEther } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
-import { anvil } from "viem/chains";
-import { TOKEN_ABI, TOKEN_ADDRESS } from "./constants";
+import { CHAIN, RPC_URL, TOKEN_ABI, TOKEN_ADDRESS } from "./constants";
 import index from "./index.html";
 
-const DEPLOYER_PRIVATE_KEY =
-  (process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`) ??
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
-const RPC_URL = process.env.BUN_PUBLIC_RPC_URL ?? "http://localhost:8545";
+if (!process.env.DEPLOYER_PRIVATE_KEY)
+  throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
+const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
 
 const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
 const deployerClient = createWalletClient({
   account: deployerAccount,
   transport: http(RPC_URL),
-  chain: anvil,
+  chain: CHAIN,
 });
 
 const createdAddresses: Address[] = [];

@@ -2,9 +2,8 @@ import { useMutation } from "@tanstack/react-query";
 import type { Address, Hex } from "viem";
 import { createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { anvil } from "viem/chains";
 import { useAccountContext } from "@/contexts/AccountContext";
-import { RPC_URL } from "../constants";
+import { CHAIN, RPC_URL } from "../constants";
 import { loggingTransport } from "../lib/loggingTransport";
 
 export function useSignIn() {
@@ -22,7 +21,7 @@ export function useSignIn() {
       const walletClient = createWalletClient({
         account: privateKeyToAccount(privateKey),
         transport: loggingTransport(RPC_URL),
-        chain: anvil,
+        chain: CHAIN,
       });
 
       const account = { address, privateKey, walletClient };

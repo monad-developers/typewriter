@@ -57,7 +57,7 @@ export function useTransfer() {
         status: "proposed",
         amount: parseEther(amount.toString()),
         to,
-        cost: receipt.gasUsed * 102n * 10n ** 9n,
+        cost: receipt.gasUsed * receipt.effectiveGasPrice,
         blockNumber: receipt.blockNumber,
         preflightLatency,
         submissionLatency,

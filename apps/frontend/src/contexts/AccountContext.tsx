@@ -9,8 +9,7 @@ import type {
 } from "viem";
 import { createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { anvil } from "viem/chains";
-import { RPC_URL } from "../constants";
+import { CHAIN, RPC_URL } from "../constants";
 import { loggingTransport } from "../lib/loggingTransport";
 
 function txStorageKey(address: Address) {
@@ -49,7 +48,7 @@ function saveTxs(address: Address, txs: Tx[]) {
 export type Account = {
   address: Address;
   privateKey: Hex;
-  walletClient: WalletClient<Transport, typeof anvil, LocalAccount>;
+  walletClient: WalletClient<Transport, typeof CHAIN, LocalAccount>;
 };
 
 export type TxStatus =
@@ -94,7 +93,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
         walletClient: createWalletClient({
           account: privateKeyToAccount(privateKey),
           transport: loggingTransport(RPC_URL),
-          chain: anvil,
+          chain: CHAIN,
         }),
       };
     }
