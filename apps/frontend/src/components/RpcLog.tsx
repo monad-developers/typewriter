@@ -4,9 +4,9 @@ export function RpcLog() {
   const entries = useRpcLog();
 
   return (
-    <div className="flex flex-col h-full w-80">
-      <code className="text-sm font-bold mb-1">RPC Request Log</code>
-      <div className="overflow-y-auto flex-1 border rounded text-xs">
+    <div className="flex flex-col h-full flex-1 min-w-0">
+      <h2 className="text-2xl font-bold mb-1">RPC Request Tracing</h2>
+      <div className="overflow-y-auto flex-1 text-xs">
         {entries.length === 0 ? (
           <div className="p-2 text-gray-400">
             <code>No RPC calls yet</code>

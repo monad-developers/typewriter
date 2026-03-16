@@ -18,7 +18,9 @@ export function Transfer() {
   if (!account) return null;
 
   return (
-    <section className="w-full border-b px-4 h-12 flex items-center gap-4 overflow-hidden">
+    <section className="w-full border-b px-4 py-4 flex flex-col gap-2">
+      <h2 className="text-2xl font-bold">Transfer Tokens</h2>
+      <div className="flex items-center gap-4">
       <code>
         send{" "}
         <input
@@ -45,6 +47,7 @@ export function Transfer() {
       >
         send
       </button>
+      </div>
     </section>
   );
 }

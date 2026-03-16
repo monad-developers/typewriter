@@ -40,8 +40,9 @@ export function Header({
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
-    <header className="w-full border-b p-4 h-60 flex justify-between">
-      <div className="flex items-start gap-2 flex-col">
+    <header className="w-full border-b p-4 h-72 flex gap-4">
+      <div className="flex items-start gap-2 flex-col flex-1 min-w-0">
+        <h2 className="text-2xl font-bold">Account Overview</h2>
         <code className="">
           address: <span className="">{account?.address}</span>
         </code>
@@ -71,7 +72,10 @@ export function Header({
           </code>
         </Tooltip>
       </div>
-      <RpcLog />
+      <div className="border-l -my-4" />
+      <div className="flex-1 min-w-0 -mr-4 -mb-4 -ml-4 pl-4">
+        <RpcLog />
+      </div>
     </header>
   );
 }

@@ -23,6 +23,17 @@ function AppInner() {
 
   return (
     <div className="min-h-screen w-full flex flex-col">
+      <div className="w-full border-b p-4">
+        <p className="text-lg">
+          Send token transfers and see every step of the transaction lifecycle —
+          from the RPC calls your wallet makes to how your transaction gets
+          confirmed. See the{" "}
+          <span className="font-bold">
+            practical throughput and latency bottlenecks
+          </span>{" "}
+          for apps.
+        </p>
+      </div>
       {account ? (
         <>
           <Header stateView={stateView} onStateViewChange={setStateView} />
@@ -45,6 +56,10 @@ function AppInner() {
                 ? "Loading..."
                 : "Sign In"}
           </button>
+          <p className="text-sm text-gray-400">
+            Create a local account with the private key stored in the browser
+            [demo only]
+          </p>
         </main>
       )}
     </div>
