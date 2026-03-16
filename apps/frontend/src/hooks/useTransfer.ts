@@ -3,9 +3,9 @@ import { type AccessList, type Address, encodeFunctionData, parseEther, parseGwe
 import { monadTestnet } from "viem/chains";
 import { sendRawTransactionSync } from "viem/actions";
 import { useAccountContext } from "@/contexts/AccountContext";
+import { nonceManager } from "viem/nonce";
 import { CHAIN_ID, TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
 import { publicClient } from "../lib/client";
-import { nonceManager } from "../lib/nonceManager";
 import { withRpcScope } from "../lib/rpcScope";
 
 // On Monad, baseFeePerGas has a minimum of 100 gwei and maxPriorityFeePerGas
@@ -52,7 +52,7 @@ export function useTransfer() {
           // eth_getTransactionCount, and on Monad hardcode gas params to skip
           // eth_maxPriorityFeePerGas and eth_getBlockByNumber.
           const nonce = preflightOptimizationsEnabled
-            ? await nonceManager.getNonce(account.address)
+            ? await nonceManager.consume({ address: account.address, chainId: CHAIN_ID, client: publicClient })
             : undefined;
 
           const monadGasParams =
@@ -107,7 +107,7 @@ export function useTransfer() {
       });
     },
     onError: () => {
-      if (account) nonceManager.reset(account.address);
+      if (account) nonceManager.reset({ address: account.address, chainId: CHAIN_ID });
     },
   });
 }
