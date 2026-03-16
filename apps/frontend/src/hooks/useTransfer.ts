@@ -45,6 +45,7 @@ export function useTransfer() {
           });
 
           let accessList: AccessList | undefined;
+          let gasEstimate: bigint | undefined;
 
           if (accessListEnabled) {
             const result = await publicClient.createAccessList({
@@ -53,11 +54,9 @@ export function useTransfer() {
               data,
             });
             accessList = result.accessList;
+            gasEstimate = result.gasUsed;
           }
 
-          // Preflight optimizations: use a local nonce manager to skip
-          // eth_getTransactionCount, and on Monad hardcode gas params to skip
-          // eth_maxPriorityFeePerGas and eth_getBlockByNumber.
           const nonce = preflightOptimizationsEnabled
             ? await nonceManager.consume(account.address)
             : undefined;
@@ -75,6 +74,7 @@ export function useTransfer() {
             data,
             chainId: CHAIN_ID,
             ...(accessList ? { accessList } : {}),
+            ...(gasEstimate !== undefined ? { gas: gasEstimate } : {}),
             ...(nonce !== undefined ? { nonce } : {}),
             ...monadGasParams,
           });
