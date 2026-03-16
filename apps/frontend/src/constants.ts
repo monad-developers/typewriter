@@ -3,10 +3,10 @@ import { anvil, monadTestnet } from "viem/chains";
 
 const chains = [anvil, monadTestnet] as const;
 
-// @ts-ignore
+// @ts-expect-error
 if (!process.env.BUN_PUBLIC_CHAIN_ID)
   throw new Error("BUN_PUBLIC_CHAIN_ID env var is required");
-// @ts-ignore
+// @ts-expect-error
 export const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID);
 
 export const CHAIN = extractChain({
@@ -14,18 +14,17 @@ export const CHAIN = extractChain({
   id: CHAIN_ID as (typeof chains)[number]["id"],
 }) as typeof anvil | typeof monadTestnet;
 
-// @ts-ignore
+// @ts-expect-error
 if (!process.env.BUN_PUBLIC_RPC_URL)
   throw new Error("BUN_PUBLIC_RPC_URL env var is required");
-// @ts-ignore
+// @ts-expect-error
 export const RPC_URL = process.env.BUN_PUBLIC_RPC_URL;
 
-// @ts-ignore
+// @ts-expect-error
 if (!process.env.BUN_PUBLIC_TOKEN_ADDRESS)
   throw new Error("BUN_PUBLIC_TOKEN_ADDRESS env var is required");
-export const TOKEN_ADDRESS = process.env
-// @ts-ignore
-  .BUN_PUBLIC_TOKEN_ADDRESS as `0x${string}`;
+export const TOKEN_ADDRESS = // @ts-expect-error
+  process.env.BUN_PUBLIC_TOKEN_ADDRESS as `0x${string}`;
 
 export const TOKEN_ABI = [
   {

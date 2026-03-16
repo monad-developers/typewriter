@@ -36,7 +36,7 @@ Example:
 const toCamelCase = (str: string): string =>
   str.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
 
-const parseValue = (value: string): any => {
+const parseValue = (value: string): string | number | boolean | string[] => {
   if (value === "true") return true;
   if (value === "false") return false;
 

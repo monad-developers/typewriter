@@ -6,11 +6,7 @@
       "contractName": "Token",
       "contractAddress": "0xff96662d1af7c4440435da62f1de28562dbaef7e",
       "function": null,
-      "arguments": [
-        "Hi Kevin",
-        "HK",
-        "18"
-      ],
+      "arguments": ["Hi Kevin", "HK", "18"],
       "transaction": {
         "from": "0x2ccb6c4ff98fec694d84f64c52f2f0ff12de1feb",
         "gas": "0x1a6848",
