@@ -1,11 +1,25 @@
-// @ts-ignore
-export const RPC_URL =
-  process.env.BUN_PUBLIC_RPC_URL ?? "http://localhost:8545";
+import { extractChain } from "viem";
+import { anvil, monadTestnet } from "viem/chains";
 
-export const CHAIN_ID = 31337 as const;
+const chains = [anvil, monadTestnet] as const;
 
-export const TOKEN_ADDRESS =
-  "0x5fbdb2315678afecb367f032d93f642f64180aa3" as const;
+if (!process.env.BUN_PUBLIC_CHAIN_ID)
+  throw new Error("BUN_PUBLIC_CHAIN_ID env var is required");
+export const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID);
+
+export const CHAIN = extractChain({
+  chains,
+  id: CHAIN_ID as (typeof chains)[number]["id"],
+}) as typeof anvil | typeof monadTestnet;
+
+if (!process.env.BUN_PUBLIC_RPC_URL)
+  throw new Error("BUN_PUBLIC_RPC_URL env var is required");
+export const RPC_URL = process.env.BUN_PUBLIC_RPC_URL;
+
+if (!process.env.BUN_PUBLIC_TOKEN_ADDRESS)
+  throw new Error("BUN_PUBLIC_TOKEN_ADDRESS env var is required");
+export const TOKEN_ADDRESS = process.env
+  .BUN_PUBLIC_TOKEN_ADDRESS as `0x${string}`;
 
 export const TOKEN_ABI = [
   {
