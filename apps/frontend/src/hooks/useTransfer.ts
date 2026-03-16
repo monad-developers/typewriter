@@ -20,7 +20,7 @@ export function useTransfer() {
 
       let start = performance.now();
 
-      const { request, serializedTx } = await withRpcScope(
+      const serializedTx = await withRpcScope(
         "transfer preflight",
         async () => {
           const data = encodeFunctionData({
@@ -37,7 +37,7 @@ export function useTransfer() {
           const serializedTx =
             await account.walletClient.signTransaction(request);
 
-          return { request, serializedTx };
+          return serializedTx ;
         },
       );
 
