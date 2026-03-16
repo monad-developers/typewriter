@@ -1,8 +1,13 @@
 import { custom, http } from "viem";
 import { anvil } from "viem/chains";
+import { getCurrentScope } from "./rpcScope";
 import { pushEntry } from "./rpcStore";
 
-export function loggingTransport(url: string) {
+export function loggingTransport(
+  url: string,
+  options?: { silent?: string[] },
+) {
+  const silentMethods = new Set(options?.silent);
   const httpTransport = http(url)({
     chain: anvil,
     retryCount: 0,
@@ -11,11 +16,17 @@ export function loggingTransport(url: string) {
 
   return custom({
     async request({ method, params }) {
+      const scope = getCurrentScope();
+      if (scope?.silent || silentMethods.has(method)) {
+        return httpTransport.request({ method, params });
+      }
+      const tag = scope?.tag ?? null;
       const start = performance.now();
       try {
         const result = await httpTransport.request({ method, params });
         pushEntry({
           method,
+          tag,
           duration: performance.now() - start,
           status: "ok",
         });
@@ -23,6 +34,7 @@ export function loggingTransport(url: string) {
       } catch (err) {
         pushEntry({
           method,
+          tag,
           duration: performance.now() - start,
           status: "error",
         });
