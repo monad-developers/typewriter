@@ -40,7 +40,7 @@ export function Header({
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
-    <header className="w-full border-b p-4 h-72 flex gap-4">
+    <header className="w-full border-b p-4 h-80 flex gap-4">
       <div className="flex items-start gap-2 flex-col flex-1 min-w-0">
         <h2 className="text-2xl font-bold">Account Overview</h2>
         <code className="">
