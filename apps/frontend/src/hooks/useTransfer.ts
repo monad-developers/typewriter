@@ -3,6 +3,7 @@ import { type Address, encodeFunctionData, parseEther } from "viem";
 import { sendRawTransactionSync } from "viem/actions";
 import { useAccountContext } from "@/contexts/AccountContext";
 import { TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
+import { withRpcScope } from "../lib/rpcScope";
 
 type TransferParams = {
   to: Address;
@@ -19,21 +20,29 @@ export function useTransfer() {
 
       let start = performance.now();
 
-      const data = encodeFunctionData({
-        abi: TOKEN_ABI,
-        functionName: "transfer",
-        args: [to, parseEther(amount.toString())],
-      });
+      const { request, serializedTx } = await withRpcScope(
+        "transfer preflight",
+        async () => {
+          const data = encodeFunctionData({
+            abi: TOKEN_ABI,
+            functionName: "transfer",
+            args: [to, parseEther(amount.toString())],
+          });
 
-      const request = await account.walletClient.prepareTransactionRequest({
-        to: TOKEN_ADDRESS,
-        data,
-      });
+          const request =
+            await account.walletClient.prepareTransactionRequest({
+              to: TOKEN_ADDRESS,
+              data,
+            });
+
+          const serializedTx =
+            await account.walletClient.signTransaction(request);
+
+          return { request, serializedTx };
+        },
+      );
 
       const preflightLatency = performance.now() - start;
-
-      const serializedTx = await account.walletClient.signTransaction(request);
-
       start = performance.now();
 
       const receipt = await sendRawTransactionSync(account.walletClient, {

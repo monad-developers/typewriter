@@ -22,7 +22,11 @@ export function RpcLog() {
                   entry.status === "ok" ? "bg-green-500" : "bg-red-500"
                 }`}
               />
-              <code className="flex-1 truncate">{entry.method}</code>
+              <code className="truncate">{entry.method}</code>
+              {entry.tag && (
+                <code className="text-blue-500 flex-shrink-0">{entry.tag}</code>
+              )}
+              <span className="flex-1" />
               <code className="text-gray-500 flex-shrink-0">
                 {entry.duration.toFixed(0)}ms
               </code>

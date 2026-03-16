@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 export type RpcLogEntry = {
   id: number;
   method: string;
+  tag: string | null;
   duration: number;
   status: "ok" | "error";
   timestamp: number;
