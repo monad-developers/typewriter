@@ -54,6 +54,14 @@ export function Header({
         </code>
         <Toggle label="gas sponsorship" disabled />
         <Toggle label="session keys" disabled />
+        <Tooltip content="Coming soon">
+          <code className="cursor-not-allowed opacity-50">
+            inclusion list:{" "}
+            <select disabled>
+              <option>none</option>
+            </select>
+          </code>
+        </Tooltip>
         <Toggle label="preflight optimizations" disabled />
         <Tooltip content="Coming soon">
           <code className="cursor-not-allowed opacity-50">
