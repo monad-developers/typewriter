@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { createWalletClient, encodeFunctionData, http, parseEther } from "viem";
+import { createWalletClient, encodeFunctionData, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
@@ -10,6 +10,7 @@ import {
   TOKEN_ABI,
   TOKEN_ADDRESS,
 } from "../constants";
+import { loggingTransport } from "../lib/loggingTransport";
 
 type AvailableAccount = (typeof ANVIL_ACCOUNTS)[number];
 
@@ -21,7 +22,7 @@ export function useSignIn() {
       const picked = accounts[Math.floor(Math.random() * accounts.length)]!;
       const walletClient = createWalletClient({
         account: privateKeyToAccount(picked.privateKey),
-        transport: http(RPC_URL),
+        transport: loggingTransport(RPC_URL),
         chain: anvil,
       });
 

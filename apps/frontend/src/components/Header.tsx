@@ -1,5 +1,6 @@
 import { useAccountContext } from "../contexts/AccountContext";
 import { useAddressInfo } from "../hooks/useAddressInfo";
+import { RpcLog } from "./RpcLog";
 import { Tooltip } from "./ui/tooltip";
 
 function Toggle({ label, disabled }: { label: string; disabled: boolean }) {
@@ -70,6 +71,7 @@ export function Header({
           </code>
         </Tooltip>
       </div>
+      <RpcLog />
     </header>
   );
 }
