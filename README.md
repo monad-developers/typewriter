@@ -20,6 +20,7 @@ apps/
 | Variable | Used By | Default | Description |
 |---|---|---|---|
 | `BUN_PUBLIC_RPC_URL` | frontend | `http://localhost:8545` | JSON-RPC URL the frontend connects to |
+| `DEPLOYER_PRIVATE_KEY` | frontend | Anvil account #0 | Private key used to fund new accounts on sign-in |
 | `RPC_URL` | contracts | — | JSON-RPC URL for contract deployment |
 | `TOKEN_NAME` | contracts | — | Name of the deployed ERC20 token |
 | `TOKEN_SYMBOL` | contracts | — | Symbol of the deployed ERC20 token |

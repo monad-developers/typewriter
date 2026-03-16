@@ -7,6 +7,7 @@ React + Tailwind frontend for the tx-lifecycle-demo-app, served via [Bun](https:
 | Variable | Default | Description |
 |---|---|---|
 | `BUN_PUBLIC_RPC_URL` | `http://localhost:8545` | JSON-RPC URL the app connects to |
+| `DEPLOYER_PRIVATE_KEY` | Anvil account #0 | Private key used to fund new accounts on sign-in |
 
 Configure in `.env` or pass inline. Bun loads `.env` automatically.
 

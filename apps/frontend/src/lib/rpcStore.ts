@@ -17,9 +17,7 @@ function emitChange() {
   for (const listener of listeners) listener();
 }
 
-export function pushEntry(
-  entry: Omit<RpcLogEntry, "id" | "timestamp">,
-) {
+export function pushEntry(entry: Omit<RpcLogEntry, "id" | "timestamp">) {
   entries = [
     { ...entry, id: nextId++, timestamp: Date.now() },
     ...entries,

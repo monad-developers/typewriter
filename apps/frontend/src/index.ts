@@ -1,12 +1,10 @@
 import { serve } from "bun";
-import {
-  createWalletClient,
-  http,
-  parseEther,
-} from "viem";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { anvil } from "viem/chains";
 import type { Address } from "viem";
+import { createWalletClient, encodeFunctionData, http, parseEther } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { sendRawTransactionSync } from "viem/actions";
+import { anvil } from "viem/chains";
+import { TOKEN_ABI, TOKEN_ADDRESS } from "./constants";
 import index from "./index.html";
 
 const DEPLOYER_PRIVATE_KEY =
@@ -32,9 +30,27 @@ const server = serve({
         const privateKey = generatePrivateKey();
         const account = privateKeyToAccount(privateKey);
 
-        const hash = await deployerClient.sendTransaction({
+        const fundingRequest = await deployerClient.prepareTransactionRequest({
           to: account.address,
           value: parseEther("1"),
+        });
+        const fundingSigned =
+          await deployerClient.signTransaction(fundingRequest);
+        await sendRawTransactionSync(deployerClient, {
+          serializedTransaction: fundingSigned,
+        });
+
+        const mintRequest = await deployerClient.prepareTransactionRequest({
+          to: TOKEN_ADDRESS,
+          data: encodeFunctionData({
+            abi: TOKEN_ABI,
+            functionName: "mint",
+            args: [account.address, parseEther("100")],
+          }),
+        });
+        const mintSigned = await deployerClient.signTransaction(mintRequest);
+        await sendRawTransactionSync(deployerClient, {
+          serializedTransaction: mintSigned,
         });
 
         createdAddresses.push(account.address);
@@ -42,7 +58,6 @@ const server = serve({
         return Response.json({
           address: account.address,
           privateKey,
-          fundingTxHash: hash,
         });
       },
     },
