@@ -11,6 +11,7 @@ function AppInner() {
   const { account } = useAccountContext();
   const signInMutation = useSignIn();
   const [stateView, setStateView] = useState<StateView>("proposed");
+  const [accessListEnabled, setAccessListEnabled] = useState(false);
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -27,8 +28,13 @@ function AppInner() {
       </div>
       {account ? (
         <>
-          <Header stateView={stateView} onStateViewChange={setStateView} />
-          <Transfer />
+          <Header
+            stateView={stateView}
+            onStateViewChange={setStateView}
+            accessListEnabled={accessListEnabled}
+            onAccessListToggle={setAccessListEnabled}
+          />
+          <Transfer accessListEnabled={accessListEnabled} />
           <TxHistory />
         </>
       ) : (

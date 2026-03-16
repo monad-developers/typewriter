@@ -32,9 +32,13 @@ export type StateView = (typeof STATE_VIEWS)[number];
 export function Header({
   stateView,
   onStateViewChange,
+  accessListEnabled,
+  onAccessListToggle,
 }: {
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
+  accessListEnabled: boolean;
+  onAccessListToggle: (v: boolean) => void;
 }) {
   const { account } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
@@ -54,14 +58,14 @@ export function Header({
         </code>
         <Toggle label="gas sponsorship" disabled />
         <Toggle label="session keys" disabled />
-        <Tooltip content="Coming soon">
-          <code className="cursor-not-allowed opacity-50">
-            inclusion list:{" "}
-            <select disabled>
-              <option>none</option>
-            </select>
-          </code>
-        </Tooltip>
+        <div className="flex items-center gap-2">
+          <code>access list:</code>
+          <input
+            type="checkbox"
+            checked={accessListEnabled}
+            onChange={(e) => onAccessListToggle(e.target.checked)}
+          />
+        </div>
         <Toggle label="preflight optimizations" disabled />
         <Tooltip content="Coming soon">
           <code className="cursor-not-allowed opacity-50">
