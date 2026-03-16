@@ -80,6 +80,8 @@ type AccountContextValue = {
   updateTx: (hash: Hash, update: Partial<Tx>, address?: Address) => void;
   accessListEnabled: boolean;
   setAccessListEnabled: (v: boolean) => void;
+  preflightOptimizationsEnabled: boolean;
+  setPreflightOptimizationsEnabled: (v: boolean) => void;
 };
 
 const AccountContext = createContext<AccountContextValue | null>(null);
@@ -109,6 +111,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
   );
 
   const [accessListEnabled, setAccessListEnabled] = useState(false);
+  const [preflightOptimizationsEnabled, setPreflightOptimizationsEnabled] = useState(false);
 
   function addTx(tx: Tx, address?: Address) {
     const addr = address ?? account?.address;
@@ -132,7 +135,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AccountContext.Provider
-      value={{ account, setAccount, txs, addTx, updateTx, accessListEnabled, setAccessListEnabled }}
+      value={{ account, setAccount, txs, addTx, updateTx, accessListEnabled, setAccessListEnabled, preflightOptimizationsEnabled, setPreflightOptimizationsEnabled }}
     >
       {children}
     </AccountContext.Provider>

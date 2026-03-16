@@ -36,7 +36,7 @@ export function Header({
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
 }) {
-  const { account, accessListEnabled, setAccessListEnabled } = useAccountContext();
+  const { account, accessListEnabled, setAccessListEnabled, preflightOptimizationsEnabled, setPreflightOptimizationsEnabled } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
@@ -62,7 +62,14 @@ export function Header({
             onChange={(e) => setAccessListEnabled(e.target.checked)}
           />
         </div>
-        <Toggle label="preflight optimizations" disabled />
+        <div className="flex items-center gap-2">
+          <code>preflight optimizations:</code>
+          <input
+            type="checkbox"
+            checked={preflightOptimizationsEnabled}
+            onChange={(e) => setPreflightOptimizationsEnabled(e.target.checked)}
+          />
+        </div>
         <Tooltip content="Coming soon">
           <code className="cursor-not-allowed opacity-50">
             state view:{" "}
