@@ -3,10 +3,7 @@ import { anvil } from "viem/chains";
 import { getCurrentScope } from "./rpcScope";
 import { pushEntry } from "./rpcStore";
 
-export function loggingTransport(
-  url: string,
-  options?: { silent?: string[] },
-) {
+export function loggingTransport(url: string, options?: { silent?: string[] }) {
   const silentMethods = new Set(options?.silent);
   const httpTransport = http(url)({
     chain: anvil,
