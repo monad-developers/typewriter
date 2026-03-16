@@ -4,22 +4,13 @@ import { Header, type StateView } from "./components/Header";
 import { Transfer } from "./components/Transfer";
 import { TxHistory } from "./components/TxHistory";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
-import { useAvailableAccounts } from "./hooks/useAvailableAccounts";
 import { useSignIn } from "./hooks/useSignIn";
 import "./index.css";
 
 function AppInner() {
   const { account } = useAccountContext();
   const signInMutation = useSignIn();
-  const { data: availableAccounts, isLoading: isLoadingAccounts } =
-    useAvailableAccounts();
   const [stateView, setStateView] = useState<StateView>("proposed");
-
-  const signInDisabled =
-    isLoadingAccounts ||
-    availableAccounts === undefined ||
-    availableAccounts.length === 0 ||
-    signInMutation.isPending;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -44,17 +35,11 @@ function AppInner() {
         <main className="flex-1 flex items-center justify-center flex-col gap-3">
           <button
             type="button"
-            disabled={signInDisabled}
-            onClick={() =>
-              availableAccounts && signInMutation.mutate(availableAccounts)
-            }
+            disabled={signInMutation.isPending}
+            onClick={() => signInMutation.mutate()}
             className="px-4 py-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {signInMutation.isPending
-              ? "Minting..."
-              : isLoadingAccounts
-                ? "Loading..."
-                : "Sign In"}
+            {signInMutation.isPending ? "Signing in..." : "Sign In"}
           </button>
           <p className="text-sm text-gray-400">
             Create a local account with the private key stored in the browser

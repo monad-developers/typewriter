@@ -10,7 +10,7 @@ import type {
 import { createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { anvil } from "viem/chains";
-import { ANVIL_ACCOUNTS, RPC_URL } from "../constants";
+import { RPC_URL } from "../constants";
 import { loggingTransport } from "../lib/loggingTransport";
 
 function txStorageKey(address: Address) {
@@ -84,17 +84,15 @@ const AccountContext = createContext<AccountContextValue | null>(null);
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccount] = useState<Account | null>(() => {
-    const address = localStorage.getItem("address");
-    const privateKey = localStorage.getItem("privateKey");
-    const valid = ANVIL_ACCOUNTS.find(
-      (a) => a.address === address && a.privateKey === privateKey,
-    );
+    const address = localStorage.getItem("address") as Address | null;
+    const privateKey = localStorage.getItem("privateKey") as Hex | null;
 
-    if (valid) {
+    if (address?.startsWith("0x") && privateKey?.startsWith("0x")) {
       return {
-        ...valid,
+        address,
+        privateKey,
         walletClient: createWalletClient({
-          account: privateKeyToAccount(valid.privateKey),
+          account: privateKeyToAccount(privateKey),
           transport: loggingTransport(RPC_URL),
           chain: anvil,
         }),
