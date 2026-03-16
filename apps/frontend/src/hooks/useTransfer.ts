@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { type Address, encodeFunctionData, parseEther } from "viem";
+import { type AccessList, type Address, encodeFunctionData, parseEther } from "viem";
 import { sendRawTransactionSync } from "viem/actions";
 import { useAccountContext } from "@/contexts/AccountContext";
 import { TOKEN_ABI, TOKEN_ADDRESS } from "../constants";
+import { publicClient } from "../lib/client";
 import { withRpcScope } from "../lib/rpcScope";
 
 type TransferParams = {
@@ -11,7 +12,7 @@ type TransferParams = {
 };
 
 export function useTransfer() {
-  const { account, addTx } = useAccountContext();
+  const { account, addTx, accessListEnabled } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -29,9 +30,21 @@ export function useTransfer() {
             args: [to, parseEther(amount.toString())],
           });
 
+          let accessList: AccessList | undefined;
+
+          if (accessListEnabled) {
+            const result = await publicClient.createAccessList({
+              account: account.address,
+              to: TOKEN_ADDRESS,
+              data,
+            });
+            accessList = result.accessList;
+          }
+
           const request = await account.walletClient.prepareTransactionRequest({
             to: TOKEN_ADDRESS,
             data,
+            ...(accessList ? { accessList } : {}),
           });
 
           const serializedTx =

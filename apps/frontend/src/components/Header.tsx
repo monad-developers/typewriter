@@ -36,7 +36,7 @@ export function Header({
   stateView: StateView;
   onStateViewChange: (v: StateView) => void;
 }) {
-  const { account } = useAccountContext();
+  const { account, accessListEnabled, setAccessListEnabled } = useAccountContext();
   const { data } = useAddressInfo(account?.address, !!account);
 
   return (
@@ -54,14 +54,14 @@ export function Header({
         </code>
         <Toggle label="gas sponsorship" disabled />
         <Toggle label="session keys" disabled />
-        <Tooltip content="Coming soon">
-          <code className="cursor-not-allowed opacity-50">
-            inclusion list:{" "}
-            <select disabled>
-              <option>none</option>
-            </select>
-          </code>
-        </Tooltip>
+        <div className="flex items-center gap-2">
+          <code>access list:</code>
+          <input
+            type="checkbox"
+            checked={accessListEnabled}
+            onChange={(e) => setAccessListEnabled(e.target.checked)}
+          />
+        </div>
         <Toggle label="preflight optimizations" disabled />
         <Tooltip content="Coming soon">
           <code className="cursor-not-allowed opacity-50">
