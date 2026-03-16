@@ -37,6 +37,7 @@ export function TxHistory() {
 
   return (
     <section className="w-full p-4">
+      <h2 className="text-2xl font-bold mb-4">View Transactions</h2>
       <table className="w-full border-collapse">
         <thead>
           <tr className="border-b">
@@ -58,7 +59,7 @@ export function TxHistory() {
                 </code>
               </td>
               <td className="py-2 pr-6">
-                <code>{formatEther(tx.amount)} MON</code>
+                <code>{formatEther(tx.amount)}</code>
               </td>
               <td className="py-2 pr-6">
                 <code>{shortAddr(tx.to)}</code>
