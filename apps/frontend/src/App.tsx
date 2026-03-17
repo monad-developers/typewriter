@@ -16,13 +16,12 @@ function AppInner() {
     <div className="min-h-screen w-full flex flex-col">
       <div className="w-full border-b p-4">
         <p className="text-lg">
-          Send token transfers and see every step of the transaction lifecycle —
-          from the RPC calls your wallet makes to how your transaction gets
-          confirmed. See the{" "}
+          Transfer tokens on Monad testnet while tracing every JSON-RPC request
+          and measuring latency. See the{" "}
           <span className="font-bold">
             practical throughput and latency bottlenecks
           </span>{" "}
-          for apps.
+          that the transaction lifecycle imposes on every app.
         </p>
       </div>
       {account ? (

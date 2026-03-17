@@ -1,14 +1,17 @@
 import type { Address } from "viem";
 import { publicClient } from "./client";
+import { withRpcScope } from "./rpcScope";
 
 class NonceManager {
   private nonces = new Map<Address, number>();
 
   async prefetch(address: Address): Promise<void> {
-    const nonce = await publicClient.getTransactionCount({
-      address,
-      blockTag: "pending",
-    });
+    const nonce = await withRpcScope("nonce", () =>
+      publicClient.getTransactionCount({
+        address,
+        blockTag: "pending",
+      }),
+    );
     this.nonces.set(address, nonce);
   }
 
