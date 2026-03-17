@@ -21,7 +21,7 @@ function loadTxs(address: Address): Tx[] {
   try {
     const raw = localStorage.getItem(txStorageKey(address));
     if (!raw) return [];
-    return JSON.parse(raw).map((tx: Record<string, string>) => ({
+    return JSON.parse(raw).map((tx: any) => ({
       ...tx,
       amount: BigInt(tx.amount),
       cost: tx.cost != null ? BigInt(tx.cost) : null,
