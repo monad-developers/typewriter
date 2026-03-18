@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
-import { Header, type StateView } from "./components/Header";
-import { Transfer } from "./components/Transfer";
-import { TxHistory } from "./components/TxHistory";
-import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
-import { useSignIn } from "./hooks/useSignIn";
-import "./index.css";
+import { Header, type StateView } from "../components/Header";
+import { PingTest } from "../components/PingTest";
+import { Transfer } from "../components/Transfer";
+import { TxHistory } from "../components/TxHistory";
+import { AccountProvider, useAccountContext } from "../contexts/AccountContext";
+import { useSignIn } from "../hooks/useSignIn";
+import "../index.css";
 
 function AppInner() {
   const { account } = useAccountContext();
@@ -23,9 +24,10 @@ function AppInner() {
           </span>{" "}
           that the transaction lifecycle imposes on every app.
         </p>
-        <a href="/fast" className="text-sm text-blue-500 hover:underline">
-          Go faster →
+        <a href="/" className="text-sm text-blue-500 hover:underline">
+          ← Go back
         </a>
+        <PingTest />
       </div>
       {account ? (
         <>
