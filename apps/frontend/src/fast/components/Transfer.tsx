@@ -14,7 +14,7 @@ export function Transfer() {
   const { data: addresses } = useQuery({
     queryKey: ["addresses"],
     queryFn: async () => {
-      const res = await fetch("/api/addresses");
+      const res = await fetch("/api/fast/addresses");
       return (await res.json()) as Address[];
     },
     refetchInterval: 5000,
