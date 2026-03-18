@@ -16,3 +16,9 @@ export type Transfer<quantity = string> = {
   to: Address;
   amount: quantity;
 };
+
+export type SignedTransfer = Transfer & {
+  nonce: number;
+  deadline: number;
+  signature: `0x${string}`;
+};

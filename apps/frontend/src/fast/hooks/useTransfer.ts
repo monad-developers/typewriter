@@ -1,7 +1,26 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { parseEther } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { CHAIN_ID, TOKEN_ADDRESS } from "../../constants";
 import type { Transfer } from "../api";
 import { useAccountContext } from "../contexts/AccountContext";
+
+const EIP712_DOMAIN = {
+  name: "FastTransfer",
+  version: "1",
+  chainId: CHAIN_ID,
+  verifyingContract: TOKEN_ADDRESS,
+} as const;
+
+const EIP712_TYPES = {
+  Transfer: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "amount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
 
 export function useTransfer() {
   const { account, addTx, updateTx } = useAccountContext();
@@ -11,10 +30,34 @@ export function useTransfer() {
     mutationFn: async ({ to, amount }: Omit<Transfer<number>, "from">) => {
       if (!account) throw new Error("No account");
 
+      const amountWei = parseEther(amount.toString());
+      const cached = queryClient.getQueryData<{ balance: string; nonce: number }>(
+        ["addressInfo", account.address],
+      );
+      const nonce = cached?.nonce ?? 0;
+      const deadline = Math.floor(Date.now() / 1000) + 60;
+
+      const signer = privateKeyToAccount(account.privateKey);
+      const signature = await signer.signTypedData({
+        domain: EIP712_DOMAIN,
+        types: EIP712_TYPES,
+        primaryType: "Transfer",
+        message: {
+          from: account.address,
+          to,
+          amount: amountWei,
+          nonce: BigInt(nonce),
+          deadline: BigInt(deadline),
+        },
+      });
+
       const body = {
         from: account.address,
         to,
-        amount: parseEther(amount.toString()).toString(),
+        amount: amountWei.toString(),
+        nonce,
+        deadline,
+        signature,
       };
 
       const start = performance.now();
@@ -32,7 +75,7 @@ export function useTransfer() {
       addTx({
         hash: `0x${id}`,
         status: "accepted",
-        amount: parseEther(amount.toString()),
+        amount: amountWei,
         to,
         cost: 0n,
         blockNumber: 0n,
