@@ -1,11 +1,28 @@
 import { serve } from "bun";
-import type { Address, Chain } from "viem";
-import { createWalletClient, encodeFunctionData, http, parseEther } from "viem";
+import type { Address, Chain, Hash } from "viem";
+import {
+  createWalletClient,
+  encodeFunctionData,
+  formatEther,
+  http,
+  parseEther,
+} from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { CHAIN, RPC_URL, TOKEN_ABI, TOKEN_ADDRESS } from "./constants";
+import type {
+  GetAccountResponse,
+  PostTransferRequest,
+  PostTransferResponse,
+} from "./fast/api";
 import fast from "./fast/index.html";
 import index from "./index.html";
+
+// ---------------------------------------------------------------------------
+// Fast server — in-memory state
+// ---------------------------------------------------------------------------
+const fastBalances = new Map<Address, bigint>();
+const fastTxCounts = new Map<Address, number>();
 
 // @ts-expect-error
 if (!process.env.DEPLOYER_PRIVATE_KEY) {
@@ -26,7 +43,7 @@ const createdAddresses: Address[] = [];
 
 const server = serve({
   routes: {
-    "/sign-in": {
+    "/api/sign-in": {
       POST: async () => {
         const privateKey = generatePrivateKey();
         const account = privateKeyToAccount(privateKey);
@@ -62,12 +79,91 @@ const server = serve({
         });
       },
     },
-    "/ping": {
-      GET: () => new Response(null, { status: 204 }),
+    "/api/fast/account": {
+      GET: (req) => {
+        const address = new URL(req.url).searchParams.get(
+          "address",
+        ) as Address | null;
+        if (!address) return new Response("Bad Request", { status: 400 });
+        return Response.json({
+          address,
+          balance: formatEther(fastBalances.get(address) ?? 0n),
+          txCount: fastTxCounts.get(address) ?? 0,
+        } satisfies GetAccountResponse);
+      },
     },
-    "/addresses": {
+    "/api/fast/transfer": {
+      POST: async (req) => {
+        const serverStart = performance.now();
+        const { from, to, amount } =
+          (await req.json()) as PostTransferRequest;
+        const amountWei = parseEther(amount.toString());
+        const fromBalance = fastBalances.get(from) ?? 0n;
+        if (fromBalance < amountWei) {
+          return new Response("Insufficient balance", { status: 400 });
+        }
+        fastBalances.set(from, fromBalance - amountWei);
+        fastBalances.set(to, (fastBalances.get(to) ?? 0n) + amountWei);
+        fastTxCounts.set(from, (fastTxCounts.get(from) ?? 0) + 1);
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        const hash =
+          `0x${Array.from(bytes)
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("")}` as Hash;
+        const submissionLatency = performance.now() - serverStart;
+        return Response.json({
+          hash,
+          submissionLatency,
+        } satisfies PostTransferResponse);
+      },
+    },
+    "/api/addresses": {
       GET: () => {
         return Response.json([deployerAccount.address, ...createdAddresses]);
+      },
+    },
+    "/api/fast/addresses": {
+      GET: () => {
+        return Response.json([deployerAccount.address, ...createdAddresses]);
+      },
+    },
+    "/api/fast/sign-in": {
+      POST: async () => {
+        const privateKey = generatePrivateKey();
+        const account = privateKeyToAccount(privateKey);
+
+        const fundingRequest = await deployerClient.prepareTransactionRequest({
+          to: account.address,
+          value: parseEther("1"),
+        });
+        const fundingSigned =
+          await deployerClient.signTransaction(fundingRequest);
+        await sendRawTransactionSync(deployerClient, {
+          serializedTransaction: fundingSigned,
+        });
+
+        const mintRequest = await deployerClient.prepareTransactionRequest({
+          to: TOKEN_ADDRESS,
+          data: encodeFunctionData({
+            abi: TOKEN_ABI,
+            functionName: "mint",
+            args: [account.address, parseEther("100")],
+          }),
+        });
+        const mintSigned = await deployerClient.signTransaction(mintRequest);
+        await sendRawTransactionSync(deployerClient, {
+          serializedTransaction: mintSigned,
+        });
+
+        createdAddresses.push(account.address);
+
+        fastBalances.set(account.address, parseEther("100"));
+        fastTxCounts.set(account.address, 0);
+
+        return Response.json({
+          address: account.address,
+          privateKey,
+        });
       },
     },
     "/fast": fast,
