@@ -1,5 +1,4 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState } from "react";
 import { Header } from "./components/Header";
 import { Transfer } from "./components/Transfer";
 import { TxHistory } from "./components/TxHistory";
@@ -52,8 +51,9 @@ function AppInner() {
   );
 }
 
+const queryClient = new QueryClient();
+
 export function App() {
-  const [queryClient] = useState(() => new QueryClient());
 
   return (
     <QueryClientProvider client={queryClient}>
