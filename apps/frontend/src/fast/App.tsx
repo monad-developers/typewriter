@@ -1,17 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
-import { Header, type StateView } from "../components/Header";
-import { PingTest } from "../components/PingTest";
-import { Transfer } from "../components/Transfer";
-import { TxHistory } from "../components/TxHistory";
-import { AccountProvider, useAccountContext } from "../contexts/AccountContext";
-import { useSignIn } from "../hooks/useSignIn";
+import { Header } from "./components/Header";
+import { Transfer } from "./components/Transfer";
+import { TxHistory } from "./components/TxHistory";
+import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
+import { useSignIn } from "./hooks/useSignIn";
 import "../index.css";
 
 function AppInner() {
   const { account } = useAccountContext();
   const signInMutation = useSignIn();
-  const [stateView, setStateView] = useState<StateView>("proposed");
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -27,11 +25,10 @@ function AppInner() {
         <a href="/" className="text-sm text-blue-500 hover:underline">
           ← Go back
         </a>
-        <PingTest />
       </div>
       {account ? (
         <>
-          <Header stateView={stateView} onStateViewChange={setStateView} />
+          <Header />
           <Transfer />
           <TxHistory />
         </>

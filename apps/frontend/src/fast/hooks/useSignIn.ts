@@ -1,30 +1,20 @@
 import { useMutation } from "@tanstack/react-query";
 import type { Address, Hex } from "viem";
-import { createWalletClient } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { useAccountContext } from "@/contexts/AccountContext";
-import { CHAIN, RPC_URL } from "../constants";
-import { loggingTransport } from "../lib/loggingTransport";
+import { useAccountContext } from "../contexts/AccountContext";
 
 export function useSignIn() {
   const { setAccount } = useAccountContext();
 
   return useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/sign-in", { method: "POST" });
+      const res = await fetch("/api/fast/sign-in", { method: "POST" });
       if (!res.ok) throw new Error("Sign-in failed");
       const { address, privateKey } = (await res.json()) as {
         address: Address;
         privateKey: Hex;
       };
 
-      const walletClient = createWalletClient({
-        account: privateKeyToAccount(privateKey),
-        transport: loggingTransport(RPC_URL),
-        chain: CHAIN,
-      });
-
-      const account = { address, privateKey, walletClient };
+      const account = { address, privateKey };
       setAccount(account);
 
       localStorage.setItem("address", address);
