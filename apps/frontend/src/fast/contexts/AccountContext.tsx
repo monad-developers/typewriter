@@ -8,6 +8,7 @@ export type Account = {
 
 export type TxStatus =
   | "pending"
+  | "accepted"
   | "proposed"
   | "voted"
   | "finalized"

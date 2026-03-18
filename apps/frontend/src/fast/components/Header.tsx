@@ -1,3 +1,4 @@
+import { Tooltip } from "../../components/ui/tooltip";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useAddressInfo } from "../hooks/useAddressInfo";
 
@@ -15,8 +16,18 @@ export function Header() {
         balance: <span>{data?.balance ?? "..."}</span>
       </code>
       <code>
-        transaction count: <span>{data?.txCount ?? "..."}</span>
+        transaction count: <span>{data?.nonce ?? "..."}</span>
       </code>
+      <div className="flex items-center gap-2">
+        <code>gas sponsorship:</code>
+        <input type="checkbox" checked disabled readOnly />
+      </div>
+      <Tooltip content="Coming soon">
+        <div className="flex items-center gap-2 cursor-not-allowed opacity-50">
+          <code>session keys:</code>
+          <input type="checkbox" disabled />
+        </div>
+      </Tooltip>
     </header>
   );
 }

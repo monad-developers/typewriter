@@ -1,20 +1,18 @@
-import type { Address, Hash } from "viem";
+import type { Address } from "viem";
 
-/** GET /api/account?address=<Address> */
-export type GetAccountResponse = {
-  address: Address;
-  balance: string;    // token balance, ether-formatted (e.g. "100.0")
-  txCount: number;
+export type State<quantity = string> = {
+  totalSupply: quantity;
+  accounts: {
+    [address: Address]: {
+      balance: quantity;
+      /** Alias for transaction count */
+      nonce: number;
+    };
+  };
 };
 
-/** POST /api/transfer */
-export type PostTransferRequest = {
+export type Transfer<quantity = string> = {
   from: Address;
   to: Address;
-  amount: number;     // token amount in whole units
-};
-
-export type PostTransferResponse = {
-  hash: Hash;
-  submissionLatency: number;  // ms, measured server-side
+  amount: quantity;
 };
