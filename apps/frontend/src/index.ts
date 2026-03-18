@@ -4,6 +4,7 @@ import { createWalletClient, encodeFunctionData, http, parseEther } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { CHAIN, RPC_URL, TOKEN_ABI, TOKEN_ADDRESS } from "./constants";
+import fast from "./fast/index.html";
 import index from "./index.html";
 
 // @ts-expect-error
@@ -61,11 +62,16 @@ const server = serve({
         });
       },
     },
+    "/ping": {
+      GET: () => new Response(null, { status: 204 }),
+    },
     "/addresses": {
       GET: () => {
         return Response.json([deployerAccount.address, ...createdAddresses]);
       },
     },
+    "/fast": fast,
+    "/fast/*": fast,
     // Serve index.html for all unmatched routes.
     "/*": index,
   },
