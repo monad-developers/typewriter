@@ -16,6 +16,10 @@ const state = {
   accounts: {},
 } as State<bigint>;
 
+const pendingTransfers = new Set<string>();
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 // @ts-expect-error
 if (!process.env.DEPLOYER_PRIVATE_KEY) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
@@ -99,7 +103,43 @@ const server = serve({
           balance: (state.accounts[to]?.balance ?? 0n) + amountBigInt,
           nonce: state.accounts[to]?.nonce ?? 0,
         };
-        return new Response(null, { status: 200 });
+        const id = crypto.randomUUID();
+        pendingTransfers.add(id);
+        return Response.json({ id });
+      },
+    },
+    "/api/fast/transfer/:id/status": {
+      GET: (req) => {
+        const id = req.params.id;
+        if (!pendingTransfers.has(id)) {
+          return new Response("Not Found", { status: 404 });
+        }
+        pendingTransfers.delete(id);
+
+        const stream = new ReadableStream({
+          async start(controller) {
+            const send = (status: string) =>
+              controller.enqueue(`data: ${JSON.stringify({ status })}\n\n`);
+
+            await sleep(250);
+            send("proposed");
+            await sleep(650);
+            send("voted");
+            await sleep(1050);
+            send("finalized");
+            await sleep(2250);
+            send("verified");
+            controller.close();
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          },
+        });
       },
     },
     "/api/addresses": {
@@ -110,8 +150,7 @@ const server = serve({
     "/api/fast/addresses": {
       GET: () => {
         return Response.json([
-          deployerAccount.address,
-          ...Object.keys(state.accounts),
+          ...new Set([deployerAccount.address, ...Object.keys(state.accounts)]),
         ]);
       },
     },

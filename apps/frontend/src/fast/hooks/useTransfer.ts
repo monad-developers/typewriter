@@ -4,14 +4,18 @@ import type { Transfer } from "../api";
 import { useAccountContext } from "../contexts/AccountContext";
 
 export function useTransfer() {
-  const { account, addTx } = useAccountContext();
+  const { account, addTx, updateTx } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ to, amount }: Omit<Transfer, "from">) => {
+    mutationFn: async ({ to, amount }: Omit<Transfer<number>, "from">) => {
       if (!account) throw new Error("No account");
 
-      const body = { from: account.address, to, amount: parseEther(amount.toString()).toString() };
+      const body = {
+        from: account.address,
+        to,
+        amount: parseEther(amount.toString()).toString(),
+      };
 
       const start = performance.now();
       const res = await fetch("/api/fast/transfer", {
@@ -23,8 +27,10 @@ export function useTransfer() {
 
       if (!res.ok) throw new Error(await res.text());
 
+      const { id } = (await res.json()) as { id: string };
+
       addTx({
-        hash: "0x",
+        hash: `0x${id}`,
         status: "accepted",
         amount: parseEther(amount.toString()),
         to,
@@ -34,6 +40,19 @@ export function useTransfer() {
         submissionLatency,
         timestamp: Date.now(),
       });
+
+      const es = new EventSource(`/api/fast/transfer/${id}/status`);
+      es.onmessage = (e) => {
+        const { status } = JSON.parse(e.data);
+        updateTx(`0x${id}`, { status });
+        if (status === "verified") {
+          es.close();
+          queryClient.invalidateQueries({
+            queryKey: ["addressInfo", account.address],
+          });
+        }
+      };
+      es.onerror = () => es.close();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
