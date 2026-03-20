@@ -8,7 +8,7 @@ import { AboutFast } from "./pages/AboutFast";
 import "../index.css";
 
 function AppInner() {
-  const { account } = useAccountContext();
+  const { account, loading } = useAccountContext();
   const signInMutation = useSignIn();
 
   if (window.location.pathname === "/fast/about") {
@@ -39,7 +39,7 @@ function AppInner() {
           </a>
         </div>
       </div>
-      {account ? (
+      {loading ? null : account ? (
         <>
           <Header />
           <Transfer />
