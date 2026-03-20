@@ -8,7 +8,7 @@ import { useSignIn } from "./hooks/useSignIn";
 import "./index.css";
 
 function AppInner() {
-  const { account } = useAccountContext();
+  const { account, loading } = useAccountContext();
   const signInMutation = useSignIn();
   const [stateView, setStateView] = useState<StateView>("proposed");
 
@@ -27,7 +27,7 @@ function AppInner() {
           Go faster →
         </a>
       </div>
-      {account ? (
+      {loading ? null : account ? (
         <>
           <Header stateView={stateView} onStateViewChange={setStateView} />
           <Transfer />

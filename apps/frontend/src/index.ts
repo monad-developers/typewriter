@@ -104,15 +104,15 @@ const server = serve({
 
         createdAddresses.push(account.address);
 
-        return Response.json(
-          { address: account.address, privateKey },
-          {
-            headers: {
-              "Set-Cookie": `boot-id=${normalBootId}; Path=/; SameSite=Lax`,
-            },
-          },
-        );
+        return Response.json({
+          address: account.address,
+          privateKey,
+          bootId: normalBootId,
+        });
       },
+    },
+    "/api/boot-id": {
+      GET: () => Response.json({ id: normalBootId }),
     },
     "/api/fast/account": {
       GET: (req) => {
@@ -231,15 +231,15 @@ const server = serve({
           nonce: 0,
         };
 
-        return Response.json(
-          { address: account.address, privateKey },
-          {
-            headers: {
-              "Set-Cookie": `fast-boot-id=${fastBootId}; Path=/; SameSite=Lax`,
-            },
-          },
-        );
+        return Response.json({
+          address: account.address,
+          privateKey,
+          bootId: fastBootId,
+        });
       },
+    },
+    "/api/fast/boot-id": {
+      GET: () => Response.json({ id: fastBootId }),
     },
     "/fast": fast,
     "/fast/*": fast,

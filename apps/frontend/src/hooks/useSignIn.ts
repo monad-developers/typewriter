@@ -13,9 +13,10 @@ export function useSignIn() {
     mutationFn: async () => {
       const res = await fetch("/api/sign-in", { method: "POST" });
       if (!res.ok) throw new Error("Sign-in failed");
-      const { address, privateKey } = (await res.json()) as {
+      const { address, privateKey, bootId } = (await res.json()) as {
         address: Address;
         privateKey: Hex;
+        bootId: string;
       };
 
       const walletClient = createWalletClient({
@@ -29,9 +30,7 @@ export function useSignIn() {
 
       localStorage.setItem("normal:address", address);
       localStorage.setItem("normal:privateKey", privateKey);
-
-      const bootId = document.cookie.match(/(?:^|; )boot-id=([^;]*)/)?.[1];
-      if (bootId) localStorage.setItem("normal:boot-id", bootId);
+      localStorage.setItem("normal:boot-id", bootId);
 
       return account;
     },

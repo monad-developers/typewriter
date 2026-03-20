@@ -9,9 +9,10 @@ export function useSignIn() {
     mutationFn: async () => {
       const res = await fetch("/api/fast/sign-in", { method: "POST" });
       if (!res.ok) throw new Error("Sign-in failed");
-      const { address, privateKey } = (await res.json()) as {
+      const { address, privateKey, bootId } = (await res.json()) as {
         address: Address;
         privateKey: Hex;
+        bootId: string;
       };
 
       const account = { address, privateKey };
@@ -19,9 +20,7 @@ export function useSignIn() {
 
       localStorage.setItem("fast:address", address);
       localStorage.setItem("fast:privateKey", privateKey);
-
-      const bootId = document.cookie.match(/(?:^|; )fast-boot-id=([^;]*)/)?.[1];
-      if (bootId) localStorage.setItem("fast:boot-id", bootId);
+      localStorage.setItem("fast:boot-id", bootId);
 
       return account;
     },
