@@ -22,21 +22,37 @@ export function AboutFast() {
             <strong>empower developers beyond "EVM but faster"</strong>.
           </p>
 
-          {/* TODO(kyle) request flow */}
+          <pre className="text-xs leading-snug overflow-x-auto bg-zinc-900 text-zinc-300 rounded-lg p-4 mt-4">
+{`   Client                        Server                     Monad Network
+      |                             |                             |
+      |  (1) Sign transfer tx       |                             |
+      |                             |                             |
+      |  (2) POST /api/transfer     |                             |
+      |-------------------------->  |                             |
+      |                             |                             |
+      |  (3) 200 OK                 |                             |
+      |<--------------------------  |                             |
+      |                             |                             |
+      |                             |  (4) Submit tx batch        |
+      |                             |-------------------------->  |
+      |                             |  (5) Receipt                |
+      |                             |<--------------------------  |
+      |                             |                             |`}
+          </pre>
         </section>
 
         {/* Protocol */}
         <section>
           <h2 className="text-2xl font-bold mb-4">Protocol</h2>
           <p className="leading-relaxed mb-4">
-            The smart contract has a several features that enable faster and
+            The smart contract has several features that enable faster and
             more scalable execution.
           </p>
           <h3 className="text-lg font-semibold mb-4">
             Application-level account system
           </h3>
           <p className="leading-relaxed mb-4">
-            The account system supports gas sponsorship, nonce managagement, and
+            The account system supports gas sponsorship, nonce management, and
             modern signature schemes.
           </p>
           <CodeBlock
@@ -84,7 +100,7 @@ contract Token {
 
           <h3 className="text-lg font-semibold mb-2">Batched execution</h3>
           <p className="leading-relaxed mb-4">
-            The scheduler processes many users transactions at once.
+            The scheduler processes many user transactions at once.
           </p>
           <CodeBlock
             title="Transfer.sol"
@@ -164,7 +180,7 @@ function execute(Transfer[] calldata transfers) external {
             With FIFO ordering, the server can issue this confirmation immediately.
           </p>
           <CodeBlock
-            title="Transfer.sol"
+            title="server.ts"
             lang="typescript"
             code={`const state = {/* ... */};
 
