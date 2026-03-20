@@ -4,6 +4,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { CHAIN_ID, TOKEN_ADDRESS } from "../../constants";
 import type { Transfer } from "../api";
 import { useAccountContext } from "../contexts/AccountContext";
+import { pushEntry } from "../lib/requestStore";
 
 const EIP712_DOMAIN = {
   name: "FastTransfer",
@@ -31,9 +32,10 @@ export function useTransfer() {
       if (!account) throw new Error("No account");
 
       const amountWei = parseEther(amount.toString());
-      const cached = queryClient.getQueryData<{ balance: string; nonce: number }>(
-        ["addressInfo", account.address],
-      );
+      const cached = queryClient.getQueryData<{
+        balance: string;
+        nonce: number;
+      }>(["addressInfo", account.address]);
       const nonce = cached?.nonce ?? 0;
       const deadline = Math.floor(Date.now() / 1000) + 60;
 
@@ -68,6 +70,14 @@ export function useTransfer() {
       });
       const submissionLatency = performance.now() - start;
 
+      pushEntry({
+        method: "POST",
+        path: "/api/fast/transfer",
+        tag: "transfer",
+        duration: submissionLatency,
+        status: res.ok ? "ok" : "error",
+      });
+
       if (!res.ok) throw new Error(await res.text());
 
       const { id } = (await res.json()) as { id: string };
@@ -90,9 +100,6 @@ export function useTransfer() {
         updateTx(`0x${id}`, { status });
         if (status === "verified") {
           es.close();
-          queryClient.invalidateQueries({
-            queryKey: ["addressInfo", account.address],
-          });
         }
       };
       es.onerror = () => es.close();
