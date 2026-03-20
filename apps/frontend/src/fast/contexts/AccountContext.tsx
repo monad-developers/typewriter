@@ -69,12 +69,27 @@ function saveTxs(address: Address, txs: Tx[]) {
   );
 }
 
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? match[1] : null;
+}
+
 const AccountContext = createContext<AccountContextValue | null>(null);
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccount] = useState<Account | null>(() => {
-    const address = localStorage.getItem("address") as Address | null;
-    const privateKey = localStorage.getItem("privateKey") as Hex | null;
+    const bootId = getCookie("fast-boot-id");
+    const savedBootId = localStorage.getItem("fast:boot-id");
+
+    if (!bootId || bootId !== savedBootId) {
+      localStorage.removeItem("fast:address");
+      localStorage.removeItem("fast:privateKey");
+      localStorage.removeItem("fast:boot-id");
+      return null;
+    }
+
+    const address = localStorage.getItem("fast:address") as Address | null;
+    const privateKey = localStorage.getItem("fast:privateKey") as Hex | null;
     if (address?.startsWith("0x") && privateKey?.startsWith("0x")) {
       return { address, privateKey };
     }

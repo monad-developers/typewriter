@@ -86,10 +86,25 @@ type AccountContextValue = {
 
 const AccountContext = createContext<AccountContextValue | null>(null);
 
+function getCookie(name: string): string | null {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? match[1] : null;
+}
+
 export function AccountProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccount] = useState<Account | null>(() => {
-    const address = localStorage.getItem("address") as Address | null;
-    const privateKey = localStorage.getItem("privateKey") as Hex | null;
+    const bootId = getCookie("boot-id");
+    const savedBootId = localStorage.getItem("normal:boot-id");
+
+    if (!bootId || bootId !== savedBootId) {
+      localStorage.removeItem("normal:address");
+      localStorage.removeItem("normal:privateKey");
+      localStorage.removeItem("normal:boot-id");
+      return null;
+    }
+
+    const address = localStorage.getItem("normal:address") as Address | null;
+    const privateKey = localStorage.getItem("normal:privateKey") as Hex | null;
 
     if (address?.startsWith("0x") && privateKey?.startsWith("0x")) {
       return {

@@ -17,8 +17,11 @@ export function useSignIn() {
       const account = { address, privateKey };
       setAccount(account);
 
-      localStorage.setItem("address", address);
-      localStorage.setItem("privateKey", privateKey);
+      localStorage.setItem("fast:address", address);
+      localStorage.setItem("fast:privateKey", privateKey);
+
+      const bootId = document.cookie.match(/(?:^|; )fast-boot-id=([^;]*)/)?.[1];
+      if (bootId) localStorage.setItem("fast:boot-id", bootId);
 
       return account;
     },
