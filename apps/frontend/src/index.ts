@@ -159,6 +159,7 @@ const server = serve({
           balance: (state.accounts[to]?.balance ?? 0n) + amountBigInt,
           nonce: state.accounts[to]?.nonce ?? 0,
         };
+        // TODO(kyle) this should be auto-increment
         const id = crypto.randomUUID();
         pendingTransfers.add(id);
         return Response.json({ id });

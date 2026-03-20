@@ -4,11 +4,16 @@ import { Transfer } from "./components/Transfer";
 import { TxHistory } from "./components/TxHistory";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useSignIn } from "./hooks/useSignIn";
+import { AboutFast } from "./pages/AboutFast";
 import "../index.css";
 
 function AppInner() {
   const { account } = useAccountContext();
   const signInMutation = useSignIn();
+
+  if (window.location.pathname === "/fast/about") {
+    return <AboutFast />;
+  }
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -21,9 +26,18 @@ function AppInner() {
           </span>{" "}
           that the transaction lifecycle imposes on every app.
         </p>
-        <a href="/" className="text-sm text-blue-500 hover:underline">
-          ← Go back
-        </a>
+        <div className="flex items-center gap-3">
+          <a href="/" className="text-sm text-blue-500 hover:underline">
+            ← Go back
+          </a>
+          <span className="text-sm text-muted-foreground">|</span>
+          <a
+            href="/fast/about"
+            className="text-sm text-blue-500 hover:underline"
+          >
+            About
+          </a>
+        </div>
       </div>
       {account ? (
         <>
@@ -54,7 +68,6 @@ function AppInner() {
 const queryClient = new QueryClient();
 
 export function App() {
-
   return (
     <QueryClientProvider client={queryClient}>
       <AccountProvider>
