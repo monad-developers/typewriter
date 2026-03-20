@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type {
   Address,
   Chain,
@@ -74,6 +74,7 @@ export type Tx = {
 
 type AccountContextValue = {
   account: Account | null;
+  loading: boolean;
   setAccount: (a: Account | null) => void;
   txs: Tx[];
   addTx: (tx: Tx, address?: Address) => void;
@@ -86,48 +87,56 @@ type AccountContextValue = {
 
 const AccountContext = createContext<AccountContextValue | null>(null);
 
-function getCookie(name: string): string | null {
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return match ? match[1] : null;
+function clearNormalStorage() {
+  localStorage.removeItem("normal:address");
+  localStorage.removeItem("normal:privateKey");
+  localStorage.removeItem("normal:boot-id");
 }
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
-  const [account, setAccount] = useState<Account | null>(() => {
-    const bootId = getCookie("boot-id");
-    const savedBootId = localStorage.getItem("normal:boot-id");
-
-    if (!bootId || bootId !== savedBootId) {
-      localStorage.removeItem("normal:address");
-      localStorage.removeItem("normal:privateKey");
-      localStorage.removeItem("normal:boot-id");
-      return null;
-    }
-
-    const address = localStorage.getItem("normal:address") as Address | null;
-    const privateKey = localStorage.getItem("normal:privateKey") as Hex | null;
-
-    if (address?.startsWith("0x") && privateKey?.startsWith("0x")) {
-      return {
-        address,
-        privateKey,
-        walletClient: createWalletClient({
-          account: privateKeyToAccount(privateKey),
-          transport: loggingTransport(RPC_URL),
-          chain: CHAIN,
-        }),
-      };
-    }
-
-    return null;
-  });
-
-  const [txs, setTxs] = useState<Tx[]>(() =>
-    account ? loadTxs(account.address) : [],
-  );
+  const [account, setAccount] = useState<Account | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [txs, setTxs] = useState<Tx[]>([]);
 
   const [accessListEnabled, setAccessListEnabled] = useState(false);
   const [preflightOptimizationsEnabled, setPreflightOptimizationsEnabled] =
     useState(false);
+
+  useEffect(() => {
+    const address = localStorage.getItem("normal:address") as Address | null;
+    const privateKey = localStorage.getItem("normal:privateKey") as Hex | null;
+
+    if (!address?.startsWith("0x") || !privateKey?.startsWith("0x")) {
+      clearNormalStorage();
+      setLoading(false);
+      return;
+    }
+
+    fetch("/api/boot-id")
+      .then((res) => res.json())
+      .then(({ id }: { id: string }) => {
+        const savedBootId = localStorage.getItem("normal:boot-id");
+        if (id !== savedBootId) {
+          clearNormalStorage();
+          return;
+        }
+        const acct = {
+          address,
+          privateKey,
+          walletClient: createWalletClient({
+            account: privateKeyToAccount(privateKey),
+            transport: loggingTransport(RPC_URL),
+            chain: CHAIN,
+          }),
+        };
+        setAccount(acct);
+        setTxs(loadTxs(address));
+      })
+      .catch(() => {
+        clearNormalStorage();
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
   function addTx(tx: Tx, address?: Address) {
     const addr = address ?? account?.address;
@@ -153,6 +162,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
     <AccountContext.Provider
       value={{
         account,
+        loading,
         setAccount,
         txs,
         addTx,

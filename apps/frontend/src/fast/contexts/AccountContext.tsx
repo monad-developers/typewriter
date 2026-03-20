@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { Address, Hash, Hex } from "viem";
 
 export type Account = {
@@ -29,6 +29,7 @@ export type Tx = {
 
 type AccountContextValue = {
   account: Account | null;
+  loading: boolean;
   setAccount: (a: Account | null) => void;
   txs: Tx[];
   addTx: (tx: Tx, address?: Address) => void;
@@ -69,36 +70,45 @@ function saveTxs(address: Address, txs: Tx[]) {
   );
 }
 
-function getCookie(name: string): string | null {
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return match ? match[1] : null;
+function clearFastStorage() {
+  localStorage.removeItem("fast:address");
+  localStorage.removeItem("fast:privateKey");
+  localStorage.removeItem("fast:boot-id");
 }
 
 const AccountContext = createContext<AccountContextValue | null>(null);
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
-  const [account, setAccount] = useState<Account | null>(() => {
-    const bootId = getCookie("fast-boot-id");
-    const savedBootId = localStorage.getItem("fast:boot-id");
+  const [account, setAccount] = useState<Account | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [txs, setTxs] = useState<Tx[]>([]);
 
-    if (!bootId || bootId !== savedBootId) {
-      localStorage.removeItem("fast:address");
-      localStorage.removeItem("fast:privateKey");
-      localStorage.removeItem("fast:boot-id");
-      return null;
-    }
-
+  useEffect(() => {
     const address = localStorage.getItem("fast:address") as Address | null;
     const privateKey = localStorage.getItem("fast:privateKey") as Hex | null;
-    if (address?.startsWith("0x") && privateKey?.startsWith("0x")) {
-      return { address, privateKey };
-    }
-    return null;
-  });
 
-  const [txs, setTxs] = useState<Tx[]>(() =>
-    account ? loadTxs(account.address) : [],
-  );
+    if (!address?.startsWith("0x") || !privateKey?.startsWith("0x")) {
+      clearFastStorage();
+      setLoading(false);
+      return;
+    }
+
+    fetch("/api/fast/boot-id")
+      .then((res) => res.json())
+      .then(({ id }: { id: string }) => {
+        const savedBootId = localStorage.getItem("fast:boot-id");
+        if (id !== savedBootId) {
+          clearFastStorage();
+          return;
+        }
+        setAccount({ address, privateKey });
+        setTxs(loadTxs(address));
+      })
+      .catch(() => {
+        clearFastStorage();
+      })
+      .finally(() => setLoading(false));
+  }, []);
 
   function addTx(tx: Tx, address?: Address) {
     const addr = address ?? account?.address;
@@ -122,7 +132,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AccountContext.Provider
-      value={{ account, setAccount, txs, addTx, updateTx }}
+      value={{ account, loading, setAccount, txs, addTx, updateTx }}
     >
       {children}
     </AccountContext.Provider>
