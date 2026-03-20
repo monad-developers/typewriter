@@ -21,6 +21,12 @@ import fast from "./fast/index.html";
 import index from "./index.html";
 
 // ---------------------------------------------------------------------------
+// Boot IDs — invalidate client auth when the server restarts
+// ---------------------------------------------------------------------------
+const normalBootId = crypto.randomUUID();
+const fastBootId = crypto.randomUUID();
+
+// ---------------------------------------------------------------------------
 // Fast server — in-memory state
 // ---------------------------------------------------------------------------
 const state = {
@@ -98,10 +104,14 @@ const server = serve({
 
         createdAddresses.push(account.address);
 
-        return Response.json({
-          address: account.address,
-          privateKey,
-        });
+        return Response.json(
+          { address: account.address, privateKey },
+          {
+            headers: {
+              "Set-Cookie": `boot-id=${normalBootId}; Path=/; SameSite=Lax`,
+            },
+          },
+        );
       },
     },
     "/api/fast/account": {
@@ -221,10 +231,14 @@ const server = serve({
           nonce: 0,
         };
 
-        return Response.json({
-          address: account.address,
-          privateKey,
-        });
+        return Response.json(
+          { address: account.address, privateKey },
+          {
+            headers: {
+              "Set-Cookie": `fast-boot-id=${fastBootId}; Path=/; SameSite=Lax`,
+            },
+          },
+        );
       },
     },
     "/fast": fast,

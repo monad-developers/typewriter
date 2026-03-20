@@ -27,8 +27,11 @@ export function useSignIn() {
       const account = { address, privateKey, walletClient };
       setAccount(account);
 
-      localStorage.setItem("address", address);
-      localStorage.setItem("privateKey", privateKey);
+      localStorage.setItem("normal:address", address);
+      localStorage.setItem("normal:privateKey", privateKey);
+
+      const bootId = document.cookie.match(/(?:^|; )boot-id=([^;]*)/)?.[1];
+      if (bootId) localStorage.setItem("normal:boot-id", bootId);
 
       return account;
     },
