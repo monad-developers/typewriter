@@ -1,66 +1,64 @@
-## Foundry
+# contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+ERC20 token contract built with [Foundry](https://book.getfoundry.sh/) and [Solmate](https://github.com/transmissions11/solmate).
 
-Foundry consists of:
+## Environment Variables
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+| Variable | Required | Description |
+|---|---|---|
+| `DEPLOYER_PRIVATE_KEY` | Yes (for deploy) | Private key used to deploy the contract |
+| `RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
 
-## Documentation
-
-https://book.getfoundry.sh/
+Copy `.env.example.local` or `.env.example.testnet` to `.env`. The deploy script sources `.env` automatically.
 
 ## Usage
 
 ### Build
 
 ```shell
-$ forge build
+forge build
 ```
 
 ### Test
 
 ```shell
-$ forge test
+forge test
 ```
 
 ### Format
 
 ```shell
-$ forge fmt
+forge fmt
+```
+
+### Local Development
+
+Start a local Anvil node and auto-deploy the token:
+
+```shell
+bun run dev
+```
+
+This runs Anvil and deploys the token using the deployer key from `.env`.
+
+### Deploy
+
+Deploy to a custom RPC endpoint (set `DEPLOYER_PRIVATE_KEY` and `RPC_URL` in `.env`):
+
+```shell
+bun run deploy
 ```
 
 ### Gas Snapshots
 
 ```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
+forge snapshot
 ```
 
 ### Help
 
 ```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+forge --help
+anvil --help
+cast --help
 ```

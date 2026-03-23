@@ -1,3 +1,15 @@
+import { formatEther } from "viem";
+import type { TxStatus } from "../contexts/AccountContext";
+import { useAccountContext } from "../contexts/AccountContext";
+import { useBlockNumber } from "../hooks/useBlockNumber";
+
+function getStatus(confirmations: bigint): TxStatus {
+  if (confirmations >= 7n) return "verified";
+  if (confirmations >= 2n) return "finalized";
+  if (confirmations >= 1n) return "voted";
+  return "proposed";
+}
+
 const COLUMNS = [
   "status",
   "amount",
@@ -8,75 +20,71 @@ const COLUMNS = [
   "when",
 ];
 
-const MOCK_TXS = [
-  {
-    id: "0x1a2b3c",
-    status: "confirmed",
-    amount: 1,
-    to: "0xAbCd...Ef12",
-    cost: "0.00021 MON",
-    preflightLatency: "12ms",
-    submissionLatency: "340ms",
-    when: "2s ago",
-  },
-  {
-    id: "0x4d5e6f",
-    status: "pending",
-    amount: 1,
-    to: "0x1111...1111",
-    cost: "0.00019 MON",
-    preflightLatency: "9ms",
-    submissionLatency: "280ms",
-    when: "8s ago",
-  },
-  {
-    id: "0x7g8h9i",
-    status: "failed",
-    amount: 1,
-    to: "0x2222...2222",
-    cost: "0.00020 MON",
-    preflightLatency: "15ms",
-    submissionLatency: "410ms",
-    when: "1m ago",
-  },
-];
+function relativeTime(timestamp: number) {
+  const s = Math.floor((Date.now() - timestamp) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+}
+
+function shortAddr(addr: string) {
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
 
 export function TxHistory() {
+  const { txs } = useAccountContext();
+  const blockNumber = useBlockNumber();
+
   return (
     <section className="w-full p-4">
-      <table className="w-full  border-collapse">
+      <h2 className="text-2xl font-bold mb-4">View Transactions</h2>
+      <table className="w-full border-collapse">
         <thead>
           <tr className="border-b">
             {COLUMNS.map((col) => (
               <th key={col} className="text-left py-2 pr-6">
-                <code className="">{col}</code>
+                <code>{col}</code>
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {MOCK_TXS.map((tx) => (
-            <tr key={tx.id} className="border-b last:border-0">
+          {txs.map((tx) => (
+            <tr key={tx.hash} className="border-b last:border-0">
               <td className="py-2 pr-6">
-                <code>{tx.status}</code>
+                <code>
+                  {blockNumber != null
+                    ? getStatus(blockNumber - tx.blockNumber)
+                    : tx.status}
+                </code>
               </td>
               <td className="py-2 pr-6">
-                <code>{tx.amount}</code>
+                <code>{formatEther(tx.amount)}</code>
               </td>
               <td className="py-2 pr-6">
-                <code>{tx.to}</code>
+                <code>{shortAddr(tx.to)}</code>
               </td>
               <td className="py-2 pr-6">
-                <code>{tx.cost}</code>
+                <code>
+                  {tx.cost != null ? `${formatEther(tx.cost)} MON` : "—"}
+                </code>
               </td>
               <td className="py-2 pr-6">
-                <code>{tx.preflightLatency}</code>
+                <code>
+                  {tx.preflightLatency != null
+                    ? `${Math.round(tx.preflightLatency)}ms`
+                    : "—"}
+                </code>
               </td>
               <td className="py-2 pr-6">
-                <code>{tx.submissionLatency}</code>
+                <code>
+                  {tx.submissionLatency != null
+                    ? `${Math.round(tx.submissionLatency)}ms`
+                    : "—"}
+                </code>
               </td>
               <td className="py-2 pr-6">
-                <code>{tx.when}</code>
+                <code>{relativeTime(tx.timestamp)}</code>
               </td>
             </tr>
           ))}

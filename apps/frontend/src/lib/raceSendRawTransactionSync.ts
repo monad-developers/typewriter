@@ -1,3 +1,5 @@
+import type { TransactionReceipt } from "viem";
+import { formatTransactionReceipt } from "viem";
 import { monadTestnet } from "viem/chains";
 
 /**
@@ -17,8 +19,6 @@ const MONAD_TESTNET_RPC_URLS = [
   "https://monad-testnet.gateway.tenderly.co",
   "https://10143.rpc.thirdweb.com",
 ];
-
-type TransactionReceipt = Record<string, unknown>;
 
 async function rpcCall(
   url: string,
@@ -52,7 +52,7 @@ async function rpcCall(
     throw new Error(`RPC ${url}: missing result`);
   }
 
-  return json.result as TransactionReceipt;
+  return formatTransactionReceipt(json.result) as TransactionReceipt;
 }
 
 /**
