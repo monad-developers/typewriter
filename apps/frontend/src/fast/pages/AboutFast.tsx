@@ -243,6 +243,59 @@ const server = serve({
 });`}
           />
         </section>
+
+        {/* Trust Assumptions */}
+        <section>
+          <h2 className="text-2xl font-bold mb-4">Trust assumptions</h2>
+          {/* <p className="leading-relaxed mb-4">
+            This architecture introduces trust assumptions that don't exist in a
+            standard EOA-to-mempool transaction flow.
+          </p> */}
+          <p className="leading-relaxed mb-4">
+            These tradeoffs are worth making at the application level, they
+            would not be acceptable at the infrastructure level. This
+            architecture is not composable and doesn't try to be.
+          </p>
+
+          <h3 className="text-lg font-semibold mb-2">Ordering</h3>
+          <p className="leading-relaxed mb-4">
+            The scheduler has a short-term monopoly over transaction ordering.
+            Users trust that it will not reorder or censor transactions for its
+            own benefit.
+          </p>
+
+          <h3 className="text-lg font-semibold mb-2">Inclusion</h3>
+          <p className="leading-relaxed mb-4">
+            The "accepted" state is a promise from the server, not an onchain
+            guarantee. Users trust that the scheduler will actually submit
+            accepted transactions onchain.
+          </p>
+
+          <h2 className="text-2xl font-bold mb-4 mt-8">Mitigations</h2>
+
+          <h3 className="text-lg font-semibold mb-2">Signed receipts</h3>
+          <p className="leading-relaxed mb-4">
+            The server could sign its "accepted" responses, giving clients a
+            cryptographic proof that the server committed to including their
+            transaction. If the server fails to include it, the client has the
+            signed receipt as evidence.
+          </p>
+
+          <h3 className="text-lg font-semibold mb-2">Transaction chaining</h3>
+          <p className="leading-relaxed mb-4">
+            Users can declare that a transaction is only valid if a previous
+            transaction with a specific nonce has already been executed. This
+            lets clients take advantage of the "accepted" state without blindly
+            trusting the server.
+          </p>
+
+          <h3 className="text-lg font-semibold mb-2">Force inclusion</h3>
+          <p className="leading-relaxed mb-4">
+            If the scheduler is unresponsive or censoring, users can bypass it
+            and submit transactions directly to the contract. This is slower but
+            removes the dependency on the scheduler.
+          </p>
+        </section>
       </main>
     </div>
   );
