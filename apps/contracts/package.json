@@ -7,6 +7,7 @@
     "build": "forge build",
     "lint": "forge fmt --check",
     "deploy": ". .env && forge build && forge script ./script/Token.s.sol:TokenScript --broadcast --fork-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY",
+    "deploy:fast": ". .env && forge build && forge script ./script/TokenFast.s.sol:TokenFastScript --broadcast --fork-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY",
     "dev": "{ sleep 1 && bun run deploy; } & anvil",
     "start": "bun run dev"
   },
