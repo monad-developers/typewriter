@@ -14,8 +14,8 @@ export function AboutFast() {
         <section>
           <p className="leading-relaxed mb-4">
             The /fast page is powered by a verticalized application
-            architecture. It maximizes performance by giving applications more
-            ownership over their transaction lifecycle.
+            architecture. It maximizes performance and cost by giving
+            applications more ownership over their transaction lifecycle.
           </p>
           <p className="leading-relaxed">
             It allows Monad to{" "}
@@ -70,8 +70,8 @@ struct Account {
           />
           <h3 className="text-lg font-semibold mb-2">Privileged "scheduler"</h3>
           <p className="leading-relaxed mb-4">
-            The scheduler submits transactions on behalf of users. It has a
-            short-term monopoly over ordering transactions.
+            The scheduler submits transactions on behalf of users. It blocks
+            transactions that run before it in the same block.
           </p>
           <p className="leading-relaxed mb-4">
             However, users can submit transactions while the scheduler is
@@ -252,16 +252,17 @@ const server = serve({
             standard EOA-to-mempool transaction flow.
           </p> */}
           <p className="leading-relaxed mb-4">
-            These tradeoffs are worth making at the application level, they
-            would not be acceptable at the infrastructure level. This
-            architecture is not composable and doesn't try to be.
+            These tradeoffs are only applicable at the application level, and
+            are all opt-in. It doesn't make sense for infrastructure (like USDC)
+            to make these same tradeoffs. This architecture is not composable
+            like other smart contract systems.
           </p>
 
           <h3 className="text-lg font-semibold mb-2">Ordering</h3>
           <p className="leading-relaxed mb-4">
-            The scheduler has a short-term monopoly over transaction ordering.
-            Users trust that it will not reorder or censor transactions for its
-            own benefit.
+            The scheduler submits transactions on behalf of users and blocks
+            others from doing so. Users trust that it will not reorder or censor
+            transactions for its own benefit.
           </p>
 
           <h3 className="text-lg font-semibold mb-2">Inclusion</h3>
