@@ -4,7 +4,7 @@ import { useAccountContext } from "../contexts/AccountContext";
 import { useBlockNumber } from "../hooks/useBlockNumber";
 
 function getStatus(confirmations: bigint): TxStatus {
-  if (confirmations >= 7n) return "verified";
+  if (confirmations >= 5n) return "verified";
   if (confirmations >= 2n) return "finalized";
   if (confirmations >= 1n) return "voted";
   return "proposed";

@@ -23,7 +23,7 @@ export function AboutFast() {
           </p>
 
           <pre className="text-xs leading-snug overflow-x-auto bg-zinc-900 text-zinc-300 rounded-lg p-4 mt-4">
-{`   Client                        Server                     Monad Network
+            {`   Client                        Server                     Monad Network
       |                             |                             |
       |  (1) Sign transfer tx       |                             |
       |                             |                             |
@@ -45,8 +45,8 @@ export function AboutFast() {
         <section>
           <h2 className="text-2xl font-bold mb-4">Protocol</h2>
           <p className="leading-relaxed mb-4">
-            The smart contract has several features that enable faster and
-            more scalable execution.
+            The smart contract has several features that enable faster and more
+            scalable execution.
           </p>
           <h3 className="text-lg font-semibold mb-4">
             Application-level account system
@@ -133,7 +133,7 @@ function execute(Transfer[] calldata transfers) external {
           <h2 className="text-2xl font-bold mb-4">Server</h2>
           <p className="leading-relaxed mb-4">
             The server acts as an intermediary between clients (browsers) and
-            the Monad nodes. Clients don't interact with the network directly.
+            the Monad nodes. Clients don't interact with Monad nodes directly.
           </p>
 
           <h3 className="text-lg font-semibold mb-2">Transaction ordering</h3>
@@ -146,9 +146,9 @@ function execute(Transfer[] calldata transfers) external {
             Deterministic execution
           </h3>
           <p className="leading-relaxed mb-4">
-            Because the scheduler has a short-term monopoly in the protocol, it
-            can deterministically execute transactions without waiting for an
-            onchain receipt.
+            Because the scheduler <strong>knows it cannot be front-run</strong>,
+            it can deterministically execute transactions without broadcasting
+            them and waiting for an onchain receipt.
           </p>
           <CodeBlock
             title="State shape"
@@ -171,13 +171,52 @@ function execute(Transfer[] calldata transfers) external {
           <h3 className="text-lg font-semibold mb-2">
             "accepted" transaction state
           </h3>
+          <table className="w-full text-sm mb-4 border border-black">
+            <thead>
+              <tr className="border-b border-black text-left">
+                <th className="px-3 py-2">State</th>
+                <th className="px-3 py-2">Description</th>
+                <th className="px-3 py-2">Latency</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2 font-semibold">pending</td>
+                <td className="px-3 py-2">Signed by the client</td>
+                <td className="px-3 py-2">—</td>
+              </tr>
+              <tr className="border-b border-black bg-emerald-400">
+                <td className="px-3 py-2 font-semibold">accepted</td>
+                <td className="px-3 py-2">Confirmed by server</td>
+                <td className="px-3 py-2">~50ms</td>
+              </tr>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2 font-semibold">proposed</td>
+                <td className="px-3 py-2">Included in a block</td>
+                <td className="px-3 py-2">~250ms</td>
+              </tr>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2 font-semibold">voted</td>
+                <td className="px-3 py-2">1 validator confirmation</td>
+                <td className="px-3 py-2">~650ms</td>
+              </tr>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2 font-semibold">finalized</td>
+                <td className="px-3 py-2">2 validator confirmations</td>
+                <td className="px-3 py-2">~1050ms</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2 font-semibold">verified</td>
+                <td className="px-3 py-2">5+ validator confirmations</td>
+                <td className="px-3 py-2">~2250ms</td>
+              </tr>
+            </tbody>
+          </table>
           <p className="leading-relaxed mb-4">
-            The "accepted" status is a server-side confirmation that the
-            transfer is valid and will be included, no onchain receipt required.
-          </p>
-
-          <p className="leading-relaxed mb-4">
-            With FIFO ordering, the server can issue this confirmation immediately.
+            The server can validate and execute a transaction without waiting
+            for it to be included in a block. FIFO ordering makes this
+            especially simple — each transfer is processed immediately when it
+            arrives.
           </p>
           <CodeBlock
             title="server.ts"
