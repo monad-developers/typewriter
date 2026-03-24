@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { CHAIN_ID, TOKEN_ADDRESS } from "../../constants";
+import { CHAIN_ID, TOKEN_FAST_ADDRESS } from "../../constants";
 import type { Transfer } from "../api";
 import { useAccountContext } from "../contexts/AccountContext";
 import { pushEntry } from "../lib/requestStore";
@@ -10,7 +10,7 @@ const EIP712_DOMAIN = {
   name: "FastTransfer",
   version: "1",
   chainId: CHAIN_ID,
-  verifyingContract: TOKEN_ADDRESS,
+  verifyingContract: TOKEN_FAST_ADDRESS,
 } as const;
 
 const EIP712_TYPES = {
