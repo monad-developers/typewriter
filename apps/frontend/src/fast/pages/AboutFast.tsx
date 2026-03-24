@@ -320,6 +320,32 @@ const server = serve({
             and submit transactions directly to the contract. This is slower but
             removes the dependency on the scheduler.
           </p>
+          <CodeBlock
+            title="Transfer.sol"
+            lang="solidity"
+            code={`QueuedTransfer[] private queue;
+
+// Anyone can enqueue a signed transfer
+function enqueue(Transfer calldata transfer, uint8 v, bytes32 r, bytes32 s) external {
+    // ... validate signature, nonce, deadline
+
+    queue.push(QueuedTransfer({
+        transfer: transfer,
+        enqueuedBlock: block.number
+    }));
+}
+
+// Anyone can execute after 2 blocks
+function forceExecute(uint256 index) external {
+    QueuedTransfer storage queued = queue[index];
+
+    if (block.number < queued.enqueuedBlock + 2) {
+        revert TooEarly();
+    }
+
+    // ... execute transfer, delete queue entry
+}`}
+          />
         </section>
       </main>
     </div>
