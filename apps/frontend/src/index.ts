@@ -147,12 +147,13 @@ async function flushMutationQueue() {
     for (const m of batch) m.status = "proposed";
 
     // Simulate finalization + verification delays
-    await sleep(400);
-    for (const m of batch) m.status = "voted";
-    await sleep(400);
-    for (const m of batch) m.status = "finalized";
-    await sleep(1200);
-    for (const m of batch) m.status = "verified";
+    sleep(400).then(async () => {
+      for (const m of batch) m.status = "voted";
+      await sleep(400);
+      for (const m of batch) m.status = "finalized";
+      await sleep(1200);
+      for (const m of batch) m.status = "verified";
+    });
   } catch (err) {
     console.error("Bundle submission failed:", err);
   }
