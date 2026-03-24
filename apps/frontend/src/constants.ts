@@ -26,6 +26,57 @@ if (!process.env.BUN_PUBLIC_TOKEN_ADDRESS)
 export const TOKEN_ADDRESS = // @ts-expect-error
   process.env.BUN_PUBLIC_TOKEN_ADDRESS as `0x${string}`;
 
+// @ts-expect-error
+if (!process.env.BUN_PUBLIC_TOKEN_FAST_ADDRESS)
+  throw new Error("BUN_PUBLIC_TOKEN_FAST_ADDRESS env var is required");
+export const TOKEN_FAST_ADDRESS = // @ts-expect-error
+  process.env.BUN_PUBLIC_TOKEN_FAST_ADDRESS as `0x${string}`;
+
+export const TOKEN_FAST_ABI = [
+  {
+    type: "constructor",
+    inputs: [{ name: "_scheduler", type: "address", internalType: "address" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "DOMAIN_SEPARATOR",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "execute",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        internalType: "struct ExecuteParams",
+        components: [
+          {
+            name: "mutations",
+            type: "uint8[]",
+            internalType: "enum Mutation[]",
+          },
+          { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
+          { name: "v", type: "uint8[]", internalType: "uint8[]" },
+          { name: "r", type: "bytes32[]", internalType: "bytes32[]" },
+          { name: "s", type: "bytes32[]", internalType: "bytes32[]" },
+        ],
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  { type: "error", name: "InvalidMutation", inputs: [] },
+  { type: "error", name: "InvalidNonce", inputs: [] },
+  { type: "error", name: "InvalidSignature", inputs: [] },
+  { type: "error", name: "LengthMismatch", inputs: [] },
+  { type: "error", name: "SignatureExpired", inputs: [] },
+  { type: "error", name: "Unauthorized", inputs: [] },
+] as const;
+
 export const TOKEN_ABI = [
   {
     type: "constructor",

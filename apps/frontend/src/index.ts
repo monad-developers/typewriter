@@ -1,10 +1,13 @@
 import { serve } from "bun";
-import type { Address, Chain } from "viem";
+import type { Address, Chain, Hex } from "viem";
 import {
+  createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
   http,
   parseEther,
+  parseSignature,
   recoverTypedDataAddress,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -15,6 +18,8 @@ import {
   RPC_URL,
   TOKEN_ABI,
   TOKEN_ADDRESS,
+  TOKEN_FAST_ABI,
+  TOKEN_FAST_ADDRESS,
 } from "./constants";
 import type { SignedTransfer, State } from "./fast/api";
 import fast from "./fast/index.html";
@@ -34,8 +39,6 @@ const state = {
   accounts: {},
 } as State<bigint>;
 
-const pendingTransfers = new Set<string>();
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // @ts-expect-error
@@ -49,7 +52,12 @@ const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
 const deployerClient = createWalletClient({
   account: deployerAccount,
-  transport: http(RPC_URL),
+  transport: http(RPC_URL, { retryCount: 0 }),
+  chain: CHAIN as Chain,
+});
+
+const publicClient = createPublicClient({
+  transport: http(RPC_URL, { retryCount: 0 }),
   chain: CHAIN as Chain,
 });
 
@@ -59,7 +67,7 @@ const EIP712_DOMAIN = {
   name: "FastTransfer",
   version: "1",
   chainId: CHAIN_ID,
-  verifyingContract: TOKEN_ADDRESS,
+  verifyingContract: TOKEN_FAST_ADDRESS,
 } as const;
 
 const EIP712_TYPES = {
@@ -71,6 +79,91 @@ const EIP712_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
 } as const;
+
+// ---------------------------------------------------------------------------
+// Mutation queue — batched every 400ms into a single TokenFast.execute() call
+// ---------------------------------------------------------------------------
+// Mutation enum values matching the Solidity contract
+const MUTATION_TRANSFER = 0;
+const MUTATION_MINT = 1;
+
+type MutationStatus =
+  | "accepted"
+  | "proposed"
+  | "voted"
+  | "finalized"
+  | "verified";
+
+type Mutation = {
+  mutationType: number;
+  mutationData: Hex;
+  v: number;
+  r: Hex;
+  s: Hex;
+  status: MutationStatus;
+};
+
+let mutationQueue: Mutation[] = [];
+const mutations = new Map<string, Mutation>();
+
+async function flushMutationQueue() {
+  if (mutationQueue.length === 0) return;
+
+  const batch = mutationQueue;
+  mutationQueue = [];
+
+  try {
+    const data = encodeFunctionData({
+      abi: TOKEN_FAST_ABI,
+      functionName: "execute",
+      args: [
+        {
+          mutations: batch.map((m) => m.mutationType),
+          mutationData: batch.map((m) => m.mutationData),
+          v: batch.map((m) => m.v),
+          r: batch.map((m) => m.r),
+          s: batch.map((m) => m.s),
+        },
+      ],
+    });
+
+    const { accessList, gasUsed } = await publicClient.createAccessList({
+      account: deployerAccount.address,
+      to: TOKEN_FAST_ADDRESS,
+      data,
+    });
+
+    const request = await deployerClient.prepareTransactionRequest({
+      to: TOKEN_FAST_ADDRESS,
+      data,
+      accessList,
+      gas: gasUsed + gasUsed / 10n,
+    });
+    const signed = await deployerClient.signTransaction(request);
+    await sendRawTransactionSync(deployerClient, {
+      serializedTransaction: signed,
+    });
+
+    for (const m of batch) m.status = "proposed";
+
+    // Simulate finalization + verification delays
+    await sleep(400);
+    for (const m of batch) m.status = "voted";
+    await sleep(400);
+    for (const m of batch) m.status = "finalized";
+    await sleep(1200);
+    for (const m of batch) m.status = "verified";
+  } catch (err) {
+    console.error("Bundle submission failed:", err);
+  }
+}
+
+(async function flushLoop() {
+  while (true) {
+    await sleep(450 - (Date.now() % 400));
+    await flushMutationQueue();
+  }
+})();
 
 const server = serve({
   routes: {
@@ -161,6 +254,8 @@ const server = serve({
         if (fromBalance < amountBigInt) {
           return new Response("Insufficient balance", { status: 400 });
         }
+
+        // Update in-memory state immediately (optimistic)
         state.accounts[from] = {
           balance: fromBalance - amountBigInt,
           nonce: expectedNonce + 1,
@@ -169,32 +264,57 @@ const server = serve({
           balance: (state.accounts[to]?.balance ?? 0n) + amountBigInt,
           nonce: state.accounts[to]?.nonce ?? 0,
         };
-        // TODO(kyle) this should be auto-increment
+
+        // Queue on-chain settlement
+        const mutationData = encodeAbiParameters(
+          [
+            { type: "address", name: "from" },
+            { type: "address", name: "to" },
+            { type: "uint256", name: "amount" },
+            { type: "uint256", name: "nonce" },
+            { type: "uint256", name: "deadline" },
+          ],
+          [from, to, amountBigInt, BigInt(nonce), BigInt(deadline)],
+        );
+
+        const { v, r, s } = parseSignature(signature);
+
         const id = crypto.randomUUID();
-        pendingTransfers.add(id);
+        const mutation: Mutation = {
+          mutationType: MUTATION_TRANSFER,
+          mutationData,
+          v: Number(v),
+          r,
+          s,
+          status: "accepted",
+        };
+        mutations.set(id, mutation);
+        mutationQueue.push(mutation);
+
         return Response.json({ id });
       },
     },
     "/api/fast/transfer/:id/status": {
       GET: (req) => {
         const id = req.params.id;
-        if (!pendingTransfers.has(id)) {
+        const mutation = mutations.get(id);
+        if (!mutation) {
           return new Response("Not Found", { status: 404 });
         }
-        pendingTransfers.delete(id);
 
         const stream = new ReadableStream({
           async start(controller) {
-            const send = (status: string) =>
+            const send = (status: MutationStatus) =>
               controller.enqueue(`data: ${JSON.stringify({ status })}\n\n`);
 
-            await sleep(250);
-            send("proposed");
-            await sleep(650);
-            send("voted");
-            await sleep(1050);
-            send("finalized");
-            await sleep(2250);
+            let last: MutationStatus | undefined;
+            while (mutation.status !== "verified") {
+              if (mutation.status !== last) {
+                last = mutation.status;
+                send(mutation.status);
+              }
+              await sleep(10);
+            }
             send("verified");
             controller.close();
           },
@@ -226,10 +346,31 @@ const server = serve({
         const privateKey = generatePrivateKey();
         const account = privateKeyToAccount(privateKey);
 
+        const mintAmount = parseEther("100");
+
+        // Update in-memory state immediately
         state.accounts[account.address] = {
-          balance: parseEther("100"),
+          balance: mintAmount,
           nonce: 0,
         };
+
+        // Queue a Mint mutation for on-chain settlement
+        const mutationData = encodeAbiParameters(
+          [
+            { type: "address", name: "to" },
+            { type: "uint256", name: "amount" },
+          ],
+          [account.address, mintAmount],
+        );
+
+        mutationQueue.push({
+          mutationType: MUTATION_MINT,
+          mutationData,
+          v: 0,
+          r: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          s: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          status: "accepted",
+        });
 
         return Response.json({
           address: account.address,
