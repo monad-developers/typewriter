@@ -10,16 +10,38 @@ export function AboutFast() {
       </div> */}
 
       <main className="max-w-3xl mx-auto px-6 py-10 flex flex-col gap-8 font-mono">
-        {/* Overview */}
+        {/* Why */}
         <section>
+          <h2 className="text-2xl font-bold mb-4">Why</h2>
           <p className="leading-relaxed mb-4">
-            The /fast page is powered by a verticalized application
-            architecture. It maximizes performance and cost by giving
-            applications more ownership over their transaction lifecycle.
+            The standard transaction lifecycle: sign, broadcast to leader, wait
+            for block inclusion + confirmation, can impose a practical latency
+            and throughput bottleneck for applications.
+          </p>
+          <p className="leading-relaxed mb-4">
+            For some applications, it's worth making tradeoffs for better user
+            experience and less composability. These tradeoffs are only
+            applicable at the application level, and are all opt-in. This design
+            is not meant for infrastructure like USDC.
+          </p>
+          <p className="leading-relaxed mb-4">
+            Polymarket is an example application that is willing to make these
+            tradeoffs.
           </p>
           <p className="leading-relaxed">
-            It allows Monad to{" "}
+            Monad can{" "}
             <strong>empower developers beyond "EVM but faster"</strong>.
+          </p>
+        </section>
+
+        {/* Overview */}
+        <section>
+          <h2 className="text-2xl font-bold mb-4">How it works</h2>
+          <p className="leading-relaxed mb-4">
+            The /fast page uses a verticalized application architecture with a
+            server as an intermediary between clients and the Monad network.
+            Apps get faster confirmation (~50ms) and more ownership over their
+            transaction lifecycle.
           </p>
 
           <pre className="text-xs leading-snug overflow-x-auto bg-zinc-900 text-zinc-300 rounded-lg p-4 mt-4">
@@ -156,8 +178,12 @@ function execute(Transfer[] calldata transfers) external {
           </h3>
           <p className="leading-relaxed mb-4">
             Because the scheduler <strong>knows it cannot be front-run</strong>,
-            it can deterministically execute transactions without broadcasting
+            it can deterministically simulate transactions without broadcasting
             them and waiting for an onchain receipt.
+          </p>
+          <p className="leading-relaxed mb-4">
+            The server keeps track of all the relevant application state and can
+            update it immediately when receives a transaction from a user.
           </p>
           <CodeBlock
             title="State shape"
@@ -222,10 +248,9 @@ function execute(Transfer[] calldata transfers) external {
             </tbody>
           </table>
           <p className="leading-relaxed mb-4">
-            The server can validate and execute a transaction without waiting
-            for it to be included in a block. FIFO ordering makes this
-            especially simple — each transfer is processed immediately when it
-            arrives.
+            The server can "accept" a transaction and submit it onchain later.
+            FIFO ordering makes this especially simple — each transfer is
+            processed immediately when it arrives.
           </p>
           <CodeBlock
             title="server.ts"
@@ -256,16 +281,6 @@ const server = serve({
         {/* Trust Assumptions */}
         <section>
           <h2 className="text-2xl font-bold mb-4">Trust assumptions</h2>
-          {/* <p className="leading-relaxed mb-4">
-            This architecture introduces trust assumptions that don't exist in a
-            standard EOA-to-mempool transaction flow.
-          </p> */}
-          <p className="leading-relaxed mb-4">
-            These tradeoffs are only applicable at the application level, and
-            are all opt-in. It doesn't make sense for infrastructure (like USDC)
-            to make these same tradeoffs. This architecture is not composable
-            like other smart contract systems.
-          </p>
 
           <h3 className="text-lg font-semibold mb-2">Ordering</h3>
           <p className="leading-relaxed mb-4">
