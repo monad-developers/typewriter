@@ -81,50 +81,43 @@ const EIP712_TYPES = {
 const MUTATION_TRANSFER = 0;
 const MUTATION_MINT = 1;
 
-type QueuedMutation = {
+type MutationStatus =
+  | "accepted"
+  | "proposed"
+  | "voted"
+  | "finalized"
+  | "verified";
+
+type Mutation = {
   mutationType: number;
   mutationData: Hex;
   v: number;
   r: Hex;
   s: Hex;
-  resolve: () => void;
-  reject: (err: Error) => void;
+  status: MutationStatus;
 };
 
-const mutationQueue: QueuedMutation[] = [];
-
-// Transfer status tracking — maps transfer ID to lifecycle promises
-type TransferLifecycle = {
-  submitted: Promise<void>;
-  resolveSubmitted: () => void;
-  confirmed: Promise<void>;
-  resolveConfirmed: () => void;
-};
-const transferLifecycles = new Map<string, TransferLifecycle>();
-
-function createTransferLifecycle(): TransferLifecycle {
-  let resolveSubmitted!: () => void;
-  let resolveConfirmed!: () => void;
-  const submitted = new Promise<void>((r) => { resolveSubmitted = r; });
-  const confirmed = new Promise<void>((r) => { resolveConfirmed = r; });
-  return { submitted, resolveSubmitted, confirmed, resolveConfirmed };
-}
+const mutationQueue: Mutation[] = [];
+const mutations = new Map<string, Mutation>();
 
 async function flushMutationQueue() {
   if (mutationQueue.length === 0) return;
 
   const batch = mutationQueue.splice(0);
-  const mutations = batch.map((m) => m.mutationType);
-  const mutationData = batch.map((m) => m.mutationData);
-  const v = batch.map((m) => m.v);
-  const r = batch.map((m) => m.r);
-  const s = batch.map((m) => m.s);
 
   try {
     const data = encodeFunctionData({
       abi: TOKEN_FAST_ABI,
       functionName: "execute",
-      args: [{ mutations, mutationData, v, r, s }],
+      args: [
+        {
+          mutations: batch.map((m) => m.mutationType),
+          mutationData: batch.map((m) => m.mutationData),
+          v: batch.map((m) => m.v),
+          r: batch.map((m) => m.r),
+          s: batch.map((m) => m.s),
+        },
+      ],
     });
 
     const request = await deployerClient.prepareTransactionRequest({
@@ -136,13 +129,17 @@ async function flushMutationQueue() {
       serializedTransaction: signed,
     });
 
-    // Notify subscribers that the batch has been submitted
-    for (const m of batch) m.resolve();
+    for (const m of batch) m.status = "proposed";
+
+    // Simulate finalization + verification delays
+    await sleep(400);
+    for (const m of batch) m.status = "voted";
+    await sleep(400);
+    for (const m of batch) m.status = "finalized";
+    await sleep(1200);
+    for (const m of batch) m.status = "verified";
   } catch (err) {
     console.error("Bundle submission failed:", err);
-    for (const m of batch) {
-      m.reject(err instanceof Error ? err : new Error(String(err)));
-    }
   }
 }
 
@@ -264,18 +261,16 @@ const server = serve({
         const { v, r, s } = parseSignature(signature);
 
         const id = crypto.randomUUID();
-        const lifecycle = createTransferLifecycle();
-        transferLifecycles.set(id, lifecycle);
-
-        mutationQueue.push({
+        const mutation: Mutation = {
           mutationType: MUTATION_TRANSFER,
           mutationData,
           v: Number(v),
           r,
           s,
-          resolve: () => lifecycle.resolveSubmitted(),
-          reject: (err) => console.error(`Transfer ${id} failed:`, err),
-        });
+          status: "accepted",
+        };
+        mutations.set(id, mutation);
+        mutationQueue.push(mutation);
 
         return Response.json({ id });
       },
@@ -283,28 +278,24 @@ const server = serve({
     "/api/fast/transfer/:id/status": {
       GET: (req) => {
         const id = req.params.id;
-        const lifecycle = transferLifecycles.get(id);
-        if (!lifecycle) {
+        const mutation = mutations.get(id);
+        if (!mutation) {
           return new Response("Not Found", { status: 404 });
         }
-        transferLifecycles.delete(id);
 
         const stream = new ReadableStream({
           async start(controller) {
-            const send = (status: string) =>
+            const send = (status: MutationStatus) =>
               controller.enqueue(`data: ${JSON.stringify({ status })}\n\n`);
 
-            send("proposed");
-            // Wait for the batch to be submitted on-chain
-            await lifecycle.submitted;
-            send("voted");
-            // The bundle is submitted synchronously via sendRawTransactionSync,
-            // so by the time submitted resolves the tx is already in the mempool.
-            // Add a small delay for finalization.
-            await sleep(1050);
-            send("finalized");
-            lifecycle.resolveConfirmed();
-            await sleep(2250);
+            let last: MutationStatus | undefined;
+            while (mutation.status !== "verified") {
+              if (mutation.status !== last) {
+                last = mutation.status;
+                send(mutation.status);
+              }
+              await sleep(10);
+            }
             send("verified");
             controller.close();
           },
@@ -353,22 +344,14 @@ const server = serve({
           [account.address, mintAmount],
         );
 
-        const settled = new Promise<void>((resolve, reject) => {
-          mutationQueue.push({
-            mutationType: MUTATION_MINT,
-            mutationData,
-            v: 0,
-            r: "0x0000000000000000000000000000000000000000000000000000000000000000",
-            s: "0x0000000000000000000000000000000000000000000000000000000000000000",
-            resolve,
-            reject,
-          });
+        mutationQueue.push({
+          mutationType: MUTATION_MINT,
+          mutationData,
+          v: 0,
+          r: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          s: "0x0000000000000000000000000000000000000000000000000000000000000000",
+          status: "accepted",
         });
-
-        // Don't await — mint settles in the next batch
-        settled.catch((err) =>
-          console.error(`Mint for ${account.address} failed:`, err),
-        );
 
         return Response.json({
           address: account.address,

@@ -34,6 +34,18 @@ export const TOKEN_FAST_ADDRESS = // @ts-expect-error
 
 export const TOKEN_FAST_ABI = [
   {
+    type: "constructor",
+    inputs: [{ name: "_scheduler", type: "address", internalType: "address" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "DOMAIN_SEPARATOR",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
+    stateMutability: "view",
+  },
+  {
     type: "function",
     name: "execute",
     inputs: [
@@ -42,7 +54,11 @@ export const TOKEN_FAST_ABI = [
         type: "tuple",
         internalType: "struct ExecuteParams",
         components: [
-          { name: "mutations", type: "uint8[]", internalType: "enum Mutation[]" },
+          {
+            name: "mutations",
+            type: "uint8[]",
+            internalType: "enum Mutation[]",
+          },
           { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
           { name: "v", type: "uint8[]", internalType: "uint8[]" },
           { name: "r", type: "bytes32[]", internalType: "bytes32[]" },
@@ -53,6 +69,12 @@ export const TOKEN_FAST_ABI = [
     outputs: [],
     stateMutability: "nonpayable",
   },
+  { type: "error", name: "InvalidMutation", inputs: [] },
+  { type: "error", name: "InvalidNonce", inputs: [] },
+  { type: "error", name: "InvalidSignature", inputs: [] },
+  { type: "error", name: "LengthMismatch", inputs: [] },
+  { type: "error", name: "SignatureExpired", inputs: [] },
+  { type: "error", name: "Unauthorized", inputs: [] },
 ] as const;
 
 export const TOKEN_ABI = [
