@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { TOKEN_FAST_ADDRESS } from "../constants";
 import { Header } from "./components/Header";
 import { Transfer } from "./components/Transfer";
 import { TxHistory } from "./components/TxHistory";
@@ -36,6 +37,15 @@ function AppInner() {
             className="text-sm text-blue-500 hover:underline"
           >
             About
+          </a>
+          <span className="text-sm text-muted-foreground">|</span>
+          <a
+            href={`https://testnet.monadexplorer.com/address/${TOKEN_FAST_ADDRESS}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-blue-500 hover:underline"
+          >
+            Token contract ↗
           </a>
         </div>
       </div>
