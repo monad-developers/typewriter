@@ -40,7 +40,7 @@ function AppInner() {
           </a>
           <span className="text-sm text-muted-foreground">|</span>
           <a
-            href={`https://testnet.monadexplorer.com/address/${TOKEN_FAST_ADDRESS}`}
+            href={`https://testnet.monadscan.xyz/address/${TOKEN_FAST_ADDRESS}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-blue-500 hover:underline"
