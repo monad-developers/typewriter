@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Header, type StateView } from "./components/Header";
 import { Transfer } from "./components/Transfer";
 import { TxHistory } from "./components/TxHistory";
+import { TOKEN_ADDRESS } from "./constants";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useSignIn } from "./hooks/useSignIn";
 import "./index.css";
@@ -23,9 +24,20 @@ function AppInner() {
           </span>{" "}
           that the transaction lifecycle imposes on every app.
         </p>
-        <a href="/fast" className="text-sm text-blue-500 hover:underline">
-          Go faster →
-        </a>
+        <div className="flex items-center gap-3">
+          <a href="/fast" className="text-sm text-blue-500 hover:underline">
+            Go faster →
+          </a>
+          <span className="text-sm text-muted-foreground">|</span>
+          <a
+            href={`https://testnet.monadexplorer.com/address/${TOKEN_ADDRESS}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-blue-500 hover:underline"
+          >
+            Token contract ↗
+          </a>
+        </div>
       </div>
       {loading ? null : account ? (
         <>
