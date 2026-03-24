@@ -1,6 +1,7 @@
 import { serve } from "bun";
 import type { Address, Chain, Hex } from "viem";
 import {
+  createPublicClient,
   createWalletClient,
   encodeAbiParameters,
   encodeFunctionData,
@@ -51,7 +52,12 @@ const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
 const deployerClient = createWalletClient({
   account: deployerAccount,
-  transport: http(RPC_URL),
+  transport: http(RPC_URL, { retryCount: 0 }),
+  chain: CHAIN as Chain,
+});
+
+const publicClient = createPublicClient({
+  transport: http(RPC_URL, { retryCount: 0 }),
   chain: CHAIN as Chain,
 });
 
@@ -97,13 +103,14 @@ type Mutation = {
   status: MutationStatus;
 };
 
-const mutationQueue: Mutation[] = [];
+let mutationQueue: Mutation[] = [];
 const mutations = new Map<string, Mutation>();
 
 async function flushMutationQueue() {
   if (mutationQueue.length === 0) return;
 
-  const batch = mutationQueue.splice(0);
+  const batch = mutationQueue;
+  mutationQueue = [];
 
   try {
     const data = encodeFunctionData({
@@ -120,9 +127,17 @@ async function flushMutationQueue() {
       ],
     });
 
+    const { accessList, gasUsed } = await publicClient.createAccessList({
+      account: deployerAccount.address,
+      to: TOKEN_FAST_ADDRESS,
+      data,
+    });
+
     const request = await deployerClient.prepareTransactionRequest({
       to: TOKEN_FAST_ADDRESS,
       data,
+      accessList,
+      gas: gasUsed + gasUsed / 10n,
     });
     const signed = await deployerClient.signTransaction(request);
     await sendRawTransactionSync(deployerClient, {
@@ -143,8 +158,12 @@ async function flushMutationQueue() {
   }
 }
 
-// Flush the queue every 400ms
-setInterval(flushMutationQueue, 400);
+(async function flushLoop() {
+  while (true) {
+    await sleep(450 - (Date.now() % 400));
+    await flushMutationQueue();
+  }
+})();
 
 const server = serve({
   routes: {
