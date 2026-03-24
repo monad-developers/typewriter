@@ -66,6 +66,15 @@ struct Account {
     uint256 nonce;
     uint256 balance;
 }
+
+// or 
+
+struct Account {
+    bytes32 id;
+    Key[] keys;
+    mapping(uint192 => uint64) nonceSeqs;
+    uint256 balance;
+}
 `}
           />
           <h3 className="text-lg font-semibold mb-2">Privileged "scheduler"</h3>
@@ -123,8 +132,8 @@ function execute(Transfer[] calldata transfers) external {
 
           <p className="leading-relaxed">
             While not implemented in this demo, the scheduler could compress
-            state with merklization into a single bytes32 word, improving gas
-            costs.
+            state with merklization into a single bytes32 word (or 4kb page),
+            improving gas costs.
           </p>
         </section>
 
