@@ -1,10 +1,12 @@
 import { serve } from "bun";
-import type { Address, Chain } from "viem";
+import type { Address, Chain, Hex } from "viem";
 import {
   createWalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
   http,
   parseEther,
+  parseSignature,
   recoverTypedDataAddress,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -15,6 +17,8 @@ import {
   RPC_URL,
   TOKEN_ABI,
   TOKEN_ADDRESS,
+  TOKEN_FAST_ABI,
+  TOKEN_FAST_ADDRESS,
 } from "./constants";
 import type { SignedTransfer, State } from "./fast/api";
 import fast from "./fast/index.html";
@@ -33,8 +37,6 @@ const state = {
   totalSupply: 0n,
   accounts: {},
 } as State<bigint>;
-
-const pendingTransfers = new Set<string>();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,7 +61,7 @@ const EIP712_DOMAIN = {
   name: "FastTransfer",
   version: "1",
   chainId: CHAIN_ID,
-  verifyingContract: TOKEN_ADDRESS,
+  verifyingContract: TOKEN_FAST_ADDRESS,
 } as const;
 
 const EIP712_TYPES = {
@@ -71,6 +73,81 @@ const EIP712_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
 } as const;
+
+// ---------------------------------------------------------------------------
+// Mutation queue — batched every 400ms into a single TokenFast.execute() call
+// ---------------------------------------------------------------------------
+// Mutation enum values matching the Solidity contract
+const MUTATION_TRANSFER = 0;
+const MUTATION_MINT = 1;
+
+type QueuedMutation = {
+  mutationType: number;
+  mutationData: Hex;
+  v: number;
+  r: Hex;
+  s: Hex;
+  resolve: () => void;
+  reject: (err: Error) => void;
+};
+
+const mutationQueue: QueuedMutation[] = [];
+
+// Transfer status tracking — maps transfer ID to lifecycle promises
+type TransferLifecycle = {
+  submitted: Promise<void>;
+  resolveSubmitted: () => void;
+  confirmed: Promise<void>;
+  resolveConfirmed: () => void;
+};
+const transferLifecycles = new Map<string, TransferLifecycle>();
+
+function createTransferLifecycle(): TransferLifecycle {
+  let resolveSubmitted!: () => void;
+  let resolveConfirmed!: () => void;
+  const submitted = new Promise<void>((r) => { resolveSubmitted = r; });
+  const confirmed = new Promise<void>((r) => { resolveConfirmed = r; });
+  return { submitted, resolveSubmitted, confirmed, resolveConfirmed };
+}
+
+async function flushMutationQueue() {
+  if (mutationQueue.length === 0) return;
+
+  const batch = mutationQueue.splice(0);
+  const mutations = batch.map((m) => m.mutationType);
+  const mutationData = batch.map((m) => m.mutationData);
+  const v = batch.map((m) => m.v);
+  const r = batch.map((m) => m.r);
+  const s = batch.map((m) => m.s);
+
+  try {
+    const data = encodeFunctionData({
+      abi: TOKEN_FAST_ABI,
+      functionName: "execute",
+      args: [{ mutations, mutationData, v, r, s }],
+    });
+
+    const request = await deployerClient.prepareTransactionRequest({
+      to: TOKEN_FAST_ADDRESS,
+      data,
+    });
+    const signed = await deployerClient.signTransaction(request);
+    await sendRawTransactionSync(deployerClient, {
+      serializedTransaction: signed,
+    });
+
+    // Notify subscribers that the batch has been submitted
+    for (const m of batch) m.resolve();
+  } catch (err) {
+    console.error("Bundle submission failed:", err);
+    for (const m of batch) {
+      m.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+}
+
+// Flush the queue every 400ms
+setInterval(flushMutationQueue, 400);
 
 const server = serve({
   routes: {
@@ -161,6 +238,8 @@ const server = serve({
         if (fromBalance < amountBigInt) {
           return new Response("Insufficient balance", { status: 400 });
         }
+
+        // Update in-memory state immediately (optimistic)
         state.accounts[from] = {
           balance: fromBalance - amountBigInt,
           nonce: expectedNonce + 1,
@@ -169,31 +248,62 @@ const server = serve({
           balance: (state.accounts[to]?.balance ?? 0n) + amountBigInt,
           nonce: state.accounts[to]?.nonce ?? 0,
         };
-        // TODO(kyle) this should be auto-increment
+
+        // Queue on-chain settlement
+        const mutationData = encodeAbiParameters(
+          [
+            { type: "address", name: "from" },
+            { type: "address", name: "to" },
+            { type: "uint256", name: "amount" },
+            { type: "uint256", name: "nonce" },
+            { type: "uint256", name: "deadline" },
+          ],
+          [from, to, amountBigInt, BigInt(nonce), BigInt(deadline)],
+        );
+
+        const { v, r, s } = parseSignature(signature);
+
         const id = crypto.randomUUID();
-        pendingTransfers.add(id);
+        const lifecycle = createTransferLifecycle();
+        transferLifecycles.set(id, lifecycle);
+
+        mutationQueue.push({
+          mutationType: MUTATION_TRANSFER,
+          mutationData,
+          v: Number(v),
+          r,
+          s,
+          resolve: () => lifecycle.resolveSubmitted(),
+          reject: (err) => console.error(`Transfer ${id} failed:`, err),
+        });
+
         return Response.json({ id });
       },
     },
     "/api/fast/transfer/:id/status": {
       GET: (req) => {
         const id = req.params.id;
-        if (!pendingTransfers.has(id)) {
+        const lifecycle = transferLifecycles.get(id);
+        if (!lifecycle) {
           return new Response("Not Found", { status: 404 });
         }
-        pendingTransfers.delete(id);
+        transferLifecycles.delete(id);
 
         const stream = new ReadableStream({
           async start(controller) {
             const send = (status: string) =>
               controller.enqueue(`data: ${JSON.stringify({ status })}\n\n`);
 
-            await sleep(250);
             send("proposed");
-            await sleep(650);
+            // Wait for the batch to be submitted on-chain
+            await lifecycle.submitted;
             send("voted");
+            // The bundle is submitted synchronously via sendRawTransactionSync,
+            // so by the time submitted resolves the tx is already in the mempool.
+            // Add a small delay for finalization.
             await sleep(1050);
             send("finalized");
+            lifecycle.resolveConfirmed();
             await sleep(2250);
             send("verified");
             controller.close();
@@ -226,10 +336,39 @@ const server = serve({
         const privateKey = generatePrivateKey();
         const account = privateKeyToAccount(privateKey);
 
+        const mintAmount = parseEther("100");
+
+        // Update in-memory state immediately
         state.accounts[account.address] = {
-          balance: parseEther("100"),
+          balance: mintAmount,
           nonce: 0,
         };
+
+        // Queue a Mint mutation for on-chain settlement
+        const mutationData = encodeAbiParameters(
+          [
+            { type: "address", name: "to" },
+            { type: "uint256", name: "amount" },
+          ],
+          [account.address, mintAmount],
+        );
+
+        const settled = new Promise<void>((resolve, reject) => {
+          mutationQueue.push({
+            mutationType: MUTATION_MINT,
+            mutationData,
+            v: 0,
+            r: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            s: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            resolve,
+            reject,
+          });
+        });
+
+        // Don't await — mint settles in the next batch
+        settled.catch((err) =>
+          console.error(`Mint for ${account.address} failed:`, err),
+        );
 
         return Response.json({
           address: account.address,
