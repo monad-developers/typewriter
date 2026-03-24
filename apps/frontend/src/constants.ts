@@ -26,6 +26,35 @@ if (!process.env.BUN_PUBLIC_TOKEN_ADDRESS)
 export const TOKEN_ADDRESS = // @ts-expect-error
   process.env.BUN_PUBLIC_TOKEN_ADDRESS as `0x${string}`;
 
+// @ts-expect-error
+if (!process.env.BUN_PUBLIC_TOKEN_FAST_ADDRESS)
+  throw new Error("BUN_PUBLIC_TOKEN_FAST_ADDRESS env var is required");
+export const TOKEN_FAST_ADDRESS = // @ts-expect-error
+  process.env.BUN_PUBLIC_TOKEN_FAST_ADDRESS as `0x${string}`;
+
+export const TOKEN_FAST_ABI = [
+  {
+    type: "function",
+    name: "execute",
+    inputs: [
+      {
+        name: "params",
+        type: "tuple",
+        internalType: "struct ExecuteParams",
+        components: [
+          { name: "mutations", type: "uint8[]", internalType: "enum Mutation[]" },
+          { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
+          { name: "v", type: "uint8[]", internalType: "uint8[]" },
+          { name: "r", type: "bytes32[]", internalType: "bytes32[]" },
+          { name: "s", type: "bytes32[]", internalType: "bytes32[]" },
+        ],
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+] as const;
+
 export const TOKEN_ABI = [
   {
     type: "constructor",
