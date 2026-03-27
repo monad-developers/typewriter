@@ -54,7 +54,9 @@ error InvalidMutation();
 error TooEarly();
 error AlreadyExecuted();
 
-event Enqueued(uint256 indexed index, address indexed from, address to, uint256 amount, uint256 nonce, uint256 deadline);
+event Enqueued(
+    uint256 indexed index, address indexed from, address to, uint256 amount, uint256 nonce, uint256 deadline
+);
 event ForceExecuted(uint256 indexed index);
 
 contract TokenFast {
@@ -175,7 +177,9 @@ contract TokenFast {
 
     function _verifySignature(TransferMutation memory transfer, uint8 v, bytes32 r, bytes32 s) internal view {
         bytes32 structHash = keccak256(
-            abi.encode(TRANSFER_TYPEHASH, transfer.from, transfer.to, transfer.amount, transfer.nonce, transfer.deadline)
+            abi.encode(
+                TRANSFER_TYPEHASH, transfer.from, transfer.to, transfer.amount, transfer.nonce, transfer.deadline
+            )
         );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
 
