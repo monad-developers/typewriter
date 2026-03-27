@@ -6,9 +6,7 @@
       "contractName": "TokenFast",
       "contractAddress": "0x656f6cae767e699bea492db72260a1c3b3454847",
       "function": null,
-      "arguments": [
-        "0x2Ccb6c4Ff98FeC694D84F64C52F2f0FF12DE1FEb"
-      ],
+      "arguments": ["0x2Ccb6c4Ff98FeC694D84F64C52F2f0FF12DE1FEb"],
       "transaction": {
         "from": "0x2ccb6c4ff98fec694d84f64c52f2f0ff12de1feb",
         "gas": "0x1446ba",
