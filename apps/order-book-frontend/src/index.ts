@@ -3,35 +3,28 @@ import type { Chain, Hex } from "viem";
 import {
   createPublicClient,
   createWalletClient,
-  encodeAbiParameters,
-  encodeFunctionData,
   http,
   parseSignature,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { sendRawTransactionSync } from "viem/actions";
-
 import type {
-  AddAssetInput,
-  AddInstrumentInput,
-  CloseOrderInput,
-  LimitOrderInput,
-  MarketOrderInput,
+  AddAccount,
+  AddAsset,
+  AddInstrument,
+  CloseOrder,
+  LimitOrder,
+  LimitOrderResolution,
+  MarketOrder,
+  MarketOrderResolution,
   SignedMutation,
   State,
 } from "./api";
-import { MutationType } from "./api";
-import { CHAIN, EXCHANGE_ABI, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
+import { MutationType, resolveAndOrderMutations } from "./api";
+import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import index from "./index.html";
 
-// ---------------------------------------------------------------------------
-// Boot ID — invalidate client auth when the server restarts
-// ---------------------------------------------------------------------------
 const bootId = crypto.randomUUID();
 
-// ---------------------------------------------------------------------------
-// In-memory state (mirrors Exchange.sol State struct)
-// ---------------------------------------------------------------------------
 const state: State<bigint> = {
   assets: [],
   accounts: [],
@@ -60,40 +53,149 @@ const publicClient = createPublicClient({
   chain: CHAIN as Chain,
 });
 
-// ---------------------------------------------------------------------------
-// Mutation queue — batched every 400ms into a single Exchange.execute() call
-// ---------------------------------------------------------------------------
-
-type MutationStatus =
-  | "accepted"
-  | "proposed"
-  | "voted"
-  | "finalized"
-  | "verified";
-
-type Mutation = {
-  mutationType: number;
-  mutationData: Hex;
-  v: number;
-  r: Hex;
-  s: Hex;
-  status: MutationStatus;
+type QueuedMutation<
+  mutation extends
+    | MarketOrder<bigint>
+    | LimitOrder<bigint>
+    | CloseOrder
+    | AddAccount
+    | AddInstrument
+    | AddAsset =
+    | MarketOrder<bigint>
+    | LimitOrder<bigint>
+    | CloseOrder
+    | AddAccount
+    | AddInstrument
+    | AddAsset,
+  ///
+  resolution = mutation extends MarketOrder<bigint>
+    ? MarketOrderResolution<bigint>
+    : mutation extends LimitOrder<bigint>
+      ? LimitOrderResolution<bigint>
+      : mutation extends CloseOrder
+        ? undefined
+        : mutation extends AddAccount
+          ? undefined
+          : mutation extends AddInstrument
+            ? undefined
+            : mutation extends AddAsset
+              ? undefined
+              :
+                  | LimitOrderResolution<bigint>
+                  | MarketOrderResolution<bigint>
+                  | undefined,
+> = {
+  id: string;
+  mutation: mutation;
+  signature?: { v: number; r: Hex; s: Hex };
+  resolve: resolution extends undefined
+    ? undefined
+    : (result: resolution) => void;
 };
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
+const FLUSH_INTERVAL_MS = 50;
+
+let mutationQueue: QueuedMutation[] = [];
+
+type Mutation =
+  | MarketOrder<bigint>
+  | LimitOrder<bigint>
+  | CloseOrder
+  | AddAccount
+  | AddInstrument
+  | AddAsset;
+
+function queueMutation<mutation extends Mutation>(
+  mutation: mutation,
+  signature?: { v: number; r: Hex; s: Hex },
+): mutation["type"] extends MutationType.MarketOrder
+  ? Promise<MarketOrderResolution<bigint>>
+  : mutation["type"] extends MutationType.LimitOrder
+    ? Promise<LimitOrderResolution<bigint>>
+    : undefined {
+  if (mutation.type === MutationType.MarketOrder) {
+    const { promise, resolve } =
+      Promise.withResolvers<MarketOrderResolution<bigint>>();
+    mutationQueue.push({
+      id: mutation.id,
+      mutation,
+      signature,
+      resolve: resolve as QueuedMutation["resolve"],
+    });
+
+    // @ts-ignore
+    return promise;
+  }
+
+  if (mutation.type === MutationType.LimitOrder) {
+    const { promise, resolve } =
+      Promise.withResolvers<LimitOrderResolution<bigint>>();
+    mutationQueue.push({
+      id: mutation.id,
+      mutation,
+      signature,
+      resolve: resolve as QueuedMutation["resolve"],
+    });
+
+    // @ts-ignore
+    return promise;
+  }
+
+  mutationQueue.push({
+    id: mutation.id,
+    mutation,
+    signature,
+    resolve: undefined,
+  });
+
+  // @ts-ignore
+  return undefined;
+}
+
+async function flushMutationQueue() {
+  if (mutationQueue.length === 0) return;
+
+  const batch = mutationQueue;
+  mutationQueue = [];
+
+  try {
+    const resolved = resolveAndOrderMutations(
+      state,
+      batch.map((m) => m.mutation),
+    );
+
+    // TODO: encode resolved mutations into Exchange.execute() calldata
+    // TODO: submit transaction on-chain using deployerClient, publicClient, EXCHANGE_ADDRESS
+
+    for (const entry of resolved) {
+      const id = Array.isArray(entry) ? entry[0].id : entry.id;
+      const queued = batch.find((m) => m.mutation.id === id);
+      if (!queued) continue;
+      if (Array.isArray(entry)) {
+        queued.resolve?.(entry[1]);
+      }
+    }
+  } catch (err) {
+    console.error("Bundle resolution failed:", err);
+    // TODO(kyle) reject
+  }
+}
+
+(async function flushLoop() {
+  while (true) {
+    await sleep(FLUSH_INTERVAL_MS);
+    flushMutationQueue();
+  }
+})();
 
 const server = serve({
   routes: {
-    // ---- State ----
     "/api/boot-id": {
       GET: () => Response.json({ id: bootId }),
     },
 
     "/api/state": {
       GET: () => {
-        // Serialize bigints to strings for JSON
         const serialized: State<string> = {
           assets: state.assets,
           accounts: state.accounts.map((a) => ({
@@ -135,316 +237,135 @@ const server = serve({
       },
     },
 
-    // ---- Mutation status (SSE) ----
-    "/api/mutation/:id/status": {
-      GET: (req) => {
-        const id = req.params.id;
-        const mutation = mutations.get(id);
-        if (!mutation) {
-          return new Response("Not Found", { status: 404 });
-        }
-
-        const stream = new ReadableStream({
-          async start(controller) {
-            const send = (status: MutationStatus) =>
-              controller.enqueue(`data: ${JSON.stringify({ status })}\n\n`);
-
-            let last: MutationStatus | undefined;
-            while (mutation.status !== "verified") {
-              if (mutation.status !== last) {
-                last = mutation.status;
-                send(mutation.status);
-              }
-              await sleep(10);
-            }
-            send("verified");
-            controller.close();
-          },
-        });
-
-        return new Response(stream, {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          },
-        });
-      },
-    },
-
-    // ---- Add Account ----
     "/api/add-account": {
       POST: async () => {
         const privateKey = generatePrivateKey();
-        const account = privateKeyToAccount(privateKey);
+        const wallet = privateKeyToAccount(privateKey);
 
-        const accountId = state.accounts.length;
-        state.accounts.push({
-          nonce: 0,
-          balances: {},
-          orders: [],
+        const id = crypto.randomUUID();
+        queueMutation({
+          id,
+          type: MutationType.AddAccount,
+          addr: wallet.address,
         });
 
-        // TODO: mint initial balances for demo purposes
-
-        // const mutationData = encodeAbiParameters(
-        //   [{ type: "address", name: "addr" }],
-        //   [account.address],
-        // );
-
-        // const id = queueMutation(MutationType.AddAccount, mutationData);
-
         return Response.json({
-          id: "0",
-          accountId,
-          address: account.address,
+          id,
+          address: wallet.address,
           privateKey,
           bootId,
         });
       },
     },
 
-    // ---- Add Asset ----
     "/api/add-asset": {
       POST: async (req) => {
-        const body = (await req.json()) as AddAssetInput;
+        const body = (await req.json()) as AddAsset;
 
-        const assetId = state.assets.length;
-        state.assets.push(body.asset);
+        const id = crypto.randomUUID();
+        queueMutation({
+          ...body,
+          id,
+          type: MutationType.AddAsset,
+        });
 
-        const mutationData = encodeAbiParameters(
-          [{ type: "address", name: "asset" }],
-          [body.asset],
-        );
-
-        const id = queueMutation(MutationType.AddAsset, mutationData);
-
-        return Response.json({ id, assetId });
+        return Response.json({ id });
       },
     },
 
-    // ---- Add Instrument ----
     "/api/add-instrument": {
       POST: async (req) => {
-        const body = (await req.json()) as AddInstrumentInput;
+        const body = (await req.json()) as AddInstrument;
 
-        if (
-          body.baseId >= state.assets.length ||
-          body.quoteId >= state.assets.length
-        ) {
-          return new Response("Invalid asset ID", { status: 400 });
-        }
-
-        const instrumentId = state.instruments.length;
-        state.instruments.push({
-          baseId: body.baseId,
-          quoteId: body.quoteId,
-          bids: {},
-          asks: {},
+        const id = crypto.randomUUID();
+        queueMutation({
+          ...body,
+          id,
+          type: MutationType.AddInstrument,
         });
 
-        const mutationData = encodeAbiParameters(
-          [
-            { type: "uint64", name: "baseId" },
-            { type: "uint64", name: "quoteId" },
-          ],
-          [BigInt(body.baseId), BigInt(body.quoteId)],
-        );
-
-        const id = queueMutation(MutationType.AddInstrument, mutationData);
-
-        return Response.json({ id, instrumentId });
+        return Response.json({ id });
       },
     },
 
-    // ---- Market Order ----
     "/api/market-order": {
       POST: async (req) => {
-        const body = (await req.json()) as SignedMutation<MarketOrderInput>;
+        const body = (await req.json()) as SignedMutation<MarketOrder>;
 
-        if (body.marketId >= state.instruments.length) {
-          return new Response("Invalid instrument", { status: 400 });
-        }
-        if (body.accountId >= state.accounts.length) {
-          return new Response("Invalid account", { status: 400 });
-        }
-
-        // TODO: EIP-712 signature verification
-        // TODO: implement matching engine — compute fills against opposing side
-        // TODO: update in-memory state optimistically (settle fills, check slippage)
-
-        const quantity = BigInt(body.quantity);
-        const minReceivedQuantity = BigInt(body.minReceivedQuantity);
-
-        // Encode (MarketOrder, MarketOrderResolution) together as the contract expects
-        const mutationData = encodeAbiParameters(
-          [
-            {
-              type: "tuple",
-              name: "order",
-              components: [
-                { type: "uint256", name: "quantity" },
-                { type: "uint256", name: "minReceivedQuantity" },
-                { type: "uint64", name: "marketId" },
-                { type: "uint64", name: "accountId" },
-                { type: "uint8", name: "bidOrAsk" },
-              ],
-            },
-            {
-              type: "tuple",
-              name: "resolution",
-              components: [
-                {
-                  type: "tuple[]",
-                  name: "fills",
-                  components: [
-                    { type: "uint256", name: "quantity" },
-                    { type: "uint64", name: "tickId" },
-                  ],
-                },
-              ],
-            },
-          ],
-          [
-            {
-              quantity,
-              minReceivedQuantity,
-              marketId: BigInt(body.marketId),
-              accountId: BigInt(body.accountId),
-              bidOrAsk: body.bidOrAsk,
-            },
-            {
-              fills: [], // TODO: compute fills from matching engine
-            },
-          ],
+        const id = crypto.randomUUID();
+        const { v, r, s } = parseSignature(body.signature);
+        const resolution = await queueMutation(
+          {
+            id,
+            type: MutationType.MarketOrder,
+            quantity: BigInt(body.quantity),
+            minReceivedQuantity: BigInt(body.minReceivedQuantity),
+            marketId: body.marketId,
+            accountId: body.accountId,
+            bidOrAsk: body.bidOrAsk,
+          },
+          { v: Number(v), r, s },
         );
 
-        const { v, r, s } = parseSignature(body.signature);
-        const id = queueMutation(MutationType.MarketOrder, mutationData, {
-          v: Number(v),
-          r,
-          s,
+        return Response.json({
+          id,
+          fills: resolution.fills.map((f) => ({
+            quantity: f.quantity.toString(),
+            tickId: f.tickId,
+          })),
         });
-
-        return Response.json({ id });
       },
     },
 
-    // ---- Limit Order ----
     "/api/limit-order": {
       POST: async (req) => {
-        const body = (await req.json()) as SignedMutation<LimitOrderInput>;
+        const body = (await req.json()) as SignedMutation<LimitOrder>;
 
-        if (body.marketId >= state.instruments.length) {
-          return new Response("Invalid instrument", { status: 400 });
-        }
-        if (body.accountId >= state.accounts.length) {
-          return new Response("Invalid account", { status: 400 });
-        }
-
-        // TODO: EIP-712 signature verification
-        // TODO: implement crossing logic — match fills against opposing side
-        // TODO: update in-memory state optimistically:
-        //   - settle any fills
-        //   - add remaining quantity to tick
-        //   - push Order to account.orders
-        //   - debit account balance
-
-        const quantity = BigInt(body.quantity);
-
-        const mutationData = encodeAbiParameters(
-          [
-            {
-              type: "tuple",
-              name: "order",
-              components: [
-                { type: "uint256", name: "quantity" },
-                { type: "uint64", name: "marketId" },
-                { type: "uint64", name: "accountId" },
-                { type: "uint64", name: "tickId" },
-                { type: "uint8", name: "bidOrAsk" },
-              ],
-            },
-            {
-              type: "tuple",
-              name: "resolution",
-              components: [
-                {
-                  type: "tuple[]",
-                  name: "fills",
-                  components: [
-                    { type: "uint256", name: "quantity" },
-                    { type: "uint64", name: "tickId" },
-                  ],
-                },
-              ],
-            },
-          ],
-          [
-            {
-              quantity,
-              marketId: BigInt(body.marketId),
-              accountId: BigInt(body.accountId),
-              tickId: BigInt(body.tickId),
-              bidOrAsk: body.bidOrAsk,
-            },
-            {
-              fills: [], // TODO: compute fills from crossing logic
-            },
-          ],
+        const id = crypto.randomUUID();
+        const { v, r, s } = parseSignature(body.signature);
+        const resolution = await queueMutation(
+          {
+            id,
+            type: MutationType.LimitOrder,
+            quantity: BigInt(body.quantity),
+            marketId: body.marketId,
+            accountId: body.accountId,
+            tickId: body.tickId,
+            bidOrAsk: body.bidOrAsk,
+          },
+          { v: Number(v), r, s },
         );
 
-        const { v, r, s } = parseSignature(body.signature);
-        const id = queueMutation(MutationType.LimitOrder, mutationData, {
-          v: Number(v),
-          r,
-          s,
+        return Response.json({
+          id,
+          fills: resolution.fills.map((f) => ({
+            quantity: f.quantity.toString(),
+            tickId: f.tickId,
+          })),
         });
-
-        return Response.json({ id });
       },
     },
 
-    // ---- Close Order ----
     "/api/close-order": {
       POST: async (req) => {
-        const body = (await req.json()) as SignedMutation<CloseOrderInput>;
+        const body = (await req.json()) as SignedMutation<CloseOrder>;
 
-        if (body.accountId >= state.accounts.length) {
-          return new Response("Invalid account", { status: 400 });
-        }
-        const account = state.accounts[body.accountId];
-        if (
-          body.orderId >= account.orders.length ||
-          account.orders[body.orderId].quantity === 0n
-        ) {
-          return new Response("Order not found", { status: 400 });
-        }
-
-        // TODO: EIP-712 signature verification
-        // TODO: compute unfilled quantity (pro-rata fill calc matching Solidity)
-        // TODO: credit balance back, update tick, delete order
-
-        const mutationData = encodeAbiParameters(
-          [
-            { type: "uint64", name: "accountId" },
-            { type: "uint64", name: "orderId" },
-          ],
-          [BigInt(body.accountId), BigInt(body.orderId)],
-        );
-
+        const id = crypto.randomUUID();
         const { v, r, s } = parseSignature(body.signature);
-        const id = queueMutation(MutationType.CloseOrder, mutationData, {
-          v: Number(v),
-          r,
-          s,
-        });
+        queueMutation(
+          {
+            id,
+            type: MutationType.CloseOrder,
+            accountId: body.accountId,
+            orderId: body.orderId,
+          },
+          { v: Number(v), r, s },
+        );
 
         return Response.json({ id });
       },
     },
 
-    // ---- Frontend ----
     "/*": index,
   },
 
