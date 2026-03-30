@@ -37,7 +37,7 @@ struct Tick {
 enum Mutation {
     MarketOrder,
     LimitOrder,
-    CancelOrder,
+    CloseOrder,
     AddAccount,
     AddInstrument,
     AddAsset
@@ -72,7 +72,7 @@ struct LimitOrderResolution {
     Fill[] fills;
 }
 
-struct CancelOrder {
+struct CloseOrder {
     uint64 accountId;
     uint64 orderId;
 }
@@ -118,7 +118,7 @@ contract Exchange {
         SCHEDULER = _scheduler;
     }
 
-    function _tickPrice(uint64 tickId) private pure returns (uint256) {
+    function _tickPrice(uint64 tickId) internal pure returns (uint256) {
         return uint256(tickId);
     }
 
@@ -150,9 +150,9 @@ contract Exchange {
                 (LimitOrder memory order, LimitOrderResolution memory resolution) =
                     abi.decode(data, (LimitOrder, LimitOrderResolution));
                 _executeLimitOrder(order, resolution);
-            } else if (mutation == Mutation.CancelOrder) {
-                CancelOrder memory cancel = abi.decode(data, (CancelOrder));
-                _executeCancelOrder(cancel);
+            } else if (mutation == Mutation.CloseOrder) {
+                CloseOrder memory close = abi.decode(data, (CloseOrder));
+                _executeCloseOrder(close);
             } else if (mutation == Mutation.AddAccount) {
                 AddAccount memory account = abi.decode(data, (AddAccount));
                 // TODO(kyle) execute
@@ -168,7 +168,7 @@ contract Exchange {
         }
     }
 
-    function _settleFill(Fill memory fill, uint64 marketId, uint8 takerSide, uint64 takerAccountId) private {
+    function _settleFill(Fill memory fill, uint64 marketId, uint8 takerSide, uint64 takerAccountId) internal {
         Instrument storage instrument = state.instruments[marketId];
         mapping(uint64 => Tick) storage ticks = takerSide == 0 ? instrument.asks : instrument.bids;
 
@@ -202,7 +202,7 @@ contract Exchange {
         }
     }
 
-    function _executeMarketOrder(MarketOrder memory order, MarketOrderResolution memory res) private {
+    function _executeMarketOrder(MarketOrder memory order, MarketOrderResolution memory res) internal {
         if (order.marketId >= state.instruments.length) revert InvalidInstrument();
         if (order.accountId >= state.accounts.length) revert InvalidAccount();
 
@@ -227,7 +227,7 @@ contract Exchange {
         if (totalReceived < order.minReceivedQuantity) revert SlippageExceeded();
     }
 
-    function _executeLimitOrder(LimitOrder memory order, LimitOrderResolution memory res) private {
+    function _executeLimitOrder(LimitOrder memory order, LimitOrderResolution memory res) internal {
         if (order.marketId >= state.instruments.length) revert InvalidInstrument();
         if (order.accountId >= state.accounts.length) revert InvalidAccount();
 
@@ -286,12 +286,12 @@ contract Exchange {
         }
     }
 
-    function _executeCancelOrder(CancelOrder memory cancel) private {
-        if (cancel.accountId >= state.accounts.length) revert InvalidAccount();
-        Account storage account = state.accounts[cancel.accountId];
-        if (account.orders[cancel.orderId].quantity == 0) revert OrderNotFound();
+    function _executeCloseOrder(CloseOrder memory close) internal {
+        if (close.accountId >= state.accounts.length) revert InvalidAccount();
+        Account storage account = state.accounts[close.accountId];
+        if (account.orders[close.orderId].quantity == 0) revert OrderNotFound();
 
-        Order storage order = account.orders[cancel.orderId];
+        Order storage order = account.orders[close.orderId];
         Instrument storage instrument = state.instruments[order.marketId];
         mapping(uint64 => Tick) storage ticks = order.side == 0 ? instrument.bids : instrument.asks;
         Tick storage tick = ticks[order.tickId];
@@ -316,7 +316,7 @@ contract Exchange {
             }
         }
 
-        delete account.orders[cancel.orderId];
+        delete account.orders[close.orderId];
     }
 
 
