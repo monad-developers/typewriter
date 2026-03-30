@@ -113,6 +113,102 @@ export type SignedMutation<T> = T & {
   signature: `0x${string}`;
 };
 
+export function matchMarketOrder(
+  instrument: Instrument<bigint>,
+  params: MarketOrder<bigint>,
+): Fill<bigint>[] {
+  const opposingSide =
+    params.bidOrAsk === 0 ? instrument.asks : instrument.bids;
+  const tickIds = Object.keys(opposingSide)
+    .map(Number)
+    .sort((a, b) => (params.bidOrAsk === 0 ? a - b : b - a));
+
+  const fills: Fill<bigint>[] = [];
+  let remaining = params.quantity;
+
+  for (const tickId of tickIds) {
+    if (remaining <= 0n) break;
+    const tick = opposingSide[tickId];
+    if (!tick || tick.remainingQuantity <= 0n) continue;
+
+    const fillQty =
+      remaining < tick.remainingQuantity ? remaining : tick.remainingQuantity;
+    fills.push({ quantity: fillQty, tickId });
+    remaining -= fillQty;
+  }
+
+  return fills;
+}
+
+export function matchLimitOrder(
+  instrument: Instrument<bigint>,
+  params: LimitOrder<bigint>,
+): Fill<bigint>[] {
+  const opposingSide =
+    params.bidOrAsk === 0 ? instrument.asks : instrument.bids;
+  const tickIds = Object.keys(opposingSide)
+    .map(Number)
+    .sort((a, b) => (params.bidOrAsk === 0 ? a - b : b - a));
+
+  const fills: Fill<bigint>[] = [];
+  let remaining = params.quantity;
+
+  for (const tickId of tickIds) {
+    if (remaining <= 0n) break;
+    if (params.bidOrAsk === 0 && tickId > params.tickId) break;
+    if (params.bidOrAsk === 1 && tickId < params.tickId) break;
+
+    const tick = opposingSide[tickId];
+    if (!tick || tick.remainingQuantity <= 0n) continue;
+
+    const fillQty =
+      remaining < tick.remainingQuantity ? remaining : tick.remainingQuantity;
+    fills.push({ quantity: fillQty, tickId });
+    remaining -= fillQty;
+  }
+
+  return fills;
+}
+
+export function findRoute(
+  state: State<bigint>,
+  baseId: number,
+  quoteId: number,
+): { instrumentId: number; flip: boolean }[] {
+  for (let i = 0; i < state.instruments.length; i++) {
+    const inst = state.instruments[i];
+    if (!inst) continue;
+    if (inst.baseId === baseId && inst.quoteId === quoteId)
+      return [{ instrumentId: i, flip: false }];
+    if (inst.baseId === quoteId && inst.quoteId === baseId)
+      return [{ instrumentId: i, flip: true }];
+  }
+
+  for (let mid = 0; mid < state.assets.length; mid++) {
+    if (mid === baseId || mid === quoteId) continue;
+    let leg1: { instrumentId: number; flip: boolean } | undefined;
+    let leg2: { instrumentId: number; flip: boolean } | undefined;
+
+    for (let i = 0; i < state.instruments.length; i++) {
+      const inst = state.instruments[i];
+      if (!inst) continue;
+      if (inst.baseId === baseId && inst.quoteId === mid)
+        leg1 = { instrumentId: i, flip: false };
+      else if (inst.baseId === mid && inst.quoteId === baseId)
+        leg1 = { instrumentId: i, flip: true };
+
+      if (inst.baseId === quoteId && inst.quoteId === mid)
+        leg2 = { instrumentId: i, flip: false };
+      else if (inst.baseId === mid && inst.quoteId === quoteId)
+        leg2 = { instrumentId: i, flip: true };
+    }
+
+    if (leg1 && leg2) return [leg1, leg2];
+  }
+
+  throw new Error(`No route from asset ${baseId} to asset ${quoteId}`);
+}
+
 export function resolveAndOrderMutations(
   state: State<bigint>,
   mutations: (
@@ -131,8 +227,80 @@ export function resolveAndOrderMutations(
   | AddInstrument
   | AddAsset
 )[] {
-  // TODO: implement ordering, resolution computation, and state application
-  throw new Error("Not implemented");
+  const admins: (AddAccount | AddAsset | AddInstrument)[] = [];
+  const closes: CloseOrder[] = [];
+  const orders: (MarketOrder<bigint> | LimitOrder<bigint>)[] = [];
+
+  for (const m of mutations) {
+    switch (m.type) {
+      case MutationType.AddAccount:
+      case MutationType.AddAsset:
+      case MutationType.AddInstrument:
+        admins.push(m);
+        break;
+      case MutationType.CloseOrder:
+        closes.push(m);
+        break;
+      case MutationType.MarketOrder:
+      case MutationType.LimitOrder:
+        orders.push(m);
+        break;
+    }
+  }
+
+  const result: (
+    | [MarketOrder<bigint>, MarketOrderResolution<bigint>]
+    | [LimitOrder<bigint>, LimitOrderResolution<bigint>]
+    | CloseOrder
+    | AddAccount
+    | AddInstrument
+    | AddAsset
+  )[] = [];
+
+  for (const m of admins) {
+    switch (m.type) {
+      case MutationType.AddAccount:
+        addAccount(state);
+        break;
+      case MutationType.AddAsset:
+        addAsset(state, m);
+        break;
+      case MutationType.AddInstrument:
+        addInstrument(state, m);
+        break;
+    }
+    result.push(m);
+  }
+
+  for (const m of closes) {
+    closeOrder(state, m);
+    result.push(m);
+  }
+
+  for (const m of orders) {
+    const instrument = state.instruments[m.marketId];
+    if (!instrument) throw new Error("Invalid instrument");
+
+    if (m.type === MutationType.MarketOrder) {
+      const fills = matchMarketOrder(instrument, m);
+      const resolution: MarketOrderResolution<bigint> = {
+        id: m.id,
+        fills,
+      };
+      marketOrder(state, m, resolution);
+      result.push([m, resolution]);
+    } else {
+      const fills = matchLimitOrder(instrument, m);
+      const resolution: LimitOrderResolution<bigint> = {
+        id: m.id,
+        fills,
+      };
+      limitOrder(state, m, resolution);
+      result.push([m, resolution]);
+    }
+  }
+
+  return result;
 }
 
 export function addAccount(state: State<bigint>): { accountId: number } {
