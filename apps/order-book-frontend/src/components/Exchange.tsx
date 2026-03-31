@@ -1,5 +1,6 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useCallback, useRef, useState } from "react";
-import { formatEther } from "viem";
+import { formatEther, parseEther } from "viem";
 import { CURRENCIES, TICK_SCALE, formatCurrency } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
@@ -64,6 +65,7 @@ function computeDepth(
 export function Exchange({ denominationId }: { denominationId: number }) {
   const { account } = useAccountContext();
   const { data: balancesData } = useBalances(account.accountId);
+  const queryClient = useQueryClient();
   const tableRef = useRef<HTMLTableElement>(null);
 
   const rows = CURRENCIES.map((_, i) => i).filter((i) => i !== denominationId);
@@ -80,13 +82,45 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     [],
   );
 
-  function submitOne(assetId: number, side: "buy" | "sell", amount: string) {
-    // TODO: POST /api/market-order
-    console.log(side, { assetId, amount });
-    setValue(assetId, side, "");
+  async function postMarketOrder(
+    assetId: number,
+    side: "buy" | "sell",
+    amount: string,
+  ) {
+    const res = await fetch("/api/market-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accountId: account.accountId,
+        baseId: assetId,
+        quoteId: denominationId,
+        bidOrAsk: side === "buy" ? 0 : 1,
+        quantity: parseEther(amount).toString(),
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      throw new Error(err?.error ?? "Order failed");
+    }
+    return res.json();
   }
 
-  function executeAll() {
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: ["balances"] });
+    queryClient.invalidateQueries({ queryKey: ["instrument-price"] });
+  }
+
+  async function submitOne(assetId: number, side: "buy" | "sell", amount: string) {
+    try {
+      await postMarketOrder(assetId, side, amount);
+      setValue(assetId, side, "");
+      invalidate();
+    } catch (err) {
+      console.error("Order failed:", err);
+    }
+  }
+
+  async function executeAll() {
     const trades: { assetId: number; side: "buy" | "sell"; amount: string }[] = [];
     for (const assetId of rows) {
       const rv = values[assetId];
@@ -97,10 +131,15 @@ export function Exchange({ denominationId }: { denominationId: number }) {
         trades.push({ assetId, side: "sell", amount: rv.sell });
       }
     }
-    if (trades.length > 0) {
-      // TODO: POST /api/market-order for each trade
-      console.log("execute all", trades);
+    if (trades.length === 0) return;
+    try {
+      await Promise.all(
+        trades.map((t) => postMarketOrder(t.assetId, t.side, t.amount)),
+      );
       setValues({});
+      invalidate();
+    } catch (err) {
+      console.error("Batch order failed:", err);
     }
   }
 

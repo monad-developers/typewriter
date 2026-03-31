@@ -1,4 +1,7 @@
 import type { Address } from "viem";
+import { TICK_SCALE } from "./constants";
+
+const TICK_SCALE_N = BigInt(TICK_SCALE);
 
 /** 0 = bid, 1 = ask — mirrors Solidity convention */
 export type Side = 0 | 1;
@@ -367,7 +370,7 @@ export function marketOrder(
 
   const { baseId, quoteId } = instrument;
   const quoteCost = resolution.fills.reduce(
-    (sum, f) => sum + f.quantity * BigInt(f.tickId),
+    (sum, f) => sum + (f.quantity * BigInt(f.tickId)) / TICK_SCALE_N,
     0n,
   );
 
@@ -428,7 +431,7 @@ export function limitOrder(
 
   const { baseId, quoteId } = instrument;
   const quoteFilled = resolution.fills.reduce(
-    (sum, f) => sum + f.quantity * BigInt(f.tickId),
+    (sum, f) => sum + (f.quantity * BigInt(f.tickId)) / TICK_SCALE_N,
     0n,
   );
 
@@ -436,7 +439,8 @@ export function limitOrder(
     account.balances[baseId] = (account.balances[baseId] ?? 0n) + filledQty;
     account.balances[quoteId] = (account.balances[quoteId] ?? 0n) - quoteFilled;
     if (remaining > 0n) {
-      account.balances[quoteId] -= remaining * BigInt(params.tickId);
+      account.balances[quoteId] -=
+        (remaining * BigInt(params.tickId)) / TICK_SCALE_N;
     }
   } else {
     account.balances[baseId] =
@@ -473,7 +477,8 @@ export function closeOrder(state: State<bigint>, params: CloseOrder): void {
     const { baseId, quoteId } = instrument;
     if (order.side === 0) {
       account.balances[quoteId] =
-        (account.balances[quoteId] ?? 0n) + unfilled * BigInt(order.tickId);
+        (account.balances[quoteId] ?? 0n) +
+        (unfilled * BigInt(order.tickId)) / TICK_SCALE_N;
     } else {
       account.balances[baseId] = (account.balances[baseId] ?? 0n) + unfilled;
     }

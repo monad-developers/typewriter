@@ -1,10 +1,9 @@
 import { serve } from "bun";
-import type { Chain, Hex } from "viem";
+import type { Chain } from "viem";
 import {
   createPublicClient,
   createWalletClient,
   http,
-  parseSignature,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type {
@@ -16,7 +15,6 @@ import type {
   LimitOrderResolution,
   MarketOrder,
   MarketOrderResolution,
-  SignedMutation,
   State,
 } from "./api";
 import { MutationType, resolveAndOrderMutations } from "./api";
@@ -83,7 +81,6 @@ type QueuedMutation<
 > = {
   id: string;
   mutation: mutation;
-  signature?: { v: number; r: Hex; s: Hex };
   resolve: resolution extends undefined
     ? undefined
     : (result: resolution) => void;
@@ -103,7 +100,6 @@ type Mutation =
 
 function queueMutation<mutation extends Mutation>(
   mutation: mutation,
-  signature?: { v: number; r: Hex; s: Hex },
 ): mutation["type"] extends MutationType.MarketOrder
   ? Promise<MarketOrderResolution<bigint>>
   : mutation["type"] extends MutationType.LimitOrder
@@ -115,7 +111,7 @@ function queueMutation<mutation extends Mutation>(
     mutationQueue.push({
       id: mutation.id,
       mutation,
-      signature,
+
       resolve: resolve as QueuedMutation["resolve"],
     });
 
@@ -129,7 +125,7 @@ function queueMutation<mutation extends Mutation>(
     mutationQueue.push({
       id: mutation.id,
       mutation,
-      signature,
+
       resolve: resolve as QueuedMutation["resolve"],
     });
 
@@ -140,7 +136,6 @@ function queueMutation<mutation extends Mutation>(
   mutationQueue.push({
     id: mutation.id,
     mutation,
-    signature,
     resolve: undefined,
   });
 
@@ -338,24 +333,41 @@ const server = serve({
       },
     },
 
+    // TODO: require signed request once authentication is added
     "/api/market-order": {
       POST: async (req) => {
-        const body = (await req.json()) as SignedMutation<MarketOrder>;
+        const body = (await req.json()) as {
+          accountId: number;
+          bidOrAsk: 0 | 1;
+          quantity: string;
+          minReceivedQuantity?: string;
+        } & ({ marketId: number } | { baseId: number; quoteId: number });
+
+        let marketId: number;
+        if ("marketId" in body) {
+          marketId = body.marketId;
+        } else {
+          marketId = state.instruments.findIndex(
+            (inst) =>
+              inst.baseId === body.baseId && inst.quoteId === body.quoteId,
+          );
+          if (marketId === -1)
+            return Response.json(
+              { error: "Invalid instrument" },
+              { status: 404 },
+            );
+        }
 
         const id = crypto.randomUUID();
-        const { v, r, s } = parseSignature(body.signature);
-        const resolution = await queueMutation(
-          {
-            id,
-            type: MutationType.MarketOrder,
-            quantity: BigInt(body.quantity),
-            minReceivedQuantity: BigInt(body.minReceivedQuantity),
-            marketId: body.marketId,
-            accountId: body.accountId,
-            bidOrAsk: body.bidOrAsk,
-          },
-          { v: Number(v), r, s },
-        );
+        const resolution = await queueMutation({
+          id,
+          type: MutationType.MarketOrder,
+          quantity: BigInt(body.quantity),
+          minReceivedQuantity: BigInt(body.minReceivedQuantity ?? "0"),
+          marketId,
+          accountId: body.accountId,
+          bidOrAsk: body.bidOrAsk,
+        });
 
         return Response.json({
           id,
@@ -367,24 +379,21 @@ const server = serve({
       },
     },
 
+    // TODO: require signed request once authentication is added
     "/api/limit-order": {
       POST: async (req) => {
-        const body = (await req.json()) as SignedMutation<LimitOrder>;
+        const body = (await req.json()) as LimitOrder;
 
         const id = crypto.randomUUID();
-        const { v, r, s } = parseSignature(body.signature);
-        const resolution = await queueMutation(
-          {
-            id,
-            type: MutationType.LimitOrder,
-            quantity: BigInt(body.quantity),
-            marketId: body.marketId,
-            accountId: body.accountId,
-            tickId: body.tickId,
-            bidOrAsk: body.bidOrAsk,
-          },
-          { v: Number(v), r, s },
-        );
+        const resolution = await queueMutation({
+          id,
+          type: MutationType.LimitOrder,
+          quantity: BigInt(body.quantity),
+          marketId: body.marketId,
+          accountId: body.accountId,
+          tickId: body.tickId,
+          bidOrAsk: body.bidOrAsk,
+        });
 
         return Response.json({
           id,
@@ -396,21 +405,18 @@ const server = serve({
       },
     },
 
+    // TODO: require signed request once authentication is added
     "/api/close-order": {
       POST: async (req) => {
-        const body = (await req.json()) as SignedMutation<CloseOrder>;
+        const body = (await req.json()) as CloseOrder;
 
         const id = crypto.randomUUID();
-        const { v, r, s } = parseSignature(body.signature);
-        queueMutation(
-          {
-            id,
-            type: MutationType.CloseOrder,
-            accountId: body.accountId,
-            orderId: body.orderId,
-          },
-          { v: Number(v), r, s },
-        );
+        queueMutation({
+          id,
+          type: MutationType.CloseOrder,
+          accountId: body.accountId,
+          orderId: body.orderId,
+        });
 
         return Response.json({ id });
       },

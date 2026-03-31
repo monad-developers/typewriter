@@ -15,69 +15,6 @@ type Trade = {
 
 const now = Date.now();
 
-const FAKE_TRADES: Trade[] = [
-  {
-    id: "1",
-    status: "verified",
-    side: "buy",
-    baseId: 0,
-    quoteId: 1,
-    amount: "5000",
-    price: "0.1381",
-    timestamp: now - 312_000,
-  },
-  {
-    id: "2",
-    status: "verified",
-    side: "sell",
-    baseId: 4,
-    quoteId: 1,
-    amount: "20000",
-    price: "0.0066",
-    timestamp: now - 245_000,
-  },
-  {
-    id: "3",
-    status: "finalized",
-    side: "buy",
-    baseId: 2,
-    quoteId: 1,
-    amount: "100000",
-    price: "0.0120",
-    timestamp: now - 98_000,
-  },
-  {
-    id: "4",
-    status: "proposed",
-    side: "sell",
-    baseId: 3,
-    quoteId: 1,
-    amount: "50000",
-    price: "0.0109",
-    timestamp: now - 42_000,
-  },
-  {
-    id: "5",
-    status: "proposed",
-    side: "buy",
-    baseId: 0,
-    quoteId: 1,
-    amount: "2500",
-    price: "0.1381",
-    timestamp: now - 18_000,
-  },
-  {
-    id: "6",
-    status: "accepted",
-    side: "sell",
-    baseId: 2,
-    quoteId: 1,
-    amount: "75000",
-    price: "0.0120",
-    timestamp: now - 3_000,
-  },
-];
-
 const COLUMNS = ["status", "direction", "size", "rate", "when"];
 
 function relativeTime(timestamp: number) {
@@ -104,7 +41,7 @@ export function TradeHistory() {
           </tr>
         </thead>
         <tbody>
-          {FAKE_TRADES.map((trade) => {
+          {/* {[].map((trade) => {
             const base = CURRENCIES[trade.baseId];
             const quote = CURRENCIES[trade.quoteId];
             return (
@@ -134,7 +71,7 @@ export function TradeHistory() {
                 </td>
               </tr>
             );
-          })}
+          })} */}
         </tbody>
       </table>
     </section>

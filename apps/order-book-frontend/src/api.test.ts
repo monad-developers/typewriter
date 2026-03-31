@@ -492,7 +492,7 @@ test("resolve market buy fills and reduces ask liquidity", () => {
   expect(state.accounts[0]!.balances).toMatchInlineSnapshot(`
     {
       "0": 51000000000000000000000n,
-      "1": -1381046500000000000000000000n,
+      "1": 7861894550000000000000n,
       "2": 200000000000000000000000n,
       "3": 100000000000000000000000n,
       "4": 1500000000000000000000000n,
@@ -623,7 +623,7 @@ test("resolve market sell fills and reduces bid liquidity", () => {
   expect(state.accounts[0]!.balances).toMatchInlineSnapshot(`
     {
       "0": 49000000000000000000000n,
-      "1": 1380950500000000000000000000n,
+      "1": 8138094250000000000000n,
       "2": 200000000000000000000000n,
       "3": 100000000000000000000000n,
       "4": 1500000000000000000000000n,
@@ -750,7 +750,7 @@ test("resolve crossing limit bid gets fills and updates book", () => {
   expect(state.accounts[0]!.balances).toMatchInlineSnapshot(`
     {
       "0": 50000000000000000000000n,
-      "1": -2772000000000000000000000n,
+      "1": 7999722000000000000000n,
       "2": 200000000000000000000000n,
       "3": 100000000000000000000000n,
       "4": 1500000000000000000000000n,
@@ -882,7 +882,7 @@ test("resolve non-crossing limit bid rests on book with no fills", () => {
   expect(state.accounts[0]!.balances).toMatchInlineSnapshot(`
     {
       "0": 50000000000000000000000n,
-      "1": -1372000000000000000000000n,
+      "1": 7999862000000000000000n,
       "2": 200000000000000000000000n,
       "3": 100000000000000000000000n,
       "4": 1500000000000000000000000n,
@@ -904,7 +904,7 @@ test("resolve close order zeroes quantity and returns unfilled balance", () => {
     {
       "balances": {
         "0": 50000000000000000000000n,
-        "1": 1294648625000000000000000000n,
+        "1": 8129464062500000000000n,
         "2": 200000000000000000000000n,
         "3": 100000000000000000000000n,
         "4": 1500000000000000000000000n,
@@ -1085,7 +1085,7 @@ test("mixed batch orders admins first, then closes, then orders", () => {
       {
         "balances": {
           "0": 50100000000000000000000n,
-          "1": 1156543625000000000000000000n,
+          "1": 8115653562500000000000n,
           "2": 200000000000000000000000n,
           "3": 100000000000000000000000n,
           "4": 1500000000000000000000000n,
