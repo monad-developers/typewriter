@@ -20,16 +20,12 @@ import type {
   State,
 } from "./api";
 import { MutationType, resolveAndOrderMutations } from "./api";
-import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
+import { CHAIN, EXAMPLE_STATE, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import index from "./index.html";
 
 const bootId = crypto.randomUUID();
 
-const state: State<bigint> = {
-  assets: [],
-  accounts: [],
-  instruments: [],
-};
+const state: State<bigint> = structuredClone(EXAMPLE_STATE);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -194,46 +190,100 @@ const server = serve({
       GET: () => Response.json({ id: bootId }),
     },
 
-    "/api/state": {
-      GET: () => {
-        const serialized: State<string> = {
-          assets: state.assets,
-          accounts: state.accounts.map((a) => ({
-            nonce: a.nonce,
-            balances: Object.fromEntries(
-              Object.entries(a.balances).map(([k, v]) => [k, v.toString()]),
-            ),
-            orders: a.orders.map((o) => ({
-              ...o,
-              quantity: o.quantity.toString(),
-            })),
-          })),
-          instruments: state.instruments.map((inst) => ({
-            baseId: inst.baseId,
-            quoteId: inst.quoteId,
-            bids: Object.fromEntries(
-              Object.entries(inst.bids).map(([k, t]) => [
-                k,
-                {
-                  quantity: t.quantity.toString(),
-                  remainingQuantity: t.remainingQuantity.toString(),
-                  volume: t.volume,
-                },
-              ]),
-            ),
-            asks: Object.fromEntries(
-              Object.entries(inst.asks).map(([k, t]) => [
-                k,
-                {
-                  quantity: t.quantity.toString(),
-                  remainingQuantity: t.remainingQuantity.toString(),
-                  volume: t.volume,
-                },
-              ]),
-            ),
-          })),
-        };
-        return Response.json(serialized);
+    // TODO: authenticate accountId via signed request instead of trusting query param
+    "/api/balances": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const accountIdParam = url.searchParams.get("accountId");
+        if (accountIdParam === null)
+          return Response.json(
+            { error: "accountId query parameter required" },
+            { status: 400 },
+          );
+
+        const accountId = Number(accountIdParam);
+        const account = state.accounts[accountId];
+        if (!account)
+          return Response.json({ error: "Invalid account" }, { status: 404 });
+
+        const balances: { [assetId: number]: string } = {};
+        for (const [assetId, balance] of Object.entries(account.balances)) {
+          balances[Number(assetId)] = balance.toString();
+        }
+        return Response.json({ accountId, balances });
+      },
+    },
+
+    "/api/instrument-price": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const instrumentIdParam = url.searchParams.get("instrumentId");
+        const baseIdParam = url.searchParams.get("baseId");
+        const quoteIdParam = url.searchParams.get("quoteId");
+
+        let instrumentId: number;
+        let instrument: (typeof state.instruments)[number] | undefined;
+
+        if (instrumentIdParam !== null) {
+          instrumentId = Number(instrumentIdParam);
+          instrument = state.instruments[instrumentId];
+        } else if (baseIdParam !== null && quoteIdParam !== null) {
+          const baseId = Number(baseIdParam);
+          const quoteId = Number(quoteIdParam);
+          instrumentId = state.instruments.findIndex(
+            (inst) => inst.baseId === baseId && inst.quoteId === quoteId,
+          );
+          instrument = state.instruments[instrumentId];
+        } else {
+          return Response.json(
+            {
+              error:
+                "instrumentId or baseId+quoteId query parameters required",
+            },
+            { status: 400 },
+          );
+        }
+
+        if (!instrument)
+          return Response.json(
+            { error: "Invalid instrument" },
+            { status: 404 },
+          );
+
+        const bidTickIds = Object.keys(instrument.bids)
+          .map(Number)
+          .sort((a, b) => b - a);
+        const askTickIds = Object.keys(instrument.asks)
+          .map(Number)
+          .sort((a, b) => a - b);
+
+        return Response.json({
+          instrumentId,
+          baseId: instrument.baseId,
+          quoteId: instrument.quoteId,
+          bestBid: bidTickIds[0] ?? null,
+          bestAsk: askTickIds[0] ?? null,
+          bids: bidTickIds.flatMap((tickId) => {
+            const tick = instrument.bids[tickId];
+            if (!tick) return [];
+            return {
+              tickId,
+              quantity: tick.quantity.toString(),
+              remainingQuantity: tick.remainingQuantity.toString(),
+              volume: tick.volume,
+            };
+          }),
+          asks: askTickIds.flatMap((tickId) => {
+            const tick = instrument.asks[tickId];
+            if (!tick) return [];
+            return {
+              tickId,
+              quantity: tick.quantity.toString(),
+              remainingQuantity: tick.remainingQuantity.toString(),
+              volume: tick.volume,
+            };
+          }),
+        });
       },
     },
 

@@ -1,8 +1,12 @@
 import { type KeyboardEvent, useCallback, useRef, useState } from "react";
 import { formatEther } from "viem";
-import { CURRENCIES, formatCurrency } from "../constants";
+import { CURRENCIES, TICK_SCALE, formatCurrency } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
-import { useExchangeState } from "../hooks/useExchangeState";
+import { useBalances } from "../hooks/useBalances";
+import {
+  type InstrumentPriceResponse,
+  useInstrumentPrice,
+} from "../hooks/useInstrumentPrice";
 
 const COLUMNS = [
   "",
@@ -34,18 +38,36 @@ function focusCell(table: HTMLTableElement, row: number, col: number) {
 
 type RowValues = { buy: string; sell: string };
 
+function computeDepth(
+  instrument: InstrumentPriceResponse,
+  bpRange: number,
+  side: "bid" | "ask",
+): string {
+  const { bestBid, bestAsk } = instrument;
+  if (bestBid === null || bestAsk === null) return "—";
+
+  const mid = (bestBid + bestAsk) / 2;
+  const ticks = side === "bid" ? instrument.bids : instrument.asks;
+  const threshold =
+    side === "bid" ? mid * (1 - bpRange / 10000) : mid * (1 + bpRange / 10000);
+
+  let total = 0n;
+  for (const tick of ticks) {
+    if (side === "bid" && tick.tickId < threshold) break;
+    if (side === "ask" && tick.tickId > threshold) break;
+    total += BigInt(tick.remainingQuantity);
+  }
+
+  return formatEther(total);
+}
+
 export function Exchange({ denominationId }: { denominationId: number }) {
   const { account } = useAccountContext();
-  const { data: state } = useExchangeState();
+  const { data: balancesData } = useBalances(account.accountId);
   const tableRef = useRef<HTMLTableElement>(null);
 
-  const acct = state?.accounts[account?.accountId ?? -1];
-  const denomCurrency = CURRENCIES[denominationId];
-
-  // One row per currency that isn't the current denomination
   const rows = CURRENCIES.map((_, i) => i).filter((i) => i !== denominationId);
 
-  // All input values keyed by assetId
   const [values, setValues] = useState<Record<number, RowValues>>({});
 
   const setValue = useCallback(
@@ -137,8 +159,8 @@ export function Exchange({ denominationId }: { denominationId: number }) {
             key={assetId}
             rowIndex={rowIndex}
             assetId={assetId}
-            balance={acct?.balances[assetId] ?? "0"}
-            denomCurrency={denomCurrency}
+            denominationId={denominationId}
+            balance={balancesData?.balances[assetId] ?? "0"}
             buyAmount={values[assetId]?.buy ?? ""}
             sellAmount={values[assetId]?.sell ?? ""}
             onValueChange={setValue}
@@ -155,8 +177,8 @@ export function Exchange({ denominationId }: { denominationId: number }) {
 function Row({
   rowIndex,
   assetId,
+  denominationId,
   balance,
-  denomCurrency,
   buyAmount,
   sellAmount,
   onValueChange,
@@ -166,8 +188,8 @@ function Row({
 }: {
   rowIndex: number;
   assetId: number;
+  denominationId: number;
   balance: string;
-  denomCurrency: (typeof CURRENCIES)[number] | undefined;
   buyAmount: string;
   sellAmount: string;
   onValueChange: (assetId: number, field: "buy" | "sell", value: string) => void;
@@ -176,25 +198,30 @@ function Row({
   onExecuteAll: () => void;
 }) {
   const currency = CURRENCIES[assetId];
+  const denomCurrency = CURRENCIES[denominationId];
+  const { data: instrument } = useInstrumentPrice(assetId, denominationId);
 
-  // Seed price from rateToUsd cross rate
-  // TODO: derive from order book best bid/ask
   const price =
-    denomCurrency && currency
-      ? (denomCurrency.rateToUsd / currency.rateToUsd).toFixed(
-          currency.decimals + 2,
+    instrument?.bestBid != null && instrument?.bestAsk != null
+      ? ((instrument.bestBid + instrument.bestAsk) / 2 / TICK_SCALE).toFixed(
+          currency?.decimals ? currency.decimals + 2 : 2,
         )
       : "—";
 
-  // TODO: compute cumulative quantity within basis point range from mid price
-  const depth25Bid = "—";
-  const depth10Bid = "—";
-  const depth5Bid = "—";
-  const depth1Bid = "—";
-  const depth1Ask = "—";
-  const depth5Ask = "—";
-  const depth10Ask = "—";
-  const depth25Ask = "—";
+  const fmtDepth = (bp: number, side: "bid" | "ask") => {
+    if (!instrument) return "—";
+    const raw = computeDepth(instrument, bp, side);
+    return currency ? formatCurrency(raw, currency) : raw;
+  };
+
+  const depth25Bid = fmtDepth(25, "bid");
+  const depth10Bid = fmtDepth(10, "bid");
+  const depth5Bid = fmtDepth(5, "bid");
+  const depth1Bid = fmtDepth(1, "bid");
+  const depth1Ask = fmtDepth(1, "ask");
+  const depth5Ask = fmtDepth(5, "ask");
+  const depth10Ask = fmtDepth(10, "ask");
+  const depth25Ask = fmtDepth(25, "ask");
 
   const inventory = formatEther(BigInt(balance));
 

@@ -1,7 +1,7 @@
 import { formatEther } from "viem";
 import { CURRENCIES, formatCurrency } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
-import { useExchangeState } from "../hooks/useExchangeState";
+import { useBalances } from "../hooks/useBalances";
 
 export function Header({
   denominationId,
@@ -11,10 +11,9 @@ export function Header({
   onDenominationChange: (id: number) => void;
 }) {
   const { account } = useAccountContext();
-  const { data: state } = useExchangeState();
+  const { data } = useBalances(account.accountId);
 
-  const acct = state?.accounts[account?.accountId ?? -1];
-  const balance = acct?.balances[denominationId] ?? "0";
+  const balance = data?.balances[denominationId] ?? "0";
   const currency = CURRENCIES[denominationId];
 
   return (
