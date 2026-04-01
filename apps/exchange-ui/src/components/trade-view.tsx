@@ -52,7 +52,7 @@ export function TradeView({
                 key={tab.id}
                 onClick={() => setRightTab(tab.id)}
                 className={cn(
-                  "w-full px-3 py-2.5 text-sm font-medium transition-colors cursor-pointer",
+                  "w-full px-3 py-2 text-sm font-medium transition-colors cursor-pointer",
                   rightTab === tab.id
                     ? "text-foreground border-b-[1px] border-foreground"
                     : "text-muted-foreground hover:text-foreground border-b-[1px] border-transparent"

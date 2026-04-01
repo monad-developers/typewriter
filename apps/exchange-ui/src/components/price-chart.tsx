@@ -370,7 +370,7 @@ export function PriceChart({
 
   return (
     <div className="flex flex-col w-full h-full">
-      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border shrink-0">
+      <div className="flex items-center gap-1 px-3 py-2 border-b border-border shrink-0">
         {BUCKET_OPTIONS.map((b) => (
           <button
             key={b}
