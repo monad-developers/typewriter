@@ -175,12 +175,7 @@ export function OrderBook({ instrument }: { instrument: string }) {
           ))}
         </div>
         <div className="px-3 h-8 border-y border-border flex items-center gap-2 bg-muted/20">
-          <span
-            className={cn(
-              "tabular-nums text-sm",
-              isPositive ? "text-bid" : "text-ask"
-            )}
-          >
+          <span className="tabular-nums text-sm text-muted-foreground">
             {data.lastPrice.toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
