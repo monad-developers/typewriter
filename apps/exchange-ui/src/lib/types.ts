@@ -45,3 +45,12 @@ export interface Candle {
   low: number;
   close: number;
 }
+
+export interface MarketSnapshot {
+  instrument: string;
+  ts: number;
+  orderbook: OrderBook;
+  trades: Trade[];
+  ticker: Ticker;
+  candles: Candle[];
+}

@@ -6,6 +6,7 @@ import { PriceChart } from "./price-chart";
 import { OrderBook } from "./order-book";
 import { RecentTrades } from "./recent-trades";
 import { cn } from "~/lib/utils";
+import { useMarketStream } from "~/lib/stream";
 
 const RIGHT_TABS = [
   { id: "book", label: "Order Book" },
@@ -21,6 +22,7 @@ export function TradeView({
 }) {
   const [instrument, setInstrument] = useState(initialInstrument);
   const [rightTab, setRightTab] = useState<RightTabId>("book");
+  useMarketStream(instrument);
 
   const onInstrumentChange = useCallback((id: string) => {
     setInstrument(id);
