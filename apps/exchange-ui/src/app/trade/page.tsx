@@ -1,5 +1,5 @@
 import { HydrationBoundary, dehydrate } from "@tanstack/react-query";
-import { getQueryClient } from "~/lib/get-query-client";
+import { getQueryClient } from "~/lib/tanstack";
 import { instrumentsOptions, tickerOptions, orderBookOptions, candlesOptions, tradesOptions } from "~/lib/queries";
 import { INSTRUMENTS, generateTicker, generateOrderBook, generateCandles, generateTrades } from "~/lib/data";
 import { TradeView } from "~/components/trade-view";
