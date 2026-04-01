@@ -14,17 +14,19 @@ import { cn } from "~/lib/utils";
 export function InstrumentPicker({
   selected,
   onSelect,
+  className
 }: {
   selected: string;
   onSelect: (id: string) => void;
+  className?: string;
 }) {
   const { data: instruments } = useSuspenseQuery(instrumentsOptions);
   const current = instruments.find((i) => i.id === selected);
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger className="flex items-center gap-1.5 px-3 py-1.5 rounded-md hover:bg-muted transition-colors outline-none">
-        <span className="font-mono font-bold text-sm text-foreground">
+      <DropdownMenuTrigger className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-md hover:bg-muted transition-colors outline-none", className)}>
+        <span className="font-bold text-sm text-foreground">
           {current?.displayName ?? selected.replace("-", "/")}
         </span>
         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
@@ -34,7 +36,7 @@ export function InstrumentPicker({
           <DropdownMenuItem
             key={inst.id}
             className={cn(
-              "font-mono text-sm cursor-pointer",
+              "text-sm cursor-pointer",
               inst.id === selected && "bg-muted"
             )}
             onClick={() => onSelect(inst.id)}

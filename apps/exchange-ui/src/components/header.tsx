@@ -13,9 +13,9 @@ export function Header() {
   const pathname = usePathname();
 
   return (
-    <header className="h-12 bg-card border-b border-border flex items-center px-4 shrink-0">
+    <header className="h-12 bg-card border-b border-border flex items-center px-4 md:px-6 shrink-0">
       <Link href="/trade" className="text-sm font-bold tracking-wide mr-8">
-        Exchange
+        Demo Exchange
       </Link>
       <nav className="flex items-center gap-1">
         {NAV_LINKS.map((link) => {
