@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSimulator } from "~/lib/market-simulator";
-import type { BucketSize } from "~/lib/types";
+import { type BucketSize, DEFAULT_BUCKET } from "~/lib/types";
 
 const VALID_BUCKETS = new Set<BucketSize>([
   "1m",
@@ -14,7 +14,7 @@ const VALID_BUCKETS = new Set<BucketSize>([
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const instrument = params.get("instrument") ?? "GOLD-USDC";
-  const bucket = (params.get("bucket") ?? "1h") as BucketSize;
+  const bucket = (params.get("bucket") ?? DEFAULT_BUCKET) as BucketSize;
   const before = params.get("before")
     ? Number(params.get("before"))
     : undefined;

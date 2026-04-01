@@ -48,6 +48,7 @@ export interface Candle {
 }
 
 export type BucketSize = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+export const DEFAULT_BUCKET: BucketSize = "5m";
 
 export interface MarketSnapshot {
   instrument: string;

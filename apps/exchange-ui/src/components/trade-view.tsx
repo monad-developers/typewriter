@@ -7,7 +7,7 @@ import { OrderBook } from "./order-book";
 import { RecentTrades } from "./recent-trades";
 import { cn } from "~/lib/utils";
 import { useMarketStream } from "~/lib/stream";
-import type { BucketSize } from "~/lib/types";
+import { type BucketSize, DEFAULT_BUCKET } from "~/lib/types";
 
 const RIGHT_TABS = [
   { id: "book", label: "Order Book" },
@@ -23,7 +23,7 @@ export function TradeView({
 }) {
   const [instrument, setInstrument] = useState(initialInstrument);
   const [rightTab, setRightTab] = useState<RightTabId>("book");
-  const [bucket, setBucket] = useState<BucketSize>("1h");
+  const [bucket, setBucket] = useState<BucketSize>(DEFAULT_BUCKET);
   useMarketStream(instrument, bucket);
 
   const onInstrumentChange = useCallback((id: string) => {
