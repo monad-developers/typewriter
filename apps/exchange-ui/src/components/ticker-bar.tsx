@@ -16,10 +16,10 @@ function Stat({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="text-[10px] text-muted-foreground leading-none">
+      <span className="text-xs text-muted-foreground leading-none">
         {label}
       </span>
-      <span className={cn("text-xs font-mono leading-none", className)}>
+      <span className={cn("text-sm font-mono leading-none", className)}>
         {value}
       </span>
     </div>
