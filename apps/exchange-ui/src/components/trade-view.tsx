@@ -38,14 +38,14 @@ export function TradeView({
         onInstrumentChange={onInstrumentChange}
       />
       <div className="flex flex-row flex-1">
-        <div className="w-[65%] h-[582px] border-r border-b border-border">
+        <div className="w-[65%] h-[584px] border-r border-b border-border">
           <PriceChart
             instrument={instrument}
             bucket={bucket}
             onBucketChange={setBucket}
           />
         </div>
-        <div className="w-[35%] h-[582px] flex flex-col border-b border-border">
+        <div className="w-[35%] h-[584px] flex flex-col border-b border-border">
           <div className="flex items-center border-b border-border shrink-0">
             {RIGHT_TABS.map((tab) => (
               <button
