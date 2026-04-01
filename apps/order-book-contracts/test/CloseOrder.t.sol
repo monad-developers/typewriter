@@ -7,73 +7,65 @@ import {
     Exchange,
     CloseOrder,
     Order,
-    OrderNotFound,
-    InvalidAccount
+    OrderNotFound
 } from "src/Exchange.sol";
 
 contract CloseOrderTest is Test, Exchange(address(0)) {
+    address constant BASE = address(1);
+    address constant QUOTE = address(2);
+    address constant ACCOUNT = address(100);
+    uint64 constant Q32 = 1 << 32;
+
     function setUp() public {
-        state.assets.push(address(0));
-        state.assets.push(address(0));
+        state.instruments[0].base = BASE;
+        state.instruments[0].quote = QUOTE;
+        state.instruments[0].baseLotExp = 0;
+        state.instruments[0].quoteLotExp = 0;
 
-        state.instruments.push();
-        state.instruments[0].baseId = 0;
-        state.instruments[0].quoteId = 1;
-
-        state.accounts.push();
-        state.accounts[0].balances[0] = 1000e18;
-        state.accounts[0].balances[1] = 1000e18;
+        state.accounts[ACCOUNT].balances[BASE] = 1000;
+        state.accounts[ACCOUNT].balances[QUOTE] = 1000;
     }
 
-    function callCloseOrder(CloseOrder memory close) external {
-        _executeCloseOrder(close);
+    function callCloseOrder(CloseOrder memory close, address account) external {
+        _executeCloseOrder(close, account);
     }
 
     function test_CloseOrder_OrderNotFound() external {
         vm.pauseGasMetering();
 
-        state.accounts[0].orders.push(Order({quantity: 0, marketId: 0, tickId: 0, tickVolume: 0, side: 0}));
+        state.accounts[ACCOUNT].orders.push(Order({quantity: 0, instrumentId: 0, price: 0, tickVolume: 0, side: 0}));
 
         vm.resumeGasMetering();
 
-        try this.callCloseOrder(CloseOrder({accountId: 0, orderId: 0})) {
+        try this.callCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT) {
             fail();
         } catch (bytes memory reason) {
             assertEq(bytes4(reason), OrderNotFound.selector);
         }
     }
 
-    function test_CloseOrder_InvalidAccount() external {
-        try this.callCloseOrder(CloseOrder({accountId: 99, orderId: 0})) {
-            fail();
-        } catch (bytes memory reason) {
-            assertEq(bytes4(reason), InvalidAccount.selector);
-        }
-    }
-
     function test_CloseOrder_TickFullyCrossed() external {
         vm.pauseGasMetering();
 
-        state.instruments[0].bids[10].quantity = 50e18;
-        state.instruments[0].bids[10].remainingQuantity = 50e18;
-        state.accounts[0].orders.push(
-            Order({quantity: 50e18, marketId: 0, tickId: 10, tickVolume: 0, side: 0})
+        state.instruments[0].bids[10 * Q32].quantity = 50;
+        state.instruments[0].bids[10 * Q32].remainingQuantity = 50;
+        state.accounts[ACCOUNT].orders.push(
+            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
         );
 
-        // Tick has been fully crossed
-        state.instruments[0].bids[10].volume = 1;
+        state.instruments[0].bids[10 * Q32].volume = 1;
 
-        uint256 quoteBefore = state.accounts[0].balances[1];
+        uint256 quoteBefore = state.accounts[ACCOUNT].balances[QUOTE];
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrder({accountId: 0, orderId: 0}));
+        _executeCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
-        // No refund
-        assertEq(state.accounts[0].balances[1], quoteBefore);
-        assertEq(state.accounts[0].orders[0].quantity, 0);
+        assertEq(state.accounts[ACCOUNT].balances[QUOTE], quoteBefore);
+        assertEq(state.accounts[ACCOUNT].balances[BASE], 1050);
+        assertEq(state.accounts[ACCOUNT].orders[0].quantity, 0);
 
         vm.resumeGasMetering();
     }
@@ -81,24 +73,23 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
     function test_CloseOrder_FullRefundBid() external {
         vm.pauseGasMetering();
 
-        state.instruments[0].bids[10].quantity = 50e18;
-        state.instruments[0].bids[10].remainingQuantity = 50e18;
-        state.accounts[0].orders.push(
-            Order({quantity: 50e18, marketId: 0, tickId: 10, tickVolume: 0, side: 0})
+        state.instruments[0].bids[10 * Q32].quantity = 50;
+        state.instruments[0].bids[10 * Q32].remainingQuantity = 50;
+        state.accounts[ACCOUNT].orders.push(
+            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
         );
 
-        uint256 quoteBefore = state.accounts[0].balances[1];
+        uint256 quoteBefore = state.accounts[ACCOUNT].balances[QUOTE];
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrder({accountId: 0, orderId: 0}));
+        _executeCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
-        // Full refund: 50e18 * 10 = 500e18 quote
-        assertEq(state.accounts[0].balances[1], quoteBefore + 500e18);
-        assertEq(state.instruments[0].bids[10].quantity, 0);
-        assertEq(state.instruments[0].bids[10].remainingQuantity, 0);
+        assertEq(state.accounts[ACCOUNT].balances[QUOTE], quoteBefore + 500);
+        assertEq(state.instruments[0].bids[10 * Q32].quantity, 0);
+        assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 0);
 
         vm.resumeGasMetering();
     }
@@ -106,21 +97,21 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
     function test_CloseOrder_FullRefundAsk() external {
         vm.pauseGasMetering();
 
-        state.instruments[0].asks[10].quantity = 50e18;
-        state.instruments[0].asks[10].remainingQuantity = 50e18;
-        state.accounts[0].orders.push(
-            Order({quantity: 50e18, marketId: 0, tickId: 10, tickVolume: 0, side: 1})
+        state.instruments[0].asks[10 * Q32].quantity = 50;
+        state.instruments[0].asks[10 * Q32].remainingQuantity = 50;
+        state.accounts[ACCOUNT].orders.push(
+            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 1})
         );
 
-        uint256 baseBefore = state.accounts[0].balances[0];
+        uint256 baseBefore = state.accounts[ACCOUNT].balances[BASE];
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrder({accountId: 0, orderId: 0}));
+        _executeCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[0].balances[0], baseBefore + 50e18);
+        assertEq(state.accounts[ACCOUNT].balances[BASE], baseBefore + 50);
 
         vm.resumeGasMetering();
     }
@@ -128,27 +119,75 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
     function test_CloseOrder_PartialRefund() external {
         vm.pauseGasMetering();
 
-        // Bid at tick 10 with 100e18 total, 40e18 consumed
-        state.instruments[0].bids[10].quantity = 100e18;
-        state.instruments[0].bids[10].remainingQuantity = 60e18;
-        state.accounts[0].orders.push(
-            Order({quantity: 50e18, marketId: 0, tickId: 10, tickVolume: 0, side: 0})
+        state.instruments[0].bids[10 * Q32].quantity = 100;
+        state.instruments[0].bids[10 * Q32].remainingQuantity = 60;
+        state.accounts[ACCOUNT].orders.push(
+            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
         );
 
-        // Pro-rata: filled = 50e18 * 40e18 / 100e18 = 20e18
-        // Unfilled = 30e18. Refund = 30e18 * 10 = 300e18
-
-        uint256 quoteBefore = state.accounts[0].balances[1];
+        uint256 quoteBefore = state.accounts[ACCOUNT].balances[QUOTE];
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrder({accountId: 0, orderId: 0}));
+        _executeCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[0].balances[1], quoteBefore + 300e18);
-        assertEq(state.instruments[0].bids[10].quantity, 70e18);
-        assertEq(state.instruments[0].bids[10].remainingQuantity, 30e18);
+        assertEq(state.accounts[ACCOUNT].balances[QUOTE], quoteBefore + 300);
+        assertEq(state.accounts[ACCOUNT].balances[BASE], 1020);
+        assertEq(state.instruments[0].bids[10 * Q32].quantity, 70);
+        assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 30);
+
+        vm.resumeGasMetering();
+    }
+
+    function test_CloseOrder_FullRefundBidWithLotExp() external {
+        vm.pauseGasMetering();
+
+        state.instruments[0].baseLotExp = 18;
+        state.instruments[0].quoteLotExp = 6;
+
+        state.accounts[ACCOUNT].balances[QUOTE] = 0;
+
+        state.instruments[0].bids[10 * Q32].quantity = 50;
+        state.instruments[0].bids[10 * Q32].remainingQuantity = 50;
+        state.accounts[ACCOUNT].orders.push(
+            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
+        );
+
+        vm.resumeGasMetering();
+
+        _executeCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+
+        vm.pauseGasMetering();
+
+        assertEq(state.accounts[ACCOUNT].balances[QUOTE], 500 << 6);
+        assertEq(state.instruments[0].bids[10 * Q32].quantity, 0);
+
+        vm.resumeGasMetering();
+    }
+
+    function test_CloseOrder_FullRefundAskWithLotExp() external {
+        vm.pauseGasMetering();
+
+        state.instruments[0].baseLotExp = 18;
+        state.instruments[0].quoteLotExp = 6;
+
+        state.accounts[ACCOUNT].balances[BASE] = 0;
+
+        state.instruments[0].asks[10 * Q32].quantity = 50;
+        state.instruments[0].asks[10 * Q32].remainingQuantity = 50;
+        state.accounts[ACCOUNT].orders.push(
+            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 1})
+        );
+
+        vm.resumeGasMetering();
+
+        _executeCloseOrder(CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+
+        vm.pauseGasMetering();
+
+        assertEq(state.accounts[ACCOUNT].balances[BASE], 50 << 18);
 
         vm.resumeGasMetering();
     }
