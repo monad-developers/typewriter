@@ -45,12 +45,14 @@ function computeDepth(
   side: "bid" | "ask",
 ): string {
   const { bestBid, bestAsk } = instrument;
-  if (bestBid === null || bestAsk === null) return "—";
+  const ref = bestBid !== null && bestAsk !== null
+    ? (bestBid + bestAsk) / 2
+    : bestBid ?? bestAsk;
+  if (ref === null) return "—";
 
-  const mid = (bestBid + bestAsk) / 2;
   const ticks = side === "bid" ? instrument.bids : instrument.asks;
   const threshold =
-    side === "bid" ? mid * (1 - bpRange / 10000) : mid * (1 + bpRange / 10000);
+    side === "bid" ? ref * (1 - bpRange / 10000) : ref * (1 + bpRange / 10000);
 
   let total = 0n;
   for (const tick of ticks) {
@@ -240,12 +242,13 @@ function Row({
   const denomCurrency = CURRENCIES[denominationId];
   const { data: instrument } = useInstrumentPrice(assetId, denominationId);
 
-  const price =
+  const ref =
     instrument?.bestBid != null && instrument?.bestAsk != null
-      ? ((instrument.bestBid + instrument.bestAsk) / 2 / TICK_SCALE).toFixed(
-          currency?.decimals ? currency.decimals + 2 : 2,
-        )
-      : "—";
+      ? (instrument.bestBid + instrument.bestAsk) / 2
+      : (instrument?.bestBid ?? instrument?.bestAsk ?? null);
+  const price = ref !== null
+    ? (ref / TICK_SCALE).toFixed(currency?.decimals ? currency.decimals + 2 : 2)
+    : "—";
 
   const fmtDepth = (bp: number, side: "bid" | "ask") => {
     if (!instrument) return "—";
