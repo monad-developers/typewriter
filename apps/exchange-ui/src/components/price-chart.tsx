@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSuspenseQuery, useQuery } from "@tanstack/react-query";
+import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
 import { candlesOptions } from "~/lib/queries";
 import type { BucketSize, Candle } from "~/lib/types";
 import { cn } from "~/lib/utils";
@@ -73,16 +73,10 @@ export function PriceChart({
   bucket: BucketSize;
   onBucketChange: (b: BucketSize) => void;
 }) {
+  const queryClient = useQueryClient();
   const { data: candles } = useSuspenseQuery(
     candlesOptions(instrument, bucket)
   );
-
-  // liveCandle is written to cache by useMarketStream — read it reactively
-  const { data: liveCandle } = useQuery<Candle | null>({
-    queryKey: ["liveCandle", instrument, bucket],
-    queryFn: () => null,
-    enabled: false,
-  });
 
   const priceContainerRef = useRef<HTMLDivElement>(null);
   const volumeContainerRef = useRef<HTMLDivElement>(null);
@@ -91,10 +85,6 @@ export function PriceChart({
   const candleSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
 
-  const prevInstrumentRef = useRef(instrument);
-  const prevBucketRef = useRef(bucket);
-  const prevCandleLenRef = useRef(0);
-  const allCandlesRef = useRef<Candle[]>([]);
   const loadingRef = useRef(false);
   const hasMoreRef = useRef(true);
   const syncingRef = useRef(false);
@@ -163,6 +153,9 @@ export function PriceChart({
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
 
+    // Reset so the data-sync effect does a full setData on this new chart
+    prevCandlesRef.current = null;
+
     // Sync time scales bidirectionally
     const syncRange = (
       target: IChartApi,
@@ -215,7 +208,7 @@ export function PriceChart({
     };
   }, []);
 
-  // Scroll-back pagination (driven by price chart)
+  // Scroll-back pagination — prepends older candles into the query cache
   useEffect(() => {
     const chart = priceChartRef.current;
     if (!chart) return;
@@ -229,7 +222,8 @@ export function PriceChart({
       )
         return;
 
-      const oldest = allCandlesRef.current[0];
+      const cached = queryClient.getQueryData<Candle[]>(["candles", instrument, bucket]);
+      const oldest = cached?.[0];
       if (!oldest) return;
 
       loadingRef.current = true;
@@ -239,15 +233,9 @@ export function PriceChart({
         .then((res) => res.json())
         .then((data: { candles: Candle[]; hasMore: boolean }) => {
           if (data.candles.length > 0) {
-            allCandlesRef.current = [
-              ...data.candles,
-              ...allCandlesRef.current,
-            ];
-            candleSeriesRef.current?.setData(
-              mapCandles(allCandlesRef.current)
-            );
-            volumeSeriesRef.current?.setData(
-              mapVolume(allCandlesRef.current)
+            queryClient.setQueryData<Candle[]>(
+              ["candles", instrument, bucket],
+              (old) => [...data.candles, ...(old ?? [])]
             );
           }
           hasMoreRef.current = data.hasMore;
@@ -262,88 +250,72 @@ export function PriceChart({
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
     };
-  }, [instrument, bucket]);
+  }, [instrument, bucket, queryClient]);
 
-  // Helper to set visible range on both charts
-  const setVisibleBars = useCallback(
-    (total: number, barCount: number = DEFAULT_VISIBLE_BARS) => {
-      const padding = Math.round(barCount * 0.1);
-      const range = { from: total - barCount, to: total + padding };
-      priceChartRef.current?.timeScale().setVisibleLogicalRange(range);
-    },
-    []
-  );
+  // Sync chart series data from the query cache (single source of truth).
+  // Track the previous candles reference so we can distinguish a full reload
+  // (instrument/bucket switch, pagination) from a live tick update.
+  const prevCandlesRef = useRef<Candle[] | null>(null);
 
-  // Update data when candles, instrument, or bucket changes
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;
     const volumeSeries = volumeSeriesRef.current;
     if (!candleSeries || !volumeSeries || candles.length === 0) return;
 
-    const instrumentChanged = prevInstrumentRef.current !== instrument;
-    const bucketChanged = prevBucketRef.current !== bucket;
+    const prev = prevCandlesRef.current;
+    prevCandlesRef.current = candles;
 
-    if (instrumentChanged || bucketChanged) {
-      allCandlesRef.current = [...candles];
-      hasMoreRef.current = true;
-      candleSeries.setData(mapCandles(candles));
-      volumeSeries.setData(mapVolume(candles));
-      setVisibleBars(allCandlesRef.current.length);
-      prevInstrumentRef.current = instrument;
-      prevBucketRef.current = bucket;
-      prevCandleLenRef.current = candles.length;
-    } else if (candles.length !== prevCandleLenRef.current) {
-      const oldestServer = candles[0]?.time ?? 0;
-      const olderCandles = allCandlesRef.current.filter(
-        (c) => c.time < oldestServer
-      );
-      allCandlesRef.current = [...olderCandles, ...candles];
-      candleSeries.setData(mapCandles(allCandlesRef.current));
-      volumeSeries.setData(mapVolume(allCandlesRef.current));
-      setVisibleBars(allCandlesRef.current.length);
-      prevCandleLenRef.current = candles.length;
-    }
-  }, [candles, instrument, bucket, setVisibleBars]);
+    // Live tick update: array only differs at the tail end
+    if (prev && prev.length > 0 && candles.length >= prev.length) {
+      const prevLast = prev[prev.length - 1];
+      const curLast = candles[candles.length - 1];
 
-  // Real-time updates from server's liveCandle
-  useEffect(() => {
-    const candleSeries = candleSeriesRef.current;
-    const volumeSeries = volumeSeriesRef.current;
-    if (!candleSeries || !volumeSeries || !liveCandle) return;
+      // Same length → last candle was updated in-place by the stream
+      // One longer → new candle period appended
+      const sameDataSet = prev[0] === candles[0];
+      const isLiveUpdate =
+        sameDataSet &&
+        (candles.length === prev.length
+          ? prevLast.time === curLast.time
+          : candles.length === prev.length + 1 &&
+            prev[prev.length - 1] === candles[candles.length - 2]);
 
-    const all = allCandlesRef.current;
-    const last = all[all.length - 1];
-
-    if (last && last.time === liveCandle.time) {
-      last.open = liveCandle.open;
-      last.high = liveCandle.high;
-      last.low = liveCandle.low;
-      last.close = liveCandle.close;
-      last.volume = liveCandle.volume;
-    } else if (!last || liveCandle.time > last.time) {
-      all.push({ ...liveCandle });
+      if (isLiveUpdate) {
+        candleSeries.update({
+          time: curLast.time as UTCTimestamp,
+          open: curLast.open,
+          high: curLast.high,
+          low: curLast.low,
+          close: curLast.close,
+        });
+        volumeSeries.update({
+          time: curLast.time as UTCTimestamp,
+          value: curLast.volume,
+          color:
+            curLast.close >= curLast.open
+              ? "rgba(0,192,118,0.4)"
+              : "rgba(255,83,83,0.4)",
+        });
+        return;
+      }
     }
 
-    candleSeries.update({
-      time: liveCandle.time as UTCTimestamp,
-      open: liveCandle.open,
-      high: liveCandle.high,
-      low: liveCandle.low,
-      close: liveCandle.close,
+    // Full reload: instrument/bucket change, pagination, or initial mount
+    candleSeries.setData(mapCandles(candles));
+    volumeSeries.setData(mapVolume(candles));
+
+    const total = candles.length;
+    const padding = Math.round(DEFAULT_VISIBLE_BARS * 0.1);
+    priceChartRef.current?.timeScale().setVisibleLogicalRange({
+      from: total - DEFAULT_VISIBLE_BARS,
+      to: total + padding,
     });
-    volumeSeries.update({
-      time: liveCandle.time as UTCTimestamp,
-      value: liveCandle.volume,
-      color:
-        liveCandle.close >= liveCandle.open
-          ? "rgba(0,192,118,0.4)"
-          : "rgba(255,83,83,0.4)",
-    });
-  }, [liveCandle]);
+  }, [candles]);
 
   const handleBucketClick = useCallback(
     (b: BucketSize) => {
       setActiveWindow(null);
+      hasMoreRef.current = true;
       onBucketChange(b);
     },
     [onBucketChange]
@@ -352,6 +324,7 @@ export function PriceChart({
   const handleWindowClick = useCallback(
     (preset: (typeof WINDOW_PRESETS)[number]) => {
       setActiveWindow(preset.id);
+      hasMoreRef.current = true;
       onBucketChange(preset.bucket);
 
       requestAnimationFrame(() => {

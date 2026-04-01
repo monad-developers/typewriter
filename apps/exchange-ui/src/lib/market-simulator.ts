@@ -40,6 +40,14 @@ const BUCKET_SECONDS: Record<BucketSize, number> = {
   "1d": 86400,
 };
 
+function hashString(str: string): number {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+  }
+  return h >>> 0;
+}
+
 function seededRandom(seed: number): () => number {
   let s = seed;
   return () => {
@@ -111,7 +119,7 @@ function initState(instrument: string): InstrumentState {
   const now = Date.now();
   const nowSec = Math.floor(now / 1000);
 
-  const rand = seededRandom(instrument.length * 3000 + 7);
+  const rand = seededRandom(hashString(instrument) * 3 + 7);
 
   // Generate 10,000 one-minute candles (~7 days of history)
   const totalCandles = 10000;
@@ -143,7 +151,7 @@ function initState(instrument: string): InstrumentState {
   const currentPrice = Number(price.toFixed(decimals));
 
   // Generate initial trades
-  const tradeRand = seededRandom(instrument.length * 2000 + 99);
+  const tradeRand = seededRandom(hashString(instrument) * 2 + 99);
   const trades: Trade[] = [];
   let tradePrice = currentPrice;
   for (let i = 0; i < 200; i++) {
@@ -163,7 +171,7 @@ function initState(instrument: string): InstrumentState {
   }
 
   // Initialize resting order book with seeded randomness
-  const bookRand = seededRandom(instrument.length * 1000 + 42);
+  const bookRand = seededRandom(hashString(instrument) + 42);
   const tickSize = getTickSize(instrument);
   const restingBids = new Map<number, number>();
   const restingAsks = new Map<number, number>();
