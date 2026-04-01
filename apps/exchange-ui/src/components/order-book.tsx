@@ -66,7 +66,7 @@ function OrderBookRow({
   const isBid = side === "bid";
 
   return (
-    <div className="relative flex items-center px-3 h-6 text-sm font-mono">
+    <div className="relative flex items-center px-3 h-6 text-sm tabular-nums">
       <div
         className={cn(
           "absolute inset-y-0 left-0",
@@ -76,7 +76,7 @@ function OrderBookRow({
       />
       <span
         className={cn(
-          "relative w-1/3 text-right",
+          "relative w-1/4 text-left",
           isBid ? "text-bid" : "text-ask"
         )}
       >
@@ -85,10 +85,10 @@ function OrderBookRow({
           maximumFractionDigits: priceDecimals,
         })}
       </span>
-      <span className="relative w-1/3 text-right text-foreground">
+      <span className="relative w-3/8 text-right">
         {level.size.toFixed(3)}
       </span>
-      <span className="relative w-1/3 text-right text-muted-foreground">
+      <span className="relative w-3/8 text-right">
         {level.total.toFixed(3)}
       </span>
     </div>
@@ -129,40 +129,38 @@ export function OrderBook({ instrument }: { instrument: string }) {
 
   const maxBidTotal = visibleBids.length ? visibleBids[visibleBids.length - 1].total : 1;
   const maxAskTotal = visibleAsks.length ? visibleAsks[visibleAsks.length - 1].total : 1;
+  const maxTotal = Math.max(maxBidTotal, maxAskTotal)
 
   const isPositive = data.lastPrice >= (data.bids[0]?.price ?? 0);
 
   return (
-    <div className="flex flex-col">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <span className="text-sm text-muted-foreground font-medium">
-          Order Book
-        </span>
-        <DropdownMenu>
-          <DropdownMenuTrigger className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono text-muted-foreground hover:text-foreground hover:bg-muted transition-colors outline-none">
-            {activeTickSize}
-            <ChevronDown className="h-3 w-3" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[80px]">
-            {tickSizes.map((ts) => (
-              <DropdownMenuItem
-                key={ts}
-                className={cn(
-                  "font-mono text-sm cursor-pointer",
-                  ts === activeTickSize && "bg-muted"
-                )}
-                onClick={() => setTickSize(ts)}
-              >
-                {ts}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-      <div className="flex items-center px-3 h-6 text-xs font-medium text-muted-foreground border-b border-border">
-        <span className="w-1/3 text-right">Price</span>
-        <span className="w-1/3 text-right">Size ({base})</span>
-        <span className="w-1/3 text-right">Total ({base})</span>
+    <div className="flex flex-col h-full">
+      <div className="flex items-center px-3 h-8 text-xs font-medium text-muted-foreground border-b border-border shrink-0">
+        <div className="w-1/4 flex flex items-center justify-start gap-2">
+          Price
+          <DropdownMenu>
+            <DropdownMenuTrigger className="flex items-center gap-0.5 px-1 py-0.5 rounded tabular-nums text-muted-foreground hover:text-foreground hover:bg-muted transition-colors outline-none">
+              {activeTickSize}
+              <ChevronDown className="h-2.5 w-2.5" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="min-w-[80px]">
+              {tickSizes.map((ts) => (
+                <DropdownMenuItem
+                  key={ts}
+                  className={cn(
+                    "tabular-nums text-sm cursor-pointer",
+                    ts === activeTickSize && "bg-muted"
+                  )}
+                  onClick={() => setTickSize(ts)}
+                >
+                  {ts}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <span className="w-3/8 text-right">Size ({base})</span>
+        <span className="w-3/8 text-right">Total ({base})</span>
       </div>
       <div className="flex-1 overflow-hidden flex flex-col min-h-0">
         <div className="flex-1 overflow-y-auto flex flex-col justify-end">
@@ -171,15 +169,15 @@ export function OrderBook({ instrument }: { instrument: string }) {
               key={level.price}
               level={level}
               side="ask"
-              maxTotal={maxAskTotal}
+              maxTotal={maxTotal}
               priceDecimals={priceDecimals}
             />
           ))}
         </div>
-        <div className="px-3 py-1.5 border-y border-border flex items-center gap-2">
+        <div className="px-3 h-8 border-y border-border flex items-center gap-2 bg-muted/20">
           <span
             className={cn(
-              "font-mono text-base font-bold",
+              "tabular-nums text-sm",
               isPositive ? "text-bid" : "text-ask"
             )}
           >
@@ -188,8 +186,8 @@ export function OrderBook({ instrument }: { instrument: string }) {
               maximumFractionDigits: 2,
             })}
           </span>
-          <span className="text-xs text-muted-foreground">
-            Spread: {data.spread.toFixed(2)}
+          <span className="text-xs text-muted-foreground ml-4">
+            Spread: <span className="tabular-nums">{data.spread.toFixed(2)}</span>
           </span>
         </div>
         <div className="flex-1 overflow-y-auto">
@@ -198,7 +196,7 @@ export function OrderBook({ instrument }: { instrument: string }) {
               key={level.price}
               level={level}
               side="bid"
-              maxTotal={maxBidTotal}
+              maxTotal={maxTotal}
               priceDecimals={priceDecimals}
             />
           ))}

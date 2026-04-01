@@ -2,7 +2,6 @@
 
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
-import { useRouter } from "next/navigation";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,9 +11,14 @@ import {
 import { instrumentsOptions } from "~/lib/queries";
 import { cn } from "~/lib/utils";
 
-export function InstrumentPicker({ selected }: { selected: string }) {
+export function InstrumentPicker({
+  selected,
+  onSelect,
+}: {
+  selected: string;
+  onSelect: (id: string) => void;
+}) {
   const { data: instruments } = useSuspenseQuery(instrumentsOptions);
-  const router = useRouter();
   const current = instruments.find((i) => i.id === selected);
 
   return (
@@ -33,7 +37,7 @@ export function InstrumentPicker({ selected }: { selected: string }) {
               "font-mono text-sm cursor-pointer",
               inst.id === selected && "bg-muted"
             )}
-            onClick={() => router.push(`/trade?instrument=${inst.id}`)}
+            onClick={() => onSelect(inst.id)}
           >
             {inst.displayName}
           </DropdownMenuItem>

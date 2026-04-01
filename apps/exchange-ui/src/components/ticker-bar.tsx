@@ -26,14 +26,20 @@ function Stat({
   );
 }
 
-export function TickerBar({ instrument }: { instrument: string }) {
+export function TickerBar({
+  instrument,
+  onInstrumentChange,
+}: {
+  instrument: string;
+  onInstrumentChange: (id: string) => void;
+}) {
   const { data: ticker } = useSuspenseQuery(tickerOptions(instrument));
 
   const isPositive = ticker.change24h >= 0;
 
   return (
     <div className="h-12 bg-card border-b border-border px-4 flex items-center gap-6 shrink-0">
-      <InstrumentPicker selected={instrument} />
+      <InstrumentPicker selected={instrument} onSelect={onInstrumentChange} />
       <span
         className={cn(
           "font-mono text-lg font-bold",

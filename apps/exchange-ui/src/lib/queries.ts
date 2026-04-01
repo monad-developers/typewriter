@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import type { Instrument, OrderBook, Ticker, Candle } from "./types";
+import type { Instrument, OrderBook, Ticker, Candle, Trade } from "./types";
 
 export const instrumentsOptions = queryOptions({
   queryKey: ["instruments"],
@@ -37,6 +37,17 @@ export function candlesOptions(instrument: string) {
       const res = await fetch(`/api/trades?instrument=${instrument}`);
       const data = await res.json();
       return data.candles;
+    },
+  });
+}
+
+export function tradesOptions(instrument: string) {
+  return queryOptions({
+    queryKey: ["trades", instrument],
+    queryFn: async (): Promise<Trade[]> => {
+      const res = await fetch(`/api/trades?instrument=${instrument}`);
+      const data = await res.json();
+      return data.trades;
     },
   });
 }

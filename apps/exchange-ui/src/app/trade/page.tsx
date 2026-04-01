@@ -1,20 +1,8 @@
 import { HydrationBoundary, dehydrate } from "@tanstack/react-query";
 import { getQueryClient } from "~/lib/get-query-client";
-import {
-  instrumentsOptions,
-  tickerOptions,
-  orderBookOptions,
-  candlesOptions,
-} from "~/lib/queries";
-import {
-  INSTRUMENTS,
-  generateTicker,
-  generateOrderBook,
-  generateCandles,
-} from "~/lib/data";
-import { TickerBar } from "~/components/ticker-bar";
-import { OrderBook } from "~/components/order-book";
-import { PriceChart } from "~/components/price-chart";
+import { instrumentsOptions, tickerOptions, orderBookOptions, candlesOptions, tradesOptions } from "~/lib/queries";
+import { INSTRUMENTS, generateTicker, generateOrderBook, generateCandles, generateTrades } from "~/lib/data";
+import { TradeView } from "~/components/trade-view";
 
 export default async function TradePage({
   searchParams,
@@ -37,20 +25,14 @@ export default async function TradePage({
     candlesOptions(instrument).queryKey,
     generateCandles(instrument)
   );
+  queryClient.setQueryData(
+    tradesOptions(instrument).queryKey,
+    generateTrades(instrument)
+  );
 
   return (
     <HydrationBoundary state={dehydrate(queryClient)}>
-      <div className="flex flex-col flex-1 h-0">
-        <TickerBar instrument={instrument} />
-        <div className="flex flex-row">
-          <div className="w-[65%] border-r border-border">
-            <PriceChart instrument={instrument} />
-          </div>
-          <div className="w-[35%]">
-            <OrderBook instrument={instrument} />
-          </div>
-        </div>
-      </div>
+      <TradeView initialInstrument={instrument} />
     </HydrationBoundary>
   );
 }
