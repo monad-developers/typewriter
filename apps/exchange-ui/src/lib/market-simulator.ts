@@ -6,6 +6,7 @@ import type {
   Ticker,
   Candle,
   MarketSnapshot,
+  BucketSize,
 } from "./types";
 
 export const INSTRUMENTS: Instrument[] = [
@@ -30,6 +31,15 @@ const BASE_PRICES: Record<string, number> = {
   "SILVER-USDC": 31,
 };
 
+const BUCKET_SECONDS: Record<BucketSize, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
+};
+
 function seededRandom(seed: number): () => number {
   let s = seed;
   return () => {
@@ -47,14 +57,49 @@ function getPriceDecimals(instrument: string): number {
   return base >= 10 ? 2 : 4;
 }
 
+// --- Candle aggregation ---
+
+export function aggregateCandles(
+  candles1m: Candle[],
+  bucket: BucketSize
+): Candle[] {
+  if (bucket === "1m") return candles1m;
+
+  const seconds = BUCKET_SECONDS[bucket];
+  const buckets = new Map<number, Candle>();
+
+  for (const c of candles1m) {
+    const key = Math.floor(c.time / seconds) * seconds;
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close;
+      existing.volume = Number((existing.volume + c.volume).toFixed(3));
+    } else {
+      buckets.set(key, {
+        time: key,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      });
+    }
+  }
+
+  return [...buckets.values()].sort((a, b) => a.time - b.time);
+}
+
+// --- State ---
+
 interface InstrumentState {
   currentPrice: number;
   orderbook: OrderBook;
   trades: Trade[];
-  candles: Candle[];
+  candles1m: Candle[];
   ticker: Ticker;
   lastAdvanceAt: number;
-  lastPollAt: number;
   tradeCounter: number;
 }
 
@@ -63,18 +108,17 @@ function initState(instrument: string): InstrumentState {
   const decimals = getPriceDecimals(instrument);
   const now = Date.now();
   const nowSec = Math.floor(now / 1000);
-  const hourSeconds = 3600;
 
-  // Seeded RNG for deterministic initial history
   const rand = seededRandom(instrument.length * 3000 + 7);
 
-  // Generate initial candle history (120 hourly candles)
+  // Generate 10,000 one-minute candles (~7 days of history)
+  const totalCandles = 10000;
   let price = basePrice * (0.98 + rand() * 0.04);
-  const candles: Candle[] = [];
-  for (let i = 0; i < 120; i++) {
-    const time = nowSec - (120 - i) * hourSeconds;
+  const candles1m: Candle[] = [];
+  for (let i = 0; i < totalCandles; i++) {
+    const time = Math.floor((nowSec - (totalCandles - i) * 60) / 60) * 60;
     const open = price;
-    const volatility = basePrice * 0.003;
+    const volatility = basePrice * 0.0008;
     const move1 = (rand() - 0.5) * volatility * 2;
     const move2 = (rand() - 0.5) * volatility * 2;
     const move3 = (rand() - 0.5) * volatility * 2;
@@ -82,19 +126,21 @@ function initState(instrument: string): InstrumentState {
     const high = Math.max(open, close) + Math.abs(move3);
     const low =
       Math.min(open, close) - Math.abs((rand() - 0.5) * volatility);
-    candles.push({
+    const volume = Number((0.5 + rand() * 10).toFixed(3));
+    candles1m.push({
       time,
       open: Number(open.toFixed(2)),
       high: Number(high.toFixed(2)),
       low: Number(low.toFixed(2)),
       close: Number(close.toFixed(2)),
+      volume,
     });
     price = close;
   }
 
   const currentPrice = Number(price.toFixed(decimals));
 
-  // Generate initial trades (seeded for deterministic history)
+  // Generate initial trades
   const tradeRand = seededRandom(instrument.length * 2000 + 99);
   const trades: Trade[] = [];
   let tradePrice = currentPrice;
@@ -114,19 +160,17 @@ function initState(instrument: string): InstrumentState {
     });
   }
 
-  // Orderbook uses seeded RNG for deterministic initial state
   const bookRand = seededRandom(instrument.length * 1000 + 42);
   const orderbook = buildOrderbook(instrument, currentPrice, decimals, bookRand);
-  const ticker = buildTicker(instrument, currentPrice, candles);
+  const ticker = buildTicker(instrument, currentPrice, candles1m);
 
   return {
     currentPrice,
     orderbook,
     trades,
-    candles,
+    candles1m,
     ticker,
     lastAdvanceAt: now,
-    lastPollAt: now,
     tradeCounter: 200,
   };
 }
@@ -175,16 +219,17 @@ function buildOrderbook(
 function buildTicker(
   instrument: string,
   currentPrice: number,
-  candles: Candle[]
+  candles1m: Candle[]
 ): Ticker {
-  const recent = candles.slice(-24);
+  // Use last 1440 minutes (24h) of 1m candles
+  const recent = candles1m.slice(-1440);
   let high24h = -Infinity;
   let low24h = Infinity;
   let volume24h = 0;
   for (const c of recent) {
     high24h = Math.max(high24h, c.high);
     low24h = Math.min(low24h, c.low);
-    volume24h += 10 + Math.random() * 50;
+    volume24h += c.volume;
   }
   const firstPrice = recent[0]?.open ?? currentPrice;
   const change24h = currentPrice - firstPrice;
@@ -238,12 +283,12 @@ function advanceTick(instrument: string, state: InstrumentState): void {
     state.trades = state.trades.slice(-200);
   }
 
-  // Update current candle or start new one
+  // Update current 1-minute candle or start new one
   const nowSec = Math.floor(now / 1000);
-  const lastCandle = state.candles[state.candles.length - 1];
-  const currentHour = Math.floor(nowSec / 3600) * 3600;
+  const currentMinute = Math.floor(nowSec / 60) * 60;
+  const lastCandle = state.candles1m[state.candles1m.length - 1];
 
-  if (lastCandle && lastCandle.time === currentHour) {
+  if (lastCandle && lastCandle.time === currentMinute) {
     lastCandle.close = state.currentPrice;
     lastCandle.high = Number(
       Math.max(lastCandle.high, state.currentPrice).toFixed(2)
@@ -251,16 +296,20 @@ function advanceTick(instrument: string, state: InstrumentState): void {
     lastCandle.low = Number(
       Math.min(lastCandle.low, state.currentPrice).toFixed(2)
     );
+    lastCandle.volume = Number(
+      (lastCandle.volume + numTrades * (0.1 + Math.random() * 2)).toFixed(3)
+    );
   } else {
-    state.candles.push({
-      time: currentHour,
+    state.candles1m.push({
+      time: currentMinute,
       open: state.currentPrice,
       high: state.currentPrice,
       low: state.currentPrice,
       close: state.currentPrice,
+      volume: Number((numTrades * (0.1 + Math.random() * 2)).toFixed(3)),
     });
-    if (state.candles.length > 120) {
-      state.candles = state.candles.slice(-120);
+    if (state.candles1m.length > 10000) {
+      state.candles1m = state.candles1m.slice(-10000);
     }
   }
 
@@ -268,26 +317,20 @@ function advanceTick(instrument: string, state: InstrumentState): void {
   state.orderbook = buildOrderbook(instrument, state.currentPrice, decimals);
 
   // Rebuild ticker
-  state.ticker = buildTicker(instrument, state.currentPrice, state.candles);
+  state.ticker = buildTicker(instrument, state.currentPrice, state.candles1m);
 }
 
 class MarketSimulator {
   private states = new Map<string, InstrumentState>();
 
-  private getState(instrument: string): InstrumentState {
+  private getOrAdvance(instrument: string): InstrumentState {
     let state = this.states.get(instrument);
     if (!state) {
       state = initState(instrument);
       this.states.set(instrument, state);
     }
-    return state;
-  }
 
-  getSnapshot(instrument: string): MarketSnapshot {
-    const state = this.getState(instrument);
     const now = Date.now();
-
-    // Lazy time advancement: catch up on missed ticks (500ms each, cap at 20)
     const elapsed = now - state.lastAdvanceAt;
     const ticksToRun = Math.min(Math.floor(elapsed / 500), 20);
     for (let i = 0; i < ticksToRun; i++) {
@@ -297,17 +340,45 @@ class MarketSimulator {
       state.lastAdvanceAt = now;
     }
 
-    const snapshot: MarketSnapshot = {
+    return state;
+  }
+
+  getSnapshot(instrument: string, bucket?: BucketSize): MarketSnapshot {
+    const state = this.getOrAdvance(instrument);
+    let liveCandle: Candle | null = null;
+    if (bucket) {
+      const aggregated = aggregateCandles(state.candles1m, bucket);
+      liveCandle = aggregated[aggregated.length - 1] ?? null;
+    }
+    return {
       instrument,
-      ts: now,
+      ts: Date.now(),
       orderbook: state.orderbook,
       trades: state.trades,
       ticker: state.ticker,
-      candles: state.candles,
+      liveCandle,
     };
+  }
 
-    state.lastPollAt = now;
-    return snapshot;
+  getCandles(
+    instrument: string,
+    bucket: BucketSize,
+    before?: number,
+    count: number = 200
+  ): { candles: Candle[]; hasMore: boolean } {
+    const state = this.getOrAdvance(instrument);
+    const aggregated = aggregateCandles(state.candles1m, bucket);
+
+    let filtered: Candle[];
+    if (before != null) {
+      filtered = aggregated.filter((c) => c.time < before);
+    } else {
+      filtered = aggregated;
+    }
+
+    const hasMore = filtered.length > count;
+    const result = filtered.slice(-count);
+    return { candles: result, hasMore };
   }
 }
 

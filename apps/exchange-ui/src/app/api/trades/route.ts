@@ -7,6 +7,5 @@ export async function GET(request: NextRequest) {
   const snapshot = getSimulator().getSnapshot(instrument);
   return Response.json({
     trades: snapshot.trades,
-    candles: snapshot.candles,
   });
 }

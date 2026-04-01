@@ -44,7 +44,10 @@ export interface Candle {
   high: number;
   low: number;
   close: number;
+  volume: number;
 }
+
+export type BucketSize = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 
 export interface MarketSnapshot {
   instrument: string;
@@ -52,5 +55,5 @@ export interface MarketSnapshot {
   orderbook: OrderBook;
   trades: Trade[];
   ticker: Ticker;
-  candles: Candle[];
+  liveCandle: Candle | null;
 }

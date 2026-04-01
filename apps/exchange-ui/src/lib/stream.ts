@@ -2,11 +2,11 @@
 
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { MarketSnapshot } from "./types";
+import type { BucketSize, MarketSnapshot } from "./types";
 
-const POLL_INTERVAL = 500;
+const POLL_INTERVAL = 1_000;
 
-export function useMarketStream(instrument: string) {
+export function useMarketStream(instrument: string, bucket: BucketSize) {
   const queryClient = useQueryClient();
   const abortRef = useRef<AbortController | null>(null);
 
@@ -21,7 +21,7 @@ export function useMarketStream(instrument: string) {
 
       try {
         const res = await fetch(
-          `/api/market?instrument=${encodeURIComponent(instrument)}`,
+          `/api/market?instrument=${encodeURIComponent(instrument)}&bucket=${bucket}`,
           { signal: controller.signal }
         );
         if (!res.ok || controller.signal.aborted) return;
@@ -31,7 +31,10 @@ export function useMarketStream(instrument: string) {
         queryClient.setQueryData(["orderbook", instrument], snapshot.orderbook);
         queryClient.setQueryData(["trades", instrument], snapshot.trades);
         queryClient.setQueryData(["ticker", instrument], snapshot.ticker);
-        queryClient.setQueryData(["candles", instrument], snapshot.candles);
+        queryClient.setQueryData(
+          ["liveCandle", instrument, bucket],
+          snapshot.liveCandle
+        );
       } catch {
         // AbortError or network failure — silently skip
       }
@@ -48,5 +51,5 @@ export function useMarketStream(instrument: string) {
       clearTimeout(timeoutId);
       abortRef.current = null;
     };
-  }, [instrument, queryClient]);
+  }, [instrument, bucket, queryClient]);
 }

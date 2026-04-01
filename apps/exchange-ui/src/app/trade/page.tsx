@@ -12,12 +12,14 @@ export default async function TradePage({
   const { instrument = "GOLD-USDC" } = await searchParams;
 
   const queryClient = getQueryClient();
-  const snapshot = getSimulator().getSnapshot(instrument);
+  const simulator = getSimulator();
+  const snapshot = simulator.getSnapshot(instrument);
+  const { candles } = simulator.getCandles(instrument, "1h");
 
   queryClient.setQueryData(instrumentsOptions.queryKey, INSTRUMENTS);
   queryClient.setQueryData(tickerOptions(instrument).queryKey, snapshot.ticker);
   queryClient.setQueryData(orderBookOptions(instrument).queryKey, snapshot.orderbook);
-  queryClient.setQueryData(candlesOptions(instrument).queryKey, snapshot.candles);
+  queryClient.setQueryData(candlesOptions(instrument, "1h").queryKey, candles);
   queryClient.setQueryData(tradesOptions(instrument).queryKey, snapshot.trades);
 
   return (
