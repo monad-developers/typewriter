@@ -1,16 +1,15 @@
 import { test, expect, beforeEach } from "bun:test";
 import type { Address } from "viem";
-import { signTypedData } from "viem/accounts";
-import { privateKeyToAccount } from "viem/accounts";
+import { privateKeyToAccount, signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
-import { resolveAndOrderMutations } from "./resolution";
 import {
   createState,
   MutationType,
   type State,
   type TaggedMutation,
 } from "./exchange";
-import { startRuntime, type RuntimeHandle } from "./runtime";
+import { resolveAndOrderMutations } from "./resolution";
+import { type RuntimeHandle, startRuntime } from "./runtime";
 
 const SCHEDULER_PK =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -35,7 +34,7 @@ const TEST_CONFIG = {
   chain: anvil,
   rpcUrl: "http://localhost:8545",
   account: SCHEDULER_ACCOUNT,
-  exchangeAddress: EXCHANGE_ADDRESS,
+  address: EXCHANGE_ADDRESS,
 };
 
 const EIP712_DOMAIN = {
@@ -226,7 +225,12 @@ test("resolveAndOrderMutations sorts by type and resolves market fills without m
       nonce: 0n,
       deadline: FAR_DEADLINE,
       signature: "0x00",
-      mutation: { quantity: 5n, instrumentId: 0, price: 20n * Q32, bidOrAsk: 0 },
+      mutation: {
+        quantity: 5n,
+        instrumentId: 0,
+        price: 20n * Q32,
+        bidOrAsk: 0,
+      },
     },
   ];
 
@@ -255,7 +259,12 @@ test("limit order places on book and locks funds", async () => {
     mutation: { asset: QUOTE, amount: 10000n },
   });
 
-  const order = { quantity: 10n, instrumentId: 0, price: 10n * Q32, bidOrAsk: 0 as const };
+  const order = {
+    quantity: 10n,
+    instrumentId: 0,
+    price: 10n * Q32,
+    bidOrAsk: 0 as const,
+  };
   const sig = await signLimitOrder(MAKER_PK, order, 1n);
   await handle.execute({
     type: MutationType.LimitOrder,
@@ -463,7 +472,12 @@ test("full lifecycle: deposit, limit, market, close", async () => {
     mutation: { asset: BASE, amount: 10000n },
   });
 
-  const limitOrder = { quantity: 100n, instrumentId: 0, price: 10n * Q32, bidOrAsk: 0 as const };
+  const limitOrder = {
+    quantity: 100n,
+    instrumentId: 0,
+    price: 10n * Q32,
+    bidOrAsk: 0 as const,
+  };
   const limitSig = await signLimitOrder(MAKER_PK, limitOrder, 1n);
   await h.execute({
     type: MutationType.LimitOrder,
@@ -475,7 +489,12 @@ test("full lifecycle: deposit, limit, market, close", async () => {
   });
   expect(fresh.accounts[MAKER]!.balances[QUOTE]).toBe(9000n);
 
-  const marketOrder = { quantity: 40n, minReceivedQuantity: 0n, instrumentId: 0, bidOrAsk: 1 as const };
+  const marketOrder = {
+    quantity: 40n,
+    minReceivedQuantity: 0n,
+    instrumentId: 0,
+    bidOrAsk: 1 as const,
+  };
   const marketSig = await signMarketOrder(TAKER_PK, marketOrder, 1n);
   await h.execute({
     type: MutationType.MarketOrder,

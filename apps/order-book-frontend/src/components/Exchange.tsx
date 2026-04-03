@@ -94,9 +94,10 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     instrumentId: number,
     side: "buy" | "sell",
     amount: string,
+    nonceOffset = 0,
   ) {
     if (!account) return;
-    const nonce = BigInt(balancesData?.nonce ?? "0");
+    const nonce = BigInt(balancesData?.nonce ?? "0") + BigInt(nonceOffset);
     const signed = await signMarketOrder(account, nonce, {
       quantity: BigInt(amount),
       minReceivedQuantity: 0n,
@@ -147,9 +148,9 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     if (trades.length === 0) return;
     try {
       await Promise.all(
-        trades.map((t) => {
+        trades.map((t, i) => {
           const instrumentId = PAIR_CURRENCY_INDICES.indexOf(t.currencyIndex);
-          return postMarketOrder(instrumentId, t.side, t.amount);
+          return postMarketOrder(instrumentId, t.side, t.amount, i);
         }),
       );
       setValues({});

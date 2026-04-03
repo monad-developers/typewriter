@@ -1,12 +1,7 @@
 import { serve } from "bun";
 import type { Address, Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import {
-  CHAIN,
-  EXAMPLE_STATE,
-  EXCHANGE_ADDRESS,
-  RPC_URL,
-} from "./constants";
+import { CHAIN, EXAMPLE_STATE, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import {
   type CloseOrder,
   type Deposit,
@@ -30,15 +25,13 @@ if (!process.env.DEPLOYER_PRIVATE_KEY) {
 const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
 const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
-const state = structuredClone(EXAMPLE_STATE);
-
 const handle = startRuntime({
-  state,
+  initialState: structuredClone(EXAMPLE_STATE),
   flushIntervalMs: 50,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,
   account: deployerAccount,
-  exchangeAddress: EXCHANGE_ADDRESS,
+  address: EXCHANGE_ADDRESS,
 });
 
 const server = serve({
@@ -53,7 +46,7 @@ const server = serve({
             { status: 400 },
           );
 
-        const acc = state.accounts[account];
+        const acc = handle.state.accounts[account];
         if (!acc)
           return Response.json({ error: "Account not found" }, { status: 404 });
 
@@ -61,7 +54,11 @@ const server = serve({
         for (const [asset, balance] of Object.entries(acc.balances)) {
           balances[asset] = balance.toString();
         }
-        return Response.json({ account, nonce: acc.nonce.toString(), balances });
+        return Response.json({
+          account,
+          nonce: acc.nonce.toString(),
+          balances,
+        });
       },
     },
 
@@ -77,7 +74,7 @@ const server = serve({
           );
 
         const instrumentId = Number(instrumentIdParam);
-        const instrument = state.instruments[instrumentId];
+        const instrument = handle.state.instruments[instrumentId];
         if (!instrument)
           return Response.json(
             { error: "Invalid instrument" },
@@ -197,6 +194,24 @@ const server = serve({
           return Response.json({ error: String(err) }, { status: 400 });
         }
       },
+    },
+
+    "/api/events/blocks": {
+      GET: () => new Response(handle.stream("block"), {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      }),
+    },
+
+    "/api/events/bundles": {
+      GET: () => new Response(handle.stream("bundle"), {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      }),
+    },
+
+    "/api/events/mutations": {
+      GET: () => new Response(handle.stream("mutation"), {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      }),
     },
 
     "/*": index,

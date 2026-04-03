@@ -23,21 +23,33 @@ import {
 import { resolveAndOrderMutations, resolveMarketOrder } from "./resolution";
 
 export type MutationStatus =
+  | "queued"
+  | "proposed"
+  | "voted"
+  | "finalized"
+  | "verified";
+export type BundleStatus =
+  | "created"
   | "accepted"
   | "proposed"
   | "voted"
   | "finalized"
   | "verified";
-
-export type MutationTicket = { id: number };
+export type MutationEvent = ResolvedMutation & { id: number };
+export type BundleEvent = {
+  id: number;
+  calldata: Hex;
+  mutations: MutationEvent[];
+};
+export type BlockEvent = { number: bigint; hash: Hex; timestamp: bigint };
 
 export type RuntimeConfig = {
-  state: State<bigint>;
+  initialState: State<bigint>;
   flushIntervalMs: number;
   chain: Chain;
   rpcUrl: string;
   account: PrivateKeyAccount;
-  exchangeAddress: Address;
+  address: Address;
 };
 
 type QueueEntry = {
@@ -47,10 +59,23 @@ type QueueEntry = {
 };
 
 export type RuntimeHandle = {
+  readonly state: State<bigint>;
+  readonly queue: (TaggedMutation & { id: number })[];
   execute<T extends TaggedMutation>(
     mutation: T,
   ): Promise<{ id: number } & Extract<ResolvedMutation, { type: T["type"] }>>;
-  getStatus(id: number): MutationStatus | undefined;
+  on(
+    event: "mutation",
+    cb: (mutation: MutationEvent, status: MutationStatus) => void,
+  ): void;
+  on(
+    event: "bundle",
+    cb: (bundle: BundleEvent, status: BundleStatus) => void,
+  ): void;
+  on(event: "block", cb: (block: BlockEvent) => void): void;
+  stream(event: "mutation"): ReadableStream;
+  stream(event: "bundle"): ReadableStream;
+  stream(event: "block"): ReadableStream;
   stop(): Promise<void>;
 };
 
@@ -263,10 +288,7 @@ function encodeBundle(resolved: ResolvedMutation[]): Hex {
   });
 }
 
-function dryRun(
-  state: State<bigint>,
-  mutation: TaggedMutation,
-): void {
+function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
   const clone = structuredClone(state);
 
   switch (mutation.type) {
@@ -296,10 +318,42 @@ function dryRun(
 }
 
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
-  const state = config.state;
+  const state = config.initialState;
   const queue: QueueEntry[] = [];
-  const statuses = new Map<number, MutationStatus>();
   let nextId = 0;
+  let nextBundleId = 0;
+
+  const mutationListeners = new Set<
+    (mutation: MutationEvent, status: MutationStatus) => void
+  >();
+  const bundleListeners = new Set<
+    (bundle: BundleEvent, status: BundleStatus) => void
+  >();
+  const blockListeners = new Set<(block: BlockEvent) => void>();
+
+  function emitMutation(mutation: MutationEvent, status: MutationStatus) {
+    for (const cb of mutationListeners) {
+      try {
+        cb(mutation, status);
+      } catch {}
+    }
+  }
+
+  function emitBundle(bundle: BundleEvent, status: BundleStatus) {
+    for (const cb of bundleListeners) {
+      try {
+        cb(bundle, status);
+      } catch {}
+    }
+  }
+
+  function emitBlock(block: BlockEvent) {
+    for (const cb of blockListeners) {
+      try {
+        cb(block);
+      } catch {}
+    }
+  }
 
   const transport = http(config.rpcUrl, { retryCount: 0 });
 
@@ -318,7 +372,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     name: "Exchange" as const,
     version: "1" as const,
     chainId: config.chain.id,
-    verifyingContract: config.exchangeAddress,
+    verifyingContract: config.address,
   };
 
   async function verifySignature(mutation: TaggedMutation): Promise<void> {
@@ -333,38 +387,75 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       throw new Error("InvalidNonce");
     }
 
-    const opts = { domain: eip712Domain, types: EIP712_TYPES, signature: mutation.signature } as const;
+    const opts = {
+      domain: eip712Domain,
+      types: EIP712_TYPES,
+      signature: mutation.signature,
+    } as const;
     let recovered: Address;
 
     switch (mutation.type) {
       case MutationType.CloseOrder:
         recovered = await recoverTypedDataAddress({
-          ...opts, primaryType: "CloseOrder",
-          message: { orderId: BigInt(mutation.mutation.orderId), nonce: mutation.nonce, deadline: mutation.deadline },
+          ...opts,
+          primaryType: "CloseOrder",
+          message: {
+            orderId: BigInt(mutation.mutation.orderId),
+            nonce: mutation.nonce,
+            deadline: mutation.deadline,
+          },
         });
         break;
       case MutationType.LimitOrder:
         recovered = await recoverTypedDataAddress({
-          ...opts, primaryType: "LimitOrder",
-          message: { quantity: mutation.mutation.quantity, instrumentId: BigInt(mutation.mutation.instrumentId), price: mutation.mutation.price, bidOrAsk: mutation.mutation.bidOrAsk, nonce: mutation.nonce, deadline: mutation.deadline },
+          ...opts,
+          primaryType: "LimitOrder",
+          message: {
+            quantity: mutation.mutation.quantity,
+            instrumentId: BigInt(mutation.mutation.instrumentId),
+            price: mutation.mutation.price,
+            bidOrAsk: mutation.mutation.bidOrAsk,
+            nonce: mutation.nonce,
+            deadline: mutation.deadline,
+          },
         });
         break;
       case MutationType.MarketOrder:
         recovered = await recoverTypedDataAddress({
-          ...opts, primaryType: "MarketOrder",
-          message: { quantity: mutation.mutation.quantity, minReceivedQuantity: mutation.mutation.minReceivedQuantity, instrumentId: BigInt(mutation.mutation.instrumentId), bidOrAsk: mutation.mutation.bidOrAsk, nonce: mutation.nonce, deadline: mutation.deadline },
+          ...opts,
+          primaryType: "MarketOrder",
+          message: {
+            quantity: mutation.mutation.quantity,
+            minReceivedQuantity: mutation.mutation.minReceivedQuantity,
+            instrumentId: BigInt(mutation.mutation.instrumentId),
+            bidOrAsk: mutation.mutation.bidOrAsk,
+            nonce: mutation.nonce,
+            deadline: mutation.deadline,
+          },
         });
         break;
       case MutationType.Deposit:
         recovered = await recoverTypedDataAddress({
-          ...opts, primaryType: "Deposit",
-          message: { asset: mutation.mutation.asset, amount: mutation.mutation.amount, nonce: mutation.nonce, deadline: mutation.deadline },
+          ...opts,
+          primaryType: "Deposit",
+          message: {
+            asset: mutation.mutation.asset,
+            amount: mutation.mutation.amount,
+            nonce: mutation.nonce,
+            deadline: mutation.deadline,
+          },
         });
         break;
       case MutationType.Withdrawal:
         recovered = await recoverTypedDataAddress({
-          ...opts, primaryType: "Withdrawal",
-          message: { asset: mutation.mutation.asset, amount: mutation.mutation.amount, nonce: mutation.nonce, deadline: mutation.deadline },
+          ...opts,
+          primaryType: "Withdrawal",
+          message: {
+            asset: mutation.mutation.asset,
+            amount: mutation.mutation.amount,
+            nonce: mutation.nonce,
+            deadline: mutation.deadline,
+          },
         });
         break;
     }
@@ -378,6 +469,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     if (queue.length === 0) return;
 
     const batch = queue.splice(0);
+    const mutationEvents: MutationEvent[] = [];
 
     const resolved = resolveAndOrderMutations(
       state,
@@ -408,25 +500,36 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
       const entry = batch.find((e) => e.tagged.mutation === r.mutation);
       if (entry) {
-        statuses.set(entry.id, "accepted");
         entry.resolve?.({ id: entry.id, ...r });
+        mutationEvents.push({ id: entry.id, ...r });
       }
     }
 
-    const _calldata = encodeBundle(resolved);
+    const calldata = encodeBundle(resolved);
+    const bundleId = nextBundleId++;
+    const bundle: BundleEvent = {
+      id: bundleId,
+      calldata,
+      mutations: mutationEvents,
+    };
+    emitBundle(bundle, "created");
+    emitBundle(bundle, "accepted");
 
-    // TODO: submit _calldata on-chain (createAccessList → prepareTransactionRequest → signTransaction → sendRawTransactionSync)
+    // TODO: submit calldata on-chain (createAccessList → prepareTransactionRequest → signTransaction → sendRawTransactionSync)
 
-    const ids = batch.map((e) => e.id);
     yield* Effect.forkDaemon(
       Effect.gen(function* () {
-        for (const id of ids) statuses.set(id, "proposed");
+        for (const m of mutationEvents) emitMutation(m, "proposed");
+        emitBundle(bundle, "proposed");
         yield* Effect.sleep(Duration.millis(400));
-        for (const id of ids) statuses.set(id, "voted");
+        for (const m of mutationEvents) emitMutation(m, "voted");
+        emitBundle(bundle, "voted");
         yield* Effect.sleep(Duration.millis(400));
-        for (const id of ids) statuses.set(id, "finalized");
+        for (const m of mutationEvents) emitMutation(m, "finalized");
+        emitBundle(bundle, "finalized");
         yield* Effect.sleep(Duration.millis(1200));
-        for (const id of ids) statuses.set(id, "verified");
+        for (const m of mutationEvents) emitMutation(m, "verified");
+        emitBundle(bundle, "verified");
       }),
     );
   });
@@ -436,7 +539,27 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     Schedule.spaced(Duration.millis(config.flushIntervalMs)),
   );
 
+  let lastBlockNumber = -1n;
+
+  const blockPoller = Effect.gen(function* () {
+    const block = yield* Effect.promise(() => publicClient.getBlock());
+    if (block.number !== null && block.number > lastBlockNumber) {
+      lastBlockNumber = block.number;
+      emitBlock({
+        number: block.number,
+        hash: block.hash as Hex,
+        timestamp: block.timestamp,
+      });
+    }
+  });
+
+  const blockProgram = Effect.repeat(
+    blockPoller,
+    Schedule.spaced(Duration.millis(50)),
+  );
+
   const fiber = Effect.runFork(program);
+  const blockFiber = Effect.runFork(blockProgram);
 
   async function execute<T extends TaggedMutation>(
     mutation: T,
@@ -457,16 +580,86 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       tagged: mutation,
       resolve: resolve as (resolved: { id: number } & ResolvedMutation) => void,
     });
+    emitMutation({ id, ...mutation } as MutationEvent, "queued");
     return promise;
   }
 
-  function getStatus(id: number): MutationStatus | undefined {
-    return statuses.get(id);
-  }
-
   async function stop(): Promise<void> {
+    await Effect.runPromise(Fiber.interrupt(blockFiber));
     await Effect.runPromise(Fiber.interrupt(fiber));
   }
 
-  return { execute, getStatus, stop } as RuntimeHandle;
+  type MutationCb = (mutation: MutationEvent, status: MutationStatus) => void;
+  type BundleCb = (bundle: BundleEvent, status: BundleStatus) => void;
+  type BlockCb = (block: BlockEvent) => void;
+
+  function on(event: "mutation", cb: MutationCb): void;
+  function on(event: "bundle", cb: BundleCb): void;
+  function on(event: "block", cb: BlockCb): void;
+  function on(
+    event: "mutation" | "bundle" | "block",
+    cb: MutationCb | BundleCb | BlockCb,
+  ): void {
+    if (event === "mutation") mutationListeners.add(cb as MutationCb);
+    else if (event === "bundle") bundleListeners.add(cb as BundleCb);
+    else if (event === "block") blockListeners.add(cb as BlockCb);
+  }
+
+  const encoder = new TextEncoder();
+
+  function sse(event: string, data: unknown): Uint8Array {
+    return encoder.encode(
+      `event: ${event}\ndata: ${JSON.stringify(data, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`,
+    );
+  }
+
+  function stream(event: "mutation"): ReadableStream;
+  function stream(event: "bundle"): ReadableStream;
+  function stream(event: "block"): ReadableStream;
+  function stream(event: "mutation" | "bundle" | "block"): ReadableStream {
+    return new ReadableStream({
+      start(controller) {
+        if (event === "mutation") {
+          on("mutation", (mutation, status) => {
+            controller.enqueue(
+              sse("mutation", { id: mutation.id, type: mutation.type, status }),
+            );
+          });
+        } else if (event === "bundle") {
+          on("bundle", (bundle, status) => {
+            controller.enqueue(
+              sse("bundle", {
+                id: bundle.id,
+                status,
+                mutationIds: bundle.mutations.map((m) => m.id),
+              }),
+            );
+          });
+        } else if (event === "block") {
+          on("block", (block) => {
+            controller.enqueue(
+              sse("block", {
+                number: block.number,
+                hash: block.hash,
+                timestamp: block.timestamp,
+              }),
+            );
+          });
+        }
+      },
+    });
+  }
+
+  return {
+    get state() {
+      return state;
+    },
+    get queue() {
+      return queue.map((e) => ({ id: e.id, ...e.tagged }));
+    },
+    execute,
+    on,
+    stream,
+    stop,
+  };
 }

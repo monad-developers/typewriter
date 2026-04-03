@@ -1,30 +1,27 @@
 import { useEffect, useRef, useState } from "react";
-import { type Block, isFinalized, useBlockStream } from "../hooks/useBlockStream";
+import { type Block, useBlockStream } from "../hooks/useBlockStream";
 
 const BLOCK_SIZE = 40;
 const GAP = 12;
-
-function activityColor(tradeCount: number): string {
-  if (tradeCount === 0) return "bg-gray-200";
-  if (tradeCount <= 2) return "bg-blue-300";
-  if (tradeCount <= 5) return "bg-blue-500";
+function bundleColor(mutationCount: number): string {
+  if (mutationCount <= 1) return "bg-blue-200";
+  if (mutationCount <= 3) return "bg-blue-300";
+  if (mutationCount <= 5) return "bg-blue-400";
+  if (mutationCount <= 8) return "bg-blue-500";
   return "bg-blue-600";
 }
 
 function BlockSquare({ block, finalized }: { block: Block; finalized: boolean }) {
   const slotKeys = ["a", "b", "c", "d", "e", "f", "g", "h"];
-  const cells = slotKeys.map((slotKey, i) => {
-    const filled = i < block.preconfs.length;
-    const slot = filled ? block.preconfs[i] : undefined;
+  const slots = slotKeys.map((key, i) => {
+    const bundle = block.bundles[i];
     return (
       <div
-        key={slotKey}
-        className={` ${
-          filled && slot ? activityColor(slot.tradeCount) : "bg-gray-50"
-        }`}
+        key={key}
+        className={bundle ? bundleColor(bundle.mutationCount) : "bg-gray-50"}
         style={{
-          transform: filled ? "scale(1)" : "scale(0.6)",
-          opacity: filled ? 1 : 0.3,
+          opacity: bundle ? 1 : 0.3,
+          transform: bundle ? "scale(1)" : "scale(0.6)",
         }}
       />
     );
@@ -32,7 +29,7 @@ function BlockSquare({ block, finalized }: { block: Block; finalized: boolean })
 
   return (
     <div
-      className={`shrink-0 border border-black grid ${finalized ? "border-2" : ""}`}
+      className={`shrink-0 border border-black grid ${block.pending ? "border-dashed" : ""} ${finalized ? "border-2" : ""}`}
       style={{
         width: BLOCK_SIZE,
         height: BLOCK_SIZE,
@@ -40,7 +37,7 @@ function BlockSquare({ block, finalized }: { block: Block; finalized: boolean })
         gridTemplateRows: "repeat(2, 1fr)",
       }}
     >
-      {cells}
+      {slots}
     </div>
   );
 }
@@ -69,7 +66,11 @@ export function BlockTracker() {
       style={{ gap: GAP, height: BLOCK_SIZE + 16 }}
     >
       {blocks.map((block, i) => (
-        <BlockSquare key={block.number.toString()} block={block} finalized={isFinalized(blocks, i)} />
+        <BlockSquare
+          key={block.pending ? "pending" : block.number.toString()}
+          block={block}
+          finalized={!block.pending && i < blocks.length - 2}
+        />
       ))}
     </footer>
   );
