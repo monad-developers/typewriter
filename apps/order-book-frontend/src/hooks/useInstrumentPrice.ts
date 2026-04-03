@@ -1,31 +1,32 @@
 import { useQuery } from "@tanstack/react-query";
+import type { Address } from "viem";
 
 export type InstrumentPriceResponse = {
   instrumentId: number;
-  baseId: number;
-  quoteId: number;
+  base: Address;
+  quote: Address;
   bestBid: number | null;
   bestAsk: number | null;
   bids: {
-    tickId: number;
+    price: number;
     quantity: string;
     remainingQuantity: string;
     volume: number;
   }[];
   asks: {
-    tickId: number;
+    price: number;
     quantity: string;
     remainingQuantity: string;
     volume: number;
   }[];
 };
 
-export function useInstrumentPrice(baseId: number, quoteId: number) {
+export function useInstrumentPrice(instrumentId: number) {
   return useQuery({
-    queryKey: ["instrument-price", baseId, quoteId],
+    queryKey: ["instrument-price", instrumentId],
     queryFn: async () => {
       const res = await fetch(
-        `/api/instrument-price?baseId=${baseId}&quoteId=${quoteId}`,
+        `/api/instrument-price?instrumentId=${instrumentId}`,
       );
       if (!res.ok) throw new Error("Failed to fetch instrument price");
       return (await res.json()) as InstrumentPriceResponse;

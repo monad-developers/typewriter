@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useCallback, useRef, useState } from "react";
-import { formatEther, parseEther } from "viem";
-import { CURRENCIES, TICK_SCALE, formatCurrency } from "../constants";
+import { CURRENCIES, formatCurrency, Q32 } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
+import { signMarketOrder } from "../hooks/useSign";
 import {
   type InstrumentPriceResponse,
   useInstrumentPrice,
@@ -25,7 +25,7 @@ const COLUMNS = [
   "sell",
 ];
 
-const INPUT_COLS = 2; // buy, sell
+const INPUT_COLS = 2;
 
 function focusCell(table: HTMLTableElement, row: number, col: number) {
   const input = table.querySelector<HTMLInputElement>(
@@ -39,6 +39,10 @@ function focusCell(table: HTMLTableElement, row: number, col: number) {
 
 type RowValues = { buy: string; sell: string };
 
+function priceToNumber(priceQ32: number): number {
+  return priceQ32 / Number(Q32);
+}
+
 function computeDepth(
   instrument: InstrumentPriceResponse,
   bpRange: number,
@@ -48,7 +52,7 @@ function computeDepth(
   const ref = bestBid !== null && bestAsk !== null
     ? (bestBid + bestAsk) / 2
     : bestBid ?? bestAsk;
-  if (ref === null) return "—";
+  if (ref === null) return "\u2014";
 
   const ticks = side === "bid" ? instrument.bids : instrument.asks;
   const threshold =
@@ -56,49 +60,54 @@ function computeDepth(
 
   let total = 0n;
   for (const tick of ticks) {
-    if (side === "bid" && tick.tickId < threshold) break;
-    if (side === "ask" && tick.tickId > threshold) break;
+    if (side === "bid" && tick.price < threshold) break;
+    if (side === "ask" && tick.price > threshold) break;
     total += BigInt(tick.remainingQuantity);
   }
 
-  return formatEther(total);
+  return total.toString();
 }
+
+const PAIR_CURRENCY_INDICES = [0, 2, 3, 4];
 
 export function Exchange({ denominationId }: { denominationId: number }) {
   const { account } = useAccountContext();
-  const { data: balancesData } = useBalances(account.accountId);
+  const { data: balancesData } = useBalances(account?.address);
   const queryClient = useQueryClient();
   const tableRef = useRef<HTMLTableElement>(null);
 
-  const rows = CURRENCIES.map((_, i) => i).filter((i) => i !== denominationId);
+  const rows = PAIR_CURRENCY_INDICES.filter((i) => i !== denominationId);
 
   const [values, setValues] = useState<Record<number, RowValues>>({});
 
   const setValue = useCallback(
-    (assetId: number, field: "buy" | "sell", value: string) => {
+    (currencyIndex: number, field: "buy" | "sell", value: string) => {
       setValues((prev) => ({
         ...prev,
-        [assetId]: { ...prev[assetId], buy: prev[assetId]?.buy ?? "", sell: prev[assetId]?.sell ?? "", [field]: value },
+        [currencyIndex]: { ...prev[currencyIndex], buy: prev[currencyIndex]?.buy ?? "", sell: prev[currencyIndex]?.sell ?? "", [field]: value },
       }));
     },
     [],
   );
 
   async function postMarketOrder(
-    assetId: number,
+    instrumentId: number,
     side: "buy" | "sell",
     amount: string,
   ) {
+    if (!account) return;
+    const nonce = BigInt(balancesData?.nonce ?? "0");
+    const signed = await signMarketOrder(account, nonce, {
+      quantity: BigInt(amount),
+      minReceivedQuantity: 0n,
+      instrumentId,
+      bidOrAsk: side === "buy" ? 0 : 1,
+    });
+
     const res = await fetch("/api/market-order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        accountId: account.accountId,
-        baseId: assetId,
-        quoteId: denominationId,
-        bidOrAsk: side === "buy" ? 0 : 1,
-        quantity: parseEther(amount).toString(),
-      }),
+      body: JSON.stringify(signed),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => null);
@@ -112,10 +121,12 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     queryClient.invalidateQueries({ queryKey: ["instrument-price"] });
   }
 
-  async function submitOne(assetId: number, side: "buy" | "sell", amount: string) {
+  async function submitOne(currencyIndex: number, side: "buy" | "sell", amount: string) {
+    const instrumentId = PAIR_CURRENCY_INDICES.indexOf(currencyIndex);
+    if (instrumentId === -1) return;
     try {
-      await postMarketOrder(assetId, side, amount);
-      setValue(assetId, side, "");
+      await postMarketOrder(instrumentId, side, amount);
+      setValue(currencyIndex, side, "");
       invalidate();
     } catch (err) {
       console.error("Order failed:", err);
@@ -123,20 +134,23 @@ export function Exchange({ denominationId }: { denominationId: number }) {
   }
 
   async function executeAll() {
-    const trades: { assetId: number; side: "buy" | "sell"; amount: string }[] = [];
-    for (const assetId of rows) {
-      const rv = values[assetId];
+    const trades: { currencyIndex: number; side: "buy" | "sell"; amount: string }[] = [];
+    for (const currencyIndex of rows) {
+      const rv = values[currencyIndex];
       if (rv?.buy && Number(rv.buy) > 0) {
-        trades.push({ assetId, side: "buy", amount: rv.buy });
+        trades.push({ currencyIndex, side: "buy", amount: rv.buy });
       }
       if (rv?.sell && Number(rv.sell) > 0) {
-        trades.push({ assetId, side: "sell", amount: rv.sell });
+        trades.push({ currencyIndex, side: "sell", amount: rv.sell });
       }
     }
     if (trades.length === 0) return;
     try {
       await Promise.all(
-        trades.map((t) => postMarketOrder(t.assetId, t.side, t.amount)),
+        trades.map((t) => {
+          const instrumentId = PAIR_CURRENCY_INDICES.indexOf(t.currencyIndex);
+          return postMarketOrder(instrumentId, t.side, t.amount);
+        }),
       );
       setValues({});
       invalidate();
@@ -195,21 +209,25 @@ export function Exchange({ denominationId }: { denominationId: number }) {
         </tr>
       </thead>
       <tbody>
-        {rows.map((assetId, rowIndex) => (
-          <Row
-            key={assetId}
-            rowIndex={rowIndex}
-            assetId={assetId}
-            denominationId={denominationId}
-            balance={balancesData?.balances[assetId] ?? "0"}
-            buyAmount={values[assetId]?.buy ?? ""}
-            sellAmount={values[assetId]?.sell ?? ""}
-            onValueChange={setValue}
-            onSubmitOne={submitOne}
-            onGridNav={handleGridNav}
-            onExecuteAll={executeAll}
-          />
-        ))}
+        {rows.map((currencyIndex, rowIndex) => {
+          const instrumentId = PAIR_CURRENCY_INDICES.indexOf(currencyIndex);
+          return (
+            <Row
+              key={currencyIndex}
+              rowIndex={rowIndex}
+              currencyIndex={currencyIndex}
+              instrumentId={instrumentId}
+              denominationId={denominationId}
+              balance={balancesData?.balances[CURRENCIES[currencyIndex]?.address ?? "0x"] ?? "0"}
+              buyAmount={values[currencyIndex]?.buy ?? ""}
+              sellAmount={values[currencyIndex]?.sell ?? ""}
+              onValueChange={setValue}
+              onSubmitOne={submitOne}
+              onGridNav={handleGridNav}
+              onExecuteAll={executeAll}
+            />
+          );
+        })}
       </tbody>
     </table>
   );
@@ -217,7 +235,8 @@ export function Exchange({ denominationId }: { denominationId: number }) {
 
 function Row({
   rowIndex,
-  assetId,
+  currencyIndex,
+  instrumentId,
   denominationId,
   balance,
   buyAmount,
@@ -228,30 +247,31 @@ function Row({
   onExecuteAll,
 }: {
   rowIndex: number;
-  assetId: number;
+  currencyIndex: number;
+  instrumentId: number;
   denominationId: number;
   balance: string;
   buyAmount: string;
   sellAmount: string;
-  onValueChange: (assetId: number, field: "buy" | "sell", value: string) => void;
-  onSubmitOne: (assetId: number, side: "buy" | "sell", amount: string) => void;
+  onValueChange: (currencyIndex: number, field: "buy" | "sell", value: string) => void;
+  onSubmitOne: (currencyIndex: number, side: "buy" | "sell", amount: string) => void;
   onGridNav: (e: KeyboardEvent<HTMLInputElement>) => void;
   onExecuteAll: () => void;
 }) {
-  const currency = CURRENCIES[assetId];
+  const currency = CURRENCIES[currencyIndex];
   const denomCurrency = CURRENCIES[denominationId];
-  const { data: instrument } = useInstrumentPrice(assetId, denominationId);
+  const { data: instrument } = useInstrumentPrice(instrumentId);
 
   const ref =
     instrument?.bestBid != null && instrument?.bestAsk != null
       ? (instrument.bestBid + instrument.bestAsk) / 2
       : (instrument?.bestBid ?? instrument?.bestAsk ?? null);
   const price = ref !== null
-    ? (ref / TICK_SCALE).toFixed(currency?.decimals ? currency.decimals + 2 : 2)
-    : "—";
+    ? priceToNumber(ref).toFixed(currency?.decimals ? currency.decimals + 2 : 2)
+    : "\u2014";
 
   const fmtDepth = (bp: number, side: "bid" | "ask") => {
-    if (!instrument) return "—";
+    if (!instrument) return "\u2014";
     const raw = computeDepth(instrument, bp, side);
     return currency ? formatCurrency(raw, currency) : raw;
   };
@@ -265,8 +285,6 @@ function Row({
   const depth10Ask = fmtDepth(10, "ask");
   const depth25Ask = fmtDepth(25, "ask");
 
-  const inventory = formatEther(BigInt(balance));
-
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -278,7 +296,7 @@ function Row({
       const side = col === 0 ? "buy" as const : "sell" as const;
       const value = col === 0 ? buyAmount : sellAmount;
       if (value) {
-        onSubmitOne(assetId, side, value);
+        onSubmitOne(currencyIndex, side, value);
       }
       return;
     }
@@ -291,7 +309,7 @@ function Row({
         <code>{currency?.flag} {currency?.code}</code>
       </td>
       <td className="px-3 align-middle whitespace-nowrap">
-        <code>{currency ? formatCurrency(inventory, currency) : inventory}</code>
+        <code>{currency ? formatCurrency(balance, currency) : balance}</code>
       </td>
       <td className="px-3 align-middle whitespace-nowrap">
         <code>{denomCurrency ? formatCurrency(price, denomCurrency) : price}</code>
@@ -326,7 +344,7 @@ function Row({
           min={0}
           placeholder="0"
           value={buyAmount}
-          onChange={(e) => onValueChange(assetId, "buy", e.target.value)}
+          onChange={(e) => onValueChange(currencyIndex, "buy", e.target.value)}
           onKeyDown={handleKeyDown}
           data-row={rowIndex}
           data-col={0}
@@ -339,7 +357,7 @@ function Row({
           min={0}
           placeholder="0"
           value={sellAmount}
-          onChange={(e) => onValueChange(assetId, "sell", e.target.value)}
+          onChange={(e) => onValueChange(currencyIndex, "sell", e.target.value)}
           onKeyDown={handleKeyDown}
           data-row={rowIndex}
           data-col={1}

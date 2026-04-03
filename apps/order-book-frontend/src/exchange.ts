@@ -90,32 +90,32 @@ export enum MutationType {
   Withdrawal = 5,
 }
 
-type Signed = {
+export type Signed<quantity = string> = {
   account: Address;
-  nonce: bigint;
-  deadline: bigint;
+  nonce: quantity;
+  deadline: quantity;
   signature: `0x${string}`;
 };
 
 export type TaggedMutation =
-  | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed)
-  | ({ type: MutationType.LimitOrder; mutation: LimitOrder<bigint> } & Signed)
-  | ({ type: MutationType.MarketOrder; mutation: MarketOrder<bigint> } & Signed)
+  | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
+  | ({ type: MutationType.LimitOrder; mutation: LimitOrder<bigint> } & Signed<bigint>)
+  | ({ type: MutationType.MarketOrder; mutation: MarketOrder<bigint> } & Signed<bigint>)
   | { type: MutationType.AddInstrument; mutation: AddInstrumentParams }
-  | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed)
-  | ({ type: MutationType.Withdrawal; mutation: Withdrawal<bigint> } & Signed);
+  | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
+  | ({ type: MutationType.Withdrawal; mutation: Withdrawal<bigint> } & Signed<bigint>);
 
 export type ResolvedMutation =
-  | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed)
-  | ({ type: MutationType.LimitOrder; mutation: LimitOrder<bigint> } & Signed)
+  | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
+  | ({ type: MutationType.LimitOrder; mutation: LimitOrder<bigint> } & Signed<bigint>)
   | ({
       type: MutationType.MarketOrder;
       mutation: MarketOrder<bigint>;
       resolution: MarketOrderResolution<bigint>;
-    } & Signed)
+    } & Signed<bigint>)
   | { type: MutationType.AddInstrument; mutation: AddInstrumentParams }
-  | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed)
-  | ({ type: MutationType.Withdrawal; mutation: Withdrawal<bigint> } & Signed);
+  | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
+  | ({ type: MutationType.Withdrawal; mutation: Withdrawal<bigint> } & Signed<bigint>);
 
 export function createState(): State<bigint> {
   return { accounts: {}, instruments: {} };
@@ -339,6 +339,14 @@ export function decodeWithdrawal(w: Withdrawal): Withdrawal<bigint> {
 
 export function encodeWithdrawal(w: Withdrawal<bigint>): Withdrawal {
   return { asset: w.asset, amount: s(w.amount) };
+}
+
+export function decodeSigned(s: Signed): Signed<bigint> {
+  return { account: s.account, nonce: BigInt(s.nonce), deadline: BigInt(s.deadline), signature: s.signature };
+}
+
+export function encodeSigned(s: Signed<bigint>): Signed {
+  return { account: s.account, nonce: s.nonce.toString(), deadline: s.deadline.toString(), signature: s.signature };
 }
 
 export function getAccount(

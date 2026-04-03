@@ -1,4 +1,3 @@
-import { formatEther } from "viem";
 import { CURRENCIES, formatCurrency } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
@@ -11,10 +10,12 @@ export function Header({
   onDenominationChange: (id: number) => void;
 }) {
   const { account } = useAccountContext();
-  const { data } = useBalances(account.accountId);
+  const { data } = useBalances(account?.address);
 
-  const balance = data?.balances[denominationId] ?? "0";
   const currency = CURRENCIES[denominationId];
+  const balance = currency && data?.balances[currency.address]
+    ? data.balances[currency.address]
+    : "0";
 
   return (
     <header className="w-full border-b px-4 py-3 flex items-center gap-6">
@@ -33,7 +34,7 @@ export function Header({
         </select>
       </div>
       <code className="text-sm">
-        balance: {currency ? formatCurrency(formatEther(BigInt(balance)), currency) : "—"}
+        balance: {currency ? formatCurrency(balance, currency) : "\u2014"}
       </code>
       <span className="flex-1" />
       <code className="text-sm text-gray-400">
