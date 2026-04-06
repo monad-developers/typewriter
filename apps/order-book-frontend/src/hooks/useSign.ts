@@ -3,7 +3,8 @@ import { signTypedData } from "viem/accounts";
 import type { Account } from "../contexts/AccountContext";
 
 const EXCHANGE_ADDRESS = // @ts-expect-error
-  (process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ?? "0x0000000000000000000000000000000000000000") as Address;
+  (process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ??
+    "0x0000000000000000000000000000000000000000") as Address;
 
 const CHAIN_ID = Number(
   // @ts-expect-error
@@ -47,12 +48,19 @@ const EIP712_TYPES = {
   ],
 } as const;
 
-const FAR_DEADLINE = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+const FAR_DEADLINE = BigInt(
+  "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+);
 
 export async function signMarketOrder(
   account: Account,
   nonce: bigint,
-  params: { quantity: bigint; minReceivedQuantity: bigint; instrumentId: number; bidOrAsk: 0 | 1 },
+  params: {
+    quantity: bigint;
+    minReceivedQuantity: bigint;
+    instrumentId: number;
+    bidOrAsk: 0 | 1;
+  },
 ) {
   const signature = await signTypedData({
     privateKey: account.privateKey,
@@ -83,7 +91,12 @@ export async function signMarketOrder(
 export async function signLimitOrder(
   account: Account,
   nonce: bigint,
-  params: { quantity: bigint; instrumentId: number; price: bigint; bidOrAsk: 0 | 1 },
+  params: {
+    quantity: bigint;
+    instrumentId: number;
+    price: bigint;
+    bidOrAsk: 0 | 1;
+  },
 ) {
   const signature = await signTypedData({
     privateKey: account.privateKey,

@@ -3,11 +3,11 @@ import { type KeyboardEvent, useCallback, useRef, useState } from "react";
 import { CURRENCIES, formatCurrency, Q32 } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
-import { signMarketOrder } from "../hooks/useSign";
 import {
   type InstrumentPriceResponse,
   useInstrumentPrice,
 } from "../hooks/useInstrumentPrice";
+import { signMarketOrder } from "../hooks/useSign";
 
 const COLUMNS = [
   "",
@@ -49,9 +49,10 @@ function computeDepth(
   side: "bid" | "ask",
 ): string {
   const { bestBid, bestAsk } = instrument;
-  const ref = bestBid !== null && bestAsk !== null
-    ? (bestBid + bestAsk) / 2
-    : bestBid ?? bestAsk;
+  const ref =
+    bestBid !== null && bestAsk !== null
+      ? (bestBid + bestAsk) / 2
+      : (bestBid ?? bestAsk);
   if (ref === null) return "\u2014";
 
   const ticks = side === "bid" ? instrument.bids : instrument.asks;
@@ -84,7 +85,12 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     (currencyIndex: number, field: "buy" | "sell", value: string) => {
       setValues((prev) => ({
         ...prev,
-        [currencyIndex]: { ...prev[currencyIndex], buy: prev[currencyIndex]?.buy ?? "", sell: prev[currencyIndex]?.sell ?? "", [field]: value },
+        [currencyIndex]: {
+          ...prev[currencyIndex],
+          buy: prev[currencyIndex]?.buy ?? "",
+          sell: prev[currencyIndex]?.sell ?? "",
+          [field]: value,
+        },
       }));
     },
     [],
@@ -122,7 +128,11 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     queryClient.invalidateQueries({ queryKey: ["instrument-price"] });
   }
 
-  async function submitOne(currencyIndex: number, side: "buy" | "sell", amount: string) {
+  async function submitOne(
+    currencyIndex: number,
+    side: "buy" | "sell",
+    amount: string,
+  ) {
     const instrumentId = PAIR_CURRENCY_INDICES.indexOf(currencyIndex);
     if (instrumentId === -1) return;
     try {
@@ -135,7 +145,11 @@ export function Exchange({ denominationId }: { denominationId: number }) {
   }
 
   async function executeAll() {
-    const trades: { currencyIndex: number; side: "buy" | "sell"; amount: string }[] = [];
+    const trades: {
+      currencyIndex: number;
+      side: "buy" | "sell";
+      amount: string;
+    }[] = [];
     for (const currencyIndex of rows) {
       const rv = values[currencyIndex];
       if (rv?.buy && Number(rv.buy) > 0) {
@@ -203,7 +217,10 @@ export function Exchange({ denominationId }: { denominationId: number }) {
       <thead>
         <tr className="border-b h-10">
           {COLUMNS.map((col) => (
-            <th key={col || "name"} className="text-left px-3 align-middle whitespace-nowrap">
+            <th
+              key={col || "name"}
+              className="text-left px-3 align-middle whitespace-nowrap"
+            >
               <code>{col}</code>
             </th>
           ))}
@@ -219,7 +236,11 @@ export function Exchange({ denominationId }: { denominationId: number }) {
               currencyIndex={currencyIndex}
               instrumentId={instrumentId}
               denominationId={denominationId}
-              balance={balancesData?.balances[CURRENCIES[currencyIndex]?.address ?? "0x"] ?? "0"}
+              balance={
+                balancesData?.balances[
+                  CURRENCIES[currencyIndex]?.address ?? "0x"
+                ] ?? "0"
+              }
               buyAmount={values[currencyIndex]?.buy ?? ""}
               sellAmount={values[currencyIndex]?.sell ?? ""}
               onValueChange={setValue}
@@ -254,8 +275,16 @@ function Row({
   balance: string;
   buyAmount: string;
   sellAmount: string;
-  onValueChange: (currencyIndex: number, field: "buy" | "sell", value: string) => void;
-  onSubmitOne: (currencyIndex: number, side: "buy" | "sell", amount: string) => void;
+  onValueChange: (
+    currencyIndex: number,
+    field: "buy" | "sell",
+    value: string,
+  ) => void;
+  onSubmitOne: (
+    currencyIndex: number,
+    side: "buy" | "sell",
+    amount: string,
+  ) => void;
   onGridNav: (e: KeyboardEvent<HTMLInputElement>) => void;
   onExecuteAll: () => void;
 }) {
@@ -267,9 +296,12 @@ function Row({
     instrument?.bestBid != null && instrument?.bestAsk != null
       ? (instrument.bestBid + instrument.bestAsk) / 2
       : (instrument?.bestBid ?? instrument?.bestAsk ?? null);
-  const price = ref !== null
-    ? priceToNumber(ref).toFixed(currency?.decimals ? currency.decimals + 2 : 2)
-    : "\u2014";
+  const price =
+    ref !== null
+      ? priceToNumber(ref).toFixed(
+          currency?.decimals ? currency.decimals + 2 : 2,
+        )
+      : "\u2014";
 
   const fmtDepth = (bp: number, side: "bid" | "ask") => {
     if (!instrument) return "\u2014";
@@ -294,7 +326,7 @@ function Row({
     }
     if (e.key === "Enter") {
       const col = Number(e.currentTarget.dataset["col"]);
-      const side = col === 0 ? "buy" as const : "sell" as const;
+      const side = col === 0 ? ("buy" as const) : ("sell" as const);
       const value = col === 0 ? buyAmount : sellAmount;
       if (value) {
         onSubmitOne(currencyIndex, side, value);
@@ -307,13 +339,17 @@ function Row({
   return (
     <tr className="border-b last:border-0 h-10">
       <td className="px-3 align-middle whitespace-nowrap">
-        <code>{currency?.flag} {currency?.code}</code>
+        <code>
+          {currency?.flag} {currency?.code}
+        </code>
       </td>
       <td className="px-3 align-middle whitespace-nowrap">
         <code>{currency ? formatCurrency(balance, currency) : balance}</code>
       </td>
       <td className="px-3 align-middle whitespace-nowrap">
-        <code>{denomCurrency ? formatCurrency(price, denomCurrency) : price}</code>
+        <code>
+          {denomCurrency ? formatCurrency(price, denomCurrency) : price}
+        </code>
       </td>
       <td className="px-3 align-middle whitespace-nowrap">
         <code>{depth25Bid}</code>

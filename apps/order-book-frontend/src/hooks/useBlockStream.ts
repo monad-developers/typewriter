@@ -22,35 +22,56 @@ export function useBlockStream(capacity: number) {
       const last = prev[prev.length - 1];
       if (last?.pending) {
         const next = [...prev];
-        next[next.length - 1] = { ...last, bundles: [...last.bundles, { mutationCount }] };
+        next[next.length - 1] = {
+          ...last,
+          bundles: [...last.bundles, { mutationCount }],
+        };
         return next;
       }
-      return [...prev, {
-        number: 0n,
-        hash: "",
-        timestamp: 0n,
-        bundles: [{ mutationCount }],
-        pending: true,
-      }];
+      return [
+        ...prev,
+        {
+          number: 0n,
+          hash: "",
+          timestamp: 0n,
+          bundles: [{ mutationCount }],
+          pending: true,
+        },
+      ];
     });
   }, []);
 
-  const addBlock = useCallback((number: bigint, hash: string, timestamp: bigint) => {
-    setBlocks((prev) => {
-      const last = prev[prev.length - 1];
-      if (last?.number && last.number >= number) return prev;
-      const cap = capacityRef.current;
-      if (last?.pending) {
-        const next = [...prev];
-        next[next.length - 1] = { ...last, number, hash, timestamp, pending: false };
-        if (cap > 0 && next.length > cap) return next.slice(-1);
-        return next;
-      }
-      const block: Block = { number, hash, timestamp, bundles: [], pending: false };
-      if (cap > 0 && prev.length >= cap) return [block];
-      return [...prev, block];
-    });
-  }, []);
+  const addBlock = useCallback(
+    (number: bigint, hash: string, timestamp: bigint) => {
+      setBlocks((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.number && last.number >= number) return prev;
+        const cap = capacityRef.current;
+        if (last?.pending) {
+          const next = [...prev];
+          next[next.length - 1] = {
+            ...last,
+            number,
+            hash,
+            timestamp,
+            pending: false,
+          };
+          if (cap > 0 && next.length > cap) return next.slice(-1);
+          return next;
+        }
+        const block: Block = {
+          number,
+          hash,
+          timestamp,
+          bundles: [],
+          pending: false,
+        };
+        if (cap > 0 && prev.length >= cap) return [block];
+        return [...prev, block];
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     const blockSource = new EventSource("/api/events/blocks");

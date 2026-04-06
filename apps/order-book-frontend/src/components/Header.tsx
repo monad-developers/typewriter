@@ -13,9 +13,10 @@ export function Header({
   const { data } = useBalances(account?.address);
 
   const currency = CURRENCIES[denominationId];
-  const balance = currency && data?.balances[currency.address]
-    ? data.balances[currency.address]
-    : "0";
+  const balance =
+    currency && data?.balances[currency.address]
+      ? data.balances[currency.address]
+      : "0";
 
   return (
     <header className="w-full border-b px-4 py-3 flex items-center gap-6">

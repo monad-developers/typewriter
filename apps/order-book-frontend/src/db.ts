@@ -126,22 +126,40 @@ async function updateStatus(
   const s = status as DBStatus;
   switch (type) {
     case MutationType.CloseOrder:
-      await db.update(schema.closeOrders).set({ status: s }).where(eq(schema.closeOrders.id, id));
+      await db
+        .update(schema.closeOrders)
+        .set({ status: s })
+        .where(eq(schema.closeOrders.id, id));
       break;
     case MutationType.LimitOrder:
-      await db.update(schema.limitOrders).set({ status: s }).where(eq(schema.limitOrders.id, id));
+      await db
+        .update(schema.limitOrders)
+        .set({ status: s })
+        .where(eq(schema.limitOrders.id, id));
       break;
     case MutationType.MarketOrder:
-      await db.update(schema.marketOrders).set({ status: s }).where(eq(schema.marketOrders.id, id));
+      await db
+        .update(schema.marketOrders)
+        .set({ status: s })
+        .where(eq(schema.marketOrders.id, id));
       break;
     case MutationType.AddInstrument:
-      await db.update(schema.addInstruments).set({ status: s }).where(eq(schema.addInstruments.id, id));
+      await db
+        .update(schema.addInstruments)
+        .set({ status: s })
+        .where(eq(schema.addInstruments.id, id));
       break;
     case MutationType.Deposit:
-      await db.update(schema.deposits).set({ status: s }).where(eq(schema.deposits.id, id));
+      await db
+        .update(schema.deposits)
+        .set({ status: s })
+        .where(eq(schema.deposits.id, id));
       break;
     case MutationType.Withdrawal:
-      await db.update(schema.withdrawals).set({ status: s }).where(eq(schema.withdrawals.id, id));
+      await db
+        .update(schema.withdrawals)
+        .set({ status: s })
+        .where(eq(schema.withdrawals.id, id));
       break;
   }
 }

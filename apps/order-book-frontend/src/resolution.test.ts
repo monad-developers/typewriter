@@ -1,4 +1,4 @@
-import { test, expect, beforeEach } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import type { Address } from "viem";
 import { privateKeyToAccount, signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";

@@ -11,7 +11,13 @@ function bundleColor(mutationCount: number): string {
   return "bg-blue-600";
 }
 
-function BlockSquare({ block, finalized }: { block: Block; finalized: boolean }) {
+function BlockSquare({
+  block,
+  finalized,
+}: {
+  block: Block;
+  finalized: boolean;
+}) {
   const slotKeys = ["a", "b", "c", "d", "e", "f", "g", "h"];
   const slots = slotKeys.map((key, i) => {
     const bundle = block.bundles[i];

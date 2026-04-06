@@ -99,15 +99,27 @@ export type Signed<quantity = string> = {
 
 export type TaggedMutation =
   | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
-  | ({ type: MutationType.LimitOrder; mutation: LimitOrder<bigint> } & Signed<bigint>)
-  | ({ type: MutationType.MarketOrder; mutation: MarketOrder<bigint> } & Signed<bigint>)
+  | ({
+      type: MutationType.LimitOrder;
+      mutation: LimitOrder<bigint>;
+    } & Signed<bigint>)
+  | ({
+      type: MutationType.MarketOrder;
+      mutation: MarketOrder<bigint>;
+    } & Signed<bigint>)
   | { type: MutationType.AddInstrument; mutation: AddInstrumentParams }
   | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
-  | ({ type: MutationType.Withdrawal; mutation: Withdrawal<bigint> } & Signed<bigint>);
+  | ({
+      type: MutationType.Withdrawal;
+      mutation: Withdrawal<bigint>;
+    } & Signed<bigint>);
 
 export type ResolvedMutation =
   | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
-  | ({ type: MutationType.LimitOrder; mutation: LimitOrder<bigint> } & Signed<bigint>)
+  | ({
+      type: MutationType.LimitOrder;
+      mutation: LimitOrder<bigint>;
+    } & Signed<bigint>)
   | ({
       type: MutationType.MarketOrder;
       mutation: MarketOrder<bigint>;
@@ -115,7 +127,10 @@ export type ResolvedMutation =
     } & Signed<bigint>)
   | { type: MutationType.AddInstrument; mutation: AddInstrumentParams }
   | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
-  | ({ type: MutationType.Withdrawal; mutation: Withdrawal<bigint> } & Signed<bigint>);
+  | ({
+      type: MutationType.Withdrawal;
+      mutation: Withdrawal<bigint>;
+    } & Signed<bigint>);
 
 export function createState(): State<bigint> {
   return { accounts: {}, instruments: {} };
@@ -342,11 +357,21 @@ export function encodeWithdrawal(w: Withdrawal<bigint>): Withdrawal {
 }
 
 export function decodeSigned(s: Signed): Signed<bigint> {
-  return { account: s.account, nonce: BigInt(s.nonce), deadline: BigInt(s.deadline), signature: s.signature };
+  return {
+    account: s.account,
+    nonce: BigInt(s.nonce),
+    deadline: BigInt(s.deadline),
+    signature: s.signature,
+  };
 }
 
 export function encodeSigned(s: Signed<bigint>): Signed {
-  return { account: s.account, nonce: s.nonce.toString(), deadline: s.deadline.toString(), signature: s.signature };
+  return {
+    account: s.account,
+    nonce: s.nonce.toString(),
+    deadline: s.deadline.toString(),
+    signature: s.signature,
+  };
 }
 
 export function getAccount(
