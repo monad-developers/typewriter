@@ -86,9 +86,9 @@ export const ticks = pgTable(
       .references(() => instruments.id),
     side: uint8().notNull(),
     price: uint64().notNull(),
-    quantity: uint64().notNull().default(0n),
-    remainingQuantity: uint64().notNull().default(0n),
-    volume: uint32().notNull().default(0),
+    quantity: uint64().notNull(),
+    remainingQuantity: uint64().notNull(),
+    volume: uint32().notNull(),
   },
   (t) => [primaryKey({ columns: [t.instrumentId, t.side, t.price] })],
 );

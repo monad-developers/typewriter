@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
+import { migrate } from "drizzle-orm/bun-sql/migrator";
 import type { Address, Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { CHAIN, EXAMPLE_STATE, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
@@ -44,9 +45,11 @@ if (!process.env.DATABASE_URL) {
 
 // @ts-expect-error
 const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
+await migrate(db, { migrationsFolder: "./drizzle" });
 dbPlugin(handle, db);
 
 const server = serve({
+  idleTimeout: 0,
   routes: {
     "/api/balances": {
       GET: (req) => {
