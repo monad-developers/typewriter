@@ -1,7 +1,9 @@
 import { serve } from "bun";
+import { drizzle } from "drizzle-orm/bun-sql";
 import type { Address, Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { CHAIN, EXAMPLE_STATE, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
+import { dbPlugin } from "./db";
 import {
   type CloseOrder,
   type Deposit,
@@ -16,6 +18,7 @@ import {
 } from "./exchange";
 import index from "./index.html";
 import { startRuntime } from "./runtime";
+import * as schema from "./schema";
 
 // @ts-expect-error
 if (!process.env.DEPLOYER_PRIVATE_KEY) {
@@ -33,6 +36,15 @@ const handle = startRuntime({
   account: deployerAccount,
   address: EXCHANGE_ADDRESS,
 });
+
+// @ts-expect-error
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL env var is required");
+}
+
+// @ts-expect-error
+const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
+dbPlugin(handle, db);
 
 const server = serve({
   routes: {
@@ -197,21 +209,33 @@ const server = serve({
     },
 
     "/api/events/blocks": {
-      GET: () => new Response(handle.stream("block"), {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-      }),
+      GET: () =>
+        new Response(handle.stream("block"), {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        }),
     },
 
     "/api/events/bundles": {
-      GET: () => new Response(handle.stream("bundle"), {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-      }),
+      GET: () =>
+        new Response(handle.stream("bundle"), {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        }),
     },
 
     "/api/events/mutations": {
-      GET: () => new Response(handle.stream("mutation"), {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-      }),
+      GET: () =>
+        new Response(handle.stream("mutation"), {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        }),
     },
 
     "/*": index,

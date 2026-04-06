@@ -29,7 +29,6 @@ export type MutationStatus =
   | "finalized"
   | "verified";
 export type BundleStatus =
-  | "created"
   | "accepted"
   | "proposed"
   | "voted"
@@ -512,7 +511,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       calldata,
       mutations: mutationEvents,
     };
-    emitBundle(bundle, "created");
     emitBundle(bundle, "accepted");
 
     // TODO: submit calldata on-chain (createAccessList → prepareTransactionRequest → signTransaction → sendRawTransactionSync)
