@@ -468,6 +468,9 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     if (queue.length === 0) return;
 
     const batch = queue.splice(0);
+    yield* Effect.logDebug("flush").pipe(
+      Effect.annotateLogs({ batchSize: batch.length }),
+    );
     const mutationEvents: MutationEvent[] = [];
 
     const resolved = resolveAndOrderMutations(
@@ -511,6 +514,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       calldata,
       mutations: mutationEvents,
     };
+
+    yield* Effect.logInfo("bundle created").pipe(
+      Effect.annotateLogs({
+        bundleId,
+        mutations: mutationEvents.length,
+        calldataBytes: calldata.length / 2 - 1,
+      }),
+    );
+
     emitBundle(bundle, "accepted");
 
     // TODO: submit calldata on-chain (createAccessList → prepareTransactionRequest → signTransaction → sendRawTransactionSync)
@@ -519,15 +531,27 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       Effect.gen(function* () {
         for (const m of mutationEvents) emitMutation(m, "proposed");
         emitBundle(bundle, "proposed");
+        yield* Effect.logDebug("bundle status").pipe(
+          Effect.annotateLogs({ bundleId, status: "proposed" }),
+        );
         yield* Effect.sleep(Duration.millis(400));
         for (const m of mutationEvents) emitMutation(m, "voted");
         emitBundle(bundle, "voted");
+        yield* Effect.logDebug("bundle status").pipe(
+          Effect.annotateLogs({ bundleId, status: "voted" }),
+        );
         yield* Effect.sleep(Duration.millis(400));
         for (const m of mutationEvents) emitMutation(m, "finalized");
         emitBundle(bundle, "finalized");
+        yield* Effect.logDebug("bundle status").pipe(
+          Effect.annotateLogs({ bundleId, status: "finalized" }),
+        );
         yield* Effect.sleep(Duration.millis(1200));
         for (const m of mutationEvents) emitMutation(m, "verified");
         emitBundle(bundle, "verified");
+        yield* Effect.logInfo("bundle verified").pipe(
+          Effect.annotateLogs({ bundleId }),
+        );
       }),
     );
   });
@@ -543,6 +567,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     const block = yield* Effect.promise(() => publicClient.getBlock());
     if (block.number !== null && block.number > lastBlockNumber) {
       lastBlockNumber = block.number;
+      yield* Effect.logDebug("block").pipe(
+        Effect.annotateLogs({
+          number: block.number.toString(),
+          hash: block.hash,
+        }),
+      );
       emitBlock({
         number: block.number,
         hash: block.hash as Hex,
@@ -559,11 +589,40 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const fiber = Effect.runFork(program);
   const blockFiber = Effect.runFork(blockProgram);
 
+  Effect.runSync(
+    Effect.logInfo("runtime started").pipe(
+      Effect.annotateLogs({
+        chain: config.chain.id,
+        address: config.address,
+        flushIntervalMs: config.flushIntervalMs,
+      }),
+    ),
+  );
+
   async function execute<T extends TaggedMutation>(
     mutation: T,
   ): Promise<{ id: number } & Extract<ResolvedMutation, { type: T["type"] }>> {
-    await verifySignature(mutation);
-    dryRun(state, mutation);
+    const typeName = MutationType[mutation.type];
+    const account =
+      mutation.type !== MutationType.AddInstrument
+        ? mutation.account
+        : undefined;
+
+    try {
+      await verifySignature(mutation);
+      dryRun(state, mutation);
+    } catch (err) {
+      Effect.runSync(
+        Effect.logWarning("mutation rejected").pipe(
+          Effect.annotateLogs({
+            type: typeName,
+            account: account ?? "n/a",
+            error: String(err),
+          }),
+        ),
+      );
+      throw err;
+    }
 
     if (mutation.type !== MutationType.AddInstrument) {
       getAccount(state, mutation.account).nonce++;
@@ -579,12 +638,25 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       resolve: resolve as (resolved: { id: number } & ResolvedMutation) => void,
     });
     emitMutation({ id, ...mutation } as MutationEvent, "queued");
+
+    Effect.runSync(
+      Effect.logInfo("mutation queued").pipe(
+        Effect.annotateLogs({
+          mutationId: id,
+          type: typeName,
+          account: account ?? "n/a",
+        }),
+      ),
+    );
+
     return promise;
   }
 
   async function stop(): Promise<void> {
+    Effect.runSync(Effect.logInfo("runtime stopping"));
     await Effect.runPromise(Fiber.interrupt(blockFiber));
     await Effect.runPromise(Fiber.interrupt(fiber));
+    Effect.runSync(Effect.logInfo("runtime stopped"));
   }
 
   type MutationCb = (mutation: MutationEvent, status: MutationStatus) => void;
