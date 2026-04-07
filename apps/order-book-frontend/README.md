@@ -7,7 +7,7 @@ React + Tailwind frontend for the tx-lifecycle-demo-app, served via [Bun](https:
 | Variable | Required | Description |
 |---|---|---|
 | `DEPLOYER_PRIVATE_KEY` | Yes | Private key used to fund new accounts on sign-in |
-| `BUN_PUBLIC_TOKEN_ADDRESS` | Yes | Deployed token contract address |
+| `BUN_PUBLIC_EXCHANGE_ADDRESS` | Yes | Deployed Exchange contract address |
 | `BUN_PUBLIC_RPC_URL` | Yes | JSON-RPC URL the app connects to |
 | `BUN_PUBLIC_CHAIN_ID` | Yes | Chain ID (31337 for Anvil, 10143 for Monad testnet) |
 
