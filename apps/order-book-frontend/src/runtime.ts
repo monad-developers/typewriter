@@ -6,9 +6,11 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   http,
+  parseSignature,
   recoverTypedDataAddress,
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
+import { sendRawTransactionSync } from "viem/actions";
 import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
 import {
   getAccount,
@@ -135,6 +137,9 @@ const EXECUTE_ABI = [
     stateMutability: "nonpayable",
   },
 ] as const;
+
+const ZERO_BYTES32 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 
 function encodeMutationData(resolved: ResolvedMutation): Hex {
   switch (resolved.type) {
@@ -269,8 +274,14 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
 }
 
 function encodeBundle(resolved: ResolvedMutation[]): Hex {
-  const zeroBytes32 =
-    "0x0000000000000000000000000000000000000000000000000000000000000000" as Hex;
+  const signatures = resolved.map((mutation) => {
+    if (mutation.type === MutationType.AddInstrument) {
+      return { v: 0, r: ZERO_BYTES32, s: ZERO_BYTES32 };
+    }
+
+    const { v, r, s } = parseSignature(mutation.signature);
+    return { v: Number(v), r, s };
+  });
 
   return encodeFunctionData({
     abi: EXECUTE_ABI,
@@ -279,9 +290,9 @@ function encodeBundle(resolved: ResolvedMutation[]): Hex {
       {
         mutations: resolved.map((r) => r.type),
         mutationData: resolved.map(encodeMutationData),
-        v: resolved.map(() => 0),
-        r: resolved.map(() => zeroBytes32),
-        s: resolved.map(() => zeroBytes32),
+        v: signatures.map((sig) => sig.v),
+        r: signatures.map((sig) => sig.r),
+        s: signatures.map((sig) => sig.s),
       },
     ],
   });
@@ -525,33 +536,74 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     emitBundle(bundle, "accepted");
 
-    // TODO: submit calldata on-chain (createAccessList → prepareTransactionRequest → signTransaction → sendRawTransactionSync)
+    const { accessList, gasUsed } = yield* Effect.promise(() =>
+      publicClient.createAccessList({
+        account: config.account.address,
+        to: config.address,
+        data: bundle.calldata,
+      }),
+    );
 
-    yield* Effect.forkDaemon(
-      Effect.gen(function* () {
-        for (const m of mutationEvents) emitMutation(m, "proposed");
-        emitBundle(bundle, "proposed");
-        yield* Effect.logDebug("bundle status").pipe(
-          Effect.annotateLogs({ bundleId, status: "proposed" }),
-        );
-        yield* Effect.sleep(Duration.millis(400));
-        for (const m of mutationEvents) emitMutation(m, "voted");
-        emitBundle(bundle, "voted");
-        yield* Effect.logDebug("bundle status").pipe(
-          Effect.annotateLogs({ bundleId, status: "voted" }),
-        );
-        yield* Effect.sleep(Duration.millis(400));
-        for (const m of mutationEvents) emitMutation(m, "finalized");
-        emitBundle(bundle, "finalized");
-        yield* Effect.logDebug("bundle status").pipe(
-          Effect.annotateLogs({ bundleId, status: "finalized" }),
-        );
-        yield* Effect.sleep(Duration.millis(1200));
-        for (const m of mutationEvents) emitMutation(m, "verified");
-        emitBundle(bundle, "verified");
-        yield* Effect.logInfo("bundle verified").pipe(
-          Effect.annotateLogs({ bundleId }),
-        );
+    const request = yield* Effect.promise(() =>
+      walletClient.prepareTransactionRequest({
+        to: config.address,
+        data: bundle.calldata,
+        accessList,
+        gas: gasUsed + gasUsed / 10n,
+      }),
+    );
+
+    const signed = yield* Effect.promise(() =>
+      walletClient.signTransaction(request),
+    );
+
+    const receipt = yield* Effect.promise(() =>
+      sendRawTransactionSync(walletClient, {
+        serializedTransaction: signed,
+      }),
+    );
+
+    for (const mutation of mutationEvents) {
+      emitMutation(mutation, "proposed");
+    }
+    emitBundle(bundle, "proposed");
+
+    yield* Effect.logInfo("bundle proposed").pipe(
+      Effect.annotateLogs({
+        bundleId: bundle.id,
+        transactionHash: receipt.transactionHash,
+        blockNumber: receipt.blockNumber.toString(),
+      }),
+    );
+
+    yield* Effect.sleep(Duration.millis(400));
+    for (const mutation of mutationEvents) emitMutation(mutation, "voted");
+    emitBundle(bundle, "voted");
+
+    yield* Effect.logDebug("bundle status").pipe(
+      Effect.annotateLogs({ bundleId: bundle.id, status: "voted" }),
+    );
+
+    yield* Effect.sleep(Duration.millis(400));
+    for (const mutation of mutationEvents) {
+      emitMutation(mutation, "finalized");
+    }
+    emitBundle(bundle, "finalized");
+
+    yield* Effect.logDebug("bundle status").pipe(
+      Effect.annotateLogs({ bundleId: bundle.id, status: "finalized" }),
+    );
+
+    yield* Effect.sleep(Duration.millis(1200));
+    for (const mutation of mutationEvents) {
+      emitMutation(mutation, "verified");
+    }
+    emitBundle(bundle, "verified");
+
+    yield* Effect.logInfo("bundle verified").pipe(
+      Effect.annotateLogs({
+        bundleId: bundle.id,
+        transactionHash: receipt.transactionHash,
       }),
     );
   });
