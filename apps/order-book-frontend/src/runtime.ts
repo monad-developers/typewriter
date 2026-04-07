@@ -1,5 +1,13 @@
 import { Duration, Effect, Fiber, Schedule } from "effect";
-import type { Address, Chain, Hex } from "viem";
+import type {
+  Address,
+  Chain,
+  CreateAccessListErrorType,
+  Hex,
+  PrepareTransactionRequestErrorType,
+  SendRawTransactionSyncErrorType,
+  SignTransactionErrorType,
+} from "viem";
 import {
   createPublicClient,
   createWalletClient,
@@ -475,7 +483,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     }
   }
 
-  const flushOnce = Effect.gen(function* () {
+  const flush = Effect.gen(function* () {
     if (queue.length === 0) return;
 
     const batch = queue.splice(0);
@@ -536,32 +544,39 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     emitBundle(bundle, "accepted");
 
-    const { accessList, gasUsed } = yield* Effect.promise(() =>
-      publicClient.createAccessList({
-        account: config.account.address,
-        to: config.address,
-        data: bundle.calldata,
-      }),
-    );
+    const { accessList, gasUsed } = yield* Effect.tryPromise({
+      try: () =>
+        publicClient.createAccessList({
+          account: config.account.address,
+          to: config.address,
+          data: bundle.calldata,
+        }),
+      catch: (error) => error as CreateAccessListErrorType,
+    });
 
-    const request = yield* Effect.promise(() =>
-      walletClient.prepareTransactionRequest({
-        to: config.address,
-        data: bundle.calldata,
-        accessList,
-        gas: gasUsed + gasUsed / 10n,
-      }),
-    );
+    const request = yield* Effect.tryPromise({
+      try: () =>
+        walletClient.prepareTransactionRequest({
+          to: config.address,
+          data: bundle.calldata,
+          accessList,
+          gas: gasUsed + gasUsed / 10n,
+        }),
+      catch: (error) => error as PrepareTransactionRequestErrorType,
+    });
 
-    const signed = yield* Effect.promise(() =>
-      walletClient.signTransaction(request),
-    );
+    const signed = yield* Effect.tryPromise({
+      try: () => walletClient.signTransaction(request),
+      catch: (error) => error as SignTransactionErrorType,
+    });
 
-    const receipt = yield* Effect.promise(() =>
-      sendRawTransactionSync(walletClient, {
-        serializedTransaction: signed,
-      }),
-    );
+    const receipt = yield* Effect.tryPromise({
+      try: () =>
+        sendRawTransactionSync(walletClient, {
+          serializedTransaction: signed,
+        }),
+      catch: (error) => error as SendRawTransactionSyncErrorType,
+    });
 
     for (const mutation of mutationEvents) {
       emitMutation(mutation, "proposed");
@@ -570,7 +585,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     yield* Effect.logInfo("bundle proposed").pipe(
       Effect.annotateLogs({
-        bundleId: bundle.id,
+        bundleId,
         transactionHash: receipt.transactionHash,
         blockNumber: receipt.blockNumber.toString(),
       }),
@@ -609,8 +624,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   });
 
   const program = Effect.repeat(
-    flushOnce,
-    Schedule.spaced(Duration.millis(config.flushIntervalMs)),
+    flush.pipe(Effect.tapError((error) => Effect.logError(error))),
+    Schedule.fixed(Duration.millis(config.flushIntervalMs)),
   );
 
   let lastBlockNumber = -1n;
@@ -664,15 +679,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       await verifySignature(mutation);
       dryRun(state, mutation);
     } catch (err) {
-      Effect.runSync(
-        Effect.logWarning("mutation rejected").pipe(
-          Effect.annotateLogs({
-            type: typeName,
-            account: account ?? "n/a",
-            error: String(err),
-          }),
-        ),
-      );
+      Effect.runSync(Effect.logError(err));
       throw err;
     }
 
