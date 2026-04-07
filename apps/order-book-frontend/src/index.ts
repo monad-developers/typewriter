@@ -3,7 +3,13 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
 import type { Address, Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { CHAIN, EXAMPLE_STATE, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
+import {
+  CHAIN,
+  CURRENCIES,
+  EXAMPLE_STATE,
+  EXCHANGE_ADDRESS,
+  RPC_URL,
+} from "./constants";
 import { dbPlugin } from "./db";
 import {
   type CloseOrder,
@@ -62,8 +68,18 @@ const server = serve({
           );
 
         const acc = handle.state.accounts[account];
-        if (!acc)
-          return Response.json({ error: "Account not found" }, { status: 404 });
+        if (!acc) {
+          const balances: Record<string, string> = {};
+          for (const currency of CURRENCIES) {
+            balances[currency.address] = "0";
+          }
+
+          return Response.json({
+            account,
+            nonce: "0",
+            balances,
+          });
+        }
 
         const balances: Record<string, string> = {};
         for (const [asset, balance] of Object.entries(acc.balances)) {

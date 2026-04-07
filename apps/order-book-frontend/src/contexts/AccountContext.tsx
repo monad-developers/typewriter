@@ -1,8 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import type { Address } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { CURRENCIES } from "../constants";
-import { signDeposit } from "../hooks/useSign";
 
 export type Account = {
   address: Address;
@@ -21,29 +19,16 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    (async () => {
+    try {
       const privateKey = generatePrivateKey();
       const wallet = privateKeyToAccount(privateKey);
       const acc: Account = { address: wallet.address, privateKey };
 
-      let nonce = 0n;
-      for (const currency of CURRENCIES) {
-        const amount = BigInt(Math.floor(50000 / currency.rateToUsd));
-        const signed = await signDeposit(acc, nonce, {
-          asset: currency.address,
-          amount,
-        });
-        await fetch("/api/mint", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(signed),
-        });
-        nonce++;
-      }
-
       setAccount(acc);
       setLoading(false);
-    })().catch(() => setLoading(false));
+    } catch {
+      setLoading(false);
+    }
   }, []);
 
   return (

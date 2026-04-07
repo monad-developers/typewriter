@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useCallback, useRef, useState } from "react";
 import { CURRENCIES, formatCurrency, Q32 } from "../constants";
 import { useAccountContext } from "../contexts/AccountContext";
@@ -7,7 +6,7 @@ import {
   type InstrumentPriceResponse,
   useInstrumentPrice,
 } from "../hooks/useInstrumentPrice";
-import { signMarketOrder } from "../hooks/useSign";
+import { useMarketOrderMutation } from "../hooks/useMarketOrderMutation";
 
 const COLUMNS = [
   "",
@@ -74,8 +73,8 @@ const PAIR_CURRENCY_INDICES = [0, 2, 3, 4];
 export function Exchange({ denominationId }: { denominationId: number }) {
   const { account } = useAccountContext();
   const { data: balancesData } = useBalances(account?.address);
-  const queryClient = useQueryClient();
   const tableRef = useRef<HTMLTableElement>(null);
+  const marketOrderMutation = useMarketOrderMutation();
 
   const rows = PAIR_CURRENCY_INDICES.filter((i) => i !== denominationId);
 
@@ -102,30 +101,12 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     amount: string,
     nonceOffset = 0,
   ) {
-    if (!account) return;
-    const nonce = BigInt(balancesData?.nonce ?? "0") + BigInt(nonceOffset);
-    const signed = await signMarketOrder(account, nonce, {
-      quantity: BigInt(amount),
-      minReceivedQuantity: 0n,
+    return marketOrderMutation.mutateAsync({
       instrumentId,
-      bidOrAsk: side === "buy" ? 0 : 1,
+      side,
+      amount,
+      nonceOffset,
     });
-
-    const res = await fetch("/api/market-order", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(signed),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => null);
-      throw new Error(err?.error ?? "Order failed");
-    }
-    return res.json();
-  }
-
-  function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["balances"] });
-    queryClient.invalidateQueries({ queryKey: ["instrument-price"] });
   }
 
   async function submitOne(
@@ -138,7 +119,6 @@ export function Exchange({ denominationId }: { denominationId: number }) {
     try {
       await postMarketOrder(instrumentId, side, amount);
       setValue(currencyIndex, side, "");
-      invalidate();
     } catch (err) {
       console.error("Order failed:", err);
     }
@@ -168,7 +148,6 @@ export function Exchange({ denominationId }: { denominationId: number }) {
         }),
       );
       setValues({});
-      invalidate();
     } catch (err) {
       console.error("Batch order failed:", err);
     }
