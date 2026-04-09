@@ -7,6 +7,7 @@ import {
     Exchange,
     ExecuteParams,
     Mutation,
+    Signature,
     Unauthorized,
     LengthMismatch
 } from "src/Exchange.sol";
@@ -16,9 +17,7 @@ contract ExecuteTest is Test, Exchange(address(1)) {
         ExecuteParams memory params;
         params.mutations = new Mutation[](0);
         params.mutationData = new bytes[](0);
-        params.v = new uint8[](0);
-        params.r = new bytes32[](0);
-        params.s = new bytes32[](0);
+        params.signatures = new Signature[](0);
 
         vm.expectRevert(Unauthorized.selector);
         this.execute(params);
@@ -28,9 +27,7 @@ contract ExecuteTest is Test, Exchange(address(1)) {
         ExecuteParams memory params;
         params.mutations = new Mutation[](1);
         params.mutationData = new bytes[](0);
-        params.v = new uint8[](1);
-        params.r = new bytes32[](1);
-        params.s = new bytes32[](1);
+        params.signatures = new Signature[](1);
 
         vm.prank(address(1));
         vm.expectRevert(LengthMismatch.selector);
