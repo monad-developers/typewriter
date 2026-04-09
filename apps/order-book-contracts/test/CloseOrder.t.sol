@@ -13,7 +13,7 @@ import {
 contract CloseOrderTest is Test, Exchange(address(0)) {
     address constant BASE = address(1);
     address constant QUOTE = address(2);
-    address constant ACCOUNT = address(100);
+    bytes32 constant ACCOUNT = bytes32(uint256(100));
     uint64 constant Q32 = 1 << 32;
 
     function setUp() public {
@@ -26,7 +26,7 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
         state.accounts[ACCOUNT].balances[QUOTE] = 1000;
     }
 
-    function callCloseOrder(CloseOrder memory close, address account) external {
+    function callCloseOrder(CloseOrder memory close, bytes32 account) external {
         _executeCloseOrder(close, account);
     }
 

@@ -17,7 +17,7 @@ import {
 contract MarketOrderTest is Test, Exchange(address(0)) {
     address constant BASE = address(1);
     address constant QUOTE = address(2);
-    address constant ACCOUNT = address(100);
+    bytes32 constant ACCOUNT = bytes32(uint256(100));
     uint64 constant Q32 = 1 << 32;
 
     function setUp() public {
@@ -36,7 +36,7 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         state.instruments[0].bids[10 * Q32].remainingQuantity = 100;
     }
 
-    function callMarketOrder(MarketOrder memory order, MarketOrderResolution memory res, address account) external {
+    function callMarketOrder(MarketOrder memory order, MarketOrderResolution memory res, bytes32 account) external {
         _executeMarketOrder(order, res, account);
     }
 

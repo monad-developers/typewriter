@@ -7,6 +7,7 @@ import {
     Exchange,
     ExecuteParams,
     Mutation,
+    Signature,
     AddInstrumentParams,
     Deposit,
     Withdrawal,
@@ -15,146 +16,212 @@ import {
     MarketOrderResolution,
     CloseOrder,
     Fill,
+    PERM_AUTHORIZE,
     MutationsOutOfOrder,
     SignatureExpired,
-    InvalidNonce,
-    InvalidSignature,
-    InsufficientBalance
+    InvalidNonce
 } from "src/Exchange.sol";
 
+import {
+    KeyType,
+    Initialize,
+    InvalidSignature,
+    KeyNotFound,
+    INITIALIZE_TYPEHASH
+} from "src/Account.sol";
+
 contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
-    address constant SCHEDULER = address(0xBEEF);
     address constant BASE = address(0x1);
     address constant QUOTE = address(0x2);
     uint64 constant Q32 = 1 << 32;
 
     uint256 makerPk = 0xA11CE;
     uint256 takerPk = 0xB0B;
-    address maker;
-    address taker;
+    bytes32 makerAccount;
+    bytes32 takerAccount;
 
     bytes32 constant _DEPOSIT_TYPEHASH =
         keccak256("Deposit(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
     bytes32 constant _WITHDRAWAL_TYPEHASH =
         keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
-    bytes32 constant _LIMIT_ORDER_TYPEHASH =
-        keccak256("LimitOrder(uint64 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)");
-    bytes32 constant _MARKET_ORDER_TYPEHASH =
-        keccak256("MarketOrder(uint64 quantity,uint64 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)");
+    bytes32 constant _LIMIT_ORDER_TYPEHASH = keccak256(
+        "LimitOrder(uint64 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 constant _MARKET_ORDER_TYPEHASH = keccak256(
+        "MarketOrder(uint64 quantity,uint64 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+    );
     bytes32 constant _CLOSE_ORDER_TYPEHASH =
         keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
 
     function setUp() public {
-        maker = vm.addr(makerPk);
-        taker = vm.addr(takerPk);
+        makerAccount = bytes32(uint256(uint160(vm.addr(makerPk))));
+        takerAccount = bytes32(uint256(uint160(vm.addr(takerPk))));
     }
 
-    function _sign(uint256 pk, bytes32 structHash) internal view returns (uint8, bytes32, bytes32) {
+    function _sign(uint256 pk, bytes32 structHash) internal view returns (bytes memory) {
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
-        return vm.sign(pk, digest);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encode(v, r, s);
     }
 
-    function _exec(
-        Mutation[] memory mutations,
-        bytes[] memory data,
-        uint8[] memory v,
-        bytes32[] memory r,
-        bytes32[] memory s
-    ) internal {
+    function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(ExecuteParams({
-            mutations: mutations,
-            mutationData: data,
-            v: v,
-            r: r,
-            s: s
-        }));
+        this.execute(ExecuteParams({mutations: mutations, mutationData: data, signatures: sigs}));
+    }
+
+    function _initAccount(uint256 pk, bytes32 acc) internal {
+        Initialize memory init = Initialize({
+            account: acc,
+            expiry: 0,
+            keyType: uint8(KeyType.Secp256k1),
+            permissions: type(uint8).max,
+            publicKey: abi.encode(vm.addr(pk))
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.Initialize;
+        data[0] = abi.encode(init);
+        sigs[0] = Signature({
+            account: acc,
+            keyId: 0,
+            rawSignature: _sign(
+                pk,
+                keccak256(
+                    abi.encode(
+                        INITIALIZE_TYPEHASH, init.account, init.expiry, init.keyType, init.permissions,
+                        keccak256(init.publicKey)
+                    )
+                )
+            )
+        });
+
+        _exec(muts, data, sigs);
     }
 
     function _setupInstrument() internal {
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
         muts[0] = Mutation.AddInstrument;
-        data[0] = abi.encode(AddInstrumentParams({
-            instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0
-        }));
+        data[0] = abi.encode(
+            AddInstrumentParams({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
+        );
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
     }
 
-    function _deposit(uint256 pk, uint256 nonce, address asset, uint256 amount) internal {
+    function _deposit(uint256 pk, bytes32 acc, uint256 nonce, address asset, uint256 amount) internal {
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.Deposit;
         Deposit memory d = Deposit({asset: asset, amount: amount, nonce: nonce, deadline: type(uint256).max});
+        muts[0] = Mutation.Deposit;
         data[0] = abi.encode(d);
-        (v[0], r[0], s[0]) = _sign(pk, keccak256(abi.encode(
-            _DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline
-        )));
+        sigs[0] = Signature({
+            account: acc,
+            keyId: 0,
+            rawSignature: _sign(pk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+        });
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
     }
 
-    function _placeLimitOrder(uint256 pk, uint256 nonce, uint64 quantity, uint64 price, uint8 bidOrAsk) internal {
+    function _placeLimitOrder(uint256 pk, bytes32 acc, uint256 nonce, uint64 quantity, uint64 price, uint8 bidOrAsk)
+        internal
+    {
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.LimitOrder;
         LimitOrder memory order = LimitOrder({
-            quantity: quantity, instrumentId: 0, price: price, bidOrAsk: bidOrAsk, nonce: nonce, deadline: type(uint256).max
+            quantity: quantity,
+            instrumentId: 0,
+            price: price,
+            bidOrAsk: bidOrAsk,
+            nonce: nonce,
+            deadline: type(uint256).max
         });
+        muts[0] = Mutation.LimitOrder;
         data[0] = abi.encode(order);
-        (v[0], r[0], s[0]) = _sign(pk, keccak256(abi.encode(
-            _LIMIT_ORDER_TYPEHASH, order.quantity, order.instrumentId, order.price, order.bidOrAsk, order.nonce, order.deadline
-        )));
+        sigs[0] = Signature({
+            account: acc,
+            keyId: 0,
+            rawSignature: _sign(
+                pk,
+                keccak256(
+                    abi.encode(
+                        _LIMIT_ORDER_TYPEHASH,
+                        order.quantity,
+                        order.instrumentId,
+                        order.price,
+                        order.bidOrAsk,
+                        order.nonce,
+                        order.deadline
+                    )
+                )
+            )
+        });
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
     }
 
     function test_LimitOrder_Cold() external {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
+        _initAccount(makerPk, makerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.LimitOrder;
         LimitOrder memory order = LimitOrder({
-            quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 1, deadline: type(uint256).max
+            quantity: 10,
+            instrumentId: 0,
+            price: 10 * Q32,
+            bidOrAsk: 0,
+            nonce: 1,
+            deadline: type(uint256).max
         });
+        muts[0] = Mutation.LimitOrder;
         data[0] = abi.encode(order);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _LIMIT_ORDER_TYPEHASH, order.quantity, order.instrumentId, order.price, order.bidOrAsk, order.nonce, order.deadline
-        )));
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk,
+                keccak256(
+                    abi.encode(
+                        _LIMIT_ORDER_TYPEHASH,
+                        order.quantity,
+                        order.instrumentId,
+                        order.price,
+                        order.bidOrAsk,
+                        order.nonce,
+                        order.deadline
+                    )
+                )
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[maker].balances[QUOTE], 9900);
-        assertEq(state.accounts[maker].orders.length, 1);
-        assertEq(state.accounts[maker].orders[0].quantity, 10);
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 9900);
+        assertEq(state.accounts[makerAccount].orders.length, 1);
+        assertEq(state.accounts[makerAccount].orders[0].quantity, 10);
         assertEq(state.instruments[0].bids[10 * Q32].quantity, 10);
         assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 10);
-        assertEq(state.accounts[maker].nonce, 2);
+        assertEq(state.accounts[makerAccount].nonces[0],2);
 
         vm.resumeGasMetering();
     }
@@ -163,33 +230,52 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
-        _placeLimitOrder(makerPk, 1, 10, 10 * Q32, 0);
+        _initAccount(makerPk, makerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
+        _placeLimitOrder(makerPk, makerAccount, 1, 10, 10 * Q32, 0);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.LimitOrder;
         LimitOrder memory order = LimitOrder({
-            quantity: 5, instrumentId: 0, price: 20 * Q32, bidOrAsk: 0, nonce: 2, deadline: type(uint256).max
+            quantity: 5,
+            instrumentId: 0,
+            price: 20 * Q32,
+            bidOrAsk: 0,
+            nonce: 2,
+            deadline: type(uint256).max
         });
+        muts[0] = Mutation.LimitOrder;
         data[0] = abi.encode(order);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _LIMIT_ORDER_TYPEHASH, order.quantity, order.instrumentId, order.price, order.bidOrAsk, order.nonce, order.deadline
-        )));
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk,
+                keccak256(
+                    abi.encode(
+                        _LIMIT_ORDER_TYPEHASH,
+                        order.quantity,
+                        order.instrumentId,
+                        order.price,
+                        order.bidOrAsk,
+                        order.nonce,
+                        order.deadline
+                    )
+                )
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[maker].balances[QUOTE], 9900 - 100);
-        assertEq(state.accounts[maker].orders.length, 2);
-        assertEq(state.accounts[maker].orders[1].quantity, 5);
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 9900 - 100);
+        assertEq(state.accounts[makerAccount].orders.length, 2);
+        assertEq(state.accounts[makerAccount].orders[1].quantity, 5);
         assertEq(state.instruments[0].bids[20 * Q32].quantity, 5);
 
         vm.resumeGasMetering();
@@ -199,38 +285,58 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
-        _deposit(takerPk, 0, BASE, 10000);
-        _placeLimitOrder(makerPk, 1, 100, 10 * Q32, 0);
+        _initAccount(makerPk, makerAccount);
+        _initAccount(takerPk, takerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
+        _deposit(takerPk, takerAccount, 0, BASE, 10000);
+        _placeLimitOrder(makerPk, makerAccount, 1, 100, 10 * Q32, 0);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
         Fill[] memory fills = new Fill[](1);
         fills[0] = Fill({quantity: 10, price: 10 * Q32});
 
-        muts[0] = Mutation.MarketOrder;
         MarketOrder memory order = MarketOrder({
-            quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 1, deadline: type(uint256).max
+            quantity: 10,
+            minReceivedQuantity: 0,
+            instrumentId: 0,
+            bidOrAsk: 1,
+            nonce: 1,
+            deadline: type(uint256).max
         });
+        muts[0] = Mutation.MarketOrder;
         data[0] = abi.encode(order, MarketOrderResolution({fills: fills}));
-        (v[0], r[0], s[0]) = _sign(takerPk, keccak256(abi.encode(
-            _MARKET_ORDER_TYPEHASH, order.quantity, order.minReceivedQuantity, order.instrumentId, order.bidOrAsk, order.nonce, order.deadline
-        )));
+        sigs[0] = Signature({
+            account: takerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                takerPk,
+                keccak256(
+                    abi.encode(
+                        _MARKET_ORDER_TYPEHASH,
+                        order.quantity,
+                        order.minReceivedQuantity,
+                        order.instrumentId,
+                        order.bidOrAsk,
+                        order.nonce,
+                        order.deadline
+                    )
+                )
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[taker].balances[BASE], 9990);
-        assertEq(state.accounts[taker].balances[QUOTE], 100);
+        assertEq(state.accounts[takerAccount].balances[BASE], 9990);
+        assertEq(state.accounts[takerAccount].balances[QUOTE], 100);
         assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 90);
-        assertEq(state.accounts[taker].nonce, 2);
+        assertEq(state.accounts[takerAccount].nonces[0],2);
 
         vm.resumeGasMetering();
     }
@@ -239,57 +345,95 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
-        _deposit(takerPk, 0, BASE, 10000);
-        _placeLimitOrder(makerPk, 1, 100, 10 * Q32, 0);
-
-        Fill[] memory coldFills = new Fill[](1);
-        coldFills[0] = Fill({quantity: 10, price: 10 * Q32});
+        _initAccount(makerPk, makerAccount);
+        _initAccount(takerPk, takerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
+        _deposit(takerPk, takerAccount, 0, BASE, 10000);
+        _placeLimitOrder(makerPk, makerAccount, 1, 100, 10 * Q32, 0);
 
         {
             Mutation[] memory m = new Mutation[](1);
             bytes[] memory d = new bytes[](1);
-            uint8[] memory _v = new uint8[](1);
-            bytes32[] memory _r = new bytes32[](1);
-            bytes32[] memory _s = new bytes32[](1);
+            Signature[] memory s = new Signature[](1);
 
-            m[0] = Mutation.MarketOrder;
             MarketOrder memory coldOrder = MarketOrder({
-                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 1, deadline: type(uint256).max
+                quantity: 10,
+                minReceivedQuantity: 0,
+                instrumentId: 0,
+                bidOrAsk: 1,
+                nonce: 1,
+                deadline: type(uint256).max
             });
+            m[0] = Mutation.MarketOrder;
+            d[0] = abi.encode(coldOrder, MarketOrderResolution({fills: new Fill[](1)}));
+            Fill[] memory coldFills = new Fill[](1);
+            coldFills[0] = Fill({quantity: 10, price: 10 * Q32});
             d[0] = abi.encode(coldOrder, MarketOrderResolution({fills: coldFills}));
-            (_v[0], _r[0], _s[0]) = _sign(takerPk, keccak256(abi.encode(
-                _MARKET_ORDER_TYPEHASH, coldOrder.quantity, coldOrder.minReceivedQuantity, coldOrder.instrumentId, coldOrder.bidOrAsk, coldOrder.nonce, coldOrder.deadline
-            )));
-            _exec(m, d, _v, _r, _s);
+            s[0] = Signature({
+                account: takerAccount,
+                keyId: 0,
+                rawSignature: _sign(
+                    takerPk,
+                    keccak256(
+                        abi.encode(
+                            _MARKET_ORDER_TYPEHASH,
+                            coldOrder.quantity,
+                            coldOrder.minReceivedQuantity,
+                            coldOrder.instrumentId,
+                            coldOrder.bidOrAsk,
+                            coldOrder.nonce,
+                            coldOrder.deadline
+                        )
+                    )
+                )
+            });
+            _exec(m, d, s);
         }
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
         Fill[] memory fills = new Fill[](1);
         fills[0] = Fill({quantity: 5, price: 10 * Q32});
 
-        muts[0] = Mutation.MarketOrder;
         MarketOrder memory order = MarketOrder({
-            quantity: 5, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 2, deadline: type(uint256).max
+            quantity: 5,
+            minReceivedQuantity: 0,
+            instrumentId: 0,
+            bidOrAsk: 1,
+            nonce: 2,
+            deadline: type(uint256).max
         });
+        muts[0] = Mutation.MarketOrder;
         data[0] = abi.encode(order, MarketOrderResolution({fills: fills}));
-        (v[0], r[0], s[0]) = _sign(takerPk, keccak256(abi.encode(
-            _MARKET_ORDER_TYPEHASH, order.quantity, order.minReceivedQuantity, order.instrumentId, order.bidOrAsk, order.nonce, order.deadline
-        )));
+        sigs[0] = Signature({
+            account: takerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                takerPk,
+                keccak256(
+                    abi.encode(
+                        _MARKET_ORDER_TYPEHASH,
+                        order.quantity,
+                        order.minReceivedQuantity,
+                        order.instrumentId,
+                        order.bidOrAsk,
+                        order.nonce,
+                        order.deadline
+                    )
+                )
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[taker].balances[BASE], 9985);
-        assertEq(state.accounts[taker].balances[QUOTE], 150);
+        assertEq(state.accounts[takerAccount].balances[BASE], 9985);
+        assertEq(state.accounts[takerAccount].balances[QUOTE], 150);
         assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 85);
 
         vm.resumeGasMetering();
@@ -299,30 +443,33 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
-        _placeLimitOrder(makerPk, 1, 50, 10 * Q32, 0);
+        _initAccount(makerPk, makerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
+        _placeLimitOrder(makerPk, makerAccount, 1, 50, 10 * Q32, 0);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.CloseOrder;
         CloseOrder memory close = CloseOrder({orderId: 0, nonce: 2, deadline: type(uint256).max});
+        muts[0] = Mutation.CloseOrder;
         data[0] = abi.encode(close);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _CLOSE_ORDER_TYPEHASH, close.orderId, close.nonce, close.deadline
-        )));
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_CLOSE_ORDER_TYPEHASH, close.orderId, close.nonce, close.deadline))
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[maker].balances[QUOTE], 10000);
-        assertEq(state.accounts[maker].orders[0].quantity, 0);
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 10000);
+        assertEq(state.accounts[makerAccount].orders[0].quantity, 0);
         assertEq(state.instruments[0].bids[10 * Q32].quantity, 0);
 
         vm.resumeGasMetering();
@@ -332,28 +479,31 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
+        _initAccount(makerPk, makerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.Withdrawal;
         Withdrawal memory w = Withdrawal({asset: QUOTE, amount: 3000, nonce: 1, deadline: type(uint256).max});
+        muts[0] = Mutation.Withdrawal;
         data[0] = abi.encode(w);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _WITHDRAWAL_TYPEHASH, w.asset, w.amount, w.nonce, w.deadline
-        )));
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_WITHDRAWAL_TYPEHASH, w.asset, w.amount, w.nonce, w.deadline))
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[maker].balances[QUOTE], 7000);
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 7000);
 
         vm.resumeGasMetering();
     }
@@ -362,55 +512,77 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         vm.pauseGasMetering();
 
         _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 10000);
-        _deposit(takerPk, 0, BASE, 10000);
-        _placeLimitOrder(makerPk, 1, 100, 10 * Q32, 0);
+        _initAccount(makerPk, makerAccount);
+        _initAccount(takerPk, takerAccount);
+        _deposit(makerPk, makerAccount, 0, QUOTE, 10000);
+        _deposit(takerPk, takerAccount, 0, BASE, 10000);
+        _placeLimitOrder(makerPk, makerAccount, 1, 100, 10 * Q32, 0);
 
         {
             Mutation[] memory m = new Mutation[](1);
             bytes[] memory d = new bytes[](1);
-            uint8[] memory _v = new uint8[](1);
-            bytes32[] memory _r = new bytes32[](1);
-            bytes32[] memory _s = new bytes32[](1);
+            Signature[] memory s = new Signature[](1);
 
             Fill[] memory fills = new Fill[](1);
             fills[0] = Fill({quantity: 40, price: 10 * Q32});
 
-            m[0] = Mutation.MarketOrder;
             MarketOrder memory mo = MarketOrder({
-                quantity: 40, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 1, deadline: type(uint256).max
+                quantity: 40,
+                minReceivedQuantity: 0,
+                instrumentId: 0,
+                bidOrAsk: 1,
+                nonce: 1,
+                deadline: type(uint256).max
             });
+            m[0] = Mutation.MarketOrder;
             d[0] = abi.encode(mo, MarketOrderResolution({fills: fills}));
-            (_v[0], _r[0], _s[0]) = _sign(takerPk, keccak256(abi.encode(
-                _MARKET_ORDER_TYPEHASH, mo.quantity, mo.minReceivedQuantity, mo.instrumentId, mo.bidOrAsk, mo.nonce, mo.deadline
-            )));
-            _exec(m, d, _v, _r, _s);
+            s[0] = Signature({
+                account: takerAccount,
+                keyId: 0,
+                rawSignature: _sign(
+                    takerPk,
+                    keccak256(
+                        abi.encode(
+                            _MARKET_ORDER_TYPEHASH,
+                            mo.quantity,
+                            mo.minReceivedQuantity,
+                            mo.instrumentId,
+                            mo.bidOrAsk,
+                            mo.nonce,
+                            mo.deadline
+                        )
+                    )
+                )
+            });
+            _exec(m, d, s);
         }
 
-        assertEq(state.accounts[taker].balances[BASE], 9960);
-        assertEq(state.accounts[taker].balances[QUOTE], 400);
+        assertEq(state.accounts[takerAccount].balances[BASE], 9960);
+        assertEq(state.accounts[takerAccount].balances[QUOTE], 400);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.CloseOrder;
         CloseOrder memory close = CloseOrder({orderId: 0, nonce: 2, deadline: type(uint256).max});
+        muts[0] = Mutation.CloseOrder;
         data[0] = abi.encode(close);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _CLOSE_ORDER_TYPEHASH, close.orderId, close.nonce, close.deadline
-        )));
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_CLOSE_ORDER_TYPEHASH, close.orderId, close.nonce, close.deadline))
+            )
+        });
 
         vm.resumeGasMetering();
 
-        _exec(muts, data, v, r, s);
+        _exec(muts, data, sigs);
 
         vm.pauseGasMetering();
 
-        assertEq(state.accounts[maker].balances[QUOTE], 10000 - 1000 + 600);
-        assertEq(state.accounts[maker].balances[BASE], 40);
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 10000 - 1000 + 600);
+        assertEq(state.accounts[makerAccount].balances[BASE], 40);
 
         vm.resumeGasMetering();
     }
@@ -418,40 +590,39 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     function test_MutationsOutOfOrder() external {
         Mutation[] memory muts = new Mutation[](2);
         bytes[] memory data = new bytes[](2);
-        uint8[] memory v = new uint8[](2);
-        bytes32[] memory r = new bytes32[](2);
-        bytes32[] memory s = new bytes32[](2);
+        Signature[] memory sigs = new Signature[](2);
 
         muts[0] = Mutation.AddInstrument;
-        data[0] = abi.encode(AddInstrumentParams({
-            instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0
-        }));
+        data[0] = abi.encode(
+            AddInstrumentParams({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
+        );
 
-        muts[1] = Mutation.CloseOrder;
-        data[1] = abi.encode(CloseOrder({orderId: 0, nonce: 0, deadline: type(uint256).max}));
+        muts[1] = Mutation.Authorize;
+        data[1] = new bytes(0);
 
         vm.prank(SCHEDULER);
         vm.expectRevert(MutationsOutOfOrder.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, v: v, r: r, s: s}));
+        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
     }
 
     function test_SignatureExpired() external {
         vm.pauseGasMetering();
 
         _setupInstrument();
+        _initAccount(makerPk, makerAccount);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.Deposit;
         Deposit memory d = Deposit({asset: QUOTE, amount: 100, nonce: 0, deadline: 0});
+        muts[0] = Mutation.Deposit;
         data[0] = abi.encode(d);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline
-        )));
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+        });
 
         vm.warp(1);
 
@@ -459,78 +630,58 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(SignatureExpired.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, v: v, r: r, s: s}));
+        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
     }
 
     function test_InvalidNonce() external {
         vm.pauseGasMetering();
 
         _setupInstrument();
+        _initAccount(makerPk, makerAccount);
 
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
+        Signature[] memory sigs = new Signature[](1);
 
-        muts[0] = Mutation.Deposit;
         Deposit memory d = Deposit({asset: QUOTE, amount: 100, nonce: 99, deadline: type(uint256).max});
-        data[0] = abi.encode(d);
-        (v[0], r[0], s[0]) = _sign(makerPk, keccak256(abi.encode(
-            _DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline
-        )));
-
-        vm.resumeGasMetering();
-
-        vm.prank(SCHEDULER);
-        vm.expectRevert(InvalidNonce.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, v: v, r: r, s: s}));
-    }
-
-    function test_InvalidSignature_ZeroRecovery() external {
-        vm.pauseGasMetering();
-
-        _setupInstrument();
-
-        Mutation[] memory muts = new Mutation[](1);
-        bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
-
         muts[0] = Mutation.Deposit;
-        data[0] = abi.encode(Deposit({asset: QUOTE, amount: 100, nonce: 0, deadline: type(uint256).max}));
-
-        vm.resumeGasMetering();
-
-        vm.prank(SCHEDULER);
-        vm.expectRevert(InvalidSignature.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, v: v, r: r, s: s}));
-    }
-
-    function test_InvalidSignature_WrongKey() external {
-        vm.pauseGasMetering();
-
-        _setupInstrument();
-        _deposit(makerPk, 0, QUOTE, 100);
-
-        Mutation[] memory muts = new Mutation[](1);
-        bytes[] memory data = new bytes[](1);
-        uint8[] memory v = new uint8[](1);
-        bytes32[] memory r = new bytes32[](1);
-        bytes32[] memory s = new bytes32[](1);
-
-        muts[0] = Mutation.Withdrawal;
-        Withdrawal memory w = Withdrawal({asset: QUOTE, amount: 100, nonce: 1, deadline: type(uint256).max});
-        data[0] = abi.encode(w);
-        (v[0], r[0], s[0]) = _sign(takerPk, keccak256(abi.encode(
-            _WITHDRAWAL_TYPEHASH, w.asset, w.amount, w.nonce, w.deadline
-        )));
+        data[0] = abi.encode(d);
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+        });
 
         vm.resumeGasMetering();
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidNonce.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, v: v, r: r, s: s}));
+        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+    }
+
+    function test_KeyNotFound() external {
+        vm.pauseGasMetering();
+
+        _setupInstrument();
+        _initAccount(makerPk, makerAccount);
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        Deposit memory d = Deposit({asset: QUOTE, amount: 100, nonce: 0, deadline: type(uint256).max});
+        muts[0] = Mutation.Deposit;
+        data[0] = abi.encode(d);
+        sigs[0] = Signature({
+            account: makerAccount,
+            keyId: 99,
+            rawSignature: _sign(makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+        });
+
+        vm.resumeGasMetering();
+
+        vm.prank(SCHEDULER);
+        vm.expectRevert();
+        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
     }
 }

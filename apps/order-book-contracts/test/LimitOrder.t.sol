@@ -6,7 +6,6 @@ import {Test} from "forge-std/Test.sol";
 import {
     Exchange,
     LimitOrder,
-    Fill,
     InvalidInstrument,
     TickPartiallyFilled,
     InsufficientBalance
@@ -15,7 +14,7 @@ import {
 contract LimitOrderTest is Test, Exchange(address(0)) {
     address constant BASE = address(1);
     address constant QUOTE = address(2);
-    address constant ACCOUNT = address(100);
+    bytes32 constant ACCOUNT = bytes32(uint256(100));
     uint64 constant Q32 = 1 << 32;
 
     function setUp() public {
@@ -28,7 +27,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         state.accounts[ACCOUNT].balances[QUOTE] = 1000;
     }
 
-    function callLimitOrder(LimitOrder memory order, address account) external {
+    function callLimitOrder(LimitOrder memory order, bytes32 account) external {
         _executeLimitOrder(order, account);
     }
 
