@@ -4,8 +4,7 @@ pragma solidity ^0.8.20;
 enum KeyType {
     P256,
     WebAuthnP256,
-    Secp256k1,
-    External
+    Secp256k1
 }
 
 struct Key {
@@ -18,8 +17,10 @@ struct Key {
 struct Initialize {
     bytes32 account;
     uint40 expiry;
+    uint8 rootKeyType;
     uint8 keyType;
     uint8 permissions;
+    bytes rootPublicKey;
     bytes publicKey;
 }
 
@@ -47,7 +48,7 @@ error KeyExpired();
 address constant P256_VERIFIER = address(0x100);
 
 bytes32 constant INITIALIZE_TYPEHASH = keccak256(
-    "Initialize(bytes32 account,uint40 expiry,uint8 keyType,uint8 permissions,bytes publicKey)"
+    "Initialize(bytes32 account,uint40 expiry,uint8 rootKeyType,uint8 keyType,uint8 permissions,bytes rootPublicKey,bytes publicKey)"
 );
 
 bytes32 constant AUTHORIZE_TYPEHASH = keccak256(
@@ -74,10 +75,8 @@ function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey
         verifySecp256k1(digest, publicKey, signature);
     } else if (keyType == KeyType.P256) {
         verifyP256(digest, publicKey, signature);
-    } else if (keyType == KeyType.WebAuthnP256) {
-        verifyWebAuthnP256(digest, publicKey, signature);
     } else {
-        verifyExternal(digest, publicKey, signature);
+        verifyWebAuthnP256(digest, publicKey, signature);
     }
 }
 
@@ -105,13 +104,6 @@ function verifyWebAuthnP256(bytes32 digest, bytes memory publicKey, bytes callda
     bytes32 message = sha256(abi.encodePacked(authData, sha256(clientDataJSON)));
     (bool ok, bytes memory ret) = P256_VERIFIER.staticcall(abi.encode(uint256(message), r, s, x, y));
     if (!ok || ret.length < 32 || abi.decode(ret, (uint256)) != 1) revert InvalidSignature();
-}
-
-function verifyExternal(bytes32 digest, bytes memory publicKey, bytes calldata signature) view {
-    address signer = abi.decode(publicKey, (address));
-    (bool ok, bytes memory ret) =
-        signer.staticcall(abi.encodeWithSignature("isValidSignature(bytes32,bytes)", digest, signature));
-    if (!ok || ret.length < 32 || abi.decode(ret, (bytes4)) != bytes4(0x1626ba7e)) revert InvalidSignature();
 }
 
 function verifyChallenge(bytes memory clientDataJSON, uint256 offset, bytes32 digest) pure {

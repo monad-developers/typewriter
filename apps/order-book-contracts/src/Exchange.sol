@@ -46,14 +46,6 @@ struct Instrument {
     mapping(uint64 => Tick) asks;
 }
 
-struct AddInstrumentParams {
-    uint64 instrumentId;
-    address base;
-    address quote;
-    uint16 baseLotExp;
-    uint16 quoteLotExp;
-}
-
 struct Tick {
     uint64 quantity;
     uint64 remainingQuantity;
@@ -72,22 +64,10 @@ enum Mutation {
     Withdrawal
 }
 
-struct MarketOrder {
-    uint64 quantity;
-    uint64 minReceivedQuantity;
-    uint64 instrumentId;
-    uint8 bidOrAsk; // 0: bid, 1: ask
+struct CloseOrder {
+    uint64 orderId;
     uint256 nonce;
     uint256 deadline;
-}
-
-struct Fill {
-    uint64 quantity;
-    uint64 price; // Q32.32
-}
-
-struct MarketOrderResolution {
-    Fill[] fills;
 }
 
 struct LimitOrder {
@@ -99,10 +79,30 @@ struct LimitOrder {
     uint256 deadline;
 }
 
-struct CloseOrder {
-    uint64 orderId;
+struct MarketOrder {
+    uint64 quantity;
+    uint64 minReceivedQuantity;
+    uint64 instrumentId;
+    uint8 bidOrAsk; // 0: bid, 1: ask
     uint256 nonce;
     uint256 deadline;
+}
+
+struct MarketOrderResolution {
+    Fill[] fills;
+}
+
+struct Fill {
+    uint64 quantity;
+    uint64 price; // Q32.32
+}
+
+struct AddInstrument {
+    uint64 instrumentId;
+    address base;
+    address quote;
+    uint16 baseLotExp;
+    uint16 quoteLotExp;
 }
 
 struct Deposit {
@@ -119,16 +119,16 @@ struct Withdrawal {
     uint256 deadline;
 }
 
-struct Signature {
-    bytes32 account;
-    uint64 keyId;
-    bytes rawSignature;
-}
-
 struct ExecuteParams {
     Mutation[] mutations;
     bytes[] mutationData;
     Signature[] signatures;
+}
+
+struct Signature {
+    bytes32 account;
+    uint64 keyId;
+    bytes rawSignature;
 }
 
 uint8 constant PERM_AUTHORIZE = 1 << 0;
@@ -210,7 +210,27 @@ contract Exchange {
             Signature calldata sig = params.signatures[i];
 
             if (mutation == Mutation.Initialize) {
-                _executeInitialize(data, sig);
+                Initialize memory init = abi.decode(data, (Initialize));
+                Account storage acc = state.accounts[sig.account];
+                if (acc.keys.length != 0) revert AlreadyInitialized();
+
+                bytes32 structHash = keccak256(
+                    abi.encode(
+                        INITIALIZE_TYPEHASH,
+                        init.account,
+                        init.expiry,
+                        init.rootKeyType,
+                        init.keyType,
+                        init.permissions,
+                        keccak256(init.rootPublicKey),
+                        keccak256(init.publicKey)
+                    )
+                );
+                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+                verifySignature(KeyType(init.rootKeyType), digest, init.rootPublicKey, sig.rawSignature);
+
+                acc.keys.push(Key(0, KeyType(init.rootKeyType), type(uint8).max, init.rootPublicKey));
+                acc.keys.push(Key(init.expiry, KeyType(init.keyType), init.permissions, init.publicKey));
             } else if (mutation == Mutation.Authorize) {
                 Authorize memory auth = abi.decode(data, (Authorize));
                 uint8 permissions = _verifySig(
@@ -296,7 +316,7 @@ contract Exchange {
                 if ((permissions & PERM_MARKET_ORDER) == 0) revert Unauthorized();
                 _executeMarketOrder(order, resolution, sig.account);
             } else if (mutation == Mutation.AddInstrument) {
-                AddInstrumentParams memory p = abi.decode(data, (AddInstrumentParams));
+                AddInstrument memory p = abi.decode(data, (AddInstrument));
                 Instrument storage inst = state.instruments[p.instrumentId];
                 if (inst.base != address(0)) revert InstrumentAlreadyExists();
                 inst.base = p.base;
@@ -347,25 +367,6 @@ contract Exchange {
         state.accounts[sig.account].nonces[nonceKey]++;
     }
 
-    function _executeInitialize(bytes calldata data, Signature calldata sig) internal {
-        Initialize memory init = abi.decode(data, (Initialize));
-        Account storage acc = state.accounts[sig.account];
-        if (acc.keys.length != 0) revert AlreadyInitialized();
-
-        Key memory key = Key(init.expiry, KeyType(init.keyType), init.permissions, init.publicKey);
-        if ((key.permissions & PERM_AUTHORIZE) == 0) revert MissingAuthorizePermission();
-
-        bytes32 structHash = keccak256(
-            abi.encode(
-                INITIALIZE_TYPEHASH, init.account, init.expiry, init.keyType, init.permissions,
-                keccak256(init.publicKey)
-            )
-        );
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
-        verifySignature(key.keyType, digest, init.publicKey, sig.rawSignature);
-
-        acc.keys.push(key);
-    }
 
     function _settleFill(Fill memory fill, Instrument storage instrument, uint8 takerSide, bytes32 takerAccount)
         internal
