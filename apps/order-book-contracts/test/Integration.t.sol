@@ -8,7 +8,7 @@ import {
     ExecuteParams,
     Mutation,
     Signature,
-    AddInstrumentParams,
+    AddInstrument,
     Deposit,
     Withdrawal,
     LimitOrder,
@@ -73,8 +73,10 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         Initialize memory init = Initialize({
             account: acc,
             expiry: 0,
+            rootKeyType: uint8(KeyType.Secp256k1),
             keyType: uint8(KeyType.Secp256k1),
             permissions: type(uint8).max,
+            rootPublicKey: abi.encode(vm.addr(pk)),
             publicKey: abi.encode(vm.addr(pk))
         });
 
@@ -91,8 +93,8 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
                 pk,
                 keccak256(
                     abi.encode(
-                        INITIALIZE_TYPEHASH, init.account, init.expiry, init.keyType, init.permissions,
-                        keccak256(init.publicKey)
+                        INITIALIZE_TYPEHASH, init.account, init.expiry, init.rootKeyType, init.keyType,
+                        init.permissions, keccak256(init.rootPublicKey), keccak256(init.publicKey)
                     )
                 )
             )
@@ -108,7 +110,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.AddInstrument;
         data[0] = abi.encode(
-            AddInstrumentParams({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
+            AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
         );
 
         _exec(muts, data, sigs);
@@ -594,7 +596,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.AddInstrument;
         data[0] = abi.encode(
-            AddInstrumentParams({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
+            AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
         );
 
         muts[1] = Mutation.Authorize;
