@@ -72,6 +72,8 @@ export type BlockEvent = { number: bigint; hash: Hex; timestamp: bigint };
 
 export type RuntimeConfig = {
   initialState: State<bigint>;
+  initialMutationId?: number;
+  initialBundleId?: number;
   flushIntervalMs: number;
   chain: Chain;
   rpcUrl: string;
@@ -661,8 +663,8 @@ function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const state = config.initialState;
   const queue: QueueEntry[] = [];
-  let nextId = 0;
-  let nextBundleId = 0;
+  let nextId = config.initialMutationId ?? 0;
+  let nextBundleId = config.initialBundleId ?? 0;
 
   const mutationListeners = new Set<
     (mutation: MutationEvent, status: MutationStatus) => void
