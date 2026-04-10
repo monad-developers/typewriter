@@ -3,12 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 
-import {
-    Exchange,
-    CloseOrder,
-    Order,
-    OrderNotFound
-} from "src/Exchange.sol";
+import {Exchange, CloseOrder, Order, OrderNotFound} from "src/Exchange.sol";
 
 contract CloseOrderTest is Test, Exchange(address(0)) {
     address constant BASE = address(1);
@@ -49,9 +44,8 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
 
         state.instruments[0].bids[10 * Q32].quantity = 50;
         state.instruments[0].bids[10 * Q32].remainingQuantity = 50;
-        state.accounts[ACCOUNT].orders.push(
-            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
-        );
+        state.accounts[ACCOUNT].orders
+            .push(Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0}));
 
         state.instruments[0].bids[10 * Q32].volume = 1;
 
@@ -75,9 +69,8 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
 
         state.instruments[0].bids[10 * Q32].quantity = 50;
         state.instruments[0].bids[10 * Q32].remainingQuantity = 50;
-        state.accounts[ACCOUNT].orders.push(
-            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
-        );
+        state.accounts[ACCOUNT].orders
+            .push(Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0}));
 
         uint256 quoteBefore = state.accounts[ACCOUNT].balances[QUOTE];
 
@@ -99,9 +92,8 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
 
         state.instruments[0].asks[10 * Q32].quantity = 50;
         state.instruments[0].asks[10 * Q32].remainingQuantity = 50;
-        state.accounts[ACCOUNT].orders.push(
-            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 1})
-        );
+        state.accounts[ACCOUNT].orders
+            .push(Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 1}));
 
         uint256 baseBefore = state.accounts[ACCOUNT].balances[BASE];
 
@@ -121,9 +113,8 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
 
         state.instruments[0].bids[10 * Q32].quantity = 100;
         state.instruments[0].bids[10 * Q32].remainingQuantity = 60;
-        state.accounts[ACCOUNT].orders.push(
-            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
-        );
+        state.accounts[ACCOUNT].orders
+            .push(Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0}));
 
         uint256 quoteBefore = state.accounts[ACCOUNT].balances[QUOTE];
 
@@ -151,9 +142,8 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
 
         state.instruments[0].bids[10 * Q32].quantity = 50;
         state.instruments[0].bids[10 * Q32].remainingQuantity = 50;
-        state.accounts[ACCOUNT].orders.push(
-            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0})
-        );
+        state.accounts[ACCOUNT].orders
+            .push(Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 0}));
 
         vm.resumeGasMetering();
 
@@ -177,9 +167,8 @@ contract CloseOrderTest is Test, Exchange(address(0)) {
 
         state.instruments[0].asks[10 * Q32].quantity = 50;
         state.instruments[0].asks[10 * Q32].remainingQuantity = 50;
-        state.accounts[ACCOUNT].orders.push(
-            Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 1})
-        );
+        state.accounts[ACCOUNT].orders
+            .push(Order({quantity: 50, instrumentId: 0, price: 10 * Q32, tickVolume: 0, side: 1}));
 
         vm.resumeGasMetering();
 

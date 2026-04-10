@@ -22,13 +22,7 @@ import {
     InvalidNonce
 } from "src/Exchange.sol";
 
-import {
-    KeyType,
-    Initialize,
-    InvalidSignature,
-    KeyNotFound,
-    INITIALIZE_TYPEHASH
-} from "src/Account.sol";
+import {KeyType, Initialize, InvalidSignature, KeyNotFound, INITIALIZE_TYPEHASH} from "src/Account.sol";
 
 contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     address constant BASE = address(0x1);
@@ -50,8 +44,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     bytes32 constant _MARKET_ORDER_TYPEHASH = keccak256(
         "MarketOrder(uint64 quantity,uint64 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
-    bytes32 constant _CLOSE_ORDER_TYPEHASH =
-        keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
+    bytes32 constant _CLOSE_ORDER_TYPEHASH = keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
 
     function setUp() public {
         makerAccount = bytes32(uint256(uint160(vm.addr(makerPk))));
@@ -93,8 +86,14 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
                 pk,
                 keccak256(
                     abi.encode(
-                        INITIALIZE_TYPEHASH, init.account, init.expiry, init.rootKeyType, init.keyType,
-                        init.permissions, keccak256(init.rootPublicKey), keccak256(init.publicKey)
+                        INITIALIZE_TYPEHASH,
+                        init.account,
+                        init.expiry,
+                        init.rootKeyType,
+                        init.keyType,
+                        init.permissions,
+                        keccak256(init.rootPublicKey),
+                        keccak256(init.publicKey)
                     )
                 )
             )
@@ -109,9 +108,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         Signature[] memory sigs = new Signature[](1);
 
         muts[0] = Mutation.AddInstrument;
-        data[0] = abi.encode(
-            AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
-        );
+        data[0] = abi.encode(AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0}));
 
         _exec(muts, data, sigs);
     }
@@ -184,12 +181,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         Signature[] memory sigs = new Signature[](1);
 
         LimitOrder memory order = LimitOrder({
-            quantity: 10,
-            instrumentId: 0,
-            price: 10 * Q32,
-            bidOrAsk: 0,
-            nonce: 1,
-            deadline: type(uint256).max
+            quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 1, deadline: type(uint256).max
         });
         muts[0] = Mutation.LimitOrder;
         data[0] = abi.encode(order);
@@ -223,7 +215,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         assertEq(state.accounts[makerAccount].orders[0].quantity, 10);
         assertEq(state.instruments[0].bids[10 * Q32].quantity, 10);
         assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 10);
-        assertEq(state.accounts[makerAccount].nonces[0],2);
+        assertEq(state.accounts[makerAccount].nonces[0], 2);
 
         vm.resumeGasMetering();
     }
@@ -241,12 +233,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         Signature[] memory sigs = new Signature[](1);
 
         LimitOrder memory order = LimitOrder({
-            quantity: 5,
-            instrumentId: 0,
-            price: 20 * Q32,
-            bidOrAsk: 0,
-            nonce: 2,
-            deadline: type(uint256).max
+            quantity: 5, instrumentId: 0, price: 20 * Q32, bidOrAsk: 0, nonce: 2, deadline: type(uint256).max
         });
         muts[0] = Mutation.LimitOrder;
         data[0] = abi.encode(order);
@@ -301,12 +288,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         fills[0] = Fill({quantity: 10, price: 10 * Q32});
 
         MarketOrder memory order = MarketOrder({
-            quantity: 10,
-            minReceivedQuantity: 0,
-            instrumentId: 0,
-            bidOrAsk: 1,
-            nonce: 1,
-            deadline: type(uint256).max
+            quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 1, deadline: type(uint256).max
         });
         muts[0] = Mutation.MarketOrder;
         data[0] = abi.encode(order, MarketOrderResolution({fills: fills}));
@@ -338,7 +320,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         assertEq(state.accounts[takerAccount].balances[BASE], 9990);
         assertEq(state.accounts[takerAccount].balances[QUOTE], 100);
         assertEq(state.instruments[0].bids[10 * Q32].remainingQuantity, 90);
-        assertEq(state.accounts[takerAccount].nonces[0],2);
+        assertEq(state.accounts[takerAccount].nonces[0], 2);
 
         vm.resumeGasMetering();
     }
@@ -400,12 +382,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         fills[0] = Fill({quantity: 5, price: 10 * Q32});
 
         MarketOrder memory order = MarketOrder({
-            quantity: 5,
-            minReceivedQuantity: 0,
-            instrumentId: 0,
-            bidOrAsk: 1,
-            nonce: 2,
-            deadline: type(uint256).max
+            quantity: 5, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 2, deadline: type(uint256).max
         });
         muts[0] = Mutation.MarketOrder;
         data[0] = abi.encode(order, MarketOrderResolution({fills: fills}));
@@ -595,9 +572,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         Signature[] memory sigs = new Signature[](2);
 
         muts[0] = Mutation.AddInstrument;
-        data[0] = abi.encode(
-            AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0})
-        );
+        data[0] = abi.encode(AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0}));
 
         muts[1] = Mutation.Authorize;
         data[1] = new bytes(0);
@@ -623,7 +598,9 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         sigs[0] = Signature({
             account: makerAccount,
             keyId: 0,
-            rawSignature: _sign(makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline))
+            )
         });
 
         vm.warp(1);
@@ -651,7 +628,9 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         sigs[0] = Signature({
             account: makerAccount,
             keyId: 0,
-            rawSignature: _sign(makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline))
+            )
         });
 
         vm.resumeGasMetering();
@@ -677,7 +656,9 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
         sigs[0] = Signature({
             account: makerAccount,
             keyId: 99,
-            rawSignature: _sign(makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)))
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline))
+            )
         });
 
         vm.resumeGasMetering();

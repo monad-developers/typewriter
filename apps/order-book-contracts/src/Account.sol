@@ -55,13 +55,9 @@ bytes32 constant AUTHORIZE_TYPEHASH = keccak256(
     "Authorize(bytes32 account,uint40 expiry,uint8 keyType,uint8 permissions,bytes publicKey,uint256 nonce,uint256 deadline)"
 );
 
-bytes32 constant REVOKE_TYPEHASH =
-    keccak256("Revoke(bytes32 account,uint64 keyId,uint256 nonce,uint256 deadline)");
+bytes32 constant REVOKE_TYPEHASH = keccak256("Revoke(bytes32 account,uint64 keyId,uint256 nonce,uint256 deadline)");
 
-function verify(Key[] storage keys, bytes32 digest, uint64 keyId, bytes calldata signature)
-    view
-    returns (uint8)
-{
+function verify(Key[] storage keys, bytes32 digest, uint64 keyId, bytes calldata signature) view returns (uint8) {
     Key storage stored = keys[keyId];
     if (stored.permissions == 0) revert KeyNotFound();
     if (stored.expiry != 0 && stored.expiry < block.timestamp) revert KeyExpired();
@@ -87,15 +83,27 @@ function verifySecp256k1(bytes32 digest, bytes memory publicKey, bytes calldata 
     if (recovered == address(0) || recovered != expected) revert InvalidSignature();
 }
 
+function decodeP256PublicKey(bytes memory publicKey) pure returns (uint256 x, uint256 y) {
+    if (publicKey.length == 65) {
+        assembly {
+            x := mload(add(publicKey, 33))
+            y := mload(add(publicKey, 65))
+        }
+    } else {
+        (x, y) = abi.decode(publicKey, (uint256, uint256));
+    }
+}
+
 function verifyP256(bytes32 digest, bytes memory publicKey, bytes calldata signature) view {
-    (uint256 x, uint256 y) = abi.decode(publicKey, (uint256, uint256));
+    (uint256 x, uint256 y) = decodeP256PublicKey(publicKey);
     (uint256 r, uint256 s) = abi.decode(signature, (uint256, uint256));
-    (bool ok, bytes memory ret) = P256_VERIFIER.staticcall(abi.encode(uint256(digest), r, s, x, y));
+    (bool ok, bytes memory ret) =
+        P256_VERIFIER.staticcall(abi.encode(uint256(sha256(abi.encodePacked(digest))), r, s, x, y));
     if (!ok || ret.length < 32 || abi.decode(ret, (uint256)) != 1) revert InvalidSignature();
 }
 
 function verifyWebAuthnP256(bytes32 digest, bytes memory publicKey, bytes calldata signature) view {
-    (uint256 x, uint256 y) = abi.decode(publicKey, (uint256, uint256));
+    (uint256 x, uint256 y) = decodeP256PublicKey(publicKey);
     (bytes memory authData, bytes memory clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s) =
         abi.decode(signature, (bytes, bytes, uint256, uint256, uint256));
 
