@@ -1,5 +1,5 @@
 {
-  "id": "3661eff1-4d97-4cee-a159-423868d7cef8",
+  "id": "5df02e6b-30bf-4704-8181-7bd1f1248296",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -8,18 +8,11 @@
       "name": "accounts",
       "schema": "",
       "columns": {
-        "address": {
-          "name": "address",
-          "type": "char(42)",
+        "id": {
+          "name": "id",
+          "type": "char(66)",
           "primaryKey": true,
           "notNull": true
-        },
-        "nonce": {
-          "name": "nonce",
-          "type": "numeric(78, 0)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
         }
       },
       "indexes": {},
@@ -106,8 +99,143 @@
           "name": "add_instruments_bundle_id_bundles_id_fk",
           "tableFrom": "add_instruments",
           "tableTo": "bundles",
-          "columnsFrom": ["bundle_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.authorizes": {
+      "name": "authorizes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "bundle_id": {
+          "name": "bundle_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "mutation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account": {
+          "name": "account",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce": {
+          "name": "nonce",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deadline": {
+          "name": "deadline",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "raw_signature": {
+          "name": "raw_signature",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expiry": {
+          "name": "expiry",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_type": {
+          "name": "key_type",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "permissions": {
+          "name": "permissions",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "public_key": {
+          "name": "public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "authorizes_account_index": {
+          "name": "authorizes_account_index",
+          "columns": [
+            {
+              "expression": "account",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "authorizes_bundle_id_index": {
+          "name": "authorizes_bundle_id_index",
+          "columns": [
+            {
+              "expression": "bundle_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "authorizes_bundle_id_bundles_id_fk": {
+          "name": "authorizes_bundle_id_bundles_id_fk",
+          "tableFrom": "authorizes",
+          "tableTo": "bundles",
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -124,7 +252,7 @@
       "columns": {
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
           "primaryKey": false,
           "notNull": true
         },
@@ -143,12 +271,16 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "balances_account_accounts_address_fk": {
-          "name": "balances_account_accounts_address_fk",
+        "balances_account_accounts_id_fk": {
+          "name": "balances_account_accounts_id_fk",
           "tableFrom": "balances",
           "tableTo": "accounts",
-          "columnsFrom": ["account"],
-          "columnsTo": ["address"],
+          "columnsFrom": [
+            "account"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -156,7 +288,10 @@
       "compositePrimaryKeys": {
         "balances_account_asset_pk": {
           "name": "balances_account_asset_pk",
-          "columns": ["account", "asset"]
+          "columns": [
+            "account",
+            "asset"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -224,8 +359,12 @@
           "name": "bundles_block_number_blocks_number_fk",
           "tableFrom": "bundles",
           "tableTo": "blocks",
-          "columnsFrom": ["block_number"],
-          "columnsTo": ["number"],
+          "columnsFrom": [
+            "block_number"
+          ],
+          "columnsTo": [
+            "number"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -261,7 +400,13 @@
         },
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -277,8 +422,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "signature": {
-          "name": "signature",
+        "raw_signature": {
+          "name": "raw_signature",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -327,8 +472,12 @@
           "name": "close_orders_bundle_id_bundles_id_fk",
           "tableFrom": "close_orders",
           "tableTo": "bundles",
-          "columnsFrom": ["bundle_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -364,7 +513,13 @@
         },
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -380,8 +535,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "signature": {
-          "name": "signature",
+        "raw_signature": {
+          "name": "raw_signature",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -436,8 +591,12 @@
           "name": "deposits_bundle_id_bundles_id_fk",
           "tableFrom": "deposits",
           "tableTo": "bundles",
-          "columnsFrom": ["bundle_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -505,8 +664,155 @@
           "name": "fills_market_order_id_market_orders_id_fk",
           "tableFrom": "fills",
           "tableTo": "market_orders",
-          "columnsFrom": ["market_order_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "market_order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.initializes": {
+      "name": "initializes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "bundle_id": {
+          "name": "bundle_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "mutation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account": {
+          "name": "account",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce": {
+          "name": "nonce",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deadline": {
+          "name": "deadline",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "raw_signature": {
+          "name": "raw_signature",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expiry": {
+          "name": "expiry",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "root_key_type": {
+          "name": "root_key_type",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_type": {
+          "name": "key_type",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "permissions": {
+          "name": "permissions",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "root_public_key": {
+          "name": "root_public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "public_key": {
+          "name": "public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "initializes_account_index": {
+          "name": "initializes_account_index",
+          "columns": [
+            {
+              "expression": "account",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "initializes_bundle_id_index": {
+          "name": "initializes_bundle_id_index",
+          "columns": [
+            {
+              "expression": "bundle_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "initializes_bundle_id_bundles_id_fk": {
+          "name": "initializes_bundle_id_bundles_id_fk",
+          "tableFrom": "initializes",
+          "tableTo": "bundles",
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -560,6 +866,77 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.keys": {
+      "name": "keys",
+      "schema": "",
+      "columns": {
+        "account": {
+          "name": "account",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_index": {
+          "name": "key_index",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expiry": {
+          "name": "expiry",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_type": {
+          "name": "key_type",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "permissions": {
+          "name": "permissions",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "public_key": {
+          "name": "public_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "keys_account_accounts_id_fk": {
+          "name": "keys_account_accounts_id_fk",
+          "tableFrom": "keys",
+          "tableTo": "accounts",
+          "columnsFrom": [
+            "account"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "keys_account_key_index_pk": {
+          "name": "keys_account_key_index_pk",
+          "columns": [
+            "account",
+            "key_index"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.limit_orders": {
       "name": "limit_orders",
       "schema": "",
@@ -585,7 +962,13 @@
         },
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -601,8 +984,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "signature": {
-          "name": "signature",
+        "raw_signature": {
+          "name": "raw_signature",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -684,8 +1067,12 @@
           "name": "limit_orders_bundle_id_bundles_id_fk",
           "tableFrom": "limit_orders",
           "tableTo": "bundles",
-          "columnsFrom": ["bundle_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -721,7 +1108,13 @@
         },
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -737,8 +1130,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "signature": {
-          "name": "signature",
+        "raw_signature": {
+          "name": "raw_signature",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -820,13 +1213,70 @@
           "name": "market_orders_bundle_id_bundles_id_fk",
           "tableFrom": "market_orders",
           "tableTo": "bundles",
-          "columnsFrom": ["bundle_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.nonces": {
+      "name": "nonces",
+      "schema": "",
+      "columns": {
+        "account": {
+          "name": "account",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce_key": {
+          "name": "nonce_key",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "nonces_account_accounts_id_fk": {
+          "name": "nonces_account_accounts_id_fk",
+          "tableFrom": "nonces",
+          "tableTo": "accounts",
+          "columnsFrom": [
+            "account"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "nonces_account_nonce_key_pk": {
+          "name": "nonces_account_nonce_key_pk",
+          "columns": [
+            "account",
+            "nonce_key"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -844,7 +1294,7 @@
         },
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
           "primaryKey": false,
           "notNull": true
         },
@@ -881,12 +1331,16 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "orders_account_accounts_address_fk": {
-          "name": "orders_account_accounts_address_fk",
+        "orders_account_accounts_id_fk": {
+          "name": "orders_account_accounts_id_fk",
           "tableFrom": "orders",
           "tableTo": "accounts",
-          "columnsFrom": ["account"],
-          "columnsTo": ["address"],
+          "columnsFrom": [
+            "account"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -894,8 +1348,12 @@
           "name": "orders_instrument_id_instruments_id_fk",
           "tableFrom": "orders",
           "tableTo": "instruments",
-          "columnsFrom": ["instrument_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "instrument_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -903,9 +1361,125 @@
       "compositePrimaryKeys": {
         "orders_account_order_index_pk": {
           "name": "orders_account_order_index_pk",
-          "columns": ["account", "order_index"]
+          "columns": [
+            "account",
+            "order_index"
+          ]
         }
       },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.revokes": {
+      "name": "revokes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "bundle_id": {
+          "name": "bundle_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "mutation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account": {
+          "name": "account",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce": {
+          "name": "nonce",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deadline": {
+          "name": "deadline",
+          "type": "numeric(78, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "raw_signature": {
+          "name": "raw_signature",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_key_id": {
+          "name": "revoked_key_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "revokes_account_index": {
+          "name": "revokes_account_index",
+          "columns": [
+            {
+              "expression": "account",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "revokes_bundle_id_index": {
+          "name": "revokes_bundle_id_index",
+          "columns": [
+            {
+              "expression": "bundle_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "revokes_bundle_id_bundles_id_fk": {
+          "name": "revokes_bundle_id_bundles_id_fk",
+          "tableFrom": "revokes",
+          "tableTo": "bundles",
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -958,8 +1532,12 @@
           "name": "ticks_instrument_id_instruments_id_fk",
           "tableFrom": "ticks",
           "tableTo": "instruments",
-          "columnsFrom": ["instrument_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "instrument_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -967,7 +1545,11 @@
       "compositePrimaryKeys": {
         "ticks_instrument_id_side_price_pk": {
           "name": "ticks_instrument_id_side_price_pk",
-          "columns": ["instrument_id", "side", "price"]
+          "columns": [
+            "instrument_id",
+            "side",
+            "price"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1000,7 +1582,13 @@
         },
         "account": {
           "name": "account",
-          "type": "char(42)",
+          "type": "char(66)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -1016,8 +1604,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "signature": {
-          "name": "signature",
+        "raw_signature": {
+          "name": "raw_signature",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1072,8 +1660,12 @@
           "name": "withdrawals_bundle_id_bundles_id_fk",
           "tableFrom": "withdrawals",
           "tableTo": "bundles",
-          "columnsFrom": ["bundle_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "bundle_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1089,7 +1681,13 @@
     "public.mutation_status": {
       "name": "mutation_status",
       "schema": "public",
-      "values": ["accepted", "proposed", "voted", "finalized", "verified"]
+      "values": [
+        "accepted",
+        "proposed",
+        "voted",
+        "finalized",
+        "verified"
+      ]
     }
   },
   "schemas": {},
