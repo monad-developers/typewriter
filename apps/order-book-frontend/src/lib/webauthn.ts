@@ -1,8 +1,11 @@
 import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
 import type { Authentication } from "webauthx/client";
 
-// @ts-expect-error
-export const RP_ID: string = process.env.BUN_PUBLIC_RP_ID ?? "localhost";
+declare var process: { env: Record<string, string | undefined> };
+export const RP_ID: string =
+  typeof process !== "undefined"
+    ? process.env["BUN_PUBLIC_RP_ID"] || "localhost"
+    : "localhost";
 export const RP_NAME = "Order Book";
 
 export function splitSignature(hex: Hex): { r: bigint; s: bigint } {
@@ -12,7 +15,9 @@ export function splitSignature(hex: Hex): { r: bigint; s: bigint } {
   };
 }
 
-export function encodeWebAuthnSignature(assertion: Authentication.Response): Hex {
+export function encodeWebAuthnSignature(
+  assertion: Authentication.Response,
+): Hex {
   const { r, s } = splitSignature(assertion.signature);
   return encodeAbiParameters(
     [
@@ -21,7 +26,12 @@ export function encodeWebAuthnSignature(assertion: Authentication.Response): Hex
       { type: "uint256" },
       { type: "uint256" },
     ],
-    [assertion.metadata.authenticatorData, assertion.metadata.clientDataJSON, r, s],
+    [
+      assertion.metadata.authenticatorData,
+      assertion.metadata.clientDataJSON,
+      r,
+      s,
+    ],
   );
 }
 

@@ -4,14 +4,14 @@ import { BlockTracker } from "./components/BlockTracker";
 import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
-import { useSignIn } from "./hooks/useSignIn";
+import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
 import "./index.css";
 
 function Auth() {
-  const signIn = useSignIn();
   const signUp = useSignUp();
-  const isPending = signIn.isPending || signUp.isPending;
+  const demoSignUp = useDemoSignUp();
+  const isPending = signUp.isPending || demoSignUp.isPending;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -20,10 +20,12 @@ function Auth() {
           <button
             type="button"
             disabled={isPending}
-            onClick={() => signIn.mutate()}
+            onClick={() => signUp.mutate()}
             className="px-6 py-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
-            {signIn.isPending ? "Signing in..." : "Sign in with passkey"}
+            {signUp.isPending
+              ? "Creating account..."
+              : "Create account with passkey"}
           </button>
           <div className="flex items-center gap-3 text-sm text-gray-400">
             <span className="h-px w-12 bg-gray-200" />
@@ -33,10 +35,10 @@ function Auth() {
           <button
             type="button"
             disabled={isPending}
-            onClick={() => signUp.mutate()}
+            onClick={() => demoSignUp.mutate()}
             className="px-6 py-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
-            {signUp.isPending ? "Creating account..." : "Create account"}
+            {demoSignUp.isPending ? "Creating demo account..." : "Demo sign up"}
           </button>
         </div>
       </main>
