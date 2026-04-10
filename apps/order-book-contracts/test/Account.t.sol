@@ -25,6 +25,7 @@ import {
     Initialize,
     Authorize,
     Revoke,
+    InvalidSignature,
     KeyNotFound,
     KeyExpired,
     INITIALIZE_TYPEHASH,
@@ -35,6 +36,8 @@ import {
 contract AccountTest is Test, Exchange(address(0xBEEF)) {
     uint256 pk1 = 0xA11CE;
     uint256 pk2 = 0xB0B;
+    uint256 p256Pk1 = 0xC0FFEE;
+    uint256 p256Pk2 = 0xDECAF;
     bytes32 account;
 
     bytes32 constant _DEPOSIT_TYPEHASH =
@@ -50,6 +53,18 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encode(v, r, s);
+    }
+
+    function _signP256(uint256 pk, bytes32 structHash) internal view returns (bytes memory) {
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+        bytes32 hashed = sha256(abi.encodePacked(digest));
+        (bytes32 r, bytes32 s) = vm.signP256(pk, hashed);
+        return abi.encode(uint256(r), uint256(s));
+    }
+
+    function _p256PublicKey(uint256 pk) internal pure returns (bytes memory) {
+        (uint256 x, uint256 y) = vm.publicKeyP256(pk);
+        return abi.encodePacked(uint8(0x04), x, y);
     }
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
@@ -157,8 +172,14 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
                 pk1,
                 keccak256(
                     abi.encode(
-                        AUTHORIZE_TYPEHASH, auth.account, auth.expiry, auth.keyType, auth.permissions,
-                        keccak256(auth.publicKey), auth.nonce, auth.deadline
+                        AUTHORIZE_TYPEHASH,
+                        auth.account,
+                        auth.expiry,
+                        auth.keyType,
+                        auth.permissions,
+                        keccak256(auth.publicKey),
+                        auth.nonce,
+                        auth.deadline
                     )
                 )
             )
@@ -198,8 +219,14 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
                 pk2,
                 keccak256(
                     abi.encode(
-                        AUTHORIZE_TYPEHASH, auth.account, auth.expiry, auth.keyType, auth.permissions,
-                        keccak256(auth.publicKey), auth.nonce, auth.deadline
+                        AUTHORIZE_TYPEHASH,
+                        auth.account,
+                        auth.expiry,
+                        auth.keyType,
+                        auth.permissions,
+                        keccak256(auth.publicKey),
+                        auth.nonce,
+                        auth.deadline
                     )
                 )
             )
@@ -225,8 +252,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
             account: account,
             keyId: 0,
             rawSignature: _sign(
-                pk1,
-                keccak256(abi.encode(REVOKE_TYPEHASH, rev.account, rev.keyId, rev.nonce, rev.deadline))
+                pk1, keccak256(abi.encode(REVOKE_TYPEHASH, rev.account, rev.keyId, rev.nonce, rev.deadline))
             )
         });
 
@@ -294,6 +320,100 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
+        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+    }
+
+    function test_Initialize_P256RootKey() external {
+        Initialize memory init = Initialize({
+            account: account,
+            expiry: 0,
+            rootKeyType: uint8(KeyType.P256),
+            keyType: uint8(KeyType.P256),
+            permissions: 0xff,
+            rootPublicKey: _p256PublicKey(p256Pk1),
+            publicKey: _p256PublicKey(p256Pk2)
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.Initialize;
+        data[0] = abi.encode(init);
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _signP256(p256Pk1, _initializeStructHash(init))});
+
+        _exec(muts, data, sigs);
+
+        assertEq(state.accounts[account].keys.length, 2);
+        assertEq(uint8(state.accounts[account].keys[0].keyType), uint8(KeyType.P256));
+        assertEq(state.accounts[account].keys[0].permissions, type(uint8).max);
+        assertEq(uint8(state.accounts[account].keys[1].keyType), uint8(KeyType.P256));
+        assertEq(state.accounts[account].keys[1].permissions, 0xff);
+    }
+
+    function test_Deposit_P256SessionKey() external {
+        Initialize memory init = Initialize({
+            account: account,
+            expiry: 0,
+            rootKeyType: uint8(KeyType.Secp256k1),
+            keyType: uint8(KeyType.P256),
+            permissions: PERM_DEPOSIT,
+            rootPublicKey: abi.encode(vm.addr(pk1)),
+            publicKey: _p256PublicKey(p256Pk1)
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.Initialize;
+        data[0] = abi.encode(init);
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _sign(pk1, _initializeStructHash(init))});
+
+        _exec(muts, data, sigs);
+
+        Deposit memory d = Deposit({asset: address(1), amount: 100, nonce: 0, deadline: type(uint256).max});
+        bytes32 depositStructHash = keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline));
+
+        muts[0] = Mutation.Deposit;
+        data[0] = abi.encode(d);
+        sigs[0] = Signature({account: account, keyId: 1, rawSignature: _signP256(p256Pk1, depositStructHash)});
+
+        _exec(muts, data, sigs);
+
+        assertEq(state.accounts[account].balances[address(1)], 100);
+    }
+
+    function test_Deposit_P256SessionKey_InvalidSignature() external {
+        Initialize memory init = Initialize({
+            account: account,
+            expiry: 0,
+            rootKeyType: uint8(KeyType.Secp256k1),
+            keyType: uint8(KeyType.P256),
+            permissions: PERM_DEPOSIT,
+            rootPublicKey: abi.encode(vm.addr(pk1)),
+            publicKey: _p256PublicKey(p256Pk1)
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.Initialize;
+        data[0] = abi.encode(init);
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _sign(pk1, _initializeStructHash(init))});
+
+        _exec(muts, data, sigs);
+
+        Deposit memory d = Deposit({asset: address(1), amount: 100, nonce: 0, deadline: type(uint256).max});
+        bytes32 depositStructHash = keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline));
+
+        muts[0] = Mutation.Deposit;
+        data[0] = abi.encode(d);
+        sigs[0] = Signature({account: account, keyId: 1, rawSignature: _signP256(p256Pk2, depositStructHash)});
+
+        vm.prank(SCHEDULER);
+        vm.expectRevert(InvalidSignature.selector);
         this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
     }
 }

@@ -7,7 +7,6 @@ import {
     Initialize,
     Authorize,
     Revoke,
-    InvalidSignature,
     KeyNotFound,
     KeyExpired,
     INITIALIZE_TYPEHASH,
@@ -195,8 +194,9 @@ contract Exchange {
     function execute(ExecuteParams calldata params) external {
         if (msg.sender != SCHEDULER) revert Unauthorized();
 
-        if (params.mutations.length != params.mutationData.length || params.mutations.length != params.signatures.length)
-        {
+        if (
+            params.mutations.length != params.mutationData.length || params.mutations.length != params.signatures.length
+        ) {
             revert LengthMismatch();
         }
 
@@ -251,9 +251,8 @@ contract Exchange {
                     sig
                 );
                 if ((permissions & PERM_AUTHORIZE) == 0) revert Unauthorized();
-                state.accounts[sig.account].keys.push(
-                    Key(auth.expiry, KeyType(auth.keyType), auth.permissions, auth.publicKey)
-                );
+                state.accounts[sig.account].keys
+                    .push(Key(auth.expiry, KeyType(auth.keyType), auth.permissions, auth.publicKey));
             } else if (mutation == Mutation.Revoke) {
                 Revoke memory rev = abi.decode(data, (Revoke));
                 uint8 permissions = _verifySig(
@@ -367,7 +366,6 @@ contract Exchange {
         state.accounts[sig.account].nonces[nonceKey]++;
     }
 
-
     function _settleFill(Fill memory fill, Instrument storage instrument, uint8 takerSide, bytes32 takerAccount)
         internal
     {
@@ -402,9 +400,7 @@ contract Exchange {
         }
     }
 
-    function _executeMarketOrder(MarketOrder memory order, MarketOrderResolution memory res, bytes32 account)
-        internal
-    {
+    function _executeMarketOrder(MarketOrder memory order, MarketOrderResolution memory res, bytes32 account) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         if (instrument.base == address(0)) revert InvalidInstrument();
 
@@ -454,15 +450,16 @@ contract Exchange {
             tick.remainingQuantity += order.quantity;
         }
 
-        acc.orders.push(
-            Order({
-                quantity: order.quantity,
-                instrumentId: order.instrumentId,
-                price: order.price,
-                tickVolume: tick.volume,
-                side: order.bidOrAsk
-            })
-        );
+        acc.orders
+            .push(
+                Order({
+                    quantity: order.quantity,
+                    instrumentId: order.instrumentId,
+                    price: order.price,
+                    tickVolume: tick.volume,
+                    side: order.bidOrAsk
+                })
+            );
     }
 
     function _executeCloseOrder(CloseOrder memory close, bytes32 account) internal {
@@ -490,13 +487,15 @@ contract Exchange {
         }
 
         if (order.side == 0) {
-            acc.balances[instrument.quote] +=
-                ((uint256(unfilledQuantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
+            acc.balances[
+                    instrument.quote
+                ] += ((uint256(unfilledQuantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
             acc.balances[instrument.base] += uint256(filledQuantity) << instrument.baseLotExp;
         } else {
             acc.balances[instrument.base] += uint256(unfilledQuantity) << instrument.baseLotExp;
-            acc.balances[instrument.quote] +=
-                ((uint256(filledQuantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
+            acc.balances[
+                    instrument.quote
+                ] += ((uint256(filledQuantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
         }
 
         delete acc.orders[close.orderId];

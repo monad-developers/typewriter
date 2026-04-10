@@ -3,14 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 
-import {
-    Exchange,
-    ExecuteParams,
-    Mutation,
-    Signature,
-    Unauthorized,
-    LengthMismatch
-} from "src/Exchange.sol";
+import {Exchange, ExecuteParams, Mutation, Signature, Unauthorized, LengthMismatch} from "src/Exchange.sol";
 
 contract ExecuteTest is Test, Exchange(address(1)) {
     function test_Execute_Unauthorized() external {

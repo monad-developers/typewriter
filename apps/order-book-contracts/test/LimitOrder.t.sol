@@ -3,13 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 
-import {
-    Exchange,
-    LimitOrder,
-    InvalidInstrument,
-    TickPartiallyFilled,
-    InsufficientBalance
-} from "src/Exchange.sol";
+import {Exchange, LimitOrder, InvalidInstrument, TickPartiallyFilled, InsufficientBalance} from "src/Exchange.sol";
 
 contract LimitOrderTest is Test, Exchange(address(0)) {
     address constant BASE = address(1);
@@ -33,8 +27,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
 
     function test_LimitOrder_InvalidInstrument() external {
         try this.callLimitOrder(
-            LimitOrder({quantity: 1, instrumentId: 99, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 1, instrumentId: 99, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -44,8 +37,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
 
     function test_LimitOrder_PlaceBid() external {
         _executeLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}), ACCOUNT
         );
 
         vm.pauseGasMetering();
@@ -62,8 +54,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
 
     function test_LimitOrder_PlaceAsk() external {
         _executeLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}), ACCOUNT
         );
 
         vm.pauseGasMetering();
@@ -86,8 +77,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         try this.callLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -103,8 +93,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         try this.callLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -120,8 +109,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         try this.callLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -140,8 +128,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         _executeLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 5 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 5 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0}), ACCOUNT
         );
 
         vm.pauseGasMetering();
@@ -163,8 +150,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         _executeLimitOrder(
-            LimitOrder({quantity: 10, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}),
-            ACCOUNT
+            LimitOrder({quantity: 10, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}), ACCOUNT
         );
 
         vm.pauseGasMetering();
