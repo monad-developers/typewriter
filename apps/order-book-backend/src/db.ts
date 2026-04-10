@@ -1,11 +1,110 @@
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
+import type { Address, Hex } from "viem";
 import { MutationType } from "./exchange";
+import type { KeyType, Side, State } from "./exchange";
 import type { MutationEvent, RuntimeHandle } from "./runtime";
 import * as schema from "./schema";
 
 type DB = BunSQLDatabase<typeof schema>;
 type DBStatus = "accepted" | "proposed" | "voted" | "finalized" | "verified";
+
+export async function loadState(db: DB): Promise<State<bigint>> {
+  const state: State<bigint> = { accounts: {}, instruments: {} };
+
+  const allAccounts = await db.select().from(schema.accounts);
+  for (const row of allAccounts) {
+    state.accounts[row.id as Hex] = {
+      nonces: {},
+      balances: {},
+      keys: [],
+      orders: [],
+    };
+  }
+
+  const allKeys = await db
+    .select()
+    .from(schema.keys)
+    .orderBy(asc(schema.keys.keyIndex));
+  for (const row of allKeys) {
+    const acc = state.accounts[row.account as Hex];
+    if (!acc) continue;
+    while (acc.keys.length < Number(row.keyIndex)) {
+      acc.keys.push({ expiry: 0, keyType: 0, permissions: 0, publicKey: "0x" });
+    }
+    acc.keys.push({
+      expiry: row.expiry,
+      keyType: row.keyType as KeyType,
+      permissions: row.permissions,
+      publicKey: row.publicKey as Hex,
+    });
+  }
+
+  const allNonces = await db.select().from(schema.nonces);
+  for (const row of allNonces) {
+    const acc = state.accounts[row.account as Hex];
+    if (!acc) continue;
+    acc.nonces[row.nonceKey!] = row.sequence;
+  }
+
+  const allBalances = await db.select().from(schema.balances);
+  for (const row of allBalances) {
+    const acc = state.accounts[row.account as Hex];
+    if (!acc) continue;
+    acc.balances[row.asset as Address] = BigInt(row.amount!);
+  }
+
+  const allOrders = await db
+    .select()
+    .from(schema.orders)
+    .orderBy(asc(schema.orders.orderIndex));
+  for (const row of allOrders) {
+    const acc = state.accounts[row.account as Hex];
+    if (!acc) continue;
+    while (acc.orders.length < Number(row.orderIndex)) {
+      acc.orders.push({
+        quantity: 0n,
+        instrumentId: 0,
+        price: 0n,
+        tickVolume: 0,
+        side: 0,
+      });
+    }
+    acc.orders.push({
+      quantity: row.quantity,
+      instrumentId: Number(row.instrumentId),
+      price: row.price,
+      tickVolume: row.tickVolume,
+      side: row.side as Side,
+    });
+  }
+
+  const allInstruments = await db.select().from(schema.instruments);
+  for (const row of allInstruments) {
+    state.instruments[Number(row.id)] = {
+      base: row.base as Address,
+      baseLotExp: row.baseLotExp,
+      quote: row.quote as Address,
+      quoteLotExp: row.quoteLotExp,
+      bids: {},
+      asks: {},
+    };
+  }
+
+  const allTicks = await db.select().from(schema.ticks);
+  for (const row of allTicks) {
+    const instrument = state.instruments[Number(row.instrumentId)];
+    if (!instrument) continue;
+    const ticks = row.side === 0 ? instrument.bids : instrument.asks;
+    ticks[Number(row.price)] = {
+      quantity: row.quantity,
+      remainingQuantity: row.remainingQuantity,
+      volume: row.volume,
+    };
+  }
+
+  return state;
+}
 
 export function dbPlugin(handle: RuntimeHandle, db: DB) {
   handle.on("block", async (block) => {
@@ -24,6 +123,7 @@ export function dbPlugin(handle: RuntimeHandle, db: DB) {
       await db.insert(schema.bundles).values({ id: bundle.id });
       for (const m of bundle.mutations) {
         await insertMutation(db, m, bundle.id);
+        await syncState(db, handle.state, m);
       }
     } else {
       for (const m of bundle.mutations) {
@@ -31,6 +131,344 @@ export function dbPlugin(handle: RuntimeHandle, db: DB) {
       }
     }
   });
+}
+
+async function syncNonce(
+  db: DB,
+  state: State<bigint>,
+  account: Hex,
+  nonce: bigint,
+) {
+  const acc = state.accounts[account];
+  if (!acc) return;
+  const nonceKey = nonce >> 64n;
+  const sequence = acc.nonces[nonceKey.toString()] ?? 0n;
+  await db
+    .insert(schema.nonces)
+    .values({
+      account,
+      nonceKey: nonceKey.toString(),
+      sequence,
+    })
+    .onConflictDoUpdate({
+      target: [schema.nonces.account, schema.nonces.nonceKey],
+      set: { sequence },
+    });
+}
+
+async function syncState(db: DB, state: State<bigint>, m: MutationEvent) {
+  switch (m.type) {
+    case MutationType.Initialize: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+
+      await db
+        .insert(schema.accounts)
+        .values({ id: m.account })
+        .onConflictDoNothing();
+
+      for (let i = 0; i < acc.keys.length; i++) {
+        const key = acc.keys[i]!;
+        await db
+          .insert(schema.keys)
+          .values({
+            account: m.account,
+            keyIndex: BigInt(i),
+            expiry: key.expiry,
+            keyType: key.keyType,
+            permissions: key.permissions,
+            publicKey: key.publicKey,
+          })
+          .onConflictDoUpdate({
+            target: [schema.keys.account, schema.keys.keyIndex],
+            set: {
+              expiry: key.expiry,
+              keyType: key.keyType,
+              permissions: key.permissions,
+              publicKey: key.publicKey,
+            },
+          });
+      }
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.Authorize: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+
+      const keyIndex = acc.keys.length - 1;
+      const key = acc.keys[keyIndex]!;
+      await db
+        .insert(schema.keys)
+        .values({
+          account: m.account,
+          keyIndex: BigInt(keyIndex),
+          expiry: key.expiry,
+          keyType: key.keyType,
+          permissions: key.permissions,
+          publicKey: key.publicKey,
+        })
+        .onConflictDoUpdate({
+          target: [schema.keys.account, schema.keys.keyIndex],
+          set: {
+            expiry: key.expiry,
+            keyType: key.keyType,
+            permissions: key.permissions,
+            publicKey: key.publicKey,
+          },
+        });
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.Revoke: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+
+      const key = acc.keys[m.mutation.keyId]!;
+      await db
+        .insert(schema.keys)
+        .values({
+          account: m.account,
+          keyIndex: BigInt(m.mutation.keyId),
+          expiry: key.expiry,
+          keyType: key.keyType,
+          permissions: key.permissions,
+          publicKey: key.publicKey,
+        })
+        .onConflictDoUpdate({
+          target: [schema.keys.account, schema.keys.keyIndex],
+          set: {
+            expiry: key.expiry,
+            keyType: key.keyType,
+            permissions: key.permissions,
+            publicKey: key.publicKey,
+          },
+        });
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.Deposit:
+    case MutationType.Withdrawal: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+
+      const balance = (acc.balances[m.mutation.asset] ?? 0n).toString();
+      await db
+        .insert(schema.balances)
+        .values({ account: m.account, asset: m.mutation.asset, amount: balance })
+        .onConflictDoUpdate({
+          target: [schema.balances.account, schema.balances.asset],
+          set: { amount: balance },
+        });
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.LimitOrder: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+      const instrument = state.instruments[m.mutation.instrumentId];
+      if (!instrument) break;
+
+      const lockedAsset =
+        m.mutation.bidOrAsk === 0 ? instrument.quote : instrument.base;
+      const balance = (acc.balances[lockedAsset] ?? 0n).toString();
+      await db
+        .insert(schema.balances)
+        .values({ account: m.account, asset: lockedAsset, amount: balance })
+        .onConflictDoUpdate({
+          target: [schema.balances.account, schema.balances.asset],
+          set: { amount: balance },
+        });
+
+      const orderIndex = acc.orders.length - 1;
+      const order = acc.orders[orderIndex]!;
+      await db
+        .insert(schema.orders)
+        .values({
+          account: m.account,
+          orderIndex: BigInt(orderIndex),
+          quantity: order.quantity,
+          instrumentId: BigInt(order.instrumentId),
+          price: order.price,
+          tickVolume: order.tickVolume,
+          side: order.side,
+        })
+        .onConflictDoUpdate({
+          target: [schema.orders.account, schema.orders.orderIndex],
+          set: {
+            quantity: order.quantity,
+            instrumentId: BigInt(order.instrumentId),
+            price: order.price,
+            tickVolume: order.tickVolume,
+            side: order.side,
+          },
+        });
+
+      const ticks =
+        m.mutation.bidOrAsk === 0 ? instrument.bids : instrument.asks;
+      const tick = ticks[Number(m.mutation.price)];
+      if (tick) {
+        await syncTick(
+          db,
+          BigInt(m.mutation.instrumentId),
+          m.mutation.bidOrAsk,
+          m.mutation.price,
+          tick,
+        );
+      }
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.MarketOrder: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+      const instrument = state.instruments[m.mutation.instrumentId];
+      if (!instrument) break;
+
+      for (const asset of [instrument.base, instrument.quote]) {
+        const balance = (acc.balances[asset] ?? 0n).toString();
+        await db
+          .insert(schema.balances)
+          .values({ account: m.account, asset, amount: balance })
+          .onConflictDoUpdate({
+            target: [schema.balances.account, schema.balances.asset],
+            set: { amount: balance },
+          });
+      }
+
+      const fillSide = m.mutation.bidOrAsk === 0 ? 1 : 0;
+      const ticks =
+        m.mutation.bidOrAsk === 0 ? instrument.asks : instrument.bids;
+      for (const fill of m.resolution.fills) {
+        const tick = ticks[Number(fill.price)];
+        if (tick) {
+          await syncTick(
+            db,
+            BigInt(m.mutation.instrumentId),
+            fillSide,
+            fill.price,
+            tick,
+          );
+        }
+      }
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.CloseOrder: {
+      const acc = state.accounts[m.account];
+      if (!acc) break;
+
+      const order = acc.orders[m.mutation.orderId];
+      if (!order) break;
+      const instrument = state.instruments[order.instrumentId];
+      if (!instrument) break;
+
+      await db
+        .insert(schema.orders)
+        .values({
+          account: m.account,
+          orderIndex: BigInt(m.mutation.orderId),
+          quantity: order.quantity,
+          instrumentId: BigInt(order.instrumentId),
+          price: order.price,
+          tickVolume: order.tickVolume,
+          side: order.side,
+        })
+        .onConflictDoUpdate({
+          target: [schema.orders.account, schema.orders.orderIndex],
+          set: { quantity: order.quantity },
+        });
+
+      for (const asset of [instrument.base, instrument.quote]) {
+        const balance = (acc.balances[asset] ?? 0n).toString();
+        await db
+          .insert(schema.balances)
+          .values({ account: m.account, asset, amount: balance })
+          .onConflictDoUpdate({
+            target: [schema.balances.account, schema.balances.asset],
+            set: { amount: balance },
+          });
+      }
+
+      const ticks = order.side === 0 ? instrument.bids : instrument.asks;
+      const tick = ticks[Number(order.price)];
+      if (tick) {
+        await syncTick(
+          db,
+          BigInt(order.instrumentId),
+          order.side,
+          order.price,
+          tick,
+        );
+      } else {
+        await db
+          .delete(schema.ticks)
+          .where(
+            and(
+              eq(schema.ticks.instrumentId, BigInt(order.instrumentId)),
+              eq(schema.ticks.side, order.side),
+              eq(schema.ticks.price, order.price),
+            ),
+          );
+      }
+
+      await syncNonce(db, state, m.account, m.nonce);
+      break;
+    }
+
+    case MutationType.AddInstrument: {
+      await db
+        .insert(schema.instruments)
+        .values({
+          id: BigInt(m.mutation.instrumentId),
+          base: m.mutation.base,
+          baseLotExp: m.mutation.baseLotExp,
+          quote: m.mutation.quote,
+          quoteLotExp: m.mutation.quoteLotExp,
+        })
+        .onConflictDoNothing();
+      break;
+    }
+  }
+}
+
+async function syncTick(
+  db: DB,
+  instrumentId: bigint,
+  side: number,
+  price: bigint,
+  tick: { quantity: bigint; remainingQuantity: bigint; volume: number },
+) {
+  await db
+    .insert(schema.ticks)
+    .values({
+      instrumentId,
+      side,
+      price,
+      quantity: tick.quantity,
+      remainingQuantity: tick.remainingQuantity,
+      volume: tick.volume,
+    })
+    .onConflictDoUpdate({
+      target: [schema.ticks.instrumentId, schema.ticks.side, schema.ticks.price],
+      set: {
+        quantity: tick.quantity,
+        remainingQuantity: tick.remainingQuantity,
+        volume: tick.volume,
+      },
+    });
 }
 
 async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
