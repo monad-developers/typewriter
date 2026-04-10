@@ -1,4 +1,4 @@
-import { Duration, Effect, Fiber, Schedule } from "effect";
+import { Duration, Effect, Fiber, Logger, LogLevel, Schedule } from "effect";
 import * as P256 from "ox/P256";
 import * as PublicKey from "ox/PublicKey";
 import * as WebAuthnP256 from "ox/WebAuthnP256";
@@ -77,8 +77,8 @@ export type RuntimeConfig = {
   rpcUrl: string;
   account: PrivateKeyAccount;
   address: Address;
-  rpId: string;
-  origin: string | string[];
+  rpId?: string;
+  origin?: string | string[];
 };
 
 type QueueEntry = {
@@ -113,8 +113,8 @@ export type EIP712Domain = {
   version: string;
   chainId: number;
   verifyingContract: Address;
-  rpId: string;
-  origin: string | string[];
+  rpId?: string;
+  origin?: string | string[];
 };
 
 type SignedMutation = Exclude<
@@ -261,61 +261,71 @@ export async function verifySignature(
     message,
   } as Parameters<typeof hashTypedData>[0];
 
-  if (key.keyType === 2) {
-    const recovered = await recoverTypedDataAddress({
-      ...typedData,
-      signature: mutation.rawSignature,
-    });
-    const expectedAddress = `0x${key.publicKey.toLowerCase().slice(26)}`;
-    if (recovered.toLowerCase() !== expectedAddress) {
-      throw new Error("InvalidSignature");
+  switch (key.keyType) {
+    case 0: {
+      const hash = hashTypedData(typedData);
+      const [r, s] = decodeAbiParameters(
+        [{ type: "uint256" }, { type: "uint256" }],
+        mutation.rawSignature,
+      );
+      const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
+      if (
+        P256.verify({
+          payload: hash,
+          publicKey,
+          signature: { r, s },
+          hash: true,
+        }) === false
+      ) {
+        throw new Error("InvalidSignature");
+      }
+      break;
     }
-  } else if (key.keyType === 0) {
-    const hash = hashTypedData(typedData);
-    const [r, s] = decodeAbiParameters(
-      [{ type: "uint256" }, { type: "uint256" }],
-      mutation.rawSignature,
-    );
-    const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
-    if (
-      P256.verify({
-        payload: hash,
-        publicKey,
-        signature: { r, s },
-        hash: true,
-      }) === false
-    ) {
-      throw new Error("InvalidSignature");
+    case 1: {
+      const hash = hashTypedData(typedData);
+      const [authenticatorData, clientDataJSON, r, s] = decodeAbiParameters(
+        [
+          { type: "bytes" },
+          { type: "string" },
+          { type: "uint256" },
+          { type: "uint256" },
+        ],
+        mutation.rawSignature,
+      );
+      const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
+      const clientData = JSON.parse(clientDataJSON) as { origin: string };
+      const clientOrigin = clientData.origin;
+      const clientRpId = new URL(clientOrigin).hostname;
+      if (
+        WebAuthnP256.verify({
+          challenge: hash,
+          publicKey,
+          signature: { r, s },
+          metadata: {
+            authenticatorData: authenticatorData as Hex,
+            clientDataJSON,
+          },
+          rpId: eip712Domain.rpId ?? clientRpId,
+          origin: eip712Domain.origin ?? clientOrigin,
+        }) === false
+      ) {
+        throw new Error("InvalidSignature");
+      }
+      break;
     }
-  } else if (key.keyType === 1) {
-    const hash = hashTypedData(typedData);
-    const [authenticatorData, clientDataJSON, r, s] = decodeAbiParameters(
-      [
-        { type: "bytes" },
-        { type: "string" },
-        { type: "uint256" },
-        { type: "uint256" },
-      ],
-      mutation.rawSignature,
-    );
-    const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
-    if (
-      WebAuthnP256.verify({
-        challenge: hash,
-        publicKey,
-        signature: { r, s },
-        metadata: {
-          authenticatorData: authenticatorData as Hex,
-          clientDataJSON,
-        },
-        rpId: eip712Domain.rpId,
-        origin: eip712Domain.origin,
-      }) === false
-    ) {
-      throw new Error("InvalidSignature");
+    case 2: {
+      const recovered = await recoverTypedDataAddress({
+        ...typedData,
+        signature: mutation.rawSignature,
+      });
+      const expectedAddress = `0x${key.publicKey.toLowerCase().slice(26)}`;
+      if (recovered.toLowerCase() !== expectedAddress) {
+        throw new Error("InvalidSignature");
+      }
+      break;
     }
-  } else {
-    throw new Error("InvalidSignature");
+    default:
+      throw new Error("InvalidSignature");
   }
 }
 
@@ -324,90 +334,129 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
     case MutationType.Initialize:
       return encodeAbiParameters(
         [
-          { type: "bytes32", name: "account" },
-          { type: "uint40", name: "expiry" },
-          { type: "uint8", name: "rootKeyType" },
-          { type: "uint8", name: "keyType" },
-          { type: "uint8", name: "permissions" },
-          { type: "bytes", name: "rootPublicKey" },
-          { type: "bytes", name: "publicKey" },
+          {
+            type: "tuple",
+            components: [
+              { type: "bytes32", name: "account" },
+              { type: "uint40", name: "expiry" },
+              { type: "uint8", name: "rootKeyType" },
+              { type: "uint8", name: "keyType" },
+              { type: "uint8", name: "permissions" },
+              { type: "bytes", name: "rootPublicKey" },
+              { type: "bytes", name: "publicKey" },
+            ],
+          },
         ],
         [
-          resolved.account,
-          resolved.mutation.expiry,
-          resolved.mutation.rootKeyType,
-          resolved.mutation.keyType,
-          resolved.mutation.permissions,
-          resolved.mutation.rootPublicKey,
-          resolved.mutation.publicKey,
+          {
+            account: resolved.account,
+            expiry: resolved.mutation.expiry,
+            rootKeyType: resolved.mutation.rootKeyType,
+            keyType: resolved.mutation.keyType,
+            permissions: resolved.mutation.permissions,
+            rootPublicKey: resolved.mutation.rootPublicKey,
+            publicKey: resolved.mutation.publicKey,
+          },
         ],
       );
 
     case MutationType.Authorize:
       return encodeAbiParameters(
         [
-          { type: "bytes32", name: "account" },
-          { type: "uint40", name: "expiry" },
-          { type: "uint8", name: "keyType" },
-          { type: "uint8", name: "permissions" },
-          { type: "bytes", name: "publicKey" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "deadline" },
+          {
+            type: "tuple",
+            components: [
+              { type: "bytes32", name: "account" },
+              { type: "uint40", name: "expiry" },
+              { type: "uint8", name: "keyType" },
+              { type: "uint8", name: "permissions" },
+              { type: "bytes", name: "publicKey" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
         ],
         [
-          resolved.account,
-          resolved.mutation.expiry,
-          resolved.mutation.keyType,
-          resolved.mutation.permissions,
-          resolved.mutation.publicKey,
-          resolved.nonce,
-          resolved.deadline,
+          {
+            account: resolved.account,
+            expiry: resolved.mutation.expiry,
+            keyType: resolved.mutation.keyType,
+            permissions: resolved.mutation.permissions,
+            publicKey: resolved.mutation.publicKey,
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
+          },
         ],
       );
 
     case MutationType.Revoke:
       return encodeAbiParameters(
         [
-          { type: "bytes32", name: "account" },
-          { type: "uint64", name: "keyId" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "deadline" },
+          {
+            type: "tuple",
+            components: [
+              { type: "bytes32", name: "account" },
+              { type: "uint64", name: "keyId" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
         ],
         [
-          resolved.account,
-          BigInt(resolved.mutation.keyId),
-          resolved.nonce,
-          resolved.deadline,
+          {
+            account: resolved.account,
+            keyId: BigInt(resolved.mutation.keyId),
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
+          },
         ],
       );
 
     case MutationType.CloseOrder:
       return encodeAbiParameters(
         [
-          { type: "uint64", name: "orderId" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "deadline" },
+          {
+            type: "tuple",
+            components: [
+              { type: "uint64", name: "orderId" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
         ],
-        [BigInt(resolved.mutation.orderId), resolved.nonce, resolved.deadline],
+        [
+          {
+            orderId: BigInt(resolved.mutation.orderId),
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
+          },
+        ],
       );
 
     case MutationType.LimitOrder:
       return encodeAbiParameters(
         [
-          { type: "uint64", name: "quantity" },
-          { type: "uint64", name: "instrumentId" },
-          { type: "uint64", name: "price" },
-          { type: "uint8", name: "bidOrAsk" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "deadline" },
+          {
+            type: "tuple",
+            components: [
+              { type: "uint64", name: "quantity" },
+              { type: "uint64", name: "instrumentId" },
+              { type: "uint64", name: "price" },
+              { type: "uint8", name: "bidOrAsk" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
         ],
         [
-          resolved.mutation.quantity,
-          BigInt(resolved.mutation.instrumentId),
-          resolved.mutation.price,
-          resolved.mutation.bidOrAsk,
-          resolved.nonce,
-          resolved.deadline,
+          {
+            quantity: resolved.mutation.quantity,
+            instrumentId: BigInt(resolved.mutation.instrumentId),
+            price: resolved.mutation.price,
+            bidOrAsk: resolved.mutation.bidOrAsk,
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
+          },
         ],
       );
 
@@ -416,7 +465,6 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
         [
           {
             type: "tuple",
-            name: "order",
             components: [
               { type: "uint64", name: "quantity" },
               { type: "uint64", name: "minReceivedQuantity" },
@@ -428,7 +476,6 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
           },
           {
             type: "tuple",
-            name: "resolution",
             components: [
               {
                 type: "tuple[]",
@@ -462,50 +509,71 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
     case MutationType.AddInstrument:
       return encodeAbiParameters(
         [
-          { type: "uint64", name: "instrumentId" },
-          { type: "address", name: "base" },
-          { type: "address", name: "quote" },
-          { type: "uint16", name: "baseLotExp" },
-          { type: "uint16", name: "quoteLotExp" },
+          {
+            type: "tuple",
+            components: [
+              { type: "uint64", name: "instrumentId" },
+              { type: "address", name: "base" },
+              { type: "address", name: "quote" },
+              { type: "uint16", name: "baseLotExp" },
+              { type: "uint16", name: "quoteLotExp" },
+            ],
+          },
         ],
         [
-          BigInt(resolved.mutation.instrumentId),
-          resolved.mutation.base,
-          resolved.mutation.quote,
-          resolved.mutation.baseLotExp,
-          resolved.mutation.quoteLotExp,
+          {
+            instrumentId: BigInt(resolved.mutation.instrumentId),
+            base: resolved.mutation.base,
+            quote: resolved.mutation.quote,
+            baseLotExp: resolved.mutation.baseLotExp,
+            quoteLotExp: resolved.mutation.quoteLotExp,
+          },
         ],
       );
 
     case MutationType.Deposit:
       return encodeAbiParameters(
         [
-          { type: "address", name: "asset" },
-          { type: "uint256", name: "amount" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "deadline" },
+          {
+            type: "tuple",
+            components: [
+              { type: "address", name: "asset" },
+              { type: "uint256", name: "amount" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
         ],
         [
-          resolved.mutation.asset,
-          resolved.mutation.amount,
-          resolved.nonce,
-          resolved.deadline,
+          {
+            asset: resolved.mutation.asset,
+            amount: resolved.mutation.amount,
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
+          },
         ],
       );
 
     case MutationType.Withdrawal:
       return encodeAbiParameters(
         [
-          { type: "address", name: "asset" },
-          { type: "uint256", name: "amount" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "deadline" },
+          {
+            type: "tuple",
+            components: [
+              { type: "address", name: "asset" },
+              { type: "uint256", name: "amount" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
         ],
         [
-          resolved.mutation.asset,
-          resolved.mutation.amount,
-          resolved.nonce,
-          resolved.deadline,
+          {
+            asset: resolved.mutation.asset,
+            amount: resolved.mutation.amount,
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
+          },
         ],
       );
   }
@@ -520,11 +588,16 @@ function encodeSignature(resolved: ResolvedMutation): {
     return { account: zeroHash, keyId: 0n, rawSignature: "0x" };
   }
 
-  const { v, r, s } = parseSignature(resolved.rawSignature);
-  const rawSignature = encodeAbiParameters(
-    [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-    [Number(v), r, s],
-  );
+  let { rawSignature } = resolved;
+
+  // Compact 65-byte secp256k1 signatures need ABI re-encoding for the contract
+  if (rawSignature.length === 132) {
+    const { v, r, s } = parseSignature(rawSignature);
+    rawSignature = encodeAbiParameters(
+      [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
+      [Number(v), r, s],
+    );
+  }
 
   return {
     account: resolved.account,
@@ -821,11 +894,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
   const blockProgram = Effect.repeat(
     blockPoller,
-    Schedule.spaced(Duration.millis(50)),
+    Schedule.spaced(Duration.millis(500)),
   );
 
-  const fiber = Effect.runFork(program);
-  const blockFiber = Effect.runFork(blockProgram);
+  const fiber = Effect.runFork(
+    program.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
+  );
+  const blockFiber = Effect.runFork(
+    blockProgram.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
+  );
 
   Effect.runSync(
     Effect.logInfo("runtime started").pipe(
@@ -854,7 +931,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       throw err;
     }
 
-    if (mutation.type !== MutationType.AddInstrument) {
+    if (
+      mutation.type !== MutationType.AddInstrument &&
+      mutation.type !== MutationType.Initialize
+    ) {
       const nonceKey = BigInt(mutation.nonce) >> 64n;
       incrementNonce(getAccount(state, mutation.account), nonceKey);
     }
