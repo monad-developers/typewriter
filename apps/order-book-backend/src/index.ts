@@ -1,29 +1,32 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
-import type { Address, Chain } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { CURRENCIES } from "order-book-frontend/src/constants";
+import index from "order-book-frontend/src/index.html";
+import type { Chain } from "viem";
 import {
-  CHAIN,
-  CURRENCIES,
-  EXAMPLE_STATE,
-  EXCHANGE_ADDRESS,
-  RPC_URL,
-} from "./constants";
+  generatePrivateKey,
+  privateKeyToAccount,
+  signTypedData,
+} from "viem/accounts";
+import { CHAIN, EIP712_TYPES, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import { dbPlugin } from "./db";
 import {
+  type Authorize,
   type CloseOrder,
+  createState,
   type Deposit,
   decodeDeposit,
   decodeLimitOrder,
   decodeMarketOrder,
   decodeSigned,
+  type Initialize,
   type LimitOrder,
   type MarketOrder,
   MutationType,
+  type Revoke,
   type Signed,
 } from "./exchange";
-import index from "./index.html";
 import { startRuntime } from "./runtime";
 import * as schema from "./schema";
 
@@ -35,13 +38,24 @@ if (!process.env.DEPLOYER_PRIVATE_KEY) {
 const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
 const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
+// @ts-expect-error
+if (!process.env.BUN_PUBLIC_RP_ID)
+  throw new Error("BUN_PUBLIC_RP_ID env var is required");
+// @ts-expect-error
+if (!process.env.BUN_PUBLIC_ORIGIN)
+  throw new Error("BUN_PUBLIC_ORIGIN env var is required");
+
 const handle = startRuntime({
-  initialState: structuredClone(EXAMPLE_STATE),
+  initialState: createState(),
   flushIntervalMs: 50,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,
   account: deployerAccount,
   address: EXCHANGE_ADDRESS,
+  // @ts-expect-error
+  rpId: process.env.BUN_PUBLIC_RP_ID,
+  // @ts-expect-error
+  origin: process.env.BUN_PUBLIC_ORIGIN,
 });
 
 // @ts-expect-error
@@ -49,10 +63,10 @@ if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL env var is required");
 }
 
-// @ts-expect-error
-const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
-await migrate(db, { migrationsFolder: "./drizzle" });
-dbPlugin(handle, db);
+// // @ts-expect-error
+// const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
+// await migrate(db, { migrationsFolder: "./drizzle" });
+// dbPlugin(handle, db);
 
 const server = serve({
   idleTimeout: 0,
@@ -60,14 +74,14 @@ const server = serve({
     "/api/balances": {
       GET: (req) => {
         const url = new URL(req.url);
-        const account = url.searchParams.get("account") as Address | null;
+        const account = url.searchParams.get("account");
         if (!account)
           return Response.json(
             { error: "account query parameter required" },
             { status: 400 },
           );
 
-        const acc = handle.state.accounts[account];
+        const acc = handle.state.accounts[account as `0x${string}`];
         if (!acc) {
           const balances: Record<string, string> = {};
           for (const currency of CURRENCIES) {
@@ -76,7 +90,7 @@ const server = serve({
 
           return Response.json({
             account,
-            nonce: "0",
+            nonces: {},
             balances,
           });
         }
@@ -85,9 +99,13 @@ const server = serve({
         for (const [asset, balance] of Object.entries(acc.balances)) {
           balances[asset] = balance.toString();
         }
+        const nonces: Record<string, string> = {};
+        for (const [k, v] of Object.entries(acc.nonces)) {
+          nonces[k] = v.toString();
+        }
         return Response.json({
           account,
-          nonce: acc.nonce.toString(),
+          nonces,
           balances,
         });
       },
@@ -106,11 +124,12 @@ const server = serve({
 
         const instrumentId = Number(instrumentIdParam);
         const instrument = handle.state.instruments[instrumentId];
-        if (!instrument)
+        if (!instrument) {
           return Response.json(
             { error: "Invalid instrument" },
             { status: 404 },
           );
+        }
 
         const bidPrices = Object.keys(instrument.bids)
           .map(Number)
@@ -146,6 +165,163 @@ const server = serve({
             };
           }),
         });
+      },
+    },
+
+    "/api/sign-in": {
+      POST: async () => {
+        try {
+          const privateKey = generatePrivateKey();
+          const wallet = privateKeyToAccount(privateKey);
+          const accountId =
+            `0x000000000000000000000000${wallet.address.slice(2).toLowerCase()}` as `0x${string}`;
+          const FAR_DEADLINE = BigInt(
+            "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          );
+          const domain = {
+            name: "Exchange" as const,
+            version: "1" as const,
+            chainId: CHAIN.id,
+            verifyingContract: EXCHANGE_ADDRESS,
+          };
+
+          const initSignature = await signTypedData({
+            privateKey,
+            domain,
+            types: EIP712_TYPES,
+            primaryType: "Initialize",
+            message: {
+              account: accountId,
+              expiry: 0,
+              rootKeyType: 2,
+              keyType: 2,
+              permissions: 0xff,
+              rootPublicKey: accountId,
+              publicKey: accountId,
+            },
+          });
+
+          await handle.execute({
+            type: MutationType.Initialize,
+            account: accountId,
+            keyId: 0,
+            nonce: 0n,
+            deadline: FAR_DEADLINE,
+            rawSignature: initSignature,
+            mutation: {
+              expiry: 0,
+              rootKeyType: 2,
+              keyType: 2,
+              permissions: 0xff,
+              rootPublicKey: accountId,
+              publicKey: accountId,
+            },
+          });
+
+          let nonce = 1n;
+          for (const currency of CURRENCIES) {
+            const amount = 10000n * 10n ** BigInt(currency.decimals);
+
+            const depositSignature = await signTypedData({
+              privateKey,
+              domain,
+              types: EIP712_TYPES,
+              primaryType: "Deposit",
+              message: {
+                asset: currency.address,
+                amount,
+                nonce,
+                deadline: FAR_DEADLINE,
+              },
+            });
+
+            await handle.execute({
+              type: MutationType.Deposit,
+              account: accountId,
+              keyId: 1,
+              nonce,
+              deadline: FAR_DEADLINE,
+              rawSignature: depositSignature,
+              mutation: { asset: currency.address, amount },
+            });
+
+            nonce++;
+          }
+
+          return Response.json({
+            address: wallet.address,
+            accountId,
+            privateKey,
+          });
+        } catch (err) {
+          return Response.json({ error: String(err) }, { status: 400 });
+        }
+      },
+    },
+
+    "/api/initialize": {
+      POST: async (req) => {
+        const body = (await req.json()) as Initialize & Signed;
+
+        try {
+          const result = await handle.execute({
+            type: MutationType.Initialize,
+            ...decodeSigned(body),
+            mutation: {
+              expiry: body.expiry,
+              rootKeyType: body.rootKeyType,
+              keyType: body.keyType,
+              permissions: body.permissions,
+              rootPublicKey: body.rootPublicKey,
+              publicKey: body.publicKey,
+            },
+          });
+
+          return Response.json({ id: result.id });
+        } catch (err) {
+          return Response.json({ error: String(err) }, { status: 400 });
+        }
+      },
+    },
+
+    "/api/authorize": {
+      POST: async (req) => {
+        const body = (await req.json()) as Authorize & Signed;
+
+        try {
+          const result = await handle.execute({
+            type: MutationType.Authorize,
+            ...decodeSigned(body),
+            mutation: {
+              expiry: body.expiry,
+              keyType: body.keyType,
+              permissions: body.permissions,
+              publicKey: body.publicKey,
+            },
+          });
+
+          return Response.json({ id: result.id });
+        } catch (err) {
+          return Response.json({ error: String(err) }, { status: 400 });
+        }
+      },
+    },
+
+    "/api/revoke": {
+      POST: async (req) => {
+        const body = (await req.json()) as Revoke & Signed;
+
+        try {
+          const result = await handle.execute({
+            type: MutationType.Revoke,
+            ...decodeSigned(body),
+            mutation: { keyId: body.keyId },
+          });
+
+          return Response.json({ id: result.id });
+        } catch (err) {
+          return Response.json({ error: String(err) }, { status: 400 });
+        }
       },
     },
 

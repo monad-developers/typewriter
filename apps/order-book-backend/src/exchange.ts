@@ -1,15 +1,33 @@
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 
 export type Side = 0 | 1;
 
+export type KeyType = 0 | 1 | 2 | 3; // P256, WebAuthnP256, Secp256k1, External
+
+export type Key = {
+  expiry: number;
+  keyType: KeyType;
+  permissions: number;
+  publicKey: Hex;
+};
+
+export const PERM_AUTHORIZE = 1 << 0;
+export const PERM_REVOKE = 1 << 1;
+export const PERM_CLOSE_ORDER = 1 << 2;
+export const PERM_LIMIT_ORDER = 1 << 3;
+export const PERM_MARKET_ORDER = 1 << 4;
+export const PERM_DEPOSIT = 1 << 5;
+export const PERM_WITHDRAW = 1 << 6;
+
 export type State<quantity = string> = {
-  accounts: Record<Address, Account<quantity>>;
+  accounts: Record<Hex, Account<quantity>>;
   instruments: Record<number, Instrument<quantity>>;
 };
 
 export type Account<quantity = string> = {
-  nonce: quantity;
+  nonces: Record<string, quantity>;
   balances: Record<Address, quantity>;
+  keys: Key[];
   orders: Order<quantity>[];
 };
 
@@ -73,7 +91,7 @@ export type Withdrawal<quantity = string> = {
   amount: quantity;
 };
 
-export type AddInstrumentParams = {
+export type AddInstrument = {
   instrumentId: number;
   base: Address;
   quote: Address;
@@ -81,23 +99,50 @@ export type AddInstrumentParams = {
   quoteLotExp: number;
 };
 
+export type Initialize = {
+  expiry: number;
+  rootKeyType: number;
+  keyType: number;
+  permissions: number;
+  rootPublicKey: Hex;
+  publicKey: Hex;
+};
+
+export type Authorize = {
+  expiry: number;
+  keyType: number;
+  permissions: number;
+  publicKey: Hex;
+};
+
+export type Revoke = {
+  keyId: number;
+};
+
 export enum MutationType {
-  CloseOrder = 0,
-  LimitOrder = 1,
-  MarketOrder = 2,
-  AddInstrument = 3,
-  Deposit = 4,
-  Withdrawal = 5,
+  Initialize = 0,
+  Authorize = 1,
+  Revoke = 2,
+  CloseOrder = 3,
+  LimitOrder = 4,
+  MarketOrder = 5,
+  AddInstrument = 6,
+  Deposit = 7,
+  Withdrawal = 8,
 }
 
 export type Signed<quantity = string> = {
-  account: Address;
+  account: Hex;
+  keyId: number;
   nonce: quantity;
   deadline: quantity;
-  signature: `0x${string}`;
+  rawSignature: Hex;
 };
 
 export type TaggedMutation =
+  | ({ type: MutationType.Initialize; mutation: Initialize } & Signed<bigint>)
+  | ({ type: MutationType.Authorize; mutation: Authorize } & Signed<bigint>)
+  | ({ type: MutationType.Revoke; mutation: Revoke } & Signed<bigint>)
   | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
   | ({
       type: MutationType.LimitOrder;
@@ -107,7 +152,7 @@ export type TaggedMutation =
       type: MutationType.MarketOrder;
       mutation: MarketOrder<bigint>;
     } & Signed<bigint>)
-  | { type: MutationType.AddInstrument; mutation: AddInstrumentParams }
+  | { type: MutationType.AddInstrument; mutation: AddInstrument }
   | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
   | ({
       type: MutationType.Withdrawal;
@@ -115,6 +160,9 @@ export type TaggedMutation =
     } & Signed<bigint>);
 
 export type ResolvedMutation =
+  | ({ type: MutationType.Initialize; mutation: Initialize } & Signed<bigint>)
+  | ({ type: MutationType.Authorize; mutation: Authorize } & Signed<bigint>)
+  | ({ type: MutationType.Revoke; mutation: Revoke } & Signed<bigint>)
   | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
   | ({
       type: MutationType.LimitOrder;
@@ -125,7 +173,7 @@ export type ResolvedMutation =
       mutation: MarketOrder<bigint>;
       resolution: MarketOrderResolution<bigint>;
     } & Signed<bigint>)
-  | { type: MutationType.AddInstrument; mutation: AddInstrumentParams }
+  | { type: MutationType.AddInstrument; mutation: AddInstrument }
   | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
   | ({
       type: MutationType.Withdrawal;
@@ -137,7 +185,7 @@ export function createState(): State<bigint> {
 }
 
 export function createAccount(): Account<bigint> {
-  return { nonce: 0n, balances: {}, orders: [] };
+  return { nonces: {}, balances: {}, keys: [], orders: [] };
 }
 
 export function createOrder(): Order<bigint> {
@@ -207,7 +255,11 @@ export function decodeAccount(a: Account): Account<bigint> {
   for (const [k, v] of Object.entries(a.balances)) {
     balances[k as Address] = n(v);
   }
-  return { nonce: n(a.nonce), balances, orders: a.orders.map(decodeOrder) };
+  const nonces: Record<string, bigint> = {};
+  for (const [k, v] of Object.entries(a.nonces)) {
+    nonces[k] = n(v);
+  }
+  return { nonces, balances, keys: a.keys, orders: a.orders.map(decodeOrder) };
 }
 
 export function encodeAccount(a: Account<bigint>): Account {
@@ -215,7 +267,11 @@ export function encodeAccount(a: Account<bigint>): Account {
   for (const [k, v] of Object.entries(a.balances)) {
     balances[k as Address] = s(v);
   }
-  return { nonce: s(a.nonce), balances, orders: a.orders.map(encodeOrder) };
+  const nonces: Record<string, string> = {};
+  for (const [k, v] of Object.entries(a.nonces)) {
+    nonces[k] = s(v);
+  }
+  return { nonces, balances, keys: a.keys, orders: a.orders.map(encodeOrder) };
 }
 
 function decodeTicks(
@@ -261,9 +317,9 @@ export function encodeInstrument(i: Instrument<bigint>): Instrument {
 }
 
 export function decodeState(st: State): State<bigint> {
-  const accounts: Record<Address, Account<bigint>> = {};
+  const accounts: Record<Hex, Account<bigint>> = {};
   for (const [k, v] of Object.entries(st.accounts)) {
-    accounts[k as Address] = decodeAccount(v);
+    accounts[k as Hex] = decodeAccount(v);
   }
   const instruments: Record<number, Instrument<bigint>> = {};
   for (const [k, v] of Object.entries(st.instruments)) {
@@ -273,9 +329,9 @@ export function decodeState(st: State): State<bigint> {
 }
 
 export function encodeState(st: State<bigint>): State {
-  const accounts: Record<Address, Account> = {};
+  const accounts: Record<Hex, Account> = {};
   for (const [k, v] of Object.entries(st.accounts)) {
-    accounts[k as Address] = encodeAccount(v);
+    accounts[k as Hex] = encodeAccount(v);
   }
   const instruments: Record<number, Instrument> = {};
   for (const [k, v] of Object.entries(st.instruments)) {
@@ -359,24 +415,41 @@ export function encodeWithdrawal(w: Withdrawal<bigint>): Withdrawal {
 export function decodeSigned(s: Signed): Signed<bigint> {
   return {
     account: s.account,
+    keyId: s.keyId,
     nonce: BigInt(s.nonce),
     deadline: BigInt(s.deadline),
-    signature: s.signature,
+    rawSignature: s.rawSignature,
   };
 }
 
 export function encodeSigned(s: Signed<bigint>): Signed {
   return {
     account: s.account,
+    keyId: s.keyId,
     nonce: s.nonce.toString(),
     deadline: s.deadline.toString(),
-    signature: s.signature,
+    rawSignature: s.rawSignature,
   };
+}
+
+export function getNonceSeq(
+  account: Account<bigint>,
+  nonceKey: bigint,
+): bigint {
+  return account.nonces[nonceKey.toString()] ?? 0n;
+}
+
+export function incrementNonce(
+  account: Account<bigint>,
+  nonceKey: bigint,
+): void {
+  const key = nonceKey.toString();
+  account.nonces[key] = (account.nonces[key] ?? 0n) + 1n;
 }
 
 export function getAccount(
   state: State<bigint>,
-  account: Address,
+  account: Hex,
 ): Account<bigint> {
   if (!state.accounts[account]) {
     state.accounts[account] = createAccount();
@@ -389,7 +462,7 @@ function settleFill(
   fill: Fill<bigint>,
   instrument: Instrument<bigint>,
   takerSide: Side,
-  takerAccount: Address,
+  takerAccount: Hex,
 ): void {
   const ticks = takerSide === 0 ? instrument.asks : instrument.bids;
   const tick = ticks[Number(fill.price)];
@@ -429,7 +502,7 @@ export function handleMarketOrder(
   state: State<bigint>,
   order: MarketOrder<bigint>,
   resolution: MarketOrderResolution<bigint>,
-  account: Address,
+  account: Hex,
 ): void {
   const instrument = state.instruments[order.instrumentId];
   if (!instrument) throw new Error("InvalidInstrument");
@@ -455,7 +528,7 @@ export function handleMarketOrder(
 export function handleLimitOrder(
   state: State<bigint>,
   order: LimitOrder<bigint>,
-  account: Address,
+  account: Hex,
 ): void {
   const instrument = state.instruments[order.instrumentId];
   if (!instrument) throw new Error("InvalidInstrument");
@@ -501,7 +574,7 @@ export function handleLimitOrder(
 export function handleCloseOrder(
   state: State<bigint>,
   close: CloseOrder,
-  account: Address,
+  account: Hex,
 ): void {
   const acc = getAccount(state, account);
   const order = acc.orders[close.orderId];
@@ -559,7 +632,7 @@ export function handleCloseOrder(
 export function handleDeposit(
   state: State<bigint>,
   params: Deposit<bigint>,
-  account: Address,
+  account: Hex,
 ): void {
   const acc = getAccount(state, account);
   acc.balances[params.asset] =
@@ -569,7 +642,7 @@ export function handleDeposit(
 export function handleWithdrawal(
   state: State<bigint>,
   params: Withdrawal<bigint>,
-  account: Address,
+  account: Hex,
 ): void {
   const acc = getAccount(state, account);
   if ((acc.balances[params.asset] ?? 0n) < params.amount)
@@ -580,7 +653,7 @@ export function handleWithdrawal(
 
 export function handleAddInstrument(
   state: State<bigint>,
-  params: AddInstrumentParams,
+  params: AddInstrument,
 ): void {
   if (state.instruments[params.instrumentId])
     throw new Error("InstrumentAlreadyExists");
@@ -591,5 +664,56 @@ export function handleAddInstrument(
     quoteLotExp: params.quoteLotExp,
     bids: {},
     asks: {},
+  };
+}
+
+export function handleInitialize(
+  state: State<bigint>,
+  params: Initialize,
+  account: Hex,
+): void {
+  const acc = getAccount(state, account);
+  if (acc.keys.length > 0) throw new Error("AlreadyInitialized");
+  acc.keys.push({
+    expiry: 0,
+    keyType: params.rootKeyType as KeyType,
+    permissions: 0xff,
+    publicKey: params.rootPublicKey,
+  });
+  acc.keys.push({
+    expiry: params.expiry,
+    keyType: params.keyType as KeyType,
+    permissions: params.permissions,
+    publicKey: params.publicKey,
+  });
+}
+
+export function handleAuthorize(
+  state: State<bigint>,
+  params: Authorize,
+  account: Hex,
+): void {
+  const acc = getAccount(state, account);
+  acc.keys.push({
+    expiry: params.expiry,
+    keyType: params.keyType as KeyType,
+    permissions: params.permissions,
+    publicKey: params.publicKey,
+  });
+}
+
+export function handleRevoke(
+  state: State<bigint>,
+  params: Revoke,
+  account: Hex,
+): void {
+  const acc = getAccount(state, account);
+  const key = acc.keys[params.keyId];
+  if (!key || key.permissions === 0) throw new Error("KeyNotFound");
+  acc.keys[params.keyId] = {
+    expiry: 0,
+    keyType: 0,
+    permissions: 0,
+    publicKey: "0x",
   };
 }

@@ -1,34 +1,22 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAccountContext } from "../contexts/AccountContext";
+import { getNonce, useAccountContext } from "../contexts/AccountContext";
 import { signMarketOrder } from "./useSign";
 
 type MarketOrderParams = {
   instrumentId: number;
   side: "buy" | "sell";
   amount: string;
-  nonceOffset?: number;
 };
 
 export function useMarketOrderMutation() {
-  const { account } = useAccountContext();
+  const { account, incrementSeq } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({
-      instrumentId,
-      side,
-      amount,
-      nonceOffset = 0,
-    }: MarketOrderParams) => {
+    mutationFn: async ({ instrumentId, side, amount }: MarketOrderParams) => {
       if (!account) throw new Error("No account");
 
-      const cached = queryClient.getQueryData<{ nonce: string }>([
-        "balances",
-        account.address,
-      ]);
-      const nonce = BigInt(cached?.nonce ?? "0") + BigInt(nonceOffset);
-
-      const signed = await signMarketOrder(account, nonce, {
+      const signed = await signMarketOrder(account, getNonce(account), {
         quantity: BigInt(amount),
         minReceivedQuantity: 0n,
         instrumentId,
@@ -42,15 +30,16 @@ export function useMarketOrderMutation() {
       });
 
       if (!res.ok) {
-        const err = (await res.json().catch(() => null)) as
-          | { error?: string }
-          | null;
+        const err = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(err?.error ?? "Order failed");
       }
 
       return res.json();
     },
     onSuccess: async () => {
+      incrementSeq();
       await queryClient.invalidateQueries({ queryKey: ["balances"] });
       await queryClient.invalidateQueries({ queryKey: ["instrument-price"] });
     },

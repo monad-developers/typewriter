@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from "bun:test";
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount, signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
 import {
@@ -21,6 +21,10 @@ const TAKER_PK =
 const SCHEDULER_ACCOUNT = privateKeyToAccount(SCHEDULER_PK);
 const MAKER = privateKeyToAccount(MAKER_PK).address;
 const TAKER = privateKeyToAccount(TAKER_PK).address;
+const MAKER_ACCOUNT =
+  `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
+const TAKER_ACCOUNT =
+  `0x000000000000000000000000${TAKER.slice(2).toLowerCase()}` as Hex;
 
 const EXCHANGE_ADDRESS =
   "0x0000000000000000000000000000000000000000" as Address;
@@ -35,6 +39,8 @@ const TEST_CONFIG = {
   rpcUrl: "http://localhost:8545",
   account: SCHEDULER_ACCOUNT,
   address: EXCHANGE_ADDRESS,
+  rpId: "localhost",
+  origin: "http://localhost:3000",
 };
 
 const EIP712_DOMAIN = {
@@ -79,6 +85,31 @@ const EIP712_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
 } as const;
+
+function makeKey(addr: Address) {
+  return {
+    expiry: 0,
+    keyType: 2 as const,
+    permissions: 0x7f,
+    publicKey:
+      `0x000000000000000000000000${addr.slice(2).toLowerCase()}` as Hex,
+  };
+}
+
+function makeAccount(addr: Address, balances: Record<Address, bigint>) {
+  return {
+    nonces: {},
+    balances,
+    keys: [makeKey(addr)],
+    orders: [] as {
+      quantity: bigint;
+      instrumentId: number;
+      price: bigint;
+      tickVolume: number;
+      side: 0 | 1;
+    }[],
+  };
+}
 
 async function signDeposit(
   pk: `0x${string}`,
@@ -185,20 +216,18 @@ beforeEach(async () => {
     asks: {},
   };
 
-  handle = startRuntime({ ...TEST_CONFIG, state });
+  handle = startRuntime({ ...TEST_CONFIG, initialState: state });
 });
 
 test("resolveAndOrderMutations sorts by type and resolves market fills without mutating state", async () => {
-  state.accounts[MAKER] = {
-    nonce: 0n,
-    balances: { [QUOTE]: 10000n, [BASE]: 0n },
-    orders: [],
-  };
-  state.accounts[TAKER] = {
-    nonce: 0n,
-    balances: { [BASE]: 10000n, [QUOTE]: 0n },
-    orders: [],
-  };
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {
+    [QUOTE]: 10000n,
+    [BASE]: 0n,
+  });
+  state.accounts[TAKER_ACCOUNT] = makeAccount(TAKER, {
+    [BASE]: 10000n,
+    [QUOTE]: 0n,
+  });
   state.instruments[0]!.bids[Number(10n * Q32)] = {
     quantity: 100n,
     remainingQuantity: 100n,
@@ -208,10 +237,11 @@ test("resolveAndOrderMutations sorts by type and resolves market fills without m
   const mutations: TaggedMutation[] = [
     {
       type: MutationType.MarketOrder,
-      account: TAKER,
+      account: TAKER_ACCOUNT,
+      keyId: 0,
       nonce: 0n,
       deadline: FAR_DEADLINE,
-      signature: "0x00",
+      rawSignature: "0x00",
       mutation: {
         quantity: 10n,
         minReceivedQuantity: 0n,
@@ -221,10 +251,11 @@ test("resolveAndOrderMutations sorts by type and resolves market fills without m
     },
     {
       type: MutationType.LimitOrder,
-      account: MAKER,
+      account: MAKER_ACCOUNT,
+      keyId: 0,
       nonce: 0n,
       deadline: FAR_DEADLINE,
-      signature: "0x00",
+      rawSignature: "0x00",
       mutation: {
         quantity: 5n,
         instrumentId: 0,
@@ -243,19 +274,21 @@ test("resolveAndOrderMutations sorts by type and resolves market fills without m
     expect(resolved[1]!.resolution.fills[0]!.quantity).toBe(10n);
   }
 
-  expect(state.accounts[MAKER]!.balances[QUOTE]).toBe(10000n);
-  expect(state.accounts[TAKER]!.balances[BASE]).toBe(10000n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(10000n);
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[BASE]).toBe(10000n);
   await handle.stop();
 });
 
 test("limit order places on book and locks funds", async () => {
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
   const depSig = await signDeposit(MAKER_PK, QUOTE, 10000n, 0n);
   await handle.execute({
     type: MutationType.Deposit,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 0n,
     deadline: FAR_DEADLINE,
-    signature: depSig,
+    rawSignature: depSig,
     mutation: { asset: QUOTE, amount: 10000n },
   });
 
@@ -268,14 +301,15 @@ test("limit order places on book and locks funds", async () => {
   const sig = await signLimitOrder(MAKER_PK, order, 1n);
   await handle.execute({
     type: MutationType.LimitOrder,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 1n,
     deadline: FAR_DEADLINE,
-    signature: sig,
+    rawSignature: sig,
     mutation: order,
   });
 
-  expect(state.accounts[MAKER]!.balances[QUOTE]).toBe(9900n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(9900n);
   expect(state.instruments[0]!.bids[Number(10n * Q32)]!.quantity).toBe(10n);
   await handle.stop();
 });
@@ -287,13 +321,15 @@ test("market sell fills against resting bid", async () => {
     volume: 0,
   };
 
+  state.accounts[TAKER_ACCOUNT] = makeAccount(TAKER, {});
   const depSig = await signDeposit(TAKER_PK, BASE, 10000n, 0n);
   await handle.execute({
     type: MutationType.Deposit,
-    account: TAKER,
+    account: TAKER_ACCOUNT,
+    keyId: 0,
     nonce: 0n,
     deadline: FAR_DEADLINE,
-    signature: depSig,
+    rawSignature: depSig,
     mutation: { asset: BASE, amount: 10000n },
   });
 
@@ -306,15 +342,16 @@ test("market sell fills against resting bid", async () => {
   const sig = await signMarketOrder(TAKER_PK, order, 1n);
   const resolved = await handle.execute({
     type: MutationType.MarketOrder,
-    account: TAKER,
+    account: TAKER_ACCOUNT,
+    keyId: 0,
     nonce: 1n,
     deadline: FAR_DEADLINE,
-    signature: sig,
+    rawSignature: sig,
     mutation: order,
   });
 
-  expect(state.accounts[TAKER]!.balances[BASE]).toBe(9990n);
-  expect(state.accounts[TAKER]!.balances[QUOTE]).toBe(100n);
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[BASE]).toBe(9990n);
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[QUOTE]).toBe(100n);
   expect(resolved.resolution.fills.length).toBe(1);
   await handle.stop();
 });
@@ -325,9 +362,8 @@ test("close order refunds unfilled and credits filled", async () => {
     remainingQuantity: 30n,
     volume: 0,
   };
-  state.accounts[MAKER] = {
-    nonce: 0n,
-    balances: { [QUOTE]: 0n, [BASE]: 0n },
+  state.accounts[MAKER_ACCOUNT] = {
+    ...makeAccount(MAKER, { [QUOTE]: 0n, [BASE]: 0n }),
     orders: [
       {
         quantity: 50n,
@@ -342,52 +378,58 @@ test("close order refunds unfilled and credits filled", async () => {
   const sig = await signCloseOrder(MAKER_PK, 0, 0n);
   await handle.execute({
     type: MutationType.CloseOrder,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 0n,
     deadline: FAR_DEADLINE,
-    signature: sig,
+    rawSignature: sig,
     mutation: { orderId: 0 },
   });
 
-  expect(state.accounts[MAKER]!.balances[QUOTE]).toBe(300n);
-  expect(state.accounts[MAKER]!.balances[BASE]).toBe(20n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(300n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[BASE]).toBe(20n);
   await handle.stop();
 });
 
 test("deposit and withdrawal", async () => {
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
   const depSig = await signDeposit(MAKER_PK, QUOTE, 500n, 0n);
   await handle.execute({
     type: MutationType.Deposit,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 0n,
     deadline: FAR_DEADLINE,
-    signature: depSig,
+    rawSignature: depSig,
     mutation: { asset: QUOTE, amount: 500n },
   });
-  expect(state.accounts[MAKER]!.balances[QUOTE]).toBe(500n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(500n);
 
   const wSig = await signWithdrawal(MAKER_PK, QUOTE, 200n, 1n);
   await handle.execute({
     type: MutationType.Withdrawal,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 1n,
     deadline: FAR_DEADLINE,
-    signature: wSig,
+    rawSignature: wSig,
     mutation: { asset: QUOTE, amount: 200n },
   });
-  expect(state.accounts[MAKER]!.balances[QUOTE]).toBe(300n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(300n);
   await handle.stop();
 });
 
 test("withdrawal with insufficient balance rejects", async () => {
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
   const sig = await signWithdrawal(MAKER_PK, BASE, 1n, 0n);
   await expect(
     handle.execute({
       type: MutationType.Withdrawal,
-      account: MAKER,
+      account: MAKER_ACCOUNT,
+      keyId: 0,
       nonce: 0n,
       deadline: FAR_DEADLINE,
-      signature: sig,
+      rawSignature: sig,
       mutation: { asset: BASE, amount: 1n },
     }),
   ).rejects.toThrow("InsufficientBalance");
@@ -395,14 +437,16 @@ test("withdrawal with insufficient balance rejects", async () => {
 });
 
 test("invalid signature rejects", async () => {
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
   const sig = await signDeposit(TAKER_PK, QUOTE, 500n, 0n);
   await expect(
     handle.execute({
       type: MutationType.Deposit,
-      account: MAKER,
+      account: MAKER_ACCOUNT,
+      keyId: 0,
       nonce: 0n,
       deadline: FAR_DEADLINE,
-      signature: sig,
+      rawSignature: sig,
       mutation: { asset: QUOTE, amount: 500n },
     }),
   ).rejects.toThrow("InvalidSignature");
@@ -410,15 +454,17 @@ test("invalid signature rejects", async () => {
 });
 
 test("expired deadline rejects", async () => {
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
   const expired = BigInt(Math.floor(Date.now() / 1000) - 1);
   const sig = await signDeposit(MAKER_PK, QUOTE, 500n, 0n);
   await expect(
     handle.execute({
       type: MutationType.Deposit,
-      account: MAKER,
+      account: MAKER_ACCOUNT,
+      keyId: 0,
       nonce: 0n,
       deadline: expired,
-      signature: sig,
+      rawSignature: sig,
       mutation: { asset: QUOTE, amount: 500n },
     }),
   ).rejects.toThrow("SignatureExpired");
@@ -426,14 +472,16 @@ test("expired deadline rejects", async () => {
 });
 
 test("wrong nonce rejects", async () => {
+  state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
   const sig = await signDeposit(MAKER_PK, QUOTE, 500n, 99n);
   await expect(
     handle.execute({
       type: MutationType.Deposit,
-      account: MAKER,
+      account: MAKER_ACCOUNT,
+      keyId: 0,
       nonce: 99n,
       deadline: FAR_DEADLINE,
-      signature: sig,
+      rawSignature: sig,
       mutation: { asset: QUOTE, amount: 500n },
     }),
   ).rejects.toThrow("InvalidNonce");
@@ -450,25 +498,29 @@ test("full lifecycle: deposit, limit, market, close", async () => {
     bids: {},
     asks: {},
   };
-  const h = startRuntime({ ...TEST_CONFIG, state: fresh });
+  fresh.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {});
+  fresh.accounts[TAKER_ACCOUNT] = makeAccount(TAKER, {});
+  const h = startRuntime({ ...TEST_CONFIG, initialState: fresh });
 
   const makerDepSig = await signDeposit(MAKER_PK, QUOTE, 10000n, 0n);
   await h.execute({
     type: MutationType.Deposit,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 0n,
     deadline: FAR_DEADLINE,
-    signature: makerDepSig,
+    rawSignature: makerDepSig,
     mutation: { asset: QUOTE, amount: 10000n },
   });
 
   const takerDepSig = await signDeposit(TAKER_PK, BASE, 10000n, 0n);
   await h.execute({
     type: MutationType.Deposit,
-    account: TAKER,
+    account: TAKER_ACCOUNT,
+    keyId: 0,
     nonce: 0n,
     deadline: FAR_DEADLINE,
-    signature: takerDepSig,
+    rawSignature: takerDepSig,
     mutation: { asset: BASE, amount: 10000n },
   });
 
@@ -481,13 +533,14 @@ test("full lifecycle: deposit, limit, market, close", async () => {
   const limitSig = await signLimitOrder(MAKER_PK, limitOrder, 1n);
   await h.execute({
     type: MutationType.LimitOrder,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 1n,
     deadline: FAR_DEADLINE,
-    signature: limitSig,
+    rawSignature: limitSig,
     mutation: limitOrder,
   });
-  expect(fresh.accounts[MAKER]!.balances[QUOTE]).toBe(9000n);
+  expect(fresh.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(9000n);
 
   const marketOrder = {
     quantity: 40n,
@@ -498,26 +551,28 @@ test("full lifecycle: deposit, limit, market, close", async () => {
   const marketSig = await signMarketOrder(TAKER_PK, marketOrder, 1n);
   await h.execute({
     type: MutationType.MarketOrder,
-    account: TAKER,
+    account: TAKER_ACCOUNT,
+    keyId: 0,
     nonce: 1n,
     deadline: FAR_DEADLINE,
-    signature: marketSig,
+    rawSignature: marketSig,
     mutation: marketOrder,
   });
-  expect(fresh.accounts[TAKER]!.balances[BASE]).toBe(9960n);
-  expect(fresh.accounts[TAKER]!.balances[QUOTE]).toBe(400n);
+  expect(fresh.accounts[TAKER_ACCOUNT]!.balances[BASE]).toBe(9960n);
+  expect(fresh.accounts[TAKER_ACCOUNT]!.balances[QUOTE]).toBe(400n);
 
   const closeSig = await signCloseOrder(MAKER_PK, 0, 2n);
   await h.execute({
     type: MutationType.CloseOrder,
-    account: MAKER,
+    account: MAKER_ACCOUNT,
+    keyId: 0,
     nonce: 2n,
     deadline: FAR_DEADLINE,
-    signature: closeSig,
+    rawSignature: closeSig,
     mutation: { orderId: 0 },
   });
-  expect(fresh.accounts[MAKER]!.balances[QUOTE]).toBe(9000n + 600n);
-  expect(fresh.accounts[MAKER]!.balances[BASE]).toBe(40n);
+  expect(fresh.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(9000n + 600n);
+  expect(fresh.accounts[MAKER_ACCOUNT]!.balances[BASE]).toBe(40n);
 
   await h.stop();
 });

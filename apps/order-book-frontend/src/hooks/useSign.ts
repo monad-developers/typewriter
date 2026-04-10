@@ -1,56 +1,28 @@
-import type { Address } from "viem";
-import { signTypedData } from "viem/accounts";
+import {
+  type Address,
+  bytesToHex,
+  encodeAbiParameters,
+  type Hex,
+  hashTypedData,
+  hexToBytes,
+} from "viem";
 import type { Account } from "../contexts/AccountContext";
+import { EIP712_DOMAIN, EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
 
-const EXCHANGE_ADDRESS = // @ts-expect-error
-  (process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ??
-    "0x0000000000000000000000000000000000000000") as Address;
-
-const CHAIN_ID = Number(
-  // @ts-expect-error
-  process.env.BUN_PUBLIC_CHAIN_ID ?? "31337",
-);
-
-const EIP712_DOMAIN = {
-  name: "Exchange" as const,
-  version: "1" as const,
-  chainId: CHAIN_ID,
-  verifyingContract: EXCHANGE_ADDRESS,
-};
-
-const EIP712_TYPES = {
-  MarketOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "minReceivedQuantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  LimitOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "price", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  CloseOrder: [
-    { name: "orderId", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Deposit: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-} as const;
-
-const FAR_DEADLINE = BigInt(
-  "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-);
+async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
+  const sig = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    sessionKey.privateKey,
+    hexToBytes(hash).buffer as ArrayBuffer,
+  );
+  const bytes = new Uint8Array(sig);
+  const r = BigInt(bytesToHex(bytes.slice(0, 32)));
+  const s = BigInt(bytesToHex(bytes.slice(32)));
+  return encodeAbiParameters(
+    [{ type: "uint256" }, { type: "uint256" }],
+    [r, s],
+  );
+}
 
 export async function signMarketOrder(
   account: Account,
@@ -62,10 +34,9 @@ export async function signMarketOrder(
     bidOrAsk: 0 | 1;
   },
 ) {
-  const signature = await signTypedData({
-    privateKey: account.privateKey,
+  const hash = hashTypedData({
     domain: EIP712_DOMAIN,
-    types: EIP712_TYPES,
+    types: { MarketOrder: EIP712_TYPES.MarketOrder },
     primaryType: "MarketOrder",
     message: {
       quantity: params.quantity,
@@ -73,18 +44,21 @@ export async function signMarketOrder(
       instrumentId: BigInt(params.instrumentId),
       bidOrAsk: params.bidOrAsk,
       nonce,
-      deadline: FAR_DEADLINE,
+      deadline: MAX_DEADLINE,
     },
   });
+
+  const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
     ...params,
     quantity: params.quantity.toString(),
     minReceivedQuantity: params.minReceivedQuantity.toString(),
-    account: account.address,
+    account: account.accountId,
+    keyId: account.keyId,
     nonce: nonce.toString(),
-    deadline: FAR_DEADLINE.toString(),
-    signature,
+    deadline: MAX_DEADLINE.toString(),
+    rawSignature,
   };
 }
 
@@ -98,10 +72,9 @@ export async function signLimitOrder(
     bidOrAsk: 0 | 1;
   },
 ) {
-  const signature = await signTypedData({
-    privateKey: account.privateKey,
+  const hash = hashTypedData({
     domain: EIP712_DOMAIN,
-    types: EIP712_TYPES,
+    types: { LimitOrder: EIP712_TYPES.LimitOrder },
     primaryType: "LimitOrder",
     message: {
       quantity: params.quantity,
@@ -109,19 +82,22 @@ export async function signLimitOrder(
       price: params.price,
       bidOrAsk: params.bidOrAsk,
       nonce,
-      deadline: FAR_DEADLINE,
+      deadline: MAX_DEADLINE,
     },
   });
+
+  const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
     ...params,
     quantity: params.quantity.toString(),
     instrumentId: params.instrumentId,
     price: params.price.toString(),
-    account: account.address,
+    account: account.accountId,
+    keyId: account.keyId,
     nonce: nonce.toString(),
-    deadline: FAR_DEADLINE.toString(),
-    signature,
+    deadline: MAX_DEADLINE.toString(),
+    rawSignature,
   };
 }
 
@@ -130,24 +106,26 @@ export async function signCloseOrder(
   nonce: bigint,
   params: { orderId: number },
 ) {
-  const signature = await signTypedData({
-    privateKey: account.privateKey,
+  const hash = hashTypedData({
     domain: EIP712_DOMAIN,
-    types: EIP712_TYPES,
+    types: { CloseOrder: EIP712_TYPES.CloseOrder },
     primaryType: "CloseOrder",
     message: {
       orderId: BigInt(params.orderId),
       nonce,
-      deadline: FAR_DEADLINE,
+      deadline: MAX_DEADLINE,
     },
   });
 
+  const rawSignature = await signP256(account.sessionKey, hash);
+
   return {
     ...params,
-    account: account.address,
+    account: account.accountId,
+    keyId: account.keyId,
     nonce: nonce.toString(),
-    deadline: FAR_DEADLINE.toString(),
-    signature,
+    deadline: MAX_DEADLINE.toString(),
+    rawSignature,
   };
 }
 
@@ -156,25 +134,27 @@ export async function signDeposit(
   nonce: bigint,
   params: { asset: Address; amount: bigint },
 ) {
-  const signature = await signTypedData({
-    privateKey: account.privateKey,
+  const hash = hashTypedData({
     domain: EIP712_DOMAIN,
-    types: EIP712_TYPES,
+    types: { Deposit: EIP712_TYPES.Deposit },
     primaryType: "Deposit",
     message: {
       asset: params.asset,
       amount: params.amount,
       nonce,
-      deadline: FAR_DEADLINE,
+      deadline: MAX_DEADLINE,
     },
   });
+
+  const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
     asset: params.asset,
     amount: params.amount.toString(),
-    account: account.address,
+    account: account.accountId,
+    keyId: account.keyId,
     nonce: nonce.toString(),
-    deadline: FAR_DEADLINE.toString(),
-    signature,
+    deadline: MAX_DEADLINE.toString(),
+    rawSignature,
   };
 }

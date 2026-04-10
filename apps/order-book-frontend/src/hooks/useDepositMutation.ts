@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Address } from "viem";
-import { useAccountContext } from "../contexts/AccountContext";
+import { getNonce, useAccountContext } from "../contexts/AccountContext";
 import { signDeposit } from "./useSign";
 
 type DepositParams = {
@@ -9,20 +9,14 @@ type DepositParams = {
 };
 
 export function useDepositMutation() {
-  const { account } = useAccountContext();
+  const { account, incrementSeq } = useAccountContext();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ asset, amount }: DepositParams) => {
       if (!account) throw new Error("No account");
 
-      const cached = queryClient.getQueryData<{ nonce: string }>([
-        "balances",
-        account.address,
-      ]);
-      const nonce = BigInt(cached?.nonce ?? "0");
-
-      const signed = await signDeposit(account, nonce, { asset, amount });
+      const signed = await signDeposit(account, getNonce(account), { asset, amount });
 
       const res = await fetch("/api/mint", {
         method: "POST",
@@ -31,20 +25,18 @@ export function useDepositMutation() {
       });
 
       if (!res.ok) {
-        const err = (await res.json().catch(() => null)) as
-          | { error?: string }
-          | null;
+        const err = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(err?.error ?? "Deposit failed");
       }
 
       return res.json() as Promise<{ id: number }>;
     },
     onSuccess: async () => {
+      incrementSeq();
       await queryClient.invalidateQueries({
-        queryKey: ["balances", account?.address],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["instrument-price"],
+        queryKey: ["balances", account?.accountId],
       });
     },
     onError: (error) => {

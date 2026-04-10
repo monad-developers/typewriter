@@ -37,13 +37,55 @@ async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
   const base = { id: m.id, bundleId, status: "accepted" as DBStatus };
 
   switch (m.type) {
+    case MutationType.Initialize:
+      await db.insert(schema.initializes).values({
+        ...base,
+        account: m.account,
+        keyId: BigInt(m.keyId),
+        nonce: m.nonce.toString(),
+        deadline: m.deadline.toString(),
+        rawSignature: m.rawSignature,
+        expiry: m.mutation.expiry,
+        rootKeyType: m.mutation.rootKeyType,
+        keyType: m.mutation.keyType,
+        permissions: m.mutation.permissions,
+        rootPublicKey: m.mutation.rootPublicKey,
+        publicKey: m.mutation.publicKey,
+      });
+      break;
+    case MutationType.Authorize:
+      await db.insert(schema.authorizes).values({
+        ...base,
+        account: m.account,
+        keyId: BigInt(m.keyId),
+        nonce: m.nonce.toString(),
+        deadline: m.deadline.toString(),
+        rawSignature: m.rawSignature,
+        expiry: m.mutation.expiry,
+        keyType: m.mutation.keyType,
+        permissions: m.mutation.permissions,
+        publicKey: m.mutation.publicKey,
+      });
+      break;
+    case MutationType.Revoke:
+      await db.insert(schema.revokes).values({
+        ...base,
+        account: m.account,
+        keyId: BigInt(m.keyId),
+        nonce: m.nonce.toString(),
+        deadline: m.deadline.toString(),
+        rawSignature: m.rawSignature,
+        revokedKeyId: BigInt(m.mutation.keyId),
+      });
+      break;
     case MutationType.CloseOrder:
       await db.insert(schema.closeOrders).values({
         ...base,
         account: m.account,
+        keyId: BigInt(m.keyId),
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
-        signature: m.signature,
+        rawSignature: m.rawSignature,
         orderId: BigInt(m.mutation.orderId),
       });
       break;
@@ -51,9 +93,10 @@ async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
       await db.insert(schema.limitOrders).values({
         ...base,
         account: m.account,
+        keyId: BigInt(m.keyId),
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
-        signature: m.signature,
+        rawSignature: m.rawSignature,
         quantity: m.mutation.quantity,
         instrumentId: BigInt(m.mutation.instrumentId),
         price: m.mutation.price,
@@ -64,9 +107,10 @@ async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
       await db.insert(schema.marketOrders).values({
         ...base,
         account: m.account,
+        keyId: BigInt(m.keyId),
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
-        signature: m.signature,
+        rawSignature: m.rawSignature,
         quantity: m.mutation.quantity,
         minReceivedQuantity: m.mutation.minReceivedQuantity,
         instrumentId: BigInt(m.mutation.instrumentId),
@@ -96,9 +140,10 @@ async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
       await db.insert(schema.deposits).values({
         ...base,
         account: m.account,
+        keyId: BigInt(m.keyId),
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
-        signature: m.signature,
+        rawSignature: m.rawSignature,
         asset: m.mutation.asset,
         amount: m.mutation.amount.toString(),
       });
@@ -107,9 +152,10 @@ async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
       await db.insert(schema.withdrawals).values({
         ...base,
         account: m.account,
+        keyId: BigInt(m.keyId),
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
-        signature: m.signature,
+        rawSignature: m.rawSignature,
         asset: m.mutation.asset,
         amount: m.mutation.amount.toString(),
       });
@@ -125,6 +171,24 @@ async function updateStatus(
 ) {
   const s = status as DBStatus;
   switch (type) {
+    case MutationType.Initialize:
+      await db
+        .update(schema.initializes)
+        .set({ status: s })
+        .where(eq(schema.initializes.id, id));
+      break;
+    case MutationType.Authorize:
+      await db
+        .update(schema.authorizes)
+        .set({ status: s })
+        .where(eq(schema.authorizes.id, id));
+      break;
+    case MutationType.Revoke:
+      await db
+        .update(schema.revokes)
+        .set({ status: s })
+        .where(eq(schema.revokes.id, id));
+      break;
     case MutationType.CloseOrder:
       await db
         .update(schema.closeOrders)
