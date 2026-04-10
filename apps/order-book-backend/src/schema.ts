@@ -16,9 +16,11 @@ import {
 const uint8 = () => smallint();
 const uint16 = () => integer();
 const uint32 = () => bigint({ mode: "number" });
+const uint40 = () => bigint({ mode: "number" });
 const uint64 = () => bigint({ mode: "bigint" });
 const uint256 = () => numeric({ precision: 78, scale: 0 });
 const address = () => char({ length: 42 });
+const bytes32 = () => char({ length: 66 });
 
 export const mutationStatusEnum = pgEnum("mutation_status", [
   "accepted",
@@ -29,11 +31,12 @@ export const mutationStatusEnum = pgEnum("mutation_status", [
 ]);
 
 export const accounts = pgTable("accounts", {
-  address: address().primaryKey(),
-  nonce: uint256().notNull().default("0"),
+  id: bytes32().primaryKey(),
 });
 
 export const accountsRelations = relations(accounts, ({ many }) => ({
+  keys: many(keys),
+  nonces: many(nonces),
   balances: many(balances),
   orders: many(orders),
   closeOrders: many(closeOrders),
@@ -41,14 +44,58 @@ export const accountsRelations = relations(accounts, ({ many }) => ({
   marketOrders: many(marketOrders),
   deposits: many(deposits),
   withdrawals: many(withdrawals),
+  authorizes: many(authorizes),
+  revokes: many(revokes),
+  initializes: many(initializes),
+}));
+
+export const keys = pgTable(
+  "keys",
+  {
+    account: bytes32()
+      .notNull()
+      .references(() => accounts.id),
+    keyIndex: uint64().notNull(),
+    expiry: uint40().notNull(),
+    keyType: uint8().notNull(),
+    permissions: uint8().notNull(),
+    publicKey: text().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.account, t.keyIndex] })],
+);
+
+export const keysRelations = relations(keys, ({ one }) => ({
+  accountRef: one(accounts, {
+    fields: [keys.account],
+    references: [accounts.id],
+  }),
+}));
+
+export const nonces = pgTable(
+  "nonces",
+  {
+    account: bytes32()
+      .notNull()
+      .references(() => accounts.id),
+    nonceKey: uint256().notNull(),
+    sequence: uint64().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.account, t.nonceKey] })],
+);
+
+export const noncesRelations = relations(nonces, ({ one }) => ({
+  accountRef: one(accounts, {
+    fields: [nonces.account],
+    references: [accounts.id],
+  }),
 }));
 
 export const balances = pgTable(
   "balances",
   {
-    account: address()
+    account: bytes32()
       .notNull()
-      .references(() => accounts.address),
+      .references(() => accounts.id),
     asset: address().notNull(),
     amount: uint256().notNull(),
   },
@@ -58,7 +105,7 @@ export const balances = pgTable(
 export const balancesRelations = relations(balances, ({ one }) => ({
   accountRef: one(accounts, {
     fields: [balances.account],
-    references: [accounts.address],
+    references: [accounts.id],
   }),
 }));
 
@@ -104,9 +151,9 @@ export const orders = pgTable(
   "orders",
   {
     orderIndex: uint64().notNull(),
-    account: address()
+    account: bytes32()
       .notNull()
-      .references(() => accounts.address),
+      .references(() => accounts.id),
     quantity: uint64().notNull(),
     instrumentId: uint64()
       .notNull()
@@ -121,7 +168,7 @@ export const orders = pgTable(
 export const ordersRelations = relations(orders, ({ one }) => ({
   accountRef: one(accounts, {
     fields: [orders.account],
-    references: [accounts.address],
+    references: [accounts.id],
   }),
   instrument: one(instruments, {
     fields: [orders.instrumentId],
@@ -150,6 +197,9 @@ export const bundlesRelations = relations(bundles, ({ one, many }) => ({
     fields: [bundles.blockNumber],
     references: [blocks.number],
   }),
+  initializes: many(initializes),
+  authorizes: many(authorizes),
+  revokes: many(revokes),
   closeOrders: many(closeOrders),
   limitOrders: many(limitOrders),
   marketOrders: many(marketOrders),
@@ -160,10 +210,11 @@ export const bundlesRelations = relations(bundles, ({ one, many }) => ({
 
 function signed() {
   return {
-    account: address().notNull(),
+    account: bytes32().notNull(),
+    keyId: uint64().notNull(),
     nonce: uint256().notNull(),
     deadline: uint256().notNull(),
-    signature: text().notNull(),
+    rawSignature: text().notNull(),
   };
 }
 
@@ -174,6 +225,77 @@ function mutationBase() {
     status: mutationStatusEnum().notNull(),
   };
 }
+
+export const initializes = pgTable(
+  "initializes",
+  {
+    ...mutationBase(),
+    ...signed(),
+    expiry: uint40().notNull(),
+    rootKeyType: uint8().notNull(),
+    keyType: uint8().notNull(),
+    permissions: uint8().notNull(),
+    rootPublicKey: text().notNull(),
+    publicKey: text().notNull(),
+  },
+  (t) => [index().on(t.account), index().on(t.bundleId)],
+);
+
+export const initializesRelations = relations(initializes, ({ one }) => ({
+  bundle: one(bundles, {
+    fields: [initializes.bundleId],
+    references: [bundles.id],
+  }),
+  accountRef: one(accounts, {
+    fields: [initializes.account],
+    references: [accounts.id],
+  }),
+}));
+
+export const authorizes = pgTable(
+  "authorizes",
+  {
+    ...mutationBase(),
+    ...signed(),
+    expiry: uint40().notNull(),
+    keyType: uint8().notNull(),
+    permissions: uint8().notNull(),
+    publicKey: text().notNull(),
+  },
+  (t) => [index().on(t.account), index().on(t.bundleId)],
+);
+
+export const authorizesRelations = relations(authorizes, ({ one }) => ({
+  bundle: one(bundles, {
+    fields: [authorizes.bundleId],
+    references: [bundles.id],
+  }),
+  accountRef: one(accounts, {
+    fields: [authorizes.account],
+    references: [accounts.id],
+  }),
+}));
+
+export const revokes = pgTable(
+  "revokes",
+  {
+    ...mutationBase(),
+    ...signed(),
+    revokedKeyId: uint64().notNull(),
+  },
+  (t) => [index().on(t.account), index().on(t.bundleId)],
+);
+
+export const revokesRelations = relations(revokes, ({ one }) => ({
+  bundle: one(bundles, {
+    fields: [revokes.bundleId],
+    references: [bundles.id],
+  }),
+  accountRef: one(accounts, {
+    fields: [revokes.account],
+    references: [accounts.id],
+  }),
+}));
 
 export const closeOrders = pgTable(
   "close_orders",
@@ -192,7 +314,7 @@ export const closeOrdersRelations = relations(closeOrders, ({ one }) => ({
   }),
   accountRef: one(accounts, {
     fields: [closeOrders.account],
-    references: [accounts.address],
+    references: [accounts.id],
   }),
 }));
 
@@ -220,7 +342,7 @@ export const limitOrdersRelations = relations(limitOrders, ({ one }) => ({
   }),
   accountRef: one(accounts, {
     fields: [limitOrders.account],
-    references: [accounts.address],
+    references: [accounts.id],
   }),
   instrument: one(instruments, {
     fields: [limitOrders.instrumentId],
@@ -254,7 +376,7 @@ export const marketOrdersRelations = relations(
     }),
     accountRef: one(accounts, {
       fields: [marketOrders.account],
-      references: [accounts.address],
+      references: [accounts.id],
     }),
     instrument: one(instruments, {
       fields: [marketOrders.instrumentId],
@@ -327,7 +449,7 @@ export const depositsRelations = relations(deposits, ({ one }) => ({
   }),
   accountRef: one(accounts, {
     fields: [deposits.account],
-    references: [accounts.address],
+    references: [accounts.id],
   }),
 }));
 
@@ -349,6 +471,6 @@ export const withdrawalsRelations = relations(withdrawals, ({ one }) => ({
   }),
   accountRef: one(accounts, {
     fields: [withdrawals.account],
-    references: [accounts.address],
+    references: [accounts.id],
   }),
 }));

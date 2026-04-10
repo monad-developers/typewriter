@@ -106,12 +106,8 @@
           "name": "add_instruments_bundle_id_bundles_id_fk",
           "tableFrom": "add_instruments",
           "tableTo": "bundles",
-          "columnsFrom": [
-            "bundle_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bundle_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -151,12 +147,8 @@
           "name": "balances_account_accounts_address_fk",
           "tableFrom": "balances",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account"
-          ],
-          "columnsTo": [
-            "address"
-          ],
+          "columnsFrom": ["account"],
+          "columnsTo": ["address"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -164,10 +156,7 @@
       "compositePrimaryKeys": {
         "balances_account_asset_pk": {
           "name": "balances_account_asset_pk",
-          "columns": [
-            "account",
-            "asset"
-          ]
+          "columns": ["account", "asset"]
         }
       },
       "uniqueConstraints": {},
@@ -235,12 +224,8 @@
           "name": "bundles_block_number_blocks_number_fk",
           "tableFrom": "bundles",
           "tableTo": "blocks",
-          "columnsFrom": [
-            "block_number"
-          ],
-          "columnsTo": [
-            "number"
-          ],
+          "columnsFrom": ["block_number"],
+          "columnsTo": ["number"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -342,12 +327,8 @@
           "name": "close_orders_bundle_id_bundles_id_fk",
           "tableFrom": "close_orders",
           "tableTo": "bundles",
-          "columnsFrom": [
-            "bundle_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bundle_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -455,12 +436,8 @@
           "name": "deposits_bundle_id_bundles_id_fk",
           "tableFrom": "deposits",
           "tableTo": "bundles",
-          "columnsFrom": [
-            "bundle_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bundle_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -528,12 +505,8 @@
           "name": "fills_market_order_id_market_orders_id_fk",
           "tableFrom": "fills",
           "tableTo": "market_orders",
-          "columnsFrom": [
-            "market_order_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["market_order_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -711,12 +684,8 @@
           "name": "limit_orders_bundle_id_bundles_id_fk",
           "tableFrom": "limit_orders",
           "tableTo": "bundles",
-          "columnsFrom": [
-            "bundle_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bundle_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -851,12 +820,8 @@
           "name": "market_orders_bundle_id_bundles_id_fk",
           "tableFrom": "market_orders",
           "tableTo": "bundles",
-          "columnsFrom": [
-            "bundle_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bundle_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -920,12 +885,8 @@
           "name": "orders_account_accounts_address_fk",
           "tableFrom": "orders",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account"
-          ],
-          "columnsTo": [
-            "address"
-          ],
+          "columnsFrom": ["account"],
+          "columnsTo": ["address"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -933,12 +894,8 @@
           "name": "orders_instrument_id_instruments_id_fk",
           "tableFrom": "orders",
           "tableTo": "instruments",
-          "columnsFrom": [
-            "instrument_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["instrument_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -946,10 +903,7 @@
       "compositePrimaryKeys": {
         "orders_account_order_index_pk": {
           "name": "orders_account_order_index_pk",
-          "columns": [
-            "account",
-            "order_index"
-          ]
+          "columns": ["account", "order_index"]
         }
       },
       "uniqueConstraints": {},
@@ -1004,12 +958,8 @@
           "name": "ticks_instrument_id_instruments_id_fk",
           "tableFrom": "ticks",
           "tableTo": "instruments",
-          "columnsFrom": [
-            "instrument_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["instrument_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1017,11 +967,7 @@
       "compositePrimaryKeys": {
         "ticks_instrument_id_side_price_pk": {
           "name": "ticks_instrument_id_side_price_pk",
-          "columns": [
-            "instrument_id",
-            "side",
-            "price"
-          ]
+          "columns": ["instrument_id", "side", "price"]
         }
       },
       "uniqueConstraints": {},
@@ -1126,12 +1072,8 @@
           "name": "withdrawals_bundle_id_bundles_id_fk",
           "tableFrom": "withdrawals",
           "tableTo": "bundles",
-          "columnsFrom": [
-            "bundle_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bundle_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1147,13 +1089,7 @@
     "public.mutation_status": {
       "name": "mutation_status",
       "schema": "public",
-      "values": [
-        "accepted",
-        "proposed",
-        "voted",
-        "finalized",
-        "verified"
-      ]
+      "values": ["accepted", "proposed", "voted", "finalized", "verified"]
     }
   },
   "schemas": {},

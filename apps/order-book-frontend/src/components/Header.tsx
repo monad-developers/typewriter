@@ -10,8 +10,8 @@ export function Header({
   denominationId: number;
   onDenominationChange: (id: number) => void;
 }) {
-  const { account, loading } = useAccountContext();
-  const { data } = useBalances(account?.address);
+  const { account, setAccount } = useAccountContext();
+  const { data } = useBalances(account?.accountId);
   const depositMutation = useDepositMutation();
 
   const currency = CURRENCIES[denominationId];
@@ -59,14 +59,18 @@ export function Header({
       <button
         type="button"
         onClick={() => void handleDeposit()}
-        disabled={loading || !account || !currency || depositMutation.isPending}
+        disabled={!account || !currency || depositMutation.isPending}
         className="border px-3 py-1 text-sm font-mono rounded disabled:opacity-50"
       >
         {depositMutation.isPending ? "depositing..." : "deposit"}
       </button>
-      <code className="text-sm text-gray-400">
-        enter trade | cmd+enter trade all
-      </code>
+      <button
+        type="button"
+        onClick={() => void setAccount(null)}
+        className="border px-3 py-1 text-sm font-mono rounded hover:bg-gray-50"
+      >
+        sign out
+      </button>
     </header>
   );
 }

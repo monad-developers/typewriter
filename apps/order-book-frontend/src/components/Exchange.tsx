@@ -155,8 +155,8 @@ export function Exchange({ denominationId }: { denominationId: number }) {
 
   function handleGridNav(e: KeyboardEvent<HTMLInputElement>) {
     const input = e.currentTarget;
-    const row = Number(input.dataset["row"]);
-    const col = Number(input.dataset["col"]);
+    const row = Number(input.dataset.row);
+    const col = Number(input.dataset.col);
     const table = tableRef.current;
     if (!table) return;
 
@@ -304,7 +304,7 @@ function Row({
       return;
     }
     if (e.key === "Enter") {
-      const col = Number(e.currentTarget.dataset["col"]);
+      const col = Number(e.currentTarget.dataset.col);
       const side = col === 0 ? ("buy" as const) : ("sell" as const);
       const value = col === 0 ? buyAmount : sellAmount;
       if (value) {

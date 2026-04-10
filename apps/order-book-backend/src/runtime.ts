@@ -1,4 +1,7 @@
 import { Duration, Effect, Fiber, Schedule } from "effect";
+import * as P256 from "ox/P256";
+import * as PublicKey from "ox/PublicKey";
+import * as WebAuthnP256 from "ox/WebAuthnP256";
 import type {
   Address,
   Chain,
@@ -11,23 +14,38 @@ import type {
 import {
   createPublicClient,
   createWalletClient,
+  decodeAbiParameters,
   encodeAbiParameters,
   encodeFunctionData,
+  hashTypedData,
   http,
   parseSignature,
   recoverTypedDataAddress,
+  zeroHash,
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
-import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
+import { EIP712_TYPES, EXCHANGE_ABI } from "./constants";
+import type {
+  Key,
+  KeyType,
+  ResolvedMutation,
+  State,
+  TaggedMutation,
+} from "./exchange";
 import {
   getAccount,
+  getNonceSeq,
   handleAddInstrument,
+  handleAuthorize,
   handleCloseOrder,
   handleDeposit,
+  handleInitialize,
   handleLimitOrder,
   handleMarketOrder,
+  handleRevoke,
   handleWithdrawal,
+  incrementNonce,
   MutationType,
 } from "./exchange";
 import { resolveAndOrderMutations, resolveMarketOrder } from "./resolution";
@@ -59,6 +77,8 @@ export type RuntimeConfig = {
   rpcUrl: string;
   account: PrivateKeyAccount;
   address: Address;
+  rpId: string;
+  origin: string | string[];
 };
 
 type QueueEntry = {
@@ -88,69 +108,279 @@ export type RuntimeHandle = {
   stop(): Promise<void>;
 };
 
-const EIP712_TYPES = {
-  CloseOrder: [
-    { name: "orderId", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  LimitOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "price", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  MarketOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "minReceivedQuantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Deposit: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Withdrawal: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-} as const;
+export type EIP712Domain = {
+  name: string;
+  version: string;
+  chainId: number;
+  verifyingContract: Address;
+  rpId: string;
+  origin: string | string[];
+};
 
-const EXECUTE_ABI = [
-  {
-    type: "function",
-    name: "execute",
-    inputs: [
-      {
-        name: "params",
-        type: "tuple",
-        components: [
-          { name: "mutations", type: "uint8[]" },
-          { name: "mutationData", type: "bytes[]" },
-          { name: "v", type: "uint8[]" },
-          { name: "r", type: "bytes32[]" },
-          { name: "s", type: "bytes32[]" },
-        ],
-      },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-] as const;
+type SignedMutation = Exclude<
+  TaggedMutation,
+  { type: MutationType.AddInstrument }
+>;
 
-const ZERO_BYTES32 =
-  "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
+export function getTypedDataParams(mutation: SignedMutation): {
+  primaryType: string;
+  message: Record<string, unknown>;
+} {
+  switch (mutation.type) {
+    case MutationType.Initialize:
+      return {
+        primaryType: "Initialize",
+        message: {
+          account: mutation.account,
+          expiry: mutation.mutation.expiry,
+          rootKeyType: mutation.mutation.rootKeyType,
+          keyType: mutation.mutation.keyType,
+          permissions: mutation.mutation.permissions,
+          rootPublicKey: mutation.mutation.rootPublicKey,
+          publicKey: mutation.mutation.publicKey,
+        },
+      };
+    case MutationType.Authorize:
+      return {
+        primaryType: "Authorize",
+        message: {
+          account: mutation.account,
+          expiry: mutation.mutation.expiry,
+          keyType: mutation.mutation.keyType,
+          permissions: mutation.mutation.permissions,
+          publicKey: mutation.mutation.publicKey,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+    case MutationType.Revoke:
+      return {
+        primaryType: "Revoke",
+        message: {
+          account: mutation.account,
+          keyId: BigInt(mutation.mutation.keyId),
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+    case MutationType.CloseOrder:
+      return {
+        primaryType: "CloseOrder",
+        message: {
+          orderId: BigInt(mutation.mutation.orderId),
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+    case MutationType.LimitOrder:
+      return {
+        primaryType: "LimitOrder",
+        message: {
+          quantity: mutation.mutation.quantity,
+          instrumentId: BigInt(mutation.mutation.instrumentId),
+          price: mutation.mutation.price,
+          bidOrAsk: mutation.mutation.bidOrAsk,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+    case MutationType.MarketOrder:
+      return {
+        primaryType: "MarketOrder",
+        message: {
+          quantity: mutation.mutation.quantity,
+          minReceivedQuantity: mutation.mutation.minReceivedQuantity,
+          instrumentId: BigInt(mutation.mutation.instrumentId),
+          bidOrAsk: mutation.mutation.bidOrAsk,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+    case MutationType.Deposit:
+      return {
+        primaryType: "Deposit",
+        message: {
+          asset: mutation.mutation.asset,
+          amount: mutation.mutation.amount,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+    case MutationType.Withdrawal:
+      return {
+        primaryType: "Withdrawal",
+        message: {
+          asset: mutation.mutation.asset,
+          amount: mutation.mutation.amount,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
+  }
+}
+
+export async function verifySignature(
+  state: State<bigint>,
+  eip712Domain: EIP712Domain,
+  mutation: TaggedMutation,
+): Promise<void> {
+  if (mutation.type === MutationType.AddInstrument) return;
+
+  if (mutation.deadline < BigInt(Math.floor(Date.now() / 1000))) {
+    throw new Error("SignatureExpired");
+  }
+
+  let key: Key;
+  if (mutation.type === MutationType.Initialize) {
+    key = {
+      expiry: 0,
+      keyType: mutation.mutation.rootKeyType as KeyType,
+      permissions: 0xff,
+      publicKey: mutation.mutation.rootPublicKey,
+    };
+  } else {
+    const acc = getAccount(state, mutation.account);
+    const k = acc.keys[mutation.keyId];
+    if (!k || k.permissions === 0) throw new Error("KeyNotFound");
+    if (k.expiry !== 0 && k.expiry < Math.floor(Date.now() / 1000)) {
+      throw new Error("KeyExpired");
+    }
+    const nonceKey = BigInt(mutation.nonce) >> 64n;
+    const nonceSeq = BigInt(mutation.nonce) & 0xffffffffffffffffn;
+    if (nonceSeq !== getNonceSeq(acc, nonceKey)) {
+      throw new Error("InvalidNonce");
+    }
+    key = k;
+  }
+
+  const { primaryType, message } = getTypedDataParams(mutation);
+  const typedData = {
+    domain: eip712Domain,
+    types: EIP712_TYPES,
+    primaryType,
+    message,
+  } as Parameters<typeof hashTypedData>[0];
+
+  if (key.keyType === 2) {
+    const recovered = await recoverTypedDataAddress({
+      ...typedData,
+      signature: mutation.rawSignature,
+    });
+    const expectedAddress = `0x${key.publicKey.toLowerCase().slice(26)}`;
+    if (recovered.toLowerCase() !== expectedAddress) {
+      throw new Error("InvalidSignature");
+    }
+  } else if (key.keyType === 0) {
+    const hash = hashTypedData(typedData);
+    const [r, s] = decodeAbiParameters(
+      [{ type: "uint256" }, { type: "uint256" }],
+      mutation.rawSignature,
+    );
+    const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
+    if (
+      P256.verify({
+        payload: hash,
+        publicKey,
+        signature: { r, s },
+        hash: true,
+      }) === false
+    ) {
+      throw new Error("InvalidSignature");
+    }
+  } else if (key.keyType === 1) {
+    const hash = hashTypedData(typedData);
+    const [authenticatorData, clientDataJSON, r, s] = decodeAbiParameters(
+      [
+        { type: "bytes" },
+        { type: "string" },
+        { type: "uint256" },
+        { type: "uint256" },
+      ],
+      mutation.rawSignature,
+    );
+    const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
+    if (
+      WebAuthnP256.verify({
+        challenge: hash,
+        publicKey,
+        signature: { r, s },
+        metadata: {
+          authenticatorData: authenticatorData as Hex,
+          clientDataJSON,
+        },
+        rpId: eip712Domain.rpId,
+        origin: eip712Domain.origin,
+      }) === false
+    ) {
+      throw new Error("InvalidSignature");
+    }
+  } else {
+    throw new Error("InvalidSignature");
+  }
+}
 
 function encodeMutationData(resolved: ResolvedMutation): Hex {
   switch (resolved.type) {
+    case MutationType.Initialize:
+      return encodeAbiParameters(
+        [
+          { type: "bytes32", name: "account" },
+          { type: "uint40", name: "expiry" },
+          { type: "uint8", name: "rootKeyType" },
+          { type: "uint8", name: "keyType" },
+          { type: "uint8", name: "permissions" },
+          { type: "bytes", name: "rootPublicKey" },
+          { type: "bytes", name: "publicKey" },
+        ],
+        [
+          resolved.account,
+          resolved.mutation.expiry,
+          resolved.mutation.rootKeyType,
+          resolved.mutation.keyType,
+          resolved.mutation.permissions,
+          resolved.mutation.rootPublicKey,
+          resolved.mutation.publicKey,
+        ],
+      );
+
+    case MutationType.Authorize:
+      return encodeAbiParameters(
+        [
+          { type: "bytes32", name: "account" },
+          { type: "uint40", name: "expiry" },
+          { type: "uint8", name: "keyType" },
+          { type: "uint8", name: "permissions" },
+          { type: "bytes", name: "publicKey" },
+          { type: "uint256", name: "nonce" },
+          { type: "uint256", name: "deadline" },
+        ],
+        [
+          resolved.account,
+          resolved.mutation.expiry,
+          resolved.mutation.keyType,
+          resolved.mutation.permissions,
+          resolved.mutation.publicKey,
+          resolved.nonce,
+          resolved.deadline,
+        ],
+      );
+
+    case MutationType.Revoke:
+      return encodeAbiParameters(
+        [
+          { type: "bytes32", name: "account" },
+          { type: "uint64", name: "keyId" },
+          { type: "uint256", name: "nonce" },
+          { type: "uint256", name: "deadline" },
+        ],
+        [
+          resolved.account,
+          BigInt(resolved.mutation.keyId),
+          resolved.nonce,
+          resolved.deadline,
+        ],
+      );
+
     case MutationType.CloseOrder:
       return encodeAbiParameters(
         [
@@ -281,26 +511,37 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
   }
 }
 
+function encodeSignature(resolved: ResolvedMutation): {
+  account: Hex;
+  keyId: bigint;
+  rawSignature: Hex;
+} {
+  if (resolved.type === MutationType.AddInstrument) {
+    return { account: zeroHash, keyId: 0n, rawSignature: "0x" };
+  }
+
+  const { v, r, s } = parseSignature(resolved.rawSignature);
+  const rawSignature = encodeAbiParameters(
+    [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
+    [Number(v), r, s],
+  );
+
+  return {
+    account: resolved.account,
+    keyId: BigInt(resolved.keyId),
+    rawSignature,
+  };
+}
+
 function encodeBundle(resolved: ResolvedMutation[]): Hex {
-  const signatures = resolved.map((mutation) => {
-    if (mutation.type === MutationType.AddInstrument) {
-      return { v: 0, r: ZERO_BYTES32, s: ZERO_BYTES32 };
-    }
-
-    const { v, r, s } = parseSignature(mutation.signature);
-    return { v: Number(v), r, s };
-  });
-
   return encodeFunctionData({
-    abi: EXECUTE_ABI,
+    abi: EXCHANGE_ABI,
     functionName: "execute",
     args: [
       {
         mutations: resolved.map((r) => r.type),
         mutationData: resolved.map(encodeMutationData),
-        v: signatures.map((sig) => sig.v),
-        r: signatures.map((sig) => sig.r),
-        s: signatures.map((sig) => sig.s),
+        signatures: resolved.map(encodeSignature),
       },
     ],
   });
@@ -310,6 +551,15 @@ function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
   const clone = structuredClone(state);
 
   switch (mutation.type) {
+    case MutationType.Initialize:
+      handleInitialize(clone, mutation.mutation, mutation.account);
+      break;
+    case MutationType.Authorize:
+      handleAuthorize(clone, mutation.mutation, mutation.account);
+      break;
+    case MutationType.Revoke:
+      handleRevoke(clone, mutation.mutation, mutation.account);
+      break;
     case MutationType.CloseOrder:
       handleCloseOrder(clone, mutation.mutation, mutation.account);
       break;
@@ -386,102 +636,14 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     transport,
   });
 
-  const eip712Domain = {
-    name: "Exchange" as const,
-    version: "1" as const,
+  const eip712Domain: EIP712Domain = {
+    name: "Exchange",
+    version: "1",
     chainId: config.chain.id,
     verifyingContract: config.address,
+    rpId: config.rpId,
+    origin: config.origin,
   };
-
-  async function verifySignature(mutation: TaggedMutation): Promise<void> {
-    if (mutation.type === MutationType.AddInstrument) return;
-
-    if (mutation.deadline < BigInt(Math.floor(Date.now() / 1000))) {
-      throw new Error("SignatureExpired");
-    }
-
-    const acc = getAccount(state, mutation.account);
-    if (mutation.nonce !== acc.nonce) {
-      throw new Error("InvalidNonce");
-    }
-
-    const opts = {
-      domain: eip712Domain,
-      types: EIP712_TYPES,
-      signature: mutation.signature,
-    } as const;
-    let recovered: Address;
-
-    switch (mutation.type) {
-      case MutationType.CloseOrder:
-        recovered = await recoverTypedDataAddress({
-          ...opts,
-          primaryType: "CloseOrder",
-          message: {
-            orderId: BigInt(mutation.mutation.orderId),
-            nonce: mutation.nonce,
-            deadline: mutation.deadline,
-          },
-        });
-        break;
-      case MutationType.LimitOrder:
-        recovered = await recoverTypedDataAddress({
-          ...opts,
-          primaryType: "LimitOrder",
-          message: {
-            quantity: mutation.mutation.quantity,
-            instrumentId: BigInt(mutation.mutation.instrumentId),
-            price: mutation.mutation.price,
-            bidOrAsk: mutation.mutation.bidOrAsk,
-            nonce: mutation.nonce,
-            deadline: mutation.deadline,
-          },
-        });
-        break;
-      case MutationType.MarketOrder:
-        recovered = await recoverTypedDataAddress({
-          ...opts,
-          primaryType: "MarketOrder",
-          message: {
-            quantity: mutation.mutation.quantity,
-            minReceivedQuantity: mutation.mutation.minReceivedQuantity,
-            instrumentId: BigInt(mutation.mutation.instrumentId),
-            bidOrAsk: mutation.mutation.bidOrAsk,
-            nonce: mutation.nonce,
-            deadline: mutation.deadline,
-          },
-        });
-        break;
-      case MutationType.Deposit:
-        recovered = await recoverTypedDataAddress({
-          ...opts,
-          primaryType: "Deposit",
-          message: {
-            asset: mutation.mutation.asset,
-            amount: mutation.mutation.amount,
-            nonce: mutation.nonce,
-            deadline: mutation.deadline,
-          },
-        });
-        break;
-      case MutationType.Withdrawal:
-        recovered = await recoverTypedDataAddress({
-          ...opts,
-          primaryType: "Withdrawal",
-          message: {
-            asset: mutation.mutation.asset,
-            amount: mutation.mutation.amount,
-            nonce: mutation.nonce,
-            deadline: mutation.deadline,
-          },
-        });
-        break;
-    }
-
-    if (recovered.toLowerCase() !== mutation.account.toLowerCase()) {
-      throw new Error("InvalidSignature");
-    }
-  }
 
   const flush = Effect.gen(function* () {
     if (queue.length === 0) return;
@@ -499,6 +661,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     for (const r of resolved) {
       switch (r.type) {
+        case MutationType.Initialize:
+          handleInitialize(state, r.mutation, r.account);
+          break;
+        case MutationType.Authorize:
+          handleAuthorize(state, r.mutation, r.account);
+          break;
+        case MutationType.Revoke:
+          handleRevoke(state, r.mutation, r.account);
+          break;
         case MutationType.CloseOrder:
           handleCloseOrder(state, r.mutation, r.account);
           break;
@@ -676,7 +847,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         : undefined;
 
     try {
-      await verifySignature(mutation);
+      await verifySignature(state, eip712Domain, mutation);
       dryRun(state, mutation);
     } catch (err) {
       Effect.runSync(Effect.logError(err));
@@ -684,7 +855,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     }
 
     if (mutation.type !== MutationType.AddInstrument) {
-      getAccount(state, mutation.account).nonce++;
+      const nonceKey = BigInt(mutation.nonce) >> 64n;
+      incrementNonce(getAccount(state, mutation.account), nonceKey);
     }
 
     const id = nextId++;

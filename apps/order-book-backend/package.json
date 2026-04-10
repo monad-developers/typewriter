@@ -1,0 +1,24 @@
+{
+  "name": "order-book-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "NODE_ENV=production bun src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bun-plugin-tailwind": "^0.1.2",
+    "drizzle-orm": "^0.45.2",
+    "effect": "^3.21.0",
+    "order-book-frontend": "workspace:*",
+    "ox": "^0.14.13",
+    "viem": "^2.47.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.31.10"
+  }
+}
