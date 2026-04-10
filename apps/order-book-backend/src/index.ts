@@ -10,7 +10,7 @@ import {
   signTypedData,
 } from "viem/accounts";
 import { CHAIN, EIP712_TYPES, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
-import { dbPlugin, loadState } from "./db";
+import { dbPlugin, loadMaxIds, loadState } from "./db";
 import {
   type Authorize,
   type CloseOrder,
@@ -46,8 +46,12 @@ if (!process.env.DATABASE_URL) {
 const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
 await migrate(db, { migrationsFolder: "./drizzle" });
 
+const { mutationId, bundleId } = await loadMaxIds(db);
+
 const handle = startRuntime({
   initialState: await loadState(db),
+  initialMutationId: mutationId,
+  initialBundleId: bundleId,
   flushIntervalMs: 50,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,

@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { Address, Hex } from "viem";
 import { MutationType } from "./exchange";
@@ -104,6 +104,46 @@ export async function loadState(db: DB): Promise<State<bigint>> {
   }
 
   return state;
+}
+
+export async function loadMaxIds(db: DB): Promise<{ mutationId: number; bundleId: number }> {
+  const [bundleRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.bundles.id}), 0)` })
+    .from(schema.bundles);
+  const [initRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.initializes.id}), 0)` })
+    .from(schema.initializes);
+  const [authRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.authorizes.id}), 0)` })
+    .from(schema.authorizes);
+  const [revokeRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.revokes.id}), 0)` })
+    .from(schema.revokes);
+  const [closeRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.closeOrders.id}), 0)` })
+    .from(schema.closeOrders);
+  const [limitRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.limitOrders.id}), 0)` })
+    .from(schema.limitOrders);
+  const [marketRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.marketOrders.id}), 0)` })
+    .from(schema.marketOrders);
+  const [addInstRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.addInstruments.id}), 0)` })
+    .from(schema.addInstruments);
+  const [depRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.deposits.id}), 0)` })
+    .from(schema.deposits);
+  const [wdRow] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.withdrawals.id}), 0)` })
+    .from(schema.withdrawals);
+
+  const mutationId = Math.max(
+    initRow!.max, authRow!.max, revokeRow!.max, closeRow!.max,
+    limitRow!.max, marketRow!.max, addInstRow!.max, depRow!.max, wdRow!.max,
+  ) + 1;
+
+  return { mutationId, bundleId: bundleRow!.max + 1 };
 }
 
 export function dbPlugin(handle: RuntimeHandle, db: DB) {
