@@ -4,7 +4,7 @@ import type { Authentication } from "webauthx/client";
 declare var process: { env: Record<string, string | undefined> };
 export const RP_ID: string =
   typeof process !== "undefined"
-    ? process.env["BUN_PUBLIC_RP_ID"] || "localhost"
+    ? process.env.BUN_PUBLIC_RP_ID || "localhost"
     : "localhost";
 export const RP_NAME = "Order Book";
 

@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import { BlockTracker } from "./components/BlockTracker";
-import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
@@ -60,7 +59,7 @@ function AppInner() {
         onDenominationChange={setDenominationId}
       />
       <main className="flex-1 p-4">
-        <Exchange denominationId={denominationId} />
+        {/* <Exchange denominationId={denominationId} /> */}
       </main>
       <BlockTracker />
     </div>

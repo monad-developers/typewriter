@@ -16,7 +16,10 @@ export function useDepositMutation() {
     mutationFn: async ({ asset, amount }: DepositParams) => {
       if (!account) throw new Error("No account");
 
-      const signed = await signDeposit(account, getNonce(account), { asset, amount });
+      const signed = await signDeposit(account, getNonce(account), {
+        asset,
+        amount,
+      });
 
       const res = await fetch("/api/mint", {
         method: "POST",

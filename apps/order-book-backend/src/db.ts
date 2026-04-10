@@ -1,8 +1,8 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { Address, Hex } from "viem";
-import { MutationType } from "./exchange";
 import type { KeyType, Side, State } from "./exchange";
+import { MutationType } from "./exchange";
 import type { MutationEvent, RuntimeHandle } from "./runtime";
 import * as schema from "./schema";
 
@@ -106,7 +106,9 @@ export async function loadState(db: DB): Promise<State<bigint>> {
   return state;
 }
 
-export async function loadMaxIds(db: DB): Promise<{ mutationId: number; bundleId: number }> {
+export async function loadMaxIds(
+  db: DB,
+): Promise<{ mutationId: number; bundleId: number }> {
   const [bundleRow] = await db
     .select({ max: sql<number>`coalesce(max(${schema.bundles.id}), 0)` })
     .from(schema.bundles);
@@ -138,10 +140,18 @@ export async function loadMaxIds(db: DB): Promise<{ mutationId: number; bundleId
     .select({ max: sql<number>`coalesce(max(${schema.withdrawals.id}), 0)` })
     .from(schema.withdrawals);
 
-  const mutationId = Math.max(
-    initRow!.max, authRow!.max, revokeRow!.max, closeRow!.max,
-    limitRow!.max, marketRow!.max, addInstRow!.max, depRow!.max, wdRow!.max,
-  ) + 1;
+  const mutationId =
+    Math.max(
+      initRow!.max,
+      authRow!.max,
+      revokeRow!.max,
+      closeRow!.max,
+      limitRow!.max,
+      marketRow!.max,
+      addInstRow!.max,
+      depRow!.max,
+      wdRow!.max,
+    ) + 1;
 
   return { mutationId, bundleId: bundleRow!.max + 1 };
 }
@@ -301,7 +311,11 @@ async function syncState(db: DB, state: State<bigint>, m: MutationEvent) {
       const balance = (acc.balances[m.mutation.asset] ?? 0n).toString();
       await db
         .insert(schema.balances)
-        .values({ account: m.account, asset: m.mutation.asset, amount: balance })
+        .values({
+          account: m.account,
+          asset: m.mutation.asset,
+          amount: balance,
+        })
         .onConflictDoUpdate({
           target: [schema.balances.account, schema.balances.asset],
           set: { amount: balance },
@@ -502,7 +516,11 @@ async function syncTick(
       volume: tick.volume,
     })
     .onConflictDoUpdate({
-      target: [schema.ticks.instrumentId, schema.ticks.side, schema.ticks.price],
+      target: [
+        schema.ticks.instrumentId,
+        schema.ticks.side,
+        schema.ticks.price,
+      ],
       set: {
         quantity: tick.quantity,
         remainingQuantity: tick.remainingQuantity,

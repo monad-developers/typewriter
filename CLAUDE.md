@@ -104,3 +104,7 @@ bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+
+## Foundry
+
+Requires Foundry nightly (`foundryup --install nightly`) for the P256 precompile at `address(0x100)` (RIP-7212). Stable Foundry (1.5.1) does not include it. The Exchange contract uses this precompile for P256 and WebAuthn signature verification. Both `forge test` and `anvil` need the nightly build.
