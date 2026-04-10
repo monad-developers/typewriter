@@ -10,11 +10,10 @@ import {
   signTypedData,
 } from "viem/accounts";
 import { CHAIN, EIP712_TYPES, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
-import { dbPlugin } from "./db";
+import { dbPlugin, loadState } from "./db";
 import {
   type Authorize,
   type CloseOrder,
-  createState,
   type Deposit,
   decodeDeposit,
   decodeLimitOrder,
@@ -39,34 +38,28 @@ const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
 const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
 // @ts-expect-error
-if (!process.env.BUN_PUBLIC_RP_ID)
-  throw new Error("BUN_PUBLIC_RP_ID env var is required");
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL env var is required");
+}
+
 // @ts-expect-error
-if (!process.env.BUN_PUBLIC_ORIGIN)
-  throw new Error("BUN_PUBLIC_ORIGIN env var is required");
+const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
+await migrate(db, { migrationsFolder: "./drizzle" });
 
 const handle = startRuntime({
-  initialState: createState(),
+  initialState: await loadState(db),
   flushIntervalMs: 50,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,
   account: deployerAccount,
   address: EXCHANGE_ADDRESS,
   // @ts-expect-error
-  rpId: process.env.BUN_PUBLIC_RP_ID,
+  rpId: process.env.BUN_PUBLIC_RP_ID || undefined,
   // @ts-expect-error
-  origin: process.env.BUN_PUBLIC_ORIGIN,
+  origin: process.env.BUN_PUBLIC_ORIGIN || undefined,
 });
 
-// @ts-expect-error
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL env var is required");
-}
-
-// // @ts-expect-error
-// const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
-// await migrate(db, { migrationsFolder: "./drizzle" });
-// dbPlugin(handle, db);
+dbPlugin(handle, db);
 
 const server = serve({
   idleTimeout: 0,
