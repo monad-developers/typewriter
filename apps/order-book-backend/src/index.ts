@@ -1,6 +1,5 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
-import { migrate } from "drizzle-orm/bun-sql/migrator";
 import { CURRENCIES } from "order-book-frontend/src/constants";
 import index from "order-book-frontend/src/index.html";
 import type { Chain } from "viem";
@@ -9,6 +8,7 @@ import {
   privateKeyToAccount,
   signTypedData,
 } from "viem/accounts";
+import * as schema from "./app-schema";
 import { CHAIN, EIP712_TYPES, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import { dbPlugin, loadMaxIds, loadState } from "./db";
 import {
@@ -26,8 +26,8 @@ import {
   type Revoke,
   type Signed,
 } from "./exchange";
+import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
-import * as schema from "./schema";
 
 // @ts-expect-error
 if (!process.env.DEPLOYER_PRIVATE_KEY) {
@@ -41,10 +41,10 @@ const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL env var is required");
 }
-
 // @ts-expect-error
-const db = drizzle(process.env.DATABASE_URL!, { schema, casing: "snake_case" });
-await migrate(db, { migrationsFolder: "./drizzle" });
+const DATABASE_URL: string = process.env.DATABASE_URL;
+const db = drizzle(DATABASE_URL, { schema, casing: "snake_case" });
+await migrate(db, CHAIN.id, EXCHANGE_ADDRESS);
 
 const { mutationId, bundleId } = await loadMaxIds(db);
 
