@@ -1,10 +1,10 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { Address, Hex } from "viem";
+import * as schema from "./app-schema";
 import type { KeyType, Side, State } from "./exchange";
 import { MutationType } from "./exchange";
 import type { MutationEvent, RuntimeHandle } from "./runtime";
-import * as schema from "./app-schema";
 
 type DB = BunSQLDatabase<typeof schema>;
 type DBStatus = "accepted" | "proposed" | "voted" | "finalized" | "verified";

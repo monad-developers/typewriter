@@ -3,13 +3,9 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import { CURRENCIES } from "order-book-frontend/src/constants";
 import index from "order-book-frontend/src/index.html";
 import type { Chain } from "viem";
-import {
-  generatePrivateKey,
-  privateKeyToAccount,
-  signTypedData,
-} from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
-import { CHAIN, EIP712_TYPES, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
+import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import { dbPlugin, loadMaxIds, loadState } from "./db";
 import {
   type Authorize,
@@ -162,97 +158,6 @@ const server = serve({
             };
           }),
         });
-      },
-    },
-
-    "/api/sign-in": {
-      POST: async () => {
-        try {
-          const privateKey = generatePrivateKey();
-          const wallet = privateKeyToAccount(privateKey);
-          const accountId =
-            `0x000000000000000000000000${wallet.address.slice(2).toLowerCase()}` as `0x${string}`;
-          const FAR_DEADLINE = BigInt(
-            "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          );
-          const domain = {
-            name: "Exchange" as const,
-            version: "1" as const,
-            chainId: CHAIN.id,
-            verifyingContract: EXCHANGE_ADDRESS,
-          };
-
-          const initSignature = await signTypedData({
-            privateKey,
-            domain,
-            types: EIP712_TYPES,
-            primaryType: "Initialize",
-            message: {
-              account: accountId,
-              expiry: 0,
-              rootKeyType: 2,
-              keyType: 2,
-              permissions: 0xff,
-              rootPublicKey: accountId,
-              publicKey: accountId,
-            },
-          });
-
-          await handle.execute({
-            type: MutationType.Initialize,
-            account: accountId,
-            keyId: 0,
-            nonce: 0n,
-            deadline: FAR_DEADLINE,
-            rawSignature: initSignature,
-            mutation: {
-              expiry: 0,
-              rootKeyType: 2,
-              keyType: 2,
-              permissions: 0xff,
-              rootPublicKey: accountId,
-              publicKey: accountId,
-            },
-          });
-
-          let nonce = 1n;
-          for (const currency of CURRENCIES) {
-            const amount = 10000n * 10n ** BigInt(currency.decimals);
-
-            const depositSignature = await signTypedData({
-              privateKey,
-              domain,
-              types: EIP712_TYPES,
-              primaryType: "Deposit",
-              message: {
-                asset: currency.address,
-                amount,
-                nonce,
-                deadline: FAR_DEADLINE,
-              },
-            });
-
-            await handle.execute({
-              type: MutationType.Deposit,
-              account: accountId,
-              keyId: 1,
-              nonce,
-              deadline: FAR_DEADLINE,
-              rawSignature: depositSignature,
-              mutation: { asset: currency.address, amount },
-            });
-
-            nonce++;
-          }
-
-          return Response.json({
-            address: wallet.address,
-            accountId,
-            privateKey,
-          });
-        } catch (err) {
-          return Response.json({ error: String(err) }, { status: 400 });
-        }
       },
     },
 
