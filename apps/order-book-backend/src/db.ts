@@ -4,7 +4,7 @@ import type { Address, Hex } from "viem";
 import type { KeyType, Side, State } from "./exchange";
 import { MutationType } from "./exchange";
 import type { MutationEvent, RuntimeHandle } from "./runtime";
-import * as schema from "./schema";
+import * as schema from "./app-schema";
 
 type DB = BunSQLDatabase<typeof schema>;
 type DBStatus = "accepted" | "proposed" | "voted" | "finalized" | "verified";
