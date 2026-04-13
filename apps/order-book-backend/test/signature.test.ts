@@ -6,8 +6,8 @@ import type { Address, Hex } from "viem";
 import { encodeAbiParameters, hashTypedData } from "viem";
 import { privateKeyToAccount, signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
-import { createState, MutationType } from "./exchange";
-import { type EIP712Domain, verifySignature } from "./runtime";
+import { createState, MutationType } from "../src/exchange";
+import { type EIP712Domain, verifySignature } from "../src/signature";
 
 const EXCHANGE_ADDRESS =
   "0x0000000000000000000000000000000000000000" as Address;
