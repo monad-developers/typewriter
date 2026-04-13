@@ -103,6 +103,7 @@
     "apps/order-book-scripts": {
       "name": "order-book-scripts",
       "dependencies": {
+        "order-book-backend": "workspace:*",
         "viem": "^2.47.1",
       },
       "devDependencies": {

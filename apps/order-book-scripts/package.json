@@ -3,9 +3,11 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "setup": "bun run setup.ts"
+    "setup": "bun run src/setup.ts",
+    "liquidity": "bun run src/liquidity.ts"
   },
   "dependencies": {
+    "order-book-backend": "workspace:*",
     "viem": "^2.47.1"
   },
   "devDependencies": {
