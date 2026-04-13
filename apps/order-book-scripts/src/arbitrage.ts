@@ -1,4 +1,4 @@
-import type { State } from "order-book-backend/src/exchange";
+import type { Instrument, State } from "order-book-backend/src/exchange";
 import type { Address, Hex } from "viem";
 import {
   generatePrivateKey,
@@ -6,27 +6,20 @@ import {
   signTypedData,
 } from "viem/accounts";
 import { API_URL, CHAIN_ID, EIP712_TYPES, EXCHANGE_ADDRESS } from "./constants";
-import { priceToQ32 } from "./utils";
+import { priceToQ32, q32ToPrice } from "./utils";
 
 if (!process.env.PRICE) {
   console.error("PRICE env var is required (e.g. 2400 for $2400)");
   process.exit(1);
 }
-if (!process.env.SIDE) {
-  console.error("SIDE env var is required (0 = bid, 1 = ask)");
-  process.exit(1);
-}
 
 const pk = generatePrivateKey();
-
 const wallet = privateKeyToAccount(pk);
 const account =
   `0x000000000000000000000000${wallet.address.slice(2).toLowerCase()}` as Hex;
 
 const instrumentId = Number(process.env.INSTRUMENT_ID ?? "0");
 const inputPrice = Number(process.env.PRICE);
-const side = Number(process.env.SIDE) as 0 | 1;
-const quantity = BigInt(process.env.QUANTITY ?? "100");
 const baseDecimals = 18;
 const quoteDecimals = 18;
 
@@ -59,7 +52,7 @@ async function getState(): Promise<State> {
   return res.json() as Promise<State>;
 }
 
-async function initialize() {
+async function initialize(nonce: bigint) {
   const pubKey = account;
   const mutation = {
     expiry: 0,
@@ -70,7 +63,7 @@ async function initialize() {
     publicKey: pubKey,
   };
   const sig = await signTypedData({
-    privateKey: pk!,
+    privateKey: pk,
     domain: domain(),
     types: EIP712_TYPES,
     primaryType: "Initialize",
@@ -80,16 +73,15 @@ async function initialize() {
     ...mutation,
     account,
     keyId: 0,
-    nonce: "0",
+    nonce: nonce.toString(),
     deadline: FAR_DEADLINE.toString(),
     rawSignature: sig,
   });
-  console.log(`initialized account ${wallet.address}`);
 }
 
 async function mint(asset: Address, amount: bigint, nonce: bigint) {
   const sig = await signTypedData({
-    privateKey: pk!,
+    privateKey: pk,
     domain: domain(),
     types: EIP712_TYPES,
     primaryType: "Deposit",
@@ -106,30 +98,30 @@ async function mint(asset: Address, amount: bigint, nonce: bigint) {
   });
 }
 
-async function limitOrder(
-  q: bigint,
-  p: bigint,
+async function marketOrder(
+  quantity: bigint,
+  minReceivedQuantity: bigint,
   bidOrAsk: 0 | 1,
   nonce: bigint,
 ) {
   const sig = await signTypedData({
-    privateKey: pk!,
+    privateKey: pk,
     domain: domain(),
     types: EIP712_TYPES,
-    primaryType: "LimitOrder",
+    primaryType: "MarketOrder",
     message: {
-      quantity: q,
+      quantity,
+      minReceivedQuantity,
       instrumentId: BigInt(instrumentId),
-      price: p,
       bidOrAsk,
       nonce,
       deadline: FAR_DEADLINE,
     },
   });
-  await post("/api/limit-order", {
-    quantity: q,
+  return post("/api/market-order", {
+    quantity,
+    minReceivedQuantity,
     instrumentId,
-    price: p,
     bidOrAsk,
     account,
     keyId: 1,
@@ -139,6 +131,52 @@ async function limitOrder(
   });
 }
 
+function findArbOpportunity(
+  instrument: Instrument,
+  realQ32: bigint,
+): {
+  side: 0 | 1;
+  quantity: bigint;
+  minReceived: bigint;
+} | null {
+  const toPrice = (q32: number) =>
+    q32ToPrice(BigInt(q32), instrument.baseLotExp, instrument.quoteLotExp, baseDecimals, quoteDecimals);
+
+  const askPrices = Object.keys(instrument.asks)
+    .map(Number)
+    .sort((a, b) => a - b);
+  const bidPrices = Object.keys(instrument.bids)
+    .map(Number)
+    .sort((a, b) => b - a);
+
+  for (const p of askPrices) {
+    if (BigInt(p) >= realQ32) break;
+    const tick = instrument.asks[p]!;
+    const remaining = BigInt(tick.remainingQuantity);
+    if (remaining <= 0n) continue;
+
+    console.log(
+      `arb: buy ${remaining} lots @ $${toPrice(p).toFixed(4)} (below real price $${inputPrice})`,
+    );
+    return { side: 0, quantity: remaining, minReceived: remaining };
+  }
+
+  for (const p of bidPrices) {
+    if (BigInt(p) <= realQ32) break;
+    const tick = instrument.bids[p]!;
+    const remaining = BigInt(tick.remainingQuantity);
+    if (remaining <= 0n) continue;
+
+    const minReceived = (remaining * BigInt(p)) >> 32n;
+    console.log(
+      `arb: sell ${remaining} lots @ $${toPrice(p).toFixed(4)} (above real price $${inputPrice})`,
+    );
+    return { side: 1, quantity: remaining, minReceived };
+  }
+
+  return null;
+}
+
 const state = await getState();
 const instrument = state.instruments[instrumentId];
 if (!instrument) {
@@ -146,41 +184,47 @@ if (!instrument) {
   process.exit(1);
 }
 
-const existingAccount = state.accounts[account];
-if (!existingAccount || existingAccount.keys.length === 0) {
-  await initialize();
-}
-
-let nonce = BigInt(existingAccount?.nonces?.["0"] ?? "0");
-
-const baseAsset = instrument.base as Address;
-const quoteAsset = instrument.quote as Address;
-const baseLotExp = BigInt(instrument.baseLotExp);
-const quoteLotExp = BigInt(instrument.quoteLotExp);
-
-const price = priceToQ32(
+const realQ32 = priceToQ32(
   inputPrice,
   instrument.baseLotExp,
   instrument.quoteLotExp,
   baseDecimals,
   quoteDecimals,
 );
-console.log(`price: $${inputPrice} (Q32: ${price})`);
+console.log(`real price: $${inputPrice} (Q32: ${realQ32})`);
 
-if (side === 1) {
-  const rawBase = quantity << baseLotExp;
-  console.log(`minting ${rawBase} base (${baseAsset})...`);
-  await mint(baseAsset, rawBase, nonce);
+const arb = findArbOpportunity(instrument, realQ32);
+if (!arb) {
+  console.log("no arbitrage opportunity found");
+  process.exit(0);
+}
+
+let nonce = 0n;
+await initialize(nonce);
+console.log(`initialized account ${wallet.address}`);
+
+const baseAsset = instrument.base as Address;
+const quoteAsset = instrument.quote as Address;
+const baseLotExp = BigInt(instrument.baseLotExp);
+const quoteLotExp = BigInt(instrument.quoteLotExp);
+
+if (arb.side === 0) {
+  const maxCost = ((arb.quantity * realQ32) >> 32n) << quoteLotExp;
+  console.log(`minting ${maxCost} quote to cover buy...`);
+  await mint(quoteAsset, maxCost, nonce);
   nonce++;
 } else {
-  const rawQuote = ((quantity * price) >> 32n) << quoteLotExp;
-  console.log(`minting ${rawQuote} quote (${quoteAsset})...`);
-  await mint(quoteAsset, rawQuote, nonce);
+  const rawBase = arb.quantity << baseLotExp;
+  console.log(`minting ${rawBase} base to cover sell...`);
+  await mint(baseAsset, rawBase, nonce);
   nonce++;
 }
 
-const label = side === 0 ? "bid" : "ask";
-console.log(`placing ${label}: ${quantity} lots @ $${inputPrice}...`);
-await limitOrder(quantity, price, side, nonce);
-
+const result = await marketOrder(
+  arb.quantity,
+  arb.minReceived,
+  arb.side,
+  nonce,
+);
+console.log("market order filled:", result);
 console.log("done");
