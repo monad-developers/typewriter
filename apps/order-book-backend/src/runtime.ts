@@ -493,6 +493,22 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     return txNonce++;
   }
 
+  const jsonLogger = Logger.replace(
+    Logger.defaultLogger,
+    Logger.make(({ logLevel, message, annotations, date }) => {
+      const msg = Array.isArray(message) ? message.join(" ") : String(message);
+      const entry: Record<string, unknown> = {
+        level: logLevel.label.toLowerCase(),
+        message: msg,
+        timestamp: date.toISOString(),
+      };
+      for (const [k, v] of annotations) {
+        entry[k] = v;
+      }
+      console.log(JSON.stringify(entry));
+    }),
+  );
+
   const eip712Domain: EIP712Domain = {
     name: "Exchange",
     version: "1",
@@ -694,13 +710,13 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const fiber = Effect.runFork(
     program.pipe(
       Logger.withMinimumLogLevel(LogLevel.Debug),
-      Effect.provide(Logger.json),
+      Effect.provide(jsonLogger),
     ),
   );
   const blockFiber = Effect.runFork(
     blockProgram.pipe(
       Logger.withMinimumLogLevel(LogLevel.Debug),
-      Effect.provide(Logger.json),
+      Effect.provide(jsonLogger),
     ),
   );
 
@@ -711,7 +727,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         address: config.address,
         flushIntervalMs: config.flushIntervalMs,
       }),
-      Effect.provide(Logger.json),
+      Effect.provide(jsonLogger),
     ),
   );
 
@@ -728,7 +744,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       await verifySignature(state, eip712Domain, mutation);
       dryRun(state, mutation);
     } catch (err) {
-      Effect.runSync(Effect.logError(err).pipe(Effect.provide(Logger.json)));
+      Effect.runSync(Effect.logError(err).pipe(Effect.provide(jsonLogger)));
       throw err;
     }
 
@@ -758,7 +774,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           type: typeName,
           account: account ?? "n/a",
         }),
-        Effect.provide(Logger.json),
+        Effect.provide(jsonLogger),
       ),
     );
 
@@ -766,10 +782,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   }
 
   async function stop(): Promise<void> {
-    Effect.runSync(Effect.logInfo("runtime stopping").pipe(Effect.provide(Logger.json)));
+    Effect.runSync(Effect.logInfo("runtime stopping").pipe(Effect.provide(jsonLogger)));
     await Effect.runPromise(Fiber.interrupt(blockFiber));
     await Effect.runPromise(Fiber.interrupt(fiber));
-    Effect.runSync(Effect.logInfo("runtime stopped").pipe(Effect.provide(Logger.json)));
+    Effect.runSync(Effect.logInfo("runtime stopped").pipe(Effect.provide(jsonLogger)));
   }
 
   type MutationCb = (mutation: MutationEvent, status: MutationStatus) => void;
