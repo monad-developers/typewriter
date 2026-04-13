@@ -41,7 +41,8 @@ if (!process.env.DATABASE_URL) {
 }
 // @ts-expect-error
 const DATABASE_URL: string = process.env.DATABASE_URL;
-const db = drizzle(DATABASE_URL, { schema, casing: "snake_case" });
+const client = new Bun.SQL({ url: DATABASE_URL, max: 1 });
+const db = drizzle({ client, schema, casing: "snake_case" });
 await migrate(db, CHAIN.id, EXCHANGE_ADDRESS);
 
 const { mutationId, bundleId } = await loadMaxIds(db);
