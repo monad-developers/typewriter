@@ -1,14 +1,13 @@
 import type { Address } from "viem";
+import {
+  API_URL,
+  GOLD,
+  GOLD_Q32_PRICE,
+  USD,
+  WTIOIL,
+  WTIOIL_Q32_PRICE,
+} from "./constants";
 import { q32ToPrice } from "./utils";
-
-const API_URL = process.env.API_URL ?? "http://localhost:3000";
-
-const USD: Address = "0x1111111111111111111111111111111111111111";
-const GOLD: Address = "0x2222222222222222222222222222222222222222";
-const WTIOIL: Address = "0x3333333333333333333333333333333333333333";
-
-const GOLD_Q32_PRICE = 21_110_623_253_299_200n;
-const WTIOIL_Q32_PRICE = 16_492_674_416_640n;
 
 async function addInstrument(instrument: {
   instrumentId: number;
