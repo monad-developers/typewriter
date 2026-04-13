@@ -505,7 +505,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       for (const [k, v] of annotations) {
         entry[k] = v;
       }
-      console.log(JSON.stringify(entry));
+      const out = JSON.stringify(entry);
+      if (LogLevel.greaterThanEqual(logLevel, LogLevel.Error)) {
+        console.error(out);
+      } else {
+        console.log(out);
+      }
     }),
   );
 
