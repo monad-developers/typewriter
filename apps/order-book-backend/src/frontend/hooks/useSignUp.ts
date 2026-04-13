@@ -68,7 +68,7 @@ export function useSignUp() {
 
       if (!res.ok) {
         const body = await res.json();
-        throw new Error(body.error ?? "Initialize failed");
+        throw new Error(body.error?.split(":")[0] ?? "Initialize failed");
       }
 
       const nonceKey = BigInt(keccak256(sessionPublicKey)) >> 64n;

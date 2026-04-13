@@ -58,7 +58,7 @@ export function useDemoSignUp() {
       });
       if (!initRes.ok) {
         const body = await initRes.json();
-        throw new Error(body.error ?? "Initialize failed");
+        throw new Error(body.error?.split(":")[0] ?? "Initialize failed");
       }
 
       const nonceKey = BigInt(keccak256(sessionPublicKey)) >> 64n;

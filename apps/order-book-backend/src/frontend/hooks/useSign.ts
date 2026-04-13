@@ -10,6 +10,7 @@ import type { Account } from "../contexts/AccountContext";
 import { EIP712_DOMAIN, EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
 
 async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
+  console.log("signP256 hash:", hash);
   const sig = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     sessionKey.privateKey,

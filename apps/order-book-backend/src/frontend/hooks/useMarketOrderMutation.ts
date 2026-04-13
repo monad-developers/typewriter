@@ -33,7 +33,7 @@ export function useMarketOrderMutation() {
         const err = (await res.json().catch(() => null)) as {
           error?: string;
         } | null;
-        throw new Error(err?.error ?? "Order failed");
+        throw new Error(err?.error?.split(":")[0] ?? "Order failed");
       }
 
       return res.json();
