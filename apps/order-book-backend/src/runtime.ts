@@ -418,7 +418,10 @@ function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
       break;
     case MutationType.MarketOrder: {
       const instrument = clone.instruments[mutation.mutation.instrumentId];
-      if (!instrument) throw new Error("InvalidInstrument");
+      if (!instrument)
+        throw new Error(
+          `InvalidInstrument: instrumentId=${mutation.mutation.instrumentId}, account=${mutation.account}`,
+        );
       const resolution = resolveMarketOrder(
         instrument,
         mutation.mutation,
@@ -745,7 +748,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           try: () => verifySignature(state, eip712Domain, mutation),
           catch: (err) => err,
         });
-        yield* Effect.try(() => dryRun(state, mutation));
+        yield* Effect.try({
+          try: () => dryRun(state, mutation),
+          catch: (err) => err,
+        });
 
         if (
           mutation.type !== MutationType.AddInstrument &&
