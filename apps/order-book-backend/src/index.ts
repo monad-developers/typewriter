@@ -8,6 +8,7 @@ import * as schema from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
 import { dbPlugin, loadMaxIds, loadState } from "./db";
 import {
+  type AddInstrument,
   type Authorize,
   type CloseOrder,
   type Deposit,
@@ -296,6 +297,23 @@ const server = serve({
           const result = await handle.execute({
             type: MutationType.CloseOrder,
             ...decodeSigned(body),
+            mutation: body,
+          });
+
+          return Response.json({ id: result.id });
+        } catch (err) {
+          return Response.json({ error: String(err) }, { status: 400 });
+        }
+      },
+    },
+
+    "/api/add-instrument": {
+      POST: async (req) => {
+        const body = (await req.json()) as AddInstrument;
+
+        try {
+          const result = await handle.execute({
+            type: MutationType.AddInstrument,
             mutation: body,
           });
 

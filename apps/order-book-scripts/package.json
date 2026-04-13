@@ -1,0 +1,14 @@
+{
+  "name": "order-book-scripts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "setup": "bun run setup.ts"
+  },
+  "dependencies": {
+    "viem": "^2.47.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
