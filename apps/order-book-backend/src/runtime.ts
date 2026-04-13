@@ -644,7 +644,11 @@ function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
     case MutationType.MarketOrder: {
       const instrument = clone.instruments[mutation.mutation.instrumentId];
       if (!instrument) throw new Error("InvalidInstrument");
-      const resolution = resolveMarketOrder(instrument, mutation.mutation);
+      const resolution = resolveMarketOrder(
+        instrument,
+        mutation.mutation,
+        new Map(),
+      );
       handleMarketOrder(clone, mutation.mutation, resolution, mutation.account);
       break;
     }
