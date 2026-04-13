@@ -678,7 +678,13 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   });
 
   const program = Effect.repeat(
-    flush.pipe(Effect.tapError((error) => Effect.logError(error))),
+    flush.pipe(
+      Effect.tapError((error) =>
+        Effect.logError(
+          error instanceof Error ? error.message : String(error),
+        ),
+      ),
+    ),
     Schedule.fixed(Duration.millis(config.flushIntervalMs)),
   );
 
@@ -744,7 +750,11 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       await verifySignature(state, eip712Domain, mutation);
       dryRun(state, mutation);
     } catch (err) {
-      Effect.runSync(Effect.logError(err).pipe(Effect.provide(jsonLogger)));
+      Effect.runSync(
+        Effect.logError(err instanceof Error ? err.message : String(err)).pipe(
+          Effect.provide(jsonLogger),
+        ),
+      );
       throw err;
     }
 
