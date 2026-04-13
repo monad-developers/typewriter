@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "setup": "bun run src/setup.ts",
-    "liquidity": "bun run src/liquidity.ts"
+    "liquidity": "bun run src/liquidity.ts",
+    "arbitrage": "bun run src/arbitrage.ts"
   },
   "dependencies": {
     "order-book-backend": "workspace:*",

@@ -83,84 +83,14 @@ const server = serve({
           for (const currency of CURRENCIES) {
             balances[currency.address] = "0";
           }
-
-          return Response.json({
-            account,
-            nonces: {},
-            balances,
-          });
+          return Response.json({ account, balances });
         }
 
         const balances: Record<string, string> = {};
         for (const [asset, balance] of Object.entries(acc.balances)) {
           balances[asset] = balance.toString();
         }
-        const nonces: Record<string, string> = {};
-        for (const [k, v] of Object.entries(acc.nonces)) {
-          nonces[k] = v.toString();
-        }
-        return Response.json({
-          account,
-          nonces,
-          balances,
-        });
-      },
-    },
-
-    "/api/instrument-price": {
-      GET: (req) => {
-        const url = new URL(req.url);
-        const instrumentIdParam = url.searchParams.get("instrumentId");
-
-        if (instrumentIdParam === null)
-          return Response.json(
-            { error: "instrumentId query parameter required" },
-            { status: 400 },
-          );
-
-        const instrumentId = Number(instrumentIdParam);
-        const instrument = handle.state.instruments[instrumentId];
-        if (!instrument) {
-          return Response.json(
-            { error: "Invalid instrument" },
-            { status: 404 },
-          );
-        }
-
-        const bidPrices = Object.keys(instrument.bids)
-          .map(Number)
-          .sort((a, b) => b - a);
-        const askPrices = Object.keys(instrument.asks)
-          .map(Number)
-          .sort((a, b) => a - b);
-
-        return Response.json({
-          instrumentId,
-          base: instrument.base,
-          quote: instrument.quote,
-          bestBid: bidPrices[0] ?? null,
-          bestAsk: askPrices[0] ?? null,
-          bids: bidPrices.flatMap((price) => {
-            const tick = instrument.bids[price];
-            if (!tick) return [];
-            return {
-              price,
-              quantity: tick.quantity.toString(),
-              remainingQuantity: tick.remainingQuantity.toString(),
-              volume: tick.volume,
-            };
-          }),
-          asks: askPrices.flatMap((price) => {
-            const tick = instrument.asks[price];
-            if (!tick) return [];
-            return {
-              price,
-              quantity: tick.quantity.toString(),
-              remainingQuantity: tick.remainingQuantity.toString(),
-              volume: tick.volume,
-            };
-          }),
-        });
+        return Response.json({ account, balances });
       },
     },
 
