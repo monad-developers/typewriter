@@ -35,6 +35,7 @@ export async function migrate(
     return;
   }
 
+  // @ts-ignore
   const [{ max }] = await db
     .select({ max: sql<number>`coalesce(max(id), 0)` })
     .from(deployments);

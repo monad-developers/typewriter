@@ -4,10 +4,8 @@ import { anvil, monadTestnet } from "viem/chains";
 
 const chains = [anvil, monadTestnet] as const;
 
-// @ts-expect-error
 if (!process.env.BUN_PUBLIC_CHAIN_ID)
   throw new Error("BUN_PUBLIC_CHAIN_ID env var is required");
-// @ts-expect-error
 export const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID);
 
 export const CHAIN = extractChain({
@@ -15,17 +13,14 @@ export const CHAIN = extractChain({
   id: CHAIN_ID as (typeof chains)[number]["id"],
 }) as typeof anvil | typeof monadTestnet;
 
-// @ts-expect-error
 if (!process.env.BUN_PUBLIC_RPC_URL)
   throw new Error("BUN_PUBLIC_RPC_URL env var is required");
-// @ts-expect-error
 export const RPC_URL = process.env.BUN_PUBLIC_RPC_URL;
 
-// @ts-expect-error
 if (!process.env.BUN_PUBLIC_EXCHANGE_ADDRESS)
   throw new Error("BUN_PUBLIC_EXCHANGE_ADDRESS env var is required");
-export const EXCHANGE_ADDRESS = // @ts-expect-error
-  process.env.BUN_PUBLIC_EXCHANGE_ADDRESS as Address;
+export const EXCHANGE_ADDRESS = process.env
+  .BUN_PUBLIC_EXCHANGE_ADDRESS as Address;
 
 export const EIP712_TYPES = {
   Initialize: [

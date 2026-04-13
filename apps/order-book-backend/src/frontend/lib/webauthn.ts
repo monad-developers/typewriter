@@ -1,11 +1,10 @@
 import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
 import type { Authentication } from "webauthx/client";
 
-declare var process: { env: Record<string, string | undefined> };
 export const RP_ID: string =
   typeof process !== "undefined"
-    ? process.env.BUN_PUBLIC_RP_ID || "localhost"
-    : "localhost";
+    ? process.env.BUN_PUBLIC_RP_ID || origin.split("://")[1]!
+    : origin.split("://")[1]!;
 export const RP_NAME = "Order Book";
 
 export function splitSignature(hex: Hex): { r: bigint; s: bigint } {

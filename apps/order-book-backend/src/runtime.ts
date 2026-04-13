@@ -685,9 +685,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const program = Effect.repeat(
     flush.pipe(
       Effect.catchAll((error) =>
-        Effect.logError(
-          error instanceof Error ? error.message : String(error),
-        ),
+        Effect.logError(error instanceof Error ? error.message : String(error)),
       ),
     ),
     Schedule.fixed(Duration.millis(config.flushIntervalMs)),
@@ -797,10 +795,14 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   }
 
   async function stop(): Promise<void> {
-    Effect.runSync(Effect.logInfo("runtime stopping").pipe(Effect.provide(jsonLogger)));
+    Effect.runSync(
+      Effect.logInfo("runtime stopping").pipe(Effect.provide(jsonLogger)),
+    );
     await Effect.runPromise(Fiber.interrupt(blockFiber));
     await Effect.runPromise(Fiber.interrupt(fiber));
-    Effect.runSync(Effect.logInfo("runtime stopped").pipe(Effect.provide(jsonLogger)));
+    Effect.runSync(
+      Effect.logInfo("runtime stopped").pipe(Effect.provide(jsonLogger)),
+    );
   }
 
   type MutationCb = (mutation: MutationEvent, status: MutationStatus) => void;

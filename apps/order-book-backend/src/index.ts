@@ -1,7 +1,5 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
-import { CURRENCIES } from "order-book-frontend/src/constants";
-import index from "order-book-frontend/src/index.html";
 import type { Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
@@ -24,25 +22,25 @@ import {
   type Revoke,
   type Signed,
 } from "./exchange";
+import { CURRENCIES } from "./frontend/constants";
+import index from "./frontend/index.html";
 import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
 
-// @ts-expect-error
 if (!process.env.DEPLOYER_PRIVATE_KEY) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
 }
-// @ts-expect-error
 const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`;
 const deployerAccount = privateKeyToAccount(DEPLOYER_PRIVATE_KEY);
 
-// @ts-expect-error
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL env var is required");
 }
-// @ts-expect-error
+
 const DATABASE_URL: string = process.env.DATABASE_URL;
 const client = new Bun.SQL({ url: DATABASE_URL, max: 1 });
 const db = drizzle({ client, schema, casing: "snake_case" });
+// @ts-ignore
 await migrate(db, CHAIN.id, EXCHANGE_ADDRESS);
 
 const { mutationId, bundleId } = await loadMaxIds(db);
@@ -56,9 +54,7 @@ const handle = startRuntime({
   rpcUrl: RPC_URL,
   account: deployerAccount,
   address: EXCHANGE_ADDRESS,
-  // @ts-expect-error
   rpId: process.env.BUN_PUBLIC_RP_ID || undefined,
-  // @ts-expect-error
   origin: process.env.BUN_PUBLIC_ORIGIN || undefined,
 });
 
