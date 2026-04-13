@@ -92,7 +92,7 @@
       "name": "order-book-scripts",
       "dependencies": {
         "order-book-backend": "workspace:*",
-        "viem": "^2.47.1",
+        "ox": "^0.14.13",
       },
       "devDependencies": {
         "@types/bun": "latest",

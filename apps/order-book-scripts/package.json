@@ -2,14 +2,10 @@
   "name": "order-book-scripts",
   "type": "module",
   "private": true,
-  "scripts": {
-    "setup": "bun run src/setup.ts",
-    "liquidity": "bun run src/liquidity.ts",
-    "arbitrage": "bun run src/arbitrage.ts"
-  },
+  "scripts": {},
   "dependencies": {
     "order-book-backend": "workspace:*",
-    "viem": "^2.47.1"
+    "ox": "^0.14.13"
   },
   "devDependencies": {
     "@types/bun": "latest"
