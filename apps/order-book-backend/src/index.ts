@@ -15,6 +15,7 @@ import {
   decodeLimitOrder,
   decodeMarketOrder,
   decodeSigned,
+  encodeState,
   type Initialize,
   type LimitOrder,
   type MarketOrder,
@@ -333,6 +334,10 @@ const server = serve({
             "Cache-Control": "no-cache",
           },
         }),
+    },
+
+    "/api/state": {
+      GET: () => Response.json(encodeState(handle.state)),
     },
 
     "/*": index,
