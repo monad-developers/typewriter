@@ -684,7 +684,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
   const program = Effect.repeat(
     flush.pipe(
-      Effect.tapError((error) =>
+      Effect.catchAll((error) =>
         Effect.logError(
           error instanceof Error ? error.message : String(error),
         ),
