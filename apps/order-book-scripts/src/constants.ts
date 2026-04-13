@@ -36,4 +36,12 @@ export const EIP712_TYPES = {
     { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
   ],
+  MarketOrder: [
+    { name: "quantity", type: "uint64" },
+    { name: "minReceivedQuantity", type: "uint64" },
+    { name: "instrumentId", type: "uint64" },
+    { name: "bidOrAsk", type: "uint8" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
 } as const;
