@@ -1726,6 +1726,146 @@ test("market order with slippage exceeded rejects", async () => {
   await handle.stop();
 });
 
+test("cancel sorted before market order in a bundle", async () => {
+  const exchangeAddress = await deployExchange();
+  const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
+  const state = createState();
+  const handle = startRuntime({ initialState: state, flushIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+
+  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+
+  const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
+  const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
+  const makerInitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: MAKER_ACCOUNT, ...makerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: MAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerInitSig, mutation: makerInit });
+
+  const makerDepSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: QUOTE, amount: 10000n, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: MAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerDepSig, mutation: { asset: QUOTE, amount: 10000n } });
+
+  const takerPub = `0x000000000000000000000000${TAKER.slice(2).toLowerCase()}` as Hex;
+  const takerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: takerPub, publicKey: takerPub };
+  const takerInitSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: TAKER_ACCOUNT, ...takerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: TAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerInitSig, mutation: takerInit });
+
+  const takerDepSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: BASE, amount: 10000n, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: TAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerDepSig, mutation: { asset: BASE, amount: 10000n } });
+
+  const limitOrder = { quantity: 100n, instrumentId: 0, price: 10n * Q32, bidOrAsk: 0 as const };
+  const limitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "LimitOrder", message: { quantity: limitOrder.quantity, instrumentId: BigInt(limitOrder.instrumentId), price: limitOrder.price, bidOrAsk: limitOrder.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.LimitOrder, account: MAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: limitSig, mutation: limitOrder });
+
+  const closeSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "CloseOrder", message: { orderId: 0n, nonce: 2n, deadline: FAR_DEADLINE } });
+  const closeResult = await handle.execute({ type: MutationType.CloseOrder, account: MAKER_ACCOUNT, keyId: 1, nonce: 2n, deadline: FAR_DEADLINE, rawSignature: closeSig, mutation: { orderId: 0 } });
+
+  const marketOrder = { quantity: 10n, minReceivedQuantity: 0n, instrumentId: 0, bidOrAsk: 1 as const };
+  const marketSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "MarketOrder", message: { quantity: marketOrder.quantity, minReceivedQuantity: marketOrder.minReceivedQuantity, instrumentId: BigInt(marketOrder.instrumentId), bidOrAsk: marketOrder.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+
+  await expect(
+    handle.execute({ type: MutationType.MarketOrder, account: TAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: marketSig, mutation: marketOrder }),
+  ).rejects.toThrow("InsufficientLiquidity");
+
+  expect(closeResult.type).toBe(MutationType.CloseOrder);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(10000n);
+  expect(state.accounts[MAKER_ACCOUNT]!.balances[BASE]).toBe(0n);
+  await handle.stop();
+});
+
+test("two market orders in a bundle", async () => {
+  const exchangeAddress = await deployExchange();
+  const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
+  const state = createState();
+  const handle = startRuntime({ initialState: state, flushIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+
+  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+
+  const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
+  const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
+  const makerInitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: MAKER_ACCOUNT, ...makerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: MAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerInitSig, mutation: makerInit });
+
+  const makerDepSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: QUOTE, amount: 10000n, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: MAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerDepSig, mutation: { asset: QUOTE, amount: 10000n } });
+
+  const takerPub = `0x000000000000000000000000${TAKER.slice(2).toLowerCase()}` as Hex;
+  const takerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: takerPub, publicKey: takerPub };
+  const takerInitSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: TAKER_ACCOUNT, ...takerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: TAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerInitSig, mutation: takerInit });
+
+  const takerDepSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: BASE, amount: 10000n, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: TAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerDepSig, mutation: { asset: BASE, amount: 10000n } });
+
+  const limitOrder = { quantity: 100n, instrumentId: 0, price: 10n * Q32, bidOrAsk: 0 as const };
+  const limitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "LimitOrder", message: { quantity: limitOrder.quantity, instrumentId: BigInt(limitOrder.instrumentId), price: limitOrder.price, bidOrAsk: limitOrder.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.LimitOrder, account: MAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: limitSig, mutation: limitOrder });
+
+  const market1 = { quantity: 10n, minReceivedQuantity: 0n, instrumentId: 0, bidOrAsk: 1 as const };
+  const market1Sig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "MarketOrder", message: { quantity: market1.quantity, minReceivedQuantity: market1.minReceivedQuantity, instrumentId: BigInt(market1.instrumentId), bidOrAsk: market1.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+
+  const market2 = { quantity: 15n, minReceivedQuantity: 0n, instrumentId: 0, bidOrAsk: 1 as const };
+  const nonce2 = 1n << 64n;
+  const market2Sig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "MarketOrder", message: { quantity: market2.quantity, minReceivedQuantity: market2.minReceivedQuantity, instrumentId: BigInt(market2.instrumentId), bidOrAsk: market2.bidOrAsk, nonce: nonce2, deadline: FAR_DEADLINE } });
+
+  const [result1, result2] = await Promise.all([
+    handle.execute({ type: MutationType.MarketOrder, account: TAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: market1Sig, mutation: market1 }),
+    handle.execute({ type: MutationType.MarketOrder, account: TAKER_ACCOUNT, keyId: 1, nonce: nonce2, deadline: FAR_DEADLINE, rawSignature: market2Sig, mutation: market2 }),
+  ]);
+
+  expect(result1.resolution.fills[0]!.quantity).toBe(10n);
+  expect(result2.resolution.fills[0]!.quantity).toBe(15n);
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[BASE]).toBe(9975n);
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[QUOTE]).toBe(250n);
+  await handle.stop();
+});
+
+test("two market orders in a bundle, first invalid due to slippage", async () => {
+  const exchangeAddress = await deployExchange();
+  const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
+  const state = createState();
+  const handle = startRuntime({ initialState: state, flushIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+
+  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+
+  const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
+  const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
+  const makerInitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: MAKER_ACCOUNT, ...makerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: MAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerInitSig, mutation: makerInit });
+
+  const makerDepSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: QUOTE, amount: 10000n, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: MAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerDepSig, mutation: { asset: QUOTE, amount: 10000n } });
+
+  const takerPub = `0x000000000000000000000000${TAKER.slice(2).toLowerCase()}` as Hex;
+  const takerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: takerPub, publicKey: takerPub };
+  const takerInitSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: TAKER_ACCOUNT, ...takerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: TAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerInitSig, mutation: takerInit });
+
+  const takerDepSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: BASE, amount: 10000n, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: TAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerDepSig, mutation: { asset: BASE, amount: 10000n } });
+
+  const limitOrder = { quantity: 100n, instrumentId: 0, price: 10n * Q32, bidOrAsk: 0 as const };
+  const limitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "LimitOrder", message: { quantity: limitOrder.quantity, instrumentId: BigInt(limitOrder.instrumentId), price: limitOrder.price, bidOrAsk: limitOrder.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.LimitOrder, account: MAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: limitSig, mutation: limitOrder });
+
+  const badMarket = { quantity: 10n, minReceivedQuantity: 99999n, instrumentId: 0, bidOrAsk: 1 as const };
+  const badMarketSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "MarketOrder", message: { quantity: badMarket.quantity, minReceivedQuantity: badMarket.minReceivedQuantity, instrumentId: BigInt(badMarket.instrumentId), bidOrAsk: badMarket.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+
+  const goodMarket = { quantity: 10n, minReceivedQuantity: 0n, instrumentId: 0, bidOrAsk: 1 as const };
+  const nonce2 = 1n << 64n;
+  const goodMarketSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "MarketOrder", message: { quantity: goodMarket.quantity, minReceivedQuantity: goodMarket.minReceivedQuantity, instrumentId: BigInt(goodMarket.instrumentId), bidOrAsk: goodMarket.bidOrAsk, nonce: nonce2, deadline: FAR_DEADLINE } });
+
+  const [badResult, goodResult] = await Promise.allSettled([
+    handle.execute({ type: MutationType.MarketOrder, account: TAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: badMarketSig, mutation: badMarket }),
+    handle.execute({ type: MutationType.MarketOrder, account: TAKER_ACCOUNT, keyId: 1, nonce: nonce2, deadline: FAR_DEADLINE, rawSignature: goodMarketSig, mutation: goodMarket }),
+  ]);
+
+  expect(badResult.status).toBe("rejected");
+  expect(goodResult.status).toBe("fulfilled");
+  if (goodResult.status === "fulfilled") {
+    expect(goodResult.value.resolution.fills[0]!.quantity).toBe(10n);
+  }
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[QUOTE]).toBe(100n);
+  await handle.stop();
+});
+
 test("close order refunds unfilled and credits filled", async () => {
   const exchangeAddress = await deployExchange();
   const domain = {
