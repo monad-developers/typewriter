@@ -482,6 +482,17 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     transport,
   });
 
+  let txNonce = -1;
+  async function nextNonce(): Promise<number> {
+    if (txNonce === -1) {
+      txNonce = await publicClient.getTransactionCount({
+        address: config.account.address,
+        blockTag: "pending",
+      });
+    }
+    return txNonce++;
+  }
+
   const eip712Domain: EIP712Domain = {
     name: "Exchange",
     version: "1",
@@ -571,6 +582,11 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       catch: (error) => error as CreateAccessListErrorType,
     });
 
+    const nonce = yield* Effect.tryPromise({
+      try: () => nextNonce(),
+      catch: (error) => error as Error,
+    });
+
     const request = yield* Effect.tryPromise({
       try: () =>
         walletClient.prepareTransactionRequest({
@@ -578,6 +594,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           data: bundle.calldata,
           accessList,
           gas: gasUsed + gasUsed / 10n,
+          nonce,
         }),
       catch: (error) => error as PrepareTransactionRequestErrorType,
     });
@@ -675,10 +692,16 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   );
 
   const fiber = Effect.runFork(
-    program.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
+    program.pipe(
+      Logger.withMinimumLogLevel(LogLevel.Debug),
+      Effect.provide(Logger.json),
+    ),
   );
   const blockFiber = Effect.runFork(
-    blockProgram.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
+    blockProgram.pipe(
+      Logger.withMinimumLogLevel(LogLevel.Debug),
+      Effect.provide(Logger.json),
+    ),
   );
 
   Effect.runSync(
@@ -688,6 +711,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         address: config.address,
         flushIntervalMs: config.flushIntervalMs,
       }),
+      Effect.provide(Logger.json),
     ),
   );
 
@@ -704,7 +728,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       await verifySignature(state, eip712Domain, mutation);
       dryRun(state, mutation);
     } catch (err) {
-      Effect.runSync(Effect.logError(err));
+      Effect.runSync(Effect.logError(err).pipe(Effect.provide(Logger.json)));
       throw err;
     }
 
@@ -734,6 +758,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           type: typeName,
           account: account ?? "n/a",
         }),
+        Effect.provide(Logger.json),
       ),
     );
 
@@ -741,10 +766,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   }
 
   async function stop(): Promise<void> {
-    Effect.runSync(Effect.logInfo("runtime stopping"));
+    Effect.runSync(Effect.logInfo("runtime stopping").pipe(Effect.provide(Logger.json)));
     await Effect.runPromise(Fiber.interrupt(blockFiber));
     await Effect.runPromise(Fiber.interrupt(fiber));
-    Effect.runSync(Effect.logInfo("runtime stopped"));
+    Effect.runSync(Effect.logInfo("runtime stopped").pipe(Effect.provide(Logger.json)));
   }
 
   type MutationCb = (mutation: MutationEvent, status: MutationStatus) => void;

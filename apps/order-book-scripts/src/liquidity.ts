@@ -1,11 +1,7 @@
 import type { State } from "order-book-backend/src/exchange";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount, signTypedData } from "viem/accounts";
-
-const API_URL = process.env.API_URL ?? "http://localhost:3000";
-const CHAIN_ID = Number(process.env.CHAIN_ID ?? "31337");
-const EXCHANGE_ADDRESS = (process.env.EXCHANGE_ADDRESS ??
-  "0x5fbdb2315678afecb367f032d93f642f64180aa3") as Address;
+import { API_URL, CHAIN_ID, EIP712_TYPES, EXCHANGE_ADDRESS } from "./constants";
 
 const pk = process.env.PRIVATE_KEY as Hex | undefined;
 if (!pk) {
@@ -29,34 +25,6 @@ const instrumentId = Number(process.env.INSTRUMENT_ID ?? "0");
 const price = BigInt(process.env.PRICE);
 const side = Number(process.env.SIDE) as 0 | 1;
 const quantity = BigInt(process.env.QUANTITY ?? "100");
-
-// Duplicated from order-book-backend/src/constants.ts because that module
-// throws on missing env vars at import time.
-const EIP712_TYPES = {
-  Initialize: [
-    { name: "account", type: "bytes32" },
-    { name: "expiry", type: "uint40" },
-    { name: "rootKeyType", type: "uint8" },
-    { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint8" },
-    { name: "rootPublicKey", type: "bytes" },
-    { name: "publicKey", type: "bytes" },
-  ],
-  Deposit: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  LimitOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "price", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-} as const;
 
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
 
