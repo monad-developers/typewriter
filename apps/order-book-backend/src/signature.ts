@@ -6,6 +6,7 @@ import {
   decodeAbiParameters,
   hashTypedData,
   recoverTypedDataAddress,
+  toHex,
 } from "viem";
 import { EIP712_TYPES } from "./constants";
 import type { Key, KeyType, State, TaggedMutation } from "./exchange";
@@ -130,7 +131,9 @@ export async function verifySignature(
   if (mutation.type === MutationType.AddInstrument) return;
 
   if (mutation.deadline < BigInt(Math.floor(Date.now() / 1000))) {
-    throw new Error("SignatureExpired");
+    throw new Error(
+      `SignatureExpired: deadline=${mutation.deadline}, now=${Math.floor(Date.now() / 1000)}, account=${mutation.account}`,
+    );
   }
 
   let key: Key;
@@ -144,14 +147,22 @@ export async function verifySignature(
   } else {
     const acc = getAccount(state, mutation.account);
     const k = acc.keys[mutation.keyId];
-    if (!k || k.permissions === 0) throw new Error("KeyNotFound");
+    if (!k || k.permissions === 0) {
+      throw new Error(
+        `KeyNotFound: account=${mutation.account}, keyId=${mutation.keyId}`,
+      );
+    }
     if (k.expiry !== 0 && k.expiry < Math.floor(Date.now() / 1000)) {
-      throw new Error("KeyExpired");
+      throw new Error(
+        `KeyExpired: account=${mutation.account}, keyId=${mutation.keyId}, expiry=${k.expiry}, now=${Math.floor(Date.now() / 1000)}`,
+      );
     }
     const nonceKey = BigInt(mutation.nonce) >> 64n;
     const nonceSeq = BigInt(mutation.nonce) & 0xffffffffffffffffn;
     if (nonceSeq !== getNonceSeq(acc, nonceKey)) {
-      throw new Error("InvalidNonce");
+      throw new Error(
+        `InvalidNonce: account=${mutation.account}, expected=${getNonceSeq(acc, nonceKey)}, got=${nonceSeq}, nonceKey=${toHex(nonceKey)}`,
+      );
     }
     key = k;
   }
@@ -180,7 +191,9 @@ export async function verifySignature(
           hash: true,
         }) === false
       ) {
-        throw new Error("InvalidSignature");
+        throw new Error(
+          `InvalidSignature: P256 verification failed, account=${mutation.account}, publicKey=${key.publicKey}, hash=${hash}`,
+        );
       }
       break;
     }
@@ -212,7 +225,9 @@ export async function verifySignature(
           origin: eip712Domain.origin ?? clientOrigin,
         }) === false
       ) {
-        throw new Error("InvalidSignature");
+        throw new Error(
+          `InvalidSignature: WebAuthn verification failed, account=${mutation.account}, rpId=${eip712Domain.rpId ?? clientRpId}, origin=${eip712Domain.origin ?? clientOrigin}, publicKey=${key.publicKey}`,
+        );
       }
       break;
     }
@@ -223,11 +238,15 @@ export async function verifySignature(
       });
       const expectedAddress = `0x${key.publicKey.toLowerCase().slice(26)}`;
       if (recovered.toLowerCase() !== expectedAddress) {
-        throw new Error("InvalidSignature");
+        throw new Error(
+          `InvalidSignature: secp256k1 recovery mismatch, account=${mutation.account}, recovered=${recovered}, expected=${expectedAddress}`,
+        );
       }
       break;
     }
     default:
-      throw new Error("InvalidSignature");
+      throw new Error(
+        `InvalidSignature: unknown keyType=${key.keyType}, account=${mutation.account}`,
+      );
   }
 }
