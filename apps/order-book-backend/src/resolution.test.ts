@@ -8,7 +8,7 @@ import {
   type State,
   type TaggedMutation,
 } from "./exchange";
-import { resolveAndOrderMutations } from "./resolution";
+import { resolveAndOrderMutations, resolveMarketOrder } from "./resolution";
 import { type RuntimeHandle, startRuntime } from "./runtime";
 
 const SCHEDULER_PK =
@@ -219,7 +219,7 @@ beforeEach(async () => {
   handle = startRuntime({ ...TEST_CONFIG, initialState: state });
 });
 
-test("resolveAndOrderMutations sorts by type and resolves market fills without mutating state", async () => {
+test("resolveAndOrderMutations sorts by type and resolves market fills", async () => {
   state.accounts[MAKER_ACCOUNT] = makeAccount(MAKER, {
     [QUOTE]: 10000n,
     [BASE]: 0n,
@@ -276,7 +276,60 @@ test("resolveAndOrderMutations sorts by type and resolves market fills without m
 
   expect(state.accounts[MAKER_ACCOUNT]!.balances[QUOTE]).toBe(10000n);
   expect(state.accounts[TAKER_ACCOUNT]!.balances[BASE]).toBe(10000n);
+  expect(
+    state.instruments[0]!.bids[Number(10n * Q32)]!.remainingQuantity,
+  ).toBe(100n);
   await handle.stop();
+});
+
+test("resolveMarketOrder throws InsufficientLiquidity when book too thin", () => {
+  state.instruments[0]!.asks[Number(10n * Q32)] = {
+    quantity: 5n,
+    remainingQuantity: 5n,
+    volume: 0,
+  };
+
+  expect(() =>
+    resolveMarketOrder(
+      state.instruments[0]!,
+      {
+        quantity: 10n,
+        minReceivedQuantity: 0n,
+        instrumentId: 0,
+        bidOrAsk: 0,
+      },
+      new Map(),
+    ),
+  ).toThrow("InsufficientLiquidity");
+
+  expect(state.instruments[0]!.asks[Number(10n * Q32)]!.remainingQuantity).toBe(
+    5n,
+  );
+});
+
+test("resolveMarketOrder throws SlippageExceeded when minReceivedQuantity not met", () => {
+  state.instruments[0]!.bids[Number(10n * Q32)] = {
+    quantity: 100n,
+    remainingQuantity: 100n,
+    volume: 0,
+  };
+
+  expect(() =>
+    resolveMarketOrder(
+      state.instruments[0]!,
+      {
+        quantity: 10n,
+        minReceivedQuantity: 200n,
+        instrumentId: 0,
+        bidOrAsk: 1,
+      },
+      new Map(),
+    ),
+  ).toThrow("SlippageExceeded");
+
+  expect(
+    state.instruments[0]!.bids[Number(10n * Q32)]!.remainingQuantity,
+  ).toBe(100n);
 });
 
 test("limit order places on book and locks funds", async () => {
