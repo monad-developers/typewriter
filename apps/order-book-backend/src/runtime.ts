@@ -1,4 +1,13 @@
-import { Duration, Effect, Fiber, Logger, LogLevel, Schedule } from "effect";
+import {
+  Chunk,
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
+  Logger,
+  Queue,
+  Schedule,
+} from "effect";
 import type {
   Address,
   Chain,
@@ -74,12 +83,11 @@ export type RuntimeConfig = {
 type QueueEntry = {
   id: number;
   tagged: TaggedMutation;
-  resolve: ((resolved: { id: number } & ResolvedMutation) => void) | null;
+  deferred: Deferred.Deferred<{ id: number } & ResolvedMutation, unknown>;
 };
 
 export type RuntimeHandle = {
   readonly state: State<bigint>;
-  readonly queue: (TaggedMutation & { id: number })[];
   execute<T extends TaggedMutation>(
     mutation: T,
   ): Promise<{ id: number } & Extract<ResolvedMutation, { type: T["type"] }>>;
@@ -433,7 +441,7 @@ function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
 
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const state = config.initialState;
-  const queue: QueueEntry[] = [];
+  const queue = Effect.runSync(Queue.unbounded<QueueEntry>());
   let nextId = config.initialMutationId ?? 0;
   let nextBundleId = config.initialBundleId ?? 0;
 
@@ -493,27 +501,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     return txNonce++;
   }
 
-  const jsonLogger = Logger.replace(
-    Logger.defaultLogger,
-    Logger.make(({ logLevel, message, annotations, date }) => {
-      const msg = Array.isArray(message) ? message.join(" ") : String(message);
-      const entry: Record<string, unknown> = {
-        level: logLevel.label.toLowerCase(),
-        message: msg,
-        timestamp: date.toISOString(),
-      };
-      for (const [k, v] of annotations) {
-        entry[k] = v;
-      }
-      const out = JSON.stringify(entry);
-      if (LogLevel.greaterThanEqual(logLevel, LogLevel.Error)) {
-        console.error(out);
-      } else {
-        console.log(out);
-      }
-    }),
-  );
-
   const eip712Domain: EIP712Domain = {
     name: "Exchange",
     version: "1",
@@ -524,12 +511,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   };
 
   const flush = Effect.gen(function* () {
-    if (queue.length === 0) return;
-
-    const batch = queue.splice(0);
-    yield* Effect.logDebug("flush").pipe(
-      Effect.annotateLogs({ batchSize: batch.length }),
-    );
+    const batch = Chunk.toArray(yield* Queue.takeAll(queue));
+    if (batch.length === 0) return;
     const mutationEvents: MutationEvent[] = [];
 
     const resolved = resolveAndOrderMutations(
@@ -570,7 +553,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
       const entry = batch.find((e) => e.tagged.mutation === r.mutation);
       if (entry) {
-        entry.resolve?.({ id: entry.id, ...r });
+        yield* Deferred.succeed(entry.deferred, { id: entry.id, ...r });
         mutationEvents.push({ id: entry.id, ...r });
       }
     }
@@ -583,11 +566,11 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       mutations: mutationEvents,
     };
 
-    yield* Effect.logInfo("bundle created").pipe(
+    yield* Effect.logInfo("bundle accepted").pipe(
       Effect.annotateLogs({
         bundleId,
-        mutations: mutationEvents.length,
-        calldataBytes: calldata.length / 2 - 1,
+        mutations: mutationEvents.map((m) => m.id),
+        mutationCount: mutationEvents.length,
       }),
     );
 
@@ -641,8 +624,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     yield* Effect.logInfo("bundle proposed").pipe(
       Effect.annotateLogs({
         bundleId,
-        transactionHash: receipt.transactionHash,
+        mutations: mutationEvents.map((m) => m.id),
+        mutationCount: mutationEvents.length,
         blockNumber: receipt.blockNumber.toString(),
+        transactionHash: receipt.transactionHash,
       }),
     );
 
@@ -652,7 +637,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         for (const mutation of mutationEvents) emitMutation(mutation, "voted");
         emitBundle(bundle, "voted");
 
-        yield* Effect.logDebug("bundle status").pipe(
+        yield* Effect.logDebug("bundle status updated").pipe(
           Effect.annotateLogs({ bundleId: bundle.id, status: "voted" }),
         );
 
@@ -662,7 +647,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         }
         emitBundle(bundle, "finalized");
 
-        yield* Effect.logDebug("bundle status").pipe(
+        yield* Effect.logDebug("bundle status updated").pipe(
           Effect.annotateLogs({ bundleId: bundle.id, status: "finalized" }),
         );
 
@@ -672,20 +657,29 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         }
         emitBundle(bundle, "verified");
 
-        yield* Effect.logInfo("bundle verified").pipe(
-          Effect.annotateLogs({
-            bundleId: bundle.id,
-            transactionHash: receipt.transactionHash,
-          }),
+        yield* Effect.logInfo("bundle status updated").pipe(
+          Effect.annotateLogs({ bundleId: bundle.id, status: "verified" }),
         );
       }),
     );
-  });
+  }).pipe(Effect.withLogSpan("flush"));
 
   const program = Effect.repeat(
     flush.pipe(
       Effect.catchAll((error) =>
-        Effect.logError(error instanceof Error ? error.message : String(error)),
+        Effect.gen(function* () {
+          const remaining = Chunk.toArray(yield* Queue.takeAll(queue));
+          for (const entry of remaining) {
+            yield* Deferred.fail(entry.deferred, error);
+          }
+          yield* Effect.logError("flush failed").pipe(
+            Effect.annotateLogs({
+              droppedMutations: remaining.map((e) => e.id),
+              droppedMutationCount: remaining.length,
+            }),
+          );
+          console.error(error);
+        }),
       ),
     ),
     Schedule.fixed(Duration.millis(config.flushIntervalMs)),
@@ -717,91 +711,88 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   );
 
   const fiber = Effect.runFork(
-    program.pipe(
-      Logger.withMinimumLogLevel(LogLevel.Debug),
-      Effect.provide(jsonLogger),
-    ),
-  );
-  const blockFiber = Effect.runFork(
-    blockProgram.pipe(
-      Logger.withMinimumLogLevel(LogLevel.Debug),
-      Effect.provide(jsonLogger),
-    ),
-  );
-
-  Effect.runSync(
-    Effect.logInfo("runtime started").pipe(
-      Effect.annotateLogs({
-        chain: config.chain.id,
-        address: config.address,
-        flushIntervalMs: config.flushIntervalMs,
-      }),
-      Effect.provide(jsonLogger),
-    ),
+    Effect.gen(function* () {
+      yield* Effect.logInfo("runtime started").pipe(
+        Effect.annotateLogs({
+          chain: config.chain.id,
+          address: config.address,
+          flushIntervalMs: config.flushIntervalMs,
+        }),
+      );
+      yield* Effect.all([program, blockProgram], { concurrency: "unbounded" });
+    }).pipe(Effect.provide(Logger.json)),
   );
 
-  async function execute<T extends TaggedMutation>(
+  function execute<T extends TaggedMutation>(
     mutation: T,
   ): Promise<{ id: number } & Extract<ResolvedMutation, { type: T["type"] }>> {
-    const typeName = MutationType[mutation.type];
-    const account =
-      mutation.type !== MutationType.AddInstrument
-        ? mutation.account
-        : undefined;
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const typeName = MutationType[mutation.type];
+        const account =
+          mutation.type !== MutationType.AddInstrument
+            ? mutation.account
+            : undefined;
 
-    try {
-      await verifySignature(state, eip712Domain, mutation);
-      dryRun(state, mutation);
-    } catch (err) {
-      Effect.runSync(
-        Effect.logError(err instanceof Error ? err.message : String(err)).pipe(
-          Effect.provide(jsonLogger),
-        ),
-      );
-      throw err;
-    }
+        yield* Effect.logInfo("received mutation").pipe(
+          Effect.annotateLogs({
+            type: typeName,
+            account: account ?? "n/a",
+          }),
+        );
 
-    if (
-      mutation.type !== MutationType.AddInstrument &&
-      mutation.type !== MutationType.Initialize
-    ) {
-      const nonceKey = BigInt(mutation.nonce) >> 64n;
-      incrementNonce(getAccount(state, mutation.account), nonceKey);
-    }
+        yield* Effect.tryPromise({
+          try: () => verifySignature(state, eip712Domain, mutation),
+          catch: (err) => err,
+        });
+        yield* Effect.try(() => dryRun(state, mutation));
 
-    const id = nextId++;
-    const { promise, resolve } = Promise.withResolvers<
-      { id: number } & Extract<ResolvedMutation, { type: T["type"] }>
-    >();
-    queue.push({
-      id,
-      tagged: mutation,
-      resolve: resolve as (resolved: { id: number } & ResolvedMutation) => void,
-    });
-    emitMutation({ id, ...mutation } as MutationEvent, "queued");
+        if (
+          mutation.type !== MutationType.AddInstrument &&
+          mutation.type !== MutationType.Initialize
+        ) {
+          const nonceKey = BigInt(mutation.nonce) >> 64n;
+          incrementNonce(getAccount(state, mutation.account), nonceKey);
+        }
 
-    Effect.runSync(
-      Effect.logInfo("mutation queued").pipe(
-        Effect.annotateLogs({
-          mutationId: id,
-          type: typeName,
-          account: account ?? "n/a",
+        const id = nextId++;
+        const deferred = yield* Deferred.make<
+          { id: number } & ResolvedMutation,
+          unknown
+        >();
+        yield* Queue.offer(queue, { id, tagged: mutation, deferred });
+        emitMutation({ id, ...mutation } as MutationEvent, "queued");
+
+        yield* Effect.logInfo("queued mutation").pipe(
+          Effect.annotateLogs({
+            mutationId: id,
+            type: typeName,
+            account: account ?? "n/a",
+          }),
+        );
+
+        return (yield* Deferred.await(deferred)) as { id: number } & Extract<
+          ResolvedMutation,
+          { type: T["type"] }
+        >;
+      }).pipe(
+        Effect.tapError((error) => {
+          console.error(error);
+          return Effect.logError("execute failed");
         }),
-        Effect.provide(jsonLogger),
+        Effect.provide(Logger.json),
       ),
     );
-
-    return promise;
   }
 
-  async function stop(): Promise<void> {
-    Effect.runSync(
-      Effect.logInfo("runtime stopping").pipe(Effect.provide(jsonLogger)),
-    );
-    await Effect.runPromise(Fiber.interrupt(blockFiber));
-    await Effect.runPromise(Fiber.interrupt(fiber));
-    Effect.runSync(
-      Effect.logInfo("runtime stopped").pipe(Effect.provide(jsonLogger)),
+  function stop(): Promise<void> {
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Effect.logInfo("runtime stopping");
+        yield* Queue.shutdown(queue);
+        yield* Fiber.interrupt(fiber);
+        yield* Effect.logInfo("runtime stopped");
+      }).pipe(Effect.provide(Logger.json)),
     );
   }
 
@@ -869,9 +860,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   return {
     get state() {
       return state;
-    },
-    get queue() {
-      return queue.map((e) => ({ id: e.id, ...e.tagged }));
     },
     execute,
     on,

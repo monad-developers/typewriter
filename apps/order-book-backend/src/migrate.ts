@@ -72,7 +72,5 @@ export async function migrate(
     });
   });
 
-  console.log(`Schema ${schemaName} ready`);
-
   await db.execute(sql.raw(`SET search_path = ${schemaName}, public`));
 }
