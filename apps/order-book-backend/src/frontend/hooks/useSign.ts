@@ -138,21 +138,16 @@ export async function signDeposit(
   nonce: bigint,
   params: { asset: Address; amount: bigint },
 ) {
-  const message = {
-    asset: params.asset,
-    amount: params.amount,
-    nonce,
-    deadline: MAX_DEADLINE,
-  };
-  console.log("[sign:Deposit] domain:", JSON.stringify(EIP712_DOMAIN, (_k, v) => typeof v === "bigint" ? v.toString() : v));
-  console.log("[sign:Deposit] message:", JSON.stringify(message, (_k, v) => typeof v === "bigint" ? v.toString() : v));
-  console.log("[sign:Deposit] account=%s, keyId=%d, nonce=%s", account.accountId, account.keyId, nonce.toString());
-
   const hash = hashTypedData({
     domain: EIP712_DOMAIN,
     types: { Deposit: EIP712_TYPES.Deposit },
     primaryType: "Deposit",
-    message,
+    message: {
+      asset: params.asset,
+      amount: params.amount,
+      nonce,
+      deadline: MAX_DEADLINE,
+    },
   });
 
   const rawSignature = await signP256(account.sessionKey, hash);
