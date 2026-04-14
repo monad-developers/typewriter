@@ -28,7 +28,7 @@ import {
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
-import { EXCHANGE_ABI } from "./constants";
+import { EXCHANGE_ABI } from "order-book-sdk";
 import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
 import {
   getAccount,

@@ -1,4 +1,4 @@
-import { USD } from "../../constants";
+import { USD } from "order-book-sdk";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
 import { useDepositMutation } from "../hooks/useDepositMutation";

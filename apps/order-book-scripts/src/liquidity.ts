@@ -1,12 +1,6 @@
+import { baseToQuote, priceToQ32, TokenAmount } from "order-book-sdk";
 import { INSTRUMENTS } from "./constants";
-import {
-  baseToQuote,
-  createAccount,
-  deposit,
-  limitOrder,
-  priceToQ32,
-  TokenAmount,
-} from "./sdk";
+import { createAccount, deposit, limitOrder } from "./sdk";
 
 if (!process.env.PRICE) {
   console.error("PRICE env var is required (e.g. 2400 for $2400)");

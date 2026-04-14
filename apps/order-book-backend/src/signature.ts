@@ -8,7 +8,7 @@ import {
   recoverTypedDataAddress,
   toHex,
 } from "viem";
-import { EIP712_TYPES } from "./constants";
+import { EIP712_TYPES } from "order-book-sdk";
 import type { Key, KeyType, State, TaggedMutation } from "./exchange";
 import { getAccount, getNonceSeq, MutationType } from "./exchange";
 

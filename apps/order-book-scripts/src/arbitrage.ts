@@ -1,14 +1,7 @@
 import type { Instrument } from "order-book-backend/src/exchange";
 import { INSTRUMENTS } from "./constants";
-import {
-  createAccount,
-  deposit,
-  fetchState,
-  marketOrder,
-  priceToQ32,
-  q32ToPrice,
-  TokenAmount,
-} from "./sdk";
+import { priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
+import { createAccount, deposit, fetchState, marketOrder } from "./sdk";
 
 if (!process.env.PRICE) {
   console.error("PRICE env var is required (e.g. 2400 for $2400)");

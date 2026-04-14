@@ -1,9 +1,9 @@
-import { INSTRUMENTS } from "../../constants";
+import { INSTRUMENTS } from "order-book-sdk";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
 import { useDepth } from "../hooks/useDepth";
 import { usePrice } from "../hooks/usePrice";
-import { fromLots, q32ToPrice } from "../lib/sdk";
+import { fromLots, q32ToPrice } from "order-book-sdk";
 
 const COLUMNS = [
   "",

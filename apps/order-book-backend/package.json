@@ -20,6 +20,7 @@
     "drizzle-orm": "^0.45.2",
     "effect": "^3.21.0",
     "lucide-react": "^0.545.0",
+    "order-book-sdk": "workspace:*",
     "ox": "^0.14.13",
     "react": "^19",
     "react-dom": "^19",

@@ -4,6 +4,7 @@ import type * as Hex from "ox/Hex";
 import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
 import * as TypedData from "ox/TypedData";
+import { EIP712_TYPES } from "order-book-sdk";
 import { API_URL, CHAIN_ID, EXCHANGE_ADDRESS } from "./constants";
 
 console.log(
@@ -11,60 +12,6 @@ console.log(
 );
 
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
-
-const EIP712_TYPES = {
-  Initialize: [
-    { name: "account", type: "bytes32" },
-    { name: "expiry", type: "uint40" },
-    { name: "rootKeyType", type: "uint8" },
-    { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint8" },
-    { name: "rootPublicKey", type: "bytes" },
-    { name: "publicKey", type: "bytes" },
-  ],
-  Authorize: [
-    { name: "account", type: "bytes32" },
-    { name: "expiry", type: "uint40" },
-    { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint8" },
-    { name: "publicKey", type: "bytes" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Deposit: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  LimitOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "price", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  MarketOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "minReceivedQuantity", type: "uint64" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  CloseOrder: [
-    { name: "orderId", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Withdrawal: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-} as const;
 
 function domain() {
   return {
@@ -103,75 +50,12 @@ async function post(path: string, body: unknown) {
   return data;
 }
 
-export type InstrumentConfig = {
-  id: number;
-  base: Address.Address;
-  quote: Address.Address;
-  baseLotExp: number;
-  quoteLotExp: number;
-};
-
-const DECIMALS = 18;
-const Q32 = 1n << 32n;
-
-export type TokenAmount = {
-  raw: bigint;
-  human: number;
-  asset: Address.Address;
-};
-
-export const TokenAmount = {
-  from(human: number, asset: Address.Address): TokenAmount {
-    const raw = BigInt(Math.round(human * 10 ** DECIMALS));
-    return { raw, human, asset };
-  },
-
-  fromRaw(raw: bigint, asset: Address.Address): TokenAmount {
-    const human = Number(raw) / 10 ** DECIMALS;
-    return { raw, human, asset };
-  },
-};
-
-function toLots(raw: bigint, lotExp: number): bigint {
-  return raw >> BigInt(lotExp);
-}
-
-/** @dev humanPrice = q32Price * (2^-(32 + baseLotExp - quoteLotExp)) */
-export function q32ToPrice(
-  q32Price: bigint,
-  instrument: InstrumentConfig,
-): number {
-  const integer = Number(q32Price >> 32n);
-  const fractional = Number(q32Price & (Q32 - 1n)) / Number(Q32);
-  const priceScaled = integer + fractional;
-  const scale = 2 ** (instrument.quoteLotExp - instrument.baseLotExp);
-  return priceScaled * scale;
-}
-
-/** @dev q32Price = humanPrice * 2^(32 + baseLotExp - quoteLotExp) */
-export function priceToQ32(
-  price: number,
-  instrument: InstrumentConfig,
-): bigint {
-  const scale = 2 ** (instrument.baseLotExp - instrument.quoteLotExp);
-  const priceScaled = price * scale;
-  const integer = BigInt(Math.floor(priceScaled));
-  const fractional = BigInt(
-    Math.round((priceScaled - Number(integer)) * Number(Q32)),
-  );
-  return (integer << 32n) | fractional;
-}
-
-export function baseToQuote(
-  quantity: TokenAmount,
-  q32Price: bigint,
-  instrument: InstrumentConfig,
-): TokenAmount {
-  const baseLots = toLots(quantity.raw, instrument.baseLotExp);
-  const quoteLots = (baseLots * q32Price) >> 32n;
-  const raw = quoteLots << BigInt(instrument.quoteLotExp);
-  return TokenAmount.fromRaw(raw, instrument.quote);
-}
+import {
+  type InstrumentConfig,
+  priceToQ32,
+  type TokenAmount,
+  toLots,
+} from "order-book-sdk";
 
 export type Account = {
   privateKey: Hex.Hex;
