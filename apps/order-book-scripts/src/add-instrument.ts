@@ -1,5 +1,5 @@
-import { INSTRUMENTS } from "./constants";
 import { priceToQ32, q32ToPrice } from "order-book-sdk";
+import { INSTRUMENTS } from "./constants";
 import { addInstrument } from "./sdk";
 
 // 5_033_164_800n;

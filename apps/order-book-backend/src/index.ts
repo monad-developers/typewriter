@@ -303,7 +303,7 @@ serve({
 
         let price: number | null = null;
         if (bestBid !== null && bestAsk !== null) {
-          price = (bestBid + bestAsk) / 2;
+          price = Math.round((bestBid + bestAsk) / 2);
         } else if (bestBid !== null) {
           price = bestBid;
         } else if (bestAsk !== null) {
@@ -344,7 +344,7 @@ serve({
 
         const mid =
           bestBid !== null && bestAsk !== null
-            ? (bestBid + bestAsk) / 2
+            ? Math.round((bestBid + bestAsk) / 2)
             : (bestBid ?? bestAsk);
 
         const BPS = [1, 5, 25] as const;

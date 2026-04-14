@@ -24,11 +24,7 @@ if (side !== "buy" && side !== "sell") {
 }
 const humanQuantity = Number(process.env.QUANTITY);
 const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
+const instrument = INSTRUMENTS[instrumentName]!;
 
 const state = await fetchState();
 const book = state.instruments[instrument.id]!;
