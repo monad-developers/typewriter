@@ -1,6 +1,6 @@
 import { fromLots, priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
-import { INSTRUMENTS } from "./constants";
-import { createAccount, deposit, fetchState, marketOrder } from "./sdk";
+import { INSTRUMENTS } from "../src/constants";
+import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
 
 if (!process.env.PRICE) {
   console.error("PRICE env var is required (e.g. 2400 for $2400)");

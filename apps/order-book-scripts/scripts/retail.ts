@@ -1,6 +1,6 @@
 import { fromLots, q32ToPrice, TokenAmount, toLots } from "order-book-sdk";
-import { INSTRUMENTS } from "./constants";
-import { createAccount, deposit, fetchState, marketOrder } from "./sdk";
+import { INSTRUMENTS } from "../src/constants";
+import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
 
 if (!process.env.INSTRUMENT) {
   console.error(

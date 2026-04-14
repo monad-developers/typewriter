@@ -1,6 +1,6 @@
 import { priceToQ32, q32ToPrice } from "order-book-sdk";
-import { INSTRUMENTS } from "./constants";
-import { addInstrument } from "./sdk";
+import { INSTRUMENTS } from "../src/constants";
+import { addInstrument } from "../src/sdk";
 
 // 5_033_164_800n;
 const GOLD_Q32_PRICE = priceToQ32(2400, INSTRUMENTS["GOLD/USD"]);
