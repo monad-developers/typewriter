@@ -84,34 +84,33 @@ if (!arb) {
 const account = await createAccount();
 console.log(`account ${account.address}`);
 
-const quantity = TokenAmount.fromRaw(
-  arb.lots << BigInt(inst.baseLotExp),
-  inst,
-  "base",
-);
+const baseRaw = arb.lots << BigInt(inst.baseLotExp);
+const quantity = TokenAmount.fromRaw(baseRaw, inst.base);
 
 const side = arb.side === 0 ? "buy" : ("sell" as "buy" | "sell");
 
 if (side === "buy") {
-  const quoteLots = (quantity.lots * realQ32) >> 32n;
+  const quoteLots = (arb.lots * realQ32) >> 32n;
   const rawQuote = (quoteLots + 1n) << BigInt(inst.quoteLotExp);
-  const maxCost = TokenAmount.fromRaw(rawQuote, inst, "quote");
+  const maxCost = TokenAmount.fromRaw(rawQuote, inst.quote);
   console.log(`minting ${maxCost.human} quote to cover buy...`);
-  await deposit(account, maxCost);
+  await deposit(account, { quantity: maxCost });
 } else {
   console.log(`minting ${quantity.human} base to cover sell...`);
-  await deposit(account, quantity);
+  await deposit(account, { quantity });
 }
 
-const minReceived = TokenAmount.fromRaw(
+const minReceivedRaw =
   arb.minReceivedLots <<
-    BigInt(side === "buy" ? inst.baseLotExp : inst.quoteLotExp),
-  inst,
-  side === "buy" ? "base" : "quote",
+  BigInt(side === "buy" ? inst.baseLotExp : inst.quoteLotExp);
+const minReceived = TokenAmount.fromRaw(
+  minReceivedRaw,
+  side === "buy" ? inst.base : inst.quote,
 );
 
 const result = await marketOrder(account, {
-  amount: quantity,
+  instrument: inst,
+  quantity,
   minReceived,
   side,
 });

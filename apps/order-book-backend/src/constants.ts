@@ -22,6 +22,29 @@ if (!process.env.BUN_PUBLIC_EXCHANGE_ADDRESS)
 export const EXCHANGE_ADDRESS = process.env
   .BUN_PUBLIC_EXCHANGE_ADDRESS as Address;
 
+export const USD: Address = "0x1111111111111111111111111111111111111111";
+export const GOLD: Address = "0x2222222222222222222222222222222222222222";
+export const WTIOIL: Address = "0x3333333333333333333333333333333333333333";
+
+export const ASSETS = [USD, GOLD, WTIOIL] as const;
+
+export const INSTRUMENTS = {
+  "GOLD/USD": {
+    id: 0,
+    base: GOLD,
+    quote: USD,
+    baseLotExp: 35,
+    quoteLotExp: 46,
+  },
+  "WTIOIL/USD": {
+    id: 1,
+    base: WTIOIL,
+    quote: USD,
+    baseLotExp: 40,
+    quoteLotExp: 46,
+  },
+} as const;
+
 export const EIP712_TYPES = {
   Initialize: [
     { name: "account", type: "bytes32" },

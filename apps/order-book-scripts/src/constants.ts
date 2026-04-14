@@ -16,8 +16,6 @@ export const INSTRUMENTS = {
     quote: USD,
     baseLotExp: 35,
     quoteLotExp: 46,
-    baseDecimals: 18,
-    quoteDecimals: 18,
   },
   "WTIOIL/USD": {
     id: 1,
@@ -25,7 +23,5 @@ export const INSTRUMENTS = {
     quote: USD,
     baseLotExp: 40,
     quoteLotExp: 46,
-    baseDecimals: 18,
-    quoteDecimals: 18,
   },
 } as const;

@@ -103,79 +103,75 @@ async function post(path: string, body: unknown) {
   return data;
 }
 
-type InstrumentConfig = {
+export type InstrumentConfig = {
   id: number;
   base: Address.Address;
   quote: Address.Address;
   baseLotExp: number;
   quoteLotExp: number;
-  baseDecimals: number;
-  quoteDecimals: number;
 };
+
+const DECIMALS = 18;
+const Q32 = 1n << 32n;
 
 export type TokenAmount = {
   raw: bigint;
   human: number;
   asset: Address.Address;
-  lots: bigint;
-  side: "base" | "quote";
-  instrument: InstrumentConfig;
 };
 
 export const TokenAmount = {
-  from(
-    human: number,
-    instrument: InstrumentConfig,
-    side: "base" | "quote",
-  ): TokenAmount {
-    const decimals = side === "base" ? instrument.baseDecimals : instrument.quoteDecimals;
-    const lotExp = side === "base" ? instrument.baseLotExp : instrument.quoteLotExp;
-    const asset = side === "base" ? instrument.base : instrument.quote;
-    const raw = BigInt(Math.round(human * 10 ** decimals));
-    const lots = raw >> BigInt(lotExp);
-    return { raw, human, asset, lots, side, instrument };
+  from(human: number, asset: Address.Address): TokenAmount {
+    const raw = BigInt(Math.round(human * 10 ** DECIMALS));
+    return { raw, human, asset };
   },
 
-  fromRaw(
-    raw: bigint,
-    instrument: InstrumentConfig,
-    side: "base" | "quote",
-  ): TokenAmount {
-    const decimals = side === "base" ? instrument.baseDecimals : instrument.quoteDecimals;
-    const lotExp = side === "base" ? instrument.baseLotExp : instrument.quoteLotExp;
-    const asset = side === "base" ? instrument.base : instrument.quote;
-    const human = Number(raw) / 10 ** decimals;
-    const lots = raw >> BigInt(lotExp);
-    return { raw, human, asset, lots, side, instrument };
+  fromRaw(raw: bigint, asset: Address.Address): TokenAmount {
+    const human = Number(raw) / 10 ** DECIMALS;
+    return { raw, human, asset };
   },
 };
 
+function toLots(raw: bigint, lotExp: number): bigint {
+  return raw >> BigInt(lotExp);
+}
+
+/** @dev humanPrice = q32Price * (2^-(32 + baseLotExp - quoteLotExp)) */
 export function q32ToPrice(
   q32Price: bigint,
   instrument: InstrumentConfig,
 ): number {
-  return (
-    (Number(q32Price) /
-      2 ** 32 /
-      2 ** (instrument.quoteLotExp - instrument.quoteDecimals)) *
-    2 ** (instrument.baseLotExp - instrument.baseDecimals)
-  );
+  const integer = Number(q32Price >> 32n);
+  const fractional = Number(q32Price & (Q32 - 1n)) / Number(Q32);
+  const priceScaled = integer + fractional;
+  const scale = 2 ** (instrument.quoteLotExp - instrument.baseLotExp);
+  return priceScaled * scale;
 }
 
+/** @dev q32Price = humanPrice * 2^(32 + baseLotExp - quoteLotExp) */
 export function priceToQ32(
   price: number,
   instrument: InstrumentConfig,
 ): bigint {
-  return BigInt(
-    Math.round(
-      (price *
-        2 ** 32 *
-        2 ** (instrument.quoteLotExp - instrument.quoteDecimals)) /
-        2 ** (instrument.baseLotExp - instrument.baseDecimals),
-    ),
+  const scale = 2 ** (instrument.baseLotExp - instrument.quoteLotExp);
+  const priceScaled = price * scale;
+  const integer = BigInt(Math.floor(priceScaled));
+  const fractional = BigInt(
+    Math.round((priceScaled - Number(integer)) * Number(Q32)),
   );
+  return (integer << 32n) | fractional;
 }
 
+export function baseToQuote(
+  quantity: TokenAmount,
+  q32Price: bigint,
+  instrument: InstrumentConfig,
+): TokenAmount {
+  const baseLots = toLots(quantity.raw, instrument.baseLotExp);
+  const quoteLots = (baseLots * q32Price) >> 32n;
+  const raw = quoteLots << BigInt(instrument.quoteLotExp);
+  return TokenAmount.fromRaw(raw, instrument.quote);
+}
 
 export type Account = {
   privateKey: Hex.Hex;
@@ -264,19 +260,20 @@ export async function addInstrument(instrument: {
 
 export async function deposit(
   account: Account,
-  amount: TokenAmount,
+  params: { quantity: TokenAmount },
   opts?: MutationOpts,
 ) {
+  const { quantity } = params;
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "Deposit", {
-    asset: amount.asset,
-    amount: amount.raw,
+    asset: quantity.asset,
+    amount: quantity.raw,
     nonce,
     deadline: FAR_DEADLINE,
   });
   return post("/api/mint", {
-    asset: amount.asset,
-    amount: amount.raw,
+    asset: quantity.asset,
+    amount: quantity.raw,
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
@@ -288,18 +285,20 @@ export async function deposit(
 export async function limitOrder(
   account: Account,
   params: {
-    amount: TokenAmount;
+    instrument: InstrumentConfig;
     price: number;
     side: "buy" | "sell";
+    quantity: TokenAmount;
   },
   opts?: MutationOpts,
 ) {
-  const instrument = params.amount.instrument;
+  const { instrument } = params;
   const bidOrAsk = params.side === "buy" ? 0 : 1;
   const q32Price = priceToQ32(params.price, instrument);
+  const quantity = toLots(params.quantity.raw, instrument.baseLotExp);
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "LimitOrder", {
-    quantity: params.amount.lots,
+    quantity,
     instrumentId: BigInt(instrument.id),
     price: q32Price,
     bidOrAsk,
@@ -307,7 +306,7 @@ export async function limitOrder(
     deadline: FAR_DEADLINE,
   });
   return post("/api/limit-order", {
-    quantity: params.amount.lots,
+    quantity,
     instrumentId: instrument.id,
     price: q32Price,
     bidOrAsk,
@@ -322,26 +321,32 @@ export async function limitOrder(
 export async function marketOrder(
   account: Account,
   params: {
-    amount: TokenAmount;
-    minReceived: TokenAmount;
+    instrument: InstrumentConfig;
     side: "buy" | "sell";
+    quantity: TokenAmount;
+    minReceived: TokenAmount;
   },
   opts?: MutationOpts,
 ) {
-  const instrument = params.amount.instrument;
+  const { instrument } = params;
   const bidOrAsk = params.side === "buy" ? 0 : 1;
+  const quantity = toLots(params.quantity.raw, instrument.baseLotExp);
+  const minReceivedQuantity = toLots(
+    params.minReceived.raw,
+    params.side === "buy" ? instrument.baseLotExp : instrument.quoteLotExp,
+  );
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "MarketOrder", {
-    quantity: params.amount.lots,
-    minReceivedQuantity: params.minReceived.lots,
+    quantity,
+    minReceivedQuantity,
     instrumentId: BigInt(instrument.id),
     bidOrAsk,
     nonce,
     deadline: FAR_DEADLINE,
   });
   return post("/api/market-order", {
-    quantity: params.amount.lots,
-    minReceivedQuantity: params.minReceived.lots,
+    quantity,
+    minReceivedQuantity,
     instrumentId: instrument.id,
     bidOrAsk,
     account: account.accountHex,
@@ -375,19 +380,20 @@ export async function closeOrder(
 
 export async function withdraw(
   account: Account,
-  amount: TokenAmount,
+  params: { quantity: TokenAmount },
   opts?: MutationOpts,
 ) {
+  const { quantity } = params;
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "Withdrawal", {
-    asset: amount.asset,
-    amount: amount.raw,
+    asset: quantity.asset,
+    amount: quantity.raw,
     nonce,
     deadline: FAR_DEADLINE,
   });
   return post("/api/withdrawal", {
-    asset: amount.asset,
-    amount: amount.raw,
+    asset: quantity.asset,
+    amount: quantity.raw,
     account: account.accountHex,
     keyId: account.keyId,
     nonce,

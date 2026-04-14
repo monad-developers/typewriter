@@ -22,7 +22,6 @@ import {
   type Revoke,
   type Signed,
 } from "./exchange";
-import { CURRENCIES } from "./frontend/constants";
 import index from "./frontend/index.html";
 import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
@@ -60,36 +59,9 @@ const handle = startRuntime({
 
 dbPlugin(handle, db);
 
-const server = serve({
+serve({
   idleTimeout: 0,
   routes: {
-    "/api/balances": {
-      GET: (req) => {
-        const url = new URL(req.url);
-        const account = url.searchParams.get("account");
-        if (!account)
-          return Response.json(
-            { error: "account query parameter required" },
-            { status: 400 },
-          );
-
-        const acc = handle.state.accounts[account as `0x${string}`];
-        if (!acc) {
-          const balances: Record<string, string> = {};
-          for (const currency of CURRENCIES) {
-            balances[currency.address] = "0";
-          }
-          return Response.json({ account, balances });
-        }
-
-        const balances: Record<string, string> = {};
-        for (const [asset, balance] of Object.entries(acc.balances)) {
-          balances[asset] = balance.toString();
-        }
-        return Response.json({ account, balances });
-      },
-    },
-
     "/api/initialize": {
       POST: async (req) => {
         const body = (await req.json()) as Initialize & Signed;
@@ -281,8 +253,138 @@ const server = serve({
         }),
     },
 
+    "/api/balances": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const account = url.searchParams.get("account");
+        if (!account)
+          return Response.json(
+            { error: "account query parameter required" },
+            { status: 400 },
+          );
+
+        const acc = handle.state.accounts[account as `0x${string}`];
+        if (!acc)
+          return Response.json({ error: "account not found" }, { status: 404 });
+
+        const balances: Record<string, string> = {};
+        for (const [asset, balance] of Object.entries(acc.balances)) {
+          balances[asset] = balance.toString();
+        }
+        return Response.json({ account, balances });
+      },
+    },
+
+    "/api/price": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const instrumentId = url.searchParams.get("instrumentId");
+        if (instrumentId === null)
+          return Response.json(
+            { error: "instrumentId query parameter required" },
+            { status: 400 },
+          );
+
+        const instrument = handle.state.instruments[Number(instrumentId)];
+        if (!instrument)
+          return Response.json(
+            { error: "instrument not found" },
+            { status: 404 },
+          );
+
+        const bidPrices = Object.entries(instrument.bids)
+          .filter(([, t]) => BigInt(t.remainingQuantity) > 0n)
+          .map(([p]) => Number(p));
+        const askPrices = Object.entries(instrument.asks)
+          .filter(([, t]) => BigInt(t.remainingQuantity) > 0n)
+          .map(([p]) => Number(p));
+        const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
+        const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
+
+        let price: number | null = null;
+        if (bestBid !== null && bestAsk !== null) {
+          price = (bestBid + bestAsk) / 2;
+        } else if (bestBid !== null) {
+          price = bestBid;
+        } else if (bestAsk !== null) {
+          price = bestAsk;
+        }
+
+        return Response.json({ instrumentId: Number(instrumentId), price });
+      },
+    },
+
+    "/api/depth": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const instrumentId = url.searchParams.get("instrumentId");
+        if (instrumentId === null)
+          return Response.json(
+            { error: "instrumentId query parameter required" },
+            { status: 400 },
+          );
+
+        const instrument = handle.state.instruments[Number(instrumentId)];
+        if (!instrument)
+          return Response.json(
+            { error: "instrument not found" },
+            { status: 404 },
+          );
+
+        const bidEntries = Object.entries(instrument.bids).filter(
+          ([, t]) => BigInt(t.remainingQuantity) > 0n,
+        );
+        const askEntries = Object.entries(instrument.asks).filter(
+          ([, t]) => BigInt(t.remainingQuantity) > 0n,
+        );
+        const bidPrices = bidEntries.map(([p]) => Number(p));
+        const askPrices = askEntries.map(([p]) => Number(p));
+        const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
+        const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
+
+        const mid =
+          bestBid !== null && bestAsk !== null
+            ? (bestBid + bestAsk) / 2
+            : (bestBid ?? bestAsk);
+
+        const BPS = [1, 5, 25] as const;
+        const bids: Record<number, string> = {};
+        const asks: Record<number, string> = {};
+
+        if (mid !== null) {
+          for (const bp of BPS) {
+            let bidTotal = 0n;
+            const bidThreshold = mid * (1 - bp / 10000);
+            for (const [p, t] of bidEntries) {
+              if (Number(p) >= bidThreshold) {
+                bidTotal += BigInt(t.remainingQuantity);
+              }
+            }
+            bids[bp] = bidTotal.toString();
+
+            let askTotal = 0n;
+            const askThreshold = mid * (1 + bp / 10000);
+            for (const [p, t] of askEntries) {
+              if (Number(p) <= askThreshold) {
+                askTotal += BigInt(t.remainingQuantity);
+              }
+            }
+            asks[bp] = askTotal.toString();
+          }
+        }
+
+        return Response.json({
+          instrumentId: Number(instrumentId),
+          bids,
+          asks,
+        });
+      },
+    },
+
     "/api/state": {
-      GET: () => Response.json(encodeState(handle.state)),
+      GET: () => {
+        return Response.json(encodeState(handle.state));
+      },
     },
 
     "/*": index,

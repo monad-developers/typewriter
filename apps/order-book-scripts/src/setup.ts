@@ -1,8 +1,17 @@
 import { INSTRUMENTS } from "./constants";
-import { addInstrument, q32ToPrice } from "./sdk";
+import { addInstrument, priceToQ32, q32ToPrice } from "./sdk";
 
-const GOLD_Q32_PRICE = 21_110_623_253_299_200n;
-const WTIOIL_Q32_PRICE = 16_492_674_416_640n;
+// 5_033_164_800n;
+const GOLD_Q32_PRICE = priceToQ32(2400, INSTRUMENTS["GOLD/USD"]);
+// 5_368_709_120n;
+const WTIOIL_Q32_PRICE = priceToQ32(80, INSTRUMENTS["WTIOIL/USD"]);
+
+console.log(
+  `GOLD/USD price: $${q32ToPrice(GOLD_Q32_PRICE, INSTRUMENTS["GOLD/USD"])}`,
+);
+console.log(
+  `WTIOIL/USD price: $${q32ToPrice(WTIOIL_Q32_PRICE, INSTRUMENTS["WTIOIL/USD"])}`,
+);
 
 const gold = INSTRUMENTS["GOLD/USD"];
 await addInstrument({
@@ -24,6 +33,4 @@ await addInstrument({
 });
 console.log("added WTIOIL/USD");
 
-console.log("setup complete");
-console.log(`GOLD/USD price: $${q32ToPrice(GOLD_Q32_PRICE, gold)}`);
-console.log(`WTIOIL/USD price: $${q32ToPrice(WTIOIL_Q32_PRICE, oil)}`);
+console.log("done");

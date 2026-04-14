@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import { BlockTracker } from "./components/BlockTracker";
+import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
@@ -20,24 +21,19 @@ function Auth() {
             type="button"
             disabled={isPending}
             onClick={() => signUp.mutate()}
-            className="px-6 py-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed w-56"
+            className="px-6 py-2 border rounded hover:bg-gray-50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
             {signUp.isPending
-              ? "Creating account..."
-              : "Create account with passkey"}
+              ? "Creating..."
+              : "Create passkey"}
           </button>
-          <div className="flex items-center gap-3 text-sm text-gray-400">
-            <span className="h-px w-12 bg-gray-200" />
-            or
-            <span className="h-px w-12 bg-gray-200" />
-          </div>
           <button
             type="button"
             disabled={isPending}
             onClick={() => demoSignUp.mutate()}
-            className="px-6 py-2 border rounded hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed w-56"
+            className="text-sm text-gray-400 hover:text-gray-600 underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {demoSignUp.isPending ? "Creating demo account..." : "Demo sign up"}
+            {demoSignUp.isPending ? "Creating..." : "or try the demo"}
           </button>
         </div>
       </main>
@@ -47,19 +43,15 @@ function Auth() {
 
 function AppInner() {
   const { account, loading } = useAccountContext();
-  const [denominationId, setDenominationId] = useState(1);
 
   if (loading) return null;
   if (!account) return <Auth />;
 
   return (
     <div className="min-h-screen w-full flex flex-col pb-14">
-      <Header
-        denominationId={denominationId}
-        onDenominationChange={setDenominationId}
-      />
+      <Header />
       <main className="flex-1 p-4">
-        {/* <Exchange denominationId={denominationId} /> */}
+        <Exchange />
       </main>
       <BlockTracker />
     </div>
