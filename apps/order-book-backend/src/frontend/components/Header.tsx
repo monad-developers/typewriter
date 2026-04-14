@@ -1,4 +1,4 @@
-import { USD } from "order-book-sdk";
+import { TokenAmount, USD } from "order-book-sdk";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
 import { useDepositMutation } from "../hooks/useDepositMutation";
@@ -8,20 +8,19 @@ export function Header() {
   const { data } = useBalances(account?.accountId);
   const depositMutation = useDepositMutation();
 
-  const balance = data?.balances[USD] ?? "0";
+  const rawBalance = data?.balances[USD] ?? "0";
+  const balance = TokenAmount.fromRaw(BigInt(rawBalance), USD).human;
 
   async function handleDeposit() {
     await depositMutation.mutateAsync({
       asset: USD,
-      amount: 50000n,
+      amount: TokenAmount.from(1000, USD).raw,
     });
   }
 
   return (
     <header className="w-full border-b px-4 py-3 flex items-center gap-6">
-      <code className="text-sm">
-        balance: ${balance}
-      </code>
+      <code className="text-sm">balance: ${balance}</code>
       {depositMutation.error ? (
         <code className="text-sm text-red-600">
           {depositMutation.error instanceof Error

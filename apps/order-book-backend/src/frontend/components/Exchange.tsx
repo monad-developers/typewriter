@@ -1,9 +1,8 @@
-import { INSTRUMENTS } from "order-book-sdk";
+import { fromLots, INSTRUMENTS, q32ToPrice, TokenAmount } from "order-book-sdk";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
 import { useDepth } from "../hooks/useDepth";
 import { usePrice } from "../hooks/usePrice";
-import { fromLots, q32ToPrice } from "order-book-sdk";
 
 const COLUMNS = [
   "",
@@ -48,7 +47,12 @@ export function Exchange() {
             key={name}
             name={name}
             instrument={inst}
-            balance={balancesData?.balances[inst.base] ?? "0"}
+            balance={
+              TokenAmount.fromRaw(
+                BigInt(balancesData?.balances[inst.base] ?? "0"),
+                inst.base,
+              ).human
+            }
           />
         ))}
       </tbody>
@@ -63,7 +67,7 @@ function Row({
 }: {
   name: string;
   instrument: (typeof INSTRUMENTS)[keyof typeof INSTRUMENTS];
-  balance: string;
+  balance: number;
 }) {
   const { data: priceData } = usePrice(instrument.id);
   const { data: depthData } = useDepth(instrument.id);
@@ -75,11 +79,8 @@ function Row({
   const fmtDepth = (side: "bids" | "asks", bp: string) => {
     const lots = depthData?.[side][bp];
     if (lots == null) return "\u2014";
-
-    return (
-      Number(fromLots(BigInt(lots), instrument.baseLotExp)) /
-      10 ** 18
-    ).toFixed(2);
+    const raw = fromLots(BigInt(lots), instrument.baseLotExp);
+    return TokenAmount.fromRaw(raw, instrument.base).human.toFixed(2);
   };
 
   return (
