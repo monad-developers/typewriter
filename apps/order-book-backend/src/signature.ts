@@ -1,3 +1,4 @@
+import { EIP712_TYPES } from "order-book-sdk";
 import * as P256 from "ox/P256";
 import * as PublicKey from "ox/PublicKey";
 import * as WebAuthnP256 from "ox/WebAuthnP256";
@@ -8,7 +9,6 @@ import {
   recoverTypedDataAddress,
   toHex,
 } from "viem";
-import { EIP712_TYPES } from "order-book-sdk";
 import type { Key, KeyType, State, TaggedMutation } from "./exchange";
 import { getAccount, getNonceSeq, MutationType } from "./exchange";
 
@@ -175,6 +175,21 @@ export async function verifySignature(
     message,
   } as Parameters<typeof hashTypedData>[0];
 
+  console.log(
+    "[verify] keyType=%d, primaryType=%s, account=%s, keyId=%d",
+    key.keyType,
+    primaryType,
+    mutation.account,
+    mutation.keyId,
+  );
+  console.log("[verify] domain:", JSON.stringify(eip712Domain));
+  console.log(
+    "[verify] message:",
+    JSON.stringify(message, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    ),
+  );
+
   switch (key.keyType) {
     case 0: {
       const hash = hashTypedData(typedData);
@@ -183,6 +198,13 @@ export async function verifySignature(
         mutation.rawSignature,
       );
       const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
+      console.log(
+        "[verify:P256] hash=%s, publicKey=%s, r=%s, s=%s",
+        hash,
+        key.publicKey,
+        r.toString(16),
+        s.toString(16),
+      );
       if (
         P256.verify({
           payload: hash,

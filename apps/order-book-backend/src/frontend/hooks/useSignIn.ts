@@ -58,7 +58,7 @@ export function useSignIn() {
 
       if (!res.ok) {
         const body = await res.json();
-        throw new Error(body.error?.split(":")[0] ?? "Authorize failed");
+        throw new Error(body.error ?? "Authorize failed");
       }
 
       const nonceKey = BigInt(keccak256(sessionPublicKey)) >> 64n;

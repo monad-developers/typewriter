@@ -31,7 +31,7 @@ export function useDepositMutation() {
         const err = (await res.json().catch(() => null)) as {
           error?: string;
         } | null;
-        throw new Error(err?.error?.split(":")[0] ?? "Deposit failed");
+        throw new Error(err?.error ?? "Deposit failed");
       }
 
       return res.json() as Promise<{ id: number }>;

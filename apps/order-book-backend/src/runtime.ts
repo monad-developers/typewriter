@@ -8,6 +8,7 @@ import {
   Queue,
   Schedule,
 } from "effect";
+import { EXCHANGE_ABI } from "order-book-sdk";
 import type {
   Address,
   Chain,
@@ -28,7 +29,6 @@ import {
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
-import { EXCHANGE_ABI } from "order-book-sdk";
 import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
 import {
   getAccount,
