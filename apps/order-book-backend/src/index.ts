@@ -59,9 +59,35 @@ const handle = startRuntime({
 
 dbPlugin(handle, db);
 
-serve({
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+} as const;
+
+class Response extends globalThis.Response {
+  constructor(body?: BodyInit | null, init?: ResponseInit) {
+    super(body, {
+      ...init,
+      headers: { ...CORS_HEADERS, ...init?.headers },
+    });
+  }
+
+  static override json(data: unknown, init?: ResponseInit) {
+    return super.json(data, {
+      ...init,
+      headers: { ...CORS_HEADERS, ...init?.headers },
+    });
+  }
+}
+
+const server = serve({
   idleTimeout: 0,
   routes: {
+    "/api/*": {
+      OPTIONS: () => new Response(null, { status: 204 }),
+    },
+
     "/api/initialize": {
       POST: async (req) => {
         const body = (await req.json()) as Initialize & Signed;

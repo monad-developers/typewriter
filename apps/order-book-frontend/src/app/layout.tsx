@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Inter } from "next/font/google";
 import { Header } from "~/components/header";
+import { AuthGate } from "~/components/auth-gate";
 import { Providers } from "~/app/providers";
 import "./globals.css";
 import { cn } from "~/lib/utils";
@@ -35,7 +36,9 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         <Providers>
           <Header />
-          <main className="flex-1 flex flex-col">{children}</main>
+          <main className="flex-1 flex flex-col">
+            <AuthGate>{children}</AuthGate>
+          </main>
         </Providers>
       </body>
     </html>
