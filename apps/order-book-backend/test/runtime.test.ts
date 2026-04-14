@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Address, Hex } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
-import { EIP712_TYPES } from "../src/constants";
+import { EIP712_TYPES } from "order-book-sdk";
 import { createState, MutationType } from "../src/exchange";
 import { startRuntime } from "../src/runtime";
 import { deployExchange, RPC_URL, SCHEDULER_ACCOUNT } from "./setup";
