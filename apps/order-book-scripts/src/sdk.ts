@@ -1,10 +1,10 @@
 import type { State } from "order-book-backend/src/exchange";
+import { EIP712_TYPES } from "order-book-sdk";
 import * as Address from "ox/Address";
 import type * as Hex from "ox/Hex";
 import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
 import * as TypedData from "ox/TypedData";
-import { EIP712_TYPES } from "order-book-sdk";
 import { API_URL, CHAIN_ID, EXCHANGE_ADDRESS } from "./constants";
 
 console.log(
