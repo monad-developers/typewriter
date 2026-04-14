@@ -42,7 +42,6 @@ if (!instrument) {
   process.exit(1);
 }
 const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
-const anchorPrice = process.env.PRICE ? Number(process.env.PRICE) : null;
 
 const account = await createAccount();
 console.log(`account ${account.address}`);
@@ -112,8 +111,6 @@ async function tick() {
 }
 
 function getMidPrice(book: Instrument): number | null {
-  if (anchorPrice !== null) return anchorPrice;
-
   const bidPrices = Object.keys(book.bids)
     .map(Number)
     .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n);
