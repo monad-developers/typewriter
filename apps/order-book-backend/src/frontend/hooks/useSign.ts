@@ -9,8 +9,10 @@ import {
 import type { Account } from "../contexts/AccountContext";
 import { EIP712_DOMAIN, EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
 
+const P256_N =
+  0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
 async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
-  console.log("signP256 hash:", hash);
   const sig = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     sessionKey.privateKey,
@@ -18,7 +20,8 @@ async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
   );
   const bytes = new Uint8Array(sig);
   const r = BigInt(bytesToHex(bytes.slice(0, 32)));
-  const s = BigInt(bytesToHex(bytes.slice(32)));
+  let s = BigInt(bytesToHex(bytes.slice(32)));
+  if (s > P256_N / 2n) s = P256_N - s;
   return encodeAbiParameters(
     [{ type: "uint256" }, { type: "uint256" }],
     [r, s],
@@ -135,16 +138,21 @@ export async function signDeposit(
   nonce: bigint,
   params: { asset: Address; amount: bigint },
 ) {
+  const message = {
+    asset: params.asset,
+    amount: params.amount,
+    nonce,
+    deadline: MAX_DEADLINE,
+  };
+  console.log("[sign:Deposit] domain:", JSON.stringify(EIP712_DOMAIN, (_k, v) => typeof v === "bigint" ? v.toString() : v));
+  console.log("[sign:Deposit] message:", JSON.stringify(message, (_k, v) => typeof v === "bigint" ? v.toString() : v));
+  console.log("[sign:Deposit] account=%s, keyId=%d, nonce=%s", account.accountId, account.keyId, nonce.toString());
+
   const hash = hashTypedData({
     domain: EIP712_DOMAIN,
     types: { Deposit: EIP712_TYPES.Deposit },
     primaryType: "Deposit",
-    message: {
-      asset: params.asset,
-      amount: params.amount,
-      nonce,
-      deadline: MAX_DEADLINE,
-    },
+    message,
   });
 
   const rawSignature = await signP256(account.sessionKey, hash);
