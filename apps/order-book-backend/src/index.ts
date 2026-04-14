@@ -21,7 +21,21 @@ import {
   MutationType,
   type Revoke,
   type Signed,
+  type Instrument,
+  type Tick,
 } from "./exchange";
+import { desc, eq } from "drizzle-orm";
+
+const Q32 = Number(1n << 32n);
+
+const BUCKET_SECONDS: Record<string, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
+};
 import index from "./frontend/index.html";
 import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
@@ -277,6 +291,239 @@ const server = serve({
             "Cache-Control": "no-cache",
           },
         }),
+    },
+
+    "/api/instruments": {
+      GET: () => {
+        const instruments = Object.entries(handle.state.instruments).map(
+          ([id, inst]) => ({
+            id: Number(id),
+            base: inst.base,
+            baseLotExp: inst.baseLotExp,
+            quote: inst.quote,
+            quoteLotExp: inst.quoteLotExp,
+          }),
+        );
+        return Response.json({ instruments });
+      },
+    },
+
+    "/api/orderbook": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const instrumentId = Number(url.searchParams.get("instrumentId") ?? 0);
+        const inst = handle.state.instruments[instrumentId] as
+          | Instrument<bigint>
+          | undefined;
+        if (!inst)
+          return Response.json(
+            { error: "Instrument not found" },
+            { status: 404 },
+          );
+
+        function formatLevels(ticks: Record<number, Tick<bigint>>) {
+          const levels: { price: number; size: number; total: number }[] = [];
+          for (const [priceKey, tick] of Object.entries(ticks)) {
+            if (tick.remainingQuantity <= 0n) continue;
+            levels.push({
+              price: Number(priceKey) / Q32,
+              size: Number(tick.remainingQuantity),
+              total: 0,
+            });
+          }
+          return levels;
+        }
+
+        const bids = formatLevels(inst.bids);
+        const asks = formatLevels(inst.asks);
+
+        bids.sort((a, b) => b.price - a.price);
+        asks.sort((a, b) => a.price - b.price);
+
+        let bidTotal = 0;
+        for (const bid of bids) {
+          bidTotal += bid.size;
+          bid.total = bidTotal;
+        }
+        let askTotal = 0;
+        for (const ask of asks) {
+          askTotal += ask.size;
+          ask.total = askTotal;
+        }
+
+        const bestBid = bids[0]?.price ?? 0;
+        const bestAsk = asks[0]?.price ?? 0;
+        const lastPrice =
+          bestBid && bestAsk ? (bestBid + bestAsk) / 2 : bestBid || bestAsk;
+        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+
+        return Response.json({
+          instrument: String(instrumentId),
+          bids,
+          asks,
+          lastPrice,
+          spread,
+        });
+      },
+    },
+
+    "/api/candles": {
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const instrumentId = Number(
+          url.searchParams.get("instrumentId") ?? 0,
+        );
+        const bucket = url.searchParams.get("bucket") ?? "5m";
+        const before = url.searchParams.get("before")
+          ? Number(url.searchParams.get("before"))
+          : undefined;
+        const count = Math.min(
+          Number(url.searchParams.get("count") ?? 200),
+          1000,
+        );
+
+        const bucketSec = BUCKET_SECONDS[bucket];
+        if (!bucketSec)
+          return Response.json({ error: "Invalid bucket" }, { status: 400 });
+
+        const rows = await db
+          .select({
+            fillId: schema.fills.id,
+            price: schema.fills.price,
+            quantity: schema.fills.quantity,
+            timestamp: schema.blocks.timestamp,
+          })
+          .from(schema.fills)
+          .innerJoin(
+            schema.marketOrders,
+            eq(schema.fills.marketOrderId, schema.marketOrders.id),
+          )
+          .innerJoin(
+            schema.bundles,
+            eq(schema.marketOrders.bundleId, schema.bundles.id),
+          )
+          .innerJoin(
+            schema.blocks,
+            eq(schema.bundles.blockNumber, schema.blocks.number),
+          )
+          .where(eq(schema.marketOrders.instrumentId, BigInt(instrumentId)))
+          .orderBy(schema.fills.id);
+
+        const candleMap = new Map<
+          number,
+          { open: number; high: number; low: number; close: number; volume: number }
+        >();
+
+        for (const row of rows) {
+          const ts = Number(row.timestamp);
+          const bucketTime = Math.floor(ts / bucketSec) * bucketSec;
+          const price = Number(row.price!) / Q32;
+          const size = Number(row.quantity!);
+
+          const existing = candleMap.get(bucketTime);
+          if (existing) {
+            existing.high = Math.max(existing.high, price);
+            existing.low = Math.min(existing.low, price);
+            existing.close = price;
+            existing.volume += size;
+          } else {
+            candleMap.set(bucketTime, {
+              open: price,
+              high: price,
+              low: price,
+              close: price,
+              volume: size,
+            });
+          }
+        }
+
+        let candles = Array.from(candleMap.entries())
+          .map(([time, c]) => ({ time, ...c }))
+          .sort((a, b) => a.time - b.time);
+
+        if (before !== undefined) {
+          candles = candles.filter((c) => c.time < before);
+        }
+        const hasMore = candles.length > count;
+        candles = candles.slice(-count);
+
+        return Response.json({ candles, hasMore });
+      },
+    },
+
+    "/api/trades": {
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const instrumentId = Number(
+          url.searchParams.get("instrumentId") ?? 0,
+        );
+        const limit = Math.min(
+          Number(url.searchParams.get("limit") ?? 50),
+          200,
+        );
+
+        const rows = await db
+          .select({
+            id: schema.fills.id,
+            quantity: schema.fills.quantity,
+            price: schema.fills.price,
+            bidOrAsk: schema.marketOrders.bidOrAsk,
+            timestamp: schema.blocks.timestamp,
+          })
+          .from(schema.fills)
+          .innerJoin(
+            schema.marketOrders,
+            eq(schema.fills.marketOrderId, schema.marketOrders.id),
+          )
+          .innerJoin(
+            schema.bundles,
+            eq(schema.marketOrders.bundleId, schema.bundles.id),
+          )
+          .innerJoin(
+            schema.blocks,
+            eq(schema.bundles.blockNumber, schema.blocks.number),
+          )
+          .where(eq(schema.marketOrders.instrumentId, BigInt(instrumentId)))
+          .orderBy(desc(schema.fills.id))
+          .limit(limit);
+
+        const trades = rows.map((r) => ({
+          id: String(r.id),
+          price: Number(r.price!) / Q32,
+          size: Number(r.quantity!),
+          side: r.bidOrAsk === 0 ? ("buy" as const) : ("sell" as const),
+          timestamp: Number(r.timestamp),
+        }));
+
+        return Response.json({ trades });
+      },
+    },
+
+    "/api/orders": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const account = url.searchParams.get("account");
+        if (!account)
+          return Response.json(
+            { error: "account query parameter required" },
+            { status: 400 },
+          );
+
+        const acc = handle.state.accounts[account as `0x${string}`];
+        if (!acc) return Response.json({ orders: [] });
+
+        const orders = acc.orders
+          .map((o, i) => ({
+            orderIndex: i,
+            instrumentId: o.instrumentId,
+            quantity: o.quantity.toString(),
+            price: o.price.toString(),
+            side: o.side,
+          }))
+          .filter((o) => o.quantity !== "0");
+
+        return Response.json({ orders });
+      },
     },
 
     "/api/balances": {

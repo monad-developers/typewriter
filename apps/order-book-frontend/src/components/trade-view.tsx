@@ -7,7 +7,7 @@ import { OrderBook } from "./order-book";
 import { RecentTrades } from "./recent-trades";
 import { cn } from "~/lib/utils";
 import { useMarketStream } from "~/lib/stream";
-import { type BucketSize, DEFAULT_BUCKET } from "~/lib/types";
+import { DEFAULT_BUCKET, type BucketSize } from "~/lib/types";
 
 const RIGHT_TABS = [
   { id: "book", label: "Order Book" },
@@ -22,9 +22,9 @@ export function TradeView({
   initialInstrument: string;
 }) {
   const [instrument, setInstrument] = useState(initialInstrument);
-  const [rightTab, setRightTab] = useState<RightTabId>("book");
   const [bucket, setBucket] = useState<BucketSize>(DEFAULT_BUCKET);
-  useMarketStream(instrument, bucket);
+  const [rightTab, setRightTab] = useState<RightTabId>("book");
+  useMarketStream(instrument);
 
   const onInstrumentChange = useCallback((id: string) => {
     setInstrument(id);
@@ -39,11 +39,7 @@ export function TradeView({
       />
       <div className="flex flex-row flex-1">
         <div className="w-[65%] h-[584px] border-r border-b border-border">
-          <PriceChart
-            instrument={instrument}
-            bucket={bucket}
-            onBucketChange={setBucket}
-          />
+          <PriceChart instrument={instrument} bucket={bucket} onBucketChange={setBucket} />
         </div>
         <div className="w-[35%] h-[584px] flex flex-col border-b border-border">
           <div className="flex items-center border-b border-border shrink-0">

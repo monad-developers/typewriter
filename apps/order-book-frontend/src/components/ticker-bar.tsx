@@ -1,7 +1,7 @@
 "use client";
 
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { tickerOptions } from "~/lib/queries";
+import { orderBookOptions } from "~/lib/queries";
 import { InstrumentPicker } from "./instrument-picker";
 import { cn } from "~/lib/utils";
 
@@ -12,26 +12,37 @@ export function TickerBar({
   instrument: string;
   onInstrumentChange: (id: string) => void;
 }) {
-  const { data: ticker } = useSuspenseQuery(tickerOptions(instrument));
+  const { data: book } = useSuspenseQuery(orderBookOptions(instrument));
 
-  const isPositive = ticker.change24h >= 0;
+  const bestBid = book.bids[0]?.price ?? 0;
+  const bestAsk = book.asks[0]?.price ?? 0;
 
   return (
     <div className="h-12 bg-card border-b border-border px-4 md:px-6 flex items-center gap-6 shrink-0">
-      <InstrumentPicker selected={instrument} onSelect={onInstrumentChange} className="-ml-[12px]" />
+      <InstrumentPicker
+        selected={instrument}
+        onSelect={onInstrumentChange}
+        className="-ml-[12px]"
+      />
       <Stat
         label="Price"
-        value={ticker.lastPrice.toLocaleString()}
-        className={isPositive ? "text-bid" : "text-ask"}
+        value={book.lastPrice ? book.lastPrice.toLocaleString() : "\u2014"}
+        className="text-foreground"
       />
       <Stat
-        label="24h Change"
-        value={`${isPositive ? "+" : ""}${ticker.change24h.toLocaleString()} / ${isPositive ? "+" : ""}${ticker.changePercent24h.toFixed(2)}%`}
-        className={isPositive ? "text-bid" : "text-ask"}
+        label="Best Bid"
+        value={bestBid ? bestBid.toLocaleString() : "\u2014"}
+        className="text-bid"
       />
-      <Stat label="24h High" value={ticker.high24h.toLocaleString()} />
-      <Stat label="24h Low" value={ticker.low24h.toLocaleString()} />
-      <Stat label="24h Volume" value={ticker.volume24h.toLocaleString()} />
+      <Stat
+        label="Best Ask"
+        value={bestAsk ? bestAsk.toLocaleString() : "\u2014"}
+        className="text-ask"
+      />
+      <Stat
+        label="Spread"
+        value={book.spread ? book.spread.toFixed(4) : "\u2014"}
+      />
     </div>
   );
 }

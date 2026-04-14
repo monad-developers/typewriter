@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
 import { candlesOptions } from "~/lib/queries";
 import type { BucketSize, Candle } from "~/lib/types";
+import { API_URL } from "~/lib/constants";
 import { cn } from "~/lib/utils";
 import {
   createChart,
@@ -157,10 +158,7 @@ export function PriceChart({
     prevCandlesRef.current = null;
 
     // Sync time scales bidirectionally
-    const syncRange = (
-      target: IChartApi,
-      range: LogicalRange | null
-    ) => {
+    const syncRange = (target: IChartApi, range: LogicalRange | null) => {
       if (syncingRef.current || !range) return;
       syncingRef.current = true;
       target.timeScale().setVisibleLogicalRange(range);
@@ -222,13 +220,17 @@ export function PriceChart({
       )
         return;
 
-      const cached = queryClient.getQueryData<Candle[]>(["candles", instrument, bucket]);
+      const cached = queryClient.getQueryData<Candle[]>([
+        "candles",
+        instrument,
+        bucket,
+      ]);
       const oldest = cached?.[0];
       if (!oldest) return;
 
       loadingRef.current = true;
       fetch(
-        `/api/candles?instrument=${encodeURIComponent(instrument)}&bucket=${bucket}&before=${oldest.time}&count=200`
+        `${API_URL}/api/candles?instrumentId=${encodeURIComponent(instrument)}&bucket=${bucket}&before=${oldest.time}&count=200`
       )
         .then((res) => res.json())
         .then((data: { candles: Candle[]; hasMore: boolean }) => {
@@ -253,8 +255,6 @@ export function PriceChart({
   }, [instrument, bucket, queryClient]);
 
   // Sync chart series data from the query cache (single source of truth).
-  // Track the previous candles reference so we can distinguish a full reload
-  // (instrument/bucket switch, pagination) from a live tick update.
   const prevCandlesRef = useRef<Candle[] | null>(null);
 
   useEffect(() => {
@@ -270,8 +270,6 @@ export function PriceChart({
       const prevLast = prev[prev.length - 1];
       const curLast = candles[candles.length - 1];
 
-      // Same length → last candle was updated in-place by the stream
-      // One longer → new candle period appended
       const sameDataSet = prev[0] === candles[0];
       const isLiveUpdate =
         sameDataSet &&
