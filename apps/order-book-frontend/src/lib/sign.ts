@@ -9,6 +9,9 @@ import {
 import type { Account } from "./account";
 import { EIP712_DOMAIN, EIP712_TYPES, MAX_DEADLINE } from "./eip712";
 
+const P256_N =
+  0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
 async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
   const sig = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
@@ -17,7 +20,8 @@ async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
   );
   const bytes = new Uint8Array(sig);
   const r = BigInt(bytesToHex(bytes.slice(0, 32)));
-  const s = BigInt(bytesToHex(bytes.slice(32)));
+  let s = BigInt(bytesToHex(bytes.slice(32)));
+  if (s > P256_N / 2n) s = P256_N - s;
   return encodeAbiParameters(
     [{ type: "uint256" }, { type: "uint256" }],
     [r, s],

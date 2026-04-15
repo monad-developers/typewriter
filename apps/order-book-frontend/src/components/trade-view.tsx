@@ -5,6 +5,8 @@ import { TickerBar } from "./ticker-bar";
 import { PriceChart } from "./price-chart";
 import { OrderBook } from "./order-book";
 import { RecentTrades } from "./recent-trades";
+import { OrdersPanel } from "./orders-panel";
+import { ActionsPanel } from "./actions-panel";
 import { cn } from "~/lib/utils";
 import { useMarketStream } from "~/lib/stream";
 import { DEFAULT_BUCKET, type BucketSize } from "~/lib/types";
@@ -37,7 +39,8 @@ export function TradeView({
         instrument={instrument}
         onInstrumentChange={onInstrumentChange}
       />
-      <div className="flex flex-row flex-1">
+      {/* Top row: Chart + Order Book/Trades */}
+      <div className="flex flex-row">
         <div className="w-[65%] h-[584px] border-r border-b border-border">
           <PriceChart instrument={instrument} bucket={bucket} onBucketChange={setBucket} />
         </div>
@@ -65,6 +68,16 @@ export function TradeView({
               <RecentTrades instrument={instrument} />
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Bottom row: Orders/Balances + Actions */}
+      <div className="flex flex-row">
+        <div className="w-[65%] h-[320px] border-r border-b border-border">
+          <OrdersPanel />
+        </div>
+        <div className="w-[35%] h-[320px] flex flex-col border-b border-border">
+          <ActionsPanel instrument={instrument} />
         </div>
       </div>
     </div>

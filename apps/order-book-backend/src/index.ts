@@ -26,8 +26,6 @@ import {
 } from "./exchange";
 import { desc, eq } from "drizzle-orm";
 
-const Q32 = Number(1n << 32n);
-
 const BUCKET_SECONDS: Record<string, number> = {
   "1m": 60,
   "5m": 300,
@@ -201,7 +199,7 @@ const server = serve({
             id: result.id,
             fills: result.resolution.fills.map((f) => ({
               quantity: f.quantity.toString(),
-              price: Number(f.price),
+              price: f.price.toString(),
             })),
           });
         } catch (err) {
@@ -322,13 +320,13 @@ const server = serve({
           );
 
         function formatLevels(ticks: Record<number, Tick<bigint>>) {
-          const levels: { price: number; size: number; total: number }[] = [];
+          const levels: { price: string; size: string; total: string }[] = [];
           for (const [priceKey, tick] of Object.entries(ticks)) {
             if (tick.remainingQuantity <= 0n) continue;
             levels.push({
-              price: Number(priceKey) / Q32,
-              size: Number(tick.remainingQuantity),
-              total: 0,
+              price: priceKey,
+              size: tick.remainingQuantity.toString(),
+              total: "0",
             });
           }
           return levels;
@@ -337,25 +335,28 @@ const server = serve({
         const bids = formatLevels(inst.bids);
         const asks = formatLevels(inst.asks);
 
-        bids.sort((a, b) => b.price - a.price);
-        asks.sort((a, b) => a.price - b.price);
+        bids.sort((a, b) => Number(b.price) - Number(a.price));
+        asks.sort((a, b) => Number(a.price) - Number(b.price));
 
-        let bidTotal = 0;
+        let bidTotal = 0n;
         for (const bid of bids) {
-          bidTotal += bid.size;
-          bid.total = bidTotal;
+          bidTotal += BigInt(bid.size);
+          bid.total = bidTotal.toString();
         }
-        let askTotal = 0;
+        let askTotal = 0n;
         for (const ask of asks) {
-          askTotal += ask.size;
-          ask.total = askTotal;
+          askTotal += BigInt(ask.size);
+          ask.total = askTotal.toString();
         }
 
-        const bestBid = bids[0]?.price ?? 0;
-        const bestAsk = asks[0]?.price ?? 0;
+        const bestBidN = Number(bids[0]?.price ?? "0");
+        const bestAskN = Number(asks[0]?.price ?? "0");
         const lastPrice =
-          bestBid && bestAsk ? (bestBid + bestAsk) / 2 : bestBid || bestAsk;
-        const spread = bestAsk && bestBid ? bestAsk - bestBid : 0;
+          bestBidN && bestAskN
+            ? String(Math.round((bestBidN + bestAskN) / 2))
+            : String(bestBidN || bestAskN);
+        const spread =
+          bestAskN && bestBidN ? String(bestAskN - bestBidN) : "0";
 
         return Response.json({
           instrument: String(instrumentId),
@@ -411,28 +412,28 @@ const server = serve({
 
         const candleMap = new Map<
           number,
-          { open: number; high: number; low: number; close: number; volume: number }
+          { open: string; high: string; low: string; close: string; volume: string }
         >();
 
         for (const row of rows) {
           const ts = Number(row.timestamp);
           const bucketTime = Math.floor(ts / bucketSec) * bucketSec;
-          const price = Number(row.price!) / Q32;
-          const size = Number(row.quantity!);
+          const price = String(row.price!);
+          const size = BigInt(String(row.quantity!));
 
           const existing = candleMap.get(bucketTime);
           if (existing) {
-            existing.high = Math.max(existing.high, price);
-            existing.low = Math.min(existing.low, price);
+            if (Number(price) > Number(existing.high)) existing.high = price;
+            if (Number(price) < Number(existing.low)) existing.low = price;
             existing.close = price;
-            existing.volume += size;
+            existing.volume = (BigInt(existing.volume) + size).toString();
           } else {
             candleMap.set(bucketTime, {
               open: price,
               high: price,
               low: price,
               close: price,
-              volume: size,
+              volume: size.toString(),
             });
           }
         }
@@ -489,8 +490,8 @@ const server = serve({
 
         const trades = rows.map((r) => ({
           id: String(r.id),
-          price: Number(r.price!) / Q32,
-          size: Number(r.quantity!),
+          price: String(r.price!),
+          size: String(r.quantity!),
           side: r.bidOrAsk === 0 ? ("buy" as const) : ("sell" as const),
           timestamp: Number(r.timestamp),
         }));

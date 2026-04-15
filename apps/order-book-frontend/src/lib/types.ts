@@ -2,6 +2,8 @@ export interface Instrument {
   id: string;
   base: string;
   quote: string;
+  baseAddress: string;
+  quoteAddress: string;
   displayName: string;
   baseLotExp: number;
   quoteLotExp: number;

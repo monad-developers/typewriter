@@ -7,14 +7,12 @@ import { cn } from "~/lib/utils";
 import { accountOptions, persistAccount } from "~/lib/account";
 import { useBalances } from "~/hooks/use-balances";
 import { useDepositMutation } from "~/hooks/use-deposit";
-import { USD_ADDRESS } from "~/lib/constants";
+import { USD, TokenAmount } from "~/lib/constants";
 
 const NAV_LINKS = [
   { href: "/trade", label: "Trade" },
   { href: "/info", label: "Info" },
 ];
-
-const DEPOSIT_AMOUNT = 50000n;
 
 export function Header() {
   const pathname = usePathname();
@@ -23,12 +21,12 @@ export function Header() {
   const { data } = useBalances(account?.accountId);
   const depositMutation = useDepositMutation();
 
-  const balance = data?.balances[USD_ADDRESS] ?? "0";
+  const balance = TokenAmount.fromRaw(BigInt(data?.balances[USD] ?? "0"), USD).human;
 
   async function handleDeposit() {
     await depositMutation.mutateAsync({
-      asset: USD_ADDRESS,
-      amount: DEPOSIT_AMOUNT,
+      asset: USD,
+      amount: TokenAmount.from(50000, USD).raw,
     });
   }
 

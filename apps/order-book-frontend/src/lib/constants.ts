@@ -1,15 +1,26 @@
-import type { Address } from "viem";
+import { USD, GOLD, WTIOIL, INSTRUMENTS, type InstrumentConfig } from "order-book-sdk";
+
+export { USD, GOLD, WTIOIL };
+export type { InstrumentConfig } from "order-book-sdk";
+export { TokenAmount, INSTRUMENTS } from "order-book-sdk";
 
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
 
-export const USD_ADDRESS: Address =
-  "0x1111111111111111111111111111111111111111";
+const INSTRUMENT_BY_ID = new Map<number, InstrumentConfig>(
+  Object.values(INSTRUMENTS).map((i) => [i.id, i]),
+);
+
+export function instrumentConfig(id: number): InstrumentConfig {
+  const inst = INSTRUMENT_BY_ID.get(id);
+  if (!inst) throw new Error(`Unknown instrument ${id}`);
+  return inst;
+}
 
 const TOKEN_NAMES: Record<string, string> = {
-  "0x1111111111111111111111111111111111111111": "USD",
-  "0x2222222222222222222222222222222222222222": "GOLD",
-  "0x3333333333333333333333333333333333333333": "WTIOIL",
+  [USD]: "USD",
+  [GOLD]: "GOLD",
+  [WTIOIL]: "WTIOIL",
 };
 
 export function tokenName(address: string): string {
