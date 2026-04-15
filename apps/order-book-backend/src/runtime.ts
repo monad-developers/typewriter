@@ -49,6 +49,7 @@ import { type EIP712Domain, verifySignature } from "./signature";
 
 export type MutationStatus =
   | "queued"
+  | "accepted"
   | "proposed"
   | "voted"
   | "finalized"
@@ -577,6 +578,9 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       }),
     );
 
+    for (const mutation of mutationEvents) {
+      emitMutation(mutation, "accepted");
+    }
     emitBundle(bundle, "accepted");
 
     const { accessList, gasUsed } = yield* Effect.tryPromise({
@@ -611,31 +615,31 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       catch: (error) => error as SignTransactionErrorType,
     });
 
-    const receipt = yield* Effect.tryPromise({
-      try: () =>
-        sendRawTransactionSync(walletClient, {
-          serializedTransaction: signed,
-        }),
-      catch: (error) => error as SendRawTransactionSyncErrorType,
-    });
-
-    for (const mutation of mutationEvents) {
-      emitMutation(mutation, "proposed");
-    }
-    emitBundle(bundle, "proposed");
-
-    yield* Effect.logInfo("bundle proposed").pipe(
-      Effect.annotateLogs({
-        bundleId,
-        mutations: mutationEvents.map((m) => m.id),
-        mutationCount: mutationEvents.length,
-        blockNumber: receipt.blockNumber.toString(),
-        transactionHash: receipt.transactionHash,
-      }),
-    );
-
-    yield* Effect.fork(
+    yield* Effect.forkDaemon(
       Effect.gen(function* () {
+        const receipt = yield* Effect.tryPromise({
+          try: () =>
+            sendRawTransactionSync(walletClient, {
+              serializedTransaction: signed,
+            }),
+          catch: (error) => error as SendRawTransactionSyncErrorType,
+        });
+
+        for (const mutation of mutationEvents) {
+          emitMutation(mutation, "proposed");
+        }
+        emitBundle(bundle, "proposed");
+
+        yield* Effect.logInfo("bundle proposed").pipe(
+          Effect.annotateLogs({
+            bundleId,
+            mutations: mutationEvents.map((m) => m.id),
+            mutationCount: mutationEvents.length,
+            blockNumber: receipt.blockNumber.toString(),
+            transactionHash: receipt.transactionHash,
+          }),
+        );
+
         yield* Effect.sleep(Duration.millis(400));
         for (const mutation of mutationEvents) emitMutation(mutation, "voted");
         emitBundle(bundle, "voted");
@@ -663,7 +667,18 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         yield* Effect.logInfo("bundle status updated").pipe(
           Effect.annotateLogs({ bundleId: bundle.id, status: "verified" }),
         );
-      }),
+      }).pipe(
+        Effect.catchAll((error) =>
+          Effect.gen(function* () {
+            yield* Effect.logError("bundle submission failed").pipe(
+              Effect.annotateLogs({
+                bundleId: bundle.id,
+              }),
+            );
+            console.error(error);
+          }),
+        ),
+      ),
     );
   }).pipe(Effect.withLogSpan("flush"));
 
