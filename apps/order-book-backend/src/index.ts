@@ -60,7 +60,7 @@ const handle = startRuntime({
   initialState: await loadState(db),
   initialMutationId: mutationId,
   initialBundleId: bundleId,
-  flushIntervalMs: 50,
+  bundleIntervalMs: 50,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,
   account: deployerAccount,

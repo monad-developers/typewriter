@@ -1,4 +1,5 @@
 import {
+  Cause,
   Chunk,
   Deferred,
   Duration,
@@ -7,6 +8,7 @@ import {
   Logger,
   Queue,
   Schedule,
+  Stream,
 } from "effect";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type {
@@ -48,7 +50,7 @@ import { resolveAndOrderMutations, resolveMarketOrder } from "./resolution";
 import { type EIP712Domain, verifySignature } from "./signature";
 
 export type MutationStatus =
-  | "queued"
+  | "pending"
   | "accepted"
   | "proposed"
   | "voted"
@@ -66,13 +68,18 @@ export type BundleEvent = {
   calldata: Hex;
   mutations: MutationEvent[];
 };
+type PendingBundle = {
+  bundle: BundleEvent;
+  proposedAt: bigint;
+  status: BundleStatus;
+};
 export type BlockEvent = { number: bigint; hash: Hex; timestamp: bigint };
 
 export type RuntimeConfig = {
   initialState: State<bigint>;
   initialMutationId?: number;
   initialBundleId?: number;
-  flushIntervalMs: number;
+  bundleIntervalMs: number;
   chain: Chain;
   rpcUrl: string;
   account: PrivateKeyAccount;
@@ -81,7 +88,7 @@ export type RuntimeConfig = {
   origin?: string | string[];
 };
 
-type QueueEntry = {
+type MutationEntry = {
   id: number;
   tagged: TaggedMutation;
   deferred: Deferred.Deferred<{ id: number } & ResolvedMutation, unknown>;
@@ -445,7 +452,9 @@ function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
 
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const state = config.initialState;
-  const queue = Effect.runSync(Queue.unbounded<QueueEntry>());
+  const mutationQueue = Effect.runSync(Queue.unbounded<MutationEntry>());
+  const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
+  const pendingBundles = new Map<number, PendingBundle>();
   let nextId = config.initialMutationId ?? 0;
   let nextBundleId = config.initialBundleId ?? 0;
 
@@ -514,8 +523,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     origin: config.origin,
   };
 
-  const flush = Effect.gen(function* () {
-    const batch = Chunk.toArray(yield* Queue.takeAll(queue));
+  const bundle = Effect.gen(function* () {
+    const batch = Chunk.toArray(yield* Queue.takeAll(mutationQueue));
     if (batch.length === 0) return;
     const mutationEvents: MutationEvent[] = [];
 
@@ -564,7 +573,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     const calldata = encodeBundle(resolved);
     const bundleId = nextBundleId++;
-    const bundle: BundleEvent = {
+    const bundleEvent: BundleEvent = {
       id: bundleId,
       calldata,
       mutations: mutationEvents,
@@ -581,165 +590,167 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     for (const mutation of mutationEvents) {
       emitMutation(mutation, "accepted");
     }
-    emitBundle(bundle, "accepted");
+    emitBundle(bundleEvent, "accepted");
 
-    const { accessList, gasUsed } = yield* Effect.tryPromise({
-      try: () =>
-        publicClient.createAccessList({
-          account: config.account.address,
-          to: config.address,
-          data: bundle.calldata,
-        }),
-      catch: (error) => error as CreateAccessListErrorType,
-    });
+    yield* Queue.offer(submitQueue, bundleEvent);
+  });
 
-    const nonce = yield* Effect.tryPromise({
-      try: () => nextNonce(),
-      catch: (error) => error as Error,
-    });
+  const bundleProgram = Effect.repeat(
+    bundle,
+    Schedule.fixed(Duration.millis(config.bundleIntervalMs)),
+  ).pipe(Effect.orDie);
 
-    const request = yield* Effect.tryPromise({
-      try: () =>
-        walletClient.prepareTransactionRequest({
-          to: config.address,
-          data: bundle.calldata,
-          accessList,
-          gas: gasUsed + gasUsed / 10n,
-          nonce,
-        }),
-      catch: (error) => error as PrepareTransactionRequestErrorType,
-    });
-
-    const signed = yield* Effect.tryPromise({
-      try: () => walletClient.signTransaction(request),
-      catch: (error) => error as SignTransactionErrorType,
-    });
-
-    yield* Effect.forkDaemon(
-      Effect.gen(function* () {
-        const receipt = yield* Effect.tryPromise({
-          try: () =>
-            sendRawTransactionSync(walletClient, {
-              serializedTransaction: signed,
-            }),
-          catch: (error) => error as SendRawTransactionSyncErrorType,
-        });
-
-        for (const mutation of mutationEvents) {
-          emitMutation(mutation, "proposed");
-        }
-        emitBundle(bundle, "proposed");
-
-        yield* Effect.logInfo("bundle proposed").pipe(
-          Effect.annotateLogs({
-            bundleId,
-            mutations: mutationEvents.map((m) => m.id),
-            mutationCount: mutationEvents.length,
-            blockNumber: receipt.blockNumber.toString(),
-            transactionHash: receipt.transactionHash,
+  const submit = (bundleEvent: BundleEvent) =>
+    Effect.gen(function* () {
+      const { accessList, gasUsed } = yield* Effect.tryPromise({
+        try: () =>
+          publicClient.createAccessList({
+            account: config.account.address,
+            to: config.address,
+            data: bundleEvent.calldata,
           }),
-        );
+        catch: (error) => error as CreateAccessListErrorType,
+      });
 
-        yield* Effect.sleep(Duration.millis(400));
-        for (const mutation of mutationEvents) emitMutation(mutation, "voted");
-        emitBundle(bundle, "voted");
+      const nonce = yield* Effect.tryPromise({
+        try: () => nextNonce(),
+        catch: (error) => error as Error,
+      });
 
-        yield* Effect.logDebug("bundle status updated").pipe(
-          Effect.annotateLogs({ bundleId: bundle.id, status: "voted" }),
-        );
-
-        yield* Effect.sleep(Duration.millis(400));
-        for (const mutation of mutationEvents) {
-          emitMutation(mutation, "finalized");
-        }
-        emitBundle(bundle, "finalized");
-
-        yield* Effect.logDebug("bundle status updated").pipe(
-          Effect.annotateLogs({ bundleId: bundle.id, status: "finalized" }),
-        );
-
-        yield* Effect.sleep(Duration.millis(1200));
-        for (const mutation of mutationEvents) {
-          emitMutation(mutation, "verified");
-        }
-        emitBundle(bundle, "verified");
-
-        yield* Effect.logInfo("bundle status updated").pipe(
-          Effect.annotateLogs({ bundleId: bundle.id, status: "verified" }),
-        );
-      }).pipe(
-        Effect.catchAll((error) =>
-          Effect.gen(function* () {
-            yield* Effect.logError("bundle submission failed").pipe(
-              Effect.annotateLogs({
-                bundleId: bundle.id,
-              }),
-            );
-            console.error(error);
+      const request = yield* Effect.tryPromise({
+        try: () =>
+          walletClient.prepareTransactionRequest({
+            to: config.address,
+            data: bundleEvent.calldata,
+            accessList,
+            gas: gasUsed + gasUsed / 10n,
+            nonce,
           }),
-        ),
-      ),
-    );
-  }).pipe(Effect.withLogSpan("flush"));
+        catch: (error) => error as PrepareTransactionRequestErrorType,
+      });
 
-  const program = Effect.repeat(
-    flush.pipe(
-      Effect.catchAll((error) =>
-        Effect.gen(function* () {
-          const remaining = Chunk.toArray(yield* Queue.takeAll(queue));
-          for (const entry of remaining) {
-            yield* Deferred.fail(entry.deferred, error);
-          }
-          yield* Effect.logError("flush failed").pipe(
-            Effect.annotateLogs({
-              droppedMutations: remaining.map((e) => e.id),
-              droppedMutationCount: remaining.length,
-            }),
-          );
-          console.error(error);
+      const signed = yield* Effect.tryPromise({
+        try: () => walletClient.signTransaction(request),
+        catch: (error) => error as SignTransactionErrorType,
+      });
+
+      const receipt = yield* Effect.tryPromise({
+        try: () =>
+          sendRawTransactionSync(walletClient, {
+            serializedTransaction: signed,
+          }),
+        catch: (error) => error as SendRawTransactionSyncErrorType,
+      });
+
+      for (const mutation of bundleEvent.mutations) {
+        emitMutation(mutation, "proposed");
+      }
+      emitBundle(bundleEvent, "proposed");
+
+      yield* Effect.logInfo("bundle proposed").pipe(
+        Effect.annotateLogs({
+          bundleId: bundleEvent.id,
+          mutations: bundleEvent.mutations.map((m) => m.id),
+          mutationCount: bundleEvent.mutations.length,
+          blockNumber: receipt.blockNumber.toString(),
+          transactionHash: receipt.transactionHash,
         }),
-      ),
-    ),
-    Schedule.fixed(Duration.millis(config.flushIntervalMs)),
+      );
+
+      pendingBundles.set(bundleEvent.id, {
+        bundle: bundleEvent,
+        proposedAt: receipt.blockNumber,
+        status: "proposed",
+      });
+    });
+
+  const submitProgram = Stream.fromQueue(submitQueue).pipe(
+    Stream.mapEffect(submit),
+    Stream.runDrain,
+    Effect.orDie,
   );
 
   let lastBlockNumber = -1n;
 
-  const blockPoller = Effect.gen(function* () {
-    const block = yield* Effect.promise(() => publicClient.getBlock());
-    if (block.number !== null && block.number > lastBlockNumber) {
-      lastBlockNumber = block.number;
-      yield* Effect.logDebug("block").pipe(
-        Effect.annotateLogs({
-          number: block.number.toString(),
-          hash: block.hash,
-        }),
+  const watch = Effect.gen(function* () {
+    const block = yield* Effect.tryPromise({
+      try: () => publicClient.getBlock(),
+      catch: (error) => error as Error,
+    });
+    if (block.number === null || block.number <= lastBlockNumber) return;
+    lastBlockNumber = block.number;
+
+    yield* Effect.logDebug("block").pipe(
+      Effect.annotateLogs({
+        number: block.number.toString(),
+        hash: block.hash,
+      }),
+    );
+    emitBlock({
+      number: block.number,
+      hash: block.hash as Hex,
+      timestamp: block.timestamp,
+    });
+
+    for (const [id, entry] of pendingBundles) {
+      const confirmations = block.number - entry.proposedAt;
+      let nextStatus: BundleStatus | null = null;
+
+      if (confirmations >= 4n && entry.status !== "verified") {
+        nextStatus = "verified";
+      } else if (
+        confirmations >= 2n &&
+        entry.status !== "finalized" &&
+        entry.status !== "verified"
+      ) {
+        nextStatus = "finalized";
+      } else if (confirmations >= 1n && entry.status === "proposed") {
+        nextStatus = "voted";
+      }
+
+      if (nextStatus === null) continue;
+
+      for (const mutation of entry.bundle.mutations) {
+        emitMutation(mutation, nextStatus as MutationStatus);
+      }
+      emitBundle(entry.bundle, nextStatus);
+      entry.status = nextStatus;
+
+      yield* Effect.logDebug("bundle status updated").pipe(
+        Effect.annotateLogs({ bundleId: id, status: nextStatus }),
       );
-      emitBlock({
-        number: block.number,
-        hash: block.hash as Hex,
-        timestamp: block.timestamp,
-      });
+
+      if (nextStatus === "verified") {
+        pendingBundles.delete(id);
+      }
+    }
+  }).pipe(Effect.withLogSpan("watch"));
+
+  const watchProgram = Effect.repeat(
+    watch,
+    Schedule.spaced(Duration.millis(500)),
+  ).pipe(Effect.orDie);
+
+  const runtimeEffect = Effect.gen(function* () {
+    yield* Effect.logInfo("runtime started").pipe(
+      Effect.annotateLogs({
+        chain: config.chain.id,
+        address: config.address,
+        bundleIntervalMs: config.bundleIntervalMs,
+      }),
+    );
+    yield* Effect.all([bundleProgram, submitProgram, watchProgram], {
+      concurrency: "unbounded",
+    });
+  }).pipe(Effect.provide(Logger.json));
+
+  const fiber = Effect.runFork(runtimeEffect);
+  Effect.runPromiseExit(Fiber.join(fiber)).then((exit) => {
+    if (exit._tag === "Failure" && !Cause.isInterruptedOnly(exit.cause)) {
+      console.error("FATAL: runtime fiber died", Cause.pretty(exit.cause));
+      process.exit(1);
     }
   });
-
-  const blockProgram = Effect.repeat(
-    blockPoller,
-    Schedule.spaced(Duration.millis(500)),
-  );
-
-  const fiber = Effect.runFork(
-    Effect.gen(function* () {
-      yield* Effect.logInfo("runtime started").pipe(
-        Effect.annotateLogs({
-          chain: config.chain.id,
-          address: config.address,
-          flushIntervalMs: config.flushIntervalMs,
-        }),
-      );
-      yield* Effect.all([program, blockProgram], { concurrency: "unbounded" });
-    }).pipe(Effect.provide(Logger.json)),
-  );
 
   function execute<T extends TaggedMutation>(
     mutation: T,
@@ -781,8 +792,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           { id: number } & ResolvedMutation,
           unknown
         >();
-        yield* Queue.offer(queue, { id, tagged: mutation, deferred });
-        emitMutation({ id, ...mutation } as MutationEvent, "queued");
+        yield* Queue.offer(mutationQueue, { id, tagged: mutation, deferred });
+        emitMutation({ id, ...mutation } as MutationEvent, "pending");
 
         yield* Effect.logInfo("queued mutation").pipe(
           Effect.annotateLogs({
@@ -810,7 +821,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     return Effect.runPromise(
       Effect.gen(function* () {
         yield* Effect.logInfo("runtime stopping");
-        yield* Queue.shutdown(queue);
+        yield* Queue.shutdown(mutationQueue);
+        yield* Queue.shutdown(submitQueue);
         yield* Fiber.interrupt(fiber);
         yield* Effect.logInfo("runtime stopped");
       }).pipe(Effect.provide(Logger.json)),
