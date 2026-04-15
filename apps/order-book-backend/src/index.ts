@@ -4,7 +4,7 @@ import type { Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
-import { dbPlugin, loadMaxIds, loadState } from "./db";
+import { checkConsistency, dbPlugin, recoverState } from "./db";
 import {
   type AddInstrument,
   type Authorize,
@@ -54,10 +54,11 @@ const db = drizzle({ client, schema, casing: "snake_case" });
 // @ts-ignore
 await migrate(db, CHAIN.id, EXCHANGE_ADDRESS);
 
-const { mutationId, bundleId } = await loadMaxIds(db);
+const consistent = await checkConsistency(db);
+const { state, mutationId, bundleId } = await recoverState(db, consistent);
 
 const handle = startRuntime({
-  initialState: await loadState(db),
+  initialState: state,
   initialMutationId: mutationId,
   initialBundleId: bundleId,
   bundleIntervalMs: 50,

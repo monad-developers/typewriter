@@ -642,6 +642,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         catch: (error) => error as SendRawTransactionSyncErrorType,
       });
 
+
       for (const mutation of bundleEvent.mutations) {
         emitMutation(mutation, "proposed");
       }

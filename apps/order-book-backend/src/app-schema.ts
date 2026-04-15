@@ -188,6 +188,7 @@ export const blocksRelations = relations(blocks, ({ many }) => ({
 
 export const bundles = pgTable("bundles", {
   id: serial().primaryKey(),
+  status: mutationStatusEnum().notNull().default("accepted"),
   blockNumber: uint256().references(() => blocks.number),
   transactionHash: char({ length: 66 }),
 });
