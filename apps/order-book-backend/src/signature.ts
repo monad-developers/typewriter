@@ -175,21 +175,6 @@ export async function verifySignature(
     message,
   } as Parameters<typeof hashTypedData>[0];
 
-  console.log(
-    "[verify] keyType=%d, primaryType=%s, account=%s, keyId=%d",
-    key.keyType,
-    primaryType,
-    mutation.account,
-    mutation.keyId,
-  );
-  console.log("[verify] domain:", JSON.stringify(eip712Domain));
-  console.log(
-    "[verify] message:",
-    JSON.stringify(message, (_k, v) =>
-      typeof v === "bigint" ? v.toString() : v,
-    ),
-  );
-
   switch (key.keyType) {
     case 0: {
       const hash = hashTypedData(typedData);
