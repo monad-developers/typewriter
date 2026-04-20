@@ -8,12 +8,12 @@ import { useBalances } from "~/hooks/use-balances";
 import { useMarketOrderMutation } from "~/hooks/use-market-order";
 import { useLimitOrderMutation } from "~/hooks/use-limit-order";
 import { instrumentsOptions, orderBookOptions } from "~/lib/queries";
-import { priceToQ32 } from "order-book-sdk";
+import { priceToQ32, toLots } from "order-book-sdk";
 import { TokenAmount, instrumentConfig } from "~/lib/constants";
 
 const ORDER_TABS = [
-  { id: "limit", label: "Limit" },
   { id: "market", label: "Market" },
+  { id: "limit", label: "Limit" },
 ] as const;
 
 type OrderTabId = (typeof ORDER_TABS)[number]["id"];
@@ -22,7 +22,7 @@ type Side = "buy" | "sell";
 const QTY_PRESETS = [10, 50, 100, 500];
 
 export function ActionsPanel({ instrument }: { instrument: string }) {
-  const [tab, setTab] = useState<OrderTabId>("limit");
+  const [tab, setTab] = useState<OrderTabId>("market");
   const [side, setSide] = useState<Side>("buy");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
@@ -70,8 +70,11 @@ export function ActionsPanel({ instrument }: { instrument: string }) {
       return;
     }
 
-    // Quantity is in lots (same units as orderbook "size")
-    const rawQty = BigInt(Math.round(qty));
+    // User enters human base units (matches orderbook "size"); convert to lots for the wire.
+    const rawQty = toLots(
+      TokenAmount.from(qty, inst.baseAddress as `0x${string}`).raw,
+      inst.baseLotExp,
+    );
 
     try {
       if (tab === "market") {
