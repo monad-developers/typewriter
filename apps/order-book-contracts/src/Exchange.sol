@@ -396,13 +396,17 @@ contract Exchange {
     {
         if (deadline < block.timestamp) revert SignatureExpired();
 
+        Account storage acc = state.accounts[sig.account];
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
-        permissions = verify(state.accounts[sig.account].keys, digest, sig.keyId, sig.rawSignature);
+        permissions = verify(acc.keys, digest, sig.keyId, sig.rawSignature);
 
         uint192 nonceKey = uint192(nonce >> 64);
         uint64 nonceSeq = uint64(nonce);
-        if (nonceSeq != state.accounts[sig.account].nonces[nonceKey]) revert InvalidNonce();
-        state.accounts[sig.account].nonces[nonceKey]++;
+        uint64 stored = acc.nonces[nonceKey];
+        if (nonceSeq != stored) revert InvalidNonce();
+        unchecked {
+            acc.nonces[nonceKey] = stored + 1;
+        }
     }
 
     function _settleFill(Fill memory fill, Instrument storage instrument, uint8 takerSide, bytes32 takerAccount)
@@ -422,22 +426,24 @@ contract Exchange {
             tick.quantity = 0;
         }
 
+        address base = instrument.base;
+        address quote = instrument.quote;
         uint256 rawBase = uint256(fill.quantity) << instrument.baseLotExp;
         uint256 rawQuote = ((uint256(fill.quantity) * uint256(fill.price)) >> 32) << instrument.quoteLotExp;
         Account storage taker = state.accounts[takerAccount];
 
         if (takerSide == 0) {
-            if (taker.balances[instrument.quote] < rawQuote) revert InsufficientBalance();
+            if (taker.balances[quote] < rawQuote) revert InsufficientBalance();
             unchecked {
-                taker.balances[instrument.quote] -= rawQuote;
+                taker.balances[quote] -= rawQuote;
             }
-            taker.balances[instrument.base] += rawBase;
+            taker.balances[base] += rawBase;
         } else {
-            if (taker.balances[instrument.base] < rawBase) revert InsufficientBalance();
+            if (taker.balances[base] < rawBase) revert InsufficientBalance();
             unchecked {
-                taker.balances[instrument.base] -= rawBase;
+                taker.balances[base] -= rawBase;
             }
-            taker.balances[instrument.quote] += rawQuote;
+            taker.balances[quote] += rawQuote;
         }
     }
 
@@ -472,32 +478,37 @@ contract Exchange {
 
     function _executeLimitOrder(LimitOrder memory order, bytes32 account) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
-        if (instrument.base == address(0)) revert InvalidInstrument();
+        address base = instrument.base;
+        if (base == address(0)) revert InvalidInstrument();
 
-        uint64 quantityLots = _toLots(order.quantity, instrument.baseLotExp);
+        uint8 baseLotExp = instrument.baseLotExp;
+        uint64 quantityLots = _toLots(order.quantity, baseLotExp);
 
         mapping(uint64 => Tick) storage ticks = order.bidOrAsk == 0 ? instrument.bids : instrument.asks;
         Tick storage tick = ticks[order.price];
 
-        if (tick.remainingQuantity != tick.quantity) revert TickPartiallyFilled();
+        uint64 currentQuantity = tick.quantity;
+        if (tick.remainingQuantity != currentQuantity) revert TickPartiallyFilled();
 
         Account storage acc = state.accounts[account];
         if (order.bidOrAsk == 0) {
+            address quote = instrument.quote;
             uint256 rawLock = ((uint256(quantityLots) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
-            if (acc.balances[instrument.quote] < rawLock) revert InsufficientBalance();
+            if (acc.balances[quote] < rawLock) revert InsufficientBalance();
             unchecked {
-                acc.balances[instrument.quote] -= rawLock;
+                acc.balances[quote] -= rawLock;
             }
         } else {
-            uint256 rawBase = uint256(quantityLots) << instrument.baseLotExp;
-            if (acc.balances[instrument.base] < rawBase) revert InsufficientBalance();
+            uint256 rawBase = uint256(quantityLots) << baseLotExp;
+            if (acc.balances[base] < rawBase) revert InsufficientBalance();
             unchecked {
-                acc.balances[instrument.base] -= rawBase;
+                acc.balances[base] -= rawBase;
             }
         }
 
-        tick.quantity += quantityLots;
-        tick.remainingQuantity += quantityLots;
+        uint64 newQuantity = currentQuantity + quantityLots;
+        tick.quantity = newQuantity;
+        tick.remainingQuantity = newQuantity;
 
         acc.orders
             .push(
@@ -513,23 +524,26 @@ contract Exchange {
 
     function _executeCloseOrder(CloseOrder memory close, bytes32 account) internal {
         Account storage acc = state.accounts[account];
-        if (acc.orders[close.orderId].quantity == 0) revert OrderNotFound();
-
         Order storage order = acc.orders[close.orderId];
+        uint64 orderQuantity = order.quantity;
+        if (orderQuantity == 0) revert OrderNotFound();
+
+        uint64 orderPrice = order.price;
+        uint8 orderSide = order.side;
         Instrument storage instrument = state.instruments[order.instrumentId];
-        mapping(uint64 => Tick) storage ticks = order.side == 0 ? instrument.bids : instrument.asks;
-        Tick storage tick = ticks[order.price];
+        mapping(uint64 => Tick) storage ticks = orderSide == 0 ? instrument.bids : instrument.asks;
+        Tick storage tick = ticks[orderPrice];
 
         uint64 filledQuantity;
         uint64 unfilledQuantity;
         if (tick.volume > order.tickVolume) {
-            filledQuantity = order.quantity;
+            filledQuantity = orderQuantity;
         } else {
             // tick.quantity != 0 here: a fully-swept tick increments volume, which the branch above catches.
             unchecked {
                 uint256 consumed = tick.quantity - tick.remainingQuantity;
-                filledQuantity = uint64((uint256(order.quantity) * consumed) / tick.quantity);
-                unfilledQuantity = order.quantity - filledQuantity;
+                filledQuantity = uint64((uint256(orderQuantity) * consumed) / tick.quantity);
+                unfilledQuantity = orderQuantity - filledQuantity;
             }
         }
 
@@ -541,16 +555,16 @@ contract Exchange {
             }
         }
 
-        if (order.side == 0) {
+        if (orderSide == 0) {
             acc.balances[
                     instrument.quote
-                ] += ((uint256(unfilledQuantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
+                ] += ((uint256(unfilledQuantity) * uint256(orderPrice)) >> 32) << instrument.quoteLotExp;
             acc.balances[instrument.base] += uint256(filledQuantity) << instrument.baseLotExp;
         } else {
             acc.balances[instrument.base] += uint256(unfilledQuantity) << instrument.baseLotExp;
             acc.balances[
                     instrument.quote
-                ] += ((uint256(filledQuantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
+                ] += ((uint256(filledQuantity) * uint256(orderPrice)) >> 32) << instrument.quoteLotExp;
         }
 
         delete acc.orders[close.orderId];
