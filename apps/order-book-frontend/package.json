@@ -6,7 +6,7 @@
     "dev": "next dev --port 3001",
     "build": "next build",
     "start": "next start",
-    "start-static": "bun .next/standalone/server.js"
+    "start-static": "bun .next/standalone/apps/order-book-frontend/server.js"
   },
   "dependencies": {
     "order-book-sdk": "workspace:*",
