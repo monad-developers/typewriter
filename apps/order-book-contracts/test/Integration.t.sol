@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {
     Exchange,
-    ExecuteParams,
+    Bundle,
     Mutation,
     Signature,
     AddInstrument,
@@ -59,7 +59,16 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(ExecuteParams({mutations: mutations, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(mutations, data, sigs));
+    }
+
+    function _bundles(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
+        internal
+        pure
+        returns (Bundle[] memory bundles)
+    {
+        bundles = new Bundle[](1);
+        bundles[0] = Bundle({mutations: mutations, mutationData: data, signatures: sigs});
     }
 
     function _initAccount(uint256 pk, bytes32 acc) internal {
@@ -579,7 +588,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(MutationsOutOfOrder.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_SignatureExpired() external {
@@ -609,7 +618,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(SignatureExpired.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_InvalidNonce() external {
@@ -637,7 +646,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidNonce.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_KeyNotFound() external {
@@ -665,6 +674,6 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert();
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 }

@@ -118,7 +118,7 @@ struct Withdrawal {
     uint256 deadline;
 }
 
-struct ExecuteParams {
+struct Bundle {
     Mutation[] mutations;
     bytes[] mutationData;
     Signature[] signatures;
@@ -191,162 +191,167 @@ contract Exchange {
         return block.chainid == INITIAL_CHAIN_ID ? INITIAL_DOMAIN_SEPARATOR : _computeDomainSeparator();
     }
 
-    function execute(ExecuteParams calldata params) external {
+    function execute(Bundle[] calldata bundles) external {
         if (msg.sender != SCHEDULER) revert Unauthorized();
 
-        if (
-            params.mutations.length != params.mutationData.length || params.mutations.length != params.signatures.length
-        ) {
-            revert LengthMismatch();
-        }
+        for (uint256 b = 0; b < bundles.length; b++) {
+            Bundle calldata bundle = bundles[b];
 
-        Mutation prev = Mutation.Initialize;
-        for (uint256 i = 0; i < params.mutations.length; i++) {
-            Mutation mutation = params.mutations[i];
-            if (mutation < prev) revert MutationsOutOfOrder();
-            prev = mutation;
+            if (
+                bundle.mutations.length != bundle.mutationData.length
+                    || bundle.mutations.length != bundle.signatures.length
+            ) {
+                revert LengthMismatch();
+            }
 
-            bytes calldata data = params.mutationData[i];
-            Signature calldata sig = params.signatures[i];
+            Mutation prev = Mutation.Initialize;
+            for (uint256 i = 0; i < bundle.mutations.length; i++) {
+                Mutation mutation = bundle.mutations[i];
+                if (mutation < prev) revert MutationsOutOfOrder();
+                prev = mutation;
 
-            if (mutation == Mutation.Initialize) {
-                Initialize memory init = abi.decode(data, (Initialize));
-                Account storage acc = state.accounts[sig.account];
-                if (acc.keys.length != 0) revert AlreadyInitialized();
+                bytes calldata data = bundle.mutationData[i];
+                Signature calldata sig = bundle.signatures[i];
 
-                bytes32 structHash = keccak256(
-                    abi.encode(
-                        INITIALIZE_TYPEHASH,
-                        init.account,
-                        init.expiry,
-                        init.rootKeyType,
-                        init.keyType,
-                        init.permissions,
-                        keccak256(init.rootPublicKey),
-                        keccak256(init.publicKey)
-                    )
-                );
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
-                verifySignature(KeyType(init.rootKeyType), digest, init.rootPublicKey, sig.rawSignature);
+                if (mutation == Mutation.Initialize) {
+                    Initialize memory init = abi.decode(data, (Initialize));
+                    Account storage acc = state.accounts[sig.account];
+                    if (acc.keys.length != 0) revert AlreadyInitialized();
 
-                acc.keys.push(Key(0, KeyType(init.rootKeyType), type(uint8).max, init.rootPublicKey));
-                acc.keys.push(Key(init.expiry, KeyType(init.keyType), init.permissions, init.publicKey));
-            } else if (mutation == Mutation.Authorize) {
-                Authorize memory auth = abi.decode(data, (Authorize));
-                uint8 permissions = _verifySig(
-                    keccak256(
+                    bytes32 structHash = keccak256(
                         abi.encode(
-                            AUTHORIZE_TYPEHASH,
-                            auth.account,
-                            auth.expiry,
-                            auth.keyType,
-                            auth.permissions,
-                            keccak256(auth.publicKey),
-                            auth.nonce,
-                            auth.deadline
+                            INITIALIZE_TYPEHASH,
+                            init.account,
+                            init.expiry,
+                            init.rootKeyType,
+                            init.keyType,
+                            init.permissions,
+                            keccak256(init.rootPublicKey),
+                            keccak256(init.publicKey)
                         )
-                    ),
-                    auth.nonce,
-                    auth.deadline,
-                    sig
-                );
-                if ((permissions & PERM_AUTHORIZE) == 0) revert Unauthorized();
-                state.accounts[sig.account].keys
-                    .push(Key(auth.expiry, KeyType(auth.keyType), auth.permissions, auth.publicKey));
-            } else if (mutation == Mutation.Revoke) {
-                Revoke memory rev = abi.decode(data, (Revoke));
-                uint8 permissions = _verifySig(
-                    keccak256(abi.encode(REVOKE_TYPEHASH, rev.account, rev.keyId, rev.nonce, rev.deadline)),
-                    rev.nonce,
-                    rev.deadline,
-                    sig
-                );
-                if ((permissions & PERM_REVOKE) == 0) revert Unauthorized();
-                delete state.accounts[sig.account].keys[rev.keyId];
-            } else if (mutation == Mutation.CloseOrder) {
-                CloseOrder memory close = abi.decode(data, (CloseOrder));
-                uint8 permissions = _verifySig(
-                    keccak256(abi.encode(CLOSE_ORDER_TYPEHASH, close.orderId, close.nonce, close.deadline)),
-                    close.nonce,
-                    close.deadline,
-                    sig
-                );
-                if ((permissions & PERM_CLOSE_ORDER) == 0) revert Unauthorized();
-                _executeCloseOrder(close, sig.account);
-            } else if (mutation == Mutation.LimitOrder) {
-                LimitOrder memory order = abi.decode(data, (LimitOrder));
-                uint8 permissions = _verifySig(
-                    keccak256(
-                        abi.encode(
-                            LIMIT_ORDER_TYPEHASH,
-                            order.quantity,
-                            order.instrumentId,
-                            order.price,
-                            order.bidOrAsk,
-                            order.nonce,
-                            order.deadline
-                        )
-                    ),
-                    order.nonce,
-                    order.deadline,
-                    sig
-                );
-                if ((permissions & PERM_LIMIT_ORDER) == 0) revert Unauthorized();
-                _executeLimitOrder(order, sig.account);
-            } else if (mutation == Mutation.MarketOrder) {
-                (MarketOrder memory order, MarketOrderResolution memory resolution) =
-                    abi.decode(data, (MarketOrder, MarketOrderResolution));
-                uint8 permissions = _verifySig(
-                    keccak256(
-                        abi.encode(
-                            MARKET_ORDER_TYPEHASH,
-                            order.quantity,
-                            order.minReceivedQuantity,
-                            order.instrumentId,
-                            order.bidOrAsk,
-                            order.nonce,
-                            order.deadline
-                        )
-                    ),
-                    order.nonce,
-                    order.deadline,
-                    sig
-                );
-                if ((permissions & PERM_MARKET_ORDER) == 0) revert Unauthorized();
-                _executeMarketOrder(order, resolution, sig.account);
-            } else if (mutation == Mutation.AddInstrument) {
-                AddInstrument memory p = abi.decode(data, (AddInstrument));
-                Instrument storage inst = state.instruments[p.instrumentId];
-                if (inst.base != address(0)) revert InstrumentAlreadyExists();
-                inst.base = p.base;
-                inst.quote = p.quote;
-                inst.baseLotExp = p.baseLotExp;
-                inst.quoteLotExp = p.quoteLotExp;
-            } else if (mutation == Mutation.Deposit) {
-                Deposit memory d = abi.decode(data, (Deposit));
-                uint8 permissions = _verifySig(
-                    keccak256(abi.encode(DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)),
-                    d.nonce,
-                    d.deadline,
-                    sig
-                );
-                if ((permissions & PERM_DEPOSIT) == 0) revert Unauthorized();
-                state.accounts[sig.account].balances[d.asset] += d.amount;
-            } else if (mutation == Mutation.Withdrawal) {
-                Withdrawal memory w = abi.decode(data, (Withdrawal));
-                uint8 permissions = _verifySig(
-                    keccak256(abi.encode(WITHDRAWAL_TYPEHASH, w.asset, w.amount, w.nonce, w.deadline)),
-                    w.nonce,
-                    w.deadline,
-                    sig
-                );
-                if ((permissions & PERM_WITHDRAW) == 0) revert Unauthorized();
-                if (state.accounts[sig.account].balances[w.asset] < w.amount) revert InsufficientBalance();
-                unchecked {
-                    state.accounts[sig.account].balances[w.asset] -= w.amount;
+                    );
+                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+                    verifySignature(KeyType(init.rootKeyType), digest, init.rootPublicKey, sig.rawSignature);
+
+                    acc.keys.push(Key(0, KeyType(init.rootKeyType), type(uint8).max, init.rootPublicKey));
+                    acc.keys.push(Key(init.expiry, KeyType(init.keyType), init.permissions, init.publicKey));
+                } else if (mutation == Mutation.Authorize) {
+                    Authorize memory auth = abi.decode(data, (Authorize));
+                    uint8 permissions = _verifySig(
+                        keccak256(
+                            abi.encode(
+                                AUTHORIZE_TYPEHASH,
+                                auth.account,
+                                auth.expiry,
+                                auth.keyType,
+                                auth.permissions,
+                                keccak256(auth.publicKey),
+                                auth.nonce,
+                                auth.deadline
+                            )
+                        ),
+                        auth.nonce,
+                        auth.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_AUTHORIZE) == 0) revert Unauthorized();
+                    state.accounts[sig.account].keys
+                        .push(Key(auth.expiry, KeyType(auth.keyType), auth.permissions, auth.publicKey));
+                } else if (mutation == Mutation.Revoke) {
+                    Revoke memory rev = abi.decode(data, (Revoke));
+                    uint8 permissions = _verifySig(
+                        keccak256(abi.encode(REVOKE_TYPEHASH, rev.account, rev.keyId, rev.nonce, rev.deadline)),
+                        rev.nonce,
+                        rev.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_REVOKE) == 0) revert Unauthorized();
+                    delete state.accounts[sig.account].keys[rev.keyId];
+                } else if (mutation == Mutation.CloseOrder) {
+                    CloseOrder memory close = abi.decode(data, (CloseOrder));
+                    uint8 permissions = _verifySig(
+                        keccak256(abi.encode(CLOSE_ORDER_TYPEHASH, close.orderId, close.nonce, close.deadline)),
+                        close.nonce,
+                        close.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_CLOSE_ORDER) == 0) revert Unauthorized();
+                    _executeCloseOrder(close, sig.account);
+                } else if (mutation == Mutation.LimitOrder) {
+                    LimitOrder memory order = abi.decode(data, (LimitOrder));
+                    uint8 permissions = _verifySig(
+                        keccak256(
+                            abi.encode(
+                                LIMIT_ORDER_TYPEHASH,
+                                order.quantity,
+                                order.instrumentId,
+                                order.price,
+                                order.bidOrAsk,
+                                order.nonce,
+                                order.deadline
+                            )
+                        ),
+                        order.nonce,
+                        order.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_LIMIT_ORDER) == 0) revert Unauthorized();
+                    _executeLimitOrder(order, sig.account);
+                } else if (mutation == Mutation.MarketOrder) {
+                    (MarketOrder memory order, MarketOrderResolution memory resolution) =
+                        abi.decode(data, (MarketOrder, MarketOrderResolution));
+                    uint8 permissions = _verifySig(
+                        keccak256(
+                            abi.encode(
+                                MARKET_ORDER_TYPEHASH,
+                                order.quantity,
+                                order.minReceivedQuantity,
+                                order.instrumentId,
+                                order.bidOrAsk,
+                                order.nonce,
+                                order.deadline
+                            )
+                        ),
+                        order.nonce,
+                        order.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_MARKET_ORDER) == 0) revert Unauthorized();
+                    _executeMarketOrder(order, resolution, sig.account);
+                } else if (mutation == Mutation.AddInstrument) {
+                    AddInstrument memory p = abi.decode(data, (AddInstrument));
+                    Instrument storage inst = state.instruments[p.instrumentId];
+                    if (inst.base != address(0)) revert InstrumentAlreadyExists();
+                    inst.base = p.base;
+                    inst.quote = p.quote;
+                    inst.baseLotExp = p.baseLotExp;
+                    inst.quoteLotExp = p.quoteLotExp;
+                } else if (mutation == Mutation.Deposit) {
+                    Deposit memory d = abi.decode(data, (Deposit));
+                    uint8 permissions = _verifySig(
+                        keccak256(abi.encode(DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline)),
+                        d.nonce,
+                        d.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_DEPOSIT) == 0) revert Unauthorized();
+                    state.accounts[sig.account].balances[d.asset] += d.amount;
+                } else if (mutation == Mutation.Withdrawal) {
+                    Withdrawal memory w = abi.decode(data, (Withdrawal));
+                    uint8 permissions = _verifySig(
+                        keccak256(abi.encode(WITHDRAWAL_TYPEHASH, w.asset, w.amount, w.nonce, w.deadline)),
+                        w.nonce,
+                        w.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_WITHDRAW) == 0) revert Unauthorized();
+                    if (state.accounts[sig.account].balances[w.asset] < w.amount) revert InsufficientBalance();
+                    unchecked {
+                        state.accounts[sig.account].balances[w.asset] -= w.amount;
+                    }
+                } else {
+                    revert InvalidMutation();
                 }
-            } else {
-                revert InvalidMutation();
             }
         }
     }
