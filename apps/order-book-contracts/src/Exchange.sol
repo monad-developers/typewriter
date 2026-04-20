@@ -38,9 +38,9 @@ struct Order {
 
 struct Instrument {
     address base;
-    uint16 baseLotExp;
+    uint8 baseLotExp;
     address quote;
-    uint16 quoteLotExp;
+    uint8 quoteLotExp;
     mapping(uint64 => Tick) bids;
     mapping(uint64 => Tick) asks;
 }
@@ -100,8 +100,8 @@ struct AddInstrument {
     uint64 instrumentId;
     address base;
     address quote;
-    uint16 baseLotExp;
-    uint16 quoteLotExp;
+    uint8 baseLotExp;
+    uint8 quoteLotExp;
     uint256 nonce;
     uint256 deadline;
 }
@@ -157,6 +157,7 @@ error InstrumentAlreadyExists();
 error AlreadyInitialized();
 error MissingAuthorizePermission();
 error AmountNotLotMultiple();
+error LotExpTooLarge();
 
 contract Exchange {
     address internal immutable SCHEDULER;
@@ -183,7 +184,7 @@ contract Exchange {
         keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
 
     bytes32 private constant ADD_INSTRUMENT_TYPEHASH = keccak256(
-        "AddInstrument(uint64 instrumentId,address base,address quote,uint16 baseLotExp,uint16 quoteLotExp,uint256 nonce,uint256 deadline)"
+        "AddInstrument(uint64 instrumentId,address base,address quote,uint8 baseLotExp,uint8 quoteLotExp,uint256 nonce,uint256 deadline)"
     );
 
     uint256 private immutable INITIAL_CHAIN_ID;
@@ -346,6 +347,7 @@ contract Exchange {
                         sig
                     );
                     if ((permissions & PERM_ADD_INSTRUMENT) == 0) revert Unauthorized();
+                    if (p.baseLotExp > 128 || p.quoteLotExp > 128) revert LotExpTooLarge();
                     Instrument storage inst = state.instruments[p.instrumentId];
                     if (inst.base != address(0)) revert InstrumentAlreadyExists();
                     inst.base = p.base;
@@ -420,14 +422,14 @@ contract Exchange {
             if (taker.balances[instrument.quote] < rawQuote) revert InsufficientBalance();
             unchecked {
                 taker.balances[instrument.quote] -= rawQuote;
-                taker.balances[instrument.base] += rawBase;
             }
+            taker.balances[instrument.base] += rawBase;
         } else {
             if (taker.balances[instrument.base] < rawBase) revert InsufficientBalance();
             unchecked {
                 taker.balances[instrument.base] -= rawBase;
-                taker.balances[instrument.quote] += rawQuote;
             }
+            taker.balances[instrument.quote] += rawQuote;
         }
     }
 
@@ -436,7 +438,7 @@ contract Exchange {
         if (instrument.base == address(0)) revert InvalidInstrument();
 
         uint64 quantityLots = _toLots(order.quantity, instrument.baseLotExp);
-        uint16 receivedLotExp = order.bidOrAsk == 0 ? instrument.baseLotExp : instrument.quoteLotExp;
+        uint8 receivedLotExp = order.bidOrAsk == 0 ? instrument.baseLotExp : instrument.quoteLotExp;
         uint64 minReceivedLots = _toLots(order.minReceivedQuantity, receivedLotExp);
 
         uint256 totalFilled;
@@ -483,10 +485,8 @@ contract Exchange {
             }
         }
 
-        unchecked {
-            tick.quantity += quantityLots;
-            tick.remainingQuantity += quantityLots;
-        }
+        tick.quantity += quantityLots;
+        tick.remainingQuantity += quantityLots;
 
         acc.orders
             .push(
@@ -514,6 +514,7 @@ contract Exchange {
         if (tick.volume > order.tickVolume) {
             filledQuantity = order.quantity;
         } else {
+            // tick.quantity != 0 here: a fully-swept tick increments volume, which the branch above catches.
             uint256 consumed = tick.quantity - tick.remainingQuantity;
             filledQuantity = uint64((uint256(order.quantity) * consumed) / tick.quantity);
             unfilledQuantity = order.quantity - filledQuantity;
@@ -545,7 +546,7 @@ contract Exchange {
         );
     }
 
-    function _toLots(uint256 fullAmount, uint16 lotExp) internal pure returns (uint64) {
+    function _toLots(uint256 fullAmount, uint8 lotExp) internal pure returns (uint64) {
         uint256 lots = fullAmount >> lotExp;
         if (lots << lotExp != fullAmount) revert AmountNotLotMultiple();
         if (lots > type(uint64).max) revert AmountNotLotMultiple();

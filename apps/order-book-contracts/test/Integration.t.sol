@@ -19,7 +19,8 @@ import {
     PERM_AUTHORIZE,
     MutationsOutOfOrder,
     SignatureExpired,
-    InvalidNonce
+    InvalidNonce,
+    LotExpTooLarge
 } from "src/Exchange.sol";
 
 import {KeyType, Initialize, InvalidSignature, KeyNotFound, INITIALIZE_TYPEHASH} from "src/Account.sol";
@@ -48,7 +49,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     );
     bytes32 constant _CLOSE_ORDER_TYPEHASH = keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
     bytes32 constant _ADD_INSTRUMENT_TYPEHASH = keccak256(
-        "AddInstrument(uint64 instrumentId,address base,address quote,uint16 baseLotExp,uint16 quoteLotExp,uint256 nonce,uint256 deadline)"
+        "AddInstrument(uint64 instrumentId,address base,address quote,uint8 baseLotExp,uint8 quoteLotExp,uint256 nonce,uint256 deadline)"
     );
 
     function setUp() public {
@@ -656,6 +657,50 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(MutationsOutOfOrder.selector);
+        this.execute(_bundles(muts, data, sigs));
+    }
+
+    function test_AddInstrument_LotExpTooLarge() external {
+        _initAccount(adminPk, adminAccount);
+
+        AddInstrument memory inst = AddInstrument({
+            instrumentId: 0,
+            base: BASE,
+            quote: QUOTE,
+            baseLotExp: 129,
+            quoteLotExp: 0,
+            nonce: 0,
+            deadline: type(uint256).max
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.AddInstrument;
+        data[0] = abi.encode(inst);
+        sigs[0] = Signature({
+            account: adminAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                adminPk,
+                keccak256(
+                    abi.encode(
+                        _ADD_INSTRUMENT_TYPEHASH,
+                        inst.instrumentId,
+                        inst.base,
+                        inst.quote,
+                        inst.baseLotExp,
+                        inst.quoteLotExp,
+                        inst.nonce,
+                        inst.deadline
+                    )
+                )
+            )
+        });
+
+        vm.prank(SCHEDULER);
+        vm.expectRevert(LotExpTooLarge.selector);
         this.execute(_bundles(muts, data, sigs));
     }
 
