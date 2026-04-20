@@ -535,6 +535,10 @@ export function handleMarketOrder(
     }
   }
 
+  if (totalFilled < order.quantity)
+    throw new Error(
+      `InsufficientLiquidity: handleMarketOrder totalFilled=${totalFilled} order.quantity=${order.quantity} fillCount=${resolution.fills.length} account=${account}`,
+    );
   if (totalFilled !== order.quantity)
     throw new Error(
       `InvalidMutation: handleMarketOrder totalFilled=${totalFilled} order.quantity=${order.quantity} fillCount=${resolution.fills.length} account=${account}`,

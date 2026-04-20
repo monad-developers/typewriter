@@ -56,12 +56,13 @@ import {
   incrementNonce,
   MutationType,
 } from "./exchange";
-import { resolveAndOrderMutations, resolveMarketOrder } from "./resolution";
+import { resolveAndOrderMutations } from "./resolution";
 import { type EIP712Domain, verifySignature } from "./signature";
 
 export type MutationStatus =
   | "pending"
   | "accepted"
+  | "rejected"
   | "proposed"
   | "voted"
   | "finalized"
@@ -416,47 +417,34 @@ function encodeBundle(resolved: ResolvedMutation[]): Hex {
   });
 }
 
-function dryRun(state: State<bigint>, mutation: TaggedMutation): void {
-  const clone = structuredClone(state);
-
-  switch (mutation.type) {
+function applyMutation(state: State<bigint>, r: ResolvedMutation): void {
+  switch (r.type) {
     case MutationType.Initialize:
-      handleInitialize(clone, mutation.mutation, mutation.account);
+      handleInitialize(state, r.mutation, r.account);
       break;
     case MutationType.Authorize:
-      handleAuthorize(clone, mutation.mutation, mutation.account);
+      handleAuthorize(state, r.mutation, r.account);
       break;
     case MutationType.Revoke:
-      handleRevoke(clone, mutation.mutation, mutation.account);
+      handleRevoke(state, r.mutation, r.account);
       break;
     case MutationType.CloseOrder:
-      handleCloseOrder(clone, mutation.mutation, mutation.account);
+      handleCloseOrder(state, r.mutation, r.account);
       break;
     case MutationType.LimitOrder:
-      handleLimitOrder(clone, mutation.mutation, mutation.account);
+      handleLimitOrder(state, r.mutation, r.account);
       break;
-    case MutationType.MarketOrder: {
-      const instrument = clone.instruments[mutation.mutation.instrumentId];
-      if (!instrument)
-        throw new Error(
-          `InvalidInstrument: instrumentId=${mutation.mutation.instrumentId}, account=${mutation.account}`,
-        );
-      const resolution = resolveMarketOrder(
-        instrument,
-        mutation.mutation,
-        new Map(),
-      );
-      handleMarketOrder(clone, mutation.mutation, resolution, mutation.account);
+    case MutationType.MarketOrder:
+      handleMarketOrder(state, r.mutation, r.resolution, r.account);
       break;
-    }
     case MutationType.AddInstrument:
-      handleAddInstrument(clone, mutation.mutation);
+      handleAddInstrument(state, r.mutation);
       break;
     case MutationType.Deposit:
-      handleDeposit(clone, mutation.mutation, mutation.account);
+      handleDeposit(state, r.mutation, r.account);
       break;
     case MutationType.Withdrawal:
-      handleWithdrawal(clone, mutation.mutation, mutation.account);
+      handleWithdrawal(state, r.mutation, r.account);
       break;
   }
 }
@@ -537,50 +525,62 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const bundle = Effect.gen(function* () {
     const batch = Chunk.toArray(yield* Queue.takeAll(mutationQueue));
     if (batch.length === 0) return;
-    const mutationEvents: MutationEvent[] = [];
 
-    const resolved = resolveAndOrderMutations(
-      state,
-      batch.map((e) => e.tagged),
-    );
+    const rejections: { entry: MutationEntry; error: unknown }[] = [];
+    let survivors = batch;
+    let resolved: ResolvedMutation[] = [];
 
-    for (const r of resolved) {
-      switch (r.type) {
-        case MutationType.Initialize:
-          handleInitialize(state, r.mutation, r.account);
+    while (survivors.length > 0) {
+      resolved = resolveAndOrderMutations(
+        state,
+        survivors.map((e) => e.tagged),
+      );
+      const clone = structuredClone(state);
+      let culprit: MutationEntry | null = null;
+      let culpritErr: unknown;
+      for (const r of resolved) {
+        try {
+          applyMutation(clone, r);
+        } catch (err) {
+          culprit = survivors.find((e) => e.tagged.mutation === r.mutation)!;
+          culpritErr = err;
           break;
-        case MutationType.Authorize:
-          handleAuthorize(state, r.mutation, r.account);
-          break;
-        case MutationType.Revoke:
-          handleRevoke(state, r.mutation, r.account);
-          break;
-        case MutationType.CloseOrder:
-          handleCloseOrder(state, r.mutation, r.account);
-          break;
-        case MutationType.LimitOrder:
-          handleLimitOrder(state, r.mutation, r.account);
-          break;
-        case MutationType.MarketOrder:
-          handleMarketOrder(state, r.mutation, r.resolution, r.account);
-          break;
-        case MutationType.AddInstrument:
-          handleAddInstrument(state, r.mutation);
-          break;
-        case MutationType.Deposit:
-          handleDeposit(state, r.mutation, r.account);
-          break;
-        case MutationType.Withdrawal:
-          handleWithdrawal(state, r.mutation, r.account);
-          break;
+        }
       }
-
-      const entry = batch.find((e) => e.tagged.mutation === r.mutation);
-      if (entry) {
-        yield* Deferred.succeed(entry.deferred, { id: entry.id, ...r });
-        mutationEvents.push({ id: entry.id, ...r });
-      }
+      if (culprit === null) break;
+      rejections.push({ entry: culprit, error: culpritErr });
+      survivors = survivors.filter((e) => e !== culprit);
     }
+    if (survivors.length === 0) resolved = [];
+
+    for (const { entry, error } of rejections) {
+      yield* Deferred.fail(entry.deferred, error);
+      emitMutation({ id: entry.id, ...entry.tagged } as MutationEvent, "rejected");
+      yield* Effect.logInfo("mutation rejected").pipe(
+        Effect.annotateLogs({
+          mutationId: entry.id,
+          type: MutationType[entry.tagged.type],
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+
+    const mutationEvents: MutationEvent[] = [];
+    for (const r of resolved) {
+      applyMutation(state, r);
+      if (
+        r.type !== MutationType.AddInstrument &&
+        r.type !== MutationType.Initialize
+      ) {
+        const nonceKey = BigInt(r.nonce) >> 64n;
+        incrementNonce(getAccount(state, r.account), nonceKey);
+      }
+      const entry = survivors.find((e) => e.tagged.mutation === r.mutation)!;
+      yield* Deferred.succeed(entry.deferred, { id: entry.id, ...r });
+      mutationEvents.push({ id: entry.id, ...r });
+    }
+
+    if (mutationEvents.length === 0) return;
 
     const calldata = encodeBundle(resolved);
     const bundleId = nextBundleId++;
@@ -847,18 +847,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           try: () => verifySignature(state, eip712Domain, mutation),
           catch: (err) => err,
         });
-        yield* Effect.try({
-          try: () => dryRun(state, mutation),
-          catch: (err) => err,
-        });
-
-        if (
-          mutation.type !== MutationType.AddInstrument &&
-          mutation.type !== MutationType.Initialize
-        ) {
-          const nonceKey = BigInt(mutation.nonce) >> 64n;
-          incrementNonce(getAccount(state, mutation.account), nonceKey);
-        }
 
         const id = nextId++;
         const deferred = yield* Deferred.make<
