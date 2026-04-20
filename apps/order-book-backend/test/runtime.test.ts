@@ -5,7 +5,12 @@ import { anvil } from "viem/chains";
 import { EIP712_TYPES } from "order-book-sdk";
 import { createState, MutationType } from "../src/exchange";
 import { startRuntime } from "../src/runtime";
-import { deployExchange, RPC_URL, SCHEDULER_ACCOUNT } from "./setup";
+import {
+  createTestDb,
+  deployExchange,
+  RPC_URL,
+  SCHEDULER_ACCOUNT,
+} from "./setup";
 
 const MAKER_PK =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
@@ -43,6 +48,7 @@ test("initialize creates account with root key and session key", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -98,6 +104,7 @@ test("initialize rejects already initialized account", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -166,6 +173,7 @@ test("authorize adds a new key", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -250,6 +258,7 @@ test("revoke removes a key", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -323,6 +332,7 @@ test("deposit credits balance", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -396,6 +406,7 @@ test("withdrawal debits balance", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -486,6 +497,7 @@ test("withdrawal with insufficient balance rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -548,6 +560,7 @@ test("add instrument creates instrument", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -578,6 +591,7 @@ test("add duplicate instrument rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -624,6 +638,7 @@ test("limit order bid locks quote and places on book", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -742,6 +757,7 @@ test("limit order ask locks base and places on book", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -854,6 +870,7 @@ test("limit order with insufficient balance rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -946,6 +963,7 @@ test("market order sell fills against resting bid", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -1123,7 +1141,7 @@ test("market order fills across multiple price levels", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
 
@@ -1168,7 +1186,7 @@ test("market order that exhausts a tick increments volume", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
 
@@ -1207,7 +1225,7 @@ test("market order with insufficient taker balance rejects", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
 
@@ -1257,6 +1275,7 @@ test("market order buy fills against resting ask", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -1447,6 +1466,7 @@ test("market order with insufficient liquidity rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -1556,6 +1576,7 @@ test("market order with slippage exceeded rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -1730,7 +1751,7 @@ test("cancel sorted before market order in a bundle", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
 
@@ -1774,7 +1795,7 @@ test("two market orders in a bundle", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
 
@@ -1821,7 +1842,7 @@ test("two market orders in a bundle, first invalid due to slippage", async () =>
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000" });
+  const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
 
@@ -1884,6 +1905,7 @@ test("close order refunds unfilled and credits filled", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -2090,6 +2112,7 @@ test("close nonexistent order rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({
@@ -2169,6 +2192,7 @@ test("invalid signature rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -2237,6 +2261,7 @@ test("expired deadline rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -2306,6 +2331,7 @@ test("wrong nonce rejects", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   const pubKey =
@@ -2374,6 +2400,7 @@ test("full lifecycle: deposit, limit, market, close", async () => {
     address: exchangeAddress,
     rpId: "localhost",
     origin: "http://localhost:3000",
+    db: await createTestDb(anvil.id, exchangeAddress),
   });
 
   await handle.execute({

@@ -17,7 +17,7 @@ import type { Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
-import { checkConsistency, dbPlugin, recoverState } from "./db";
+import { checkConsistency, recoverState } from "./db";
 import {
   type AddInstrument,
   type Authorize,
@@ -101,9 +101,8 @@ const handle = startRuntime({
   address: EXCHANGE_ADDRESS,
   rpId: process.env.BUN_PUBLIC_RP_ID || undefined,
   origin: process.env.BUN_PUBLIC_ORIGIN || undefined,
+  db: writerDb,
 });
-
-dbPlugin(handle, writerDb);
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",

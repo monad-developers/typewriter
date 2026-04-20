@@ -31,6 +31,16 @@ import {
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
+import type * as schema from "./app-schema";
+import {
+  insertBlock,
+  insertBundle,
+  insertMutation,
+  syncState,
+  updateBundleStatus,
+  updateMutationStatus,
+} from "./db";
 import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
 import {
   getAccount,
@@ -86,6 +96,7 @@ export type RuntimeConfig = {
   address: Address;
   rpId?: string;
   origin?: string | string[];
+  db: BunSQLDatabase<typeof schema>;
 };
 
 type MutationEntry = {
@@ -579,6 +590,17 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       mutations: mutationEvents,
     };
 
+    yield* Effect.tryPromise({
+      try: async () => {
+        await insertBundle(config.db, bundleId);
+        for (const m of mutationEvents) {
+          await insertMutation(config.db, m, bundleId);
+          await syncState(config.db, state, m);
+        }
+      },
+      catch: (error) => error as Error,
+    });
+
     yield* Effect.logInfo("bundle accepted").pipe(
       Effect.annotateLogs({
         bundleId,
@@ -660,6 +682,16 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         catch: (error) => error as SendRawTransactionSyncErrorType,
       });
 
+      yield* Effect.tryPromise({
+        try: async () => {
+          await updateBundleStatus(config.db, bundleEvent.id, "proposed");
+          for (const m of bundleEvent.mutations) {
+            await updateMutationStatus(config.db, m.type, m.id, "proposed");
+          }
+        },
+        catch: (error) => error as Error,
+      });
+
       for (const mutation of bundleEvent.mutations) {
         emitMutation(mutation, "proposed");
       }
@@ -698,17 +730,24 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     if (block.number === null || block.number <= lastBlockNumber) return;
     lastBlockNumber = block.number;
 
+    const blockEvent: BlockEvent = {
+      number: block.number,
+      hash: block.hash as Hex,
+      timestamp: block.timestamp,
+    };
+
+    yield* Effect.tryPromise({
+      try: () => insertBlock(config.db, blockEvent),
+      catch: (error) => error as Error,
+    });
+
     yield* Effect.logDebug("block").pipe(
       Effect.annotateLogs({
         number: block.number.toString(),
         hash: block.hash,
       }),
     );
-    emitBlock({
-      number: block.number,
-      hash: block.hash as Hex,
-      timestamp: block.timestamp,
-    });
+    emitBlock(blockEvent);
 
     for (const [id, entry] of pendingBundles) {
       const confirmations = block.number - entry.proposedAt;
@@ -728,17 +767,28 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
       if (nextStatus === null) continue;
 
+      const status = nextStatus;
+      yield* Effect.tryPromise({
+        try: async () => {
+          await updateBundleStatus(config.db, id, status);
+          for (const m of entry.bundle.mutations) {
+            await updateMutationStatus(config.db, m.type, m.id, status);
+          }
+        },
+        catch: (error) => error as Error,
+      });
+
       for (const mutation of entry.bundle.mutations) {
-        emitMutation(mutation, nextStatus as MutationStatus);
+        emitMutation(mutation, status as MutationStatus);
       }
-      emitBundle(entry.bundle, nextStatus);
-      entry.status = nextStatus;
+      emitBundle(entry.bundle, status);
+      entry.status = status;
 
       yield* Effect.logDebug("bundle status updated").pipe(
-        Effect.annotateLogs({ bundleId: id, status: nextStatus }),
+        Effect.annotateLogs({ bundleId: id, status }),
       );
 
-      if (nextStatus === "verified") {
+      if (status === "verified") {
         pendingBundles.delete(id);
       }
     }

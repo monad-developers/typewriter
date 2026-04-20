@@ -18,7 +18,7 @@ import {
   incrementNonce,
   MutationType,
 } from "./exchange";
-import type { MutationEvent, RuntimeHandle } from "./runtime";
+import type { BlockEvent, BundleStatus, MutationEvent } from "./runtime";
 
 type DB = BunSQLDatabase<typeof schema>;
 type DBStatus = "accepted" | "proposed" | "voted" | "finalized" | "verified";
@@ -492,35 +492,30 @@ export async function recoverState(
   });
 }
 
-export function dbPlugin(handle: RuntimeHandle, db: DB) {
-  handle.on("block", async (block) => {
-    await db
-      .insert(schema.blocks)
-      .values({
-        number: block.number.toString(),
-        hash: block.hash,
-        timestamp: block.timestamp.toString(),
-      })
-      .onConflictDoNothing();
-  });
+export async function insertBlock(db: DB, block: BlockEvent) {
+  await db
+    .insert(schema.blocks)
+    .values({
+      number: block.number.toString(),
+      hash: block.hash,
+      timestamp: block.timestamp.toString(),
+    })
+    .onConflictDoNothing();
+}
 
-  handle.on("bundle", async (bundle, status) => {
-    if (status === "accepted") {
-      await db.insert(schema.bundles).values({ id: bundle.id });
-      for (const m of bundle.mutations) {
-        await insertMutation(db, m, bundle.id);
-        await syncState(db, handle.state, m);
-      }
-    } else {
-      await db
-        .update(schema.bundles)
-        .set({ status: status as DBStatus })
-        .where(eq(schema.bundles.id, bundle.id));
-      for (const m of bundle.mutations) {
-        await updateStatus(db, m.type, m.id, status);
-      }
-    }
-  });
+export async function insertBundle(db: DB, bundleId: number) {
+  await db.insert(schema.bundles).values({ id: bundleId });
+}
+
+export async function updateBundleStatus(
+  db: DB,
+  bundleId: number,
+  status: BundleStatus,
+) {
+  await db
+    .update(schema.bundles)
+    .set({ status: status as DBStatus })
+    .where(eq(schema.bundles.id, bundleId));
 }
 
 async function syncNonce(
@@ -546,7 +541,11 @@ async function syncNonce(
     });
 }
 
-async function syncState(db: DB, state: State<bigint>, m: MutationEvent) {
+export async function syncState(
+  db: DB,
+  state: State<bigint>,
+  m: MutationEvent,
+) {
   switch (m.type) {
     case MutationType.Initialize: {
       const acc = state.accounts[m.account];
@@ -869,7 +868,11 @@ async function syncTick(
     });
 }
 
-async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
+export async function insertMutation(
+  db: DB,
+  m: MutationEvent,
+  bundleId: number,
+) {
   const base = { id: m.id, bundleId, status: "accepted" as DBStatus };
 
   switch (m.type) {
@@ -999,7 +1002,7 @@ async function insertMutation(db: DB, m: MutationEvent, bundleId: number) {
   }
 }
 
-async function updateStatus(
+export async function updateMutationStatus(
   db: DB,
   type: MutationType,
   id: number,
