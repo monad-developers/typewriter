@@ -20,6 +20,9 @@ const RANGES = [
   { min: 1, max: 5 },
   { min: 5, max: 10 },
   { min: 10, max: 25 },
+  { min: 25, max: 100 },
+  { min: 100, max: 250 },
+  { min: 250, max: 1000 },
 ];
 const DEFAULT_INTERVAL = 10_000;
 
@@ -135,7 +138,7 @@ function getMidPrice(book: Instrument): number | null {
 
 function orderBps(order: Order, midPrice: number): number {
   const price = q32ToPrice(BigInt(order.price), instrument);
-  return Math.abs(price - midPrice) / midPrice * 10000;
+  return (Math.abs(price - midPrice) / midPrice) * 10000;
 }
 
 function rangeKey(side: "buy" | "sell", rangeIndex: number): string {
