@@ -102,6 +102,8 @@ struct AddInstrument {
     address quote;
     uint16 baseLotExp;
     uint16 quoteLotExp;
+    uint256 nonce;
+    uint256 deadline;
 }
 
 struct Deposit {
@@ -137,6 +139,7 @@ uint8 constant PERM_LIMIT_ORDER = 1 << 3;
 uint8 constant PERM_MARKET_ORDER = 1 << 4;
 uint8 constant PERM_DEPOSIT = 1 << 5;
 uint8 constant PERM_WITHDRAW = 1 << 6;
+uint8 constant PERM_ADD_INSTRUMENT = 1 << 7;
 
 error MutationsOutOfOrder();
 error Unauthorized();
@@ -178,6 +181,10 @@ contract Exchange {
 
     bytes32 private constant WITHDRAWAL_TYPEHASH =
         keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
+
+    bytes32 private constant ADD_INSTRUMENT_TYPEHASH = keccak256(
+        "AddInstrument(uint64 instrumentId,address base,address quote,uint16 baseLotExp,uint16 quoteLotExp,uint256 nonce,uint256 deadline)"
+    );
 
     uint256 private immutable INITIAL_CHAIN_ID;
     bytes32 private immutable INITIAL_DOMAIN_SEPARATOR;
@@ -321,6 +328,24 @@ contract Exchange {
                     _executeMarketOrder(order, resolution, sig.account);
                 } else if (mutation == Mutation.AddInstrument) {
                     AddInstrument memory p = abi.decode(data, (AddInstrument));
+                    uint8 permissions = _verifySig(
+                        keccak256(
+                            abi.encode(
+                                ADD_INSTRUMENT_TYPEHASH,
+                                p.instrumentId,
+                                p.base,
+                                p.quote,
+                                p.baseLotExp,
+                                p.quoteLotExp,
+                                p.nonce,
+                                p.deadline
+                            )
+                        ),
+                        p.nonce,
+                        p.deadline,
+                        sig
+                    );
+                    if ((permissions & PERM_ADD_INSTRUMENT) == 0) revert Unauthorized();
                     Instrument storage inst = state.instruments[p.instrumentId];
                     if (inst.base != address(0)) revert InstrumentAlreadyExists();
                     inst.base = p.base;
