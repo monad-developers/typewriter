@@ -38,8 +38,8 @@ struct Order {
 
 struct Instrument {
     address base;
-    uint8 baseLotExp;
     address quote;
+    uint8 baseLotExp;
     uint8 quoteLotExp;
     mapping(uint64 => Tick) bids;
     mapping(uint64 => Tick) asks;
@@ -80,7 +80,7 @@ struct LimitOrder {
 
 struct MarketOrder {
     uint256 quantity;
-    uint256 minReceivedQuantity;
+    uint256 minReceivedQuantity; // bidOrAsk = 0: base, bidOrAsk = 1: quote
     uint64 instrumentId;
     uint8 bidOrAsk; // 0: bid, 1: ask
     uint256 nonce;
@@ -155,7 +155,6 @@ error SignatureExpired();
 error InvalidNonce();
 error InstrumentAlreadyExists();
 error AlreadyInitialized();
-error MissingAuthorizePermission();
 error AmountNotLotMultiple();
 error LotExpTooLarge();
 
