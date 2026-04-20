@@ -70,7 +70,7 @@ const writerDb = drizzle({
   casing: "snake_case",
 });
 
-// @ts-ignore
+// @ts-expect-error migrate's BunSQLDatabase type doesn't carry schema
 const schemaName = await migrate(writerDb, CHAIN.id, EXCHANGE_ADDRESS);
 
 const readerClient = new Bun.SQL({
@@ -126,7 +126,7 @@ class Response extends globalThis.Response {
   }
 }
 
-const server = serve({
+serve({
   idleTimeout: 0,
   routes: {
     "/api/*": {

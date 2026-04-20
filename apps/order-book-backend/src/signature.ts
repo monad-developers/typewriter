@@ -183,13 +183,6 @@ export async function verifySignature(
         mutation.rawSignature,
       );
       const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
-      console.log(
-        "[verify:P256] hash=%s, publicKey=%s, r=%s, s=%s",
-        hash,
-        key.publicKey,
-        r.toString(16),
-        s.toString(16),
-      );
       if (
         P256.verify({
           payload: hash,

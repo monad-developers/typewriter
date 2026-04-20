@@ -82,7 +82,7 @@ beforeAll(async () => {
     await adminClient.unsafe(`DROP SCHEMA "${row.nspname}" CASCADE`);
   }
   await adminClient`DROP TABLE IF EXISTS deployments CASCADE`;
-  await adminClient`DROP TABLE IF EXISTS "__drizzle_migrations" CASCADE`;
+  await adminClient`DROP SCHEMA IF EXISTS drizzle CASCADE`;
 });
 
 afterAll(async () => {

@@ -1,3 +1,4 @@
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import {
   Cause,
   Chunk,
@@ -31,7 +32,6 @@ import {
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
-import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type * as schema from "./app-schema";
 import {
   insertBlock,

@@ -45,7 +45,7 @@ export async function migrate(
     return existing.schemaName;
   }
 
-  // @ts-ignore
+  // @ts-expect-error
   const [{ max }] = await db
     .select({ max: sql<number>`coalesce(max(id), 0)` })
     .from(deployments);
