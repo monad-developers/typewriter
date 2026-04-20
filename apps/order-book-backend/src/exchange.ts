@@ -638,9 +638,6 @@ export function handleCloseOrder(
   if (tick && unfilledQuantity > 0n) {
     tick.quantity -= unfilledQuantity;
     tick.remainingQuantity -= unfilledQuantity;
-    if (tick.quantity === 0n) {
-      delete ticks[priceKey];
-    }
   }
 
   if (order.side === 0) {

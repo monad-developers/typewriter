@@ -640,7 +640,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
             ],
           }),
         catch: (error) => error as Error,
-      });
+      }).pipe(
+        Effect.retry({
+          times: 3,
+          schedule: Schedule.spaced(Duration.millis(200)),
+        }),
+      );
 
       const { accessList, gasUsed } = yield* Effect.tryPromise({
         try: () =>
