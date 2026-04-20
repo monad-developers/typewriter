@@ -475,7 +475,14 @@ export async function recoverState(
 
     const state = createState();
     for (const m of mutations) {
-      replayMutation(state, m);
+      try {
+        replayMutation(state, m);
+      } catch (err) {
+        throw new Error(
+          `replayMutation failed: bundleId=${m.bundleId} type=${MutationType[m.type]} nonce=${"nonce" in m ? m.nonce : "n/a"}: ${err instanceof Error ? err.message : err}`,
+          { cause: err },
+        );
+      }
     }
 
     await persistState(d, state);

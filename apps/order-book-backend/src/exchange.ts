@@ -466,8 +466,16 @@ function settleFill(
 ): void {
   const ticks = takerSide === 0 ? instrument.asks : instrument.bids;
   const tick = ticks[Number(fill.price)];
-  if (!tick || fill.quantity > tick.remainingQuantity)
-    throw new Error("InvalidTick");
+  if (!tick) {
+    throw new Error(
+      `InvalidTick: tick missing at price=${fill.price} side=${takerSide === 0 ? "ask" : "bid"} account=${takerAccount}`,
+    );
+  }
+  if (fill.quantity > tick.remainingQuantity) {
+    throw new Error(
+      `InvalidTick: fill.quantity=${fill.quantity} exceeds remaining=${tick.remainingQuantity} at price=${fill.price} side=${takerSide === 0 ? "ask" : "bid"} tick.quantity=${tick.quantity} tick.volume=${tick.volume} account=${takerAccount}`,
+    );
+  }
 
   tick.remainingQuantity -= fill.quantity;
   if (tick.remainingQuantity === 0n) {
@@ -482,17 +490,21 @@ function settleFill(
   const taker = getAccount(state, takerAccount);
 
   if (takerSide === 0) {
-    if ((taker.balances[instrument.quote] ?? 0n) < rQuote)
-      throw new Error("InsufficientBalance");
-    taker.balances[instrument.quote] =
-      (taker.balances[instrument.quote] ?? 0n) - rQuote;
+    const balance = taker.balances[instrument.quote] ?? 0n;
+    if (balance < rQuote)
+      throw new Error(
+        `InsufficientBalance: settleFill taker buy, asset=${instrument.quote} balance=${balance} required=${rQuote} account=${takerAccount}`,
+      );
+    taker.balances[instrument.quote] = balance - rQuote;
     taker.balances[instrument.base] =
       (taker.balances[instrument.base] ?? 0n) + rBase;
   } else {
-    if ((taker.balances[instrument.base] ?? 0n) < rBase)
-      throw new Error("InsufficientBalance");
-    taker.balances[instrument.base] =
-      (taker.balances[instrument.base] ?? 0n) - rBase;
+    const balance = taker.balances[instrument.base] ?? 0n;
+    if (balance < rBase)
+      throw new Error(
+        `InsufficientBalance: settleFill taker sell, asset=${instrument.base} balance=${balance} required=${rBase} account=${takerAccount}`,
+      );
+    taker.balances[instrument.base] = balance - rBase;
     taker.balances[instrument.quote] =
       (taker.balances[instrument.quote] ?? 0n) + rQuote;
   }
@@ -505,7 +517,10 @@ export function handleMarketOrder(
   account: Hex,
 ): void {
   const instrument = state.instruments[order.instrumentId];
-  if (!instrument) throw new Error("InvalidInstrument");
+  if (!instrument)
+    throw new Error(
+      `InvalidInstrument: handleMarketOrder instrumentId=${order.instrumentId} account=${account}`,
+    );
 
   let totalFilled = 0n;
   let totalReceived = 0n;
@@ -520,9 +535,14 @@ export function handleMarketOrder(
     }
   }
 
-  if (totalFilled !== order.quantity) throw new Error("InvalidMutation");
+  if (totalFilled !== order.quantity)
+    throw new Error(
+      `InvalidMutation: handleMarketOrder totalFilled=${totalFilled} order.quantity=${order.quantity} fillCount=${resolution.fills.length} account=${account}`,
+    );
   if (totalReceived < order.minReceivedQuantity)
-    throw new Error("SlippageExceeded");
+    throw new Error(
+      `SlippageExceeded: totalReceived=${totalReceived} minReceivedQuantity=${order.minReceivedQuantity} account=${account}`,
+    );
 }
 
 export function handleLimitOrder(
@@ -531,7 +551,10 @@ export function handleLimitOrder(
   account: Hex,
 ): void {
   const instrument = state.instruments[order.instrumentId];
-  if (!instrument) throw new Error("InvalidInstrument");
+  if (!instrument)
+    throw new Error(
+      `InvalidInstrument: handleLimitOrder instrumentId=${order.instrumentId} account=${account}`,
+    );
 
   const ticks = order.bidOrAsk === 0 ? instrument.bids : instrument.asks;
   const priceKey = Number(order.price);
@@ -541,22 +564,28 @@ export function handleLimitOrder(
   const tick = ticks[priceKey]!;
 
   if (tick.remainingQuantity !== tick.quantity)
-    throw new Error("TickPartiallyFilled");
+    throw new Error(
+      `TickPartiallyFilled: price=${order.price} side=${order.bidOrAsk === 0 ? "bid" : "ask"} tick.quantity=${tick.quantity} tick.remainingQuantity=${tick.remainingQuantity} tick.volume=${tick.volume} account=${account}`,
+    );
 
   const acc = getAccount(state, account);
   if (order.bidOrAsk === 0) {
     const rLock =
       ((order.quantity * order.price) >> 32n) << BigInt(instrument.quoteLotExp);
-    if ((acc.balances[instrument.quote] ?? 0n) < rLock)
-      throw new Error("InsufficientBalance");
-    acc.balances[instrument.quote] =
-      (acc.balances[instrument.quote] ?? 0n) - rLock;
+    const balance = acc.balances[instrument.quote] ?? 0n;
+    if (balance < rLock)
+      throw new Error(
+        `InsufficientBalance: handleLimitOrder bid, asset=${instrument.quote} balance=${balance} required=${rLock} account=${account}`,
+      );
+    acc.balances[instrument.quote] = balance - rLock;
   } else {
     const rBase = order.quantity << BigInt(instrument.baseLotExp);
-    if ((acc.balances[instrument.base] ?? 0n) < rBase)
-      throw new Error("InsufficientBalance");
-    acc.balances[instrument.base] =
-      (acc.balances[instrument.base] ?? 0n) - rBase;
+    const balance = acc.balances[instrument.base] ?? 0n;
+    if (balance < rBase)
+      throw new Error(
+        `InsufficientBalance: handleLimitOrder ask, asset=${instrument.base} balance=${balance} required=${rBase} account=${account}`,
+      );
+    acc.balances[instrument.base] = balance - rBase;
   }
 
   tick.quantity += order.quantity;
@@ -578,10 +607,16 @@ export function handleCloseOrder(
 ): void {
   const acc = getAccount(state, account);
   const order = acc.orders[close.orderId];
-  if (!order || order.quantity === 0n) throw new Error("OrderNotFound");
+  if (!order || order.quantity === 0n)
+    throw new Error(
+      `OrderNotFound: orderId=${close.orderId} ordersLength=${acc.orders.length} quantity=${order?.quantity ?? "missing"} account=${account}`,
+    );
 
   const instrument = state.instruments[order.instrumentId];
-  if (!instrument) throw new Error("InvalidInstrument");
+  if (!instrument)
+    throw new Error(
+      `InvalidInstrument: handleCloseOrder instrumentId=${order.instrumentId} orderId=${close.orderId} account=${account}`,
+    );
 
   const ticks = order.side === 0 ? instrument.bids : instrument.asks;
   const priceKey = Number(order.price);
@@ -645,10 +680,12 @@ export function handleWithdrawal(
   account: Hex,
 ): void {
   const acc = getAccount(state, account);
-  if ((acc.balances[params.asset] ?? 0n) < params.amount)
-    throw new Error("InsufficientBalance");
-  acc.balances[params.asset] =
-    (acc.balances[params.asset] ?? 0n) - params.amount;
+  const balance = acc.balances[params.asset] ?? 0n;
+  if (balance < params.amount)
+    throw new Error(
+      `InsufficientBalance: handleWithdrawal asset=${params.asset} balance=${balance} amount=${params.amount} account=${account}`,
+    );
+  acc.balances[params.asset] = balance - params.amount;
 }
 
 export function handleAddInstrument(
@@ -656,7 +693,9 @@ export function handleAddInstrument(
   params: AddInstrument,
 ): void {
   if (state.instruments[params.instrumentId])
-    throw new Error("InstrumentAlreadyExists");
+    throw new Error(
+      `InstrumentAlreadyExists: instrumentId=${params.instrumentId}`,
+    );
   state.instruments[params.instrumentId] = {
     base: params.base,
     baseLotExp: params.baseLotExp,
@@ -673,7 +712,10 @@ export function handleInitialize(
   account: Hex,
 ): void {
   const acc = getAccount(state, account);
-  if (acc.keys.length > 0) throw new Error("AlreadyInitialized");
+  if (acc.keys.length > 0)
+    throw new Error(
+      `AlreadyInitialized: account=${account} keyCount=${acc.keys.length}`,
+    );
   acc.keys.push({
     expiry: 0,
     keyType: params.rootKeyType as KeyType,
@@ -709,7 +751,10 @@ export function handleRevoke(
 ): void {
   const acc = getAccount(state, account);
   const key = acc.keys[params.keyId];
-  if (!key || key.permissions === 0) throw new Error("KeyNotFound");
+  if (!key || key.permissions === 0)
+    throw new Error(
+      `KeyNotFound: handleRevoke keyId=${params.keyId} keyCount=${acc.keys.length} permissions=${key?.permissions ?? "missing"} account=${account}`,
+    );
   acc.keys[params.keyId] = {
     expiry: 0,
     keyType: 0,
