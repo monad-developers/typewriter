@@ -355,6 +355,32 @@ function replayMutation(state: State<bigint>, m: ResolvedMutation): void {
 }
 
 async function persistState(db: DB, state: State<bigint>) {
+  for (const [instId, inst] of Object.entries(state.instruments)) {
+    await db.insert(schema.instruments).values({
+      id: BigInt(Number(instId)),
+      base: inst.base,
+      baseLotExp: inst.baseLotExp,
+      quote: inst.quote,
+      quoteLotExp: inst.quoteLotExp,
+    });
+
+    for (const [side, ticks] of [
+      [0, inst.bids],
+      [1, inst.asks],
+    ] as const) {
+      for (const [price, tick] of Object.entries(ticks)) {
+        await db.insert(schema.ticks).values({
+          instrumentId: BigInt(Number(instId)),
+          side,
+          price: BigInt(Number(price)),
+          quantity: tick.quantity,
+          remainingQuantity: tick.remainingQuantity,
+          volume: tick.volume,
+        });
+      }
+    }
+  }
+
   for (const [accountId, acc] of Object.entries(state.accounts)) {
     await db.insert(schema.accounts).values({ id: accountId });
 
@@ -393,32 +419,6 @@ async function persistState(db: DB, state: State<bigint>) {
         tickVolume: order.tickVolume,
         side: order.side,
       });
-    }
-  }
-
-  for (const [instId, inst] of Object.entries(state.instruments)) {
-    await db.insert(schema.instruments).values({
-      id: BigInt(Number(instId)),
-      base: inst.base,
-      baseLotExp: inst.baseLotExp,
-      quote: inst.quote,
-      quoteLotExp: inst.quoteLotExp,
-    });
-
-    for (const [side, ticks] of [
-      [0, inst.bids],
-      [1, inst.asks],
-    ] as const) {
-      for (const [price, tick] of Object.entries(ticks)) {
-        await db.insert(schema.ticks).values({
-          instrumentId: BigInt(Number(instId)),
-          side,
-          price: BigInt(Number(price)),
-          quantity: tick.quantity,
-          remainingQuantity: tick.remainingQuantity,
-          volume: tick.volume,
-        });
-      }
     }
   }
 }
