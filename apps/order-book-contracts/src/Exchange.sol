@@ -203,7 +203,7 @@ contract Exchange {
     function execute(Bundle[] calldata bundles) external {
         if (msg.sender != SCHEDULER) revert Unauthorized();
 
-        for (uint256 b = 0; b < bundles.length; b++) {
+        for (uint256 b = 0; b < bundles.length;) {
             Bundle calldata bundle = bundles[b];
 
             if (
@@ -214,7 +214,7 @@ contract Exchange {
             }
 
             Mutation prev = Mutation.Initialize;
-            for (uint256 i = 0; i < bundle.mutations.length; i++) {
+            for (uint256 i = 0; i < bundle.mutations.length;) {
                 Mutation mutation = bundle.mutations[i];
                 if (mutation < prev) revert MutationsOutOfOrder();
                 prev = mutation;
@@ -380,6 +380,12 @@ contract Exchange {
                 } else {
                     revert InvalidMutation();
                 }
+                unchecked {
+                    ++i;
+                }
+            }
+            unchecked {
+                ++b;
             }
         }
     }
@@ -408,7 +414,9 @@ contract Exchange {
 
         if (fill.quantity > tick.remainingQuantity) revert InvalidTick();
 
-        tick.remainingQuantity -= fill.quantity;
+        unchecked {
+            tick.remainingQuantity -= fill.quantity;
+        }
         if (tick.remainingQuantity == 0) {
             tick.volume++;
             tick.quantity = 0;
@@ -443,15 +451,18 @@ contract Exchange {
 
         uint256 totalFilled;
         uint256 totalReceived;
-        for (uint256 i = 0; i < res.fills.length; i++) {
+        for (uint256 i = 0; i < res.fills.length;) {
             Fill memory fill = res.fills[i];
-            totalFilled += fill.quantity;
             _settleFill(fill, instrument, order.bidOrAsk, account);
 
-            if (order.bidOrAsk == 0) {
-                totalReceived += fill.quantity;
-            } else {
-                totalReceived += (fill.quantity * uint256(fill.price)) >> 32;
+            unchecked {
+                totalFilled += fill.quantity;
+                if (order.bidOrAsk == 0) {
+                    totalReceived += fill.quantity;
+                } else {
+                    totalReceived += (uint256(fill.quantity) * uint256(fill.price)) >> 32;
+                }
+                ++i;
             }
         }
 
@@ -515,14 +526,19 @@ contract Exchange {
             filledQuantity = order.quantity;
         } else {
             // tick.quantity != 0 here: a fully-swept tick increments volume, which the branch above catches.
-            uint256 consumed = tick.quantity - tick.remainingQuantity;
-            filledQuantity = uint64((uint256(order.quantity) * consumed) / tick.quantity);
-            unfilledQuantity = order.quantity - filledQuantity;
+            unchecked {
+                uint256 consumed = tick.quantity - tick.remainingQuantity;
+                filledQuantity = uint64((uint256(order.quantity) * consumed) / tick.quantity);
+                unfilledQuantity = order.quantity - filledQuantity;
+            }
         }
 
         if (unfilledQuantity > 0) {
-            tick.quantity -= unfilledQuantity;
-            tick.remainingQuantity -= unfilledQuantity;
+            // unfilledQuantity <= tick.remainingQuantity: this order's unfilled share is bounded by the tick's total unfilled.
+            unchecked {
+                tick.quantity -= unfilledQuantity;
+                tick.remainingQuantity -= unfilledQuantity;
+            }
         }
 
         if (order.side == 0) {
