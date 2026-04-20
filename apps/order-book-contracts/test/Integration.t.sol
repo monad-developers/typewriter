@@ -39,10 +39,10 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     bytes32 constant _WITHDRAWAL_TYPEHASH =
         keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
     bytes32 constant _LIMIT_ORDER_TYPEHASH = keccak256(
-        "LimitOrder(uint64 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+        "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
     bytes32 constant _MARKET_ORDER_TYPEHASH = keccak256(
-        "MarketOrder(uint64 quantity,uint64 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+        "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
     bytes32 constant _CLOSE_ORDER_TYPEHASH = keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
 

@@ -29,7 +29,7 @@ struct Account {
 }
 
 struct Order {
-    uint64 quantity;
+    uint64 quantity; // lots
     uint64 instrumentId;
     uint64 price; // Q32.32
     uint32 tickVolume;
@@ -46,8 +46,8 @@ struct Instrument {
 }
 
 struct Tick {
-    uint64 quantity;
-    uint64 remainingQuantity;
+    uint64 quantity; // lots
+    uint64 remainingQuantity; // lots
     uint32 volume;
 }
 
@@ -70,7 +70,7 @@ struct CloseOrder {
 }
 
 struct LimitOrder {
-    uint64 quantity;
+    uint256 quantity;
     uint64 instrumentId;
     uint64 price; // Q32.32
     uint8 bidOrAsk; // 0: bid, 1: ask
@@ -79,8 +79,8 @@ struct LimitOrder {
 }
 
 struct MarketOrder {
-    uint64 quantity;
-    uint64 minReceivedQuantity;
+    uint256 quantity;
+    uint256 minReceivedQuantity;
     uint64 instrumentId;
     uint8 bidOrAsk; // 0: bid, 1: ask
     uint256 nonce;
@@ -92,7 +92,7 @@ struct MarketOrderResolution {
 }
 
 struct Fill {
-    uint64 quantity;
+    uint64 quantity; // lots
     uint64 price; // Q32.32
 }
 
@@ -153,6 +153,7 @@ error InvalidNonce();
 error InstrumentAlreadyExists();
 error AlreadyInitialized();
 error MissingAuthorizePermission();
+error AmountNotLotMultiple();
 
 contract Exchange {
     address internal immutable SCHEDULER;
@@ -165,11 +166,11 @@ contract Exchange {
         keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
 
     bytes32 private constant LIMIT_ORDER_TYPEHASH = keccak256(
-        "LimitOrder(uint64 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+        "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
 
     bytes32 private constant MARKET_ORDER_TYPEHASH = keccak256(
-        "MarketOrder(uint64 quantity,uint64 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+        "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
 
     bytes32 private constant DEPOSIT_TYPEHASH =
@@ -409,6 +410,10 @@ contract Exchange {
         Instrument storage instrument = state.instruments[order.instrumentId];
         if (instrument.base == address(0)) revert InvalidInstrument();
 
+        uint64 quantityLots = _toLots(order.quantity, instrument.baseLotExp);
+        uint16 receivedLotExp = order.bidOrAsk == 0 ? instrument.baseLotExp : instrument.quoteLotExp;
+        uint64 minReceivedLots = _toLots(order.minReceivedQuantity, receivedLotExp);
+
         uint256 totalFilled;
         uint256 totalReceived;
         for (uint256 i = 0; i < res.fills.length; i++) {
@@ -423,13 +428,16 @@ contract Exchange {
             }
         }
 
-        if (totalFilled != order.quantity) revert InvalidMutation();
-        if (totalReceived < order.minReceivedQuantity) revert SlippageExceeded();
+        if (totalFilled != quantityLots) revert InvalidMutation();
+        if (totalReceived < minReceivedLots) revert SlippageExceeded();
     }
 
     function _executeLimitOrder(LimitOrder memory order, bytes32 account) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         if (instrument.base == address(0)) revert InvalidInstrument();
+
+        uint64 quantityLots = _toLots(order.quantity, instrument.baseLotExp);
+
         mapping(uint64 => Tick) storage ticks = order.bidOrAsk == 0 ? instrument.bids : instrument.asks;
         Tick storage tick = ticks[order.price];
 
@@ -437,13 +445,13 @@ contract Exchange {
 
         Account storage acc = state.accounts[account];
         if (order.bidOrAsk == 0) {
-            uint256 rawLock = ((uint256(order.quantity) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
+            uint256 rawLock = ((uint256(quantityLots) * uint256(order.price)) >> 32) << instrument.quoteLotExp;
             if (acc.balances[instrument.quote] < rawLock) revert InsufficientBalance();
             unchecked {
                 acc.balances[instrument.quote] -= rawLock;
             }
         } else {
-            uint256 rawBase = uint256(order.quantity) << instrument.baseLotExp;
+            uint256 rawBase = uint256(quantityLots) << instrument.baseLotExp;
             if (acc.balances[instrument.base] < rawBase) revert InsufficientBalance();
             unchecked {
                 acc.balances[instrument.base] -= rawBase;
@@ -451,14 +459,14 @@ contract Exchange {
         }
 
         unchecked {
-            tick.quantity += order.quantity;
-            tick.remainingQuantity += order.quantity;
+            tick.quantity += quantityLots;
+            tick.remainingQuantity += quantityLots;
         }
 
         acc.orders
             .push(
                 Order({
-                    quantity: order.quantity,
+                    quantity: quantityLots,
                     instrumentId: order.instrumentId,
                     price: order.price,
                     tickVolume: tick.volume,
@@ -510,5 +518,12 @@ contract Exchange {
         return keccak256(
             abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256("Exchange"), keccak256("1"), block.chainid, address(this))
         );
+    }
+
+    function _toLots(uint256 fullAmount, uint16 lotExp) internal pure returns (uint64) {
+        uint256 lots = fullAmount >> lotExp;
+        if (lots << lotExp != fullAmount) revert AmountNotLotMultiple();
+        if (lots > type(uint64).max) revert AmountNotLotMultiple();
+        return uint64(lots);
     }
 }
