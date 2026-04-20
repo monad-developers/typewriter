@@ -602,6 +602,23 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
   const submit = (bundleEvent: BundleEvent) =>
     Effect.gen(function* () {
+      yield* Effect.tryPromise({
+        try: () =>
+          publicClient.simulateContract({
+            abi: EXCHANGE_ABI,
+            address: config.address,
+            functionName: "execute",
+            args: [
+              {
+                mutations: bundleEvent.mutations.map((r) => r.type),
+                mutationData: bundleEvent.mutations.map(encodeMutationData),
+                signatures: bundleEvent.mutations.map(encodeSignature),
+              },
+            ],
+          }),
+        catch: (error) => error as Error,
+      });
+
       const { accessList, gasUsed } = yield* Effect.tryPromise({
         try: () =>
           publicClient.createAccessList({
@@ -641,7 +658,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           }),
         catch: (error) => error as SendRawTransactionSyncErrorType,
       });
-
 
       for (const mutation of bundleEvent.mutations) {
         emitMutation(mutation, "proposed");

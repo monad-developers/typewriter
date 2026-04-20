@@ -1,4 +1,5 @@
 import { serve } from "bun";
+import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import type { Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -16,15 +17,14 @@ import {
   decodeSigned,
   encodeState,
   type Initialize,
+  type Instrument,
   type LimitOrder,
   type MarketOrder,
   MutationType,
   type Revoke,
   type Signed,
-  type Instrument,
   type Tick,
 } from "./exchange";
-import { desc, eq } from "drizzle-orm";
 
 const BUCKET_SECONDS: Record<string, number> = {
   "1m": 60,
@@ -34,6 +34,7 @@ const BUCKET_SECONDS: Record<string, number> = {
   "4h": 14400,
   "1d": 86400,
 };
+
 import index from "./frontend/index.html";
 import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
@@ -356,8 +357,7 @@ const server = serve({
           bestBidN && bestAskN
             ? String(Math.round((bestBidN + bestAskN) / 2))
             : String(bestBidN || bestAskN);
-        const spread =
-          bestAskN && bestBidN ? String(bestAskN - bestBidN) : "0";
+        const spread = bestAskN && bestBidN ? String(bestAskN - bestBidN) : "0";
 
         return Response.json({
           instrument: String(instrumentId),
@@ -372,9 +372,7 @@ const server = serve({
     "/api/candles": {
       GET: async (req) => {
         const url = new URL(req.url);
-        const instrumentId = Number(
-          url.searchParams.get("instrumentId") ?? 0,
-        );
+        const instrumentId = Number(url.searchParams.get("instrumentId") ?? 0);
         const bucket = url.searchParams.get("bucket") ?? "5m";
         const before = url.searchParams.get("before")
           ? Number(url.searchParams.get("before"))
@@ -413,7 +411,13 @@ const server = serve({
 
         const candleMap = new Map<
           number,
-          { open: string; high: string; low: string; close: string; volume: string }
+          {
+            open: string;
+            high: string;
+            low: string;
+            close: string;
+            volume: string;
+          }
         >();
 
         for (const row of rows) {
@@ -456,9 +460,7 @@ const server = serve({
     "/api/trades": {
       GET: async (req) => {
         const url = new URL(req.url);
-        const instrumentId = Number(
-          url.searchParams.get("instrumentId") ?? 0,
-        );
+        const instrumentId = Number(url.searchParams.get("instrumentId") ?? 0);
         const limit = Math.min(
           Number(url.searchParams.get("limit") ?? 50),
           200,
