@@ -624,6 +624,11 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
   const submit = (bundleEvent: BundleEvent) =>
     Effect.gen(function* () {
+      const rpcRetry = Effect.retry({
+        times: 3,
+        schedule: Schedule.spaced(Duration.millis(200)),
+      });
+
       yield* Effect.tryPromise({
         try: () =>
           publicClient.simulateContract({
@@ -640,12 +645,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
             ],
           }),
         catch: (error) => error as Error,
-      }).pipe(
-        Effect.retry({
-          times: 3,
-          schedule: Schedule.spaced(Duration.millis(200)),
-        }),
-      );
+      }).pipe(rpcRetry);
 
       const { accessList, gasUsed } = yield* Effect.tryPromise({
         try: () =>
@@ -655,12 +655,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
             data: bundleEvent.calldata,
           }),
         catch: (error) => error as CreateAccessListErrorType,
-      });
+      }).pipe(rpcRetry);
 
       const nonce = yield* Effect.tryPromise({
         try: () => nextNonce(),
         catch: (error) => error as Error,
-      });
+      }).pipe(rpcRetry);
 
       const request = yield* Effect.tryPromise({
         try: () =>
@@ -672,7 +672,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
             nonce,
           }),
         catch: (error) => error as PrepareTransactionRequestErrorType,
-      });
+      }).pipe(rpcRetry);
 
       const signed = yield* Effect.tryPromise({
         try: () => walletClient.signTransaction(request),
