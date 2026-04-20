@@ -1,4 +1,5 @@
 import { afterAll, beforeAll } from "bun:test";
+import { drizzle } from "drizzle-orm/bun-sql";
 import { Instance, Server } from "prool";
 import type { Address, Hex } from "viem";
 import {
@@ -10,6 +11,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { anvil } from "viem/chains";
 import Exchange from "../../order-book-contracts/out/Exchange.sol/Exchange.json";
+import * as schema from "../src/app-schema";
+import { migrate } from "../src/migrate";
 
 const SCHEDULER_PK =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -34,7 +37,12 @@ const publicClient = createPublicClient({
   transport: http(RPC_URL),
 });
 
+const TEST_DATABASE_URL =
+  process.env.TEST_DATABASE_URL ??
+  "postgres://postgres:postgres@localhost:5432/postgres";
+
 let teardown: (() => Promise<void>) | undefined;
+let adminClient: Bun.SQL | undefined;
 
 export async function deployExchange(): Promise<Address> {
   const hash = await walletClient.deployContract({
@@ -46,6 +54,17 @@ export async function deployExchange(): Promise<Address> {
   return receipt.contractAddress!;
 }
 
+export async function createTestDb(
+  chainId: number,
+  exchangeAddress: Address,
+): Promise<ReturnType<typeof drizzle<typeof schema>>> {
+  const client = new Bun.SQL({ url: TEST_DATABASE_URL, max: 1 });
+  const db = drizzle({ client, schema, casing: "snake_case" });
+  // @ts-expect-error migrate's BunSQLDatabase type doesn't carry schema
+  await migrate(db, chainId, exchangeAddress);
+  return db;
+}
+
 beforeAll(async () => {
   const server = Server.create({
     instance: Instance.anvil(),
@@ -53,8 +72,20 @@ beforeAll(async () => {
   });
   teardown = await server.start();
   process.on("exit", () => teardown?.());
+
+  adminClient = new Bun.SQL({ url: TEST_DATABASE_URL, max: 1 });
+  const rows = await adminClient`
+    SELECT nspname FROM pg_namespace
+    WHERE nspname LIKE 'd\\_%' ESCAPE '\\'
+  `;
+  for (const row of rows as Array<{ nspname: string }>) {
+    await adminClient.unsafe(`DROP SCHEMA "${row.nspname}" CASCADE`);
+  }
+  await adminClient`DROP TABLE IF EXISTS deployments CASCADE`;
+  await adminClient`DROP TABLE IF EXISTS "__drizzle_migrations" CASCADE`;
 });
 
 afterAll(async () => {
+  await adminClient?.close();
   await teardown?.();
 });

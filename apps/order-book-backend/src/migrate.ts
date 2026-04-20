@@ -10,11 +10,21 @@ import type { Address } from "viem";
 import * as appSchema from "./app-schema";
 import { deployments } from "./deployment-schema";
 
+function deploymentLockKey(chainId: number, address: Address): bigint {
+  const hash = Bun.hash.wyhash(`${chainId}:${address.toLowerCase()}`);
+  return BigInt.asIntN(64, BigInt(hash));
+}
+
 export async function migrate(
   db: BunSQLDatabase,
   chainId: number,
   contractAddress: Address,
-) {
+): Promise<string> {
+  const lockKey = deploymentLockKey(chainId, contractAddress);
+  await db.execute(sql.raw("SET lock_timeout = '60s'"));
+  await db.execute(sql`SELECT pg_advisory_lock(${lockKey})`);
+  await db.execute(sql.raw("SET lock_timeout = DEFAULT"));
+
   await drizzleMigrate(db, { migrationsFolder: "./drizzle" });
 
   const [existing] = await db
@@ -32,7 +42,7 @@ export async function migrate(
     await db.execute(
       sql.raw(`SET search_path = ${existing.schemaName}, public`),
     );
-    return;
+    return existing.schemaName;
   }
 
   // @ts-ignore
@@ -73,4 +83,5 @@ export async function migrate(
   });
 
   await db.execute(sql.raw(`SET search_path = ${schemaName}, public`));
+  return schemaName;
 }

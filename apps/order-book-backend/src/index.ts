@@ -62,13 +62,33 @@ if (!process.env.DATABASE_URL) {
 }
 
 const DATABASE_URL: string = process.env.DATABASE_URL;
-const client = new Bun.SQL({ url: DATABASE_URL, max: 1 });
-const db = drizzle({ client, schema, casing: "snake_case" });
-// @ts-ignore
-await migrate(db, CHAIN.id, EXCHANGE_ADDRESS);
 
-const consistent = await checkConsistency(db);
-const { state, mutationId, bundleId } = await recoverState(db, consistent);
+const writerClient = new Bun.SQL({ url: DATABASE_URL, max: 1 });
+const writerDb = drizzle({
+  client: writerClient,
+  schema,
+  casing: "snake_case",
+});
+
+// @ts-ignore
+const schemaName = await migrate(writerDb, CHAIN.id, EXCHANGE_ADDRESS);
+
+const readerClient = new Bun.SQL({
+  url: DATABASE_URL,
+  max: 10,
+  connection: { search_path: `${schemaName},public` },
+});
+const readerDb = drizzle({
+  client: readerClient,
+  schema,
+  casing: "snake_case",
+});
+
+const consistent = await checkConsistency(writerDb);
+const { state, mutationId, bundleId } = await recoverState(
+  writerDb,
+  consistent,
+);
 
 const handle = startRuntime({
   initialState: state,
@@ -83,7 +103,7 @@ const handle = startRuntime({
   origin: process.env.BUN_PUBLIC_ORIGIN || undefined,
 });
 
-dbPlugin(handle, db);
+dbPlugin(handle, writerDb);
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -398,7 +418,7 @@ const server = serve({
         if (!bucketSec)
           return Response.json({ error: "Invalid bucket" }, { status: 400 });
 
-        const rows = await db
+        const rows = await readerDb
           .select({
             fillId: schema.fills.id,
             price: schema.fills.price,
@@ -478,7 +498,7 @@ const server = serve({
           200,
         );
 
-        const rows = await db
+        const rows = await readerDb
           .select({
             id: schema.fills.id,
             quantity: schema.fills.quantity,
