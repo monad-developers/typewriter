@@ -605,6 +605,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       yield* Effect.tryPromise({
         try: () =>
           publicClient.simulateContract({
+            account: config.account.address,
             abi: EXCHANGE_ABI,
             address: config.address,
             functionName: "execute",
