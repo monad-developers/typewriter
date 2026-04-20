@@ -1,4 +1,16 @@
 import { serve } from "bun";
+
+const originalConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  originalConsoleError(
+    ...args.map((a) =>
+      a instanceof Error
+        ? Bun.inspect(a, { depth: Number.POSITIVE_INFINITY, colors: true })
+        : a,
+    ),
+  );
+};
+
 import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import type { Chain } from "viem";
