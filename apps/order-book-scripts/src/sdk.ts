@@ -22,7 +22,7 @@ function domain() {
   };
 }
 
-function sign(
+export function sign(
   privateKey: Hex.Hex,
   primaryType: string,
   message: Record<string, unknown>,
