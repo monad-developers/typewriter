@@ -74,13 +74,34 @@ function randomNonceKey(): bigint {
   return key;
 }
 
-function nextNonce(account: Account, opts?: MutationOpts): bigint {
+function reserveNonce(
+  account: Account,
+  opts?: MutationOpts,
+): { nonce: bigint; rollback: () => void } {
   if (opts?.concurrent) {
-    return randomNonceKey() << 64n;
+    return { nonce: randomNonceKey() << 64n, rollback: () => {} };
   }
   const nonce = (account.nonceKey << 64n) | account.seq;
   account.seq++;
-  return nonce;
+  return {
+    nonce,
+    rollback: () => {
+      account.seq--;
+    },
+  };
+}
+
+async function postWithNonce<T>(
+  rollback: () => void,
+  path: string,
+  body: unknown,
+): Promise<T> {
+  try {
+    return (await post(path, body)) as T;
+  } catch (err) {
+    rollback();
+    throw err;
+  }
 }
 
 /** Round down to the nearest lot multiple. The contract rejects non-multiples. */
@@ -148,7 +169,7 @@ export async function addInstrument(
   },
   opts?: MutationOpts,
 ) {
-  const nonce = nextNonce(account, opts);
+  const { nonce, rollback } = reserveNonce(account, opts);
   const rawSignature = sign(account.privateKey, "AddInstrument", {
     instrumentId: BigInt(instrument.instrumentId),
     base: instrument.base,
@@ -158,7 +179,7 @@ export async function addInstrument(
     nonce,
     deadline: FAR_DEADLINE,
   });
-  return post("/api/add-instrument", {
+  return postWithNonce(rollback, "/api/add-instrument", {
     ...instrument,
     account: account.accountHex,
     keyId: account.keyId,
@@ -174,14 +195,14 @@ export async function deposit(
   opts?: MutationOpts,
 ) {
   const { quantity } = params;
-  const nonce = nextNonce(account, opts);
+  const { nonce, rollback } = reserveNonce(account, opts);
   const rawSignature = sign(account.privateKey, "Deposit", {
     asset: quantity.asset,
     amount: quantity.raw,
     nonce,
     deadline: FAR_DEADLINE,
   });
-  return post("/api/mint", {
+  return postWithNonce(rollback, "/api/mint", {
     asset: quantity.asset,
     amount: quantity.raw,
     account: account.accountHex,
@@ -206,7 +227,7 @@ export async function limitOrder(
   const bidOrAsk = params.side === "buy" ? 0 : 1;
   const q32Price = priceToQ32(params.price, instrument);
   const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
-  const nonce = nextNonce(account, opts);
+  const { nonce, rollback } = reserveNonce(account, opts);
   const rawSignature = sign(account.privateKey, "LimitOrder", {
     quantity,
     instrumentId: BigInt(instrument.id),
@@ -215,7 +236,7 @@ export async function limitOrder(
     nonce,
     deadline: FAR_DEADLINE,
   });
-  return post("/api/limit-order", {
+  return postWithNonce(rollback, "/api/limit-order", {
     quantity,
     instrumentId: instrument.id,
     price: q32Price,
@@ -247,7 +268,7 @@ export async function marketOrder(
     params.minReceived.raw,
     receivedLotExp,
   );
-  const nonce = nextNonce(account, opts);
+  const { nonce, rollback } = reserveNonce(account, opts);
   const rawSignature = sign(account.privateKey, "MarketOrder", {
     quantity,
     minReceivedQuantity,
@@ -256,7 +277,7 @@ export async function marketOrder(
     nonce,
     deadline: FAR_DEADLINE,
   });
-  return post("/api/market-order", {
+  return postWithNonce(rollback, "/api/market-order", {
     quantity,
     minReceivedQuantity,
     instrumentId: instrument.id,
@@ -274,13 +295,13 @@ export async function closeOrder(
   params: { orderId: number },
   opts?: MutationOpts,
 ) {
-  const nonce = nextNonce(account, opts);
+  const { nonce, rollback } = reserveNonce(account, opts);
   const rawSignature = sign(account.privateKey, "CloseOrder", {
     orderId: BigInt(params.orderId),
     nonce,
     deadline: FAR_DEADLINE,
   });
-  return post("/api/close-order", {
+  return postWithNonce(rollback, "/api/close-order", {
     ...params,
     account: account.accountHex,
     keyId: account.keyId,
@@ -296,14 +317,14 @@ export async function withdraw(
   opts?: MutationOpts,
 ) {
   const { quantity } = params;
-  const nonce = nextNonce(account, opts);
+  const { nonce, rollback } = reserveNonce(account, opts);
   const rawSignature = sign(account.privateKey, "Withdrawal", {
     asset: quantity.asset,
     amount: quantity.raw,
     nonce,
     deadline: FAR_DEADLINE,
   });
-  return post("/api/withdrawal", {
+  return postWithNonce(rollback, "/api/withdrawal", {
     asset: quantity.asset,
     amount: quantity.raw,
     account: account.accountHex,
