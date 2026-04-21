@@ -54,7 +54,6 @@ import {
   type InstrumentConfig,
   priceToQ32,
   type TokenAmount,
-  toLots,
 } from "order-book-sdk";
 
 export type Account = {
@@ -84,6 +83,12 @@ function nextNonce(account: Account, opts?: MutationOpts): bigint {
   return nonce;
 }
 
+/** Round down to the nearest lot multiple. The contract rejects non-multiples. */
+function lotAligned(raw: bigint, lotExp: number): bigint {
+  const e = BigInt(lotExp);
+  return (raw >> e) << e;
+}
+
 export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
   const pk = privateKey ?? Secp256k1.randomPrivateKey();
   const publicKey = Secp256k1.getPublicKey({ privateKey: pk });
@@ -99,7 +104,7 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
       expiry: 0,
       rootKeyType: 2,
       keyType: 2,
-      permissions: 0x7f,
+      permissions: 0xff,
       rootPublicKey: accountHex,
       publicKey: accountHex,
     };
@@ -132,14 +137,35 @@ export async function fetchState(): Promise<State> {
   return res.json() as Promise<State>;
 }
 
-export async function addInstrument(instrument: {
-  instrumentId: number;
-  base: Address.Address;
-  quote: Address.Address;
-  baseLotExp: number;
-  quoteLotExp: number;
-}) {
-  return post("/api/add-instrument", instrument);
+export async function addInstrument(
+  account: Account,
+  instrument: {
+    instrumentId: number;
+    base: Address.Address;
+    quote: Address.Address;
+    baseLotExp: number;
+    quoteLotExp: number;
+  },
+  opts?: MutationOpts,
+) {
+  const nonce = nextNonce(account, opts);
+  const rawSignature = sign(account.privateKey, "AddInstrument", {
+    instrumentId: BigInt(instrument.instrumentId),
+    base: instrument.base,
+    quote: instrument.quote,
+    baseLotExp: instrument.baseLotExp,
+    quoteLotExp: instrument.quoteLotExp,
+    nonce,
+    deadline: FAR_DEADLINE,
+  });
+  return post("/api/add-instrument", {
+    ...instrument,
+    account: account.accountHex,
+    keyId: account.keyId,
+    nonce,
+    deadline: FAR_DEADLINE,
+    rawSignature,
+  });
 }
 
 export async function deposit(
@@ -179,7 +205,7 @@ export async function limitOrder(
   const { instrument } = params;
   const bidOrAsk = params.side === "buy" ? 0 : 1;
   const q32Price = priceToQ32(params.price, instrument);
-  const quantity = toLots(params.quantity.raw, instrument.baseLotExp);
+  const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "LimitOrder", {
     quantity,
@@ -214,10 +240,12 @@ export async function marketOrder(
 ) {
   const { instrument } = params;
   const bidOrAsk = params.side === "buy" ? 0 : 1;
-  const quantity = toLots(params.quantity.raw, instrument.baseLotExp);
-  const minReceivedQuantity = toLots(
+  const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
+  const receivedLotExp =
+    params.side === "buy" ? instrument.baseLotExp : instrument.quoteLotExp;
+  const minReceivedQuantity = lotAligned(
     params.minReceived.raw,
-    params.side === "buy" ? instrument.baseLotExp : instrument.quoteLotExp,
+    receivedLotExp,
   );
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "MarketOrder", {

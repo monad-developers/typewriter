@@ -8,7 +8,7 @@ import { useBalances } from "~/hooks/use-balances";
 import { useMarketOrderMutation } from "~/hooks/use-market-order";
 import { useLimitOrderMutation } from "~/hooks/use-limit-order";
 import { instrumentsOptions, orderBookOptions } from "~/lib/queries";
-import { priceToQ32, toLots } from "order-book-sdk";
+import { priceToQ32 } from "order-book-sdk";
 import { TokenAmount, instrumentConfig } from "~/lib/constants";
 
 const ORDER_TABS = [
@@ -70,11 +70,10 @@ export function ActionsPanel({ instrument }: { instrument: string }) {
       return;
     }
 
-    // User enters human base units (matches orderbook "size"); convert to lots for the wire.
-    const rawQty = toLots(
-      TokenAmount.from(qty, inst.baseAddress as `0x${string}`).raw,
-      inst.baseLotExp,
-    );
+    // User enters human base units; contract takes full amounts that must be lot multiples.
+    const cfg = instrumentConfig(Number(instrument));
+    const raw = TokenAmount.from(qty, inst.baseAddress as `0x${string}`).raw;
+    const rawQty = (raw >> BigInt(cfg.baseLotExp)) << BigInt(cfg.baseLotExp);
 
     try {
       if (tab === "market") {
@@ -89,7 +88,7 @@ export function ActionsPanel({ instrument }: { instrument: string }) {
           setError("Enter a valid price");
           return;
         }
-        const rawPrice = priceToQ32(p, instrumentConfig(Number(instrument)));
+        const rawPrice = priceToQ32(p, cfg);
 
         await limitOrder.mutateAsync({
           instrumentId: Number(instrument),

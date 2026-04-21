@@ -21,12 +21,7 @@ export type EIP712Domain = {
   origin?: string | string[];
 };
 
-type SignedMutation = Exclude<
-  TaggedMutation,
-  { type: MutationType.AddInstrument }
->;
-
-export function getTypedDataParams(mutation: SignedMutation): {
+export function getTypedDataParams(mutation: TaggedMutation): {
   primaryType: string;
   message: Record<string, unknown>;
 } {
@@ -100,6 +95,19 @@ export function getTypedDataParams(mutation: SignedMutation): {
           deadline: mutation.deadline,
         },
       };
+    case MutationType.AddInstrument:
+      return {
+        primaryType: "AddInstrument",
+        message: {
+          instrumentId: BigInt(mutation.mutation.instrumentId),
+          base: mutation.mutation.base,
+          quote: mutation.mutation.quote,
+          baseLotExp: mutation.mutation.baseLotExp,
+          quoteLotExp: mutation.mutation.quoteLotExp,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
     case MutationType.Deposit:
       return {
         primaryType: "Deposit",
@@ -128,8 +136,6 @@ export async function verifySignature(
   eip712Domain: EIP712Domain,
   mutation: TaggedMutation,
 ): Promise<void> {
-  if (mutation.type === MutationType.AddInstrument) return;
-
   if (mutation.deadline < BigInt(Math.floor(Date.now() / 1000))) {
     throw new Error(
       `SignatureExpired: deadline=${mutation.deadline}, now=${Math.floor(Date.now() / 1000)}, account=${mutation.account}`,

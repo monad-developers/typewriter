@@ -5,9 +5,12 @@ import {Test} from "forge-std/Test.sol";
 
 import {
     Exchange,
-    ExecuteParams,
+    Bundle,
     Mutation,
     Signature,
+    Initialize,
+    Authorize,
+    Revoke,
     Deposit,
     Withdrawal,
     PERM_AUTHORIZE,
@@ -16,22 +19,13 @@ import {
     PERM_WITHDRAW,
     PERM_LIMIT_ORDER,
     Unauthorized,
-    AlreadyInitialized
-} from "src/Exchange.sol";
-
-import {
-    KeyType,
-    Key,
-    Initialize,
-    Authorize,
-    Revoke,
-    InvalidSignature,
-    KeyNotFound,
-    KeyExpired,
+    AlreadyInitialized,
     INITIALIZE_TYPEHASH,
     AUTHORIZE_TYPEHASH,
     REVOKE_TYPEHASH
-} from "src/Account.sol";
+} from "src/Exchange.sol";
+
+import {KeyType, Key, InvalidSignature, KeyNotFound, KeyExpired} from "src/Account.sol";
 
 contract AccountTest is Test, Exchange(address(0xBEEF)) {
     uint256 pk1 = 0xA11CE;
@@ -69,7 +63,16 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(ExecuteParams({mutations: mutations, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(mutations, data, sigs));
+    }
+
+    function _bundles(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
+        internal
+        pure
+        returns (Bundle[] memory bundles)
+    {
+        bundles = new Bundle[](1);
+        bundles[0] = Bundle({mutations: mutations, mutationData: data, signatures: sigs});
     }
 
     function _initializeStructHash(Initialize memory init) internal pure returns (bytes32) {
@@ -142,7 +145,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(AlreadyInitialized.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_Authorize() external {
@@ -234,7 +237,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_Revoke() external {
@@ -296,7 +299,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(KeyExpired.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_PermissionEnforcement() external {
@@ -320,7 +323,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_Initialize_P256RootKey() external {
@@ -414,6 +417,6 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidSignature.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 }

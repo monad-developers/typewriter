@@ -28,7 +28,6 @@ import {
   encodeFunctionData,
   http,
   parseSignature,
-  zeroHash,
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
@@ -236,7 +235,7 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
           {
             type: "tuple",
             components: [
-              { type: "uint64", name: "quantity" },
+              { type: "uint256", name: "quantity" },
               { type: "uint64", name: "instrumentId" },
               { type: "uint64", name: "price" },
               { type: "uint8", name: "bidOrAsk" },
@@ -263,8 +262,8 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
           {
             type: "tuple",
             components: [
-              { type: "uint64", name: "quantity" },
-              { type: "uint64", name: "minReceivedQuantity" },
+              { type: "uint256", name: "quantity" },
+              { type: "uint256", name: "minReceivedQuantity" },
               { type: "uint64", name: "instrumentId" },
               { type: "uint8", name: "bidOrAsk" },
               { type: "uint256", name: "nonce" },
@@ -312,8 +311,10 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
               { type: "uint64", name: "instrumentId" },
               { type: "address", name: "base" },
               { type: "address", name: "quote" },
-              { type: "uint16", name: "baseLotExp" },
-              { type: "uint16", name: "quoteLotExp" },
+              { type: "uint8", name: "baseLotExp" },
+              { type: "uint8", name: "quoteLotExp" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
             ],
           },
         ],
@@ -324,6 +325,8 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
             quote: resolved.mutation.quote,
             baseLotExp: resolved.mutation.baseLotExp,
             quoteLotExp: resolved.mutation.quoteLotExp,
+            nonce: resolved.nonce,
+            deadline: resolved.deadline,
           },
         ],
       );
@@ -381,10 +384,6 @@ function encodeSignature(resolved: ResolvedMutation): {
   keyId: bigint;
   rawSignature: Hex;
 } {
-  if (resolved.type === MutationType.AddInstrument) {
-    return { account: zeroHash, keyId: 0n, rawSignature: "0x" };
-  }
-
   let { rawSignature } = resolved;
 
   // Compact 65-byte secp256k1 signatures need ABI re-encoding for the contract
@@ -408,11 +407,13 @@ function encodeBundle(resolved: ResolvedMutation[]): Hex {
     abi: EXCHANGE_ABI,
     functionName: "execute",
     args: [
-      {
-        mutations: resolved.map((r) => r.type),
-        mutationData: resolved.map(encodeMutationData),
-        signatures: resolved.map(encodeSignature),
-      },
+      [
+        {
+          mutations: resolved.map((r) => r.type),
+          mutationData: resolved.map(encodeMutationData),
+          signatures: resolved.map(encodeSignature),
+        },
+      ],
     ],
   });
 }
@@ -568,10 +569,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     const mutationEvents: MutationEvent[] = [];
     for (const r of resolved) {
       applyMutation(state, r);
-      if (
-        r.type !== MutationType.AddInstrument &&
-        r.type !== MutationType.Initialize
-      ) {
+      if (r.type !== MutationType.Initialize) {
         const nonceKey = BigInt(r.nonce) >> 64n;
         incrementNonce(getAccount(state, r.account), nonceKey);
       }
@@ -637,11 +635,13 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
             address: config.address,
             functionName: "execute",
             args: [
-              {
-                mutations: bundleEvent.mutations.map((r) => r.type),
-                mutationData: bundleEvent.mutations.map(encodeMutationData),
-                signatures: bundleEvent.mutations.map(encodeSignature),
-              },
+              [
+                {
+                  mutations: bundleEvent.mutations.map((r) => r.type),
+                  mutationData: bundleEvent.mutations.map(encodeMutationData),
+                  signatures: bundleEvent.mutations.map(encodeSignature),
+                },
+              ],
             ],
           }),
         catch: (error) => error as Error,
@@ -831,15 +831,11 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     return Effect.runPromise(
       Effect.gen(function* () {
         const typeName = MutationType[mutation.type];
-        const account =
-          mutation.type !== MutationType.AddInstrument
-            ? mutation.account
-            : undefined;
 
         yield* Effect.logInfo("received mutation").pipe(
           Effect.annotateLogs({
             type: typeName,
-            account: account ?? "n/a",
+            account: mutation.account,
           }),
         );
 
@@ -860,7 +856,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           Effect.annotateLogs({
             mutationId: id,
             type: typeName,
-            account: account ?? "n/a",
+            account: mutation.account,
           }),
         );
 

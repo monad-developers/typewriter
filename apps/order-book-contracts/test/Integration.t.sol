@@ -5,9 +5,10 @@ import {Test} from "forge-std/Test.sol";
 
 import {
     Exchange,
-    ExecuteParams,
+    Bundle,
     Mutation,
     Signature,
+    Initialize,
     AddInstrument,
     Deposit,
     Withdrawal,
@@ -19,10 +20,12 @@ import {
     PERM_AUTHORIZE,
     MutationsOutOfOrder,
     SignatureExpired,
-    InvalidNonce
+    InvalidNonce,
+    LotExpTooLarge,
+    INITIALIZE_TYPEHASH
 } from "src/Exchange.sol";
 
-import {KeyType, Initialize, InvalidSignature, KeyNotFound, INITIALIZE_TYPEHASH} from "src/Account.sol";
+import {KeyType, InvalidSignature, KeyNotFound} from "src/Account.sol";
 
 contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     address constant BASE = address(0x1);
@@ -31,24 +34,30 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
     uint256 makerPk = 0xA11CE;
     uint256 takerPk = 0xB0B;
+    uint256 adminPk = 0xAD11;
     bytes32 makerAccount;
     bytes32 takerAccount;
+    bytes32 adminAccount;
 
     bytes32 constant _DEPOSIT_TYPEHASH =
         keccak256("Deposit(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
     bytes32 constant _WITHDRAWAL_TYPEHASH =
         keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
     bytes32 constant _LIMIT_ORDER_TYPEHASH = keccak256(
-        "LimitOrder(uint64 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+        "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
     bytes32 constant _MARKET_ORDER_TYPEHASH = keccak256(
-        "MarketOrder(uint64 quantity,uint64 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+        "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
     );
     bytes32 constant _CLOSE_ORDER_TYPEHASH = keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
+    bytes32 constant _ADD_INSTRUMENT_TYPEHASH = keccak256(
+        "AddInstrument(uint64 instrumentId,address base,address quote,uint8 baseLotExp,uint8 quoteLotExp,uint256 nonce,uint256 deadline)"
+    );
 
     function setUp() public {
         makerAccount = bytes32(uint256(uint160(vm.addr(makerPk))));
         takerAccount = bytes32(uint256(uint160(vm.addr(takerPk))));
+        adminAccount = bytes32(uint256(uint160(vm.addr(adminPk))));
     }
 
     function _sign(uint256 pk, bytes32 structHash) internal view returns (bytes memory) {
@@ -59,7 +68,16 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(ExecuteParams({mutations: mutations, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(mutations, data, sigs));
+    }
+
+    function _bundles(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
+        internal
+        pure
+        returns (Bundle[] memory bundles)
+    {
+        bundles = new Bundle[](1);
+        bundles[0] = Bundle({mutations: mutations, mutationData: data, signatures: sigs});
     }
 
     function _initAccount(uint256 pk, bytes32 acc) internal {
@@ -103,12 +121,43 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     }
 
     function _setupInstrument() internal {
+        _initAccount(adminPk, adminAccount);
+
+        AddInstrument memory inst = AddInstrument({
+            instrumentId: 0,
+            base: BASE,
+            quote: QUOTE,
+            baseLotExp: 0,
+            quoteLotExp: 0,
+            nonce: 0,
+            deadline: type(uint256).max
+        });
+
         Mutation[] memory muts = new Mutation[](1);
         bytes[] memory data = new bytes[](1);
         Signature[] memory sigs = new Signature[](1);
 
         muts[0] = Mutation.AddInstrument;
-        data[0] = abi.encode(AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0}));
+        data[0] = abi.encode(inst);
+        sigs[0] = Signature({
+            account: adminAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                adminPk,
+                keccak256(
+                    abi.encode(
+                        _ADD_INSTRUMENT_TYPEHASH,
+                        inst.instrumentId,
+                        inst.base,
+                        inst.quote,
+                        inst.baseLotExp,
+                        inst.quoteLotExp,
+                        inst.nonce,
+                        inst.deadline
+                    )
+                )
+            )
+        });
 
         _exec(muts, data, sigs);
     }
@@ -567,19 +616,94 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     }
 
     function test_MutationsOutOfOrder() external {
+        _initAccount(adminPk, adminAccount);
+
+        AddInstrument memory inst = AddInstrument({
+            instrumentId: 0,
+            base: BASE,
+            quote: QUOTE,
+            baseLotExp: 0,
+            quoteLotExp: 0,
+            nonce: 0,
+            deadline: type(uint256).max
+        });
+
         Mutation[] memory muts = new Mutation[](2);
         bytes[] memory data = new bytes[](2);
         Signature[] memory sigs = new Signature[](2);
 
         muts[0] = Mutation.AddInstrument;
-        data[0] = abi.encode(AddInstrument({instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0}));
+        data[0] = abi.encode(inst);
+        sigs[0] = Signature({
+            account: adminAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                adminPk,
+                keccak256(
+                    abi.encode(
+                        _ADD_INSTRUMENT_TYPEHASH,
+                        inst.instrumentId,
+                        inst.base,
+                        inst.quote,
+                        inst.baseLotExp,
+                        inst.quoteLotExp,
+                        inst.nonce,
+                        inst.deadline
+                    )
+                )
+            )
+        });
 
         muts[1] = Mutation.Authorize;
         data[1] = new bytes(0);
 
         vm.prank(SCHEDULER);
         vm.expectRevert(MutationsOutOfOrder.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
+    }
+
+    function test_AddInstrument_LotExpTooLarge() external {
+        _initAccount(adminPk, adminAccount);
+
+        AddInstrument memory inst = AddInstrument({
+            instrumentId: 0,
+            base: BASE,
+            quote: QUOTE,
+            baseLotExp: 129,
+            quoteLotExp: 0,
+            nonce: 0,
+            deadline: type(uint256).max
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.AddInstrument;
+        data[0] = abi.encode(inst);
+        sigs[0] = Signature({
+            account: adminAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                adminPk,
+                keccak256(
+                    abi.encode(
+                        _ADD_INSTRUMENT_TYPEHASH,
+                        inst.instrumentId,
+                        inst.base,
+                        inst.quote,
+                        inst.baseLotExp,
+                        inst.quoteLotExp,
+                        inst.nonce,
+                        inst.deadline
+                    )
+                )
+            )
+        });
+
+        vm.prank(SCHEDULER);
+        vm.expectRevert(LotExpTooLarge.selector);
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_SignatureExpired() external {
@@ -609,7 +733,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(SignatureExpired.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_InvalidNonce() external {
@@ -637,7 +761,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidNonce.selector);
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_KeyNotFound() external {
@@ -665,6 +789,6 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert();
-        this.execute(ExecuteParams({mutations: muts, mutationData: data, signatures: sigs}));
+        this.execute(_bundles(muts, data, sigs));
     }
 }

@@ -1,6 +1,6 @@
 import { priceToQ32, q32ToPrice } from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { addInstrument } from "../src/sdk";
+import { addInstrument, createAccount } from "../src/sdk";
 
 // 5_033_164_800n;
 const GOLD_Q32_PRICE = priceToQ32(2400, INSTRUMENTS["GOLD/USD"]);
@@ -14,8 +14,10 @@ console.log(
   `WTIOIL/USD price: $${q32ToPrice(WTIOIL_Q32_PRICE, INSTRUMENTS["WTIOIL/USD"])}`,
 );
 
+const admin = await createAccount();
+
 const gold = INSTRUMENTS["GOLD/USD"];
-await addInstrument({
+await addInstrument(admin, {
   instrumentId: gold.id,
   base: gold.base,
   quote: gold.quote,
@@ -25,7 +27,7 @@ await addInstrument({
 console.log("added GOLD/USD");
 
 const oil = INSTRUMENTS["WTIOIL/USD"];
-await addInstrument({
+await addInstrument(admin, {
   instrumentId: oil.id,
   base: oil.base,
   quote: oil.quote,

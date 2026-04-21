@@ -18,6 +18,7 @@ export const PERM_LIMIT_ORDER = 1 << 3;
 export const PERM_MARKET_ORDER = 1 << 4;
 export const PERM_DEPOSIT = 1 << 5;
 export const PERM_WITHDRAW = 1 << 6;
+export const PERM_ADD_INSTRUMENT = 1 << 7;
 
 export type State<quantity = string> = {
   accounts: Record<Hex, Account<quantity>>;
@@ -99,6 +100,16 @@ export type AddInstrument = {
   quoteLotExp: number;
 };
 
+export function toLots(fullAmount: bigint, lotExp: number): bigint {
+  const lots = fullAmount >> BigInt(lotExp);
+  if (lots << BigInt(lotExp) !== fullAmount) {
+    throw new Error(
+      `AmountNotLotMultiple: fullAmount=${fullAmount} lotExp=${lotExp}`,
+    );
+  }
+  return lots;
+}
+
 export type Initialize = {
   expiry: number;
   rootKeyType: number;
@@ -152,7 +163,10 @@ export type TaggedMutation =
       type: MutationType.MarketOrder;
       mutation: MarketOrder<bigint>;
     } & Signed<bigint>)
-  | { type: MutationType.AddInstrument; mutation: AddInstrument }
+  | ({
+      type: MutationType.AddInstrument;
+      mutation: AddInstrument;
+    } & Signed<bigint>)
   | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
   | ({
       type: MutationType.Withdrawal;
@@ -173,7 +187,10 @@ export type ResolvedMutation =
       mutation: MarketOrder<bigint>;
       resolution: MarketOrderResolution<bigint>;
     } & Signed<bigint>)
-  | { type: MutationType.AddInstrument; mutation: AddInstrument }
+  | ({
+      type: MutationType.AddInstrument;
+      mutation: AddInstrument;
+    } & Signed<bigint>)
   | ({ type: MutationType.Deposit; mutation: Deposit<bigint> } & Signed<bigint>)
   | ({
       type: MutationType.Withdrawal;
@@ -522,6 +539,12 @@ export function handleMarketOrder(
       `InvalidInstrument: handleMarketOrder instrumentId=${order.instrumentId} account=${account}`,
     );
 
+  // mutation carries full amounts; match contract's _toLots boundary
+  const quantityLots = toLots(order.quantity, instrument.baseLotExp);
+  const receivedLotExp =
+    order.bidOrAsk === 0 ? instrument.baseLotExp : instrument.quoteLotExp;
+  const minReceivedLots = toLots(order.minReceivedQuantity, receivedLotExp);
+
   let totalFilled = 0n;
   let totalReceived = 0n;
   for (const fill of resolution.fills) {
@@ -535,17 +558,17 @@ export function handleMarketOrder(
     }
   }
 
-  if (totalFilled < order.quantity)
+  if (totalFilled < quantityLots)
     throw new Error(
-      `InsufficientLiquidity: handleMarketOrder totalFilled=${totalFilled} order.quantity=${order.quantity} fillCount=${resolution.fills.length} account=${account}`,
+      `InsufficientLiquidity: handleMarketOrder totalFilled=${totalFilled} quantityLots=${quantityLots} fillCount=${resolution.fills.length} account=${account}`,
     );
-  if (totalFilled !== order.quantity)
+  if (totalFilled !== quantityLots)
     throw new Error(
-      `InvalidMutation: handleMarketOrder totalFilled=${totalFilled} order.quantity=${order.quantity} fillCount=${resolution.fills.length} account=${account}`,
+      `InvalidMutation: handleMarketOrder totalFilled=${totalFilled} quantityLots=${quantityLots} fillCount=${resolution.fills.length} account=${account}`,
     );
-  if (totalReceived < order.minReceivedQuantity)
+  if (totalReceived < minReceivedLots)
     throw new Error(
-      `SlippageExceeded: totalReceived=${totalReceived} minReceivedQuantity=${order.minReceivedQuantity} account=${account}`,
+      `SlippageExceeded: totalReceived=${totalReceived} minReceivedLots=${minReceivedLots} account=${account}`,
     );
 }
 
@@ -559,6 +582,9 @@ export function handleLimitOrder(
     throw new Error(
       `InvalidInstrument: handleLimitOrder instrumentId=${order.instrumentId} account=${account}`,
     );
+
+  // mutation carries full base amount; convert to lots at the boundary
+  const quantityLots = toLots(order.quantity, instrument.baseLotExp);
 
   const ticks = order.bidOrAsk === 0 ? instrument.bids : instrument.asks;
   const priceKey = Number(order.price);
@@ -575,7 +601,7 @@ export function handleLimitOrder(
   const acc = getAccount(state, account);
   if (order.bidOrAsk === 0) {
     const rLock =
-      ((order.quantity * order.price) >> 32n) << BigInt(instrument.quoteLotExp);
+      ((quantityLots * order.price) >> 32n) << BigInt(instrument.quoteLotExp);
     const balance = acc.balances[instrument.quote] ?? 0n;
     if (balance < rLock)
       throw new Error(
@@ -583,7 +609,7 @@ export function handleLimitOrder(
       );
     acc.balances[instrument.quote] = balance - rLock;
   } else {
-    const rBase = order.quantity << BigInt(instrument.baseLotExp);
+    const rBase = quantityLots << BigInt(instrument.baseLotExp);
     const balance = acc.balances[instrument.base] ?? 0n;
     if (balance < rBase)
       throw new Error(
@@ -592,11 +618,11 @@ export function handleLimitOrder(
     acc.balances[instrument.base] = balance - rBase;
   }
 
-  tick.quantity += order.quantity;
-  tick.remainingQuantity += order.quantity;
+  tick.quantity += quantityLots;
+  tick.remainingQuantity += quantityLots;
 
   acc.orders.push({
-    quantity: order.quantity,
+    quantity: quantityLots,
     instrumentId: order.instrumentId,
     price: order.price,
     tickVolume: tick.volume,
@@ -693,6 +719,10 @@ export function handleAddInstrument(
   state: State<bigint>,
   params: AddInstrument,
 ): void {
+  if (params.baseLotExp > 128 || params.quoteLotExp > 128)
+    throw new Error(
+      `LotExpTooLarge: baseLotExp=${params.baseLotExp} quoteLotExp=${params.quoteLotExp}`,
+    );
   if (state.instruments[params.instrumentId])
     throw new Error(
       `InstrumentAlreadyExists: instrumentId=${params.instrumentId}`,

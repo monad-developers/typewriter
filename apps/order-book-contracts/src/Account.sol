@@ -14,48 +14,11 @@ struct Key {
     bytes publicKey;
 }
 
-struct Initialize {
-    bytes32 account;
-    uint40 expiry;
-    uint8 rootKeyType;
-    uint8 keyType;
-    uint8 permissions;
-    bytes rootPublicKey;
-    bytes publicKey;
-}
-
-struct Authorize {
-    bytes32 account;
-    uint40 expiry;
-    uint8 keyType;
-    uint8 permissions;
-    bytes publicKey;
-    uint256 nonce;
-    uint256 deadline;
-}
-
-struct Revoke {
-    bytes32 account;
-    uint64 keyId;
-    uint256 nonce;
-    uint256 deadline;
-}
-
 error InvalidSignature();
 error KeyNotFound();
 error KeyExpired();
 
 address constant P256_VERIFIER = address(0x100);
-
-bytes32 constant INITIALIZE_TYPEHASH = keccak256(
-    "Initialize(bytes32 account,uint40 expiry,uint8 rootKeyType,uint8 keyType,uint8 permissions,bytes rootPublicKey,bytes publicKey)"
-);
-
-bytes32 constant AUTHORIZE_TYPEHASH = keccak256(
-    "Authorize(bytes32 account,uint40 expiry,uint8 keyType,uint8 permissions,bytes publicKey,uint256 nonce,uint256 deadline)"
-);
-
-bytes32 constant REVOKE_TYPEHASH = keccak256("Revoke(bytes32 account,uint64 keyId,uint256 nonce,uint256 deadline)");
 
 function verify(Key[] storage keys, bytes32 digest, uint64 keyId, bytes calldata signature) view returns (uint8) {
     Key storage stored = keys[keyId];
