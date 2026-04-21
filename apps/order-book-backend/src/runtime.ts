@@ -15,6 +15,7 @@ import type {
   Address,
   Chain,
   CreateAccessListErrorType,
+  EstimateGasErrorType,
   Hex,
   PrepareTransactionRequestErrorType,
   SendRawTransactionSyncErrorType,
@@ -645,7 +646,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       catch: (error) => error as Error,
     }).pipe(rpcRetry);
 
-    const { accessList, gasUsed } = yield* Effect.tryPromise({
+    const { accessList } = yield* Effect.tryPromise({
       try: () =>
         publicClient.createAccessList({
           account: config.account.address,
@@ -653,6 +654,17 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           data: calldata,
         }),
       catch: (error) => error as CreateAccessListErrorType,
+    }).pipe(rpcRetry);
+
+    const gasUsed = yield* Effect.tryPromise({
+      try: () =>
+        publicClient.estimateGas({
+          account: config.account.address,
+          to: config.address,
+          data: calldata,
+          accessList,
+        }),
+      catch: (error) => error as EstimateGasErrorType,
     }).pipe(rpcRetry);
 
     const nonce = yield* Effect.tryPromise({
@@ -666,7 +678,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           to: config.address,
           data: calldata,
           accessList,
-          gas: gasUsed + gasUsed / 10n,
+          gas: gasUsed + gasUsed / 100n,
           nonce,
         }),
       catch: (error) => error as PrepareTransactionRequestErrorType,
