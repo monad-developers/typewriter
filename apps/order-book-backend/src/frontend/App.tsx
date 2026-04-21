@@ -23,9 +23,7 @@ function Auth() {
             onClick={() => signUp.mutate()}
             className="px-6 py-2 border rounded hover:bg-gray-50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
-            {signUp.isPending
-              ? "Creating..."
-              : "Create passkey"}
+            {signUp.isPending ? "Creating..." : "Create passkey"}
           </button>
           <button
             type="button"

@@ -14,6 +14,7 @@ console.error = (...args: unknown[]) => {
 import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import type { Chain } from "viem";
+import { createPublicClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
@@ -47,6 +48,7 @@ const BUCKET_SECONDS: Record<string, number> = {
   "1d": 86400,
 };
 
+import { createEVM, type EVM } from "evm";
 import index from "./frontend/index.html";
 import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
@@ -90,6 +92,25 @@ const { state, mutationId, bundleId } = await recoverState(
   consistent,
 );
 
+const publicClientForBootstrap = createPublicClient({
+  chain: CHAIN as Chain,
+  transport: http(RPC_URL),
+});
+const exchangeCode = await publicClientForBootstrap.getCode({
+  address: EXCHANGE_ADDRESS,
+});
+if (!exchangeCode || exchangeCode === "0x") {
+  throw new Error(
+    `no code at ${EXCHANGE_ADDRESS} — is the Exchange deployed on this chain?`,
+  );
+}
+const evm: EVM = await createEVM({
+  accounts: {
+    [EXCHANGE_ADDRESS]: { code: exchangeCode },
+    [deployerAccount.address]: { balance: 10n ** 24n },
+  },
+});
+
 const handle = startRuntime({
   initialState: state,
   initialMutationId: mutationId,
@@ -101,6 +122,7 @@ const handle = startRuntime({
   rpId: process.env.BUN_PUBLIC_RP_ID || undefined,
   origin: process.env.BUN_PUBLIC_ORIGIN || undefined,
   db: writerDb,
+  evm,
 });
 
 const CORS_HEADERS = {

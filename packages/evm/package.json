@@ -1,0 +1,21 @@
+{
+  "name": "evm",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "cargo build --release",
+    "lint": "cargo fmt --check && cargo clippy --release -- -D warnings",
+    "test": "bun test --timeout 30000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ox": "^0.14.13"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

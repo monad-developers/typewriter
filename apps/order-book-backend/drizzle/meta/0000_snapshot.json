@@ -53,17 +53,12 @@
         "deployments_schemaName_unique": {
           "name": "deployments_schemaName_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "schema_name"
-          ]
+          "columns": ["schema_name"]
         },
         "deployments_contractAddress_chainId_unique": {
           "name": "deployments_contractAddress_chainId_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "contract_address",
-            "chain_id"
-          ]
+          "columns": ["contract_address", "chain_id"]
         }
       },
       "policies": {},

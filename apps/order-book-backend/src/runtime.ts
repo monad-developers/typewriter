@@ -10,6 +10,7 @@ import {
   Queue,
   Schedule,
 } from "effect";
+import type { EVM } from "evm";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type {
   Address,
@@ -96,6 +97,7 @@ export type RuntimeConfig = {
   rpId?: string;
   origin?: string | string[];
   db: BunSQLDatabase<typeof schema>;
+  evm?: EVM;
 };
 
 type MutationEntry = {
@@ -591,6 +593,26 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       id: bundleId,
       mutations: mutationEvents,
     };
+
+    if (config.evm) {
+      const evm = config.evm;
+      const bundleCalldata = encodeBundles([bundleEvent]);
+      yield* Effect.tryPromise({
+        try: async () => {
+          const result = await evm.execute({
+            from: config.account.address,
+            to: config.address,
+            data: bundleCalldata,
+          });
+          if (!result.success) {
+            throw new Error(
+              `EVM execution failed: ${result.revertReason ?? "unknown reason"}`,
+            );
+          }
+        },
+        catch: (error) => error as Error,
+      });
+    }
 
     yield* Effect.tryPromise({
       try: async () => {
