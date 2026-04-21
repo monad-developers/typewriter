@@ -695,7 +695,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           serializedTransaction: signed,
         }),
       catch: (error) => error as SendRawTransactionSyncErrorType,
-    });
+    }).pipe(rpcRetry);
 
     yield* Effect.tryPromise({
       try: async () => {
@@ -743,7 +743,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     const block = yield* Effect.tryPromise({
       try: () => publicClient.getBlock(),
       catch: (error) => error as Error,
-    });
+    }).pipe(
+      Effect.retry({
+        times: 3,
+        schedule: Schedule.spaced(Duration.millis(200)),
+      }),
+    );
     if (block.number === null || block.number <= lastBlockNumber) return;
     lastBlockNumber = block.number;
 
