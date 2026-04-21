@@ -12,6 +12,7 @@ console.log(
 );
 
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
+const FETCH_TIMEOUT_MS = 30_000;
 
 function domain() {
   return {
@@ -44,6 +45,7 @@ async function post(path: string, body: unknown) {
     body: JSON.stringify(body, (_k, v) =>
       typeof v === "bigint" ? v.toString() : v,
     ),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`${path} failed: ${data.error}`);
@@ -154,7 +156,9 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
 }
 
 export async function fetchState(): Promise<State> {
-  const res = await fetch(`${API_URL}/api/state`);
+  const res = await fetch(`${API_URL}/api/state`, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   return res.json() as Promise<State>;
 }
 

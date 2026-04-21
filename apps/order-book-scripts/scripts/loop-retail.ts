@@ -23,7 +23,19 @@ if (!instrument) {
 
 const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
 
-const account = await createAccount();
+let account: Awaited<ReturnType<typeof createAccount>>;
+while (true) {
+  try {
+    account = await createAccount();
+    break;
+  } catch (err) {
+    console.error(
+      "createAccount failed, retrying:",
+      err instanceof Error ? err.message : err,
+    );
+    await Bun.sleep(interval);
+  }
+}
 console.log(`account ${account.address}`);
 console.log(`interval: ${interval}ms`);
 
