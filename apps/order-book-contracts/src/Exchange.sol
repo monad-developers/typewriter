@@ -1,20 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {
-    KeyType,
-    Key,
-    Initialize,
-    Authorize,
-    Revoke,
-    KeyNotFound,
-    KeyExpired,
-    INITIALIZE_TYPEHASH,
-    AUTHORIZE_TYPEHASH,
-    REVOKE_TYPEHASH,
-    verify,
-    verifySignature
-} from "./Account.sol";
+import {KeyType, Key, KeyNotFound, KeyExpired, verify, verifySignature} from "./Account.sol";
 
 struct State {
     mapping(bytes32 => Account) accounts;
@@ -61,6 +48,33 @@ enum Mutation {
     AddInstrument,
     Deposit,
     Withdrawal
+}
+
+struct Initialize {
+    bytes32 account;
+    uint40 expiry;
+    uint8 rootKeyType;
+    uint8 keyType;
+    uint8 permissions;
+    bytes rootPublicKey;
+    bytes publicKey;
+}
+
+struct Authorize {
+    bytes32 account;
+    uint40 expiry;
+    uint8 keyType;
+    uint8 permissions;
+    bytes publicKey;
+    uint256 nonce;
+    uint256 deadline;
+}
+
+struct Revoke {
+    bytes32 account;
+    uint64 keyId;
+    uint256 nonce;
+    uint256 deadline;
 }
 
 struct CloseOrder {
@@ -158,36 +172,45 @@ error AlreadyInitialized();
 error AmountNotLotMultiple();
 error LotExpTooLarge();
 
+bytes32 constant EIP712_DOMAIN_TYPEHASH =
+    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+bytes32 constant INITIALIZE_TYPEHASH = keccak256(
+    "Initialize(bytes32 account,uint40 expiry,uint8 rootKeyType,uint8 keyType,uint8 permissions,bytes rootPublicKey,bytes publicKey)"
+);
+
+bytes32 constant AUTHORIZE_TYPEHASH = keccak256(
+    "Authorize(bytes32 account,uint40 expiry,uint8 keyType,uint8 permissions,bytes publicKey,uint256 nonce,uint256 deadline)"
+);
+
+bytes32 constant REVOKE_TYPEHASH = keccak256("Revoke(bytes32 account,uint64 keyId,uint256 nonce,uint256 deadline)");
+
+bytes32 constant CLOSE_ORDER_TYPEHASH =
+    keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
+
+bytes32 constant LIMIT_ORDER_TYPEHASH = keccak256(
+    "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+);
+
+bytes32 constant MARKET_ORDER_TYPEHASH = keccak256(
+    "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
+);
+
+bytes32 constant DEPOSIT_TYPEHASH =
+    keccak256("Deposit(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
+
+bytes32 constant WITHDRAWAL_TYPEHASH =
+    keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
+
+bytes32 constant ADD_INSTRUMENT_TYPEHASH = keccak256(
+    "AddInstrument(uint64 instrumentId,address base,address quote,uint8 baseLotExp,uint8 quoteLotExp,uint256 nonce,uint256 deadline)"
+);
+
 contract Exchange {
-    address internal immutable SCHEDULER;
-    State internal state;
-
-    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-
-    bytes32 private constant CLOSE_ORDER_TYPEHASH =
-        keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
-
-    bytes32 private constant LIMIT_ORDER_TYPEHASH = keccak256(
-        "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
-    );
-
-    bytes32 private constant MARKET_ORDER_TYPEHASH = keccak256(
-        "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
-    );
-
-    bytes32 private constant DEPOSIT_TYPEHASH =
-        keccak256("Deposit(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
-
-    bytes32 private constant WITHDRAWAL_TYPEHASH =
-        keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
-
-    bytes32 private constant ADD_INSTRUMENT_TYPEHASH = keccak256(
-        "AddInstrument(uint64 instrumentId,address base,address quote,uint8 baseLotExp,uint8 quoteLotExp,uint256 nonce,uint256 deadline)"
-    );
-
     uint256 private immutable INITIAL_CHAIN_ID;
     bytes32 private immutable INITIAL_DOMAIN_SEPARATOR;
+    address internal immutable SCHEDULER;
+    State internal state;
 
     constructor(address _scheduler) {
         SCHEDULER = _scheduler;

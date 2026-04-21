@@ -8,6 +8,7 @@ import {
     Bundle,
     Mutation,
     Signature,
+    Initialize,
     AddInstrument,
     Deposit,
     Withdrawal,
@@ -20,10 +21,11 @@ import {
     MutationsOutOfOrder,
     SignatureExpired,
     InvalidNonce,
-    LotExpTooLarge
+    LotExpTooLarge,
+    INITIALIZE_TYPEHASH
 } from "src/Exchange.sol";
 
-import {KeyType, Initialize, InvalidSignature, KeyNotFound, INITIALIZE_TYPEHASH} from "src/Account.sol";
+import {KeyType, InvalidSignature, KeyNotFound} from "src/Account.sol";
 
 contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     address constant BASE = address(0x1);

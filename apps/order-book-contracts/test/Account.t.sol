@@ -8,6 +8,9 @@ import {
     Bundle,
     Mutation,
     Signature,
+    Initialize,
+    Authorize,
+    Revoke,
     Deposit,
     Withdrawal,
     PERM_AUTHORIZE,
@@ -16,22 +19,13 @@ import {
     PERM_WITHDRAW,
     PERM_LIMIT_ORDER,
     Unauthorized,
-    AlreadyInitialized
-} from "src/Exchange.sol";
-
-import {
-    KeyType,
-    Key,
-    Initialize,
-    Authorize,
-    Revoke,
-    InvalidSignature,
-    KeyNotFound,
-    KeyExpired,
+    AlreadyInitialized,
     INITIALIZE_TYPEHASH,
     AUTHORIZE_TYPEHASH,
     REVOKE_TYPEHASH
-} from "src/Account.sol";
+} from "src/Exchange.sol";
+
+import {KeyType, Key, InvalidSignature, KeyNotFound, KeyExpired} from "src/Account.sol";
 
 contract AccountTest is Test, Exchange(address(0xBEEF)) {
     uint256 pk1 = 0xA11CE;
