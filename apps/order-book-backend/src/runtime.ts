@@ -27,6 +27,7 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   http,
+  keccak256,
   parseSignature,
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
@@ -689,6 +690,8 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       catch: (error) => error as SignTransactionErrorType,
     });
 
+    const transactionHash = keccak256(signed);
+
     const receipt = yield* Effect.tryPromise({
       try: () =>
         sendRawTransactionSync(walletClient, {
@@ -696,6 +699,14 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         }),
       catch: (error) => error as SendRawTransactionSyncErrorType,
     }).pipe(rpcRetry);
+
+    if (receipt.transactionHash !== transactionHash) {
+      yield* Effect.die(
+        new Error(
+          `transaction hash mismatch: expected ${transactionHash} got ${receipt.transactionHash}`,
+        ),
+      );
+    }
 
     yield* Effect.tryPromise({
       try: async () => {
@@ -727,7 +738,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         bundleCount: bundles.length,
         mutationCount: bundles.reduce((n, b) => n + b.mutations.length, 0),
         blockNumber: receipt.blockNumber.toString(),
-        transactionHash: receipt.transactionHash,
+        transactionHash,
       }),
     );
   });
