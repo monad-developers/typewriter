@@ -20,7 +20,7 @@ export function resolveMarketOrder(
     .sort((a, b) => (order.bidOrAsk === 0 ? a - b : b - a));
 
   const fills: Fill<bigint>[] = [];
-  let remaining = order.quantity;
+  let remaining = order.quantity >> BigInt(instrument.baseLotExp);
 
   for (const p of prices) {
     if (remaining <= 0n) break;

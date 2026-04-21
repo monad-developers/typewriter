@@ -1242,6 +1242,66 @@ test("market order fills across multiple price levels", async () => {
   await handle.stop();
 });
 
+test("market order with nonzero lot exponents fills in lot units", async () => {
+  // Regression: resolveMarketOrder was iterating with remaining=order.quantity (full amount)
+  // while ticks are in lots; with baseLotExp>0 the resolver over-fills and handleMarketOrder
+  // throws InvalidMutation (totalFilled > quantityLots). All other tests use baseLotExp: 0,
+  // where full-amount and lot-amount are identical and the bug is invisible.
+  const baseLotExp = 35;
+  const quoteLotExp = 46;
+  const exchangeAddress = await deployExchange();
+  const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
+  const state = createState();
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp, quoteLotExp });
+
+  const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
+  const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
+  const makerInitSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: MAKER_ACCOUNT, ...makerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: MAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerInitSig, mutation: makerInit });
+
+  // Maker locks enough quote for two bids of 3 lots: (3*10 + 3*8) << quoteLotExp = 54 << 46
+  const makerQuote = 54n << BigInt(quoteLotExp);
+  const makerDepSig = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: QUOTE, amount: makerQuote, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: MAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: makerDepSig, mutation: { asset: QUOTE, amount: makerQuote } });
+
+  // Two bids: best at 10*Q32 (3 lots), then 8*Q32 (3 lots). Quantities are full amounts.
+  const bidFull = 3n << BigInt(baseLotExp);
+  const limitOrder1 = { quantity: bidFull, instrumentId: 0, price: 10n * Q32, bidOrAsk: 0 as const };
+  const limitSig1 = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "LimitOrder", message: { quantity: limitOrder1.quantity, instrumentId: BigInt(limitOrder1.instrumentId), price: limitOrder1.price, bidOrAsk: limitOrder1.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.LimitOrder, account: MAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: limitSig1, mutation: limitOrder1 });
+
+  const limitOrder2 = { quantity: bidFull, instrumentId: 0, price: 8n * Q32, bidOrAsk: 0 as const };
+  const limitSig2 = await signTypedData({ privateKey: MAKER_PK, domain, types: EIP712_TYPES, primaryType: "LimitOrder", message: { quantity: limitOrder2.quantity, instrumentId: BigInt(limitOrder2.instrumentId), price: limitOrder2.price, bidOrAsk: limitOrder2.bidOrAsk, nonce: 2n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.LimitOrder, account: MAKER_ACCOUNT, keyId: 1, nonce: 2n, deadline: FAR_DEADLINE, rawSignature: limitSig2, mutation: limitOrder2 });
+
+  const takerPub = `0x000000000000000000000000${TAKER.slice(2).toLowerCase()}` as Hex;
+  const takerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: takerPub, publicKey: takerPub };
+  const takerInitSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Initialize", message: { account: TAKER_ACCOUNT, ...takerInit } });
+  await handle.execute({ type: MutationType.Initialize, account: TAKER_ACCOUNT, keyId: 0, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerInitSig, mutation: takerInit });
+
+  // Taker deposits 10 lots of base, sells 5 — book has 6 lots total. Pre-fix bug would sweep all 6.
+  const takerBase = 10n << BigInt(baseLotExp);
+  const takerDepSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "Deposit", message: { asset: BASE, amount: takerBase, nonce: 0n, deadline: FAR_DEADLINE } });
+  await handle.execute({ type: MutationType.Deposit, account: TAKER_ACCOUNT, keyId: 1, nonce: 0n, deadline: FAR_DEADLINE, rawSignature: takerDepSig, mutation: { asset: BASE, amount: takerBase } });
+
+  const sellFull = 5n << BigInt(baseLotExp);
+  const marketOrder = { quantity: sellFull, minReceivedQuantity: 0n, instrumentId: 0, bidOrAsk: 1 as const };
+  const marketSig = await signTypedData({ privateKey: TAKER_PK, domain, types: EIP712_TYPES, primaryType: "MarketOrder", message: { quantity: marketOrder.quantity, minReceivedQuantity: marketOrder.minReceivedQuantity, instrumentId: BigInt(marketOrder.instrumentId), bidOrAsk: marketOrder.bidOrAsk, nonce: 1n, deadline: FAR_DEADLINE } });
+  const result = await handle.execute({ type: MutationType.MarketOrder, account: TAKER_ACCOUNT, keyId: 1, nonce: 1n, deadline: FAR_DEADLINE, rawSignature: marketSig, mutation: marketOrder });
+
+  expect(result.resolution.fills.length).toBe(2);
+  expect(result.resolution.fills[0]!.price).toBe(10n * Q32);
+  expect(result.resolution.fills[0]!.quantity).toBe(3n);
+  expect(result.resolution.fills[1]!.price).toBe(8n * Q32);
+  expect(result.resolution.fills[1]!.quantity).toBe(2n);
+  // Taker keeps 5 unsold lots of base; receives (3*10 + 2*8)=46 quote lots worth of quote.
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[BASE]).toBe(5n << BigInt(baseLotExp));
+  expect(state.accounts[TAKER_ACCOUNT]!.balances[QUOTE]).toBe(46n << BigInt(quoteLotExp));
+  await handle.stop();
+});
+
 test("market order that exhausts a tick increments volume", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
