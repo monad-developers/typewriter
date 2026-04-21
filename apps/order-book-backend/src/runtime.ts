@@ -9,7 +9,6 @@ import {
   Logger,
   Queue,
   Schedule,
-  Stream,
 } from "effect";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type {
@@ -75,7 +74,6 @@ export type BundleStatus =
 export type MutationEvent = ResolvedMutation & { id: number };
 export type BundleEvent = {
   id: number;
-  calldata: Hex;
   mutations: MutationEvent[];
 };
 type PendingBundle = {
@@ -89,7 +87,6 @@ export type RuntimeConfig = {
   initialState: State<bigint>;
   initialMutationId?: number;
   initialBundleId?: number;
-  bundleIntervalMs: number;
   chain: Chain;
   rpcUrl: string;
   account: PrivateKeyAccount;
@@ -402,19 +399,19 @@ function encodeSignature(resolved: ResolvedMutation): {
   };
 }
 
-function encodeBundle(resolved: ResolvedMutation[]): Hex {
+function encodeBundleArg(mutations: MutationEvent[]) {
+  return {
+    mutations: mutations.map((m) => m.type),
+    mutationData: mutations.map(encodeMutationData),
+    signatures: mutations.map(encodeSignature),
+  };
+}
+
+function encodeBundles(bundles: BundleEvent[]): Hex {
   return encodeFunctionData({
     abi: EXCHANGE_ABI,
     functionName: "execute",
-    args: [
-      [
-        {
-          mutations: resolved.map((r) => r.type),
-          mutationData: resolved.map(encodeMutationData),
-          signatures: resolved.map(encodeSignature),
-        },
-      ],
-    ],
+    args: [bundles.map((b) => encodeBundleArg(b.mutations))],
   });
 }
 
@@ -449,6 +446,9 @@ function applyMutation(state: State<bigint>, r: ResolvedMutation): void {
       break;
   }
 }
+
+const SUBMIT_INTERVAL_MS = 400;
+const BUNDLE_INTERVAL_MS = 50;
 
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const state = config.initialState;
@@ -556,7 +556,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     for (const { entry, error } of rejections) {
       yield* Deferred.fail(entry.deferred, error);
-      emitMutation({ id: entry.id, ...entry.tagged } as MutationEvent, "rejected");
+      emitMutation(
+        { id: entry.id, ...entry.tagged } as MutationEvent,
+        "rejected",
+      );
       yield* Effect.logInfo("mutation rejected").pipe(
         Effect.annotateLogs({
           mutationId: entry.id,
@@ -580,11 +583,9 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     if (mutationEvents.length === 0) return;
 
-    const calldata = encodeBundle(resolved);
     const bundleId = nextBundleId++;
     const bundleEvent: BundleEvent = {
       id: bundleId,
-      calldata,
       mutations: mutationEvents,
     };
 
@@ -617,113 +618,112 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
   const bundleProgram = Effect.repeat(
     bundle,
-    Schedule.fixed(Duration.millis(config.bundleIntervalMs)),
+    Schedule.fixed(Duration.millis(BUNDLE_INTERVAL_MS)),
   ).pipe(Effect.orDie);
 
-  const submit = (bundleEvent: BundleEvent) =>
-    Effect.gen(function* () {
-      const rpcRetry = Effect.retry({
-        times: 3,
-        schedule: Schedule.spaced(Duration.millis(200)),
-      });
+  const submit = Effect.gen(function* () {
+    const bundles = Chunk.toArray(yield* Queue.takeAll(submitQueue));
+    if (bundles.length === 0) return;
 
-      yield* Effect.tryPromise({
-        try: () =>
-          publicClient.simulateContract({
-            account: config.account.address,
-            abi: EXCHANGE_ABI,
-            address: config.address,
-            functionName: "execute",
-            args: [
-              [
-                {
-                  mutations: bundleEvent.mutations.map((r) => r.type),
-                  mutationData: bundleEvent.mutations.map(encodeMutationData),
-                  signatures: bundleEvent.mutations.map(encodeSignature),
-                },
-              ],
-            ],
-          }),
-        catch: (error) => error as Error,
-      }).pipe(rpcRetry);
+    const rpcRetry = Effect.retry({
+      times: 3,
+      schedule: Schedule.spaced(Duration.millis(200)),
+    });
 
-      const { accessList, gasUsed } = yield* Effect.tryPromise({
-        try: () =>
-          publicClient.createAccessList({
-            account: config.account.address,
-            to: config.address,
-            data: bundleEvent.calldata,
-          }),
-        catch: (error) => error as CreateAccessListErrorType,
-      }).pipe(rpcRetry);
+    const args = bundles.map((b) => encodeBundleArg(b.mutations));
+    const calldata = encodeBundles(bundles);
 
-      const nonce = yield* Effect.tryPromise({
-        try: () => nextNonce(),
-        catch: (error) => error as Error,
-      }).pipe(rpcRetry);
+    yield* Effect.tryPromise({
+      try: () =>
+        publicClient.simulateContract({
+          account: config.account.address,
+          abi: EXCHANGE_ABI,
+          address: config.address,
+          functionName: "execute",
+          args: [args],
+        }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
 
-      const request = yield* Effect.tryPromise({
-        try: () =>
-          walletClient.prepareTransactionRequest({
-            to: config.address,
-            data: bundleEvent.calldata,
-            accessList,
-            gas: gasUsed + gasUsed / 10n,
-            nonce,
-          }),
-        catch: (error) => error as PrepareTransactionRequestErrorType,
-      }).pipe(rpcRetry);
+    const { accessList, gasUsed } = yield* Effect.tryPromise({
+      try: () =>
+        publicClient.createAccessList({
+          account: config.account.address,
+          to: config.address,
+          data: calldata,
+        }),
+      catch: (error) => error as CreateAccessListErrorType,
+    }).pipe(rpcRetry);
 
-      const signed = yield* Effect.tryPromise({
-        try: () => walletClient.signTransaction(request),
-        catch: (error) => error as SignTransactionErrorType,
-      });
+    const nonce = yield* Effect.tryPromise({
+      try: () => nextNonce(),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
 
-      const receipt = yield* Effect.tryPromise({
-        try: () =>
-          sendRawTransactionSync(walletClient, {
-            serializedTransaction: signed,
-          }),
-        catch: (error) => error as SendRawTransactionSyncErrorType,
-      });
+    const request = yield* Effect.tryPromise({
+      try: () =>
+        walletClient.prepareTransactionRequest({
+          to: config.address,
+          data: calldata,
+          accessList,
+          gas: gasUsed + gasUsed / 10n,
+          nonce,
+        }),
+      catch: (error) => error as PrepareTransactionRequestErrorType,
+    }).pipe(rpcRetry);
 
-      yield* Effect.tryPromise({
-        try: async () => {
+    const signed = yield* Effect.tryPromise({
+      try: () => walletClient.signTransaction(request),
+      catch: (error) => error as SignTransactionErrorType,
+    });
+
+    const receipt = yield* Effect.tryPromise({
+      try: () =>
+        sendRawTransactionSync(walletClient, {
+          serializedTransaction: signed,
+        }),
+      catch: (error) => error as SendRawTransactionSyncErrorType,
+    });
+
+    yield* Effect.tryPromise({
+      try: async () => {
+        for (const bundleEvent of bundles) {
           await updateBundleStatus(config.db, bundleEvent.id, "proposed");
           for (const m of bundleEvent.mutations) {
             await updateMutationStatus(config.db, m.type, m.id, "proposed");
           }
-        },
-        catch: (error) => error as Error,
-      });
+        }
+      },
+      catch: (error) => error as Error,
+    });
 
+    for (const bundleEvent of bundles) {
       for (const mutation of bundleEvent.mutations) {
         emitMutation(mutation, "proposed");
       }
       emitBundle(bundleEvent, "proposed");
-
-      yield* Effect.logInfo("bundle proposed").pipe(
-        Effect.annotateLogs({
-          bundleId: bundleEvent.id,
-          mutations: bundleEvent.mutations.map((m) => m.id),
-          mutationCount: bundleEvent.mutations.length,
-          blockNumber: receipt.blockNumber.toString(),
-          transactionHash: receipt.transactionHash,
-        }),
-      );
-
       pendingBundles.set(bundleEvent.id, {
         bundle: bundleEvent,
         proposedAt: receipt.blockNumber,
         status: "proposed",
       });
-    });
+    }
 
-  const submitProgram = Stream.fromQueue(submitQueue).pipe(
-    Stream.mapEffect(submit),
-    Stream.runDrain,
-    Effect.orDie,
-  );
+    yield* Effect.logInfo("bundles proposed").pipe(
+      Effect.annotateLogs({
+        bundleIds: bundles.map((b) => b.id),
+        bundleCount: bundles.length,
+        mutationCount: bundles.reduce((n, b) => n + b.mutations.length, 0),
+        blockNumber: receipt.blockNumber.toString(),
+        transactionHash: receipt.transactionHash,
+      }),
+    );
+  });
+
+  const submitProgram = Effect.repeat(
+    submit,
+    Schedule.fixed(Duration.millis(SUBMIT_INTERVAL_MS)),
+  ).pipe(Effect.orDie);
 
   let lastBlockNumber = -1n;
 
@@ -809,7 +809,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       Effect.annotateLogs({
         chain: config.chain.id,
         address: config.address,
-        bundleIntervalMs: config.bundleIntervalMs,
       }),
     );
     yield* Effect.all([bundleProgram, submitProgram, watchProgram], {

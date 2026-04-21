@@ -94,7 +94,6 @@ const handle = startRuntime({
   initialState: state,
   initialMutationId: mutationId,
   initialBundleId: bundleId,
-  bundleIntervalMs: 50,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,
   account: deployerAccount,
