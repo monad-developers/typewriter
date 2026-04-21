@@ -797,7 +797,7 @@
 
     "follow-redirects": ["follow-redirects@1.16.0", "", {}, "sha512-y5rN/uOsadFT/JfYwhxRS5R7Qce+g3zG97+JrtFZlC9klX/W5hD7iiLzScI4nZqUS7DNUdhPgw4xI8W2LuXlUw=="],
 
-    "forge-std": ["forge-std@github:foundry-rs/forge-std#2999b65", {}, "foundry-rs-forge-std-2999b65", "sha512-kNfmnlt5OmqFrR1fHVC0TjAPBCTzgKdI6XeW2qQeDZcLAgBjyL5NswrEVwUuakmeQqMRnWjXLpnw7N7LLhkoEQ=="],
+    "forge-std": ["forge-std@github:foundry-rs/forge-std#624bef6", {}, "foundry-rs-forge-std-624bef6", "sha512-ityaKPjWF4T3tznSqxJwnwNw6prCtk6G7XqNIlGL720wA0ObmXr0+8RHe5RBaHu6hWJIypiyG5UfezDm4p9C3g=="],
 
     "formdata-polyfill": ["formdata-polyfill@4.0.10", "", { "dependencies": { "fetch-blob": "^3.1.2" } }, "sha512-buewHzMvYL29jdeQTVILecSaZKnt/RJWjoZCF5OW60Z67/GmSLBkOFM7qh1PI3zFNtJbaZL5eQu1vLfazOwj4g=="],
 
