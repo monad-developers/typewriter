@@ -54,7 +54,7 @@ export const EIP712_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
   LimitOrder: [
-    { name: "quantity", type: "uint64" },
+    { name: "quantity", type: "uint256" },
     { name: "instrumentId", type: "uint64" },
     { name: "price", type: "uint64" },
     { name: "bidOrAsk", type: "uint8" },
@@ -62,10 +62,19 @@ export const EIP712_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
   MarketOrder: [
-    { name: "quantity", type: "uint64" },
-    { name: "minReceivedQuantity", type: "uint64" },
+    { name: "quantity", type: "uint256" },
+    { name: "minReceivedQuantity", type: "uint256" },
     { name: "instrumentId", type: "uint64" },
     { name: "bidOrAsk", type: "uint8" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+  AddInstrument: [
+    { name: "instrumentId", type: "uint64" },
+    { name: "base", type: "address" },
+    { name: "quote", type: "address" },
+    { name: "baseLotExp", type: "uint8" },
+    { name: "quoteLotExp", type: "uint8" },
     { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
   ],
@@ -101,9 +110,9 @@ export const EXCHANGE_ABI = [
     name: "execute",
     inputs: [
       {
-        name: "params",
-        type: "tuple",
-        internalType: "struct ExecuteParams",
+        name: "bundles",
+        type: "tuple[]",
+        internalType: "struct Bundle[]",
         components: [
           {
             name: "mutations",
@@ -128,6 +137,7 @@ export const EXCHANGE_ABI = [
     stateMutability: "nonpayable",
   },
   { type: "error", name: "AlreadyInitialized", inputs: [] },
+  { type: "error", name: "AmountNotLotMultiple", inputs: [] },
   { type: "error", name: "InstrumentAlreadyExists", inputs: [] },
   { type: "error", name: "InsufficientBalance", inputs: [] },
   { type: "error", name: "InvalidInstrument", inputs: [] },
@@ -138,7 +148,7 @@ export const EXCHANGE_ABI = [
   { type: "error", name: "KeyExpired", inputs: [] },
   { type: "error", name: "KeyNotFound", inputs: [] },
   { type: "error", name: "LengthMismatch", inputs: [] },
-  { type: "error", name: "MissingAuthorizePermission", inputs: [] },
+  { type: "error", name: "LotExpTooLarge", inputs: [] },
   { type: "error", name: "MutationsOutOfOrder", inputs: [] },
   { type: "error", name: "OrderNotFound", inputs: [] },
   { type: "error", name: "SignatureExpired", inputs: [] },

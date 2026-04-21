@@ -324,7 +324,7 @@ export const limitOrders = pgTable(
   {
     ...mutationBase(),
     ...signed(),
-    quantity: uint64().notNull(),
+    quantity: uint256().notNull(),
     instrumentId: uint64().notNull(),
     price: uint64().notNull(),
     bidOrAsk: uint8().notNull(),
@@ -356,8 +356,8 @@ export const marketOrders = pgTable(
   {
     ...mutationBase(),
     ...signed(),
-    quantity: uint64().notNull(),
-    minReceivedQuantity: uint64().notNull(),
+    quantity: uint256().notNull(),
+    minReceivedQuantity: uint256().notNull(),
     instrumentId: uint64().notNull(),
     bidOrAsk: uint8().notNull(),
   },
@@ -412,13 +412,14 @@ export const addInstruments = pgTable(
   "add_instruments",
   {
     ...mutationBase(),
+    ...signed(),
     instrumentId: uint64().notNull(),
     base: address().notNull(),
     quote: address().notNull(),
     baseLotExp: uint16().notNull(),
     quoteLotExp: uint16().notNull(),
   },
-  (t) => [index().on(t.bundleId)],
+  (t) => [index().on(t.account), index().on(t.bundleId)],
 );
 
 export const addInstrumentsRelations = relations(addInstruments, ({ one }) => ({
@@ -429,6 +430,10 @@ export const addInstrumentsRelations = relations(addInstruments, ({ one }) => ({
   instrument: one(instruments, {
     fields: [addInstruments.instrumentId],
     references: [instruments.id],
+  }),
+  accountRef: one(accounts, {
+    fields: [addInstruments.account],
+    references: [accounts.id],
   }),
 }));
 

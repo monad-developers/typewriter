@@ -3,7 +3,9 @@ import type { Address, Hex } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
 import { EIP712_TYPES } from "order-book-sdk";
+import type { AddInstrument as AddInstrumentParams } from "../src/exchange";
 import { createState, MutationType } from "../src/exchange";
+import type { RuntimeHandle } from "../src/runtime";
 import { startRuntime } from "../src/runtime";
 import {
   createTestDb,
@@ -16,19 +18,94 @@ const MAKER_PK =
   "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as const;
 const TAKER_PK =
   "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" as const;
+const ADMIN_PK =
+  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6" as const;
 
 const MAKER: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const TAKER: Address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+const ADMIN: Address = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 
 const MAKER_ACCOUNT =
   `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
 const TAKER_ACCOUNT =
   `0x000000000000000000000000${TAKER.slice(2).toLowerCase()}` as Hex;
+const ADMIN_ACCOUNT =
+  `0x000000000000000000000000${ADMIN.slice(2).toLowerCase()}` as Hex;
 
 const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
 const Q32 = 1n << 32n;
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
+
+type Domain = {
+  name: "Exchange";
+  version: "1";
+  chainId: number;
+  verifyingContract: Address;
+};
+
+/** Initialize ADMIN_ACCOUNT with PERM_ADD_INSTRUMENT and submit a signed AddInstrument. */
+async function addInstrument(
+  handle: RuntimeHandle,
+  domain: Domain,
+  params: AddInstrumentParams,
+  opts?: { skipInit?: boolean; nonce?: bigint },
+) {
+  if (!opts?.skipInit) {
+    const adminPubKey =
+      `0x000000000000000000000000${ADMIN.slice(2).toLowerCase()}` as Hex;
+    const initMutation = {
+      expiry: 0,
+      rootKeyType: 2,
+      keyType: 2,
+      permissions: 0xff,
+      rootPublicKey: adminPubKey,
+      publicKey: adminPubKey,
+    };
+    const initSig = await signTypedData({
+      privateKey: ADMIN_PK,
+      domain,
+      types: EIP712_TYPES,
+      primaryType: "Initialize",
+      message: { account: ADMIN_ACCOUNT, ...initMutation },
+    });
+    await handle.execute({
+      type: MutationType.Initialize,
+      account: ADMIN_ACCOUNT,
+      keyId: 0,
+      nonce: 0n,
+      deadline: FAR_DEADLINE,
+      rawSignature: initSig,
+      mutation: initMutation,
+    });
+  }
+
+  const nonce = opts?.nonce ?? 0n;
+  const sig = await signTypedData({
+    privateKey: ADMIN_PK,
+    domain,
+    types: EIP712_TYPES,
+    primaryType: "AddInstrument",
+    message: {
+      instrumentId: BigInt(params.instrumentId),
+      base: params.base,
+      quote: params.quote,
+      baseLotExp: params.baseLotExp,
+      quoteLotExp: params.quoteLotExp,
+      nonce,
+      deadline: FAR_DEADLINE,
+    },
+  });
+  return handle.execute({
+    type: MutationType.AddInstrument,
+    account: ADMIN_ACCOUNT,
+    keyId: 1,
+    nonce,
+    deadline: FAR_DEADLINE,
+    rawSignature: sig,
+    mutation: params,
+  });
+}
 
 test("initialize creates account with root key and session key", async () => {
   const exchangeAddress = await deployExchange();
@@ -550,6 +627,12 @@ test("withdrawal with insufficient balance rejects", async () => {
 
 test("add instrument creates instrument", async () => {
   const exchangeAddress = await deployExchange();
+  const domain = {
+    name: "Exchange" as const,
+    version: "1" as const,
+    chainId: anvil.id,
+    verifyingContract: exchangeAddress,
+  };
   const state = createState();
   const handle = startRuntime({
     initialState: state,
@@ -563,15 +646,12 @@ test("add instrument creates instrument", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   expect(state.instruments[0]!.base).toBe(BASE);
@@ -581,6 +661,12 @@ test("add instrument creates instrument", async () => {
 
 test("add duplicate instrument rejects", async () => {
   const exchangeAddress = await deployExchange();
+  const domain = {
+    name: "Exchange" as const,
+    version: "1" as const,
+    chainId: anvil.id,
+    verifyingContract: exchangeAddress,
+  };
   const state = createState();
   const handle = startRuntime({
     initialState: state,
@@ -594,28 +680,27 @@ test("add duplicate instrument rejects", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   await expect(
-    handle.execute({
-      type: MutationType.AddInstrument,
-      mutation: {
+    addInstrument(
+      handle,
+      domain,
+      {
         instrumentId: 0,
         base: BASE,
         quote: QUOTE,
         baseLotExp: 0,
         quoteLotExp: 0,
       },
-    }),
+      { skipInit: true, nonce: 1n },
+    ),
   ).rejects.toThrow("InstrumentAlreadyExists");
   await handle.stop();
 });
@@ -641,15 +726,12 @@ test("limit order bid locks quote and places on book", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const pubKey =
@@ -760,15 +842,12 @@ test("limit order ask locks base and places on book", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const pubKey =
@@ -873,15 +952,12 @@ test("limit order with insufficient balance rejects", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const pubKey =
@@ -966,15 +1042,12 @@ test("market order sell fills against resting bid", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const makerPub =
@@ -1143,7 +1216,7 @@ test("market order fills across multiple price levels", async () => {
   const state = createState();
   const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
-  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
   const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
   const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
@@ -1188,7 +1261,7 @@ test("market order that exhausts a tick increments volume", async () => {
   const state = createState();
   const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
-  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
   const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
   const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
@@ -1227,7 +1300,7 @@ test("market order with insufficient taker balance rejects", async () => {
   const state = createState();
   const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
-  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
   const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
   const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
@@ -1278,15 +1351,12 @@ test("market order buy fills against resting ask", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const makerPub =
@@ -1469,15 +1539,12 @@ test("market order with insufficient liquidity rejects", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const takerPub =
@@ -1579,15 +1646,12 @@ test("market order with slippage exceeded rejects", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const makerPub =
@@ -1753,7 +1817,7 @@ test("cancel sorted before market order in a bundle", async () => {
   const state = createState();
   const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
-  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
   const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
   const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
@@ -1797,7 +1861,7 @@ test("two market orders in a bundle", async () => {
   const state = createState();
   const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
-  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
   const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
   const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
@@ -1844,7 +1908,7 @@ test("two market orders in a bundle, first invalid due to slippage", async () =>
   const state = createState();
   const handle = startRuntime({ initialState: state, bundleIntervalMs: 10, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
-  await handle.execute({ type: MutationType.AddInstrument, mutation: { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 } });
+  await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
   const makerPub = `0x000000000000000000000000${MAKER.slice(2).toLowerCase()}` as Hex;
   const makerInit = { expiry: 0, rootKeyType: 2, keyType: 2, permissions: 0x7f, rootPublicKey: makerPub, publicKey: makerPub };
@@ -1908,15 +1972,12 @@ test("close order refunds unfilled and credits filled", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const makerPub =
@@ -2115,15 +2176,12 @@ test("close nonexistent order rejects", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const pubKey =
@@ -2403,15 +2461,12 @@ test("full lifecycle: deposit, limit, market, close", async () => {
     db: await createTestDb(anvil.id, exchangeAddress),
   });
 
-  await handle.execute({
-    type: MutationType.AddInstrument,
-    mutation: {
-      instrumentId: 0,
-      base: BASE,
-      quote: QUOTE,
-      baseLotExp: 0,
-      quoteLotExp: 0,
-    },
+  await addInstrument(handle, domain, {
+    instrumentId: 0,
+    base: BASE,
+    quote: QUOTE,
+    baseLotExp: 0,
+    quoteLotExp: 0,
   });
 
   const makerPub =

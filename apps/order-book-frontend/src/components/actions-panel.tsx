@@ -70,8 +70,9 @@ export function ActionsPanel({ instrument }: { instrument: string }) {
       return;
     }
 
-    // Quantity is in lots (same units as orderbook "size")
-    const rawQty = BigInt(Math.round(qty));
+    // Quantity is entered in lots; contract mutations take full base amounts.
+    const cfg = instrumentConfig(Number(instrument));
+    const rawQty = BigInt(Math.round(qty)) << BigInt(cfg.baseLotExp);
 
     try {
       if (tab === "market") {
@@ -86,7 +87,7 @@ export function ActionsPanel({ instrument }: { instrument: string }) {
           setError("Enter a valid price");
           return;
         }
-        const rawPrice = priceToQ32(p, instrumentConfig(Number(instrument)));
+        const rawPrice = priceToQ32(p, cfg);
 
         await limitOrder.mutateAsync({
           instrumentId: Number(instrument),

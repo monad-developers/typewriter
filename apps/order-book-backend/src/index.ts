@@ -279,11 +279,12 @@ serve({
 
     "/api/add-instrument": {
       POST: async (req) => {
-        const body = (await req.json()) as AddInstrument;
+        const body = (await req.json()) as AddInstrument & Signed;
 
         try {
           const result = await handle.execute({
             type: MutationType.AddInstrument,
+            ...decodeSigned(body),
             mutation: body,
           });
 

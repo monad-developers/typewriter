@@ -246,7 +246,7 @@ async function loadAllMutations(
       type: MutationType.LimitOrder,
       ...signed(r),
       mutation: {
-        quantity: r.quantity,
+        quantity: BigInt(r.quantity),
         instrumentId: Number(r.instrumentId),
         price: r.price,
         bidOrAsk: r.bidOrAsk as Side,
@@ -265,8 +265,8 @@ async function loadAllMutations(
       type: MutationType.MarketOrder,
       ...signed(r),
       mutation: {
-        quantity: r.quantity,
-        minReceivedQuantity: r.minReceivedQuantity,
+        quantity: BigInt(r.quantity),
+        minReceivedQuantity: BigInt(r.minReceivedQuantity),
         instrumentId: Number(r.instrumentId),
         bidOrAsk: r.bidOrAsk as Side,
       },
@@ -280,6 +280,7 @@ async function loadAllMutations(
     mutations.push({
       bundleId: r.bundleId!,
       type: MutationType.AddInstrument,
+      ...signed(r),
       mutation: {
         instrumentId: Number(r.instrumentId),
         base: r.base as Address,
@@ -287,7 +288,7 @@ async function loadAllMutations(
         baseLotExp: r.baseLotExp,
         quoteLotExp: r.quoteLotExp,
       },
-    } as ResolvedMutation & { bundleId: number });
+    });
   }
 
   for (const r of await db.select().from(schema.deposits)) {
@@ -345,10 +346,7 @@ function replayMutation(state: State<bigint>, m: ResolvedMutation): void {
       break;
   }
 
-  if (
-    m.type !== MutationType.AddInstrument &&
-    m.type !== MutationType.Initialize
-  ) {
+  if (m.type !== MutationType.Initialize) {
     const nonceKey = m.nonce >> 64n;
     incrementNonce(getAccount(state, m.account), nonceKey);
   }
@@ -936,7 +934,7 @@ export async function insertMutation(
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
         rawSignature: m.rawSignature,
-        quantity: m.mutation.quantity,
+        quantity: m.mutation.quantity.toString(),
         instrumentId: BigInt(m.mutation.instrumentId),
         price: m.mutation.price,
         bidOrAsk: m.mutation.bidOrAsk,
@@ -950,8 +948,8 @@ export async function insertMutation(
         nonce: m.nonce.toString(),
         deadline: m.deadline.toString(),
         rawSignature: m.rawSignature,
-        quantity: m.mutation.quantity,
-        minReceivedQuantity: m.mutation.minReceivedQuantity,
+        quantity: m.mutation.quantity.toString(),
+        minReceivedQuantity: m.mutation.minReceivedQuantity.toString(),
         instrumentId: BigInt(m.mutation.instrumentId),
         bidOrAsk: m.mutation.bidOrAsk,
       });
@@ -968,6 +966,11 @@ export async function insertMutation(
     case MutationType.AddInstrument:
       await db.insert(schema.addInstruments).values({
         ...base,
+        account: m.account,
+        keyId: BigInt(m.keyId),
+        nonce: m.nonce.toString(),
+        deadline: m.deadline.toString(),
+        rawSignature: m.rawSignature,
         instrumentId: BigInt(m.mutation.instrumentId),
         base: m.mutation.base,
         quote: m.mutation.quote,
