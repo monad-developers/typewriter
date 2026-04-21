@@ -83,6 +83,12 @@ function nextNonce(account: Account, opts?: MutationOpts): bigint {
   return nonce;
 }
 
+/** Round down to the nearest lot multiple. The contract rejects non-multiples. */
+function lotAligned(raw: bigint, lotExp: number): bigint {
+  const e = BigInt(lotExp);
+  return (raw >> e) << e;
+}
+
 export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
   const pk = privateKey ?? Secp256k1.randomPrivateKey();
   const publicKey = Secp256k1.getPublicKey({ privateKey: pk });
@@ -199,7 +205,7 @@ export async function limitOrder(
   const { instrument } = params;
   const bidOrAsk = params.side === "buy" ? 0 : 1;
   const q32Price = priceToQ32(params.price, instrument);
-  const quantity = params.quantity.raw;
+  const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "LimitOrder", {
     quantity,
@@ -234,8 +240,13 @@ export async function marketOrder(
 ) {
   const { instrument } = params;
   const bidOrAsk = params.side === "buy" ? 0 : 1;
-  const quantity = params.quantity.raw;
-  const minReceivedQuantity = params.minReceived.raw;
+  const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
+  const receivedLotExp =
+    params.side === "buy" ? instrument.baseLotExp : instrument.quoteLotExp;
+  const minReceivedQuantity = lotAligned(
+    params.minReceived.raw,
+    receivedLotExp,
+  );
   const nonce = nextNonce(account, opts);
   const rawSignature = sign(account.privateKey, "MarketOrder", {
     quantity,
