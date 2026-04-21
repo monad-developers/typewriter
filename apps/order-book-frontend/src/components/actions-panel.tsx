@@ -12,8 +12,8 @@ import { priceToQ32 } from "order-book-sdk";
 import { TokenAmount, instrumentConfig } from "~/lib/constants";
 
 const ORDER_TABS = [
-  { id: "limit", label: "Limit" },
   { id: "market", label: "Market" },
+  { id: "limit", label: "Limit" },
 ] as const;
 
 type OrderTabId = (typeof ORDER_TABS)[number]["id"];
@@ -22,7 +22,7 @@ type Side = "buy" | "sell";
 const QTY_PRESETS = [10, 50, 100, 500];
 
 export function ActionsPanel({ instrument }: { instrument: string }) {
-  const [tab, setTab] = useState<OrderTabId>("limit");
+  const [tab, setTab] = useState<OrderTabId>("market");
   const [side, setSide] = useState<Side>("buy");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
@@ -70,9 +70,10 @@ export function ActionsPanel({ instrument }: { instrument: string }) {
       return;
     }
 
-    // Quantity is entered in lots; contract mutations take full base amounts.
+    // User enters human base units; contract takes full amounts that must be lot multiples.
     const cfg = instrumentConfig(Number(instrument));
-    const rawQty = BigInt(Math.round(qty)) << BigInt(cfg.baseLotExp);
+    const raw = TokenAmount.from(qty, inst.baseAddress as `0x${string}`).raw;
+    const rawQty = (raw >> BigInt(cfg.baseLotExp)) << BigInt(cfg.baseLotExp);
 
     try {
       if (tab === "market") {
