@@ -449,6 +449,7 @@ function applyMutation(state: State<bigint>, r: ResolvedMutation): void {
   }
 }
 
+const BLOCK_POLLING_INTERVAL_MS = 200;
 const SUBMIT_INTERVAL_MS = 400;
 const BUNDLE_INTERVAL_MS = 50;
 
@@ -829,7 +830,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
   const watchProgram = Effect.repeat(
     watch,
-    Schedule.spaced(Duration.millis(500)),
+    Schedule.spaced(Duration.millis(BLOCK_POLLING_INTERVAL_MS)),
   ).pipe(Effect.orDie);
 
   const runtimeEffect = Effect.gen(function* () {
