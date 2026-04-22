@@ -54,6 +54,9 @@ export async function persistAccount(
     localStorage.setItem("ob:accountId", account.accountId);
     localStorage.setItem("ob:keyId", String(account.keyId));
     localStorage.setItem("ob:nonceKey", account.nonceKey.toString());
+    // Persist the account ID across sign-outs so future sign-ins can skip
+    // the identify() WebAuthn dialog and only show a single passkey prompt.
+    localStorage.setItem("ob:lastAccountId", account.accountId);
     await saveSessionKey(account.sessionKey);
   } else {
     localStorage.removeItem("ob:accountId");

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { Hex } from "viem";
 import { bytesToHex, hashTypedData, keccak256 } from "viem";
 import { Authentication as ClientAuthentication } from "webauthx/client";
 import { persistAccount } from "~/lib/account";
@@ -14,11 +15,18 @@ export function useSignIn() {
 
   return useMutation({
     mutationFn: async () => {
-      const [accountId, sessionKey] = await Promise.all([
-        identify(),
-        generateSessionKey(),
-      ]);
+      const sessionKey = await generateSessionKey();
       const sessionPublicKey = await exportPublicKey(sessionKey);
+
+      // Try to use a cached account ID so we only need a single WebAuthn
+      // dialog (the signing step) instead of two (identify + sign).
+      let accountId = localStorage.getItem("ob:lastAccountId") as Hex | null;
+
+      if (!accountId) {
+        // First sign-in on this device — need an extra WebAuthn prompt to
+        // discover the account ID from the passkey's userHandle.
+        accountId = await identify();
+      }
 
       const nonce =
         BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n;
@@ -43,6 +51,7 @@ export function useSignIn() {
       const assertion = await ClientAuthentication.sign({
         rpId: RP_ID,
         challenge: hash,
+        userVerification: "discouraged",
       });
 
       const rawSignature = encodeWebAuthnSignature(assertion);
@@ -60,6 +69,9 @@ export function useSignIn() {
       });
 
       if (!res.ok) {
+        // If the cached account ID was stale, clear it so the next attempt
+        // falls back to the identify() flow.
+        localStorage.removeItem("ob:lastAccountId");
         const body = await res.json();
         throw new Error(body.error?.split(":")[0] ?? "Authorize failed");
       }

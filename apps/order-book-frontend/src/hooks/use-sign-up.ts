@@ -53,6 +53,7 @@ export function useSignUp() {
       const assertion = await ClientAuthentication.sign({
         rpId: RP_ID,
         challenge: hash,
+        userVerification: "discouraged",
       });
 
       const rawSignature = encodeWebAuthnSignature(assertion);
