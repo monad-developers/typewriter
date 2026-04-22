@@ -1,0 +1,40 @@
+.git
+.github
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Bun / Node
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+**/out
+**/coverage
+**/*.tsbuildinfo
+**/.eslintcache
+**/.cache
+
+# Foundry artifacts (rebuilt in image)
+**/broadcast
+**/cache
+**/out
+
+# Logs
+**/*.log
+**/logs
+
+# Env / secrets
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.example.*
+
+# Docker itself
+Dockerfile
+.dockerignore
+
+# Editor / OS junk
+**/*.swp
+**/Thumbs.db
