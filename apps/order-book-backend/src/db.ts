@@ -473,38 +473,31 @@ export async function recoverState(
     // biome-ignore lint: transaction has same query API as DB
     const d: any = tx;
 
-    const acceptedMutationIds = d
+    const acceptedRows = await d
       .select({ id: schema.mutations.id })
       .from(schema.mutations)
       .where(eq(schema.mutations.status, "accepted"));
+    const acceptedIds = acceptedRows.map((r: { id: number }) => r.id);
 
-    await d
-      .delete(schema.fills)
-      .where(
-        inArray(
-          schema.fills.marketOrderId,
-          d
-            .select({ id: schema.marketOrders.id })
-            .from(schema.marketOrders)
-            .where(inArray(schema.marketOrders.id, acceptedMutationIds)),
-        ),
-      );
-    for (const table of [
-      schema.initializes,
-      schema.authorizes,
-      schema.revokes,
-      schema.closeOrders,
-      schema.limitOrders,
-      schema.marketOrders,
-      schema.addInstruments,
-      schema.deposits,
-      schema.withdrawals,
-    ] as const) {
-      await d.delete(table).where(inArray(table.id, acceptedMutationIds));
+    if (acceptedIds.length > 0) {
+      await d
+        .delete(schema.fills)
+        .where(inArray(schema.fills.marketOrderId, acceptedIds));
+      for (const table of [
+        schema.initializes,
+        schema.authorizes,
+        schema.revokes,
+        schema.closeOrders,
+        schema.limitOrders,
+        schema.marketOrders,
+        schema.addInstruments,
+        schema.deposits,
+        schema.withdrawals,
+      ] as const) {
+        await d.delete(table).where(inArray(table.id, acceptedIds));
+      }
+      await d.delete(schema.mutations).where(inArray(schema.mutations.id, acceptedIds));
     }
-    await d
-      .delete(schema.mutations)
-      .where(eq(schema.mutations.status, "accepted"));
     await d.delete(schema.bundles).where(eq(schema.bundles.status, "accepted"));
 
     await d.delete(schema.ticks);
@@ -598,17 +591,6 @@ export async function updateBundleBlock(
     .update(schema.bundles)
     .set({ blockNumber: blockNumber.toString(), transactionHash })
     .where(eq(schema.bundles.id, bundleId));
-}
-
-export async function updateMutationStatus(
-  db: DB,
-  id: number,
-  status: BundleStatus,
-) {
-  await db
-    .update(schema.mutations)
-    .set({ status: status as BundleDBStatus })
-    .where(eq(schema.mutations.id, id));
 }
 
 export async function updateBundleMutationStatuses(

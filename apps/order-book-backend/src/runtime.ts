@@ -806,11 +806,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       timestamp: block.timestamp,
     };
 
-    yield* Effect.tryPromise({
-      try: () => insertBlock(config.db, blockRow),
-      catch: (error) => error as Error,
-    });
-
     const bundleIds = yield* Effect.tryPromise({
       try: () => selectBundleIdsInBlock(config.db, block.number!),
       catch: (error) => error as Error,
@@ -975,6 +970,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     else if (event === "block") blockListeners.add(cb as BlockCb);
   }
 
+  function off(
+    event: "mutation" | "bundle" | "block",
+    cb: MutationCb | BundleCb | BlockCb,
+  ): void {
+    if (event === "mutation") mutationListeners.delete(cb as MutationCb);
+    else if (event === "bundle") bundleListeners.delete(cb as BundleCb);
+    else if (event === "block") blockListeners.delete(cb as BlockCb);
+  }
+
   const encoder = new TextEncoder();
 
   function sse(event: string, data: unknown): Uint8Array {
@@ -987,27 +991,36 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   function stream(event: "bundle"): ReadableStream;
   function stream(event: "block"): ReadableStream;
   function stream(event: "mutation" | "bundle" | "block"): ReadableStream {
+    let cb: MutationCb | BundleCb | BlockCb;
+    let keepalive: ReturnType<typeof setInterval>;
     return new ReadableStream({
       start(controller) {
+        const enqueue = (chunk: Uint8Array) => {
+          try {
+            controller.enqueue(chunk);
+          } catch {}
+        };
         if (event === "mutation") {
-          on("mutation", (mutation, status) => {
-            controller.enqueue(
+          cb = ((mutation, status) => {
+            enqueue(
               sse("mutation", { id: mutation.id, type: mutation.type, status }),
             );
-          });
+          }) satisfies MutationCb;
+          on("mutation", cb as MutationCb);
         } else if (event === "bundle") {
-          on("bundle", (bundle, status) => {
-            controller.enqueue(
+          cb = ((bundle, status) => {
+            enqueue(
               sse("bundle", {
                 id: bundle.id,
                 status,
                 mutationIds: bundle.mutations.map((m) => m.id),
               }),
             );
-          });
-        } else if (event === "block") {
-          on("block", (block) => {
-            controller.enqueue(
+          }) satisfies BundleCb;
+          on("bundle", cb as BundleCb);
+        } else {
+          cb = ((block) => {
+            enqueue(
               sse("block", {
                 number: block.number,
                 hash: block.hash,
@@ -1015,8 +1028,14 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
                 bundleIds: block.bundleIds,
               }),
             );
-          });
+          }) satisfies BlockCb;
+          on("block", cb as BlockCb);
         }
+        keepalive = setInterval(() => enqueue(encoder.encode(": ping\n\n")), 15000);
+      },
+      cancel() {
+        clearInterval(keepalive);
+        off(event, cb);
       },
     });
   }
