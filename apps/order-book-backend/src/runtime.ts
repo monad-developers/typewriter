@@ -34,12 +34,17 @@ import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import type * as schema from "./app-schema";
 import {
+  acceptMutation,
+  deletePendingMutation,
   insertBlock,
   insertBundle,
-  insertMutation,
+  insertPendingMutation,
+  selectBundleIdsInBlock,
   syncState,
+  updateBundleBlock,
+  updateBundleMutationStatuses,
+  updateBundleMutationsBlock,
   updateBundleStatus,
-  updateMutationStatus,
 } from "./db";
 import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
 import {
@@ -83,12 +88,12 @@ type PendingBundle = {
   proposedAt: bigint;
   status: BundleStatus;
 };
-export type BlockEvent = { number: bigint; hash: Hex; timestamp: bigint };
+export type BlockRow = { number: bigint; hash: Hex; timestamp: bigint };
+export type BlockEvent = BlockRow & { bundleIds: number[] };
 
 export type RuntimeConfig = {
   initialState: State<bigint>;
   initialMutationId?: number;
-  initialBundleId?: number;
   chain: Chain;
   rpcUrl: string;
   account: PrivateKeyAccount;
@@ -459,7 +464,6 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
   const pendingBundles = new Map<number, PendingBundle>();
   let nextId = config.initialMutationId ?? 0;
-  let nextBundleId = config.initialBundleId ?? 0;
 
   const mutationListeners = new Set<
     (mutation: MutationEvent, status: MutationStatus) => void
@@ -558,6 +562,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     if (survivors.length === 0) resolved = [];
 
     for (const { entry, error } of rejections) {
+      yield* Effect.tryPromise({
+        try: () => deletePendingMutation(config.db, entry.id),
+        catch: (e) => e as Error,
+      });
       yield* Deferred.fail(entry.deferred, error);
       emitMutation(
         { id: entry.id, ...entry.tagged } as MutationEvent,
@@ -586,22 +594,29 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     if (mutationEvents.length === 0) return;
 
-    const bundleId = nextBundleId++;
+    const bundleId = yield* Effect.tryPromise({
+      try: () =>
+        config.db.transaction(async (tx) => {
+          const id = await insertBundle(tx as unknown as typeof config.db);
+          for (const m of mutationEvents) {
+            const calldata = encodeMutationData(m);
+            await acceptMutation(
+              tx as unknown as typeof config.db,
+              m,
+              id,
+              calldata,
+            );
+            await syncState(tx as unknown as typeof config.db, state, m);
+          }
+          return id;
+        }),
+      catch: (error) => error as Error,
+    });
+
     const bundleEvent: BundleEvent = {
       id: bundleId,
       mutations: mutationEvents,
     };
-
-    yield* Effect.tryPromise({
-      try: async () => {
-        await insertBundle(config.db, bundleId);
-        for (const m of mutationEvents) {
-          await insertMutation(config.db, m, bundleId);
-          await syncState(config.db, state, m);
-        }
-      },
-      catch: (error) => error as Error,
-    });
 
     yield* Effect.logInfo("bundle accepted").pipe(
       Effect.annotateLogs({
@@ -709,15 +724,36 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       );
     }
 
+    const block = yield* Effect.tryPromise({
+      try: () => publicClient.getBlock({ blockHash: receipt.blockHash }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
     yield* Effect.tryPromise({
-      try: async () => {
-        for (const bundleEvent of bundles) {
-          await updateBundleStatus(config.db, bundleEvent.id, "proposed");
-          for (const m of bundleEvent.mutations) {
-            await updateMutationStatus(config.db, m.type, m.id, "proposed");
+      try: () =>
+        config.db.transaction(async (tx) => {
+          const db = tx as unknown as typeof config.db;
+          await insertBlock(db, {
+            number: block.number!,
+            hash: block.hash as Hex,
+            timestamp: block.timestamp,
+          });
+          for (const bundleEvent of bundles) {
+            await updateBundleBlock(
+              db,
+              bundleEvent.id,
+              receipt.blockNumber,
+              transactionHash,
+            );
+            await updateBundleStatus(db, bundleEvent.id, "proposed");
+            await updateBundleMutationsBlock(
+              db,
+              bundleEvent.id,
+              receipt.blockNumber,
+            );
+            await updateBundleMutationStatuses(db, bundleEvent.id, "proposed");
           }
-        }
-      },
+        }),
       catch: (error) => error as Error,
     });
 
@@ -764,14 +800,19 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     if (block.number === null || block.number <= lastBlockNumber) return;
     lastBlockNumber = block.number;
 
-    const blockEvent: BlockEvent = {
+    const blockRow: BlockRow = {
       number: block.number,
       hash: block.hash as Hex,
       timestamp: block.timestamp,
     };
 
     yield* Effect.tryPromise({
-      try: () => insertBlock(config.db, blockEvent),
+      try: () => insertBlock(config.db, blockRow),
+      catch: (error) => error as Error,
+    });
+
+    const bundleIds = yield* Effect.tryPromise({
+      try: () => selectBundleIdsInBlock(config.db, block.number!),
       catch: (error) => error as Error,
     });
 
@@ -781,7 +822,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         hash: block.hash,
       }),
     );
-    emitBlock(blockEvent);
+    emitBlock({ ...blockRow, bundleIds });
 
     for (const [id, entry] of pendingBundles) {
       const confirmations = block.number - entry.proposedAt;
@@ -803,12 +844,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
       const status = nextStatus;
       yield* Effect.tryPromise({
-        try: async () => {
-          await updateBundleStatus(config.db, id, status);
-          for (const m of entry.bundle.mutations) {
-            await updateMutationStatus(config.db, m.type, m.id, status);
-          }
-        },
+        try: () =>
+          config.db.transaction(async (tx) => {
+            const db = tx as unknown as typeof config.db;
+            await updateBundleStatus(db, id, status);
+            await updateBundleMutationStatuses(db, id, status);
+          }),
         catch: (error) => error as Error,
       });
 
@@ -873,6 +914,10 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         });
 
         const id = nextId++;
+        yield* Effect.tryPromise({
+          try: () => insertPendingMutation(config.db, mutation, id),
+          catch: (error) => error as Error,
+        });
         const deferred = yield* Deferred.make<
           { id: number } & ResolvedMutation,
           unknown
@@ -967,6 +1012,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
                 number: block.number,
                 hash: block.hash,
                 timestamp: block.timestamp,
+                bundleIds: block.bundleIds,
               }),
             );
           });

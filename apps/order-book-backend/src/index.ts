@@ -1,19 +1,8 @@
 import { serve } from "bun";
-
-const originalConsoleError = console.error.bind(console);
-console.error = (...args: unknown[]) => {
-  originalConsoleError(
-    ...args.map((a) =>
-      a instanceof Error
-        ? Bun.inspect(a, { depth: Number.POSITIVE_INFINITY, colors: true })
-        : a,
-    ),
-  );
-};
-
-import { desc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import { drizzle } from "drizzle-orm/bun-sql";
-import type { Chain } from "viem";
+import type { Chain, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
@@ -29,27 +18,186 @@ import {
   decodeSigned,
   encodeState,
   type Initialize,
-  type Instrument,
   type LimitOrder,
   type MarketOrder,
   MutationType,
   type Revoke,
   type Signed,
-  type Tick,
 } from "./exchange";
-
-const BUCKET_SECONDS: Record<string, number> = {
-  "1m": 60,
-  "5m": 300,
-  "15m": 900,
-  "1h": 3600,
-  "4h": 14400,
-  "1d": 86400,
-};
-
 import index from "./frontend/index.html";
 import { migrate } from "./migrate";
 import { startRuntime } from "./runtime";
+
+const originalConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  originalConsoleError(
+    ...args.map((a) =>
+      a instanceof Error
+        ? Bun.inspect(a, { depth: Number.POSITIVE_INFINITY, colors: true })
+        : a,
+    ),
+  );
+};
+
+type DB = BunSQLDatabase<typeof schema>;
+
+type ApiMutation = {
+  id: number;
+  bundleId: number | null;
+  blockNumber: string | null;
+  status: (typeof schema.mutationStatusEnum.enumValues)[number];
+  account: Hex;
+  keyIndex: string | null;
+  nonce: string | null;
+  deadline: string;
+  type: (typeof schema.mutationEnum.enumValues)[number];
+  pendingAt: Date;
+  acceptedAt: Date | null;
+  proposedAt: Date | null;
+  votedAt: Date | null;
+  finalizedAt: Date | null;
+  verifiedAt: Date | null;
+  transactionHash: string | null;
+  payload: unknown;
+};
+
+async function loadMutationsByIds(
+  db: DB,
+  ids: number[],
+): Promise<ApiMutation[]> {
+  if (ids.length === 0) return [];
+
+  const centrals = await db
+    .select({
+      id: schema.mutations.id,
+      bundleId: schema.mutations.bundleId,
+      blockNumber: schema.mutations.blockNumber,
+      status: schema.mutations.status,
+      account: schema.mutations.account,
+      keyIndex: schema.mutations.keyIndex,
+      nonce: schema.mutations.nonce,
+      deadline: schema.mutations.deadline,
+      type: schema.mutations.type,
+      pendingAt: schema.mutations.pendingAt,
+      acceptedAt: schema.mutations.acceptedAt,
+      proposedAt: schema.mutations.proposedAt,
+      votedAt: schema.mutations.votedAt,
+      finalizedAt: schema.mutations.finalizedAt,
+      verifiedAt: schema.mutations.verifiedAt,
+      transactionHash: schema.bundles.transactionHash,
+    })
+    .from(schema.mutations)
+    .leftJoin(schema.bundles, eq(schema.mutations.bundleId, schema.bundles.id))
+    .where(inArray(schema.mutations.id, ids))
+    .orderBy(asc(schema.mutations.id));
+
+  const [
+    initRows,
+    authRows,
+    revokeRows,
+    closeRows,
+    limitRows,
+    marketRows,
+    addInstRows,
+    depRows,
+    wdRows,
+    fillRows,
+  ] = await Promise.all([
+    db
+      .select()
+      .from(schema.initializes)
+      .where(inArray(schema.initializes.id, ids)),
+    db
+      .select()
+      .from(schema.authorizes)
+      .where(inArray(schema.authorizes.id, ids)),
+    db.select().from(schema.revokes).where(inArray(schema.revokes.id, ids)),
+    db
+      .select()
+      .from(schema.closeOrders)
+      .where(inArray(schema.closeOrders.id, ids)),
+    db
+      .select()
+      .from(schema.limitOrders)
+      .where(inArray(schema.limitOrders.id, ids)),
+    db
+      .select()
+      .from(schema.marketOrders)
+      .where(inArray(schema.marketOrders.id, ids)),
+    db
+      .select()
+      .from(schema.addInstruments)
+      .where(inArray(schema.addInstruments.id, ids)),
+    db.select().from(schema.deposits).where(inArray(schema.deposits.id, ids)),
+    db
+      .select()
+      .from(schema.withdrawals)
+      .where(inArray(schema.withdrawals.id, ids)),
+    db
+      .select()
+      .from(schema.fills)
+      .where(inArray(schema.fills.marketOrderId, ids))
+      .orderBy(asc(schema.fills.marketOrderId), asc(schema.fills.fillIndex)),
+  ]);
+
+  const payloadById = new Map<number, unknown>();
+  for (const r of initRows) payloadById.set(r.id, r);
+  for (const r of authRows) payloadById.set(r.id, r);
+  for (const r of revokeRows) {
+    payloadById.set(r.id, { ...r, revokedKeyId: r.revokedKeyId.toString() });
+  }
+  for (const r of closeRows) {
+    payloadById.set(r.id, { ...r, orderId: r.orderId.toString() });
+  }
+  for (const r of limitRows) {
+    payloadById.set(r.id, {
+      ...r,
+      instrumentId: r.instrumentId.toString(),
+      price: r.price.toString(),
+    });
+  }
+  const fillsByMarket = new Map<number, typeof fillRows>();
+  for (const f of fillRows) {
+    const list = fillsByMarket.get(f.marketOrderId) ?? [];
+    list.push(f);
+    fillsByMarket.set(f.marketOrderId, list);
+  }
+  for (const r of marketRows) {
+    payloadById.set(r.id, {
+      ...r,
+      instrumentId: r.instrumentId.toString(),
+      fills: (fillsByMarket.get(r.id) ?? []).map((f) => ({
+        quantity: f.quantity.toString(),
+        price: f.price.toString(),
+      })),
+    });
+  }
+  for (const r of addInstRows) {
+    payloadById.set(r.id, { ...r, instrumentId: r.instrumentId.toString() });
+  }
+  for (const r of depRows) payloadById.set(r.id, r);
+  for (const r of wdRows) payloadById.set(r.id, r);
+
+  return centrals.map((c) => ({
+    id: c.id,
+    bundleId: c.bundleId,
+    blockNumber: c.blockNumber,
+    status: c.status,
+    account: c.account as Hex,
+    keyIndex: c.keyIndex != null ? c.keyIndex.toString() : null,
+    nonce: c.nonce,
+    deadline: c.deadline,
+    type: c.type,
+    pendingAt: c.pendingAt,
+    acceptedAt: c.acceptedAt,
+    proposedAt: c.proposedAt,
+    votedAt: c.votedAt,
+    finalizedAt: c.finalizedAt,
+    verifiedAt: c.verifiedAt,
+    transactionHash: c.transactionHash,
+    payload: payloadById.get(c.id) ?? null,
+  }));
+}
 
 if (!process.env.DEPLOYER_PRIVATE_KEY) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
@@ -85,15 +233,11 @@ const readerDb = drizzle({
 });
 
 const consistent = await checkConsistency(writerDb);
-const { state, mutationId, bundleId } = await recoverState(
-  writerDb,
-  consistent,
-);
+const { state, mutationId } = await recoverState(writerDb, consistent);
 
 const handle = startRuntime({
   initialState: state,
   initialMutationId: mutationId,
-  initialBundleId: bundleId,
   chain: CHAIN as Chain,
   rpcUrl: RPC_URL,
   account: deployerAccount,
@@ -103,35 +247,9 @@ const handle = startRuntime({
   db: writerDb,
 });
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-} as const;
-
-class Response extends globalThis.Response {
-  constructor(body?: BodyInit | null, init?: ResponseInit) {
-    super(body, {
-      ...init,
-      headers: { ...CORS_HEADERS, ...init?.headers },
-    });
-  }
-
-  static override json(data: unknown, init?: ResponseInit) {
-    return super.json(data, {
-      ...init,
-      headers: { ...CORS_HEADERS, ...init?.headers },
-    });
-  }
-}
-
 serve({
   idleTimeout: 0,
   routes: {
-    "/api/*": {
-      OPTIONS: () => new Response(null, { status: 204 }),
-    },
-
     "/api/initialize": {
       POST: async (req) => {
         const body = (await req.json()) as Initialize & Signed;
@@ -324,240 +442,132 @@ serve({
         }),
     },
 
-    "/api/instruments": {
-      GET: () => {
-        const instruments = Object.entries(handle.state.instruments).map(
-          ([id, inst]) => ({
-            id: Number(id),
-            base: inst.base,
-            baseLotExp: inst.baseLotExp,
-            quote: inst.quote,
-            quoteLotExp: inst.quoteLotExp,
-          }),
-        );
-        return Response.json({ instruments });
-      },
-    },
-
-    "/api/orderbook": {
-      GET: (req) => {
-        const url = new URL(req.url);
-        const instrumentId = Number(url.searchParams.get("instrumentId") ?? 0);
-        const inst = handle.state.instruments[instrumentId] as
-          | Instrument<bigint>
-          | undefined;
-        if (!inst)
+    "/api/blocks/:number": {
+      GET: async (req) => {
+        const number = req.params.number;
+        if (!/^\d+$/.test(number)) {
           return Response.json(
-            { error: "Instrument not found" },
-            { status: 404 },
+            { error: "Invalid block number" },
+            { status: 400 },
           );
-
-        function formatLevels(ticks: Record<number, Tick<bigint>>) {
-          const levels: { price: string; size: string; total: string }[] = [];
-          for (const [priceKey, tick] of Object.entries(ticks)) {
-            if (tick.remainingQuantity <= 0n) continue;
-            levels.push({
-              price: priceKey,
-              size: tick.remainingQuantity.toString(),
-              total: "0",
-            });
-          }
-          return levels;
         }
 
-        const bids = formatLevels(inst.bids);
-        const asks = formatLevels(inst.asks);
+        const [row] = await readerDb
+          .select()
+          .from(schema.blocks)
+          .where(eq(schema.blocks.number, number))
+          .limit(1);
 
-        bids.sort((a, b) => Number(b.price) - Number(a.price));
-        asks.sort((a, b) => Number(a.price) - Number(b.price));
-
-        let bidTotal = 0n;
-        for (const bid of bids) {
-          bidTotal += BigInt(bid.size);
-          bid.total = bidTotal.toString();
+        if (!row) {
+          return Response.json({ error: "Block not found" }, { status: 404 });
         }
-        let askTotal = 0n;
-        for (const ask of asks) {
-          askTotal += BigInt(ask.size);
-          ask.total = askTotal.toString();
-        }
-
-        const bestBidN = Number(bids[0]?.price ?? "0");
-        const bestAskN = Number(asks[0]?.price ?? "0");
-        const lastPrice =
-          bestBidN && bestAskN
-            ? String(Math.round((bestBidN + bestAskN) / 2))
-            : String(bestBidN || bestAskN);
-        const spread = bestAskN && bestBidN ? String(bestAskN - bestBidN) : "0";
 
         return Response.json({
-          instrument: String(instrumentId),
-          bids,
-          asks,
-          lastPrice,
-          spread,
+          number: row.number,
+          hash: row.hash,
+          timestamp: row.timestamp,
         });
       },
     },
 
-    "/api/candles": {
+    "/api/mutations": {
       GET: async (req) => {
         const url = new URL(req.url);
-        const instrumentId = Number(url.searchParams.get("instrumentId") ?? 0);
-        const bucket = url.searchParams.get("bucket") ?? "5m";
-        const before = url.searchParams.get("before")
-          ? Number(url.searchParams.get("before"))
-          : undefined;
-        const count = Math.min(
-          Number(url.searchParams.get("count") ?? 200),
-          1000,
-        );
-
-        const bucketSec = BUCKET_SECONDS[bucket];
-        if (!bucketSec)
-          return Response.json({ error: "Invalid bucket" }, { status: 400 });
-
-        const rows = await readerDb
-          .select({
-            fillId: schema.fills.id,
-            price: schema.fills.price,
-            quantity: schema.fills.quantity,
-            timestamp: schema.blocks.timestamp,
-          })
-          .from(schema.fills)
-          .innerJoin(
-            schema.marketOrders,
-            eq(schema.fills.marketOrderId, schema.marketOrders.id),
-          )
-          .innerJoin(
-            schema.bundles,
-            eq(schema.marketOrders.bundleId, schema.bundles.id),
-          )
-          .innerJoin(
-            schema.blocks,
-            eq(schema.bundles.blockNumber, schema.blocks.number),
-          )
-          .where(eq(schema.marketOrders.instrumentId, BigInt(instrumentId)))
-          .orderBy(schema.fills.id);
-
-        const candleMap = new Map<
-          number,
-          {
-            open: string;
-            high: string;
-            low: string;
-            close: string;
-            volume: string;
-          }
-        >();
-
-        for (const row of rows) {
-          const ts = Number(row.timestamp);
-          const bucketTime = Math.floor(ts / bucketSec) * bucketSec;
-          const price = String(row.price!);
-          const size = BigInt(String(row.quantity!));
-
-          const existing = candleMap.get(bucketTime);
-          if (existing) {
-            if (Number(price) > Number(existing.high)) existing.high = price;
-            if (Number(price) < Number(existing.low)) existing.low = price;
-            existing.close = price;
-            existing.volume = (BigInt(existing.volume) + size).toString();
-          } else {
-            candleMap.set(bucketTime, {
-              open: price,
-              high: price,
-              low: price,
-              close: price,
-              volume: size.toString(),
-            });
-          }
-        }
-
-        let candles = Array.from(candleMap.entries())
-          .map(([time, c]) => ({ time, ...c }))
-          .sort((a, b) => a.time - b.time);
-
-        if (before !== undefined) {
-          candles = candles.filter((c) => c.time < before);
-        }
-        const hasMore = candles.length > count;
-        candles = candles.slice(-count);
-
-        return Response.json({ candles, hasMore });
-      },
-    },
-
-    "/api/trades": {
-      GET: async (req) => {
-        const url = new URL(req.url);
-        const instrumentId = Number(url.searchParams.get("instrumentId") ?? 0);
-        const limit = Math.min(
-          Number(url.searchParams.get("limit") ?? 50),
-          200,
-        );
-
-        const rows = await readerDb
-          .select({
-            id: schema.fills.id,
-            quantity: schema.fills.quantity,
-            price: schema.fills.price,
-            bidOrAsk: schema.marketOrders.bidOrAsk,
-            timestamp: schema.blocks.timestamp,
-          })
-          .from(schema.fills)
-          .innerJoin(
-            schema.marketOrders,
-            eq(schema.fills.marketOrderId, schema.marketOrders.id),
-          )
-          .innerJoin(
-            schema.bundles,
-            eq(schema.marketOrders.bundleId, schema.bundles.id),
-          )
-          .innerJoin(
-            schema.blocks,
-            eq(schema.bundles.blockNumber, schema.blocks.number),
-          )
-          .where(eq(schema.marketOrders.instrumentId, BigInt(instrumentId)))
-          .orderBy(desc(schema.fills.id))
-          .limit(limit);
-
-        const trades = rows.map((r) => ({
-          id: String(r.id),
-          price: String(r.price!),
-          size: String(r.quantity!),
-          side: r.bidOrAsk === 0 ? ("buy" as const) : ("sell" as const),
-          timestamp: Number(r.timestamp),
-        }));
-
-        return Response.json({ trades });
-      },
-    },
-
-    "/api/orders": {
-      GET: (req) => {
-        const url = new URL(req.url);
-        const account = url.searchParams.get("account");
-        if (!account)
+        const block = url.searchParams.get("block");
+        if (block === null || !/^\d+$/.test(block)) {
           return Response.json(
-            { error: "account query parameter required" },
+            { error: "block query parameter required (integer)" },
             { status: 400 },
           );
+        }
 
-        const acc = handle.state.accounts[account as `0x${string}`];
-        if (!acc) return Response.json({ orders: [] });
+        const idRows = await readerDb
+          .select({ id: schema.mutations.id })
+          .from(schema.mutations)
+          .where(eq(schema.mutations.blockNumber, block))
+          .orderBy(asc(schema.mutations.id));
+        const mutations = await loadMutationsByIds(
+          readerDb,
+          idRows.map((r) => r.id),
+        );
+        return Response.json(mutations);
+      },
+    },
 
-        const orders = acc.orders
-          .map((o, i) => ({
-            orderIndex: i,
-            instrumentId: o.instrumentId,
-            quantity: o.quantity.toString(),
-            price: o.price.toString(),
-            side: o.side,
-          }))
-          .filter((o) => o.quantity !== "0");
+    "/api/mutation": {
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const idParam = url.searchParams.get("id");
+        const account = url.searchParams.get("account");
+        const nonce = url.searchParams.get("nonce");
 
-        return Response.json({ orders });
+        let id: number | null = null;
+        if (idParam !== null) {
+          if (!/^\d+$/.test(idParam)) {
+            return Response.json(
+              { error: "Invalid id" },
+              { status: 400 },
+            );
+          }
+          id = Number(idParam);
+        } else if (account !== null && nonce !== null) {
+          if (!/^0x[0-9a-fA-F]{64}$/.test(account) || !/^\d+$/.test(nonce)) {
+            return Response.json(
+              { error: "Invalid account or nonce" },
+              { status: 400 },
+            );
+          }
+          const [row] = await readerDb
+            .select({ id: schema.mutations.id })
+            .from(schema.mutations)
+            .where(
+              and(
+                eq(schema.mutations.account, account),
+                eq(schema.mutations.nonce, nonce),
+              ),
+            )
+            .limit(1);
+          if (!row) {
+            return Response.json(
+              { error: "Mutation not found" },
+              { status: 404 },
+            );
+          }
+          id = row.id;
+        } else {
+          return Response.json(
+            { error: "Query with id, or account and nonce" },
+            { status: 400 },
+          );
+        }
+
+        const [mutation] = await loadMutationsByIds(readerDb, [id]);
+        if (!mutation) {
+          return Response.json(
+            { error: "Mutation not found" },
+            { status: 404 },
+          );
+        }
+        return Response.json(mutation);
+      },
+    },
+
+    "/api/account/:address": {
+      GET: (req) => {
+        const address = req.params.address as Hex;
+        const acc = handle.state.accounts[address];
+        if (!acc)
+          return Response.json({ error: "account not found" }, { status: 404 });
+
+        return Response.json({
+          address,
+          keys: acc.keys.map((k) => ({
+            keyType: k.keyType,
+            permissions: k.permissions,
+            expiry: k.expiry,
+            publicKey: k.publicKey,
+          })),
+        });
       },
     },
 

@@ -7,6 +7,9 @@ import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
 import "./index.css";
+import { RouterProvider, useMatch } from "./lib/router";
+import { BlockPage } from "./pages/BlockPage";
+import { MutationPage } from "./pages/MutationPage";
 
 function Auth() {
   const signUp = useSignUp();
@@ -41,7 +44,7 @@ function Auth() {
   );
 }
 
-function AppInner() {
+function TradingApp() {
   const { account, loading } = useAccountContext();
 
   if (loading) return null;
@@ -58,14 +61,24 @@ function AppInner() {
   );
 }
 
+function Routes() {
+  const blockMatch = useMatch("/block/:number");
+  const mutationMatch = useMatch("/mutation/:id");
+  if (blockMatch) return <BlockPage />;
+  if (mutationMatch) return <MutationPage />;
+  return <TradingApp />;
+}
+
 export function App() {
   const [queryClient] = useState(() => new QueryClient());
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AccountProvider>
-        <AppInner />
-      </AccountProvider>
+      <RouterProvider>
+        <AccountProvider>
+          <Routes />
+        </AccountProvider>
+      </RouterProvider>
     </QueryClientProvider>
   );
 }

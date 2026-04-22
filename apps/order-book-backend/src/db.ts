@@ -2,7 +2,13 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { Address, Hex } from "viem";
 import * as schema from "./app-schema";
-import type { KeyType, ResolvedMutation, Side, State } from "./exchange";
+import type {
+  KeyType,
+  ResolvedMutation,
+  Side,
+  State,
+  TaggedMutation,
+} from "./exchange";
 import {
   createState,
   getAccount,
@@ -18,10 +24,25 @@ import {
   incrementNonce,
   MutationType,
 } from "./exchange";
-import type { BlockEvent, BundleStatus, MutationEvent } from "./runtime";
+import type { BlockRow, BundleStatus, MutationEvent } from "./runtime";
 
 type DB = BunSQLDatabase<typeof schema>;
-type DBStatus = "accepted" | "proposed" | "voted" | "finalized" | "verified";
+type BundleDBStatus = typeof schema.bundleStatusEnum.enumValues[number];
+
+const MUTATION_TYPE_TO_ENUM: Record<
+  MutationType,
+  typeof schema.mutationEnum.enumValues[number]
+> = {
+  [MutationType.Initialize]: "initialize",
+  [MutationType.Authorize]: "authorize",
+  [MutationType.Revoke]: "revoke",
+  [MutationType.CloseOrder]: "closeOrder",
+  [MutationType.LimitOrder]: "limitOrder",
+  [MutationType.MarketOrder]: "marketOrder",
+  [MutationType.AddInstrument]: "addInstrument",
+  [MutationType.Deposit]: "deposit",
+  [MutationType.Withdrawal]: "withdrawal",
+};
 
 export async function loadState(db: DB): Promise<State<bigint>> {
   const state: State<bigint> = { accounts: {}, instruments: {} };
@@ -120,54 +141,11 @@ export async function loadState(db: DB): Promise<State<bigint>> {
   return state;
 }
 
-export async function loadMaxIds(
-  db: DB,
-): Promise<{ mutationId: number; bundleId: number }> {
-  const [bundleRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.bundles.id}), 0)` })
-    .from(schema.bundles);
-  const [initRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.initializes.id}), 0)` })
-    .from(schema.initializes);
-  const [authRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.authorizes.id}), 0)` })
-    .from(schema.authorizes);
-  const [revokeRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.revokes.id}), 0)` })
-    .from(schema.revokes);
-  const [closeRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.closeOrders.id}), 0)` })
-    .from(schema.closeOrders);
-  const [limitRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.limitOrders.id}), 0)` })
-    .from(schema.limitOrders);
-  const [marketRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.marketOrders.id}), 0)` })
-    .from(schema.marketOrders);
-  const [addInstRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.addInstruments.id}), 0)` })
-    .from(schema.addInstruments);
-  const [depRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.deposits.id}), 0)` })
-    .from(schema.deposits);
-  const [wdRow] = await db
-    .select({ max: sql<number>`coalesce(max(${schema.withdrawals.id}), 0)` })
-    .from(schema.withdrawals);
-
-  const mutationId =
-    Math.max(
-      initRow!.max,
-      authRow!.max,
-      revokeRow!.max,
-      closeRow!.max,
-      limitRow!.max,
-      marketRow!.max,
-      addInstRow!.max,
-      depRow!.max,
-      wdRow!.max,
-    ) + 1;
-
-  return { mutationId, bundleId: bundleRow!.max + 1 };
+export async function loadMaxMutationId(db: DB): Promise<number> {
+  const [row] = await db
+    .select({ max: sql<number>`coalesce(max(${schema.mutations.id}), 0)` })
+    .from(schema.mutations);
+  return row!.max + 1;
 }
 
 export async function checkConsistency(db: DB): Promise<boolean> {
@@ -181,138 +159,194 @@ export async function checkConsistency(db: DB): Promise<boolean> {
 
 async function loadAllMutations(
   db: DB,
-): Promise<(ResolvedMutation & { bundleId: number })[]> {
-  const signed = (r: { account: string; nonce: string }) => ({
-    account: r.account as Hex,
-    keyId: 0,
-    nonce: BigInt(r.nonce),
-    deadline: 0n,
-    rawSignature: "0x" as Hex,
-  });
+): Promise<(ResolvedMutation & { bundleId: number; id: number })[]> {
+  const centrals = await db
+    .select()
+    .from(schema.mutations)
+    .orderBy(asc(schema.mutations.id));
 
-  const mutations: (ResolvedMutation & { bundleId: number })[] = [];
-
-  for (const r of await db.select().from(schema.initializes)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.Initialize,
-      ...signed(r),
-      mutation: {
-        expiry: r.expiry,
-        rootKeyType: r.rootKeyType,
-        keyType: r.keyType,
-        permissions: r.permissions,
-        rootPublicKey: r.rootPublicKey as Hex,
-        publicKey: r.publicKey as Hex,
-      },
-    });
-  }
-
-  for (const r of await db.select().from(schema.authorizes)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.Authorize,
-      ...signed(r),
-      mutation: {
-        expiry: r.expiry,
-        keyType: r.keyType,
-        permissions: r.permissions,
-        publicKey: r.publicKey as Hex,
-      },
-    });
-  }
-
-  for (const r of await db.select().from(schema.revokes)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.Revoke,
-      ...signed(r),
-      mutation: { keyId: Number(r.revokedKeyId) },
-    });
-  }
-
-  for (const r of await db.select().from(schema.closeOrders)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.CloseOrder,
-      ...signed(r),
-      mutation: { orderId: Number(r.orderId) },
-    });
-  }
-
-  for (const r of await db.select().from(schema.limitOrders)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.LimitOrder,
-      ...signed(r),
-      mutation: {
-        quantity: BigInt(r.quantity),
-        instrumentId: Number(r.instrumentId),
-        price: r.price,
-        bidOrAsk: r.bidOrAsk as Side,
-      },
-    });
-  }
-
-  for (const r of await db.select().from(schema.marketOrders)) {
-    const fills = await db
+  const [
+    initRows,
+    authRows,
+    revokeRows,
+    closeRows,
+    limitRows,
+    marketRows,
+    addInstRows,
+    depRows,
+    wdRows,
+    fillRows,
+  ] = await Promise.all([
+    db.select().from(schema.initializes),
+    db.select().from(schema.authorizes),
+    db.select().from(schema.revokes),
+    db.select().from(schema.closeOrders),
+    db.select().from(schema.limitOrders),
+    db.select().from(schema.marketOrders),
+    db.select().from(schema.addInstruments),
+    db.select().from(schema.deposits),
+    db.select().from(schema.withdrawals),
+    db
       .select()
       .from(schema.fills)
-      .where(eq(schema.fills.marketOrderId, r.id))
-      .orderBy(asc(schema.fills.fillIndex));
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.MarketOrder,
-      ...signed(r),
-      mutation: {
-        quantity: BigInt(r.quantity),
-        minReceivedQuantity: BigInt(r.minReceivedQuantity),
-        instrumentId: Number(r.instrumentId),
-        bidOrAsk: r.bidOrAsk as Side,
-      },
-      resolution: {
-        fills: fills.map((f) => ({ quantity: f.quantity, price: f.price })),
-      },
-    });
+      .orderBy(asc(schema.fills.marketOrderId), asc(schema.fills.fillIndex)),
+  ]);
+
+  const initById = new Map(initRows.map((r) => [r.id, r]));
+  const authById = new Map(authRows.map((r) => [r.id, r]));
+  const revokeById = new Map(revokeRows.map((r) => [r.id, r]));
+  const closeById = new Map(closeRows.map((r) => [r.id, r]));
+  const limitById = new Map(limitRows.map((r) => [r.id, r]));
+  const marketById = new Map(marketRows.map((r) => [r.id, r]));
+  const addInstById = new Map(addInstRows.map((r) => [r.id, r]));
+  const depById = new Map(depRows.map((r) => [r.id, r]));
+  const wdById = new Map(wdRows.map((r) => [r.id, r]));
+  const fillsByMarket = new Map<number, typeof fillRows>();
+  for (const f of fillRows) {
+    const list = fillsByMarket.get(f.marketOrderId) ?? [];
+    list.push(f);
+    fillsByMarket.set(f.marketOrderId, list);
   }
 
-  for (const r of await db.select().from(schema.addInstruments)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.AddInstrument,
-      ...signed(r),
-      mutation: {
-        instrumentId: Number(r.instrumentId),
-        base: r.base as Address,
-        quote: r.quote as Address,
-        baseLotExp: r.baseLotExp,
-        quoteLotExp: r.quoteLotExp,
-      },
-    });
+  const out: (ResolvedMutation & { bundleId: number; id: number })[] = [];
+  for (const c of centrals) {
+    if (c.bundleId == null) continue;
+    const signed = {
+      account: c.account as Hex,
+      keyId: c.keyIndex != null ? Number(c.keyIndex) : 0,
+      nonce: c.nonce != null ? BigInt(c.nonce) : 0n,
+      deadline: BigInt(c.deadline),
+      rawSignature: c.rawSignature as Hex,
+    };
+    const shared = { id: c.id, bundleId: c.bundleId };
+
+    switch (c.type) {
+      case "initialize": {
+        const p = initById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.Initialize,
+          ...signed,
+          mutation: {
+            expiry: p.expiry,
+            rootKeyType: p.rootKeyType,
+            keyType: p.keyType,
+            permissions: p.permissions,
+            rootPublicKey: p.rootPublicKey as Hex,
+            publicKey: p.publicKey as Hex,
+          },
+        });
+        break;
+      }
+      case "authorize": {
+        const p = authById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.Authorize,
+          ...signed,
+          mutation: {
+            expiry: p.expiry,
+            keyType: p.keyType,
+            permissions: p.permissions,
+            publicKey: p.publicKey as Hex,
+          },
+        });
+        break;
+      }
+      case "revoke": {
+        const p = revokeById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.Revoke,
+          ...signed,
+          mutation: { keyId: Number(p.revokedKeyId) },
+        });
+        break;
+      }
+      case "closeOrder": {
+        const p = closeById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.CloseOrder,
+          ...signed,
+          mutation: { orderId: Number(p.orderId) },
+        });
+        break;
+      }
+      case "limitOrder": {
+        const p = limitById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.LimitOrder,
+          ...signed,
+          mutation: {
+            quantity: BigInt(p.quantity),
+            instrumentId: Number(p.instrumentId),
+            price: p.price,
+            bidOrAsk: p.bidOrAsk as Side,
+          },
+        });
+        break;
+      }
+      case "marketOrder": {
+        const p = marketById.get(c.id)!;
+        const fills = fillsByMarket.get(c.id) ?? [];
+        out.push({
+          ...shared,
+          type: MutationType.MarketOrder,
+          ...signed,
+          mutation: {
+            quantity: BigInt(p.quantity),
+            minReceivedQuantity: BigInt(p.minReceivedQuantity),
+            instrumentId: Number(p.instrumentId),
+            bidOrAsk: p.bidOrAsk as Side,
+          },
+          resolution: {
+            fills: fills.map((f) => ({ quantity: f.quantity, price: f.price })),
+          },
+        });
+        break;
+      }
+      case "addInstrument": {
+        const p = addInstById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.AddInstrument,
+          ...signed,
+          mutation: {
+            instrumentId: Number(p.instrumentId),
+            base: p.base as Address,
+            quote: p.quote as Address,
+            baseLotExp: p.baseLotExp,
+            quoteLotExp: p.quoteLotExp,
+          },
+        });
+        break;
+      }
+      case "deposit": {
+        const p = depById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.Deposit,
+          ...signed,
+          mutation: { asset: p.asset as Address, amount: BigInt(p.amount!) },
+        });
+        break;
+      }
+      case "withdrawal": {
+        const p = wdById.get(c.id)!;
+        out.push({
+          ...shared,
+          type: MutationType.Withdrawal,
+          ...signed,
+          mutation: { asset: p.asset as Address, amount: BigInt(p.amount!) },
+        });
+        break;
+      }
+    }
   }
 
-  for (const r of await db.select().from(schema.deposits)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.Deposit,
-      ...signed(r),
-      mutation: { asset: r.asset as Address, amount: BigInt(r.amount!) },
-    });
-  }
-
-  for (const r of await db.select().from(schema.withdrawals)) {
-    mutations.push({
-      bundleId: r.bundleId!,
-      type: MutationType.Withdrawal,
-      ...signed(r),
-      mutation: { asset: r.asset as Address, amount: BigInt(r.amount!) },
-    });
-  }
-
-  mutations.sort((a, b) =>
-    a.bundleId !== b.bundleId ? a.bundleId - b.bundleId : a.type - b.type,
-  );
-  return mutations;
+  return out;
 }
 
 function replayMutation(state: State<bigint>, m: ResolvedMutation): void {
@@ -424,16 +458,25 @@ async function persistState(db: DB, state: State<bigint>) {
 export async function recoverState(
   db: DB,
   consistent: boolean,
-): Promise<{ state: State<bigint>; mutationId: number; bundleId: number }> {
+): Promise<{ state: State<bigint>; mutationId: number }> {
+  await db
+    .delete(schema.mutations)
+    .where(eq(schema.mutations.status, "pending"));
+
   if (consistent) {
     const state = await loadState(db);
-    const ids = await loadMaxIds(db);
-    return { state, ...ids };
+    const mutationId = await loadMaxMutationId(db);
+    return { state, mutationId };
   }
 
   return db.transaction(async (tx) => {
     // biome-ignore lint: transaction has same query API as DB
     const d: any = tx;
+
+    const acceptedMutationIds = d
+      .select({ id: schema.mutations.id })
+      .from(schema.mutations)
+      .where(eq(schema.mutations.status, "accepted"));
 
     await d
       .delete(schema.fills)
@@ -443,7 +486,7 @@ export async function recoverState(
           d
             .select({ id: schema.marketOrders.id })
             .from(schema.marketOrders)
-            .where(eq(schema.marketOrders.status, "accepted")),
+            .where(inArray(schema.marketOrders.id, acceptedMutationIds)),
         ),
       );
     for (const table of [
@@ -457,8 +500,11 @@ export async function recoverState(
       schema.deposits,
       schema.withdrawals,
     ] as const) {
-      await d.delete(table).where(eq(table.status, "accepted"));
+      await d.delete(table).where(inArray(table.id, acceptedMutationIds));
     }
+    await d
+      .delete(schema.mutations)
+      .where(eq(schema.mutations.status, "accepted"));
     await d.delete(schema.bundles).where(eq(schema.bundles.status, "accepted"));
 
     await d.delete(schema.ticks);
@@ -485,12 +531,12 @@ export async function recoverState(
 
     await persistState(d, state);
 
-    const ids = await loadMaxIds(d);
-    return { state, ...ids };
+    const mutationId = await loadMaxMutationId(d);
+    return { state, mutationId };
   });
 }
 
-export async function insertBlock(db: DB, block: BlockEvent) {
+export async function insertBlock(db: DB, block: BlockRow) {
   await db
     .insert(schema.blocks)
     .values({
@@ -501,9 +547,32 @@ export async function insertBlock(db: DB, block: BlockEvent) {
     .onConflictDoNothing();
 }
 
-export async function insertBundle(db: DB, bundleId: number) {
-  await db.insert(schema.bundles).values({ id: bundleId });
+export async function selectBundleIdsInBlock(
+  db: DB,
+  blockNumber: bigint,
+): Promise<number[]> {
+  const rows = await db
+    .select({ id: schema.bundles.id })
+    .from(schema.bundles)
+    .where(eq(schema.bundles.blockNumber, blockNumber.toString()));
+  return rows.map((r) => r.id);
 }
+
+export async function insertBundle(db: DB): Promise<number> {
+  const [row] = await db
+    .insert(schema.bundles)
+    .values({ acceptedAt: sql`NOW()` })
+    .returning({ id: schema.bundles.id });
+  return row!.id;
+}
+
+const BUNDLE_STATUS_TIMESTAMP_COL: Record<BundleStatus, keyof typeof schema.bundles.$inferInsert> = {
+  accepted: "acceptedAt",
+  proposed: "proposedAt",
+  voted: "votedAt",
+  finalized: "finalizedAt",
+  verified: "verifiedAt",
+};
 
 export async function updateBundleStatus(
   db: DB,
@@ -512,8 +581,59 @@ export async function updateBundleStatus(
 ) {
   await db
     .update(schema.bundles)
-    .set({ status: status as DBStatus })
+    .set({
+      status: status as BundleDBStatus,
+      [BUNDLE_STATUS_TIMESTAMP_COL[status]]: sql`NOW()`,
+    })
     .where(eq(schema.bundles.id, bundleId));
+}
+
+export async function updateBundleBlock(
+  db: DB,
+  bundleId: number,
+  blockNumber: bigint,
+  transactionHash: Hex,
+) {
+  await db
+    .update(schema.bundles)
+    .set({ blockNumber: blockNumber.toString(), transactionHash })
+    .where(eq(schema.bundles.id, bundleId));
+}
+
+export async function updateMutationStatus(
+  db: DB,
+  id: number,
+  status: BundleStatus,
+) {
+  await db
+    .update(schema.mutations)
+    .set({ status: status as BundleDBStatus })
+    .where(eq(schema.mutations.id, id));
+}
+
+export async function updateBundleMutationStatuses(
+  db: DB,
+  bundleId: number,
+  status: BundleStatus,
+) {
+  await db
+    .update(schema.mutations)
+    .set({
+      status: status as BundleDBStatus,
+      [BUNDLE_STATUS_TIMESTAMP_COL[status]]: sql`NOW()`,
+    })
+    .where(eq(schema.mutations.bundleId, bundleId));
+}
+
+export async function updateBundleMutationsBlock(
+  db: DB,
+  bundleId: number,
+  blockNumber: bigint,
+) {
+  await db
+    .update(schema.mutations)
+    .set({ blockNumber: blockNumber.toString() })
+    .where(eq(schema.mutations.bundleId, bundleId));
 }
 
 async function syncNonce(
@@ -866,22 +986,50 @@ async function syncTick(
     });
 }
 
-export async function insertMutation(
+export async function insertPendingMutation(
+  db: DB,
+  m: TaggedMutation,
+  id: number,
+) {
+  await db.insert(schema.mutations).values({
+    id,
+    bundleId: null,
+    status: "pending",
+    account: m.account,
+    keyIndex: m.type === MutationType.Initialize ? null : BigInt(m.keyId),
+    nonce: m.type === MutationType.Initialize ? null : m.nonce.toString(),
+    deadline: m.deadline.toString(),
+    rawSignature: m.rawSignature,
+    type: MUTATION_TYPE_TO_ENUM[m.type],
+    calldata: null,
+    pendingAt: sql`NOW()`,
+  });
+}
+
+export async function deletePendingMutation(db: DB, id: number) {
+  await db.delete(schema.mutations).where(eq(schema.mutations.id, id));
+}
+
+export async function acceptMutation(
   db: DB,
   m: MutationEvent,
   bundleId: number,
+  calldata: Hex,
 ) {
-  const base = { id: m.id, bundleId, status: "accepted" as DBStatus };
+  await db
+    .update(schema.mutations)
+    .set({
+      status: "accepted",
+      bundleId,
+      calldata,
+      acceptedAt: sql`NOW()`,
+    })
+    .where(eq(schema.mutations.id, m.id));
 
   switch (m.type) {
     case MutationType.Initialize:
       await db.insert(schema.initializes).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         expiry: m.mutation.expiry,
         rootKeyType: m.mutation.rootKeyType,
         keyType: m.mutation.keyType,
@@ -892,12 +1040,7 @@ export async function insertMutation(
       break;
     case MutationType.Authorize:
       await db.insert(schema.authorizes).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         expiry: m.mutation.expiry,
         keyType: m.mutation.keyType,
         permissions: m.mutation.permissions,
@@ -906,34 +1049,19 @@ export async function insertMutation(
       break;
     case MutationType.Revoke:
       await db.insert(schema.revokes).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         revokedKeyId: BigInt(m.mutation.keyId),
       });
       break;
     case MutationType.CloseOrder:
       await db.insert(schema.closeOrders).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         orderId: BigInt(m.mutation.orderId),
       });
       break;
     case MutationType.LimitOrder:
       await db.insert(schema.limitOrders).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         quantity: m.mutation.quantity.toString(),
         instrumentId: BigInt(m.mutation.instrumentId),
         price: m.mutation.price,
@@ -942,12 +1070,7 @@ export async function insertMutation(
       break;
     case MutationType.MarketOrder:
       await db.insert(schema.marketOrders).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         quantity: m.mutation.quantity.toString(),
         minReceivedQuantity: m.mutation.minReceivedQuantity.toString(),
         instrumentId: BigInt(m.mutation.instrumentId),
@@ -965,12 +1088,7 @@ export async function insertMutation(
       break;
     case MutationType.AddInstrument:
       await db.insert(schema.addInstruments).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         instrumentId: BigInt(m.mutation.instrumentId),
         base: m.mutation.base,
         quote: m.mutation.quote,
@@ -980,92 +1098,17 @@ export async function insertMutation(
       break;
     case MutationType.Deposit:
       await db.insert(schema.deposits).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         asset: m.mutation.asset,
         amount: m.mutation.amount.toString(),
       });
       break;
     case MutationType.Withdrawal:
       await db.insert(schema.withdrawals).values({
-        ...base,
-        account: m.account,
-        keyId: BigInt(m.keyId),
-        nonce: m.nonce.toString(),
-        deadline: m.deadline.toString(),
-        rawSignature: m.rawSignature,
+        id: m.id,
         asset: m.mutation.asset,
         amount: m.mutation.amount.toString(),
       });
-      break;
-  }
-}
-
-export async function updateMutationStatus(
-  db: DB,
-  type: MutationType,
-  id: number,
-  status: string,
-) {
-  const s = status as DBStatus;
-  switch (type) {
-    case MutationType.Initialize:
-      await db
-        .update(schema.initializes)
-        .set({ status: s })
-        .where(eq(schema.initializes.id, id));
-      break;
-    case MutationType.Authorize:
-      await db
-        .update(schema.authorizes)
-        .set({ status: s })
-        .where(eq(schema.authorizes.id, id));
-      break;
-    case MutationType.Revoke:
-      await db
-        .update(schema.revokes)
-        .set({ status: s })
-        .where(eq(schema.revokes.id, id));
-      break;
-    case MutationType.CloseOrder:
-      await db
-        .update(schema.closeOrders)
-        .set({ status: s })
-        .where(eq(schema.closeOrders.id, id));
-      break;
-    case MutationType.LimitOrder:
-      await db
-        .update(schema.limitOrders)
-        .set({ status: s })
-        .where(eq(schema.limitOrders.id, id));
-      break;
-    case MutationType.MarketOrder:
-      await db
-        .update(schema.marketOrders)
-        .set({ status: s })
-        .where(eq(schema.marketOrders.id, id));
-      break;
-    case MutationType.AddInstrument:
-      await db
-        .update(schema.addInstruments)
-        .set({ status: s })
-        .where(eq(schema.addInstruments.id, id));
-      break;
-    case MutationType.Deposit:
-      await db
-        .update(schema.deposits)
-        .set({ status: s })
-        .where(eq(schema.deposits.id, id));
-      break;
-    case MutationType.Withdrawal:
-      await db
-        .update(schema.withdrawals)
-        .set({ status: s })
-        .where(eq(schema.withdrawals.id, id));
       break;
   }
 }

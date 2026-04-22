@@ -2,6 +2,7 @@ import { relations } from "drizzle-orm";
 import {
   bigint,
   char,
+  foreignKey,
   index,
   integer,
   numeric,
@@ -11,6 +12,7 @@ import {
   serial,
   smallint,
   text,
+  timestamp,
 } from "drizzle-orm/pg-core";
 
 const uint8 = () => smallint();
@@ -22,7 +24,28 @@ const uint256 = () => numeric({ precision: 78, scale: 0 });
 const address = () => char({ length: 42 });
 const bytes32 = () => char({ length: 66 });
 
+export const mutationEnum = pgEnum("mutation", [
+  "initialize",
+  "authorize",
+  "revoke",
+  "closeOrder",
+  "limitOrder",
+  "marketOrder",
+  "addInstrument",
+  "deposit",
+  "withdrawal",
+]);
+
 export const mutationStatusEnum = pgEnum("mutation_status", [
+  "pending",
+  "accepted",
+  "proposed",
+  "voted",
+  "finalized",
+  "verified",
+]);
+
+export const bundleStatusEnum = pgEnum("bundle_status", [
   "accepted",
   "proposed",
   "voted",
@@ -39,14 +62,7 @@ export const accountsRelations = relations(accounts, ({ many }) => ({
   nonces: many(nonces),
   balances: many(balances),
   orders: many(orders),
-  closeOrders: many(closeOrders),
-  limitOrders: many(limitOrders),
-  marketOrders: many(marketOrders),
-  deposits: many(deposits),
-  withdrawals: many(withdrawals),
-  authorizes: many(authorizes),
-  revokes: many(revokes),
-  initializes: many(initializes),
+  mutations: many(mutations),
 }));
 
 export const keys = pgTable(
@@ -186,164 +202,195 @@ export const blocksRelations = relations(blocks, ({ many }) => ({
   bundles: many(bundles),
 }));
 
-export const bundles = pgTable("bundles", {
-  id: serial().primaryKey(),
-  status: mutationStatusEnum().notNull().default("accepted"),
-  blockNumber: uint256().references(() => blocks.number),
-  transactionHash: char({ length: 66 }),
-});
+export const bundles = pgTable(
+  "bundles",
+  {
+    id: serial().primaryKey(),
+    blockNumber: uint256().references(() => blocks.number),
+    status: bundleStatusEnum().notNull().default("accepted"),
+    transactionHash: char({ length: 66 }),
+    acceptedAt: timestamp().notNull(),
+    proposedAt: timestamp(),
+    votedAt: timestamp(),
+    finalizedAt: timestamp(),
+    verifiedAt: timestamp(),
+  },
+  (t) => [index().on(t.blockNumber)],
+);
 
 export const bundlesRelations = relations(bundles, ({ one, many }) => ({
   block: one(blocks, {
     fields: [bundles.blockNumber],
     references: [blocks.number],
   }),
-  initializes: many(initializes),
-  authorizes: many(authorizes),
-  revokes: many(revokes),
-  closeOrders: many(closeOrders),
-  limitOrders: many(limitOrders),
-  marketOrders: many(marketOrders),
-  addInstruments: many(addInstruments),
-  deposits: many(deposits),
-  withdrawals: many(withdrawals),
+  mutations: many(mutations),
 }));
 
-function signed() {
-  return {
-    account: bytes32().notNull(),
-    keyId: uint64().notNull(),
-    nonce: uint256().notNull(),
-    deadline: uint256().notNull(),
-    rawSignature: text().notNull(),
-  };
-}
-
-function mutationBase() {
-  return {
+export const mutations = pgTable(
+  "mutations",
+  {
     id: serial().primaryKey(),
     bundleId: integer().references(() => bundles.id),
+    blockNumber: uint256().references(() => blocks.number),
     status: mutationStatusEnum().notNull(),
-  };
-}
-
-export const initializes = pgTable(
-  "initializes",
-  {
-    ...mutationBase(),
-    ...signed(),
-    expiry: uint40().notNull(),
-    rootKeyType: uint8().notNull(),
-    keyType: uint8().notNull(),
-    permissions: uint8().notNull(),
-    rootPublicKey: text().notNull(),
-    publicKey: text().notNull(),
+    account: bytes32().notNull(),
+    keyIndex: uint64(),
+    nonce: uint256(),
+    deadline: uint256().notNull(),
+    rawSignature: text().notNull(),
+    type: mutationEnum().notNull(),
+    calldata: text(),
+    pendingAt: timestamp().notNull(),
+    acceptedAt: timestamp(),
+    proposedAt: timestamp(),
+    votedAt: timestamp(),
+    finalizedAt: timestamp(),
+    verifiedAt: timestamp(),
   },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
+  (t) => [
+    index().on(t.bundleId),
+    index().on(t.blockNumber),
+    index().on(t.account),
+    foreignKey({
+      columns: [t.account, t.keyIndex],
+      foreignColumns: [keys.account, keys.keyIndex],
+    }),
+  ],
 );
+
+export const mutationsRelations = relations(mutations, ({ one }) => ({
+  bundle: one(bundles, {
+    fields: [mutations.bundleId],
+    references: [bundles.id],
+  }),
+  block: one(blocks, {
+    fields: [mutations.blockNumber],
+    references: [blocks.number],
+  }),
+  accountRef: one(accounts, {
+    fields: [mutations.account],
+    references: [accounts.id],
+  }),
+  initialize: one(initializes, {
+    fields: [mutations.id],
+    references: [initializes.id],
+  }),
+  authorize: one(authorizes, {
+    fields: [mutations.id],
+    references: [authorizes.id],
+  }),
+  revoke: one(revokes, {
+    fields: [mutations.id],
+    references: [revokes.id],
+  }),
+  closeOrder: one(closeOrders, {
+    fields: [mutations.id],
+    references: [closeOrders.id],
+  }),
+  limitOrder: one(limitOrders, {
+    fields: [mutations.id],
+    references: [limitOrders.id],
+  }),
+  marketOrder: one(marketOrders, {
+    fields: [mutations.id],
+    references: [marketOrders.id],
+  }),
+  addInstrument: one(addInstruments, {
+    fields: [mutations.id],
+    references: [addInstruments.id],
+  }),
+  deposit: one(deposits, {
+    fields: [mutations.id],
+    references: [deposits.id],
+  }),
+  withdrawal: one(withdrawals, {
+    fields: [mutations.id],
+    references: [withdrawals.id],
+  }),
+}));
+
+export const initializes = pgTable("initializes", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  expiry: uint40().notNull(),
+  rootKeyType: uint8().notNull(),
+  keyType: uint8().notNull(),
+  permissions: uint8().notNull(),
+  rootPublicKey: text().notNull(),
+  publicKey: text().notNull(),
+});
 
 export const initializesRelations = relations(initializes, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [initializes.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [initializes.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [initializes.id],
+    references: [mutations.id],
   }),
 }));
 
-export const authorizes = pgTable(
-  "authorizes",
-  {
-    ...mutationBase(),
-    ...signed(),
-    expiry: uint40().notNull(),
-    keyType: uint8().notNull(),
-    permissions: uint8().notNull(),
-    publicKey: text().notNull(),
-  },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
-);
+export const authorizes = pgTable("authorizes", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  expiry: uint40().notNull(),
+  keyType: uint8().notNull(),
+  permissions: uint8().notNull(),
+  publicKey: text().notNull(),
+});
 
 export const authorizesRelations = relations(authorizes, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [authorizes.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [authorizes.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [authorizes.id],
+    references: [mutations.id],
   }),
 }));
 
-export const revokes = pgTable(
-  "revokes",
-  {
-    ...mutationBase(),
-    ...signed(),
-    revokedKeyId: uint64().notNull(),
-  },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
-);
+export const revokes = pgTable("revokes", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  revokedKeyId: uint64().notNull(),
+});
 
 export const revokesRelations = relations(revokes, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [revokes.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [revokes.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [revokes.id],
+    references: [mutations.id],
   }),
 }));
 
-export const closeOrders = pgTable(
-  "close_orders",
-  {
-    ...mutationBase(),
-    ...signed(),
-    orderId: uint64().notNull(),
-  },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
-);
+export const closeOrders = pgTable("close_orders", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  orderId: uint64().notNull(),
+});
 
 export const closeOrdersRelations = relations(closeOrders, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [closeOrders.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [closeOrders.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [closeOrders.id],
+    references: [mutations.id],
   }),
 }));
 
 export const limitOrders = pgTable(
   "limit_orders",
   {
-    ...mutationBase(),
-    ...signed(),
+    id: integer()
+      .primaryKey()
+      .references(() => mutations.id),
     quantity: uint256().notNull(),
     instrumentId: uint64().notNull(),
     price: uint64().notNull(),
     bidOrAsk: uint8().notNull(),
   },
-  (t) => [
-    index().on(t.account),
-    index().on(t.instrumentId),
-    index().on(t.bundleId),
-  ],
+  (t) => [index().on(t.instrumentId)],
 );
 
 export const limitOrdersRelations = relations(limitOrders, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [limitOrders.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [limitOrders.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [limitOrders.id],
+    references: [mutations.id],
   }),
   instrument: one(instruments, {
     fields: [limitOrders.instrumentId],
@@ -354,30 +401,23 @@ export const limitOrdersRelations = relations(limitOrders, ({ one }) => ({
 export const marketOrders = pgTable(
   "market_orders",
   {
-    ...mutationBase(),
-    ...signed(),
+    id: integer()
+      .primaryKey()
+      .references(() => mutations.id),
     quantity: uint256().notNull(),
     minReceivedQuantity: uint256().notNull(),
     instrumentId: uint64().notNull(),
     bidOrAsk: uint8().notNull(),
   },
-  (t) => [
-    index().on(t.account),
-    index().on(t.instrumentId),
-    index().on(t.bundleId),
-  ],
+  (t) => [index().on(t.instrumentId)],
 );
 
 export const marketOrdersRelations = relations(
   marketOrders,
   ({ one, many }) => ({
-    bundle: one(bundles, {
-      fields: [marketOrders.bundleId],
-      references: [bundles.id],
-    }),
-    accountRef: one(accounts, {
-      fields: [marketOrders.account],
-      references: [accounts.id],
+    mutation: one(mutations, {
+      fields: [marketOrders.id],
+      references: [mutations.id],
     }),
     instrument: one(instruments, {
       fields: [marketOrders.instrumentId],
@@ -408,75 +448,54 @@ export const fillsRelations = relations(fills, ({ one }) => ({
   }),
 }));
 
-export const addInstruments = pgTable(
-  "add_instruments",
-  {
-    ...mutationBase(),
-    ...signed(),
-    instrumentId: uint64().notNull(),
-    base: address().notNull(),
-    quote: address().notNull(),
-    baseLotExp: uint16().notNull(),
-    quoteLotExp: uint16().notNull(),
-  },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
-);
+export const addInstruments = pgTable("add_instruments", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  instrumentId: uint64().notNull(),
+  base: address().notNull(),
+  quote: address().notNull(),
+  baseLotExp: uint16().notNull(),
+  quoteLotExp: uint16().notNull(),
+});
 
 export const addInstrumentsRelations = relations(addInstruments, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [addInstruments.bundleId],
-    references: [bundles.id],
+  mutation: one(mutations, {
+    fields: [addInstruments.id],
+    references: [mutations.id],
   }),
   instrument: one(instruments, {
     fields: [addInstruments.instrumentId],
     references: [instruments.id],
   }),
-  accountRef: one(accounts, {
-    fields: [addInstruments.account],
-    references: [accounts.id],
-  }),
 }));
 
-export const deposits = pgTable(
-  "deposits",
-  {
-    ...mutationBase(),
-    ...signed(),
-    asset: address().notNull(),
-    amount: uint256().notNull(),
-  },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
-);
+export const deposits = pgTable("deposits", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  asset: address().notNull(),
+  amount: uint256().notNull(),
+});
 
 export const depositsRelations = relations(deposits, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [deposits.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [deposits.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [deposits.id],
+    references: [mutations.id],
   }),
 }));
 
-export const withdrawals = pgTable(
-  "withdrawals",
-  {
-    ...mutationBase(),
-    ...signed(),
-    asset: address().notNull(),
-    amount: uint256().notNull(),
-  },
-  (t) => [index().on(t.account), index().on(t.bundleId)],
-);
+export const withdrawals = pgTable("withdrawals", {
+  id: integer()
+    .primaryKey()
+    .references(() => mutations.id),
+  asset: address().notNull(),
+  amount: uint256().notNull(),
+});
 
 export const withdrawalsRelations = relations(withdrawals, ({ one }) => ({
-  bundle: one(bundles, {
-    fields: [withdrawals.bundleId],
-    references: [bundles.id],
-  }),
-  accountRef: one(accounts, {
-    fields: [withdrawals.account],
-    references: [accounts.id],
+  mutation: one(mutations, {
+    fields: [withdrawals.id],
+    references: [mutations.id],
   }),
 }));
