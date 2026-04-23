@@ -1,4 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
+import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import { bytesToHex, hashTypedData, keccak256 } from "viem";
 import {
   Authentication as ClientAuthentication,
@@ -35,7 +36,7 @@ export function useSignUp() {
         expiry: 0,
         rootKeyType: 1,
         keyType: 0,
-        permissions: 0xff,
+        permissions: DEFAULT_NON_ROOT_PERMISSIONS,
         rootPublicKey: credential.publicKey,
         publicKey: sessionPublicKey,
       };
