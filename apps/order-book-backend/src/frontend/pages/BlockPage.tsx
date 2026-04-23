@@ -8,7 +8,7 @@ const MUTATION_COLUMNS = ["id", "bundle", "status", "account", "description"];
 const linkClass = "text-blue-500 hover:underline";
 
 function shortAddr(addr: string) {
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
 function dedupeTransactionHash(mutations: ApiMutation[]): string | null {
@@ -53,10 +53,10 @@ export function BlockPage() {
               {block.data.number}
             </a>
           ) : (
-            "…"
+            "..."
           )}
         </code>
-        <code>timestamp: {block.data?.timestamp ?? "…"}</code>
+        <code>timestamp: {block.data?.timestamp ?? "..."}</code>
         <code>
           transaction:{" "}
           {transactionHash ? (
@@ -123,8 +123,13 @@ export function BlockPage() {
                   </td>
                   <td className="py-2 pr-6">
                     <code>
-                      <Link to={`/account/${m.account}`} className={linkClass}>
-                        {shortAddr(m.account)}
+                      <Link
+                        to={`/account/${m.accountSerial ?? m.account}`}
+                        className={linkClass}
+                      >
+                        {m.accountSerial != null
+                          ? m.accountSerial
+                          : shortAddr(m.account)}
                       </Link>
                     </code>
                   </td>

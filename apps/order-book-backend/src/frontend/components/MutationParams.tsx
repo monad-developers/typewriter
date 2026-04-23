@@ -73,6 +73,9 @@ export function MutationParams({ mutation }: { mutation: ApiMutation }) {
 }
 
 function renderRows(mutation: ApiMutation) {
+  if (mutation.payload == null) {
+    return <Row label="payload" value="pending" />;
+  }
   switch (mutation.type) {
     case "initialize":
       return (
@@ -106,7 +109,7 @@ function renderRows(mutation: ApiMutation) {
     case "revoke":
       return <Row label="revoked key id" value={mutation.payload.revokedKeyId} />;
     case "closeOrder":
-      return <Row label="order id" value={`#${mutation.payload.orderId}`} />;
+      return <Row label="order id" value={mutation.payload.orderId} />;
     case "limitOrder": {
       const id = Number(mutation.payload.instrumentId);
       return (
@@ -201,6 +204,8 @@ export function MarketOrderFills({
 }: {
   mutation: Extract<ApiMutation, { type: "marketOrder" }>;
 }) {
+  if (mutation.payload == null)
+    return <code className="text-muted-foreground">Pending</code>;
   const id = Number(mutation.payload.instrumentId);
   const entry = instrumentEntry(id);
   const fills = mutation.payload.fills;
@@ -221,10 +226,8 @@ export function MarketOrderFills({
       </thead>
       <tbody>
         {fills.map((f, i) => (
-          <tr
-            key={`${i}-${f.quantity}-${f.price}`}
-            className="border-b last:border-0"
-          >
+          // biome-ignore lint/suspicious/noArrayIndexKey: fill position is the identity
+          <tr key={i} className="border-b last:border-0">
             <td className="py-2 pr-6">
               <code>
                 {entry

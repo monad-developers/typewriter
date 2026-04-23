@@ -8,6 +8,7 @@ import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
 import "./index.css";
 import { RouterProvider, useMatch } from "./lib/router";
+import { AccountPage } from "./pages/AccountPage";
 import { BlockPage } from "./pages/BlockPage";
 import { MutationPage } from "./pages/MutationPage";
 
@@ -26,9 +27,7 @@ function Auth() {
             onClick={() => signUp.mutate()}
             className="px-6 py-2 border rounded hover:bg-gray-50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
-            {signUp.isPending
-              ? "Creating..."
-              : "Create passkey"}
+            {signUp.isPending ? "Creating..." : "Create passkey"}
           </button>
           <button
             type="button"
@@ -51,9 +50,9 @@ function TradingApp() {
   if (!account) return <Auth />;
 
   return (
-    <div className="min-h-screen w-full flex flex-col pb-14">
+    <div className="min-h-screen w-full flex flex-col">
       <Header />
-      <main className="flex-1 p-4">
+      <main className="flex-1 p-4 pb-14">
         <Exchange />
       </main>
       <BlockTracker />
@@ -64,8 +63,10 @@ function TradingApp() {
 function Routes() {
   const blockMatch = useMatch("/block/:number");
   const mutationMatch = useMatch("/mutation/:id");
+  const accountMatch = useMatch("/account/:id");
   if (blockMatch) return <BlockPage />;
   if (mutationMatch) return <MutationPage />;
+  if (accountMatch) return <AccountPage />;
   return <TradingApp />;
 }
 

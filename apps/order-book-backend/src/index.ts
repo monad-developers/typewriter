@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import { drizzle } from "drizzle-orm/bun-sql";
 import type { Chain, Hex } from "viem";
@@ -47,6 +47,7 @@ type ApiMutation = {
   blockNumber: string | null;
   status: (typeof schema.mutationStatusEnum.enumValues)[number];
   account: Hex;
+  accountSerial: number | null;
   keyIndex: string | null;
   nonce: string | null;
   deadline: string;
@@ -74,6 +75,7 @@ async function loadMutationsByIds(
       blockNumber: schema.mutations.blockNumber,
       status: schema.mutations.status,
       account: schema.mutations.account,
+      accountSerial: schema.accounts.serial,
       keyIndex: schema.mutations.keyIndex,
       nonce: schema.mutations.nonce,
       deadline: schema.mutations.deadline,
@@ -88,6 +90,7 @@ async function loadMutationsByIds(
     })
     .from(schema.mutations)
     .leftJoin(schema.bundles, eq(schema.mutations.bundleId, schema.bundles.id))
+    .leftJoin(schema.accounts, eq(schema.mutations.account, schema.accounts.id))
     .where(inArray(schema.mutations.id, ids))
     .orderBy(asc(schema.mutations.id));
 
@@ -184,6 +187,7 @@ async function loadMutationsByIds(
     blockNumber: c.blockNumber,
     status: c.status,
     account: c.account as Hex,
+    accountSerial: c.accountSerial,
     keyIndex: c.keyIndex != null ? c.keyIndex.toString() : null,
     nonce: c.nonce,
     deadline: c.deadline,
@@ -504,10 +508,7 @@ serve({
         let id: number | null = null;
         if (idParam !== null) {
           if (!/^\d+$/.test(idParam)) {
-            return Response.json(
-              { error: "Invalid id" },
-              { status: 400 },
-            );
+            return Response.json({ error: "Invalid id" }, { status: 400 });
           }
           id = Number(idParam);
         } else if (account !== null && nonce !== null) {
@@ -552,21 +553,90 @@ serve({
       },
     },
 
-    "/api/account/:address": {
-      GET: (req) => {
-        const address = req.params.address as Hex;
+    "/api/account/:id": {
+      GET: async (req) => {
+        const idParam = req.params.id;
+
+        let address: Hex;
+        let serial: number;
+        if (/^\d+$/.test(idParam)) {
+          const [row] = await readerDb
+            .select({ id: schema.accounts.id, serial: schema.accounts.serial })
+            .from(schema.accounts)
+            .where(eq(schema.accounts.serial, Number(idParam)))
+            .limit(1);
+          if (!row)
+            return Response.json(
+              { error: "account not found" },
+              { status: 404 },
+            );
+          address = row.id as Hex;
+          serial = row.serial;
+        } else {
+          address = idParam as Hex;
+          const [row] = await readerDb
+            .select({ serial: schema.accounts.serial })
+            .from(schema.accounts)
+            .where(eq(schema.accounts.id, address))
+            .limit(1);
+          if (!row)
+            return Response.json(
+              { error: "account not found" },
+              { status: 404 },
+            );
+          serial = row.serial;
+        }
+
         const acc = handle.state.accounts[address];
         if (!acc)
           return Response.json({ error: "account not found" }, { status: 404 });
 
+        const idRows = await readerDb
+          .select({ id: schema.mutations.id })
+          .from(schema.mutations)
+          .where(
+            and(
+              eq(schema.mutations.account, address),
+              ne(schema.mutations.status, "pending"),
+            ),
+          )
+          .orderBy(desc(schema.mutations.id))
+          .limit(50);
+        const mutations = await loadMutationsByIds(
+          readerDb,
+          idRows.map((r) => r.id),
+        );
+        mutations.sort((a, b) => b.id - a.id);
+
+        const nonces: Record<string, string> = {};
+        for (const [k, v] of Object.entries(acc.nonces)) {
+          nonces[k] = v.toString();
+        }
+
+        const balances: Record<string, string> = {};
+        for (const [asset, amount] of Object.entries(acc.balances)) {
+          balances[asset] = amount.toString();
+        }
+
         return Response.json({
           address,
+          serial,
           keys: acc.keys.map((k) => ({
             keyType: k.keyType,
             permissions: k.permissions,
             expiry: k.expiry,
             publicKey: k.publicKey,
           })),
+          nonces,
+          orders: acc.orders.map((o) => ({
+            quantity: o.quantity.toString(),
+            instrumentId: o.instrumentId,
+            price: o.price.toString(),
+            tickVolume: o.tickVolume,
+            side: o.side,
+          })),
+          balances,
+          mutations,
         });
       },
     },

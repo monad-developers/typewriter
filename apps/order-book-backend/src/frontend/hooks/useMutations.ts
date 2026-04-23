@@ -81,6 +81,7 @@ type MutationBase = {
   blockNumber: string | null;
   status: MutationStatus;
   account: Hex;
+  accountSerial: number | null;
   keyIndex: string | null;
   nonce: string | null;
   deadline: string;
@@ -94,15 +95,18 @@ type MutationBase = {
 };
 
 export type ApiMutation =
-  | (MutationBase & { type: "initialize"; payload: InitializePayload })
-  | (MutationBase & { type: "authorize"; payload: AuthorizePayload })
-  | (MutationBase & { type: "revoke"; payload: RevokePayload })
-  | (MutationBase & { type: "closeOrder"; payload: CloseOrderPayload })
-  | (MutationBase & { type: "limitOrder"; payload: LimitOrderPayload })
-  | (MutationBase & { type: "marketOrder"; payload: MarketOrderPayload })
-  | (MutationBase & { type: "addInstrument"; payload: AddInstrumentPayload })
-  | (MutationBase & { type: "deposit"; payload: DepositPayload })
-  | (MutationBase & { type: "withdrawal"; payload: WithdrawalPayload });
+  | (MutationBase & { type: "initialize"; payload: InitializePayload | null })
+  | (MutationBase & { type: "authorize"; payload: AuthorizePayload | null })
+  | (MutationBase & { type: "revoke"; payload: RevokePayload | null })
+  | (MutationBase & { type: "closeOrder"; payload: CloseOrderPayload | null })
+  | (MutationBase & { type: "limitOrder"; payload: LimitOrderPayload | null })
+  | (MutationBase & { type: "marketOrder"; payload: MarketOrderPayload | null })
+  | (MutationBase & {
+      type: "addInstrument";
+      payload: AddInstrumentPayload | null;
+    })
+  | (MutationBase & { type: "deposit"; payload: DepositPayload | null })
+  | (MutationBase & { type: "withdrawal"; payload: WithdrawalPayload | null });
 
 export function useMutations(blockNumber: string | undefined) {
   return useQuery({

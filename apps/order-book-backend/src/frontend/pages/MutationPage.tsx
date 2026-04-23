@@ -24,7 +24,7 @@ function stageTimestamps(mutation: ApiMutation): StageTimestamps {
 const linkClass = "text-blue-500 hover:underline";
 
 function shortAddr(addr: string) {
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
 function computeRequiresNonce(nonce: string): string | null {
@@ -60,8 +60,8 @@ export function MutationPage() {
     <div className="min-h-screen w-full flex flex-col">
       <section className="w-full border-b p-4 flex flex-col gap-2">
         <h2 className="text-2xl font-bold">Mutation</h2>
-        <code>id: {mutation?.id ?? "…"}</code>
-        <code>bundle: {mutation?.bundleId ?? "…"}</code>
+        <code>id: {mutation?.id ?? "..."}</code>
+        <code>bundle: {mutation?.bundleId ?? "..."}</code>
         <code>
           block:{" "}
           {mutation?.blockNumber ? (
@@ -72,7 +72,7 @@ export function MutationPage() {
               {mutation.blockNumber}
             </Link>
           ) : (
-            "…"
+            "..."
           )}
         </code>
       </section>
@@ -88,7 +88,7 @@ export function MutationPage() {
       <div className="w-full border-b flex flex-col md:flex-row">
         <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
           <h2 className="text-2xl font-bold mb-2">Parameters</h2>
-          <code>type: {mutation?.type ?? "…"}</code>
+          <code>type: {mutation?.type ?? "..."}</code>
           {mutation ? <MutationParams mutation={mutation} /> : null}
         </section>
 
@@ -104,17 +104,22 @@ export function MutationPage() {
           <code>
             account:{" "}
             {mutation ? (
-              <Link to={`/account/${mutation.account}`} className={linkClass}>
-                {shortAddr(mutation.account)}
+              <Link
+                to={`/account/${mutation.accountSerial ?? mutation.account}`}
+                className={linkClass}
+              >
+                {mutation.accountSerial != null
+                  ? mutation.accountSerial
+                  : shortAddr(mutation.account)}
               </Link>
             ) : (
-              "…"
+              "..."
             )}
           </code>
           <code>
             requires:{" "}
             {mutation == null ? (
-              "…"
+              "..."
             ) : requiresNonce == null ? (
               "none"
             ) : requires.data ? (
@@ -122,18 +127,18 @@ export function MutationPage() {
                 {requires.data.id}
               </Link>
             ) : (
-              "…"
+              "..."
             )}
           </code>
           <code>
             type:{" "}
             {mutation == null
-              ? "…"
+              ? "..."
               : mutation.keyIndex == null
                 ? "root"
                 : keyType != null
                   ? KEY_TYPE_LABELS[keyType]
-                  : "…"}
+                  : "..."}
           </code>
         </section>
       </div>

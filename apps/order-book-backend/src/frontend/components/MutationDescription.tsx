@@ -8,7 +8,28 @@ import {
   WTIOIL,
 } from "order-book-sdk";
 import type { Address } from "viem";
-import type { ApiMutation } from "../hooks/useMutations";
+import type {
+  AddInstrumentPayload,
+  AuthorizePayload,
+  CloseOrderPayload,
+  DepositPayload,
+  InitializePayload,
+  LimitOrderPayload,
+  MarketOrderPayload,
+  RevokePayload,
+  WithdrawalPayload,
+} from "../hooks/useMutations";
+
+type MutationDescriptor =
+  | { type: "initialize"; payload: InitializePayload | null }
+  | { type: "authorize"; payload: AuthorizePayload | null }
+  | { type: "revoke"; payload: RevokePayload | null }
+  | { type: "closeOrder"; payload: CloseOrderPayload | null }
+  | { type: "limitOrder"; payload: LimitOrderPayload | null }
+  | { type: "marketOrder"; payload: MarketOrderPayload | null }
+  | { type: "addInstrument"; payload: AddInstrumentPayload | null }
+  | { type: "deposit"; payload: DepositPayload | null }
+  | { type: "withdrawal"; payload: WithdrawalPayload | null };
 
 const INSTRUMENT_BY_ID = new Map<
   number,
@@ -36,17 +57,26 @@ function baseSymbol(instrumentId: number) {
   return assetSymbol(entry.config.base);
 }
 
-function formatBaseQuantity(quantity: string, instrumentId: number) {
+function formatBaseQuantity(
+  quantity: string | number | bigint | null | undefined,
+  instrumentId: number,
+) {
+  if (quantity == null) return "?";
   const entry = INSTRUMENT_BY_ID.get(instrumentId);
-  if (!entry) return quantity;
-  return TokenAmount.fromRaw(BigInt(quantity), entry.config.base).human.toFixed(
-    2,
-  );
+  if (!entry) return String(quantity);
+  return TokenAmount.fromRaw(
+    BigInt(quantity),
+    entry.config.base,
+  ).human.toFixed(2);
 }
 
-function formatPrice(priceQ32: string, instrumentId: number) {
+function formatPrice(
+  priceQ32: string | number | bigint | null | undefined,
+  instrumentId: number,
+) {
+  if (priceQ32 == null) return "?";
   const entry = INSTRUMENT_BY_ID.get(instrumentId);
-  if (!entry) return priceQ32;
+  if (!entry) return String(priceQ32);
   return `$${q32ToPrice(BigInt(priceQ32), entry.config).toFixed(2)}`;
 }
 
@@ -60,7 +90,12 @@ function keyTypeName(keyType: number) {
   return KEY_TYPE_NAMES[keyType] ?? `keyType ${keyType}`;
 }
 
-export function MutationDescription({ mutation }: { mutation: ApiMutation }) {
+export function MutationDescription({
+  mutation,
+}: {
+  mutation: MutationDescriptor;
+}) {
+  if (mutation.payload == null) return <>{mutation.type}</>;
   switch (mutation.type) {
     case "initialize":
       return (

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import type { Hex } from "viem";
+import type { Address, Hex } from "viem";
+import type { ApiMutation } from "./useMutations";
 
 export type ApiKey = {
   keyType: 0 | 1 | 2;
@@ -8,19 +9,33 @@ export type ApiKey = {
   publicKey: Hex;
 };
 
-export type ApiAccount = {
-  address: Hex;
-  keys: ApiKey[];
+export type ApiOrder = {
+  quantity: string;
+  instrumentId: number;
+  price: string;
+  tickVolume: number;
+  side: 0 | 1;
 };
 
-export function useAccount(address: Hex | undefined) {
+export type ApiAccount = {
+  address: Hex;
+  serial: number;
+  keys: ApiKey[];
+  nonces: Record<string, string>;
+  orders: ApiOrder[];
+  balances: Record<Address, string>;
+  mutations: ApiMutation[];
+};
+
+export function useAccount(idOrAddress: string | undefined) {
   return useQuery({
-    queryKey: ["account", address],
+    queryKey: ["account", idOrAddress],
     queryFn: async () => {
-      const res = await fetch(`/api/account/${address}`);
-      if (!res.ok) throw new Error(`Failed to fetch account ${address}`);
+      const res = await fetch(`/api/account/${idOrAddress}`);
+      if (!res.ok)
+        throw new Error(`Failed to fetch account ${idOrAddress}`);
       return (await res.json()) as ApiAccount;
     },
-    enabled: !!address,
+    enabled: !!idOrAddress,
   });
 }
