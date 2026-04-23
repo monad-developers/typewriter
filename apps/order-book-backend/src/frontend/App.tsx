@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
-import { BlockTracker } from "./components/BlockTracker";
 import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
+import { LiveBlocks } from "./components/LiveBlocks";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
@@ -52,10 +52,10 @@ function TradingApp() {
   return (
     <div className="min-h-screen w-full flex flex-col">
       <Header />
-      <main className="flex-1 p-4 pb-14">
+      <main className="flex-1 p-4">
         <Exchange />
       </main>
-      <BlockTracker />
+      <LiveBlocks />
     </div>
   );
 }

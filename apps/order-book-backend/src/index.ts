@@ -251,6 +251,13 @@ const handle = startRuntime({
   db: writerDb,
 });
 
+const TPS_WINDOW_MS = 10_000;
+const acceptedMutationTimestamps: number[] = [];
+handle.on("mutation", (m) => {
+  if (m.status !== "accepted") return;
+  acceptedMutationTimestamps.push(Date.now());
+});
+
 serve({
   idleTimeout: 0,
   routes: {
@@ -413,6 +420,23 @@ serve({
         } catch (err) {
           return Response.json({ error: String(err) }, { status: 400 });
         }
+      },
+    },
+
+    "/api/tps": {
+      GET: () => {
+        const cutoff = Date.now() - TPS_WINDOW_MS;
+        let drop = 0;
+        while (
+          drop < acceptedMutationTimestamps.length &&
+          acceptedMutationTimestamps[drop]! < cutoff
+        ) {
+          drop++;
+        }
+        if (drop > 0) acceptedMutationTimestamps.splice(0, drop);
+        return Response.json(
+          acceptedMutationTimestamps.length / (TPS_WINDOW_MS / 1000),
+        );
       },
     },
 
