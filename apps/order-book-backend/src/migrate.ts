@@ -73,7 +73,6 @@ export async function migrate(
       await tx.execute(sql.raw(stmt.replaceAll('"public".', "")));
     }
 
-    await tx.execute(sql.raw("SET LOCAL search_path = public"));
     await tx.insert(deployments).values({
       schemaName,
       contractAddress: contractAddress.toLowerCase(),

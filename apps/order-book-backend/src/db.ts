@@ -24,14 +24,15 @@ import {
   incrementNonce,
   MutationType,
 } from "./exchange";
-import type { BlockRow, BundleStatus, MutationEvent } from "./runtime";
 
 type DB = BunSQLDatabase<typeof schema>;
-type BundleDBStatus = typeof schema.bundleStatusEnum.enumValues[number];
+type BundleDBStatus = (typeof schema.bundleStatusEnum.enumValues)[number];
+type BlockRow = { number: bigint; hash: Hex; timestamp: bigint };
+type AcceptedMutation = ResolvedMutation & { id: number };
 
 const MUTATION_TYPE_TO_ENUM: Record<
   MutationType,
-  typeof schema.mutationEnum.enumValues[number]
+  (typeof schema.mutationEnum.enumValues)[number]
 > = {
   [MutationType.Initialize]: "initialize",
   [MutationType.Authorize]: "authorize",
@@ -496,7 +497,9 @@ export async function recoverState(
       ] as const) {
         await d.delete(table).where(inArray(table.id, acceptedIds));
       }
-      await d.delete(schema.mutations).where(inArray(schema.mutations.id, acceptedIds));
+      await d
+        .delete(schema.mutations)
+        .where(inArray(schema.mutations.id, acceptedIds));
     }
     await d.delete(schema.bundles).where(eq(schema.bundles.status, "accepted"));
 
@@ -540,17 +543,6 @@ export async function insertBlock(db: DB, block: BlockRow) {
     .onConflictDoNothing();
 }
 
-export async function selectBundleIdsInBlock(
-  db: DB,
-  blockNumber: bigint,
-): Promise<number[]> {
-  const rows = await db
-    .select({ id: schema.bundles.id })
-    .from(schema.bundles)
-    .where(eq(schema.bundles.blockNumber, blockNumber.toString()));
-  return rows.map((r) => r.id);
-}
-
 export async function insertBundle(db: DB): Promise<number> {
   const [row] = await db
     .insert(schema.bundles)
@@ -559,7 +551,10 @@ export async function insertBundle(db: DB): Promise<number> {
   return row!.id;
 }
 
-const BUNDLE_STATUS_TIMESTAMP_COL: Record<BundleStatus, keyof typeof schema.bundles.$inferInsert> = {
+const BUNDLE_STATUS_TIMESTAMP_COL: Record<
+  BundleDBStatus,
+  keyof typeof schema.bundles.$inferInsert
+> = {
   accepted: "acceptedAt",
   proposed: "proposedAt",
   voted: "votedAt",
@@ -570,7 +565,7 @@ const BUNDLE_STATUS_TIMESTAMP_COL: Record<BundleStatus, keyof typeof schema.bund
 export async function updateBundleStatus(
   db: DB,
   bundleId: number,
-  status: BundleStatus,
+  status: BundleDBStatus,
 ) {
   await db
     .update(schema.bundles)
@@ -596,7 +591,7 @@ export async function updateBundleBlock(
 export async function updateBundleMutationStatuses(
   db: DB,
   bundleId: number,
-  status: BundleStatus,
+  status: BundleDBStatus,
 ) {
   await db
     .update(schema.mutations)
@@ -644,7 +639,7 @@ async function syncNonce(
 export async function syncState(
   db: DB,
   state: State<bigint>,
-  m: MutationEvent,
+  m: AcceptedMutation,
 ) {
   switch (m.type) {
     case MutationType.Initialize: {
@@ -994,7 +989,7 @@ export async function deletePendingMutation(db: DB, id: number) {
 
 export async function acceptMutation(
   db: DB,
-  m: MutationEvent,
+  m: AcceptedMutation,
   bundleId: number,
   calldata: Hex,
 ) {

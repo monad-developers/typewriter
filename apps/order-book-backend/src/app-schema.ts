@@ -2,7 +2,6 @@ import { relations } from "drizzle-orm";
 import {
   bigint,
   char,
-  foreignKey,
   index,
   integer,
   numeric,
@@ -55,6 +54,7 @@ export const bundleStatusEnum = pgEnum("bundle_status", [
 
 export const accounts = pgTable("accounts", {
   id: bytes32().primaryKey(),
+  serial: serial().notNull(),
 });
 
 export const accountsRelations = relations(accounts, ({ many }) => ({
@@ -251,10 +251,10 @@ export const mutations = pgTable(
     index().on(t.bundleId),
     index().on(t.blockNumber),
     index().on(t.account),
-    foreignKey({
-      columns: [t.account, t.keyIndex],
-      foreignColumns: [keys.account, keys.keyIndex],
-    }),
+    // FK (account, keyIndex) -> keys disabled: blocks recoverState's
+    // wipe-and-replay because deleting keys while surviving non-accepted
+    // mutations reference them violates the FK. Drizzle 0.45 can't declare
+    // DEFERRABLE FKs.
   ],
 );
 
