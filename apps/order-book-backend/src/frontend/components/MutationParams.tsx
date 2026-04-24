@@ -62,9 +62,14 @@ function formatAmount(amount: string, asset: Address) {
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <code>
-      {label}: {value}
-    </code>
+    <div className="flex items-baseline gap-4 text-[15px]">
+      <span className="text-muted-foreground w-36 shrink-0 text-sm">
+        {label}
+      </span>
+      <span className="min-w-0 break-all font-mono tabular-nums text-sm">
+        {value}
+      </span>
+    </div>
   );
 }
 
@@ -205,41 +210,35 @@ export function MarketOrderFills({
   mutation: Extract<ApiMutation, { type: "marketOrder" }>;
 }) {
   if (mutation.payload == null)
-    return <code className="text-muted-foreground">Pending</code>;
+    return <span className="text-muted-foreground text-sm">Pending</span>;
   const id = Number(mutation.payload.instrumentId);
   const entry = instrumentEntry(id);
   const fills = mutation.payload.fills;
   if (fills.length === 0)
-    return <code className="text-muted-foreground">No fills</code>;
+    return <span className="text-muted-foreground text-sm">No fills</span>;
 
   return (
     <table className="w-full border-collapse">
-      <thead>
-        <tr className="border-b">
-          <th className="text-left py-2 pr-6">
-            <code>quantity</code>
-          </th>
-          <th className="text-left py-2 pr-6">
-            <code>price</code>
-          </th>
+      <thead className="text-xs text-muted-foreground">
+        <tr className="border-b border-border">
+          <th className="text-left py-2 pr-6 font-medium">Quantity</th>
+          <th className="text-left py-2 pr-6 font-medium">Price</th>
         </tr>
       </thead>
       <tbody>
         {fills.map((f, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: fill position is the identity
-          <tr key={i} className="border-b last:border-0">
-            <td className="py-2 pr-6">
-              <code>
-                {entry
-                  ? `${TokenAmount.fromRaw(
-                      BigInt(f.quantity) << BigInt(entry.config.baseLotExp),
-                      entry.config.base,
-                    ).human.toFixed(2)} ${assetSymbol(entry.config.base)}`
-                  : f.quantity}
-              </code>
+          <tr key={i} className="border-b border-border last:border-0">
+            <td className="py-3 pr-6 font-mono tabular-nums text-sm">
+              {entry
+                ? `${TokenAmount.fromRaw(
+                    BigInt(f.quantity) << BigInt(entry.config.baseLotExp),
+                    entry.config.base,
+                  ).human.toFixed(2)} ${assetSymbol(entry.config.base)}`
+                : f.quantity}
             </td>
-            <td className="py-2 pr-6">
-              <code>{formatPrice(f.price, id)}</code>
+            <td className="py-3 pr-6 font-mono tabular-nums text-sm">
+              {formatPrice(f.price, id)}
             </td>
           </tr>
         ))}

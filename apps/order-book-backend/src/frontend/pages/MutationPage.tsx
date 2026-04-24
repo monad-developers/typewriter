@@ -3,6 +3,14 @@ import {
   type StageTimestamps,
 } from "../components/MutationLifecycle";
 import { MarketOrderFills, MutationParams } from "../components/MutationParams";
+import {
+  Card,
+  Field,
+  PageContainer,
+  PageHeader,
+  PageShell,
+  Section,
+} from "../components/ui/page";
 import { useAccount } from "../hooks/useAccount";
 import { useMutation, useMutationByNonce } from "../hooks/useMutation";
 import type { ApiMutation } from "../hooks/useMutations";
@@ -21,10 +29,10 @@ function stageTimestamps(mutation: ApiMutation): StageTimestamps {
   return out;
 }
 
-const linkClass = "text-blue-500 hover:underline";
+const linkClass = "hover:underline decoration-1 underline-offset-2";
 
 function shortAddr(addr: string) {
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
 function computeRequiresNonce(nonce: string): string | null {
@@ -57,96 +65,110 @@ export function MutationPage() {
       : null;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
-      <section className="w-full border-b p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold">Mutation</h2>
-        <code>id: {mutation?.id ?? "..."}</code>
-        <code>bundle: {mutation?.bundleId ?? "..."}</code>
-        <code>
-          block:{" "}
-          {mutation?.blockNumber ? (
-            <Link
-              to={`/block/${mutation.blockNumber}`}
-              className={linkClass}
-            >
-              {mutation.blockNumber}
-            </Link>
-          ) : (
-            "..."
-          )}
-        </code>
-      </section>
+    <PageShell>
+      <PageContainer>
+        <div className="flex flex-col gap-5">
+          <PageHeader eyebrow="Mutation" title={mutation?.id ?? "…"} />
+          <div className="flex flex-col gap-2">
+            <Field label="Bundle" mono>
+              {mutation?.bundleId ?? "…"}
+            </Field>
+            <Field label="Block" mono>
+              {mutation?.blockNumber ? (
+                <Link
+                  to={`/block/${mutation.blockNumber}`}
+                  className={linkClass}
+                >
+                  {mutation.blockNumber}
+                </Link>
+              ) : (
+                "…"
+              )}
+            </Field>
+          </div>
+        </div>
 
-      <section className="w-full border-b p-4">
-        <h2 className="text-2xl font-bold mb-4">Lifecycle</h2>
-        <MutationLifecycle
-          status={mutation?.status}
-          timestamps={timestamps}
-        />
-      </section>
+        <Section title="Lifecycle">
+          <Card className="p-6">
+            <MutationLifecycle
+              status={mutation?.status}
+              timestamps={timestamps}
+            />
+          </Card>
+        </Section>
 
-      <div className="w-full border-b flex flex-col md:flex-row">
-        <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
-          <h2 className="text-2xl font-bold mb-2">Parameters</h2>
-          <code>type: {mutation?.type ?? "..."}</code>
-          {mutation ? <MutationParams mutation={mutation} /> : null}
-        </section>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card className="p-6 flex flex-col gap-3">
+            <h3 className="text-base font-semibold tracking-tight mb-1">
+              Parameters
+            </h3>
+            <Field label="Type">
+              <span className="font-medium">{mutation?.type ?? "…"}</span>
+            </Field>
+            {mutation ? <MutationParams mutation={mutation} /> : null}
+          </Card>
 
-        {mutation?.type === "marketOrder" ? (
-          <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
-            <h2 className="text-2xl font-bold mb-2">Resolution</h2>
-            <MarketOrderFills mutation={mutation} />
-          </section>
-        ) : null}
+          {mutation?.type === "marketOrder" ? (
+            <Card className="p-6 flex flex-col gap-3">
+              <h3 className="text-base font-semibold tracking-tight mb-1">
+                Resolution
+              </h3>
+              <MarketOrderFills mutation={mutation} />
+            </Card>
+          ) : null}
 
-        <section className="flex-1 p-4 flex flex-col gap-2">
-          <h2 className="text-2xl font-bold mb-2">Signature</h2>
-          <code>
-            account:{" "}
-            {mutation ? (
-              <Link
-                to={`/account/${mutation.accountSerial ?? mutation.account}`}
-                className={linkClass}
-              >
-                {mutation.accountSerial != null
-                  ? mutation.accountSerial
-                  : shortAddr(mutation.account)}
-              </Link>
-            ) : (
-              "..."
-            )}
-          </code>
-          <code>
-            requires:{" "}
-            {mutation == null ? (
-              "..."
-            ) : requiresNonce == null ? (
-              "none"
-            ) : requires.data ? (
-              <Link to={`/mutation/${requires.data.id}`} className={linkClass}>
-                {requires.data.id}
-              </Link>
-            ) : (
-              "..."
-            )}
-          </code>
-          <code>
-            type:{" "}
-            {mutation == null
-              ? "..."
-              : mutation.keyIndex == null
-                ? "root"
-                : keyType != null
-                  ? KEY_TYPE_LABELS[keyType]
-                  : "..."}
-          </code>
-        </section>
-      </div>
+          <Card className="p-6 flex flex-col gap-3">
+            <h3 className="text-base font-semibold tracking-tight mb-1">
+              Signature
+            </h3>
+            <Field label="Account" mono>
+              {mutation ? (
+                <Link
+                  to={`/account/${mutation.accountSerial ?? mutation.account}`}
+                  className={linkClass}
+                >
+                  {mutation.accountSerial != null
+                    ? `#${mutation.accountSerial}`
+                    : shortAddr(mutation.account)}
+                </Link>
+              ) : (
+                "…"
+              )}
+            </Field>
+            <Field label="Requires" mono>
+              {mutation == null ? (
+                "…"
+              ) : requiresNonce == null ? (
+                <span className="text-muted-foreground">none</span>
+              ) : requires.data ? (
+                <Link
+                  to={`/mutation/${requires.data.id}`}
+                  className={linkClass}
+                >
+                  {requires.data.id}
+                </Link>
+              ) : (
+                "…"
+              )}
+            </Field>
+            <Field label="Key">
+              {mutation == null
+                ? "…"
+                : mutation.keyIndex == null
+                  ? "root"
+                  : keyType != null
+                    ? KEY_TYPE_LABELS[keyType]
+                    : "…"}
+            </Field>
+          </Card>
+        </div>
 
-      <section className="w-full p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold mb-2">State changes</h2>
-        <code className="text-muted-foreground">coming soon</code>
-      </section>
-    </div>
+        <Section title="State changes">
+          <Card className="p-6">
+            <div className="text-muted-foreground text-sm">coming soon</div>
+          </Card>
+        </Section>
+      </PageContainer>
+    </PageShell>
   );
 }

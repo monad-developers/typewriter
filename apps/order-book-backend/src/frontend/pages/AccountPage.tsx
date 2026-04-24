@@ -14,6 +14,20 @@ import {
 } from "order-book-sdk";
 import type { Address } from "viem";
 import { MutationDescription } from "../components/MutationDescription";
+import {
+  PageContainer,
+  PageHeader,
+  PageShell,
+  Section,
+} from "../components/ui/page";
+import {
+  DataTable,
+  Empty,
+  TD,
+  TH,
+  THead,
+  TR,
+} from "../components/ui/table";
 import { useAccount } from "../hooks/useAccount";
 import { Link, useMatch } from "../lib/router";
 
@@ -36,14 +50,14 @@ const PERMISSIONS = [
   { bit: PERM_WITHDRAW, name: "withdrawal" },
 ];
 
-const KEY_COLUMNS = ["type", "permissions", "expiry", "publicKey"];
-const BALANCE_COLUMNS = ["asset", "amount"];
-const MUTATION_COLUMNS = ["id", "block", "bundle", "status", "description"];
+const KEY_COLUMNS = ["Type", "Permissions", "Expiry", "Public key"];
+const BALANCE_COLUMNS = ["Asset", "Amount"];
+const MUTATION_COLUMNS = ["ID", "Block", "Bundle", "Status", "Description"];
 
-const linkClass = "text-blue-500 hover:underline";
+const linkClass = "hover:underline decoration-1 underline-offset-2";
 
 function shortHex(hex: string) {
-  return `${hex.slice(0, 10)}...${hex.slice(-8)}`;
+  return `${hex.slice(0, 10)}…${hex.slice(-8)}`;
 }
 
 function displayPublicKey(keyType: number, publicKey: string) {
@@ -81,133 +95,96 @@ export function AccountPage() {
   const account = query.data;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
-      <section className="w-full border-b p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold">Account</h2>
-        <code>id: {account?.serial ?? "..."}</code>
-      </section>
+    <PageShell>
+      <PageContainer>
+        <PageHeader
+          eyebrow="Account"
+          title={account?.serial != null ? `#${account.serial}` : "…"}
+        />
 
-      <section className="w-full p-4">
-        <h2 className="text-2xl font-bold mb-4">Balances</h2>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="border-b">
-              {BALANCE_COLUMNS.map((col) => (
-                <th key={col} className="text-left py-2 pr-6">
-                  <code>{col}</code>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {account && Object.keys(account.balances).length === 0 ? (
-              <tr>
-                <td
-                  colSpan={BALANCE_COLUMNS.length}
-                  className="py-2 pr-6 text-muted-foreground"
-                >
-                  <code>No balances</code>
-                </td>
-              </tr>
-            ) : (
-              account &&
-              Object.entries(account.balances).map(([asset, amount]) => (
-                <tr key={asset} className="border-b last:border-0">
-                  <td className="py-2 pr-6">
-                    <code>{assetSymbol(asset as Address)}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{formatAssetAmount(asset as Address, amount)}</code>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </section>
+        <Section title="Balances">
+          <DataTable>
+            <THead>
+              <TR>
+                {BALANCE_COLUMNS.map((col) => (
+                  <TH key={col}>{col}</TH>
+                ))}
+              </TR>
+            </THead>
+            <tbody>
+              {account && Object.keys(account.balances).length === 0 ? (
+                <Empty colSpan={BALANCE_COLUMNS.length}>No balances</Empty>
+              ) : (
+                account &&
+                Object.entries(account.balances).map(([asset, amount]) => (
+                  <TR key={asset}>
+                    <TD className="font-medium">
+                      {assetSymbol(asset as Address)}
+                    </TD>
+                    <TD mono>{formatAssetAmount(asset as Address, amount)}</TD>
+                  </TR>
+                ))
+              )}
+            </tbody>
+          </DataTable>
+        </Section>
 
-      <section className="w-full p-4">
-        <h2 className="text-2xl font-bold mb-4">
-          Keys ({account?.keys.length ?? 0})
-        </h2>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="border-b">
-              {KEY_COLUMNS.map((col) => (
-                <th key={col} className="text-left py-2 pr-6">
-                  <code>{col}</code>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {account && account.keys.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={KEY_COLUMNS.length}
-                  className="py-2 pr-6 text-muted-foreground"
-                >
-                  <code>No keys</code>
-                </td>
-              </tr>
-            ) : (
-              account?.keys.map((k) => (
-                <tr key={k.publicKey} className="border-b last:border-0">
-                  <td className="py-2 pr-6">
-                    <code>{KEY_TYPE_LABELS[k.keyType]}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{formatPermissions(k.permissions)}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{formatExpiry(k.expiry)}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{displayPublicKey(k.keyType, k.publicKey)}</code>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </section>
+        <Section title="Keys" description={`${account?.keys.length ?? 0} authorized keys`}>
+          <DataTable>
+            <THead>
+              <TR>
+                {KEY_COLUMNS.map((col) => (
+                  <TH key={col}>{col}</TH>
+                ))}
+              </TR>
+            </THead>
+            <tbody>
+              {account && account.keys.length === 0 ? (
+                <Empty colSpan={KEY_COLUMNS.length}>No keys</Empty>
+              ) : (
+                account?.keys.map((k) => (
+                  <TR key={k.publicKey}>
+                    <TD className="font-medium">
+                      {KEY_TYPE_LABELS[k.keyType]}
+                    </TD>
+                    <TD className="text-sm">
+                      {formatPermissions(k.permissions)}
+                    </TD>
+                    <TD mono>{formatExpiry(k.expiry)}</TD>
+                    <TD mono className="text-muted-foreground">
+                      {displayPublicKey(k.keyType, k.publicKey)}
+                    </TD>
+                  </TR>
+                ))
+              )}
+            </tbody>
+          </DataTable>
+        </Section>
 
-      <section className="w-full p-4">
-        <h2 className="text-2xl font-bold mb-4">
-          Mutations ({account?.mutations.length ?? 0})
-        </h2>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="border-b">
-              {MUTATION_COLUMNS.map((col) => (
-                <th key={col} className="text-left py-2 pr-6">
-                  <code>{col}</code>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {account && account.mutations.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={MUTATION_COLUMNS.length}
-                  className="py-2 pr-6 text-muted-foreground"
-                >
-                  <code>No mutations</code>
-                </td>
-              </tr>
-            ) : (
-              account?.mutations.map((m) => (
-                <tr key={m.id} className="border-b last:border-0">
-                  <td className="py-2 pr-6">
-                    <code>
+        <Section
+          title="Mutations"
+          description={`${account?.mutations.length ?? 0} actions by this account`}
+        >
+          <DataTable>
+            <THead>
+              <TR>
+                {MUTATION_COLUMNS.map((col) => (
+                  <TH key={col}>{col}</TH>
+                ))}
+              </TR>
+            </THead>
+            <tbody>
+              {account && account.mutations.length === 0 ? (
+                <Empty colSpan={MUTATION_COLUMNS.length}>No mutations</Empty>
+              ) : (
+                account?.mutations.map((m) => (
+                  <TR key={m.id}>
+                    <TD mono>
                       <Link to={`/mutation/${m.id}`} className={linkClass}>
                         {m.id}
                       </Link>
-                    </code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>
+                    </TD>
+                    <TD mono>
                       {m.blockNumber ? (
                         <Link
                           to={`/block/${m.blockNumber}`}
@@ -216,28 +193,47 @@ export function AccountPage() {
                           {m.blockNumber}
                         </Link>
                       ) : (
-                        "..."
+                        <span className="text-muted-foreground">—</span>
                       )}
-                    </code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{m.bundleId ?? "..."}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{m.status}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>
+                    </TD>
+                    <TD mono>
+                      {m.bundleId ?? (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TD>
+                    <TD>
+                      <StatusPill status={m.status} />
+                    </TD>
+                    <TD className="text-sm">
                       <MutationDescription mutation={m} />
-                    </code>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </section>
+                    </TD>
+                  </TR>
+                ))
+              )}
+            </tbody>
+          </DataTable>
+        </Section>
+      </PageContainer>
+    </PageShell>
+  );
+}
 
-    </div>
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "verified" || status === "finalized"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "voted" || status === "proposed"
+        ? "bg-sky-50 text-sky-700"
+        : status === "accepted"
+          ? "bg-slate-100 text-slate-700"
+          : status === "pending"
+            ? "bg-amber-50 text-amber-700"
+            : "bg-muted text-muted-foreground";
+  return (
+    <span
+      className={`inline-flex items-center h-6 px-2 rounded-full text-xs font-medium ${tone}`}
+    >
+      {status}
+    </span>
   );
 }

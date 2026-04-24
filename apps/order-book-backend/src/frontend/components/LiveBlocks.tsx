@@ -9,11 +9,11 @@ import { useTps } from "../hooks/useTps";
 import { Link } from "../lib/router";
 
 function bundleColor(mutationCount: number): string {
-  if (mutationCount <= 1) return "bg-blue-200";
-  if (mutationCount <= 3) return "bg-blue-300";
-  if (mutationCount <= 5) return "bg-blue-400";
-  if (mutationCount <= 8) return "bg-blue-500";
-  return "bg-blue-600";
+  if (mutationCount <= 1) return "bg-slate-300";
+  if (mutationCount <= 3) return "bg-slate-400";
+  if (mutationCount <= 5) return "bg-slate-600";
+  if (mutationCount <= 8) return "bg-slate-800";
+  return "bg-slate-900";
 }
 
 const BLOCK_INNER_SLOTS = 8;
@@ -30,9 +30,9 @@ function BlockColumn({ block }: { block: LiveBlock }) {
   return (
     <Link
       to={`/block/${block.number}`}
-      className="border border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-gray-100"
+      className="border border-border rounded-xl bg-muted/30 hover:bg-muted hover:border-foreground/30 transition-all flex flex-col gap-2 h-full overflow-hidden p-3"
     >
-      <div className="text-xs text-gray-600 shrink-0 truncate">
+      <div className="text-xs font-mono tabular-nums text-muted-foreground shrink-0 truncate">
         {block.number}
       </div>
       <div
@@ -49,8 +49,8 @@ function BlockColumn({ block }: { block: LiveBlock }) {
               key={key}
               className={
                 bundle
-                  ? `${bundleColor(bundle.mutationCount)} rounded-sm`
-                  : "border border-dashed border-gray-300 rounded-sm"
+                  ? `${bundleColor(bundle.mutationCount)} rounded-[3px]`
+                  : "bg-muted/60 rounded-[3px]"
               }
             />
           );
@@ -66,8 +66,10 @@ function FormingBlockColumn({
   bundleSlots: (LiveBundle | null)[];
 }) {
   return (
-    <div className="border border-dashed border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2">
-      <div className="text-xs text-gray-600 shrink-0 truncate">accepted</div>
+    <div className="border border-dashed border-muted-foreground/40 rounded-xl bg-muted/20 flex flex-col gap-2 h-full overflow-hidden p-3">
+      <div className="text-xs text-muted-foreground shrink-0 truncate">
+        Accepted
+      </div>
       <div
         className="grid gap-1 flex-1 min-h-0"
         style={{
@@ -81,8 +83,8 @@ function FormingBlockColumn({
             key={i}
             className={
               bundle
-                ? `${bundleColor(bundle.mutations.length)} rounded-sm`
-                : "border border-dashed border-gray-300 rounded-sm"
+                ? `${bundleColor(bundle.mutations.length)} rounded-[3px]`
+                : "bg-muted/60 rounded-[3px]"
             }
           />
         ))}
@@ -108,15 +110,22 @@ export function LiveBlocks() {
   };
 
   return (
-    <div className="w-full flex flex-col gap-2 p-4">
-      <div className="text-xs uppercase tracking-wider text-gray-600 flex items-center gap-2">
-        <span>
-          activity stream{tps != null && <> ({tps.toFixed(1)} tps)</>}
-        </span>
+    <div className="w-full border-t border-border px-8 py-8">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-3">
+          <h3 className="text-base font-semibold tracking-tight">
+            Activity stream
+          </h3>
+          {tps != null && (
+            <span className="text-sm font-mono tabular-nums text-muted-foreground">
+              {tps.toFixed(1)} tps
+            </span>
+          )}
+        </div>
         {isPaused && (
           <span
             title="paused"
-            className="inline-flex items-center gap-0.5 text-gray-500 normal-case tracking-normal"
+            className="inline-flex items-center gap-0.5 text-muted-foreground"
           >
             <span className="inline-block w-[3px] h-[10px] bg-current" />
             <span className="inline-block w-[3px] h-[10px] bg-current" />
@@ -124,7 +133,7 @@ export function LiveBlocks() {
         )}
       </div>
       <div
-        className="border border-black p-3 grid gap-2"
+        className="grid gap-3"
         style={{
           height: 260,
           gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
@@ -135,7 +144,7 @@ export function LiveBlocks() {
           aria-label="landed blocks"
           onPointerEnter={() => handleHoverChange(true)}
           onPointerLeave={() => handleHoverChange(false)}
-          className="grid gap-2 h-full"
+          className="grid gap-3 h-full"
           style={{
             gridColumn: `span ${BLOCK_QUEUE_SIZE}`,
             gridTemplateColumns: `repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,

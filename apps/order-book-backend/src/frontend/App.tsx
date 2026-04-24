@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
+import { Button } from "./components/ui/button";
+import { PageShell } from "./components/ui/page";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
@@ -19,28 +21,42 @@ function Auth() {
   const isPending = signUp.isPending || demoSignUp.isPending;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
-      <main className="flex-1 flex items-center justify-center flex-col gap-6">
-        <div className="flex flex-col gap-3 items-center">
-          <button
-            type="button"
+    <PageShell>
+      <main className="flex-1 flex items-center justify-center px-6">
+        <div className="w-full max-w-sm flex flex-col items-stretch gap-6">
+          <div className="text-center">
+            <div className="flex items-center justify-center gap-2 mb-8">
+              <span className="w-2 h-2 rounded-full bg-foreground" />
+              <span className="text-sm font-medium tracking-tight">
+                Order Book
+              </span>
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight mb-2">
+              Sign in to trade
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Create a passkey. No seed phrase, no wallet.
+            </p>
+          </div>
+          <Button
+            variant="solid"
+            size="lg"
             disabled={isPending}
             onClick={() => signUp.mutate()}
-            className="px-6 py-2 border rounded hover:bg-gray-50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
-            {signUp.isPending ? "Creating..." : "Create passkey"}
-          </button>
+            {signUp.isPending ? "Creating…" : "Create passkey"}
+          </Button>
           <button
             type="button"
             disabled={isPending}
             onClick={() => demoSignUp.mutate()}
-            className="text-sm text-gray-400 hover:text-gray-600 underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-4 decoration-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {demoSignUp.isPending ? "Creating..." : "or try the demo"}
+            {demoSignUp.isPending ? "Creating…" : "or try the demo"}
           </button>
         </div>
       </main>
-    </div>
+    </PageShell>
   );
 }
 
@@ -51,13 +67,13 @@ function TradingApp() {
   if (!account) return <Auth />;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
+    <PageShell>
       <Header />
-      <main className="flex-1 p-4">
+      <main className="flex-1 px-8 py-8">
         <Exchange />
       </main>
       <LiveBlocks />
-    </div>
+    </PageShell>
   );
 }
 

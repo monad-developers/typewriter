@@ -8,11 +8,13 @@ export function Info({
   children: ReactNode;
 }) {
   return (
-    <aside className="border border-sky-200 border-l-4 border-l-sky-500 bg-sky-50 px-4 py-3 my-4">
-      <div className="text-xs uppercase tracking-wider font-semibold mb-1 text-sky-700">
+    <aside className="rounded-xl bg-muted/50 px-5 py-4 my-4 border border-border/60">
+      <div className="text-xs font-medium mb-1 text-muted-foreground">
         {title}
       </div>
-      <div className="leading-relaxed text-sm">{children}</div>
+      <div className="leading-relaxed text-[15px] text-foreground/90">
+        {children}
+      </div>
     </aside>
   );
 }

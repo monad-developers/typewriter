@@ -20,7 +20,7 @@ export function AboutOrderBook() {
     typeof window !== "undefined" ? `${window.location.origin}/api` : "/api";
   return (
     <div className="min-h-screen w-full flex flex-col">
-      <main className="max-w-3xl mx-auto px-6 py-10 flex flex-col gap-10 font-mono">
+      <main className="max-w-3xl mx-auto px-6 py-12 flex flex-col gap-12">
         {/* What is this */}
         <section>
           <h2 id="exchange" className="text-2xl font-bold mb-4 scroll-mt-24">
@@ -74,19 +74,19 @@ export function AboutOrderBook() {
           <p className="leading-relaxed mb-4">
             Measured per-op marginal gas for a realistic batch.
           </p>
-          <table className="w-full text-sm border border-black">
+          <table className="w-full text-sm border border-border">
             <thead>
-              <tr className="border-b border-black text-left">
+              <tr className="border-b border-border text-left">
                 <th className="px-3 py-2">Operation</th>
                 <th className="px-3 py-2">Gas</th>
               </tr>
             </thead>
             <tbody>
-              <tr className="border-b border-black">
+              <tr className="border-b border-border">
                 <td className="px-3 py-2 font-semibold">market order</td>
                 <td className="px-3 py-2">27k — 37k</td>
               </tr>
-              <tr className="border-b border-black">
+              <tr className="border-b border-border">
                 <td className="px-3 py-2 font-semibold">limit order</td>
                 <td className="px-3 py-2">47k — 69k</td>
               </tr>
@@ -102,7 +102,7 @@ export function AboutOrderBook() {
         <section>
           <Link
             to="/exchange"
-            className="block border rounded-lg overflow-hidden hover:border-black transition-colors"
+            className="block border rounded-lg overflow-hidden hover:border-foreground/40 transition-colors"
           >
             {/* TODO: replace with a real screenshot or OG preview asset */}
             <img
@@ -113,7 +113,7 @@ export function AboutOrderBook() {
             />
             <div className="px-4 py-3 border-t flex items-center justify-between">
               <span className="text-sm font-semibold">Open the exchange</span>
-              <span className="text-sm text-blue-500">/exchange →</span>
+              <span className="text-sm text-foreground hover:underline decoration-1 underline-offset-2">/exchange →</span>
             </div>
           </Link>
         </section>
@@ -175,7 +175,7 @@ struct Key {
             permissions.
           </p>
           <Info title="info">
-            <Link to="/exchange" className="hover:underline text-blue-500">
+            <Link to="/exchange" className="text-foreground hover:underline decoration-1 underline-offset-2">
               /exchange
             </Link>{" "}
             uses a session key: a non-extractable P-256{" "}
@@ -206,7 +206,7 @@ struct Key {
               href="https://eips.ethereum.org/EIPS/eip-4337"
               target="_blank"
               rel="noreferrer"
-              className="text-blue-500 hover:underline"
+              className="text-foreground hover:underline decoration-1 underline-offset-2"
             >
               ERC-4337
             </a>
@@ -261,7 +261,7 @@ struct Key {
           </p>
           <Link
             to="/exchange"
-            className="block border rounded-lg overflow-hidden hover:border-black transition-colors my-4"
+            className="block border rounded-lg overflow-hidden hover:border-foreground/40 transition-colors my-4"
           >
             {/* TODO: replace with a screenshot of a batch containing a cancel and a market order */}
             <img
@@ -272,7 +272,7 @@ struct Key {
             />
             <div className="px-4 py-3 border-t flex items-center justify-between">
               <span className="text-sm font-semibold">See a live batch</span>
-              <span className="text-sm text-blue-500">/exchange →</span>
+              <span className="text-sm text-foreground hover:underline decoration-1 underline-offset-2">/exchange →</span>
             </div>
           </Link>
 
@@ -372,7 +372,7 @@ function execute(Bundle[] calldata bundles) external {
               className="ml-14 flex flex-col items-center w-px"
               aria-hidden="true"
             >
-              <div className="border-l border-black h-8" />
+              <div className="border-l border-border h-8" />
               <div className="leading-none text-xs -mt-[0.25em]">▼</div>
             </div>
             {[
@@ -409,10 +409,10 @@ function execute(Bundle[] calldata bundles) external {
               const isTerminal = i === arr.length - 1;
               const isAccepted = step.state === "accepted";
               const badgeClass = isTerminal
-                ? "w-28 shrink-0 px-3 py-1.5 border border-black rounded text-sm font-semibold text-center bg-black text-white"
+                ? "w-28 shrink-0 px-3 py-1.5 rounded-full text-sm font-medium text-center bg-foreground text-background"
                 : isAccepted
-                  ? "w-28 shrink-0 px-3 py-1.5 border border-black rounded text-sm font-semibold text-center bg-white ring-2 ring-emerald-500 ring-offset-2"
-                  : "w-28 shrink-0 px-3 py-1.5 border border-black rounded text-sm font-semibold text-center bg-white";
+                  ? "w-28 shrink-0 px-3 py-1.5 border border-border rounded-full text-sm font-medium text-center bg-background ring-2 ring-emerald-500 ring-offset-2"
+                  : "w-28 shrink-0 px-3 py-1.5 border border-border rounded-full text-sm font-medium text-center bg-background";
               return (
                 <div key={step.state}>
                   <div className="flex items-center gap-4">
@@ -427,7 +427,7 @@ function execute(Bundle[] calldata bundles) external {
                         className="ml-14 flex flex-col items-center w-px"
                         aria-hidden="true"
                       >
-                        <div className="border-l border-black h-8" />
+                        <div className="border-l border-border h-8" />
                         <div className="leading-none text-xs -mt-[0.25em]">
                           ▼
                         </div>
@@ -448,35 +448,35 @@ function execute(Bundle[] calldata bundles) external {
           <h2 id="deployment" className="text-2xl font-bold mb-4 scroll-mt-24">
             Deployment
           </h2>
-          <table className="w-full text-sm border border-black mb-4">
+          <table className="w-full text-sm border border-border mb-4">
             <tbody>
-              <tr className="border-b border-black">
+              <tr className="border-b border-border">
                 <td className="px-3 py-2 font-semibold w-32">Chain</td>
                 <td className="px-3 py-2">
                   {CHAIN_NAME} (id {CHAIN_ID})
                 </td>
               </tr>
-              <tr className="border-b border-black">
+              <tr className="border-b border-border">
                 <td className="px-3 py-2 font-semibold">Exchange</td>
                 <td className="px-3 py-2 break-all">
                   <a
                     href={`https://testnet.monadscan.com/address/${EXCHANGE_ADDRESS}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-blue-500 hover:underline"
+                    className="text-foreground hover:underline decoration-1 underline-offset-2"
                   >
                     {EXCHANGE_ADDRESS}
                   </a>
                 </td>
               </tr>
-              <tr className="border-b border-black">
+              <tr className="border-b border-border">
                 <td className="px-3 py-2 font-semibold">API</td>
                 <td className="px-3 py-2 break-all">
                   <a
                     href={apiUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-blue-500 hover:underline"
+                    className="text-foreground hover:underline decoration-1 underline-offset-2"
                   >
                     {apiUrl}
                   </a>
@@ -489,7 +489,7 @@ function execute(Bundle[] calldata bundles) external {
                     href="https://github.com/monad-developers/tx-lifecycle-demo-app"
                     target="_blank"
                     rel="noreferrer"
-                    className="text-blue-500 hover:underline"
+                    className="text-foreground hover:underline decoration-1 underline-offset-2"
                   >
                     github.com/monad-developers/tx-lifecycle-demo-app
                   </a>
@@ -506,14 +506,14 @@ function execute(Bundle[] calldata bundles) external {
           </h3>
           <p className="leading-relaxed mb-4">
             Instrument creation is permissionless;{" "}
-            <Link to="/exchange" className="hover:underline text-blue-500">
+            <Link to="/exchange" className="text-foreground hover:underline decoration-1 underline-offset-2">
               /exchange
             </Link>{" "}
             displays a curated subset.
           </p>
-          <table className="w-full text-sm border border-black">
+          <table className="w-full text-sm border border-border">
             <thead>
-              <tr className="border-b border-black text-left">
+              <tr className="border-b border-border text-left">
                 <th className="px-3 py-2">ID</th>
                 <th className="px-3 py-2">Pair</th>
                 <th className="px-3 py-2">Base lot</th>
@@ -522,7 +522,7 @@ function execute(Bundle[] calldata bundles) external {
               </tr>
             </thead>
             <tbody>
-              <tr className="border-b border-black">
+              <tr className="border-b border-border">
                 <td className="px-3 py-2">0</td>
                 <td className="px-3 py-2 font-semibold">GOLD/USD</td>
                 <td className="px-3 py-2">0.0000000343597 GOLD</td>
