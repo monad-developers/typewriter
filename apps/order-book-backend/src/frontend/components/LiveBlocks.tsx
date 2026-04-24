@@ -30,9 +30,9 @@ function BlockColumn({ block }: { block: LiveBlock }) {
   return (
     <Link
       to={`/block/${block.number}`}
-      className="border border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-gray-100"
+      className="border border-black flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-zinc-50"
     >
-      <div className="text-xs text-gray-600 shrink-0 truncate">
+      <div className="text-sm shrink-0 truncate">
         {block.number}
       </div>
       <div
@@ -49,8 +49,8 @@ function BlockColumn({ block }: { block: LiveBlock }) {
               key={key}
               className={
                 bundle
-                  ? `${bundleColor(bundle.mutationCount)} rounded-sm`
-                  : "border border-dashed border-gray-300 rounded-sm"
+                  ? bundleColor(bundle.mutationCount)
+                  : "border border-dashed border-zinc-300"
               }
             />
           );
@@ -66,8 +66,8 @@ function FormingBlockColumn({
   bundleSlots: (LiveBundle | null)[];
 }) {
   return (
-    <div className="border border-dashed border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2">
-      <div className="text-xs text-gray-600 shrink-0 truncate">accepted</div>
+    <div className="border border-dashed border-black flex flex-col gap-1 h-full overflow-hidden p-2">
+      <div className="text-sm shrink-0 truncate">accepted</div>
       <div
         className="grid gap-1 flex-1 min-h-0"
         style={{
@@ -81,8 +81,8 @@ function FormingBlockColumn({
             key={i}
             className={
               bundle
-                ? `${bundleColor(bundle.mutations.length)} rounded-sm`
-                : "border border-dashed border-gray-300 rounded-sm"
+                ? bundleColor(bundle.mutations.length)
+                : "border border-dashed border-zinc-300"
             }
           />
         ))}
@@ -108,25 +108,28 @@ export function LiveBlocks() {
   };
 
   return (
-    <div className="w-full flex flex-col gap-2 p-4">
-      <div className="text-xs uppercase tracking-wider text-gray-600 flex items-center gap-2">
-        <span>
-          activity stream{tps != null && <> ({tps.toFixed(1)} tps)</>}
-        </span>
+    <div className="w-full flex flex-col gap-4 px-6 py-6">
+      <h2 className="text-lg font-semibold flex items-baseline gap-3">
+        <span>Activity stream</span>
+        {tps != null && (
+          <span className="text-base font-normal tabular-nums">
+            {tps.toFixed(1)} tps
+          </span>
+        )}
         {isPaused && (
           <span
             title="paused"
-            className="inline-flex items-center gap-0.5 text-gray-500 normal-case tracking-normal"
+            className="inline-flex items-center gap-0.5 text-zinc-500"
           >
             <span className="inline-block w-[3px] h-[10px] bg-current" />
             <span className="inline-block w-[3px] h-[10px] bg-current" />
           </span>
         )}
-      </div>
+      </h2>
       <div
-        className="border border-black p-3 grid gap-2"
+        className="grid gap-2"
         style={{
-          height: 260,
+          height: 240,
           gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
         }}
       >
