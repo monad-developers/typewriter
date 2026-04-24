@@ -7,7 +7,8 @@ import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
 import "./index.css";
-import { RouterProvider, useMatch } from "./lib/router";
+import { RouterProvider, useMatch, useRoute } from "./lib/router";
+import { AboutOrderBook } from "./pages/AboutOrderBook";
 import { AccountPage } from "./pages/AccountPage";
 import { BlockPage } from "./pages/BlockPage";
 import { MutationPage } from "./pages/MutationPage";
@@ -61,13 +62,15 @@ function TradingApp() {
 }
 
 function Routes() {
+  const path = useRoute();
   const blockMatch = useMatch("/block/:number");
   const mutationMatch = useMatch("/mutation/:id");
   const accountMatch = useMatch("/account/:id");
   if (blockMatch) return <BlockPage />;
   if (mutationMatch) return <MutationPage />;
   if (accountMatch) return <AccountPage />;
-  return <TradingApp />;
+  if (path === "/exchange") return <TradingApp />;
+  return <AboutOrderBook />;
 }
 
 export function App() {

@@ -41,6 +41,12 @@ export function Header() {
         </code>
       ) : null}
       <span className="flex-1" />
+      <Link
+        to="/"
+        className="text-sm font-mono text-blue-500 hover:underline"
+      >
+        docs
+      </Link>
       {serial != null ? (
         <Link
           to={`/account/${serial}`}
