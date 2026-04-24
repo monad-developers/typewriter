@@ -1,4 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
+import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import type { Hex } from "viem";
 import { keccak256 } from "viem";
 import {
@@ -33,7 +34,7 @@ export function useDemoSignUp() {
           expiry: 0,
           rootKeyType: 2,
           keyType: 0,
-          permissions: 0xff,
+          permissions: DEFAULT_NON_ROOT_PERMISSIONS,
           rootPublicKey: accountId,
           publicKey: sessionPublicKey,
         },
@@ -47,7 +48,7 @@ export function useDemoSignUp() {
           expiry: 0,
           rootKeyType: 2,
           keyType: 0,
-          permissions: 0xff,
+          permissions: DEFAULT_NON_ROOT_PERMISSIONS,
           rootPublicKey: accountId,
           publicKey: sessionPublicKey,
           keyId: 0,

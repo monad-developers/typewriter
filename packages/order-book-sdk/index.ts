@@ -6,6 +6,17 @@ export const WTIOIL: Address = "0x3333333333333333333333333333333333333333";
 
 export const ASSETS = [USD, GOLD, WTIOIL] as const;
 
+export const PERM_AUTHORIZE = 1 << 0;
+export const PERM_REVOKE = 1 << 1;
+export const PERM_CLOSE_ORDER = 1 << 2;
+export const PERM_LIMIT_ORDER = 1 << 3;
+export const PERM_MARKET_ORDER = 1 << 4;
+export const PERM_ADD_INSTRUMENT = 1 << 5;
+export const PERM_DEPOSIT = 1 << 6;
+export const PERM_WITHDRAW = 1 << 7;
+
+export const DEFAULT_NON_ROOT_PERMISSIONS = 0xff & ~(PERM_AUTHORIZE | PERM_REVOKE);
+
 export const INSTRUMENTS = {
   "GOLD/USD": {
     id: 0,

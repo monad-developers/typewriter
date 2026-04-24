@@ -34,12 +34,16 @@ import type { PrivateKeyAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import type * as schema from "./app-schema";
 import {
+  acceptMutation,
+  deletePendingMutation,
   insertBlock,
   insertBundle,
-  insertMutation,
+  insertPendingMutation,
   syncState,
+  updateBundleBlock,
+  updateBundleMutationStatuses,
+  updateBundleMutationsBlock,
   updateBundleStatus,
-  updateMutationStatus,
 } from "./db";
 import type { ResolvedMutation, State, TaggedMutation } from "./exchange";
 import {
@@ -73,22 +77,44 @@ export type BundleStatus =
   | "voted"
   | "finalized"
   | "verified";
-export type MutationEvent = ResolvedMutation & { id: number };
-export type BundleEvent = {
+export type BlockStatus =
+  | "accepted"
+  | "proposed"
+  | "voted"
+  | "finalized"
+  | "verified";
+
+type ResolvedMutationEvent = {
   id: number;
-  mutations: MutationEvent[];
-};
-type PendingBundle = {
-  bundle: BundleEvent;
-  proposedAt: bigint;
+  status: Exclude<MutationStatus, "pending" | "rejected">;
+} & ResolvedMutation;
+export type MutationEvent =
+  | ({ id: number; status: "pending" | "rejected" } & TaggedMutation)
+  | ResolvedMutationEvent;
+
+export type BundleEvent<includeMutations extends boolean = false> = {
+  id: number;
   status: BundleStatus;
+  position: number;
+  mutations: includeMutations extends true ? ResolvedMutationEvent[] : number[];
 };
-export type BlockEvent = { number: bigint; hash: Hex; timestamp: bigint };
+
+export type BlockEvent<includeMutations extends boolean = false> =
+  | {
+      status: "accepted";
+      bundles: includeMutations extends true ? BundleEvent<true>[] : number[];
+    }
+  | {
+      status: Exclude<BlockStatus, "accepted">;
+      number: bigint;
+      hash: Hex;
+      timestamp: bigint;
+      bundles: includeMutations extends true ? BundleEvent<true>[] : number[];
+    };
 
 export type RuntimeConfig = {
   initialState: State<bigint>;
   initialMutationId?: number;
-  initialBundleId?: number;
   chain: Chain;
   rpcUrl: string;
   account: PrivateKeyAccount;
@@ -98,26 +124,14 @@ export type RuntimeConfig = {
   db: BunSQLDatabase<typeof schema>;
 };
 
-type MutationEntry = {
-  id: number;
-  tagged: TaggedMutation;
-  deferred: Deferred.Deferred<{ id: number } & ResolvedMutation, unknown>;
-};
-
 export type RuntimeHandle = {
   readonly state: State<bigint>;
   execute<T extends TaggedMutation>(
     mutation: T,
   ): Promise<{ id: number } & Extract<ResolvedMutation, { type: T["type"] }>>;
-  on(
-    event: "mutation",
-    cb: (mutation: MutationEvent, status: MutationStatus) => void,
-  ): void;
-  on(
-    event: "bundle",
-    cb: (bundle: BundleEvent, status: BundleStatus) => void,
-  ): void;
-  on(event: "block", cb: (block: BlockEvent) => void): void;
+  on(event: "mutation", cb: (mutation: MutationEvent) => void): void;
+  on(event: "bundle", cb: (bundle: BundleEvent<true>) => void): void;
+  on(event: "block", cb: (block: BlockEvent<true>) => void): void;
   stream(event: "mutation"): ReadableStream;
   stream(event: "bundle"): ReadableStream;
   stream(event: "block"): ReadableStream;
@@ -378,6 +392,117 @@ function encodeMutationData(resolved: ResolvedMutation): Hex {
   }
 }
 
+function toStreamMutation(m: ResolvedMutationEvent) {
+  const base = {
+    id: m.id,
+    account: m.account,
+    keyIndex: m.type === MutationType.Initialize ? null : m.keyId,
+    nonce: m.type === MutationType.Initialize ? null : m.nonce,
+    deadline: m.deadline,
+  };
+  switch (m.type) {
+    case MutationType.Initialize:
+      return {
+        ...base,
+        type: "initialize" as const,
+        payload: {
+          id: m.id,
+          expiry: m.mutation.expiry,
+          rootKeyType: m.mutation.rootKeyType,
+          keyType: m.mutation.keyType,
+          permissions: m.mutation.permissions,
+          rootPublicKey: m.mutation.rootPublicKey,
+          publicKey: m.mutation.publicKey,
+        },
+      };
+    case MutationType.Authorize:
+      return {
+        ...base,
+        type: "authorize" as const,
+        payload: {
+          id: m.id,
+          expiry: m.mutation.expiry,
+          keyType: m.mutation.keyType,
+          permissions: m.mutation.permissions,
+          publicKey: m.mutation.publicKey,
+        },
+      };
+    case MutationType.Revoke:
+      return {
+        ...base,
+        type: "revoke" as const,
+        payload: { id: m.id, revokedKeyId: m.mutation.keyId },
+      };
+    case MutationType.CloseOrder:
+      return {
+        ...base,
+        type: "closeOrder" as const,
+        payload: { id: m.id, orderId: m.mutation.orderId },
+      };
+    case MutationType.LimitOrder:
+      return {
+        ...base,
+        type: "limitOrder" as const,
+        payload: {
+          id: m.id,
+          quantity: m.mutation.quantity,
+          instrumentId: m.mutation.instrumentId,
+          price: m.mutation.price,
+          bidOrAsk: m.mutation.bidOrAsk,
+        },
+      };
+    case MutationType.MarketOrder:
+      return {
+        ...base,
+        type: "marketOrder" as const,
+        payload: {
+          id: m.id,
+          quantity: m.mutation.quantity,
+          minReceivedQuantity: m.mutation.minReceivedQuantity,
+          instrumentId: m.mutation.instrumentId,
+          bidOrAsk: m.mutation.bidOrAsk,
+          fills: m.resolution.fills.map((f) => ({
+            quantity: f.quantity,
+            price: f.price,
+          })),
+        },
+      };
+    case MutationType.AddInstrument:
+      return {
+        ...base,
+        type: "addInstrument" as const,
+        payload: {
+          id: m.id,
+          instrumentId: m.mutation.instrumentId,
+          base: m.mutation.base,
+          quote: m.mutation.quote,
+          baseLotExp: m.mutation.baseLotExp,
+          quoteLotExp: m.mutation.quoteLotExp,
+        },
+      };
+    case MutationType.Deposit:
+      return {
+        ...base,
+        type: "deposit" as const,
+        payload: {
+          id: m.id,
+          asset: m.mutation.asset,
+          amount: m.mutation.amount,
+        },
+      };
+    case MutationType.Withdrawal:
+      return {
+        ...base,
+        type: "withdrawal" as const,
+        payload: {
+          id: m.id,
+          asset: m.mutation.asset,
+          amount: m.mutation.amount,
+        },
+      };
+  }
+}
+
 function encodeSignature(resolved: ResolvedMutation): {
   account: Hex;
   keyId: bigint;
@@ -401,7 +526,7 @@ function encodeSignature(resolved: ResolvedMutation): {
   };
 }
 
-function encodeBundleArg(mutations: MutationEvent[]) {
+function encodeBundleArg(mutations: ResolvedMutationEvent[]) {
   return {
     mutations: mutations.map((m) => m.type),
     mutationData: mutations.map(encodeMutationData),
@@ -409,7 +534,7 @@ function encodeBundleArg(mutations: MutationEvent[]) {
   };
 }
 
-function encodeBundles(bundles: BundleEvent[]): Hex {
+function encodeBundles(bundles: BundleEvent<true>[]): Hex {
   return encodeFunctionData({
     abi: EXCHANGE_ABI,
     functionName: "execute",
@@ -455,37 +580,43 @@ const BUNDLE_INTERVAL_MS = 50;
 
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const state = config.initialState;
-  const mutationQueue = Effect.runSync(Queue.unbounded<MutationEntry>());
-  const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
-  const pendingBundles = new Map<number, PendingBundle>();
+  const mutationQueue = Effect.runSync(
+    Queue.unbounded<
+      Extract<MutationEvent, { status: "pending" | "rejected" }> & {
+        deferred: Deferred.Deferred<MutationEvent, unknown>;
+      }
+    >(),
+  );
+  const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent<true>>());
+  let unverifiedBlocks: Extract<
+    BlockEvent<true>,
+    { status: Exclude<BlockStatus, "accepted"> }
+  >[] = [];
+
   let nextId = config.initialMutationId ?? 0;
-  let nextBundleId = config.initialBundleId ?? 0;
+  let bundlePosition = 0;
 
-  const mutationListeners = new Set<
-    (mutation: MutationEvent, status: MutationStatus) => void
-  >();
-  const bundleListeners = new Set<
-    (bundle: BundleEvent, status: BundleStatus) => void
-  >();
-  const blockListeners = new Set<(block: BlockEvent) => void>();
+  const mutationListeners = new Set<(mutation: MutationEvent) => void>();
+  const bundleListeners = new Set<(bundle: BundleEvent<true>) => void>();
+  const blockListeners = new Set<(block: BlockEvent<true>) => void>();
 
-  function emitMutation(mutation: MutationEvent, status: MutationStatus) {
+  function emitMutation(mutation: MutationEvent) {
     for (const cb of mutationListeners) {
       try {
-        cb(mutation, status);
+        cb(mutation);
       } catch {}
     }
   }
 
-  function emitBundle(bundle: BundleEvent, status: BundleStatus) {
+  function emitBundle(bundle: BundleEvent<true>) {
     for (const cb of bundleListeners) {
       try {
-        cb(bundle, status);
+        cb(bundle);
       } catch {}
     }
   }
 
-  function emitBlock(block: BlockEvent) {
+  function emitBlock(block: BlockEvent<true>) {
     for (const cb of blockListeners) {
       try {
         cb(block);
@@ -527,96 +658,138 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   };
 
   const bundle = Effect.gen(function* () {
-    const batch = Chunk.toArray(yield* Queue.takeAll(mutationQueue));
-    if (batch.length === 0) return;
+    const position = bundlePosition++;
 
-    const rejections: { entry: MutationEntry; error: unknown }[] = [];
-    let survivors = batch;
-    let resolved: ResolvedMutation[] = [];
+    const queued = Chunk.toArray(yield* Queue.takeAll(mutationQueue));
+    const deferredById = new Map(queued.map((m) => [m.id, m.deferred]));
+    let mutations = queued as Extract<
+      MutationEvent,
+      { status: "pending" | "rejected" }
+    >[];
+    let resolvedMutations: ResolvedMutationEvent[] = [];
+    const rejections: {
+      mutation: Extract<MutationEvent, { status: "pending" | "rejected" }>;
+      error: unknown;
+    }[] = [];
 
-    while (survivors.length > 0) {
-      resolved = resolveAndOrderMutations(
-        state,
-        survivors.map((e) => e.tagged),
-      );
+    if (mutations.length === 0) return;
+
+    while (mutations.length > 0) {
+      // @ts-ignore hack because ids are passed through
+      resolvedMutations = resolveAndOrderMutations(state, mutations);
       const clone = structuredClone(state);
-      let culprit: MutationEntry | null = null;
-      let culpritErr: unknown;
-      for (const r of resolved) {
+      let failedMutation: MutationEvent | null = null;
+      let error: unknown;
+      for (const resolvedMutation of resolvedMutations) {
         try {
-          applyMutation(clone, r);
-        } catch (err) {
-          culprit = survivors.find((e) => e.tagged.mutation === r.mutation)!;
-          culpritErr = err;
+          applyMutation(clone, resolvedMutation);
+        } catch (_error) {
+          failedMutation = resolvedMutation;
+          resolvedMutations = resolvedMutations.filter(
+            (m) => m.id !== resolvedMutation.id,
+          );
+          mutations = mutations.filter((m) => m.id !== resolvedMutation.id);
+          error = _error;
           break;
         }
       }
-      if (culprit === null) break;
-      rejections.push({ entry: culprit, error: culpritErr });
-      survivors = survivors.filter((e) => e !== culprit);
+      if (failedMutation === null) break;
+      // @ts-ignore
+      rejections.push({ mutation: failedMutation, error });
     }
-    if (survivors.length === 0) resolved = [];
 
-    for (const { entry, error } of rejections) {
-      yield* Deferred.fail(entry.deferred, error);
-      emitMutation(
-        { id: entry.id, ...entry.tagged } as MutationEvent,
-        "rejected",
-      );
+    // state, status, deferred, db, emit
+
+    for (const mutation of resolvedMutations) {
+      applyMutation(state, mutation);
+      if (mutation.type !== MutationType.Initialize) {
+        const nonceKey = BigInt(mutation.nonce) >> 64n;
+        incrementNonce(getAccount(state, mutation.account), nonceKey);
+      }
+    }
+
+    for (const { mutation } of rejections) {
+      mutation.status = "rejected";
+    }
+
+    for (const mutation of resolvedMutations) {
+      mutation.status = "accepted";
+    }
+
+    for (const { mutation, error } of rejections) {
+      yield* Deferred.fail(deferredById.get(mutation.id)!, error);
+
       yield* Effect.logInfo("mutation rejected").pipe(
         Effect.annotateLogs({
-          mutationId: entry.id,
-          type: MutationType[entry.tagged.type],
+          mutationId: mutation.id,
+          type: MutationType[mutation.type],
           error: error instanceof Error ? error.message : String(error),
         }),
       );
     }
 
-    const mutationEvents: MutationEvent[] = [];
-    for (const r of resolved) {
-      applyMutation(state, r);
-      if (r.type !== MutationType.Initialize) {
-        const nonceKey = BigInt(r.nonce) >> 64n;
-        incrementNonce(getAccount(state, r.account), nonceKey);
-      }
-      const entry = survivors.find((e) => e.tagged.mutation === r.mutation)!;
-      yield* Deferred.succeed(entry.deferred, { id: entry.id, ...r });
-      mutationEvents.push({ id: entry.id, ...r });
+    for (const mutation of resolvedMutations) {
+      yield* Deferred.succeed(deferredById.get(mutation.id)!, mutation);
     }
 
-    if (mutationEvents.length === 0) return;
+    for (const { mutation } of rejections) {
+      yield* Effect.tryPromise({
+        try: () => deletePendingMutation(config.db, mutation.id),
+        catch: (e) => e as Error,
+      });
+    }
 
-    const bundleId = nextBundleId++;
-    const bundleEvent: BundleEvent = {
-      id: bundleId,
-      mutations: mutationEvents,
-    };
-
-    yield* Effect.tryPromise({
-      try: async () => {
-        await insertBundle(config.db, bundleId);
-        for (const m of mutationEvents) {
-          await insertMutation(config.db, m, bundleId);
-          await syncState(config.db, state, m);
-        }
-      },
+    const bundleId = yield* Effect.tryPromise({
+      try: () =>
+        config.db.transaction(async (tx) => {
+          const bundleId = await insertBundle(
+            tx as unknown as typeof config.db,
+          );
+          for (const mutation of resolvedMutations) {
+            const calldata = encodeMutationData(mutation);
+            await acceptMutation(
+              tx as unknown as typeof config.db,
+              mutation,
+              bundleId,
+              calldata,
+            );
+            await syncState(tx as unknown as typeof config.db, state, mutation);
+          }
+          return bundleId;
+        }),
       catch: (error) => error as Error,
     });
+
+    emitBundle({
+      id: bundleId,
+      status: "accepted",
+      position,
+      mutations: resolvedMutations,
+    });
+
+    for (const { mutation } of rejections) {
+      emitMutation(mutation);
+    }
+
+    for (const mutation of resolvedMutations) {
+      emitMutation(mutation);
+    }
 
     yield* Effect.logInfo("bundle accepted").pipe(
       Effect.annotateLogs({
         bundleId,
-        mutations: mutationEvents.map((m) => m.id),
-        mutationCount: mutationEvents.length,
+        position,
+        mutations: resolvedMutations.map((m) => m.id),
+        mutationCount: resolvedMutations.length,
       }),
     );
 
-    for (const mutation of mutationEvents) {
-      emitMutation(mutation, "accepted");
-    }
-    emitBundle(bundleEvent, "accepted");
-
-    yield* Queue.offer(submitQueue, bundleEvent);
+    yield* Queue.offer(submitQueue, {
+      id: bundleId,
+      status: "accepted",
+      position,
+      mutations: resolvedMutations,
+    });
   });
 
   const bundleProgram = Effect.repeat(
@@ -625,8 +798,12 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   ).pipe(Effect.orDie);
 
   const submit = Effect.gen(function* () {
+    bundlePosition = 0;
+
     const bundles = Chunk.toArray(yield* Queue.takeAll(submitQueue));
     if (bundles.length === 0) return;
+
+    emitBlock({ status: "accepted", bundles });
 
     const rpcRetry = Effect.retry({
       times: 3,
@@ -701,37 +878,64 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       catch: (error) => error as SendRawTransactionSyncErrorType,
     }).pipe(rpcRetry);
 
-    if (receipt.transactionHash !== transactionHash) {
-      yield* Effect.die(
-        new Error(
-          `transaction hash mismatch: expected ${transactionHash} got ${receipt.transactionHash}`,
-        ),
-      );
+    const block = yield* Effect.tryPromise({
+      try: () => publicClient.getBlock({ blockHash: receipt.blockHash }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    for (const bundle of bundles) {
+      for (const mutation of bundle.mutations) {
+        mutation.status = "proposed";
+      }
+      bundle.status = "proposed";
     }
 
     yield* Effect.tryPromise({
-      try: async () => {
-        for (const bundleEvent of bundles) {
-          await updateBundleStatus(config.db, bundleEvent.id, "proposed");
-          for (const m of bundleEvent.mutations) {
-            await updateMutationStatus(config.db, m.type, m.id, "proposed");
+      try: () =>
+        config.db.transaction(async (tx) => {
+          const db = tx as unknown as typeof config.db;
+          await insertBlock(db, {
+            number: block.number,
+            hash: block.hash,
+            timestamp: block.timestamp,
+          });
+          for (const bundleEvent of bundles) {
+            await updateBundleBlock(
+              db,
+              bundleEvent.id,
+              block.number,
+              transactionHash,
+            );
+            await updateBundleStatus(db, bundleEvent.id, "proposed");
+            await updateBundleMutationsBlock(db, bundleEvent.id, block.number);
+            await updateBundleMutationStatuses(db, bundleEvent.id, "proposed");
           }
-        }
-      },
+        }),
       catch: (error) => error as Error,
     });
 
-    for (const bundleEvent of bundles) {
-      for (const mutation of bundleEvent.mutations) {
-        emitMutation(mutation, "proposed");
+    emitBlock({
+      status: "proposed",
+      bundles,
+      number: block.number,
+      hash: block.hash,
+      timestamp: block.timestamp,
+    });
+
+    for (const bundle of bundles) {
+      emitBundle(bundle);
+      for (const mutation of bundle.mutations) {
+        emitMutation(mutation);
       }
-      emitBundle(bundleEvent, "proposed");
-      pendingBundles.set(bundleEvent.id, {
-        bundle: bundleEvent,
-        proposedAt: receipt.blockNumber,
-        status: "proposed",
-      });
     }
+
+    unverifiedBlocks.push({
+      status: "proposed",
+      bundles,
+      number: block.number,
+      hash: block.hash,
+      timestamp: block.timestamp,
+    });
 
     yield* Effect.logInfo("bundles proposed").pipe(
       Effect.annotateLogs({
@@ -761,71 +965,74 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         schedule: Schedule.spaced(Duration.millis(200)),
       }),
     );
+
     if (block.number === null || block.number <= lastBlockNumber) return;
     lastBlockNumber = block.number;
 
-    const blockEvent: BlockEvent = {
-      number: block.number,
-      hash: block.hash as Hex,
-      timestamp: block.timestamp,
-    };
+    for (const blockEvent of unverifiedBlocks.filter(
+      (b) => b.number < block.number,
+    )) {
+      const confirmations = block.number - blockEvent.number;
+      let isStatusUpdated = false;
 
-    yield* Effect.tryPromise({
-      try: () => insertBlock(config.db, blockEvent),
-      catch: (error) => error as Error,
-    });
-
-    yield* Effect.logDebug("block").pipe(
-      Effect.annotateLogs({
-        number: block.number.toString(),
-        hash: block.hash,
-      }),
-    );
-    emitBlock(blockEvent);
-
-    for (const [id, entry] of pendingBundles) {
-      const confirmations = block.number - entry.proposedAt;
-      let nextStatus: BundleStatus | null = null;
-
-      if (confirmations >= 4n && entry.status !== "verified") {
-        nextStatus = "verified";
+      if (confirmations >= 5n && blockEvent.status !== "verified") {
+        blockEvent.status = "verified";
+        isStatusUpdated = true;
       } else if (
         confirmations >= 2n &&
-        entry.status !== "finalized" &&
-        entry.status !== "verified"
+        blockEvent.status !== "finalized" &&
+        blockEvent.status !== "verified"
       ) {
-        nextStatus = "finalized";
-      } else if (confirmations >= 1n && entry.status === "proposed") {
-        nextStatus = "voted";
+        blockEvent.status = "finalized";
+        isStatusUpdated = true;
+      } else if (
+        confirmations >= 1n &&
+        blockEvent.status !== "voted" &&
+        blockEvent.status !== "finalized" &&
+        blockEvent.status !== "verified"
+      ) {
+        blockEvent.status = "voted";
+        isStatusUpdated = true;
       }
 
-      if (nextStatus === null) continue;
+      if (isStatusUpdated === false) continue;
 
-      const status = nextStatus;
+      for (const bundle of blockEvent.bundles) {
+        for (const mutation of bundle.mutations) {
+          mutation.status = blockEvent.status;
+        }
+        bundle.status = blockEvent.status;
+      }
+
       yield* Effect.tryPromise({
-        try: async () => {
-          await updateBundleStatus(config.db, id, status);
-          for (const m of entry.bundle.mutations) {
-            await updateMutationStatus(config.db, m.type, m.id, status);
-          }
-        },
+        try: () =>
+          config.db.transaction(async (tx) => {
+            const db = tx as unknown as typeof config.db;
+            for (const bundle of blockEvent.bundles) {
+              await updateBundleStatus(db, bundle.id, bundle.status);
+              await updateBundleMutationStatuses(db, bundle.id, bundle.status);
+            }
+          }),
         catch: (error) => error as Error,
       });
 
-      for (const mutation of entry.bundle.mutations) {
-        emitMutation(mutation, status as MutationStatus);
-      }
-      emitBundle(entry.bundle, status);
-      entry.status = status;
+      emitBlock({
+        status: blockEvent.status,
+        bundles: blockEvent.bundles,
+        number: blockEvent.number,
+        hash: blockEvent.hash,
+        timestamp: blockEvent.timestamp,
+      });
 
-      yield* Effect.logDebug("bundle status updated").pipe(
-        Effect.annotateLogs({ bundleId: id, status }),
-      );
-
-      if (status === "verified") {
-        pendingBundles.delete(id);
+      for (const bundle of blockEvent.bundles) {
+        emitBundle(bundle);
+        for (const mutation of bundle.mutations) {
+          emitMutation(mutation);
+        }
       }
     }
+
+    unverifiedBlocks = unverifiedBlocks.filter((b) => b.status !== "verified");
   }).pipe(Effect.withLogSpan("watch"));
 
   const watchProgram = Effect.repeat(
@@ -873,12 +1080,18 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         });
 
         const id = nextId++;
-        const deferred = yield* Deferred.make<
-          { id: number } & ResolvedMutation,
-          unknown
-        >();
-        yield* Queue.offer(mutationQueue, { id, tagged: mutation, deferred });
-        emitMutation({ id, ...mutation } as MutationEvent, "pending");
+        yield* Effect.tryPromise({
+          try: () => insertPendingMutation(config.db, mutation, id),
+          catch: (error) => error as Error,
+        });
+        const deferred = yield* Deferred.make<MutationEvent, unknown>();
+        yield* Queue.offer(mutationQueue, {
+          id,
+          status: "pending",
+          ...mutation,
+          deferred,
+        });
+        emitMutation({ id, status: "pending", ...mutation });
 
         yield* Effect.logInfo("queued mutation").pipe(
           Effect.annotateLogs({
@@ -888,10 +1101,9 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           }),
         );
 
-        return (yield* Deferred.await(deferred)) as { id: number } & Extract<
-          ResolvedMutation,
-          { type: T["type"] }
-        >;
+        return (yield* Deferred.await(deferred)) as unknown as {
+          id: number;
+        } & Extract<ResolvedMutation, { type: T["type"] }>;
       }).pipe(
         Effect.tapError((error) => {
           console.error(error);
@@ -914,9 +1126,9 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     );
   }
 
-  type MutationCb = (mutation: MutationEvent, status: MutationStatus) => void;
-  type BundleCb = (bundle: BundleEvent, status: BundleStatus) => void;
-  type BlockCb = (block: BlockEvent) => void;
+  type MutationCb = (mutation: MutationEvent) => void;
+  type BundleCb = (bundle: BundleEvent<true>) => void;
+  type BlockCb = (block: BlockEvent<true>) => void;
 
   function on(event: "mutation", cb: MutationCb): void;
   function on(event: "bundle", cb: BundleCb): void;
@@ -928,6 +1140,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     if (event === "mutation") mutationListeners.add(cb as MutationCb);
     else if (event === "bundle") bundleListeners.add(cb as BundleCb);
     else if (event === "block") blockListeners.add(cb as BlockCb);
+  }
+
+  function off(
+    event: "mutation" | "bundle" | "block",
+    cb: MutationCb | BundleCb | BlockCb,
+  ): void {
+    if (event === "mutation") mutationListeners.delete(cb as MutationCb);
+    else if (event === "bundle") bundleListeners.delete(cb as BundleCb);
+    else if (event === "block") blockListeners.delete(cb as BlockCb);
   }
 
   const encoder = new TextEncoder();
@@ -942,35 +1163,69 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   function stream(event: "bundle"): ReadableStream;
   function stream(event: "block"): ReadableStream;
   function stream(event: "mutation" | "bundle" | "block"): ReadableStream {
+    let cb: MutationCb | BundleCb | BlockCb;
+    let keepalive: ReturnType<typeof setInterval>;
     return new ReadableStream({
       start(controller) {
+        const enqueue = (chunk: Uint8Array) => {
+          try {
+            controller.enqueue(chunk);
+          } catch {}
+        };
         if (event === "mutation") {
-          on("mutation", (mutation, status) => {
-            controller.enqueue(
-              sse("mutation", { id: mutation.id, type: mutation.type, status }),
+          cb = ((mutation) => {
+            enqueue(
+              sse("mutation", {
+                id: mutation.id,
+                type: mutation.type,
+                status: mutation.status,
+              }),
             );
-          });
+          }) satisfies MutationCb;
+          on("mutation", cb as MutationCb);
         } else if (event === "bundle") {
-          on("bundle", (bundle, status) => {
-            controller.enqueue(
+          cb = ((bundle) => {
+            enqueue(
               sse("bundle", {
                 id: bundle.id,
-                status,
-                mutationIds: bundle.mutations.map((m) => m.id),
+                status: bundle.status,
+                position: bundle.position,
+                mutations: bundle.mutations.map(toStreamMutation),
               }),
             );
-          });
-        } else if (event === "block") {
-          on("block", (block) => {
-            controller.enqueue(
-              sse("block", {
-                number: block.number,
-                hash: block.hash,
-                timestamp: block.timestamp,
-              }),
-            );
-          });
+          }) satisfies BundleCb;
+          on("bundle", cb as BundleCb);
+        } else {
+          cb = ((block) => {
+            const payload =
+              block.status === "accepted"
+                ? {
+                    status: block.status,
+                    bundles: block.bundles.map((b) => b.id),
+                  }
+                : {
+                    status: block.status,
+                    number: block.number,
+                    hash: block.hash,
+                    timestamp: block.timestamp,
+                    bundles: block.bundles.map((b) => ({
+                      id: b.id,
+                      position: b.position,
+                      mutationCount: b.mutations.length,
+                    })),
+                  };
+            enqueue(sse("block", payload));
+          }) satisfies BlockCb;
+          on("block", cb as BlockCb);
         }
+        keepalive = setInterval(
+          () => enqueue(encoder.encode(": ping\n\n")),
+          15000,
+        );
+      },
+      cancel() {
+        clearInterval(keepalive);
+        off(event, cb);
       },
     });
   }

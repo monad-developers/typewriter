@@ -3,6 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 type PriceResponse = {
   instrumentId: number;
   price: number | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
 };
 
 export function usePrice(instrumentId: number) {

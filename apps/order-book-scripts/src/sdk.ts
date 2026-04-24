@@ -1,5 +1,5 @@
 import type { State } from "order-book-backend/src/exchange";
-import { EIP712_TYPES } from "order-book-sdk";
+import { DEFAULT_NON_ROOT_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
 import * as Address from "ox/Address";
 import type * as Hex from "ox/Hex";
 import * as Secp256k1 from "ox/Secp256k1";
@@ -127,7 +127,7 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
       expiry: 0,
       rootKeyType: 2,
       keyType: 2,
-      permissions: 0xff,
+      permissions: DEFAULT_NON_ROOT_PERMISSIONS,
       rootPublicKey: accountHex,
       publicKey: accountHex,
     };
