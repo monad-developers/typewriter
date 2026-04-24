@@ -12,9 +12,18 @@
 @layer base {
   :root {
     @apply font-sans;
+    font-feature-settings:
+      "cv02",
+      "cv03",
+      "cv04",
+      "cv11";
   }
 
   body {
-    @apply min-w-[320px] min-h-screen m-0 bg-background text-foreground;
+    @apply min-w-[320px] min-h-screen m-0 bg-background text-foreground antialiased;
+  }
+
+  a {
+    color: inherit;
   }
 }
