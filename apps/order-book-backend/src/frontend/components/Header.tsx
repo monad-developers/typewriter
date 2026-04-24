@@ -4,6 +4,7 @@ import { useAccount } from "../hooks/useAccount";
 import { useBalances } from "../hooks/useBalances";
 import { useDepositMutation } from "../hooks/useDepositMutation";
 import { Link } from "../lib/router";
+import { Button } from "./ui/button";
 
 export function Header() {
   const { account, setAccount } = useAccountContext();
@@ -23,45 +24,44 @@ export function Header() {
   }
 
   return (
-    <header className="w-full border-b px-4 py-3 flex items-center gap-6">
-      <code className="text-sm">balance: ${balance.toFixed(2)}</code>
-      <button
-        type="button"
-        onClick={() => void handleDeposit()}
-        disabled={!account || depositMutation.isPending}
-        className="border px-3 py-1 text-sm font-mono rounded disabled:opacity-50"
-      >
-        {depositMutation.isPending ? "depositing..." : "deposit"}
-      </button>
-      {depositMutation.error ? (
-        <code className="text-sm text-red-600">
-          {depositMutation.error instanceof Error
-            ? depositMutation.error.message
-            : "Deposit failed"}
-        </code>
-      ) : null}
-      <span className="flex-1" />
+    <header className="w-full border-b border-border px-6 h-12 flex items-center gap-4">
       <Link
         to="/"
-        className="text-sm font-mono text-blue-500 hover:underline"
+        className="text-[11px] uppercase tracking-[0.18em] font-semibold hover:text-sky-700 transition-colors"
       >
-        docs
+        order book
       </Link>
+      <span className="h-4 w-px bg-border" />
+      <div className="flex items-baseline gap-1.5 text-sm">
+        <span className="text-muted-foreground text-xs">balance</span>
+        <span className="tabular-nums">${balance.toFixed(2)}</span>
+      </div>
+      <Button
+        size="sm"
+        onClick={() => void handleDeposit()}
+        disabled={!account || depositMutation.isPending}
+      >
+        {depositMutation.isPending ? "depositing…" : "deposit"}
+      </Button>
+      {depositMutation.error ? (
+        <span className="text-sm text-red-600">
+          {depositMutation.error instanceof Error
+            ? depositMutation.error.message
+            : "deposit failed"}
+        </span>
+      ) : null}
+      <span className="flex-1" />
       {serial != null ? (
         <Link
           to={`/account/${serial}`}
-          className="text-sm font-mono text-blue-500 hover:underline"
+          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
-          view account
+          account #{serial}
         </Link>
       ) : null}
-      <button
-        type="button"
-        onClick={() => void setAccount(null)}
-        className="border px-3 py-1 text-sm font-mono rounded hover:bg-gray-50"
-      >
+      <Button size="sm" variant="ghost" onClick={() => void setAccount(null)}>
         sign out
-      </button>
+      </Button>
     </header>
   );
 }

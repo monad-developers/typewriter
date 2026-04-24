@@ -9,11 +9,11 @@ import { useTps } from "../hooks/useTps";
 import { Link } from "../lib/router";
 
 function bundleColor(mutationCount: number): string {
-  if (mutationCount <= 1) return "bg-blue-200";
-  if (mutationCount <= 3) return "bg-blue-300";
-  if (mutationCount <= 5) return "bg-blue-400";
-  if (mutationCount <= 8) return "bg-blue-500";
-  return "bg-blue-600";
+  if (mutationCount <= 1) return "bg-sky-200";
+  if (mutationCount <= 3) return "bg-sky-300";
+  if (mutationCount <= 5) return "bg-sky-400";
+  if (mutationCount <= 8) return "bg-sky-500";
+  return "bg-sky-600";
 }
 
 const BLOCK_INNER_SLOTS = 8;
@@ -30,9 +30,9 @@ function BlockColumn({ block }: { block: LiveBlock }) {
   return (
     <Link
       to={`/block/${block.number}`}
-      className="border border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-gray-100"
+      className="border border-border rounded-[3px] bg-muted/40 hover:bg-muted transition-colors flex flex-col gap-1.5 h-full overflow-hidden p-2"
     >
-      <div className="text-xs text-gray-600 shrink-0 truncate">
+      <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground shrink-0 truncate tabular-nums">
         {block.number}
       </div>
       <div
@@ -49,8 +49,8 @@ function BlockColumn({ block }: { block: LiveBlock }) {
               key={key}
               className={
                 bundle
-                  ? `${bundleColor(bundle.mutationCount)} rounded-sm`
-                  : "border border-dashed border-gray-300 rounded-sm"
+                  ? `${bundleColor(bundle.mutationCount)} rounded-[2px]`
+                  : "border border-dashed border-border rounded-[2px]"
               }
             />
           );
@@ -66,8 +66,10 @@ function FormingBlockColumn({
   bundleSlots: (LiveBundle | null)[];
 }) {
   return (
-    <div className="border border-dashed border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2">
-      <div className="text-xs text-gray-600 shrink-0 truncate">accepted</div>
+    <div className="border border-dashed border-muted-foreground/60 rounded-[3px] bg-muted/40 flex flex-col gap-1.5 h-full overflow-hidden p-2">
+      <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground shrink-0 truncate">
+        accepted
+      </div>
       <div
         className="grid gap-1 flex-1 min-h-0"
         style={{
@@ -81,8 +83,8 @@ function FormingBlockColumn({
             key={i}
             className={
               bundle
-                ? `${bundleColor(bundle.mutations.length)} rounded-sm`
-                : "border border-dashed border-gray-300 rounded-sm"
+                ? `${bundleColor(bundle.mutations.length)} rounded-[2px]`
+                : "border border-dashed border-border rounded-[2px]"
             }
           />
         ))}
@@ -108,15 +110,20 @@ export function LiveBlocks() {
   };
 
   return (
-    <div className="w-full flex flex-col gap-2 p-4">
-      <div className="text-xs uppercase tracking-wider text-gray-600 flex items-center gap-2">
-        <span>
-          activity stream{tps != null && <> ({tps.toFixed(1)} tps)</>}
-        </span>
+    <div className="w-full border-t border-border px-6 py-5">
+      <div className="mb-3 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold">activity stream</span>
+          {tps != null && (
+            <span className="tabular-nums normal-case tracking-normal">
+              {tps.toFixed(1)} tps
+            </span>
+          )}
+        </div>
         {isPaused && (
           <span
             title="paused"
-            className="inline-flex items-center gap-0.5 text-gray-500 normal-case tracking-normal"
+            className="inline-flex items-center gap-0.5 text-muted-foreground normal-case tracking-normal"
           >
             <span className="inline-block w-[3px] h-[10px] bg-current" />
             <span className="inline-block w-[3px] h-[10px] bg-current" />
@@ -124,9 +131,9 @@ export function LiveBlocks() {
         )}
       </div>
       <div
-        className="border border-black p-3 grid gap-2"
+        className="border border-border rounded-[4px] p-3 grid gap-2 bg-background"
         style={{
-          height: 260,
+          height: 240,
           gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
         }}
       >

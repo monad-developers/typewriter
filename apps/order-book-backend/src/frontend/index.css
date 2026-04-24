@@ -11,10 +11,16 @@
 
 @layer base {
   :root {
-    @apply font-sans;
+    @apply font-mono;
+    --link: oklch(0.5 0.16 240);
+    --link-hover: oklch(0.42 0.18 240);
   }
 
   body {
-    @apply min-w-[320px] min-h-screen m-0 bg-background text-foreground;
+    @apply min-w-[320px] min-h-screen m-0 bg-background text-foreground antialiased;
+  }
+
+  a {
+    color: inherit;
   }
 }

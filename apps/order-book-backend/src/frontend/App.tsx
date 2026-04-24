@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
+import { Button } from "./components/ui/button";
+import { PageShell } from "./components/ui/page";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
@@ -19,28 +21,33 @@ function Auth() {
   const isPending = signUp.isPending || demoSignUp.isPending;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
-      <main className="flex-1 flex items-center justify-center flex-col gap-6">
-        <div className="flex flex-col gap-3 items-center">
-          <button
-            type="button"
+    <PageShell>
+      <main className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col gap-5 items-stretch w-64">
+          <div className="text-center">
+            <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground mb-2">
+              order book
+            </div>
+            <div className="text-sm text-muted-foreground">sign in to trade</div>
+          </div>
+          <Button
+            variant="solid"
             disabled={isPending}
             onClick={() => signUp.mutate()}
-            className="px-6 py-2 border rounded hover:bg-gray-50 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed w-56"
           >
-            {signUp.isPending ? "Creating..." : "Create passkey"}
-          </button>
+            {signUp.isPending ? "creating..." : "create passkey"}
+          </Button>
           <button
             type="button"
             disabled={isPending}
             onClick={() => demoSignUp.mutate()}
-            className="text-sm text-gray-400 hover:text-gray-600 underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-4 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {demoSignUp.isPending ? "Creating..." : "or try the demo"}
+            {demoSignUp.isPending ? "creating..." : "or try the demo"}
           </button>
         </div>
       </main>
-    </div>
+    </PageShell>
   );
 }
 
@@ -51,13 +58,13 @@ function TradingApp() {
   if (!account) return <Auth />;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
+    <PageShell>
       <Header />
-      <main className="flex-1 p-4">
+      <main className="flex-1 px-6 py-6">
         <Exchange />
       </main>
       <LiveBlocks />
-    </div>
+    </PageShell>
   );
 }
 

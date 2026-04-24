@@ -16,16 +16,10 @@ const BID_SUB = ["25bp", "5bp", "1bp"] as const;
 const ASK_SUB = ["1bp", "5bp", "25bp"] as const;
 const PLAIN_COLUMNS_RIGHT = ["buy", "sell"] as const;
 
-const BID_CELL = "bg-green-50";
-const ASK_CELL = "bg-red-50";
-const BID_HEADER = "bg-green-100 text-green-900";
-const ASK_HEADER = "bg-red-100 text-red-900";
-const BID_TOP = "border-t-2 border-green-400";
-const ASK_TOP = "border-t-2 border-red-400";
-const BID_GROUP_FIRST = "border-l-2 border-green-400";
-const BID_GROUP_LAST = "border-r-2 border-green-400";
-const ASK_GROUP_FIRST = "border-l-2 border-red-400";
-const ASK_GROUP_LAST = "border-r-2 border-red-400";
+const BID_CELL = "bg-emerald-50/70";
+const ASK_CELL = "bg-rose-50/70";
+const BID_HEADER = "bg-emerald-100/70 text-emerald-900";
+const ASK_HEADER = "bg-rose-100/70 text-rose-900";
 
 const instruments = Object.entries(INSTRUMENTS) as [
   keyof typeof INSTRUMENTS,
@@ -37,84 +31,83 @@ export function Exchange() {
   const { data: balancesData } = useBalances(account?.accountId);
 
   return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr className="h-8">
-          {PLAIN_COLUMNS_LEFT.map((col) => (
-            <th key={col || "name"} className="px-3" />
-          ))}
-          <th
-            colSpan={BID_SUB.length}
-            className={`text-center px-3 align-middle whitespace-nowrap ${BID_HEADER} ${BID_TOP} ${BID_GROUP_FIRST} ${BID_GROUP_LAST}`}
-          >
-            <code>bid</code>
-          </th>
-          <th
-            colSpan={ASK_SUB.length}
-            className={`text-center px-3 align-middle whitespace-nowrap ${ASK_HEADER} ${ASK_TOP} ${ASK_GROUP_FIRST} ${ASK_GROUP_LAST}`}
-          >
-            <code>ask</code>
-          </th>
-          {PLAIN_COLUMNS_RIGHT.map((col) => (
-            <th key={col} className="px-3" />
-          ))}
-        </tr>
-        <tr className="h-10">
-          {PLAIN_COLUMNS_LEFT.map((col) => (
+    <div className="border border-border rounded-[4px] overflow-hidden bg-background">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr>
             <th
-              key={col || "name"}
-              className="text-left px-3 align-middle whitespace-nowrap border-b"
-            >
-              <code>{col}</code>
-            </th>
-          ))}
-          {BID_SUB.map((col, i) => (
+              colSpan={PLAIN_COLUMNS_LEFT.length}
+              className="h-7 border-b border-border"
+            />
             <th
-              key={`bid-${col}`}
-              className={`text-left px-3 align-middle whitespace-nowrap ${BID_HEADER} ${
-                i === 0 ? BID_GROUP_FIRST : ""
-              } ${i === BID_SUB.length - 1 ? BID_GROUP_LAST : ""}`}
+              colSpan={BID_SUB.length}
+              className={`h-7 text-center align-middle text-[11px] uppercase tracking-[0.18em] font-semibold ${BID_HEADER} border-b border-emerald-200`}
             >
-              <code>{col}</code>
+              bid
             </th>
-          ))}
-          {ASK_SUB.map((col, i) => (
             <th
-              key={`ask-${col}`}
-              className={`text-left px-3 align-middle whitespace-nowrap ${ASK_HEADER} ${
-                i === 0 ? ASK_GROUP_FIRST : ""
-              } ${i === ASK_SUB.length - 1 ? ASK_GROUP_LAST : ""}`}
+              colSpan={ASK_SUB.length}
+              className={`h-7 text-center align-middle text-[11px] uppercase tracking-[0.18em] font-semibold ${ASK_HEADER} border-b border-rose-200`}
             >
-              <code>{col}</code>
+              ask
             </th>
-          ))}
-          {PLAIN_COLUMNS_RIGHT.map((col) => (
             <th
-              key={col}
-              className="text-left px-3 align-middle whitespace-nowrap border-b"
-            >
-              <code>{col}</code>
-            </th>
+              colSpan={PLAIN_COLUMNS_RIGHT.length}
+              className="h-7 border-b border-border"
+            />
+          </tr>
+          <tr className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
+            {PLAIN_COLUMNS_LEFT.map((col) => (
+              <th
+                key={col || "name"}
+                className="text-left px-3 h-9 align-middle whitespace-nowrap border-b border-border font-semibold"
+              >
+                {col}
+              </th>
+            ))}
+            {BID_SUB.map((col) => (
+              <th
+                key={`bid-${col}`}
+                className={`text-left px-3 h-9 align-middle whitespace-nowrap ${BID_HEADER} border-b border-emerald-200 font-semibold`}
+              >
+                {col}
+              </th>
+            ))}
+            {ASK_SUB.map((col) => (
+              <th
+                key={`ask-${col}`}
+                className={`text-left px-3 h-9 align-middle whitespace-nowrap ${ASK_HEADER} border-b border-rose-200 font-semibold`}
+              >
+                {col}
+              </th>
+            ))}
+            {PLAIN_COLUMNS_RIGHT.map((col) => (
+              <th
+                key={col}
+                className="text-left px-3 h-9 align-middle whitespace-nowrap border-b border-border font-semibold"
+              >
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {instruments.map(([name, inst]) => (
+            <Row
+              key={name}
+              name={name}
+              instrument={inst}
+              balance={
+                TokenAmount.fromRaw(
+                  BigInt(balancesData?.balances[inst.base] ?? "0"),
+                  inst.base,
+                ).human
+              }
+            />
           ))}
-        </tr>
-      </thead>
-      <tbody>
-        {instruments.map(([name, inst], i) => (
-          <Row
-            key={name}
-            name={name}
-            instrument={inst}
-            isLast={i === instruments.length - 1}
-            balance={
-              TokenAmount.fromRaw(
-                BigInt(balancesData?.balances[inst.base] ?? "0"),
-                inst.base,
-              ).human
-            }
-          />
-        ))}
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -122,12 +115,10 @@ function Row({
   name,
   instrument,
   balance,
-  isLast,
 }: {
   name: string;
   instrument: (typeof INSTRUMENTS)[keyof typeof INSTRUMENTS];
   balance: number;
-  isLast: boolean;
 }) {
   const { data: priceData } = usePrice(instrument.id);
   const { data: depthData } = useDepth(instrument.id);
@@ -171,71 +162,72 @@ function Row({
     return TokenAmount.fromRaw(raw, instrument.base).human.toFixed(2);
   };
 
-  const bidCellBase = `px-3 align-middle whitespace-nowrap ${BID_CELL}`;
-  const askCellBase = `px-3 align-middle whitespace-nowrap ${ASK_CELL}`;
-  const bidBottom = isLast ? "border-b-2 border-green-400 rounded-b" : "";
-  const askBottom = isLast ? "border-b-2 border-red-400 rounded-b" : "";
+  const bidCell = `px-3 h-10 align-middle whitespace-nowrap tabular-nums ${BID_CELL}`;
+  const askCell = `px-3 h-10 align-middle whitespace-nowrap tabular-nums ${ASK_CELL}`;
 
   return (
-    <tr className="border-b last:border-0 h-10">
-      <td className="px-3 align-middle whitespace-nowrap">
-        <code>{name}</code>
+    <tr className="border-b border-border last:border-b-0">
+      <td className="px-3 h-10 align-middle whitespace-nowrap font-semibold">
+        {name}
       </td>
-      <td className="px-3 align-middle whitespace-nowrap">
-        <code>{balance.toFixed(4)}</code>
+      <td className="px-3 h-10 align-middle whitespace-nowrap tabular-nums">
+        {balance.toFixed(4)}
       </td>
-      <td className="px-3 align-middle whitespace-nowrap">
-        <code>{price}</code>
+      <td className="px-3 h-10 align-middle whitespace-nowrap tabular-nums">
+        {price}
       </td>
-      <td className="px-3 align-middle whitespace-nowrap">
-        <code>{spread}</code>
+      <td className="px-3 h-10 align-middle whitespace-nowrap tabular-nums text-muted-foreground">
+        {spread}
       </td>
-      <td className={`${bidCellBase} ${BID_GROUP_FIRST} ${bidBottom}`}>
-        <code>{fmtDepth("bids", "25")}</code>
-      </td>
-      <td className={`${bidCellBase} ${bidBottom}`}>
-        <code>{fmtDepth("bids", "5")}</code>
-      </td>
-      <td className={`${bidCellBase} ${BID_GROUP_LAST} ${bidBottom}`}>
-        <code>{fmtDepth("bids", "1")}</code>
-      </td>
-      <td className={`${askCellBase} ${ASK_GROUP_FIRST} ${askBottom}`}>
-        <code>{fmtDepth("asks", "1")}</code>
-      </td>
-      <td className={`${askCellBase} ${askBottom}`}>
-        <code>{fmtDepth("asks", "5")}</code>
-      </td>
-      <td className={`${askCellBase} ${ASK_GROUP_LAST} ${askBottom}`}>
-        <code>{fmtDepth("asks", "25")}</code>
-      </td>
-      <td className="px-3 align-middle whitespace-nowrap">
-        <input
-          type="number"
-          min={0}
-          placeholder="0"
+      <td className={bidCell}>{fmtDepth("bids", "25")}</td>
+      <td className={bidCell}>{fmtDepth("bids", "5")}</td>
+      <td className={bidCell}>{fmtDepth("bids", "1")}</td>
+      <td className={askCell}>{fmtDepth("asks", "1")}</td>
+      <td className={askCell}>{fmtDepth("asks", "5")}</td>
+      <td className={askCell}>{fmtDepth("asks", "25")}</td>
+      <td className="px-3 h-10 align-middle whitespace-nowrap">
+        <OrderInput
           value={buyAmount}
-          onChange={(e) => setBuyAmount(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit("buy", buyAmount);
-          }}
+          onChange={setBuyAmount}
+          onSubmit={() => submit("buy", buyAmount)}
           disabled={marketOrder.isPending}
-          className="w-20 border px-1 font-mono text-sm h-7 placeholder:text-gray-300 disabled:opacity-50"
         />
       </td>
-      <td className="px-3 align-middle whitespace-nowrap">
-        <input
-          type="number"
-          min={0}
-          placeholder="0"
+      <td className="px-3 h-10 align-middle whitespace-nowrap">
+        <OrderInput
           value={sellAmount}
-          onChange={(e) => setSellAmount(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit("sell", sellAmount);
-          }}
+          onChange={setSellAmount}
+          onSubmit={() => submit("sell", sellAmount)}
           disabled={marketOrder.isPending}
-          className="w-20 border px-1 font-mono text-sm h-7 placeholder:text-gray-300 disabled:opacity-50"
         />
       </td>
     </tr>
+  );
+}
+
+function OrderInput({
+  value,
+  onChange,
+  onSubmit,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <input
+      type="number"
+      min={0}
+      placeholder="0"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onSubmit();
+      }}
+      disabled={disabled}
+      className="w-20 h-7 px-2 font-mono text-sm tabular-nums rounded-[3px] border border-border bg-background placeholder:text-muted-foreground focus:outline-none focus:border-foreground/50 disabled:opacity-50"
+    />
   );
 }

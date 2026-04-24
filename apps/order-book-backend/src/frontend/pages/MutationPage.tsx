@@ -3,6 +3,7 @@ import {
   type StageTimestamps,
 } from "../components/MutationLifecycle";
 import { MarketOrderFills, MutationParams } from "../components/MutationParams";
+import { Field, PageShell, Section } from "../components/ui/page";
 import { useAccount } from "../hooks/useAccount";
 import { useMutation, useMutationByNonce } from "../hooks/useMutation";
 import type { ApiMutation } from "../hooks/useMutations";
@@ -21,7 +22,7 @@ function stageTimestamps(mutation: ApiMutation): StageTimestamps {
   return out;
 }
 
-const linkClass = "text-blue-500 hover:underline";
+const linkClass = "text-sky-700 hover:underline";
 
 function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -57,96 +58,99 @@ export function MutationPage() {
       : null;
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
-      <section className="w-full border-b p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold">Mutation</h2>
-        <code>id: {mutation?.id ?? "..."}</code>
-        <code>bundle: {mutation?.bundleId ?? "..."}</code>
-        <code>
-          block:{" "}
-          {mutation?.blockNumber ? (
-            <Link
-              to={`/block/${mutation.blockNumber}`}
-              className={linkClass}
-            >
-              {mutation.blockNumber}
-            </Link>
-          ) : (
-            "..."
-          )}
-        </code>
-      </section>
+    <PageShell>
+      <Section>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground mb-1">
+          mutation
+        </div>
+        <div className="text-2xl font-semibold tabular-nums mb-4">
+          {mutation?.id ?? "…"}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Field label="bundle">
+            <span className="tabular-nums">{mutation?.bundleId ?? "…"}</span>
+          </Field>
+          <Field label="block">
+            {mutation?.blockNumber ? (
+              <Link
+                to={`/block/${mutation.blockNumber}`}
+                className={`${linkClass} tabular-nums`}
+              >
+                {mutation.blockNumber}
+              </Link>
+            ) : (
+              "…"
+            )}
+          </Field>
+        </div>
+      </Section>
 
-      <section className="w-full border-b p-4">
-        <h2 className="text-2xl font-bold mb-4">Lifecycle</h2>
+      <Section title="lifecycle">
         <MutationLifecycle
           status={mutation?.status}
           timestamps={timestamps}
         />
-      </section>
+      </Section>
 
-      <div className="w-full border-b flex flex-col md:flex-row">
-        <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
-          <h2 className="text-2xl font-bold mb-2">Parameters</h2>
-          <code>type: {mutation?.type ?? "..."}</code>
-          {mutation ? <MutationParams mutation={mutation} /> : null}
-        </section>
+      <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-border border-b border-border">
+        <Section bordered={false} title="parameters">
+          <div className="flex flex-col gap-1.5">
+            <Field label="type">{mutation?.type ?? "…"}</Field>
+            {mutation ? <MutationParams mutation={mutation} /> : null}
+          </div>
+        </Section>
 
         {mutation?.type === "marketOrder" ? (
-          <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
-            <h2 className="text-2xl font-bold mb-2">Resolution</h2>
+          <Section bordered={false} title="resolution">
             <MarketOrderFills mutation={mutation} />
-          </section>
+          </Section>
         ) : null}
 
-        <section className="flex-1 p-4 flex flex-col gap-2">
-          <h2 className="text-2xl font-bold mb-2">Signature</h2>
-          <code>
-            account:{" "}
-            {mutation ? (
-              <Link
-                to={`/account/${mutation.accountSerial ?? mutation.account}`}
-                className={linkClass}
-              >
-                {mutation.accountSerial != null
-                  ? mutation.accountSerial
-                  : shortAddr(mutation.account)}
-              </Link>
-            ) : (
-              "..."
-            )}
-          </code>
-          <code>
-            requires:{" "}
-            {mutation == null ? (
-              "..."
-            ) : requiresNonce == null ? (
-              "none"
-            ) : requires.data ? (
-              <Link to={`/mutation/${requires.data.id}`} className={linkClass}>
-                {requires.data.id}
-              </Link>
-            ) : (
-              "..."
-            )}
-          </code>
-          <code>
-            type:{" "}
-            {mutation == null
-              ? "..."
-              : mutation.keyIndex == null
-                ? "root"
-                : keyType != null
-                  ? KEY_TYPE_LABELS[keyType]
-                  : "..."}
-          </code>
-        </section>
+        <Section bordered={false} title="signature">
+          <div className="flex flex-col gap-1.5">
+            <Field label="account">
+              {mutation ? (
+                <Link
+                  to={`/account/${mutation.accountSerial ?? mutation.account}`}
+                  className={linkClass}
+                >
+                  {mutation.accountSerial != null
+                    ? `#${mutation.accountSerial}`
+                    : shortAddr(mutation.account)}
+                </Link>
+              ) : (
+                "…"
+              )}
+            </Field>
+            <Field label="requires">
+              {mutation == null ? (
+                "…"
+              ) : requiresNonce == null ? (
+                <span className="text-muted-foreground">none</span>
+              ) : requires.data ? (
+                <Link to={`/mutation/${requires.data.id}`} className={linkClass}>
+                  {requires.data.id}
+                </Link>
+              ) : (
+                "…"
+              )}
+            </Field>
+            <Field label="key">
+              {mutation == null
+                ? "…"
+                : mutation.keyIndex == null
+                  ? "root"
+                  : keyType != null
+                    ? KEY_TYPE_LABELS[keyType]
+                    : "…"}
+            </Field>
+          </div>
+        </Section>
       </div>
 
-      <section className="w-full p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold mb-2">State changes</h2>
-        <code className="text-muted-foreground">coming soon</code>
-      </section>
-    </div>
+      <Section title="state changes" bordered={false}>
+        <div className="text-muted-foreground text-sm italic">coming soon</div>
+      </Section>
+    </PageShell>
   );
 }

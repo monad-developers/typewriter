@@ -34,7 +34,7 @@ export function MutationLifecycle({
   const currentIndex = status ? STAGES.indexOf(status) : -1;
 
   return (
-    <div className="flex items-start">
+    <div className="flex items-start text-sm">
       {STAGES.map((stage, i) => {
         const reached = i <= currentIndex;
         const isCurrent = i === currentIndex;
@@ -52,36 +52,41 @@ export function MutationLifecycle({
             : null;
 
         return (
-          <div
-            key={stage}
-            className="flex items-start flex-1 last:flex-none"
-          >
+          <div key={stage} className="flex items-start flex-1 last:flex-none">
             <div className="flex flex-col items-center gap-2 min-w-20">
               <div
-                className={`w-4 h-4 rounded-full border-2 ${
+                className={`w-3 h-3 rounded-full border-2 ${
                   reached
-                    ? "bg-blue-500 border-blue-500"
-                    : "bg-white border-gray-300"
-                } ${isCurrent ? "ring-2 ring-blue-200 ring-offset-2" : ""}`}
+                    ? "bg-sky-600 border-sky-600"
+                    : "bg-background border-border"
+                } ${isCurrent ? "ring-4 ring-sky-100" : ""}`}
               />
-              <code className={reached ? "" : "text-muted-foreground"}>
-                {stage}
-              </code>
-              {ago ? (
-                <code className="text-xs text-muted-foreground">{ago}</code>
-              ) : null}
+              <div className="flex flex-col items-center gap-0.5">
+                <span
+                  className={
+                    reached ? "font-semibold" : "text-muted-foreground"
+                  }
+                >
+                  {stage}
+                </span>
+                {ago ? (
+                  <span className="text-[11px] text-muted-foreground tabular-nums">
+                    {ago}
+                  </span>
+                ) : null}
+              </div>
             </div>
             {i < STAGES.length - 1 ? (
-              <div className="flex-1 flex flex-col items-center mt-1">
+              <div className="flex-1 flex flex-col items-center mt-[5px]">
                 <div
-                  className={`w-full h-0.5 ${
-                    i < currentIndex ? "bg-blue-500" : "bg-gray-300"
+                  className={`w-full h-px ${
+                    i < currentIndex ? "bg-sky-600" : "bg-border"
                   }`}
                 />
                 {segmentMs != null ? (
-                  <code className="text-xs text-muted-foreground mt-1">
+                  <span className="text-[11px] text-muted-foreground tabular-nums mt-1">
                     {segmentMs}ms
-                  </code>
+                  </span>
                 ) : null}
               </div>
             ) : null}

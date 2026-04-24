@@ -1,11 +1,20 @@
 import { MutationDescription } from "../components/MutationDescription";
+import { Field, PageShell, Section } from "../components/ui/page";
+import {
+  DataTable,
+  Empty,
+  TD,
+  TH,
+  THead,
+  TR,
+} from "../components/ui/table";
 import { useBlock } from "../hooks/useBlock";
 import { type ApiMutation, useMutations } from "../hooks/useMutations";
 import { Link, useMatch } from "../lib/router";
 
 const MUTATION_COLUMNS = ["id", "bundle", "status", "account", "description"];
 
-const linkClass = "text-blue-500 hover:underline";
+const linkClass = "text-sky-700 hover:underline";
 
 function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -38,112 +47,101 @@ export function BlockPage() {
   }
 
   return (
-    <div className="min-h-screen w-full flex flex-col">
-      <section className="w-full border-b p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold">Block</h2>
-        <code>
-          number:{" "}
-          {block.data ? (
-            <a
-              href={`https://testnet.monadscan.com/block/${block.data.number}`}
-              target="_blank"
-              rel="noreferrer"
-              className={linkClass}
-            >
-              {block.data.number}
-            </a>
-          ) : (
-            "..."
-          )}
-        </code>
-        <code>timestamp: {block.data?.timestamp ?? "..."}</code>
-        <code>
-          transaction:{" "}
-          {transactionHash ? (
-            <a
-              href={`https://testnet.monadscan.com/tx/${transactionHash}`}
-              target="_blank"
-              rel="noreferrer"
-              className={linkClass}
-            >
-              {transactionHash}
-            </a>
-          ) : (
-            "..."
-          )}
-        </code>
-      </section>
+    <PageShell>
+      <Section>
+        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground mb-1">
+          block
+        </div>
+        <div className="text-2xl font-semibold tabular-nums mb-4">
+          {block.data?.number ?? "…"}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Field label="onchain">
+            {block.data ? (
+              <a
+                href={`https://testnet.monadscan.com/block/${block.data.number}`}
+                target="_blank"
+                rel="noreferrer"
+                className={linkClass}
+              >
+                view on monadscan ↗
+              </a>
+            ) : (
+              "…"
+            )}
+          </Field>
+          <Field label="timestamp">
+            <span className="tabular-nums">{block.data?.timestamp ?? "…"}</span>
+          </Field>
+          <Field label="tx hash">
+            {transactionHash ? (
+              <a
+                href={`https://testnet.monadscan.com/tx/${transactionHash}`}
+                target="_blank"
+                rel="noreferrer"
+                className={`${linkClass} tabular-nums`}
+              >
+                {transactionHash}
+              </a>
+            ) : (
+              "…"
+            )}
+          </Field>
+        </div>
+      </Section>
 
-      <section className="w-full p-4">
-        <h2 className="text-2xl font-bold mb-4">
-          Mutations ({mutations.data?.length ?? 0})
-        </h2>
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="border-b">
+      <Section title={`mutations (${mutations.data?.length ?? 0})`} bordered={false}>
+        <DataTable>
+          <THead>
+            <TR>
               {MUTATION_COLUMNS.map((col) => (
-                <th key={col} className="text-left py-2 pr-6">
-                  <code>{col}</code>
-                </th>
+                <TH key={col}>{col}</TH>
               ))}
-            </tr>
-          </thead>
+            </TR>
+          </THead>
           <tbody>
             {mutations.data && rows.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={MUTATION_COLUMNS.length}
-                  className="py-2 pr-6 text-muted-foreground"
-                >
-                  <code>No mutations in this block</code>
-                </td>
-              </tr>
+              <Empty colSpan={MUTATION_COLUMNS.length}>
+                no mutations in this block
+              </Empty>
             ) : (
               rows.map((m) => (
-                <tr
+                <TR
                   key={m.id}
-                  className={`border-b last:border-0 ${
+                  className={
                     (bundleOrder.get(m.bundleId) ?? 0) % 2 === 0
-                      ? "bg-white"
-                      : "bg-gray-50"
-                  }`}
+                      ? undefined
+                      : "bg-muted/30"
+                  }
                 >
-                  <td className="py-2 pr-6">
-                    <code>
-                      <Link to={`/mutation/${m.id}`} className={linkClass}>
-                        {m.id}
-                      </Link>
-                    </code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{m.bundleId}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{m.status}</code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>
-                      <Link
-                        to={`/account/${m.accountSerial ?? m.account}`}
-                        className={linkClass}
-                      >
-                        {m.accountSerial != null
-                          ? m.accountSerial
-                          : shortAddr(m.account)}
-                      </Link>
-                    </code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>
-                      <MutationDescription mutation={m} />
-                    </code>
-                  </td>
-                </tr>
+                  <TD className="tabular-nums">
+                    <Link to={`/mutation/${m.id}`} className={linkClass}>
+                      {m.id}
+                    </Link>
+                  </TD>
+                  <TD className="tabular-nums">{m.bundleId}</TD>
+                  <TD>
+                    <span className="text-muted-foreground">{m.status}</span>
+                  </TD>
+                  <TD className="tabular-nums">
+                    <Link
+                      to={`/account/${m.accountSerial ?? m.account}`}
+                      className={linkClass}
+                    >
+                      {m.accountSerial != null
+                        ? m.accountSerial
+                        : shortAddr(m.account)}
+                    </Link>
+                  </TD>
+                  <TD>
+                    <MutationDescription mutation={m} />
+                  </TD>
+                </TR>
               ))
             )}
           </tbody>
-        </table>
-      </section>
-    </div>
+        </DataTable>
+      </Section>
+    </PageShell>
   );
 }
