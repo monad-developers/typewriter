@@ -975,13 +975,22 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       const confirmations = block.number - blockEvent.number;
       let isStatusUpdated = false;
 
-      if (confirmations >= 5n) {
+      if (confirmations >= 5n && blockEvent.status !== "verified") {
         blockEvent.status = "verified";
         isStatusUpdated = true;
-      } else if (confirmations >= 2n && blockEvent.status !== "finalized") {
+      } else if (
+        confirmations >= 2n &&
+        blockEvent.status !== "finalized" &&
+        blockEvent.status !== "verified"
+      ) {
         blockEvent.status = "finalized";
         isStatusUpdated = true;
-      } else if (confirmations >= 1n && blockEvent.status !== "voted") {
+      } else if (
+        confirmations >= 1n &&
+        blockEvent.status !== "voted" &&
+        blockEvent.status !== "finalized" &&
+        blockEvent.status !== "verified"
+      ) {
         blockEvent.status = "voted";
         isStatusUpdated = true;
       }

@@ -1,30 +1,12 @@
+import { useState } from "react";
 import {
+  BLOCK_QUEUE_SIZE,
   type LiveBlock,
   type LiveBundle,
   useLiveBlocks,
 } from "../hooks/useLiveBlocks";
 import { useTps } from "../hooks/useTps";
 import { Link } from "../lib/router";
-import { MutationDescription } from "./MutationDescription";
-
-function BundleCard({ bundle }: { bundle: LiveBundle }) {
-  return (
-    <div className="border border-gray-800 rounded px-2 py-2 bg-gray-50 flex flex-col gap-1 h-full overflow-hidden">
-      <div className="text-xs text-gray-600 shrink-0">bundle {bundle.id}</div>
-      <div className="flex flex-col gap-0.5 overflow-hidden">
-        {bundle.mutations.map((m) => (
-          <Link
-            key={m.id}
-            to={`/mutation/${m.id}`}
-            className="font-mono text-xs text-gray-800 hover:underline truncate"
-          >
-            <MutationDescription mutation={m} />
-          </Link>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function bundleColor(mutationCount: number): string {
   if (mutationCount <= 1) return "bg-blue-200";
@@ -37,7 +19,7 @@ function bundleColor(mutationCount: number): string {
 const BLOCK_INNER_SLOTS = 8;
 const BLOCK_INNER_KEYS = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
-function BlockCard({ block }: { block: LiveBlock }) {
+function BlockColumn({ block }: { block: LiveBlock }) {
   const bySlot = new Array<LiveBlock["bundles"][number] | undefined>(
     BLOCK_INNER_SLOTS,
   );
@@ -50,12 +32,14 @@ function BlockCard({ block }: { block: LiveBlock }) {
       to={`/block/${block.number}`}
       className="border border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-gray-100"
     >
-      <div className="text-xs text-gray-600 shrink-0">block {block.number}</div>
+      <div className="text-xs text-gray-600 shrink-0 truncate">
+        {block.number}
+      </div>
       <div
         className="grid gap-1 flex-1 min-h-0"
         style={{
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gridTemplateRows: "repeat(2, 1fr)",
+          gridTemplateColumns: "1fr",
+          gridTemplateRows: `repeat(${BLOCK_INNER_SLOTS}, 1fr)`,
         }}
       >
         {BLOCK_INNER_KEYS.map((key, i) => {
@@ -76,61 +60,92 @@ function BlockCard({ block }: { block: LiveBlock }) {
   );
 }
 
-function EmptyBundleSlot() {
+function FormingBlockColumn({
+  bundleSlots,
+}: {
+  bundleSlots: (LiveBundle | null)[];
+}) {
   return (
-    <div className="border border-dashed border-gray-300 rounded h-full" />
-  );
-}
-
-function EmptyBlockSlot() {
-  return (
-    <div className="border border-dashed border-gray-300 rounded h-full" />
+    <div className="border border-dashed border-gray-800 rounded bg-gray-50 flex flex-col gap-1 h-full overflow-hidden p-2">
+      <div className="text-xs text-gray-600 shrink-0 truncate">accepted</div>
+      <div
+        className="grid gap-1 flex-1 min-h-0"
+        style={{
+          gridTemplateColumns: "1fr",
+          gridTemplateRows: `repeat(${BLOCK_INNER_SLOTS}, 1fr)`,
+        }}
+      >
+        {bundleSlots.map((bundle, i) => (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: slot position is identity
+            key={i}
+            className={
+              bundle
+                ? `${bundleColor(bundle.mutations.length)} rounded-sm`
+                : "border border-dashed border-gray-300 rounded-sm"
+            }
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
 export function LiveBlocks() {
-  const { bundleSlots, blockSlots } = useLiveBlocks();
+  const { bundleSlots, blocks } = useLiveBlocks();
   const { data: tps } = useTps();
+  const [frozenBlocks, setFrozenBlocks] = useState<LiveBlock[] | null>(null);
+
+  const displayBlocks = frozenBlocks ?? blocks;
+  const isPaused = frozenBlocks !== null;
+
+  const handleHoverChange = (hovered: boolean) => {
+    if (hovered) {
+      setFrozenBlocks((prev) => prev ?? blocks);
+    } else {
+      setFrozenBlocks(null);
+    }
+  };
 
   return (
-    <div className="w-full flex flex-col gap-6 p-4">
-      <section>
-        <div className="text-xs uppercase tracking-wider text-gray-600 mb-2">
-          forming bundles (next block)
-        </div>
-        <div
-          className="border border-black p-3 grid grid-cols-4 grid-rows-2 gap-2"
-          style={{ height: 320 }}
+    <div className="w-full flex flex-col gap-2 p-4">
+      <div className="text-xs uppercase tracking-wider text-gray-600 flex items-center gap-2">
+        <span>
+          activity stream{tps != null && <> ({tps.toFixed(1)} tps)</>}
+        </span>
+        {isPaused && (
+          <span
+            title="paused"
+            className="inline-flex items-center gap-0.5 text-gray-500 normal-case tracking-normal"
+          >
+            <span className="inline-block w-[3px] h-[10px] bg-current" />
+            <span className="inline-block w-[3px] h-[10px] bg-current" />
+          </span>
+        )}
+      </div>
+      <div
+        className="border border-black p-3 grid gap-2"
+        style={{
+          height: 260,
+          gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
+        }}
+      >
+        <FormingBlockColumn bundleSlots={bundleSlots} />
+        <section
+          aria-label="landed blocks"
+          onPointerEnter={() => handleHoverChange(true)}
+          onPointerLeave={() => handleHoverChange(false)}
+          className="grid gap-2 h-full"
+          style={{
+            gridColumn: `span ${BLOCK_QUEUE_SIZE}`,
+            gridTemplateColumns: `repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
+          }}
         >
-          {bundleSlots.map((bundle, i) =>
-            bundle ? (
-              <BundleCard key={bundle.id} bundle={bundle} />
-            ) : (
-              // biome-ignore lint/suspicious/noArrayIndexKey: slot position is identity
-              <EmptyBundleSlot key={`empty-${i}`} />
-            ),
-          )}
-        </div>
-      </section>
-
-      <section>
-        <div className="text-xs uppercase tracking-wider text-gray-600 mb-2">
-          landed blocks{tps != null && <> ({tps.toFixed(1)} tps)</>}
-        </div>
-        <div
-          className="border border-black p-3 grid grid-cols-8 gap-2"
-          style={{ height: 160 }}
-        >
-          {blockSlots.map((block, i) =>
-            block ? (
-              <BlockCard key={block.hash} block={block} />
-            ) : (
-              // biome-ignore lint/suspicious/noArrayIndexKey: slot position is identity
-              <EmptyBlockSlot key={`empty-block-${i}`} />
-            ),
-          )}
-        </div>
-      </section>
+          {displayBlocks.map((block) => (
+            <BlockColumn key={block.hash} block={block} />
+          ))}
+        </section>
+      </div>
     </div>
   );
 }

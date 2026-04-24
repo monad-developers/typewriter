@@ -54,18 +54,16 @@ export type LiveBlock = {
 };
 
 export const BUNDLE_SLOT_COUNT = 8;
-export const BLOCK_SLOT_COUNT = 8;
+export const BLOCK_QUEUE_SIZE = 8;
 
 export function useLiveBlocks(): {
   bundleSlots: (LiveBundle | null)[];
-  blockSlots: (LiveBlock | null)[];
+  blocks: LiveBlock[];
 } {
   const [bundleSlots, setBundleSlots] = useState<(LiveBundle | null)[]>(() =>
     Array(BUNDLE_SLOT_COUNT).fill(null),
   );
-  const [blockSlots, setBlockSlots] = useState<(LiveBlock | null)[]>(() =>
-    Array(BLOCK_SLOT_COUNT).fill(null),
-  );
+  const [blocks, setBlocks] = useState<LiveBlock[]>([]);
 
   useEffect(() => {
     const blockSource = new EventSource("/api/events/blocks");
@@ -111,33 +109,10 @@ export function useLiveBlocks(): {
           timestamp: data.timestamp,
           bundles: data.bundles ?? [],
         };
-        const num = BigInt(block.number);
-        const idx = Number(num % BigInt(BLOCK_SLOT_COUNT));
-        setBlockSlots((prev) => {
-          let shouldClear = false;
-          for (let i = idx; i < BLOCK_SLOT_COUNT; i++) {
-            const existing = prev[i];
-            if (existing) {
-              shouldClear = true;
-              break;
-            }
-          }
-
-          for (let i = 0; i < idx; i++) {
-            const existing = prev[i];
-            if (
-              existing &&
-              num - BigInt(existing.number) >= BigInt(BLOCK_SLOT_COUNT)
-            ) {
-              shouldClear = true;
-              break;
-            }
-          }
-
-          const next = shouldClear
-            ? Array(BLOCK_SLOT_COUNT).fill(null)
-            : prev.slice();
-          next[idx] = block;
+        setBlocks((prev) => {
+          if (prev.some((b) => b.hash === block.hash)) return prev;
+          const next = [block, ...prev];
+          if (next.length > BLOCK_QUEUE_SIZE) next.length = BLOCK_QUEUE_SIZE;
           return next;
         });
       }
@@ -149,5 +124,5 @@ export function useLiveBlocks(): {
     };
   }, []);
 
-  return { bundleSlots, blockSlots };
+  return { bundleSlots, blocks };
 }

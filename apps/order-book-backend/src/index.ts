@@ -722,7 +722,16 @@ serve({
           price = bestAsk;
         }
 
-        return Response.json({ instrumentId: Number(instrumentId), price });
+        const spread =
+          bestBid !== null && bestAsk !== null ? bestAsk - bestBid : null;
+
+        return Response.json({
+          instrumentId: Number(instrumentId),
+          price,
+          bestBid,
+          bestAsk,
+          spread,
+        });
       },
     },
 

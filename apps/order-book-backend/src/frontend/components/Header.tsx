@@ -24,7 +24,7 @@ export function Header() {
 
   return (
     <header className="w-full border-b px-4 py-3 flex items-center gap-6">
-      <code className="text-sm">balance: ${balance}</code>
+      <code className="text-sm">balance: ${balance.toFixed(2)}</code>
       <button
         type="button"
         onClick={() => void handleDeposit()}
