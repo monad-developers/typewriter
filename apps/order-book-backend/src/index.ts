@@ -44,6 +44,7 @@ type DB = BunSQLDatabase<typeof schema>;
 type ApiMutation = {
   id: number;
   bundleId: number | null;
+  bundlePosition: number | null;
   blockNumber: string | null;
   status: (typeof schema.mutationStatusEnum.enumValues)[number];
   account: Hex;
@@ -72,6 +73,7 @@ async function loadMutationsByIds(
     .select({
       id: schema.mutations.id,
       bundleId: schema.mutations.bundleId,
+      bundlePosition: schema.mutations.bundlePosition,
       blockNumber: schema.mutations.blockNumber,
       status: schema.mutations.status,
       account: schema.mutations.account,
@@ -92,7 +94,10 @@ async function loadMutationsByIds(
     .leftJoin(schema.bundles, eq(schema.mutations.bundleId, schema.bundles.id))
     .leftJoin(schema.accounts, eq(schema.mutations.account, schema.accounts.id))
     .where(inArray(schema.mutations.id, ids))
-    .orderBy(asc(schema.mutations.id));
+    .orderBy(
+      asc(schema.mutations.bundleId),
+      asc(schema.mutations.bundlePosition),
+    );
 
   const [
     initRows,
@@ -184,6 +189,7 @@ async function loadMutationsByIds(
   return centrals.map((c) => ({
     id: c.id,
     bundleId: c.bundleId,
+    bundlePosition: c.bundlePosition,
     blockNumber: c.blockNumber,
     status: c.status,
     account: c.account as Hex,
@@ -523,8 +529,7 @@ serve({
         const idRows = await readerDb
           .select({ id: schema.mutations.id })
           .from(schema.mutations)
-          .where(eq(schema.mutations.blockNumber, block))
-          .orderBy(asc(schema.mutations.id));
+          .where(eq(schema.mutations.blockNumber, block));
         const mutations = await loadMutationsByIds(
           readerDb,
           idRows.map((r) => r.id),
@@ -637,11 +642,9 @@ serve({
           )
           .orderBy(desc(schema.mutations.id))
           .limit(50);
-        const mutations = await loadMutationsByIds(
-          readerDb,
-          idRows.map((r) => r.id),
-        );
-        mutations.sort((a, b) => b.id - a.id);
+        const mutations = (
+          await loadMutationsByIds(readerDb, idRows.map((r) => r.id))
+        ).reverse();
 
         const nonces: Record<string, string> = {};
         for (const [k, v] of Object.entries(acc.nonces)) {

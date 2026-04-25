@@ -231,6 +231,7 @@ export const mutations = pgTable(
   {
     id: serial().primaryKey(),
     bundleId: integer().references(() => bundles.id),
+    bundlePosition: integer(),
     blockNumber: uint256().references(() => blocks.number),
     status: mutationStatusEnum().notNull(),
     account: bytes32().notNull(),
@@ -248,7 +249,7 @@ export const mutations = pgTable(
     verifiedAt: timestamp(),
   },
   (t) => [
-    index().on(t.bundleId),
+    index().on(t.bundleId, t.bundlePosition),
     index().on(t.blockNumber),
     index().on(t.account),
     // FK (account, keyIndex) -> keys disabled: blocks recoverState's

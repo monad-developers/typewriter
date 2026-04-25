@@ -745,12 +745,14 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           const bundleId = await insertBundle(
             tx as unknown as typeof config.db,
           );
-          for (const mutation of resolvedMutations) {
+          for (let i = 0; i < resolvedMutations.length; i++) {
+            const mutation = resolvedMutations[i]!;
             const calldata = encodeMutationData(mutation);
             await acceptMutation(
               tx as unknown as typeof config.db,
               mutation,
               bundleId,
+              i,
               calldata,
             );
             await syncState(tx as unknown as typeof config.db, state, mutation);

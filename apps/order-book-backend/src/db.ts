@@ -164,7 +164,10 @@ async function loadAllMutations(
   const centrals = await db
     .select()
     .from(schema.mutations)
-    .orderBy(asc(schema.mutations.id));
+    .orderBy(
+      asc(schema.mutations.bundleId),
+      asc(schema.mutations.bundlePosition),
+    );
 
   const [
     initRows,
@@ -991,6 +994,7 @@ export async function acceptMutation(
   db: DB,
   m: AcceptedMutation,
   bundleId: number,
+  bundlePosition: number,
   calldata: Hex,
 ) {
   await db
@@ -998,6 +1002,7 @@ export async function acceptMutation(
     .set({
       status: "accepted",
       bundleId,
+      bundlePosition,
       calldata,
       acceptedAt: sql`NOW()`,
     })
