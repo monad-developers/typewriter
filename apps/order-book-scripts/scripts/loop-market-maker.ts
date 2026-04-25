@@ -100,9 +100,11 @@ async function tick(instrument: InstrumentConfig, label: string) {
   const filledIds = findFilledOrders(orders, book, instrument);
   if (filledIds.length > 0) {
     console.log(`[${label}] closing ${filledIds.length} filled orders...`);
-    for (const orderId of filledIds) {
-      await closeOrder(account, { orderId });
-    }
+    await Promise.all(
+      filledIds.map((orderId) =>
+        closeOrder(account, { orderId }, { concurrent: true }),
+      ),
+    );
   }
 
   const midPrice = getMidPrice(book, instrument);
@@ -122,18 +124,19 @@ async function tick(instrument: InstrumentConfig, label: string) {
 
   await depositForOrders(account, needed, instrument, label);
 
-  for (const order of needed) {
-    const quantity = TokenAmount.from(humanQuantity, instrument.base);
-    console.log(
-      `[${label}] placing ${order.side}: ${quantity.human} @ $${order.price.toFixed(4)}`,
-    );
-    await limitOrder(account, {
-      instrument,
-      quantity,
-      price: order.price,
-      side: order.side,
-    });
-  }
+  await Promise.all(
+    needed.map((order) => {
+      const quantity = TokenAmount.from(humanQuantity, instrument.base);
+      console.log(
+        `[${label}] placing ${order.side}: ${quantity.human} @ $${order.price.toFixed(4)}`,
+      );
+      return limitOrder(
+        account,
+        { instrument, quantity, price: order.price, side: order.side },
+        { concurrent: true },
+      );
+    }),
+  );
 
   console.log(`[${label}] placed ${needed.length} orders`);
 }
@@ -293,14 +296,20 @@ async function depositForOrders(
     }
   }
 
+  const deposits: Promise<unknown>[] = [];
   if (totalBase > 0n) {
     const amount = TokenAmount.fromRaw(totalBase, instrument.base);
     console.log(`[${label}] depositing ${amount.human.toFixed(4)} base...`);
-    await deposit(account, { quantity: amount });
+    deposits.push(
+      deposit(account, { quantity: amount }, { concurrent: true }),
+    );
   }
   if (totalQuote > 0n) {
     const amount = TokenAmount.fromRaw(totalQuote, instrument.quote);
     console.log(`[${label}] depositing ${amount.human.toFixed(4)} quote...`);
-    await deposit(account, { quantity: amount });
+    deposits.push(
+      deposit(account, { quantity: amount }, { concurrent: true }),
+    );
   }
+  await Promise.all(deposits);
 }

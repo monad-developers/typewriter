@@ -145,6 +145,8 @@ async function tick(
     return;
   }
 
+  const legs: Promise<unknown>[] = [];
+
   if (buyLots > 0n) {
     const quantity = TokenAmount.fromRaw(
       fromLots(buyLots, instrument.baseLotExp),
@@ -158,13 +160,16 @@ async function tick(
     console.log(
       `[${label}] arb buy: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
     );
-    await deposit(account, { quantity: depositAmount });
-    await marketOrder(account, {
-      instrument,
-      quantity,
-      minReceived: quantity,
-      side: "buy",
-    });
+    legs.push(
+      (async () => {
+        await deposit(account, { quantity: depositAmount }, { concurrent: true });
+        await marketOrder(
+          account,
+          { instrument, quantity, minReceived: quantity, side: "buy" },
+          { concurrent: true },
+        );
+      })(),
+    );
   }
 
   if (sellLots > 0n) {
@@ -180,12 +185,17 @@ async function tick(
     console.log(
       `[${label}] arb sell: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
     );
-    await deposit(account, { quantity });
-    await marketOrder(account, {
-      instrument,
-      quantity,
-      minReceived,
-      side: "sell",
-    });
+    legs.push(
+      (async () => {
+        await deposit(account, { quantity }, { concurrent: true });
+        await marketOrder(
+          account,
+          { instrument, quantity, minReceived, side: "sell" },
+          { concurrent: true },
+        );
+      })(),
+    );
   }
+
+  await Promise.all(legs);
 }
