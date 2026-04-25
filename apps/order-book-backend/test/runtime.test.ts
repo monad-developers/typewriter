@@ -119,7 +119,7 @@ test("initialize creates account with root key and session key", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -174,7 +174,7 @@ test("initialize rejects already initialized account", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -242,7 +242,7 @@ test("authorize adds a new key", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -326,7 +326,7 @@ test("revoke removes a key", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -399,7 +399,7 @@ test("deposit credits balance", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -472,7 +472,7 @@ test("withdrawal debits balance", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -562,7 +562,7 @@ test("withdrawal with insufficient balance rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -630,7 +630,7 @@ test("add instrument creates instrument", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -663,7 +663,7 @@ test("add duplicate instrument rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -708,7 +708,7 @@ test("limit order bid locks quote and places on book", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -823,7 +823,7 @@ test("limit order ask locks base and places on book", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -932,7 +932,7 @@ test("limit order with insufficient balance rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -1021,7 +1021,7 @@ test("market order sell fills against resting bid", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -1201,7 +1201,7 @@ test("market order fills across multiple price levels", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
@@ -1252,7 +1252,7 @@ test("market order with nonzero lot exponents fills in lot units", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp, quoteLotExp });
 
@@ -1306,7 +1306,7 @@ test("market order that exhausts a tick increments volume", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
@@ -1345,7 +1345,7 @@ test("market order with insufficient taker balance rejects", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
@@ -1389,7 +1389,7 @@ test("market order buy fills against resting ask", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -1576,7 +1576,7 @@ test("market order with insufficient liquidity rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -1682,7 +1682,7 @@ test("market order with slippage exceeded rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -1859,7 +1859,7 @@ test("cancel sorted before market order in a bundle", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
@@ -1903,7 +1903,7 @@ test("two market orders in a bundle", async () => {
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
@@ -1950,7 +1950,7 @@ test("two market orders in a bundle, first invalid due to slippage", async () =>
   const exchangeAddress = await deployExchange();
   const domain = { name: "Exchange" as const, version: "1" as const, chainId: anvil.id, verifyingContract: exchangeAddress };
   const state = createState();
-  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrl: RPC_URL, account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
+  const handle = startRuntime({ initialState: state, chain: anvil, rpcUrls: [RPC_URL], account: SCHEDULER_ACCOUNT, address: exchangeAddress, rpId: "localhost", origin: "http://localhost:3000", db: await createTestDb(anvil.id, exchangeAddress) });
 
   await addInstrument(handle, domain, { instrumentId: 0, base: BASE, quote: QUOTE, baseLotExp: 0, quoteLotExp: 0 });
 
@@ -2007,7 +2007,7 @@ test("close order refunds unfilled and credits filled", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -2210,7 +2210,7 @@ test("close nonexistent order rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -2286,7 +2286,7 @@ test("invalid signature rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -2354,7 +2354,7 @@ test("expired deadline rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -2423,7 +2423,7 @@ test("wrong nonce rejects", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",
@@ -2491,7 +2491,7 @@ test("full lifecycle: deposit, limit, market, close", async () => {
   const handle = startRuntime({
     initialState: state,
     chain: anvil,
-    rpcUrl: RPC_URL,
+    rpcUrls: [RPC_URL],
     account: SCHEDULER_ACCOUNT,
     address: exchangeAddress,
     rpId: "localhost",

@@ -116,7 +116,7 @@ export type RuntimeConfig = {
   initialState: State<bigint>;
   initialMutationId?: number;
   chain: Chain;
-  rpcUrl: string;
+  rpcUrls: string[];
   account: PrivateKeyAccount;
   address: Address;
   rpId?: string;
@@ -578,6 +578,42 @@ const BLOCK_POLLING_INTERVAL_MS = 200;
 const SUBMIT_INTERVAL_MS = 400;
 const BUNDLE_INTERVAL_MS = 50;
 
+/**
+ * Resolves with the first promise to fulfill. If every promise rejects,
+ * rejects with the first error to arrive (chronologically, not by index).
+ */
+function raceFirstSuccess<T>(promises: Promise<T>[]): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (promises.length === 0) {
+      reject(new Error("raceFirstSuccess: no promises"));
+      return;
+    }
+    let firstError: unknown;
+    let firstErrorSet = false;
+    let remaining = promises.length;
+    let settled = false;
+    for (const p of promises) {
+      p.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        },
+        (err) => {
+          if (!firstErrorSet) {
+            firstError = err;
+            firstErrorSet = true;
+          }
+          if (--remaining === 0 && !settled) {
+            settled = true;
+            reject(firstError);
+          }
+        },
+      );
+    }
+  });
+}
+
 export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const state = config.initialState;
   const mutationQueue = Effect.runSync(
@@ -624,7 +660,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     }
   }
 
-  const transport = http(config.rpcUrl, { retryCount: 0 });
+  const transport = http(config.rpcUrls[0], { retryCount: 0 });
 
   const publicClient = createPublicClient({
     chain: config.chain,
@@ -636,6 +672,14 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     chain: config.chain,
     transport,
   });
+
+  const broadcastClients = config.rpcUrls.map((url) =>
+    createWalletClient({
+      account: config.account,
+      chain: config.chain,
+      transport: http(url, { retryCount: 0 }),
+    }),
+  );
 
   let txNonce = -1;
   async function nextNonce(): Promise<number> {
@@ -808,7 +852,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     emitBlock({ status: "accepted", bundles });
 
     const rpcRetry = Effect.retry({
-      times: 3,
+      times: 8,
       schedule: Schedule.spaced(Duration.millis(200)),
     });
 
@@ -874,9 +918,13 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     const receipt = yield* Effect.tryPromise({
       try: () =>
-        sendRawTransactionSync(walletClient, {
-          serializedTransaction: signed,
-        }),
+        raceFirstSuccess(
+          broadcastClients.map((client) =>
+            sendRawTransactionSync(client, {
+              serializedTransaction: signed,
+            }),
+          ),
+        ),
       catch: (error) => error as SendRawTransactionSyncErrorType,
     }).pipe(rpcRetry);
 
@@ -963,7 +1011,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       catch: (error) => error as Error,
     }).pipe(
       Effect.retry({
-        times: 3,
+        times: 8,
         schedule: Schedule.spaced(Duration.millis(200)),
       }),
     );

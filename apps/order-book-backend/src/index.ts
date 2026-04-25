@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import type { Chain, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import * as schema from "./app-schema";
-import { CHAIN, EXCHANGE_ADDRESS, RPC_URL } from "./constants";
+import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
 import { checkConsistency, recoverState } from "./db";
 import {
   type AddInstrument,
@@ -260,7 +260,7 @@ const handle = startRuntime({
   initialState: state,
   initialMutationId: mutationId,
   chain: CHAIN as Chain,
-  rpcUrl: RPC_URL,
+  rpcUrls: RPC_URLS,
   account: deployerAccount,
   address: EXCHANGE_ADDRESS,
   rpId: process.env.BUN_PUBLIC_RP_ID || undefined,
