@@ -529,12 +529,33 @@ function execute(Bundle[] calldata bundles) external {
                 <td className="px-3 py-2">$0.0000703687</td>
                 <td className="px-3 py-2">$0.000000476837</td>
               </tr>
-              <tr>
+              <tr className="border-b border-black">
                 <td className="px-3 py-2">1</td>
                 <td className="px-3 py-2 font-semibold">WTIOIL/USD</td>
                 <td className="px-3 py-2">0.00000109951 WTIOIL</td>
                 <td className="px-3 py-2">$0.0000703687</td>
                 <td className="px-3 py-2">$0.0000000149012</td>
+              </tr>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2">2</td>
+                <td className="px-3 py-2 font-semibold">EUR/USD</td>
+                <td className="px-3 py-2">0.0000703687 EUR</td>
+                <td className="px-3 py-2">$0.0000703687</td>
+                <td className="px-3 py-2">$0.000000000232831</td>
+              </tr>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2">3</td>
+                <td className="px-3 py-2 font-semibold">SPX/USD</td>
+                <td className="px-3 py-2">0.0000000171799 SPX</td>
+                <td className="px-3 py-2">$0.0000703687</td>
+                <td className="px-3 py-2">$0.000000953674</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2">4</td>
+                <td className="px-3 py-2 font-semibold">BTC/USD</td>
+                <td className="px-3 py-2">0.000000000536871 BTC</td>
+                <td className="px-3 py-2">$0.0000703687</td>
+                <td className="px-3 py-2">$0.0000305176</td>
               </tr>
             </tbody>
           </table>

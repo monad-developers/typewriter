@@ -1,8 +1,11 @@
 import {
+  BTC,
+  EUR,
   GOLD,
   INSTRUMENTS,
   type InstrumentConfig,
   q32ToPrice,
+  SPX,
   TokenAmount,
   USD,
   WTIOIL,
@@ -24,6 +27,9 @@ const ASSET_SYMBOLS: Record<Address, string> = {
   [USD]: "USD",
   [GOLD]: "GOLD",
   [WTIOIL]: "WTIOIL",
+  [EUR]: "EUR",
+  [SPX]: "SPX",
+  [BTC]: "BTC",
 };
 
 const KEY_TYPE_NAMES = ["p256", "webauthn-p256", "secp256k1"];

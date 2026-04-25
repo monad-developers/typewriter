@@ -1,4 +1,10 @@
-import { fromLots, q32ToPrice, TokenAmount, toLots } from "order-book-sdk";
+import {
+  fromLots,
+  type InstrumentConfig,
+  q32ToPrice,
+  TokenAmount,
+  toLots,
+} from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
 import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
 
@@ -7,20 +13,7 @@ const DEFAULT_INTERVAL = 10_000;
 // sometimes active. Repeated weights bias toward common sizes.
 const QUANTITIES = [0, 0, 0, 0, 0.1, 0.25, 0.5, 1, 2, 2, 5, 10];
 
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
-
+const instruments = resolveInstruments();
 const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
 
 let account: Awaited<ReturnType<typeof createAccount>>;
@@ -37,25 +30,48 @@ while (true) {
   }
 }
 console.log(`account ${account.address}`);
-console.log(`interval: ${interval}ms`);
+console.log(
+  `interval: ${interval}ms, instruments: ${instruments.map((i) => i.name).join(", ")}`,
+);
 
 while (true) {
-  try {
-    await tick();
-  } catch (err) {
-    console.error(
-      "iteration failed:",
-      err instanceof Error ? err.message : err,
-    );
+  for (const inst of instruments) {
+    try {
+      await tick(inst.instrument, inst.name);
+    } catch (err) {
+      console.error(
+        `[${inst.name}] iteration failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   await Bun.sleep(interval);
 }
 
-async function tick() {
+function resolveInstruments(): {
+  name: keyof typeof INSTRUMENTS;
+  instrument: InstrumentConfig;
+}[] {
+  if (!process.env.INSTRUMENT) {
+    return Object.entries(INSTRUMENTS).map(([name, instrument]) => ({
+      name: name as keyof typeof INSTRUMENTS,
+      instrument,
+    }));
+  }
+  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
+  const instrument = INSTRUMENTS[name];
+  if (!instrument) {
+    console.error(`unknown instrument: ${name}`);
+    process.exit(1);
+  }
+  return [{ name, instrument }];
+}
+
+async function tick(instrument: InstrumentConfig, label: string) {
   const humanQuantity =
     QUANTITIES[Math.floor(Math.random() * QUANTITIES.length)]!;
   if (humanQuantity === 0) {
-    console.log("skip");
+    console.log(`[${label}] skip`);
     return;
   }
 
@@ -64,7 +80,7 @@ async function tick() {
   const state = await fetchState();
   const book = state.instruments[instrument.id];
   if (!book) {
-    console.log("instrument not found on-chain, skipping");
+    console.log(`[${label}] instrument not found on-chain, skipping`);
     return;
   }
 
@@ -89,7 +105,9 @@ async function tick() {
   }
 
   if (remainingLots > 0n) {
-    console.log(`insufficient liquidity for ${side} ${humanQuantity}, skipping`);
+    console.log(
+      `[${label}] insufficient liquidity for ${side} ${humanQuantity}, skipping`,
+    );
     return;
   }
 
@@ -106,7 +124,7 @@ async function tick() {
 
   const avgQ32 = (quoteLots << 32n) / quantityLots;
   const avgPrice = q32ToPrice(avgQ32, instrument);
-  console.log(`${side} ${humanQuantity} @ ~$${avgPrice.toFixed(2)}`);
+  console.log(`[${label}] ${side} ${humanQuantity} @ ~$${avgPrice.toFixed(2)}`);
 
   await marketOrder(account, {
     instrument,

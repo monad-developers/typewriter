@@ -1,6 +1,7 @@
 import type { Instrument, Order } from "order-book-backend/src/exchange";
 import {
   baseToQuote,
+  type InstrumentConfig,
   priceToQ32,
   q32ToPrice,
   TokenAmount,
@@ -30,20 +31,9 @@ if (!process.env.QUANTITY) {
   console.error("QUANTITY env var is required (e.g. 1 for 1 unit per level)");
   process.exit(1);
 }
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
 
 const humanQuantity = Number(process.env.QUANTITY);
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
+const instruments = resolveInstruments();
 const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
 
 let account: Awaited<ReturnType<typeof createAccount>>;
@@ -60,59 +50,82 @@ while (true) {
   }
 }
 console.log(`account ${account.address}`);
-console.log(`interval: ${interval}ms`);
+console.log(
+  `interval: ${interval}ms, instruments: ${instruments.map((i) => i.name).join(", ")}`,
+);
 
 while (true) {
-  try {
-    await tick();
-  } catch (err) {
-    console.error(
-      "iteration failed:",
-      err instanceof Error ? err.message : err,
-    );
+  for (const inst of instruments) {
+    try {
+      await tick(inst.instrument, inst.name);
+    } catch (err) {
+      console.error(
+        `[${inst.name}] iteration failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   await Bun.sleep(interval);
 }
 
-async function tick() {
+function resolveInstruments(): {
+  name: keyof typeof INSTRUMENTS;
+  instrument: InstrumentConfig;
+}[] {
+  if (!process.env.INSTRUMENT) {
+    return Object.entries(INSTRUMENTS).map(([name, instrument]) => ({
+      name: name as keyof typeof INSTRUMENTS,
+      instrument,
+    }));
+  }
+  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
+  const instrument = INSTRUMENTS[name];
+  if (!instrument) {
+    console.error(`unknown instrument: ${name}`);
+    process.exit(1);
+  }
+  return [{ name, instrument }];
+}
+
+async function tick(instrument: InstrumentConfig, label: string) {
   const state = await fetchState();
   const book = state.instruments[instrument.id];
   if (!book) {
-    console.log("instrument not found on-chain, skipping");
+    console.log(`[${label}] instrument not found on-chain, skipping`);
     return;
   }
   const acc = state.accounts[account.accountHex];
   const orders = acc?.orders ?? [];
 
-  const filledIds = findFilledOrders(orders, book);
+  const filledIds = findFilledOrders(orders, book, instrument);
   if (filledIds.length > 0) {
-    console.log(`closing ${filledIds.length} filled orders...`);
+    console.log(`[${label}] closing ${filledIds.length} filled orders...`);
     for (const orderId of filledIds) {
       await closeOrder(account, { orderId });
     }
   }
 
-  const midPrice = getMidPrice(book);
+  const midPrice = getMidPrice(book, instrument);
   if (midPrice === null) {
-    console.log("no price available, skipping");
+    console.log(`[${label}] no price available, skipping`);
     return;
   }
-  console.log(`mid price: $${midPrice.toFixed(4)}`);
+  console.log(`[${label}] mid price: $${midPrice.toFixed(4)}`);
 
-  const covered = getCoveredRanges(orders, book, midPrice);
-  const needed = getMissingOrders(midPrice, covered, book);
+  const covered = getCoveredRanges(orders, book, midPrice, instrument);
+  const needed = getMissingOrders(midPrice, covered, book, instrument);
 
   if (needed.length === 0) {
-    console.log("all ranges covered");
+    console.log(`[${label}] all ranges covered`);
     return;
   }
 
-  await depositForOrders(account, needed);
+  await depositForOrders(account, needed, instrument, label);
 
   for (const order of needed) {
     const quantity = TokenAmount.from(humanQuantity, instrument.base);
     console.log(
-      `placing ${order.side}: ${quantity.human} @ $${order.price.toFixed(4)}`,
+      `[${label}] placing ${order.side}: ${quantity.human} @ $${order.price.toFixed(4)}`,
     );
     await limitOrder(account, {
       instrument,
@@ -122,10 +135,13 @@ async function tick() {
     });
   }
 
-  console.log(`placed ${needed.length} orders`);
+  console.log(`[${label}] placed ${needed.length} orders`);
 }
 
-function getMidPrice(book: Instrument): number | null {
+function getMidPrice(
+  book: Instrument,
+  instrument: InstrumentConfig,
+): number | null {
   const bidPrices = Object.keys(book.bids)
     .map(Number)
     .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n);
@@ -148,7 +164,11 @@ function getMidPrice(book: Instrument): number | null {
   return q32ToPrice(BigInt(midQ32), instrument);
 }
 
-function orderBps(order: Order, midPrice: number): number {
+function orderBps(
+  order: Order,
+  midPrice: number,
+  instrument: InstrumentConfig,
+): number {
   const price = q32ToPrice(BigInt(order.price), instrument);
   return (Math.abs(price - midPrice) / midPrice) * 10000;
 }
@@ -168,6 +188,7 @@ function getCoveredRanges(
   orders: Order[],
   book: Instrument,
   midPrice: number,
+  instrument: InstrumentConfig,
 ): Set<string> {
   const covered = new Set<string>();
   for (let i = 0; i < orders.length; i++) {
@@ -179,7 +200,7 @@ function getCoveredRanges(
     const tick = ticks[Number(order.price)];
     if (!tick || tick.volume > order.tickVolume) continue;
 
-    const bps = orderBps(order, midPrice);
+    const bps = orderBps(order, midPrice, instrument);
     const ri = findRangeIndex(bps);
     if (ri === null) continue;
 
@@ -204,6 +225,7 @@ function getMissingOrders(
   midPrice: number,
   covered: Set<string>,
   book: Instrument,
+  instrument: InstrumentConfig,
 ): { price: number; side: "buy" | "sell" }[] {
   const orders: { price: number; side: "buy" | "sell" }[] = [];
 
@@ -229,7 +251,11 @@ function getMissingOrders(
   return orders;
 }
 
-function findFilledOrders(orders: Order[], book: Instrument): number[] {
+function findFilledOrders(
+  orders: Order[],
+  book: Instrument,
+  instrument: InstrumentConfig,
+): number[] {
   const filled: number[] = [];
   for (let i = 0; i < orders.length; i++) {
     const order = orders[i]!;
@@ -248,6 +274,8 @@ function findFilledOrders(orders: Order[], book: Instrument): number[] {
 async function depositForOrders(
   account: Account,
   orders: { price: number; side: "buy" | "sell" }[],
+  instrument: InstrumentConfig,
+  label: string,
 ) {
   let totalBase = 0n;
   let totalQuote = 0n;
@@ -267,12 +295,12 @@ async function depositForOrders(
 
   if (totalBase > 0n) {
     const amount = TokenAmount.fromRaw(totalBase, instrument.base);
-    console.log(`depositing ${amount.human.toFixed(4)} base...`);
+    console.log(`[${label}] depositing ${amount.human.toFixed(4)} base...`);
     await deposit(account, { quantity: amount });
   }
   if (totalQuote > 0n) {
     const amount = TokenAmount.fromRaw(totalQuote, instrument.quote);
-    console.log(`depositing ${amount.human.toFixed(4)} quote...`);
+    console.log(`[${label}] depositing ${amount.human.toFixed(4)} quote...`);
     await deposit(account, { quantity: amount });
   }
 }

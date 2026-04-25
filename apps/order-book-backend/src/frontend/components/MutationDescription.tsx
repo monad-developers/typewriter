@@ -1,8 +1,11 @@
 import {
+  BTC,
+  EUR,
   GOLD,
   INSTRUMENTS,
   type InstrumentConfig,
   q32ToPrice,
+  SPX,
   TokenAmount,
   USD,
   WTIOIL,
@@ -45,6 +48,9 @@ const ASSET_SYMBOLS: Record<Address, string> = {
   [USD]: "USD",
   [GOLD]: "GOLD",
   [WTIOIL]: "WTIOIL",
+  [EUR]: "EUR",
+  [SPX]: "SPX",
+  [BTC]: "BTC",
 };
 
 function assetSymbol(asset: Address) {

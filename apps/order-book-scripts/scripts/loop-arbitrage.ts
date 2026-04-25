@@ -1,4 +1,9 @@
-import { fromLots, priceToQ32, TokenAmount } from "order-book-sdk";
+import {
+  fromLots,
+  type InstrumentConfig,
+  priceToQ32,
+  TokenAmount,
+} from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
 import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
 
@@ -7,28 +12,12 @@ const DEFAULT_INTERVAL = 10_000;
 const YAHOO_SYMBOLS = {
   "GOLD/USD": "GC=F",
   "WTIOIL/USD": "CL=F",
+  "EUR/USD": "EURUSD=X",
+  "SPX/USD": "^GSPC",
+  "BTC/USD": "BTC-USD",
 } as const;
 
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
-
-const yahooSymbol = YAHOO_SYMBOLS[instrumentName];
-if (!yahooSymbol) {
-  console.error(`no Yahoo Finance symbol for ${instrumentName}`);
-  process.exit(1);
-}
-
+const targets = resolveTargets();
 const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
 
 let account: Awaited<ReturnType<typeof createAccount>>;
@@ -45,18 +34,50 @@ while (true) {
   }
 }
 console.log(`account ${account.address}`);
-console.log(`interval: ${interval}ms, symbol: ${yahooSymbol}`);
+console.log(
+  `interval: ${interval}ms, instruments: ${targets.map((t) => `${t.name}(${t.yahooSymbol})`).join(", ")}`,
+);
 
 while (true) {
-  try {
-    await tick();
-  } catch (err) {
-    console.error(
-      "iteration failed:",
-      err instanceof Error ? err.message : err,
-    );
+  for (const target of targets) {
+    try {
+      await tick(target.instrument, target.yahooSymbol, target.name);
+    } catch (err) {
+      console.error(
+        `[${target.name}] iteration failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   await Bun.sleep(interval);
+}
+
+function resolveTargets(): {
+  name: keyof typeof INSTRUMENTS;
+  instrument: InstrumentConfig;
+  yahooSymbol: string;
+}[] {
+  if (!process.env.INSTRUMENT) {
+    return (Object.keys(INSTRUMENTS) as (keyof typeof INSTRUMENTS)[]).map(
+      (name) => ({
+        name,
+        instrument: INSTRUMENTS[name],
+        yahooSymbol: YAHOO_SYMBOLS[name],
+      }),
+    );
+  }
+  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
+  const instrument = INSTRUMENTS[name];
+  if (!instrument) {
+    console.error(`unknown instrument: ${name}`);
+    process.exit(1);
+  }
+  const yahooSymbol = YAHOO_SYMBOLS[name];
+  if (!yahooSymbol) {
+    console.error(`no Yahoo Finance symbol for ${name}`);
+    process.exit(1);
+  }
+  return [{ name, instrument, yahooSymbol }];
 }
 
 async function fetchYahooPrice(symbol: string): Promise<number> {
@@ -73,16 +94,20 @@ async function fetchYahooPrice(symbol: string): Promise<number> {
   return data.chart.result[0].meta.regularMarketPrice;
 }
 
-async function tick() {
+async function tick(
+  instrument: InstrumentConfig,
+  yahooSymbol: string,
+  label: string,
+) {
   const [realPrice, state] = await Promise.all([
     fetchYahooPrice(yahooSymbol),
     fetchState(),
   ]);
-  console.log(`real price: $${realPrice.toFixed(4)}`);
+  console.log(`[${label}] real price: $${realPrice.toFixed(4)}`);
 
   const book = state.instruments[instrument.id];
   if (!book) {
-    console.log("instrument not found on-chain, skipping");
+    console.log(`[${label}] instrument not found on-chain, skipping`);
     return;
   }
 
@@ -116,7 +141,7 @@ async function tick() {
   }
 
   if (buyLots === 0n && sellLots === 0n) {
-    console.log("no arbitrage opportunity");
+    console.log(`[${label}] no arbitrage opportunity`);
     return;
   }
 
@@ -131,7 +156,7 @@ async function tick() {
     );
     const avgPrice = depositAmount.human / quantity.human;
     console.log(
-      `arb buy: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
+      `[${label}] arb buy: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
     );
     await deposit(account, { quantity: depositAmount });
     await marketOrder(account, {
@@ -153,7 +178,7 @@ async function tick() {
     );
     const avgPrice = minReceived.human / quantity.human;
     console.log(
-      `arb sell: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
+      `[${label}] arb sell: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
     );
     await deposit(account, { quantity });
     await marketOrder(account, {
