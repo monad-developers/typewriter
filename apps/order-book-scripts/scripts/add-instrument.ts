@@ -1,17 +1,17 @@
-import { baseToQuote, priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
-import { INSTRUMENTS } from "../src/constants";
 import {
-  addInstrument,
-  createAccount,
-  deposit,
-  limitOrder,
-} from "../src/sdk";
+  baseToQuote,
+  priceToQ32,
+  q32ToPrice,
+  TokenAmount,
+} from "order-book-sdk";
+import { INSTRUMENTS } from "../src/constants";
+import { addInstrument, createAccount, deposit, limitOrder } from "../src/sdk";
 
-const GOLD_PRICE = 2400;
-const WTIOIL_PRICE = 80;
-const EUR_PRICE = 1.1;
-const SPX_PRICE = 5200;
-const BTC_PRICE = 95000;
+const GOLD_PRICE = 4740;
+const WTIOIL_PRICE = 94;
+const EUR_PRICE = 1.17;
+const SPX_PRICE = 7165;
+const BTC_PRICE = 77300;
 
 const GOLD_Q32_PRICE = priceToQ32(GOLD_PRICE, INSTRUMENTS["GOLD/USD"]);
 const WTIOIL_Q32_PRICE = priceToQ32(WTIOIL_PRICE, INSTRUMENTS["WTIOIL/USD"]);
@@ -100,11 +100,7 @@ for (const name of [
 
   const price = PRICES[name];
   const quantity = TokenAmount.from(SEED_QUANTITY, inst.base);
-  const quoteDeposit = baseToQuote(
-    quantity,
-    priceToQ32(price, inst),
-    inst,
-  );
+  const quoteDeposit = baseToQuote(quantity, priceToQ32(price, inst), inst);
   await deposit(admin, { quantity });
   await deposit(admin, { quantity: quoteDeposit });
   await limitOrder(admin, { instrument: inst, quantity, price, side: "buy" });

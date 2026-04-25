@@ -24,6 +24,8 @@ const RANGES = [
   { min: 25, max: 100 },
   { min: 100, max: 250 },
   { min: 250, max: 1000 },
+  { min: 1000, max: 2500 },
+  { min: 2500, max: 10000 },
 ];
 const DEFAULT_INTERVAL = 10_000;
 
@@ -300,16 +302,12 @@ async function depositForOrders(
   if (totalBase > 0n) {
     const amount = TokenAmount.fromRaw(totalBase, instrument.base);
     console.log(`[${label}] depositing ${amount.human.toFixed(4)} base...`);
-    deposits.push(
-      deposit(account, { quantity: amount }, { concurrent: true }),
-    );
+    deposits.push(deposit(account, { quantity: amount }, { concurrent: true }));
   }
   if (totalQuote > 0n) {
     const amount = TokenAmount.fromRaw(totalQuote, instrument.quote);
     console.log(`[${label}] depositing ${amount.human.toFixed(4)} quote...`);
-    deposits.push(
-      deposit(account, { quantity: amount }, { concurrent: true }),
-    );
+    deposits.push(deposit(account, { quantity: amount }, { concurrent: true }));
   }
   await Promise.all(deposits);
 }
