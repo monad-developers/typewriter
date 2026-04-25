@@ -215,15 +215,26 @@ if (!process.env.DATABASE_URL) {
 
 const DATABASE_URL: string = process.env.DATABASE_URL;
 
-const writerClient = new Bun.SQL({ url: DATABASE_URL, max: 1 });
-const writerDb = drizzle({
-  client: writerClient,
+const migrationClient = new Bun.SQL({ url: DATABASE_URL, max: 1 });
+const migrationDb = drizzle({
+  client: migrationClient,
   schema,
   casing: "snake_case",
 });
 
 // @ts-expect-error migrate's BunSQLDatabase type doesn't carry schema
-const schemaName = await migrate(writerDb, CHAIN.id, EXCHANGE_ADDRESS);
+const schemaName = await migrate(migrationDb, CHAIN.id, EXCHANGE_ADDRESS);
+
+const writerClient = new Bun.SQL({
+  url: DATABASE_URL,
+  max: 5,
+  connection: { search_path: `${schemaName},public` },
+});
+const writerDb = drizzle({
+  client: writerClient,
+  schema,
+  casing: "snake_case",
+});
 
 const readerClient = new Bun.SQL({
   url: DATABASE_URL,
