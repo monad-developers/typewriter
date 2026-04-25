@@ -14,9 +14,12 @@ export function Header() {
   const serial = accountQuery.data?.serial;
 
   return (
-    <header className="w-full border-b border-black px-6 h-12 flex items-center gap-6 text-sm">
+    <header className="w-full px-6 h-12 flex items-center gap-6 text-sm">
       <Link to="/exchange" className="text-blue-500 hover:underline">
         /exchange
+      </Link>
+      <Link to="/about" className="text-blue-500 hover:underline">
+        /about
       </Link>
       <span className="flex-1" />
       {account ? (
@@ -27,7 +30,7 @@ export function Header() {
               to={`/account/${serial}`}
               className="text-blue-500 hover:underline"
             >
-              account {serial}
+              view account
             </Link>
           ) : null}
           <button

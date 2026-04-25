@@ -2,6 +2,7 @@ import architectureDiagram from "../architecture.svg";
 import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
+import exchangeScreenshot from "../image.png";
 import { Link } from "../lib/router";
 
 const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID ?? "0");
@@ -104,13 +105,13 @@ export function AboutOrderBook() {
             to="/exchange"
             className="block border rounded-lg overflow-hidden hover:border-black transition-colors"
           >
-            {/* TODO: replace with a real screenshot or OG preview asset */}
-            <img
-              src="/exchange-preview.png"
-              alt="Exchange UI preview"
-              className="w-full block bg-zinc-100"
-              style={{ aspectRatio: "16 / 9", objectFit: "cover" }}
-            />
+            <div className="bg-background p-4">
+              <img
+                src={exchangeScreenshot}
+                alt="Exchange UI preview"
+                className="w-full block"
+              />
+            </div>
             <div className="px-4 py-3 border-t flex items-center justify-between">
               <span className="text-sm font-semibold">Open the exchange</span>
               <span className="text-sm text-blue-500">/exchange →</span>
@@ -314,7 +315,7 @@ struct Key {
             System Architecture
           </h2>
           <p className="leading-relaxed mb-4">
-            Transactions don't hit the chain directly. Every signed mutation
+            Transactions don't hit the chain directly. Every signed message
             goes through a server that verifies the signature, runs it through
             REVM against local state, and replies{" "}
             <InlineCode>accepted</InlineCode> the moment it knows the
@@ -323,7 +324,7 @@ struct Key {
           <div className="my-6 flex justify-center">
             <img
               src={architectureDiagram}
-              alt="Architecture sequence diagram: client signs, server bundles and submits, Monad confirms"
+              alt="Architecture sequence diagram: client signs, server batches and submits, Monad confirms"
               className="w-3/4 h-auto"
             />
           </div>
@@ -354,10 +355,10 @@ function execute(Bundle[] calldata bundles) external {
           </p> */}
 
           <h3
-            id="order-lifecycle"
+            id="message-lifecycle"
             className="text-lg font-semibold mt-6 mb-2 scroll-mt-24"
           >
-            Order lifecycle
+            Message lifecycle
           </h3>
           <p className="leading-relaxed mb-4">
             Every transaction moves through six states. The first two happen on

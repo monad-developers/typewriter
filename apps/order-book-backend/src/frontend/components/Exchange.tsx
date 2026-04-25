@@ -212,7 +212,7 @@ function Row({
         <input
           type="number"
           min={0}
-          placeholder="0"
+          placeholder="qty ↵"
           value={buyAmount}
           onChange={(e) => setBuyAmount(e.target.value)}
           onKeyDown={(e) => {
@@ -226,7 +226,7 @@ function Row({
         <input
           type="number"
           min={0}
-          placeholder="0"
+          placeholder="qty ↵"
           value={sellAmount}
           onChange={(e) => setSellAmount(e.target.value)}
           onKeyDown={(e) => {

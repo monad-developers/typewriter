@@ -33,7 +33,7 @@ function BlockColumn({ block }: { block: LiveBlock }) {
       className="border border-black flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-zinc-50"
     >
       <div className="text-sm shrink-0 truncate">
-        {block.number}
+        block {block.number}
       </div>
       <div
         className="grid gap-1 flex-1 min-h-0"

@@ -72,6 +72,7 @@ function Routes() {
   if (mutationMatch) return <Shell><MutationPage /></Shell>;
   if (accountMatch) return <Shell><AccountPage /></Shell>;
   if (path === "/exchange") return <Shell><ExchangePage /></Shell>;
+  if (path === "/about") return <AboutOrderBook />;
   return <AboutOrderBook />;
 }
 
