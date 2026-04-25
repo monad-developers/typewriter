@@ -92,5 +92,3 @@ await marketOrder(account, {
     side === "buy" ? instrument.base : instrument.quote,
   ),
 });
-
-console.log("done");

@@ -114,5 +114,3 @@ if (sellLots > 0n) {
     side: "sell",
   });
 }
-
-console.log("done");
