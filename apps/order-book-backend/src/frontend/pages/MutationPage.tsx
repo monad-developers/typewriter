@@ -59,9 +59,9 @@ export function MutationPage() {
   return (
     <div className="min-h-screen w-full flex flex-col">
       <section className="w-full border-b p-4 flex flex-col gap-2">
-        <h2 className="text-2xl font-bold">Mutation</h2>
+        <h2 className="text-2xl font-bold">Message</h2>
         <code>id: {mutation?.id ?? "..."}</code>
-        <code>bundle: {mutation?.bundleId ?? "..."}</code>
+        <code>batch: {mutation?.bundleId ?? "..."}</code>
         <code>
           block:{" "}
           {mutation?.blockNumber ? (

@@ -1,4 +1,6 @@
 import {
+  BTC,
+  EUR,
   GOLD,
   PERM_ADD_INSTRUMENT,
   PERM_AUTHORIZE,
@@ -8,6 +10,7 @@ import {
   PERM_MARKET_ORDER,
   PERM_REVOKE,
   PERM_WITHDRAW,
+  SPX,
   TokenAmount,
   USD,
   WTIOIL,
@@ -21,6 +24,9 @@ const ASSET_SYMBOLS: Record<Address, string> = {
   [USD]: "USD",
   [GOLD]: "GOLD",
   [WTIOIL]: "WTIOIL",
+  [EUR]: "EUR",
+  [SPX]: "SPX",
+  [BTC]: "BTC",
 };
 
 const KEY_TYPE_LABELS = ["P256", "WebAuthnP256", "Secp256k1"] as const;
@@ -38,7 +44,7 @@ const PERMISSIONS = [
 
 const KEY_COLUMNS = ["type", "permissions", "expiry", "publicKey"];
 const BALANCE_COLUMNS = ["asset", "amount"];
-const MUTATION_COLUMNS = ["id", "block", "bundle", "status", "description"];
+const MUTATION_COLUMNS = ["id", "block", "batch", "status", "description"];
 
 const linkClass = "text-blue-500 hover:underline";
 
@@ -174,7 +180,7 @@ export function AccountPage() {
 
       <section className="w-full p-4">
         <h2 className="text-2xl font-bold mb-4">
-          Mutations ({account?.mutations.length ?? 0})
+          Messages ({account?.mutations.length ?? 0})
         </h2>
         <table className="w-full border-collapse">
           <thead>
@@ -193,7 +199,7 @@ export function AccountPage() {
                   colSpan={MUTATION_COLUMNS.length}
                   className="py-2 pr-6 text-muted-foreground"
                 >
-                  <code>No mutations</code>
+                  <code>No messages</code>
                 </td>
               </tr>
             ) : (

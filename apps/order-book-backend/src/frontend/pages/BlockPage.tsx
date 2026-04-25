@@ -3,7 +3,7 @@ import { useBlock } from "../hooks/useBlock";
 import { type ApiMutation, useMutations } from "../hooks/useMutations";
 import { Link, useMatch } from "../lib/router";
 
-const MUTATION_COLUMNS = ["id", "bundle", "status", "account", "description"];
+const MUTATION_COLUMNS = ["id", "batch", "status", "account", "description"];
 
 const linkClass = "text-blue-500 hover:underline";
 
@@ -76,7 +76,7 @@ export function BlockPage() {
 
       <section className="w-full p-4">
         <h2 className="text-2xl font-bold mb-4">
-          Mutations ({mutations.data?.length ?? 0})
+          Messages ({mutations.data?.length ?? 0})
         </h2>
         <table className="w-full border-collapse">
           <thead>
@@ -95,7 +95,7 @@ export function BlockPage() {
                   colSpan={MUTATION_COLUMNS.length}
                   className="py-2 pr-6 text-muted-foreground"
                 >
-                  <code>No mutations in this block</code>
+                  <code>No messages in this block</code>
                 </td>
               </tr>
             ) : (
