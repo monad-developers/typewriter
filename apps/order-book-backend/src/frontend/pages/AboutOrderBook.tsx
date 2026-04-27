@@ -3,8 +3,8 @@ import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
 import exchangeScreenshot from "../image.png";
-import orderSequencingScreenshot from "../order-sequencing.png";
 import { Link } from "../lib/router";
+import orderSequencingScreenshot from "../order-sequencing.png";
 
 const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID ?? "0");
 const EXCHANGE_ADDRESS =
@@ -69,42 +69,13 @@ export function AboutOrderBook() {
               backend cooperation.
             </li>
           </ul>
-
-          <h3 id="gas" className="text-lg font-semibold mt-6 mb-2 scroll-mt-24">
-            Gas
-          </h3>
-          <p className="leading-relaxed mb-4">
-            Measured per-op marginal gas for a realistic batch.
-          </p>
-          <table className="w-full text-sm border border-black">
-            <thead>
-              <tr className="border-b border-black text-left">
-                <th className="px-3 py-2">Operation</th>
-                <th className="px-3 py-2">Gas</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-b border-black">
-                <td className="px-3 py-2 font-semibold">market order</td>
-                <td className="px-3 py-2">27k — 37k</td>
-              </tr>
-              <tr className="border-b border-black">
-                <td className="px-3 py-2 font-semibold">limit order</td>
-                <td className="px-3 py-2">47k — 69k</td>
-              </tr>
-              <tr>
-                <td className="px-3 py-2 font-semibold">cancel order</td>
-                <td className="px-3 py-2">35k</td>
-              </tr>
-            </tbody>
-          </table>
         </section>
 
         {/* CTA */}
         <section>
           <Link
             to="/exchange"
-            className="block border rounded-lg overflow-hidden hover:border-black transition-colors"
+            className="group block border rounded-lg overflow-hidden hover:border-black hover:shadow-md transition-all"
           >
             <div className="bg-background p-4">
               <img
@@ -113,9 +84,11 @@ export function AboutOrderBook() {
                 className="w-full block"
               />
             </div>
-            <div className="px-4 py-3 border-t flex items-center justify-between">
-              <span className="text-sm font-semibold">Open the exchange</span>
-              <span className="text-sm text-blue-500">/exchange →</span>
+            <div className="px-4 py-3 bg-blue-500 text-white flex items-center justify-between">
+              <span className="text-base font-semibold">Open the exchange</span>
+              <span className="text-base font-semibold transition-transform group-hover:translate-x-1">
+                →
+              </span>
             </div>
           </Link>
         </section>
@@ -212,7 +185,9 @@ struct Key {
             >
               ERC-4337
             </a>
-            .
+            . User's can decide whether two transactions should be processed
+            sequentially or can run in parallel by assigning them the same or
+            different nonce keys.
           </p>
           <CodeBlock
             title="Exchange.sol"
@@ -283,9 +258,7 @@ struct Key {
           <p className="leading-relaxed">
             Every resting order at a tick fills at the same rate, regardless of
             when it arrived. Large orders earn their share of the fill
-            proportionally, so posting size is rewarded. This also makes
-            matching O(ticks), not O(orders), so gas scales with price levels
-            rather than the number of makers.
+            proportionally, so posting size is rewarded.
           </p>
 
           {/* <h3
@@ -617,6 +590,49 @@ function forceExecute(uint256 index) external {
                 <td className="px-3 py-2">0.000000000536871 BTC</td>
                 <td className="px-3 py-2">$0.0000703687</td>
                 <td className="px-3 py-2">$0.0000305176</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3 id="gas" className="text-lg font-semibold mt-6 mb-2 scroll-mt-24">
+            Gas
+          </h3>
+          <p className="leading-relaxed mb-4">
+            Measured per-op marginal gas for a realistic batch. Reference
+            figures are{" "}
+            <a
+              href="https://github.com/Kuru-Labs/Kuru-contracts-dex-public/blob/main/test/test_results/Benchmark_via_ir"
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-500 hover:underline"
+            >
+              Kuru's published Foundry benchmarks
+            </a>
+            .
+          </p>
+          <table className="w-full text-sm border border-black">
+            <thead>
+              <tr className="border-b border-black text-left">
+                <th className="px-3 py-2">Operation</th>
+                <th className="px-3 py-2">Gas</th>
+                <th className="px-3 py-2">Reference (Kuru)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2 font-semibold">market order</td>
+                <td className="px-3 py-2">27k — 37k</td>
+                <td className="px-3 py-2">135k</td>
+              </tr>
+              <tr className="border-b border-black">
+                <td className="px-3 py-2 font-semibold">limit order</td>
+                <td className="px-3 py-2">47k — 69k</td>
+                <td className="px-3 py-2">145k</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-2 font-semibold">cancel order</td>
+                <td className="px-3 py-2">35k</td>
+                <td className="px-3 py-2">51k</td>
               </tr>
             </tbody>
           </table>
