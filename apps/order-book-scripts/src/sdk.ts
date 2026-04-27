@@ -164,6 +164,29 @@ export async function fetchState(): Promise<State> {
   return res.json() as Promise<State>;
 }
 
+export async function estimateMarketOrder(params: {
+  instrumentId: number;
+  side: "buy" | "sell";
+  quantityLots: bigint;
+}): Promise<{
+  fills: { quantity: bigint; price: number }[];
+  filledQuantity: bigint;
+  quoteQuantity: bigint;
+}> {
+  const url = `${API_URL}/api/estimate-market-order?instrumentId=${params.instrumentId}&side=${params.side}&quantity=${params.quantityLots}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`estimate-market-order failed: ${data.error}`);
+  return {
+    fills: (data.fills as { quantity: string; price: number }[]).map((f) => ({
+      quantity: BigInt(f.quantity),
+      price: f.price,
+    })),
+    filledQuantity: BigInt(data.filledQuantity as string),
+    quoteQuantity: BigInt(data.quoteQuantity as string),
+  };
+}
+
 export async function addInstrument(
   account: Account,
   instrument: {

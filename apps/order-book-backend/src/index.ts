@@ -816,6 +816,75 @@ serve({
       },
     },
 
+    "/api/estimate-market-order": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const instrumentIdParam = url.searchParams.get("instrumentId");
+        const sideParam = url.searchParams.get("side");
+        const quantityParam = url.searchParams.get("quantity");
+
+        if (instrumentIdParam === null || !/^\d+$/.test(instrumentIdParam)) {
+          return Response.json(
+            { error: "instrumentId query parameter required (integer)" },
+            { status: 400 },
+          );
+        }
+        if (sideParam !== "buy" && sideParam !== "sell") {
+          return Response.json(
+            { error: "side query parameter must be 'buy' or 'sell'" },
+            { status: 400 },
+          );
+        }
+        if (quantityParam === null || !/^\d+$/.test(quantityParam)) {
+          return Response.json(
+            { error: "quantity query parameter required (integer lots)" },
+            { status: 400 },
+          );
+        }
+
+        const instrument = handle.state.instruments[Number(instrumentIdParam)];
+        if (!instrument)
+          return Response.json(
+            { error: "instrument not found" },
+            { status: 404 },
+          );
+
+        const quantityLots = BigInt(quantityParam);
+        const ticks = sideParam === "buy" ? instrument.asks : instrument.bids;
+        const prices = Object.keys(ticks)
+          .map(Number)
+          .filter((p) => ticks[p]!.remainingQuantity > 0n)
+          .sort((a, b) => (sideParam === "buy" ? a - b : b - a));
+
+        let remainingLots = quantityLots;
+        let quoteLots = 0n;
+        const fills: { quantity: string; price: number }[] = [];
+
+        for (const price of prices) {
+          if (remainingLots === 0n) break;
+          const available = ticks[price]!.remainingQuantity;
+          const fillLots =
+            remainingLots < available ? remainingLots : available;
+          quoteLots += (fillLots * BigInt(price)) >> 32n;
+          remainingLots -= fillLots;
+          fills.push({ quantity: fillLots.toString(), price });
+        }
+
+        if (remainingLots > 0n) {
+          return Response.json(
+            { error: "insufficient liquidity" },
+            { status: 400 },
+          );
+        }
+
+        return Response.json({
+          fills,
+          filledQuantity: quantityLots.toString(),
+          quoteQuantity: quoteLots.toString(),
+        });
+      },
+    },
+
     "/api/state": {
       GET: () => {
         return Response.json(encodeState(handle.state));
