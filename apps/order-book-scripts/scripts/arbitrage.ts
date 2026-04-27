@@ -1,6 +1,11 @@
 import { fromLots, priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
+import {
+  createAccount,
+  deposit,
+  estimateFillToPrice,
+  marketOrder,
+} from "../src/sdk";
 
 if (!process.env.PRICE) {
   console.error("PRICE env var is required (e.g. 2400 for $2400)");
@@ -21,47 +26,40 @@ if (!instrument) {
   process.exit(1);
 }
 
-const state = await fetchState();
-const book = state.instruments[instrument.id]!;
-
 const account = await createAccount();
 console.log(`account ${account.address}`);
 
-const anchorQ32 = Number(priceToQ32(anchorPrice, instrument));
+const anchorQ32 = priceToQ32(anchorPrice, instrument);
 console.log(`anchor price: $${anchorPrice}`);
 
-const askPrices = Object.keys(book.asks)
-  .map(Number)
-  .filter((p) => BigInt(book.asks[p]!.remainingQuantity) > 0n)
-  .sort((a, b) => a - b);
-const bidPrices = Object.keys(book.bids)
-  .map(Number)
-  .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n)
-  .sort((a, b) => b - a);
+const [buyEstimate, sellEstimate] = await Promise.all([
+  estimateFillToPrice({
+    instrumentId: instrument.id,
+    side: "buy",
+    priceQ32: anchorQ32,
+  }),
+  estimateFillToPrice({
+    instrumentId: instrument.id,
+    side: "sell",
+    priceQ32: anchorQ32,
+  }),
+]);
 
-let buyLots = 0n;
-let buyQuoteLots = 0n;
-for (const p of askPrices) {
-  if (p > anchorQ32) break;
-  const available = BigInt(book.asks[p]!.remainingQuantity);
-  buyLots += available;
-  buyQuoteLots += (available * BigInt(p)) >> 32n;
+for (const fill of buyEstimate.fills) {
   console.log(
-    `  buy ${TokenAmount.fromRaw(fromLots(available, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(BigInt(p), instrument).toFixed(4)}`,
+    `  buy ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(BigInt(fill.price), instrument).toFixed(4)}`,
+  );
+}
+for (const fill of sellEstimate.fills) {
+  console.log(
+    `  sell ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(BigInt(fill.price), instrument).toFixed(4)}`,
   );
 }
 
-let sellLots = 0n;
-let sellQuoteLots = 0n;
-for (const p of bidPrices) {
-  if (p < anchorQ32) break;
-  const available = BigInt(book.bids[p]!.remainingQuantity);
-  sellLots += available;
-  sellQuoteLots += (available * BigInt(p)) >> 32n;
-  console.log(
-    `  sell ${TokenAmount.fromRaw(fromLots(available, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(BigInt(p), instrument).toFixed(4)}`,
-  );
-}
+const buyLots = buyEstimate.totalQuantity;
+const buyQuoteLots = buyEstimate.quoteQuantity;
+const sellLots = sellEstimate.totalQuantity;
+const sellQuoteLots = sellEstimate.quoteQuantity;
 
 if (buyLots === 0n && sellLots === 0n) {
   console.log("no arbitrage opportunity found");

@@ -1,4 +1,3 @@
-import type { Instrument, Order } from "order-book-backend/src/exchange";
 import {
   baseToQuote,
   type InstrumentConfig,
@@ -9,12 +8,18 @@ import {
 import { INSTRUMENTS } from "../src/constants";
 import {
   type Account,
+  type AccountOrder,
   closeOrder,
   createAccount,
   deposit,
-  fetchState,
+  fetchAccountOrders,
+  fetchPrice,
+  fetchTicks,
   limitOrder,
 } from "../src/sdk";
+
+type Tick = { quantity: bigint; remainingQuantity: bigint; volume: number };
+type TickLookup = (side: 0 | 1, priceQ32: bigint) => Tick | null;
 
 const RANGES = [
   { min: 0, max: 1 },
@@ -90,16 +95,47 @@ function resolveInstruments(): {
 }
 
 async function tick(instrument: InstrumentConfig, label: string) {
-  const state = await fetchState();
-  const book = state.instruments[instrument.id];
-  if (!book) {
-    console.log(`[${label}] instrument not found on-chain, skipping`);
+  const [priceInfo, orders] = await Promise.all([
+    fetchPrice(instrument.id),
+    fetchAccountOrders(account.accountHex, instrument.id),
+  ]);
+
+  if (priceInfo.priceQ32 === null) {
+    console.log(`[${label}] no price available, skipping`);
     return;
   }
-  const acc = state.accounts[account.accountHex];
-  const orders = acc?.orders ?? [];
+  const midPrice = q32ToPrice(priceInfo.priceQ32, instrument);
+  console.log(`[${label}] mid price: $${midPrice.toFixed(4)}`);
 
-  const filledIds = findFilledOrders(orders, book, instrument);
+  const candidates: { price: number; side: "buy" | "sell" }[] = [];
+  for (const range of RANGES) {
+    const midBps = (range.min + range.max) / 2;
+    candidates.push({ price: midPrice * (1 - midBps / 10000), side: "buy" });
+    candidates.push({ price: midPrice * (1 + midBps / 10000), side: "sell" });
+  }
+
+  const orderQueries = orders.map((o) => ({
+    side: (o.side === 0 ? "buy" : "sell") as "buy" | "sell",
+    priceQ32: o.price,
+  }));
+  const candidateQueries = candidates.map((c) => ({
+    side: c.side,
+    priceQ32: priceToQ32(c.price, instrument),
+  }));
+
+  const allQueries = [...orderQueries, ...candidateQueries];
+  const allTicks = await fetchTicks(instrument.id, allQueries);
+
+  const tickLookup: TickLookup = (side, priceQ32) => {
+    for (let i = 0; i < allQueries.length; i++) {
+      const q = allQueries[i]!;
+      const qSide = q.side === "buy" ? 0 : 1;
+      if (qSide === side && q.priceQ32 === priceQ32) return allTicks[i] ?? null;
+    }
+    return null;
+  };
+
+  const filledIds = findFilledOrders(orders, tickLookup);
   if (filledIds.length > 0) {
     console.log(`[${label}] closing ${filledIds.length} filled orders...`);
     await Promise.all(
@@ -109,15 +145,8 @@ async function tick(instrument: InstrumentConfig, label: string) {
     );
   }
 
-  const midPrice = getMidPrice(book, instrument);
-  if (midPrice === null) {
-    console.log(`[${label}] no price available, skipping`);
-    return;
-  }
-  console.log(`[${label}] mid price: $${midPrice.toFixed(4)}`);
-
-  const covered = getCoveredRanges(orders, book, midPrice, instrument);
-  const needed = getMissingOrders(midPrice, covered, book, instrument);
+  const covered = getCoveredRanges(orders, tickLookup, midPrice, instrument);
+  const needed = getMissingOrders(covered, candidates, tickLookup, instrument);
 
   if (needed.length === 0) {
     console.log(`[${label}] all ranges covered`);
@@ -143,38 +172,12 @@ async function tick(instrument: InstrumentConfig, label: string) {
   console.log(`[${label}] placed ${needed.length} orders`);
 }
 
-function getMidPrice(
-  book: Instrument,
-  instrument: InstrumentConfig,
-): number | null {
-  const bidPrices = Object.keys(book.bids)
-    .map(Number)
-    .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n);
-  const askPrices = Object.keys(book.asks)
-    .map(Number)
-    .filter((p) => BigInt(book.asks[p]!.remainingQuantity) > 0n);
-  const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
-  const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
-
-  let midQ32: number | null = null;
-  if (bestBid !== null && bestAsk !== null) {
-    midQ32 = Math.round((bestBid + bestAsk) / 2);
-  } else if (bestBid !== null) {
-    midQ32 = bestBid;
-  } else if (bestAsk !== null) {
-    midQ32 = bestAsk;
-  }
-
-  if (midQ32 === null) return null;
-  return q32ToPrice(BigInt(midQ32), instrument);
-}
-
 function orderBps(
-  order: Order,
+  order: AccountOrder,
   midPrice: number,
   instrument: InstrumentConfig,
 ): number {
-  const price = q32ToPrice(BigInt(order.price), instrument);
+  const price = q32ToPrice(order.price, instrument);
   return (Math.abs(price - midPrice) / midPrice) * 10000;
 }
 
@@ -190,19 +193,16 @@ function findRangeIndex(bps: number): number | null {
 }
 
 function getCoveredRanges(
-  orders: Order[],
-  book: Instrument,
+  orders: AccountOrder[],
+  tickLookup: TickLookup,
   midPrice: number,
   instrument: InstrumentConfig,
 ): Set<string> {
   const covered = new Set<string>();
-  for (let i = 0; i < orders.length; i++) {
-    const order = orders[i]!;
-    if (order.quantity === "0") continue;
-    if (order.instrumentId !== instrument.id) continue;
+  for (const order of orders) {
+    if (order.quantity === 0n) continue;
 
-    const ticks = order.side === 0 ? book.bids : book.asks;
-    const tick = ticks[Number(order.price)];
+    const tick = tickLookup(order.side, order.price);
     if (!tick || tick.volume > order.tickVolume) continue;
 
     const bps = orderBps(order, midPrice, instrument);
@@ -215,62 +215,50 @@ function getCoveredRanges(
   return covered;
 }
 
-function isPartiallyFilled(
-  book: Instrument,
-  q32Price: bigint,
-  side: "buy" | "sell",
-): boolean {
-  const ticks = side === "buy" ? book.bids : book.asks;
-  const tick = ticks[Number(q32Price)];
-  if (!tick) return false;
-  return BigInt(tick.remainingQuantity) !== BigInt(tick.quantity);
-}
-
 function getMissingOrders(
-  midPrice: number,
   covered: Set<string>,
-  book: Instrument,
+  candidates: { price: number; side: "buy" | "sell" }[],
+  tickLookup: TickLookup,
   instrument: InstrumentConfig,
 ): { price: number; side: "buy" | "sell" }[] {
-  const orders: { price: number; side: "buy" | "sell" }[] = [];
+  const out: { price: number; side: "buy" | "sell" }[] = [];
 
   for (let i = 0; i < RANGES.length; i++) {
-    const range = RANGES[i]!;
-    const midBps = (range.min + range.max) / 2;
+    const buyCandidate = candidates[i * 2]!;
+    const sellCandidate = candidates[i * 2 + 1]!;
 
     if (!covered.has(rangeKey("buy", i))) {
-      const price = midPrice * (1 - midBps / 10000);
-      if (!isPartiallyFilled(book, priceToQ32(price, instrument), "buy")) {
-        orders.push({ price, side: "buy" });
+      const tick = tickLookup(0, priceToQ32(buyCandidate.price, instrument));
+      const partiallyFilled =
+        tick !== null && tick.remainingQuantity !== tick.quantity;
+      if (!partiallyFilled) {
+        out.push({ price: buyCandidate.price, side: "buy" });
       }
     }
 
     if (!covered.has(rangeKey("sell", i))) {
-      const price = midPrice * (1 + midBps / 10000);
-      if (!isPartiallyFilled(book, priceToQ32(price, instrument), "sell")) {
-        orders.push({ price, side: "sell" });
+      const tick = tickLookup(1, priceToQ32(sellCandidate.price, instrument));
+      const partiallyFilled =
+        tick !== null && tick.remainingQuantity !== tick.quantity;
+      if (!partiallyFilled) {
+        out.push({ price: sellCandidate.price, side: "sell" });
       }
     }
   }
 
-  return orders;
+  return out;
 }
 
 function findFilledOrders(
-  orders: Order[],
-  book: Instrument,
-  instrument: InstrumentConfig,
+  orders: AccountOrder[],
+  tickLookup: TickLookup,
 ): number[] {
   const filled: number[] = [];
-  for (let i = 0; i < orders.length; i++) {
-    const order = orders[i]!;
-    if (order.quantity === "0") continue;
-    if (order.instrumentId !== instrument.id) continue;
-
-    const ticks = order.side === 0 ? book.bids : book.asks;
-    const tick = ticks[Number(order.price)];
+  for (const order of orders) {
+    if (order.quantity === 0n) continue;
+    const tick = tickLookup(order.side, order.price);
     if (!tick || tick.volume > order.tickVolume) {
-      filled.push(i);
+      filled.push(order.orderId);
     }
   }
   return filled;

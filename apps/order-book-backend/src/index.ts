@@ -16,7 +16,6 @@ import {
   decodeLimitOrder,
   decodeMarketOrder,
   decodeSigned,
-  encodeState,
   type Initialize,
   type LimitOrder,
   type MarketOrder,
@@ -593,6 +592,58 @@ serve({
       },
     },
 
+    "/api/account/:id/orders": {
+      GET: (req) => {
+        const idParam = req.params.id;
+        if (!/^0x[0-9a-fA-F]{64}$/.test(idParam)) {
+          return Response.json(
+            { error: "Invalid account address" },
+            { status: 400 },
+          );
+        }
+        const acc = handle.state.accounts[idParam as Hex];
+        if (!acc)
+          return Response.json({ error: "account not found" }, { status: 404 });
+
+        const url = new URL(req.url);
+        const instrumentIdParam = url.searchParams.get("instrumentId");
+        const filterId =
+          instrumentIdParam !== null && /^\d+$/.test(instrumentIdParam)
+            ? Number(instrumentIdParam)
+            : null;
+
+        const orders = acc.orders
+          .map((o, i) => ({
+            orderId: i,
+            quantity: o.quantity.toString(),
+            instrumentId: o.instrumentId,
+            price: o.price.toString(),
+            tickVolume: o.tickVolume,
+            side: o.side,
+          }))
+          .filter((o) => filterId === null || o.instrumentId === filterId);
+
+        return Response.json({ orders });
+      },
+    },
+
+    "/api/account/:id/exists": {
+      GET: (req) => {
+        const idParam = req.params.id;
+        if (!/^0x[0-9a-fA-F]{64}$/.test(idParam)) {
+          return Response.json(
+            { error: "Invalid account address" },
+            { status: 400 },
+          );
+        }
+        const acc = handle.state.accounts[idParam as Hex];
+        return Response.json({
+          exists: acc !== undefined,
+          hasKeys: acc !== undefined && acc.keys.length > 0,
+        });
+      },
+    },
+
     "/api/account/:id": {
       GET: async (req) => {
         const idParam = req.params.id;
@@ -816,6 +867,50 @@ serve({
       },
     },
 
+    "/api/ticks": {
+      POST: async (req) => {
+        const body = (await req.json()) as {
+          instrumentId?: number;
+          queries?: { side: "buy" | "sell"; priceQ32: string }[];
+        };
+        if (typeof body.instrumentId !== "number") {
+          return Response.json(
+            { error: "instrumentId required (number)" },
+            { status: 400 },
+          );
+        }
+        if (!Array.isArray(body.queries)) {
+          return Response.json(
+            { error: "queries required (array)" },
+            { status: 400 },
+          );
+        }
+
+        const instrument = handle.state.instruments[body.instrumentId];
+        if (!instrument)
+          return Response.json(
+            { error: "instrument not found" },
+            { status: 404 },
+          );
+
+        const ticks = body.queries.map((q) => {
+          if (q.side !== "buy" && q.side !== "sell") return null;
+          if (typeof q.priceQ32 !== "string" || !/^\d+$/.test(q.priceQ32))
+            return null;
+          const side = q.side === "buy" ? instrument.bids : instrument.asks;
+          const tick = side[Number(q.priceQ32)];
+          if (!tick) return null;
+          return {
+            quantity: tick.quantity.toString(),
+            remainingQuantity: tick.remainingQuantity.toString(),
+            volume: tick.volume,
+          };
+        });
+
+        return Response.json({ ticks });
+      },
+    },
+
     "/api/estimate-market-order": {
       GET: (req) => {
         const url = new URL(req.url);
@@ -885,9 +980,65 @@ serve({
       },
     },
 
-    "/api/state": {
-      GET: () => {
-        return Response.json(encodeState(handle.state));
+    "/api/estimate-fill-to-price": {
+      GET: (req) => {
+        const url = new URL(req.url);
+        const instrumentIdParam = url.searchParams.get("instrumentId");
+        const sideParam = url.searchParams.get("side");
+        const priceQ32Param = url.searchParams.get("priceQ32");
+
+        if (instrumentIdParam === null || !/^\d+$/.test(instrumentIdParam)) {
+          return Response.json(
+            { error: "instrumentId query parameter required (integer)" },
+            { status: 400 },
+          );
+        }
+        if (sideParam !== "buy" && sideParam !== "sell") {
+          return Response.json(
+            { error: "side query parameter must be 'buy' or 'sell'" },
+            { status: 400 },
+          );
+        }
+        if (priceQ32Param === null || !/^\d+$/.test(priceQ32Param)) {
+          return Response.json(
+            { error: "priceQ32 query parameter required (integer Q32 price)" },
+            { status: 400 },
+          );
+        }
+
+        const instrument = handle.state.instruments[Number(instrumentIdParam)];
+        if (!instrument)
+          return Response.json(
+            { error: "instrument not found" },
+            { status: 404 },
+          );
+
+        const anchorQ32 = Number(priceQ32Param);
+        const ticks = sideParam === "buy" ? instrument.asks : instrument.bids;
+        const prices = Object.keys(ticks)
+          .map(Number)
+          .filter((p) => ticks[p]!.remainingQuantity > 0n)
+          .sort((a, b) => (sideParam === "buy" ? a - b : b - a));
+
+        let totalLots = 0n;
+        let quoteLots = 0n;
+        const fills: { quantity: string; price: number }[] = [];
+
+        for (const price of prices) {
+          if (sideParam === "buy" ? price > anchorQ32 : price < anchorQ32) {
+            break;
+          }
+          const available = ticks[price]!.remainingQuantity;
+          totalLots += available;
+          quoteLots += (available * BigInt(price)) >> 32n;
+          fills.push({ quantity: available.toString(), price });
+        }
+
+        return Response.json({
+          fills,
+          totalQuantity: totalLots.toString(),
+          quoteQuantity: quoteLots.toString(),
+        });
       },
     },
 

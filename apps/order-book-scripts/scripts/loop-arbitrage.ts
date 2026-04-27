@@ -5,7 +5,12 @@ import {
   TokenAmount,
 } from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
+import {
+  createAccount,
+  deposit,
+  estimateFillToPrice,
+  marketOrder,
+} from "../src/sdk";
 
 const DEFAULT_INTERVAL = 10_000;
 
@@ -99,46 +104,37 @@ async function tick(
   yahooSymbol: string,
   label: string,
 ) {
-  const [realPrice, state] = await Promise.all([
-    fetchYahooPrice(yahooSymbol),
-    fetchState(),
-  ]);
+  const realPrice = await fetchYahooPrice(yahooSymbol);
   console.log(`[${label}] real price: $${realPrice.toFixed(4)}`);
 
-  const book = state.instruments[instrument.id];
-  if (!book) {
-    console.log(`[${label}] instrument not found on-chain, skipping`);
+  const anchorQ32 = priceToQ32(realPrice, instrument);
+
+  let buyEstimate: Awaited<ReturnType<typeof estimateFillToPrice>>;
+  let sellEstimate: Awaited<ReturnType<typeof estimateFillToPrice>>;
+  try {
+    [buyEstimate, sellEstimate] = await Promise.all([
+      estimateFillToPrice({
+        instrumentId: instrument.id,
+        side: "buy",
+        priceQ32: anchorQ32,
+      }),
+      estimateFillToPrice({
+        instrumentId: instrument.id,
+        side: "sell",
+        priceQ32: anchorQ32,
+      }),
+    ]);
+  } catch (err) {
+    console.log(
+      `[${label}] estimate failed, skipping (${err instanceof Error ? err.message : err})`,
+    );
     return;
   }
 
-  const anchorQ32 = Number(priceToQ32(realPrice, instrument));
-
-  const askPrices = Object.keys(book.asks)
-    .map(Number)
-    .filter((p) => BigInt(book.asks[p]!.remainingQuantity) > 0n)
-    .sort((a, b) => a - b);
-  const bidPrices = Object.keys(book.bids)
-    .map(Number)
-    .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n)
-    .sort((a, b) => b - a);
-
-  let buyLots = 0n;
-  let buyQuoteLots = 0n;
-  for (const p of askPrices) {
-    if (p > anchorQ32) break;
-    const available = BigInt(book.asks[p]!.remainingQuantity);
-    buyLots += available;
-    buyQuoteLots += (available * BigInt(p)) >> 32n;
-  }
-
-  let sellLots = 0n;
-  let sellQuoteLots = 0n;
-  for (const p of bidPrices) {
-    if (p < anchorQ32) break;
-    const available = BigInt(book.bids[p]!.remainingQuantity);
-    sellLots += available;
-    sellQuoteLots += (available * BigInt(p)) >> 32n;
-  }
+  const buyLots = buyEstimate.totalQuantity;
+  const buyQuoteLots = buyEstimate.quoteQuantity;
+  const sellLots = sellEstimate.totalQuantity;
+  const sellQuoteLots = sellEstimate.quoteQuantity;
 
   if (buyLots === 0n && sellLots === 0n) {
     console.log(`[${label}] no arbitrage opportunity`);
