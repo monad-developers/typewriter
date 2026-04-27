@@ -68,7 +68,7 @@ function ExchangeRoute() {
   }
   return (
     <Shell>
-      <main className="flex-1 pt-6">
+      <main className="flex-1 pt-4 sm:pt-6">
         <Exchange />
         <LiveBlocks />
       </main>

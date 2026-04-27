@@ -37,74 +37,96 @@ export function Exchange() {
   const { data: balancesData } = useBalances(account?.accountId);
 
   return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr className="h-8">
-          {PLAIN_COLUMNS_LEFT.map((col) => (
-            <th key={col || "name"} className="px-3" />
-          ))}
-          <th
-            colSpan={BID_SUB.length}
-            className={`text-center px-3 align-middle whitespace-nowrap ${BID_HEADER} ${BID_TOP} ${BID_GROUP_FIRST} ${BID_GROUP_LAST}`}
-          >
-            <code>bid</code>
-          </th>
-          <th
-            colSpan={ASK_SUB.length}
-            className={`text-center px-3 align-middle whitespace-nowrap ${ASK_HEADER} ${ASK_TOP} ${ASK_GROUP_FIRST} ${ASK_GROUP_LAST}`}
-          >
-            <code>ask</code>
-          </th>
-          {PLAIN_COLUMNS_RIGHT.map((col) => (
-            <th key={col} className="px-3" />
-          ))}
-        </tr>
-        <tr className="h-10">
-          {PLAIN_COLUMNS_LEFT.map((col) => (
-            <th
-              key={col || "name"}
-              className="text-left px-3 align-middle whitespace-nowrap border-b"
-            >
-              <code>{col}</code>
-            </th>
-          ))}
-          {BID_SUB.map((col, i) => (
-            <th
-              key={`bid-${col}`}
-              className={`text-left px-3 align-middle whitespace-nowrap ${BID_HEADER} ${
-                i === 0 ? BID_GROUP_FIRST : ""
-              } ${i === BID_SUB.length - 1 ? BID_GROUP_LAST : ""}`}
-            >
-              <code>{col}</code>
-            </th>
-          ))}
-          {ASK_SUB.map((col, i) => (
-            <th
-              key={`ask-${col}`}
-              className={`text-left px-3 align-middle whitespace-nowrap ${ASK_HEADER} ${
-                i === 0 ? ASK_GROUP_FIRST : ""
-              } ${i === ASK_SUB.length - 1 ? ASK_GROUP_LAST : ""}`}
-            >
-              <code>{col}</code>
-            </th>
-          ))}
-          {PLAIN_COLUMNS_RIGHT.map((col) => (
-            <th
-              key={col}
-              className="text-left px-3 align-middle whitespace-nowrap border-b"
-            >
-              <code>{col}</code>
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {instruments.map(([name, inst], i) => (
-          <Row
+    <>
+      {/* Desktop table */}
+      <div className="hidden lg:block">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="h-8">
+              {PLAIN_COLUMNS_LEFT.map((col) => (
+                <th key={col || "name"} className="px-3" />
+              ))}
+              <th
+                colSpan={BID_SUB.length}
+                className={`text-center px-3 align-middle whitespace-nowrap ${BID_HEADER} ${BID_TOP} ${BID_GROUP_FIRST} ${BID_GROUP_LAST}`}
+              >
+                <code>bid</code>
+              </th>
+              <th
+                colSpan={ASK_SUB.length}
+                className={`text-center px-3 align-middle whitespace-nowrap ${ASK_HEADER} ${ASK_TOP} ${ASK_GROUP_FIRST} ${ASK_GROUP_LAST}`}
+              >
+                <code>ask</code>
+              </th>
+              {PLAIN_COLUMNS_RIGHT.map((col) => (
+                <th key={col} className="px-3" />
+              ))}
+            </tr>
+            <tr className="h-10">
+              {PLAIN_COLUMNS_LEFT.map((col) => (
+                <th
+                  key={col || "name"}
+                  className="text-left px-3 align-middle whitespace-nowrap border-b"
+                >
+                  <code>{col}</code>
+                </th>
+              ))}
+              {BID_SUB.map((col, i) => (
+                <th
+                  key={`bid-${col}`}
+                  className={`text-left px-3 align-middle whitespace-nowrap ${BID_HEADER} ${
+                    i === 0 ? BID_GROUP_FIRST : ""
+                  } ${i === BID_SUB.length - 1 ? BID_GROUP_LAST : ""}`}
+                >
+                  <code>{col}</code>
+                </th>
+              ))}
+              {ASK_SUB.map((col, i) => (
+                <th
+                  key={`ask-${col}`}
+                  className={`text-left px-3 align-middle whitespace-nowrap ${ASK_HEADER} ${
+                    i === 0 ? ASK_GROUP_FIRST : ""
+                  } ${i === ASK_SUB.length - 1 ? ASK_GROUP_LAST : ""}`}
+                >
+                  <code>{col}</code>
+                </th>
+              ))}
+              {PLAIN_COLUMNS_RIGHT.map((col) => (
+                <th
+                  key={col}
+                  className="text-left px-3 align-middle whitespace-nowrap border-b"
+                >
+                  <code>{col}</code>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {instruments.map(([name, inst], i) => (
+              <Row
+                key={name}
+                name={name}
+                instrument={inst}
+                isLast={i === instruments.length - 1}
+                balance={
+                  TokenAmount.fromRaw(
+                    BigInt(balancesData?.balances[inst.base] ?? "0"),
+                    inst.base,
+                  ).human
+                }
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile card layout */}
+      <div className="lg:hidden flex flex-col gap-4 px-4">
+        {instruments.map(([name, inst]) => (
+          <MobileCard
             key={name}
             name={name}
             instrument={inst}
-            isLast={i === instruments.length - 1}
             balance={
               TokenAmount.fromRaw(
                 BigInt(balancesData?.balances[inst.base] ?? "0"),
@@ -113,8 +135,8 @@ export function Exchange() {
             }
           />
         ))}
-      </tbody>
-    </table>
+      </div>
+    </>
   );
 }
 
@@ -237,5 +259,140 @@ function Row({
         />
       </td>
     </tr>
+  );
+}
+
+function MobileCard({
+  name,
+  instrument,
+  balance,
+}: {
+  name: string;
+  instrument: (typeof INSTRUMENTS)[keyof typeof INSTRUMENTS];
+  balance: number;
+}) {
+  const { data: priceData } = usePrice(instrument.id);
+  const { data: depthData } = useDepth(instrument.id);
+  const marketOrder = useMarketOrderMutation();
+  const [buyAmount, setBuyAmount] = useState("");
+  const [sellAmount, setSellAmount] = useState("");
+
+  const submit = (side: "buy" | "sell", human: string) => {
+    const n = Number(human);
+    if (!Number.isFinite(n) || n <= 0) return;
+    const raw = TokenAmount.from(n, instrument.base).raw;
+    const aligned = lotAligned(raw, instrument.baseLotExp);
+    if (aligned <= 0n) return;
+    marketOrder.mutate(
+      {
+        instrumentId: instrument.id,
+        side,
+        amount: aligned.toString(),
+      },
+      {
+        onSuccess: () => {
+          if (side === "buy") setBuyAmount("");
+          else setSellAmount("");
+        },
+      },
+    );
+  };
+
+  const price =
+    priceData?.price != null
+      ? `$${q32ToPrice(BigInt(priceData.price), instrument).toFixed(2)}`
+      : "—";
+  const spread =
+    priceData?.spread != null
+      ? `$${q32ToPrice(BigInt(priceData.spread), instrument).toFixed(2)}`
+      : "—";
+
+  const fmtDepth = (side: "bids" | "asks", bp: string) => {
+    const lots = depthData?.[side][bp];
+    if (lots == null) return "—";
+    const raw = fromLots(BigInt(lots), instrument.baseLotExp);
+    return TokenAmount.fromRaw(raw, instrument.base).human.toFixed(2);
+  };
+
+  return (
+    <div className="border border-zinc-200 p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <code className="text-base font-semibold">{name}</code>
+        <code className="text-sm text-zinc-500">{balance.toFixed(4)}</code>
+      </div>
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+        <div className="flex justify-between">
+          <span className="text-zinc-500">price</span>
+          <code>{price}</code>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-500">spread</span>
+          <code>{spread}</code>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className={`p-2 ${BID_CELL} border-l-2 border-green-400`}>
+          <div className={`text-xs font-semibold mb-1 ${BID_HEADER} inline-block px-1`}>
+            bid
+          </div>
+          <div className="flex flex-col gap-0.5 text-xs">
+            {BID_SUB.map((bp) => (
+              <div key={bp} className="flex justify-between">
+                <span className="text-zinc-500">{bp}</span>
+                <code>{fmtDepth("bids", bp === "25bp" ? "25" : bp === "5bp" ? "5" : "1")}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className={`p-2 ${ASK_CELL} border-l-2 border-red-400`}>
+          <div className={`text-xs font-semibold mb-1 ${ASK_HEADER} inline-block px-1`}>
+            ask
+          </div>
+          <div className="flex flex-col gap-0.5 text-xs">
+            {ASK_SUB.map((bp) => (
+              <div key={bp} className="flex justify-between">
+                <span className="text-zinc-500">{bp}</span>
+                <code>{fmtDepth("asks", bp === "1bp" ? "1" : bp === "5bp" ? "5" : "25")}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-zinc-500">buy</label>
+          <input
+            type="number"
+            min={0}
+            placeholder="qty ↵"
+            value={buyAmount}
+            onChange={(e) => setBuyAmount(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit("buy", buyAmount);
+            }}
+            disabled={marketOrder.isPending}
+            className="w-full border px-2 font-mono text-sm h-8 placeholder:text-gray-300 disabled:opacity-50"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-zinc-500">sell</label>
+          <input
+            type="number"
+            min={0}
+            placeholder="qty ↵"
+            value={sellAmount}
+            onChange={(e) => setSellAmount(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit("sell", sellAmount);
+            }}
+            disabled={marketOrder.isPending}
+            className="w-full border px-2 font-mono text-sm h-8 placeholder:text-gray-300 disabled:opacity-50"
+          />
+        </div>
+      </div>
+    </div>
   );
 }

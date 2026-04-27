@@ -108,7 +108,7 @@ export function LiveBlocks() {
   };
 
   return (
-    <div className="w-full flex flex-col gap-4 px-6 py-6">
+    <div className="w-full flex flex-col gap-4 px-4 sm:px-6 py-6">
       <h2 className="text-lg font-semibold flex items-baseline gap-3">
         <span>Activity stream</span>
         {tps != null && (
@@ -126,28 +126,31 @@ export function LiveBlocks() {
           </span>
         )}
       </h2>
-      <div
-        className="grid gap-2"
-        style={{
-          height: 240,
-          gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
-        }}
-      >
-        <FormingBlockColumn bundleSlots={bundleSlots} />
-        <section
-          aria-label="landed blocks"
-          onPointerEnter={() => handleHoverChange(true)}
-          onPointerLeave={() => handleHoverChange(false)}
-          className="grid gap-2 h-full"
+      <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+        <div
+          className="grid gap-2"
           style={{
-            gridColumn: `span ${BLOCK_QUEUE_SIZE}`,
-            gridTemplateColumns: `repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
+            height: 240,
+            minWidth: 480,
+            gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
           }}
         >
-          {displayBlocks.map((block) => (
-            <BlockColumn key={block.hash} block={block} />
-          ))}
-        </section>
+          <FormingBlockColumn bundleSlots={bundleSlots} />
+          <section
+            aria-label="landed blocks"
+            onPointerEnter={() => handleHoverChange(true)}
+            onPointerLeave={() => handleHoverChange(false)}
+            className="grid gap-2 h-full"
+            style={{
+              gridColumn: `span ${BLOCK_QUEUE_SIZE}`,
+              gridTemplateColumns: `repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
+            }}
+          >
+            {displayBlocks.map((block) => (
+              <BlockColumn key={block.hash} block={block} />
+            ))}
+          </section>
+        </div>
       </div>
     </div>
   );
