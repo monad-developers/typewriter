@@ -11,7 +11,9 @@ console.log(
   `Using API_URL=${API_URL}, CHAIN_ID=${CHAIN_ID}, EXCHANGE_ADDRESS=${EXCHANGE_ADDRESS}`,
 );
 
-const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
+function farDeadline(): bigint {
+  return BigInt(Math.floor(Date.now() / 1000) + 86400);
+}
 const FETCH_TIMEOUT_MS = 30_000;
 
 function domain() {
@@ -140,7 +142,7 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
       account: accountHex,
       keyId: 0,
       nonce: "0",
-      deadline: FAR_DEADLINE.toString(),
+      deadline: farDeadline().toString(),
       rawSignature,
     });
   }
@@ -181,14 +183,14 @@ export async function addInstrument(
     baseLotExp: instrument.baseLotExp,
     quoteLotExp: instrument.quoteLotExp,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
   });
   return postWithNonce(rollback, "/api/add-instrument", {
     ...instrument,
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
     rawSignature,
   });
 }
@@ -204,7 +206,7 @@ export async function deposit(
     asset: quantity.asset,
     amount: quantity.raw,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
   });
   return postWithNonce(rollback, "/api/mint", {
     asset: quantity.asset,
@@ -212,7 +214,7 @@ export async function deposit(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
     rawSignature,
   });
 }
@@ -238,7 +240,7 @@ export async function limitOrder(
     price: q32Price,
     bidOrAsk,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
   });
   return postWithNonce(rollback, "/api/limit-order", {
     quantity,
@@ -248,7 +250,7 @@ export async function limitOrder(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
     rawSignature,
   });
 }
@@ -279,7 +281,7 @@ export async function marketOrder(
     instrumentId: BigInt(instrument.id),
     bidOrAsk,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
   });
   return postWithNonce(rollback, "/api/market-order", {
     quantity,
@@ -289,7 +291,7 @@ export async function marketOrder(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
     rawSignature,
   });
 }
@@ -303,14 +305,14 @@ export async function closeOrder(
   const rawSignature = sign(account.privateKey, "CloseOrder", {
     orderId: BigInt(params.orderId),
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
   });
   return postWithNonce(rollback, "/api/close-order", {
     ...params,
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
     rawSignature,
   });
 }
@@ -326,7 +328,7 @@ export async function withdraw(
     asset: quantity.asset,
     amount: quantity.raw,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
   });
   return postWithNonce(rollback, "/api/withdrawal", {
     asset: quantity.asset,
@@ -334,7 +336,7 @@ export async function withdraw(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline: farDeadline(),
     rawSignature,
   });
 }
