@@ -98,6 +98,26 @@ async function loadMutationsByIds(
       asc(schema.mutations.bundlePosition),
     );
 
+  const idsByType = new Map<
+    (typeof schema.mutationEnum.enumValues)[number],
+    number[]
+  >();
+  for (const c of centrals) {
+    const list = idsByType.get(c.type) ?? [];
+    list.push(c.id);
+    idsByType.set(c.type, list);
+  }
+
+  const initIds = idsByType.get("initialize") ?? [];
+  const authIds = idsByType.get("authorize") ?? [];
+  const revokeIds = idsByType.get("revoke") ?? [];
+  const closeIds = idsByType.get("closeOrder") ?? [];
+  const limitIds = idsByType.get("limitOrder") ?? [];
+  const marketIds = idsByType.get("marketOrder") ?? [];
+  const addInstIds = idsByType.get("addInstrument") ?? [];
+  const depIds = idsByType.get("deposit") ?? [];
+  const wdIds = idsByType.get("withdrawal") ?? [];
+
   const [
     initRows,
     authRows,
@@ -110,41 +130,67 @@ async function loadMutationsByIds(
     wdRows,
     fillRows,
   ] = await Promise.all([
-    db
-      .select()
-      .from(schema.initializes)
-      .where(inArray(schema.initializes.id, ids)),
-    db
-      .select()
-      .from(schema.authorizes)
-      .where(inArray(schema.authorizes.id, ids)),
-    db.select().from(schema.revokes).where(inArray(schema.revokes.id, ids)),
-    db
-      .select()
-      .from(schema.closeOrders)
-      .where(inArray(schema.closeOrders.id, ids)),
-    db
-      .select()
-      .from(schema.limitOrders)
-      .where(inArray(schema.limitOrders.id, ids)),
-    db
-      .select()
-      .from(schema.marketOrders)
-      .where(inArray(schema.marketOrders.id, ids)),
-    db
-      .select()
-      .from(schema.addInstruments)
-      .where(inArray(schema.addInstruments.id, ids)),
-    db.select().from(schema.deposits).where(inArray(schema.deposits.id, ids)),
-    db
-      .select()
-      .from(schema.withdrawals)
-      .where(inArray(schema.withdrawals.id, ids)),
-    db
-      .select()
-      .from(schema.fills)
-      .where(inArray(schema.fills.marketOrderId, ids))
-      .orderBy(asc(schema.fills.marketOrderId), asc(schema.fills.fillIndex)),
+    initIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.initializes)
+          .where(inArray(schema.initializes.id, initIds)),
+    authIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.authorizes)
+          .where(inArray(schema.authorizes.id, authIds)),
+    revokeIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.revokes)
+          .where(inArray(schema.revokes.id, revokeIds)),
+    closeIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.closeOrders)
+          .where(inArray(schema.closeOrders.id, closeIds)),
+    limitIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.limitOrders)
+          .where(inArray(schema.limitOrders.id, limitIds)),
+    marketIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.marketOrders)
+          .where(inArray(schema.marketOrders.id, marketIds)),
+    addInstIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.addInstruments)
+          .where(inArray(schema.addInstruments.id, addInstIds)),
+    depIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.deposits)
+          .where(inArray(schema.deposits.id, depIds)),
+    wdIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.withdrawals)
+          .where(inArray(schema.withdrawals.id, wdIds)),
+    marketIds.length === 0
+      ? []
+      : db
+          .select()
+          .from(schema.fills)
+          .where(inArray(schema.fills.marketOrderId, marketIds))
+          .orderBy(asc(schema.fills.marketOrderId), asc(schema.fills.fillIndex)),
   ]);
 
   const payloadById = new Map<number, unknown>();
