@@ -3,6 +3,7 @@ import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
 import exchangeScreenshot from "../image.png";
+import orderSequencingScreenshot from "../order-sequencing.png";
 import { Link } from "../lib/router";
 
 const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID ?? "0");
@@ -262,12 +263,10 @@ struct Key {
             to="/exchange"
             className="block border rounded-lg overflow-hidden hover:border-black transition-colors my-4"
           >
-            {/* TODO: replace with a screenshot of a batch containing a cancel and a market order */}
             <img
-              src="/order-sequencing-preview.png"
+              src={orderSequencingScreenshot}
               alt="Batch containing a cancel and a market order"
-              className="w-full block bg-zinc-100"
-              style={{ aspectRatio: "16 / 9", objectFit: "cover" }}
+              className="w-full block"
             />
             <div className="px-4 py-3 border-t flex items-center justify-between">
               <span className="text-sm font-semibold">See a live batch</span>
