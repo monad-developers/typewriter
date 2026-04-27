@@ -1,6 +1,11 @@
 import { fromLots, q32ToPrice, TokenAmount, toLots } from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
+import {
+  createAccount,
+  deposit,
+  estimateMarketOrder,
+  marketOrder,
+} from "../src/sdk";
 
 if (!process.env.SIDE) {
   console.error("SIDE env var is required (buy or sell)");
@@ -26,9 +31,6 @@ const humanQuantity = Number(process.env.QUANTITY);
 const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
 const instrument = INSTRUMENTS[instrumentName]!;
 
-const state = await fetchState();
-const book = state.instruments[instrument.id]!;
-
 const account = await createAccount();
 console.log(`account ${account.address}`);
 
@@ -37,35 +39,29 @@ console.log(
   `amount: ${quantity.human.toFixed(4)} (raw: ${quantity.raw}, asset: ${quantity.asset})`,
 );
 
-const ticks = side === "buy" ? book.asks : book.bids;
-const prices = Object.keys(ticks)
-  .map(Number)
-  .filter((p) => BigInt(ticks[p]!.remainingQuantity) > 0n)
-  .sort((a, b) => (side === "buy" ? a - b : b - a));
+const quantityLots = toLots(quantity.raw, instrument.baseLotExp);
 
-let remainingLots = toLots(quantity.raw, instrument.baseLotExp);
-let quoteLots = 0n;
-
-for (const price of prices) {
-  if (remainingLots === 0n) break;
-  const tick = ticks[price]!;
-  const availableLots = BigInt(tick.remainingQuantity);
-  const fillLots =
-    remainingLots < availableLots ? remainingLots : availableLots;
-  quoteLots += (fillLots * BigInt(price)) >> 32n;
-  remainingLots -= fillLots;
-
-  console.log(
-    `price: $${q32ToPrice(BigInt(price), instrument).toFixed(4)}, fill quantity: ${TokenAmount.fromRaw(fromLots(fillLots, instrument.baseLotExp), instrument.base).human.toFixed(4)}`,
+let quoteLots: bigint;
+try {
+  const estimate = await estimateMarketOrder({
+    instrumentId: instrument.id,
+    side,
+    quantityLots,
+  });
+  quoteLots = estimate.quoteQuantity;
+  for (const fill of estimate.fills) {
+    console.log(
+      `price: $${q32ToPrice(BigInt(fill.price), instrument).toFixed(4)}, fill quantity: ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)}`,
+    );
+  }
+} catch (err) {
+  console.error(
+    `insufficient liquidity (${err instanceof Error ? err.message : err})`,
   );
-}
-
-if (remainingLots > 0n) {
-  console.error(`insufficient liquidity: ${remainingLots} lots unfilled`);
   process.exit(1);
 }
 
-const q32 = (quoteLots << 32n) / toLots(quantity.raw, instrument.baseLotExp);
+const q32 = (quoteLots << 32n) / quantityLots;
 console.log(
   `placing market ${side}: ${quantity.human.toFixed(4)} @~$${q32ToPrice(q32, instrument).toFixed(4)}...`,
 );

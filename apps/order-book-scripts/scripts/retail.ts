@@ -1,6 +1,11 @@
 import { fromLots, q32ToPrice, TokenAmount, toLots } from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
+import {
+  createAccount,
+  deposit,
+  estimateMarketOrder,
+  marketOrder,
+} from "../src/sdk";
 
 if (!process.env.INSTRUMENT) {
   console.error(
@@ -22,31 +27,21 @@ const side = Math.random() < 0.5 ? "buy" : ("sell" as "buy" | "sell");
 const humanQuantity =
   QUANTITIES[Math.floor(Math.random() * QUANTITIES.length)]!;
 
-const state = await fetchState();
-const book = state.instruments[instrument.id]!;
-
 const quantity = TokenAmount.from(humanQuantity, instrument.base);
 const quantityLots = toLots(quantity.raw, instrument.baseLotExp);
 
-const ticks = side === "buy" ? book.asks : book.bids;
-const prices = Object.keys(ticks)
-  .map(Number)
-  .filter((p) => BigInt(ticks[p]!.remainingQuantity) > 0n)
-  .sort((a, b) => (side === "buy" ? a - b : b - a));
-
-let remainingLots = quantityLots;
-let quoteLots = 0n;
-
-for (const price of prices) {
-  if (remainingLots === 0n) break;
-  const available = BigInt(ticks[price]!.remainingQuantity);
-  const fillLots = remainingLots < available ? remainingLots : available;
-  quoteLots += (fillLots * BigInt(price)) >> 32n;
-  remainingLots -= fillLots;
-}
-
-if (remainingLots > 0n) {
-  console.log(`insufficient liquidity for ${side} ${humanQuantity}, skipping`);
+let quoteLots: bigint;
+try {
+  const estimate = await estimateMarketOrder({
+    instrumentId: instrument.id,
+    side,
+    quantityLots,
+  });
+  quoteLots = estimate.quoteQuantity;
+} catch (err) {
+  console.log(
+    `insufficient liquidity for ${side} ${humanQuantity}, skipping (${err instanceof Error ? err.message : err})`,
+  );
   process.exit(0);
 }
 
