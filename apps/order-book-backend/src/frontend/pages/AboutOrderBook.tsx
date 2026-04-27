@@ -53,9 +53,9 @@ export function AboutOrderBook() {
               time.
             </li>
             <li>
-              <strong>Session-key and modern auth.</strong> Passkey at sign-in,
-              ephemeral session keys with scoped permissions for order placement
-              and cancellation.
+              <strong>Modern auth.</strong> Passkey at sign-in, ephemeral
+              session keys with scoped permissions for order placement and
+              cancellation.
             </li>
             <li>
               <strong>Self-contained stack.</strong> No third-party sequencers,
@@ -64,7 +64,7 @@ export function AboutOrderBook() {
             <li>
               <strong>Non-custodial with a trustless exit.</strong> Balances,
               orders, and matching rules all live onchain; users can withdraw
-              and force-include orders directly against the contract without
+              and force-include orders directly against the protocol without
               backend cooperation.
             </li>
           </ul>
@@ -211,9 +211,7 @@ struct Key {
             >
               ERC-4337
             </a>
-            . Use different keys for independent flows that shouldn't block each
-            other; use the same key when a transaction should only execute after
-            its predecessor.
+            .
           </p>
           <CodeBlock
             title="Exchange.sol"
@@ -312,14 +310,13 @@ struct Key {
             id="architecture"
             className="text-2xl font-bold mb-4 scroll-mt-24"
           >
-            System Architecture
+            System architecture
           </h2>
           <p className="leading-relaxed mb-4">
             Transactions don't hit the chain directly. Every signed message
-            goes through a server that verifies the signature, runs it through
-            REVM against local state, and replies{" "}
-            <InlineCode>accepted</InlineCode> the moment it knows the
-            transaction will succeed onchain.
+            first goes through a server that runs it through REVM against local
+            state and replies <InlineCode>accepted</InlineCode> the moment it
+            knows the transaction will succeed onchain.
           </p>
           <div className="my-6 flex justify-center">
             <img
@@ -328,31 +325,6 @@ struct Key {
               className="w-3/4 h-auto"
             />
           </div>
-          {/* <p className="leading-relaxed mb-4">
-            The contract locks bundle submission to a single{" "}
-            <InlineCode>scheduler</InlineCode> address that the server controls.
-            No other party can submit through the normal path; users can still
-            exit via force inclusion if the server misbehaves.
-          </p>
-          <CodeBlock
-            title="Exchange.sol"
-            lang="solidity"
-            code={`address internal immutable SCHEDULER;
-
-constructor(address _scheduler) {
-    SCHEDULER = _scheduler;
-}
-
-function execute(Bundle[] calldata bundles) external {
-    if (msg.sender != SCHEDULER) revert Unauthorized();
-    // ...
-}`}
-          />
-
-          <p className="leading-relaxed mb-4">
-            Every mutation moves through an explicit lifecycle as it travels
-            from the server to the chain.
-          </p> */}
 
           <h3
             id="message-lifecycle"
@@ -442,6 +414,95 @@ function execute(Bundle[] calldata bundles) external {
               );
             })}
           </div>
+        </section>
+
+        {/* Censorship resistance */}
+        <section>
+          <h2
+            id="censorship-resistance"
+            className="text-2xl font-bold mb-4 scroll-mt-24"
+          >
+            Censorship resistance
+          </h2>
+          <p className="leading-relaxed mb-4">
+            Bundle submission is gated to a single{" "}
+            <InlineCode>scheduler</InlineCode> address that the server controls.
+            That gate is what makes almost all of the features possible: the
+            scheduler knows it can't be front-run, so it can deterministically
+            simulate a mutation without submitting it onchain.
+          </p>
+          <CodeBlock
+            title="Exchange.sol"
+            lang="solidity"
+            code={`address internal immutable SCHEDULER;
+
+function execute(Bundle[] calldata bundles) external {
+    if (msg.sender != SCHEDULER) revert Unauthorized();
+    // ...
+}`}
+          />
+          <p className="leading-relaxed mb-4">
+            The scheduler's power is limited to inclusion. Every signature,
+            balance change, order placement, and fill is validated onchain.
+          </p>
+          <p className="leading-relaxed mb-4">
+            Two mechanisms further narrow that trust.
+          </p>
+          <ul className="leading-relaxed list-disc pl-6 mb-4 space-y-1">
+            <li>
+              <strong>Signed accept receipts.</strong> The server signs every{" "}
+              <InlineCode>accepted</InlineCode> response, committing to a
+              specific batch. If the mutation never lands onchain, the receipt
+              is evidence of the broken promise.
+            </li>
+            <li>
+              <strong>Mutation chaining.</strong> The 192-bit nonce key lets a
+              client declare a mutation is only valid after a specific
+              predecessor has executed. A reorder invalidates the chain.
+            </li>
+          </ul>
+        </section>
+
+        {/* Force exit */}
+        <section>
+          <h2 id="force-exit" className="text-2xl font-bold mb-4 scroll-mt-24">
+            Force exit
+          </h2>
+          <p className="leading-relaxed mb-4">
+            If the server becomes unresponsive, users can bypass it. Anyone can
+            enqueue a signed message onchain, and execute it after a delay. The
+            window gives the scheduler a final chance to include the mutation
+            through the normal path first.
+          </p>
+          <p className="leading-relaxed mb-4">
+            A force-included withdrawal, cancel, or order settles under
+            identical rules as a server-submitted one.
+          </p>
+          <CodeBlock
+            title="Exchange.sol"
+            lang="solidity"
+            code={`uint256 constant FORCE_EXIT_DELAY = 3;
+
+struct QueuedMutation {
+    Mutation mutation;
+    bytes data;
+    Signature sig;
+    uint256 enqueuedBlock;
+}
+
+QueuedMutation[] private queue;
+
+function enqueue(Mutation mutation, bytes calldata data, Signature calldata sig) external {
+    // ... verify signature, nonce, deadline
+    queue.push(QueuedMutation(mutation, data, sig, block.number));
+}
+
+function forceExecute(uint256 index) external {
+    QueuedMutation storage q = queue[index];
+    if (block.number < q.enqueuedBlock + FORCE_EXIT_DELAY) revert TooEarly();
+    // ... apply mutation, delete queue entry
+}`}
+          />
         </section>
 
         {/* Deployment */}
