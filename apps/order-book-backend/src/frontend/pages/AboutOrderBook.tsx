@@ -447,7 +447,7 @@ function execute(Bundle[] calldata bundles) external {
           <p className="leading-relaxed mb-4">
             Two mechanisms further narrow that trust.
           </p>
-          <ul className="leading-relaxed list-disc pl-6 mb-4 space-y-1">
+          <ul className="leading-relaxed list-disc pl-6 mb-2 space-y-1">
             <li>
               <strong>Signed accept receipts.</strong> The server signs every{" "}
               <InlineCode>accepted</InlineCode> response, committing to a
