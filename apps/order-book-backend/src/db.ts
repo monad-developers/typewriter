@@ -391,21 +391,22 @@ function replayMutation(state: State<bigint>, m: ResolvedMutation): void {
 }
 
 async function persistState(db: DB, state: State<bigint>) {
+  const instrumentRows: (typeof schema.instruments.$inferInsert)[] = [];
+  const tickRows: (typeof schema.ticks.$inferInsert)[] = [];
   for (const [instId, inst] of Object.entries(state.instruments)) {
-    await db.insert(schema.instruments).values({
+    instrumentRows.push({
       id: BigInt(Number(instId)),
       base: inst.base,
       baseLotExp: inst.baseLotExp,
       quote: inst.quote,
       quoteLotExp: inst.quoteLotExp,
     });
-
     for (const [side, ticks] of [
       [0, inst.bids],
       [1, inst.asks],
     ] as const) {
       for (const [price, tick] of Object.entries(ticks)) {
-        await db.insert(schema.ticks).values({
+        tickRows.push({
           instrumentId: BigInt(Number(instId)),
           side,
           price: BigInt(Number(price)),
@@ -416,13 +417,20 @@ async function persistState(db: DB, state: State<bigint>) {
       }
     }
   }
+  if (instrumentRows.length > 0)
+    await db.insert(schema.instruments).values(instrumentRows);
+  if (tickRows.length > 0) await db.insert(schema.ticks).values(tickRows);
 
+  const accountRows: (typeof schema.accounts.$inferInsert)[] = [];
+  const keyRows: (typeof schema.keys.$inferInsert)[] = [];
+  const nonceRows: (typeof schema.nonces.$inferInsert)[] = [];
+  const balanceRows: (typeof schema.balances.$inferInsert)[] = [];
+  const orderRows: (typeof schema.orders.$inferInsert)[] = [];
   for (const [accountId, acc] of Object.entries(state.accounts)) {
-    await db.insert(schema.accounts).values({ id: accountId });
-
+    accountRows.push({ id: accountId });
     for (let i = 0; i < acc.keys.length; i++) {
       const key = acc.keys[i]!;
-      await db.insert(schema.keys).values({
+      keyRows.push({
         account: accountId,
         keyIndex: BigInt(i),
         expiry: key.expiry,
@@ -431,22 +439,19 @@ async function persistState(db: DB, state: State<bigint>) {
         publicKey: key.publicKey,
       });
     }
-
     for (const [nonceKey, sequence] of Object.entries(acc.nonces)) {
-      await db
-        .insert(schema.nonces)
-        .values({ account: accountId, nonceKey, sequence });
+      nonceRows.push({ account: accountId, nonceKey, sequence });
     }
-
     for (const [asset, amount] of Object.entries(acc.balances)) {
-      await db
-        .insert(schema.balances)
-        .values({ account: accountId, asset, amount: amount.toString() });
+      balanceRows.push({
+        account: accountId,
+        asset,
+        amount: amount.toString(),
+      });
     }
-
     for (let i = 0; i < acc.orders.length; i++) {
       const order = acc.orders[i]!;
-      await db.insert(schema.orders).values({
+      orderRows.push({
         account: accountId,
         orderIndex: BigInt(i),
         quantity: order.quantity,
@@ -457,6 +462,13 @@ async function persistState(db: DB, state: State<bigint>) {
       });
     }
   }
+  if (accountRows.length > 0)
+    await db.insert(schema.accounts).values(accountRows);
+  if (keyRows.length > 0) await db.insert(schema.keys).values(keyRows);
+  if (nonceRows.length > 0) await db.insert(schema.nonces).values(nonceRows);
+  if (balanceRows.length > 0)
+    await db.insert(schema.balances).values(balanceRows);
+  if (orderRows.length > 0) await db.insert(schema.orders).values(orderRows);
 }
 
 export async function recoverState(
@@ -654,25 +666,26 @@ export async function syncState(
         .values({ id: m.account })
         .onConflictDoNothing();
 
-      for (let i = 0; i < acc.keys.length; i++) {
-        const key = acc.keys[i]!;
+      if (acc.keys.length > 0) {
         await db
           .insert(schema.keys)
-          .values({
-            account: m.account,
-            keyIndex: BigInt(i),
-            expiry: key.expiry,
-            keyType: key.keyType,
-            permissions: key.permissions,
-            publicKey: key.publicKey,
-          })
-          .onConflictDoUpdate({
-            target: [schema.keys.account, schema.keys.keyIndex],
-            set: {
+          .values(
+            acc.keys.map((key, i) => ({
+              account: m.account,
+              keyIndex: BigInt(i),
               expiry: key.expiry,
               keyType: key.keyType,
               permissions: key.permissions,
               publicKey: key.publicKey,
+            })),
+          )
+          .onConflictDoUpdate({
+            target: [schema.keys.account, schema.keys.keyIndex],
+            set: {
+              expiry: sql`excluded.expiry`,
+              keyType: sql`excluded.key_type`,
+              permissions: sql`excluded.permissions`,
+              publicKey: sql`excluded.public_key`,
             },
           });
       }
@@ -826,32 +839,36 @@ export async function syncState(
       const instrument = state.instruments[m.mutation.instrumentId];
       if (!instrument) break;
 
-      for (const asset of [instrument.base, instrument.quote]) {
-        const balance = (acc.balances[asset] ?? 0n).toString();
-        await db
-          .insert(schema.balances)
-          .values({ account: m.account, asset, amount: balance })
-          .onConflictDoUpdate({
-            target: [schema.balances.account, schema.balances.asset],
-            set: { amount: balance },
-          });
-      }
+      await db
+        .insert(schema.balances)
+        .values(
+          [instrument.base, instrument.quote].map((asset) => ({
+            account: m.account,
+            asset,
+            amount: (acc.balances[asset] ?? 0n).toString(),
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [schema.balances.account, schema.balances.asset],
+          set: { amount: sql`excluded.amount` },
+        });
 
       const fillSide = m.mutation.bidOrAsk === 0 ? 1 : 0;
       const ticks =
         m.mutation.bidOrAsk === 0 ? instrument.asks : instrument.bids;
+      const tickRows: Parameters<typeof syncTicks>[1] = [];
       for (const fill of m.resolution.fills) {
         const tick = ticks[Number(fill.price)];
         if (tick) {
-          await syncTick(
-            db,
-            BigInt(m.mutation.instrumentId),
-            fillSide,
-            fill.price,
+          tickRows.push({
+            instrumentId: BigInt(m.mutation.instrumentId),
+            side: fillSide,
+            price: fill.price,
             tick,
-          );
+          });
         }
       }
+      await syncTicks(db, tickRows);
 
       await syncNonce(db, state, m.account, m.nonce);
       break;
@@ -882,16 +899,19 @@ export async function syncState(
           set: { quantity: order.quantity },
         });
 
-      for (const asset of [instrument.base, instrument.quote]) {
-        const balance = (acc.balances[asset] ?? 0n).toString();
-        await db
-          .insert(schema.balances)
-          .values({ account: m.account, asset, amount: balance })
-          .onConflictDoUpdate({
-            target: [schema.balances.account, schema.balances.asset],
-            set: { amount: balance },
-          });
-      }
+      await db
+        .insert(schema.balances)
+        .values(
+          [instrument.base, instrument.quote].map((asset) => ({
+            account: m.account,
+            asset,
+            amount: (acc.balances[asset] ?? 0n).toString(),
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [schema.balances.account, schema.balances.asset],
+          set: { amount: sql`excluded.amount` },
+        });
 
       const ticks = order.side === 0 ? instrument.bids : instrument.asks;
       const tick = ticks[Number(order.price)];
@@ -942,16 +962,31 @@ async function syncTick(
   price: bigint,
   tick: { quantity: bigint; remainingQuantity: bigint; volume: number },
 ) {
+  await syncTicks(db, [{ instrumentId, side, price, tick }]);
+}
+
+async function syncTicks(
+  db: DB,
+  rows: {
+    instrumentId: bigint;
+    side: number;
+    price: bigint;
+    tick: { quantity: bigint; remainingQuantity: bigint; volume: number };
+  }[],
+) {
+  if (rows.length === 0) return;
   await db
     .insert(schema.ticks)
-    .values({
-      instrumentId,
-      side,
-      price,
-      quantity: tick.quantity,
-      remainingQuantity: tick.remainingQuantity,
-      volume: tick.volume,
-    })
+    .values(
+      rows.map((r) => ({
+        instrumentId: r.instrumentId,
+        side: r.side,
+        price: r.price,
+        quantity: r.tick.quantity,
+        remainingQuantity: r.tick.remainingQuantity,
+        volume: r.tick.volume,
+      })),
+    )
     .onConflictDoUpdate({
       target: [
         schema.ticks.instrumentId,
@@ -959,9 +994,9 @@ async function syncTick(
         schema.ticks.price,
       ],
       set: {
-        quantity: tick.quantity,
-        remainingQuantity: tick.remainingQuantity,
-        volume: tick.volume,
+        quantity: sql`excluded.quantity`,
+        remainingQuantity: sql`excluded.remaining_quantity`,
+        volume: sql`excluded.volume`,
       },
     });
 }
@@ -1058,14 +1093,15 @@ export async function acceptMutation(
         instrumentId: BigInt(m.mutation.instrumentId),
         bidOrAsk: m.mutation.bidOrAsk,
       });
-      for (let i = 0; i < m.resolution.fills.length; i++) {
-        const fill = m.resolution.fills[i]!;
-        await db.insert(schema.fills).values({
-          marketOrderId: m.id,
-          fillIndex: i,
-          quantity: fill.quantity,
-          price: fill.price,
-        });
+      if (m.resolution.fills.length > 0) {
+        await db.insert(schema.fills).values(
+          m.resolution.fills.map((fill, i) => ({
+            marketOrderId: m.id,
+            fillIndex: i,
+            quantity: fill.quantity,
+            price: fill.price,
+          })),
+        );
       }
       break;
     case MutationType.AddInstrument:
