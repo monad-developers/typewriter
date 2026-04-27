@@ -251,7 +251,8 @@ export const mutations = pgTable(
   (t) => [
     index().on(t.bundleId, t.bundlePosition),
     index().on(t.blockNumber),
-    index().on(t.account),
+    index().on(t.account, t.id.desc()),
+    index().on(t.account, t.nonce),
     // FK (account, keyIndex) -> keys disabled: blocks recoverState's
     // wipe-and-replay because deleting keys while surviving non-accepted
     // mutations reference them violates the FK. Drizzle 0.45 can't declare
