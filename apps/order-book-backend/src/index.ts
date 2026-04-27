@@ -232,7 +232,7 @@ const schemaName = await migrate(migrationDb, CHAIN.id, EXCHANGE_ADDRESS);
 
 const writerClient = new Bun.SQL({
   url: DATABASE_URL,
-  max: 5,
+  max: 25,
   connection: { search_path: `${schemaName},public` },
 });
 const writerDb = drizzle({

@@ -636,11 +636,31 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const bundleListeners = new Set<(bundle: BundleEvent<true>) => void>();
   const blockListeners = new Set<(block: BlockEvent<true>) => void>();
 
+  type SseSink = (chunk: Uint8Array) => void;
+  const mutationSseSinks = new Set<SseSink>();
+  const bundleSseSinks = new Set<SseSink>();
+  const blockSseSinks = new Set<SseSink>();
+
+  const sseEncoder = new TextEncoder();
+  function sseEncode(event: string, data: unknown): Uint8Array {
+    return sseEncoder.encode(
+      `event: ${event}\ndata: ${JSON.stringify(data, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`,
+    );
+  }
+
   function emitMutation(mutation: MutationEvent) {
     for (const cb of mutationListeners) {
       try {
         cb(mutation);
       } catch {}
+    }
+    if (mutationSseSinks.size > 0) {
+      const chunk = sseEncode("mutation", {
+        id: mutation.id,
+        type: mutation.type,
+        status: mutation.status,
+      });
+      for (const sink of mutationSseSinks) sink(chunk);
     }
   }
 
@@ -650,6 +670,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         cb(bundle);
       } catch {}
     }
+    if (bundleSseSinks.size > 0) {
+      const chunk = sseEncode("bundle", {
+        id: bundle.id,
+        status: bundle.status,
+        position: bundle.position,
+        mutations: bundle.mutations.map(toStreamMutation),
+      });
+      for (const sink of bundleSseSinks) sink(chunk);
+    }
   }
 
   function emitBlock(block: BlockEvent<true>) {
@@ -657,6 +686,27 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
       try {
         cb(block);
       } catch {}
+    }
+    if (blockSseSinks.size > 0) {
+      const payload =
+        block.status === "accepted"
+          ? {
+              status: block.status,
+              bundles: block.bundles.map((b) => b.id),
+            }
+          : {
+              status: block.status,
+              number: block.number,
+              hash: block.hash,
+              timestamp: block.timestamp,
+              bundles: block.bundles.map((b) => ({
+                id: b.id,
+                position: b.position,
+                mutationCount: b.mutations.length,
+              })),
+            };
+      const chunk = sseEncode("block", payload);
+      for (const sink of blockSseSinks) sink(chunk);
     }
   }
 
@@ -1192,90 +1242,34 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     else if (event === "block") blockListeners.add(cb as BlockCb);
   }
 
-  function off(
-    event: "mutation" | "bundle" | "block",
-    cb: MutationCb | BundleCb | BlockCb,
-  ): void {
-    if (event === "mutation") mutationListeners.delete(cb as MutationCb);
-    else if (event === "bundle") bundleListeners.delete(cb as BundleCb);
-    else if (event === "block") blockListeners.delete(cb as BlockCb);
-  }
-
-  const encoder = new TextEncoder();
-
-  function sse(event: string, data: unknown): Uint8Array {
-    return encoder.encode(
-      `event: ${event}\ndata: ${JSON.stringify(data, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`,
-    );
-  }
-
   function stream(event: "mutation"): ReadableStream;
   function stream(event: "bundle"): ReadableStream;
   function stream(event: "block"): ReadableStream;
   function stream(event: "mutation" | "bundle" | "block"): ReadableStream {
-    let cb: MutationCb | BundleCb | BlockCb;
+    const sinks =
+      event === "mutation"
+        ? mutationSseSinks
+        : event === "bundle"
+          ? bundleSseSinks
+          : blockSseSinks;
+    let sink: SseSink;
     let keepalive: ReturnType<typeof setInterval>;
     return new ReadableStream({
       start(controller) {
-        const enqueue = (chunk: Uint8Array) => {
+        sink = (chunk) => {
           try {
             controller.enqueue(chunk);
           } catch {}
         };
-        if (event === "mutation") {
-          cb = ((mutation) => {
-            enqueue(
-              sse("mutation", {
-                id: mutation.id,
-                type: mutation.type,
-                status: mutation.status,
-              }),
-            );
-          }) satisfies MutationCb;
-          on("mutation", cb as MutationCb);
-        } else if (event === "bundle") {
-          cb = ((bundle) => {
-            enqueue(
-              sse("bundle", {
-                id: bundle.id,
-                status: bundle.status,
-                position: bundle.position,
-                mutations: bundle.mutations.map(toStreamMutation),
-              }),
-            );
-          }) satisfies BundleCb;
-          on("bundle", cb as BundleCb);
-        } else {
-          cb = ((block) => {
-            const payload =
-              block.status === "accepted"
-                ? {
-                    status: block.status,
-                    bundles: block.bundles.map((b) => b.id),
-                  }
-                : {
-                    status: block.status,
-                    number: block.number,
-                    hash: block.hash,
-                    timestamp: block.timestamp,
-                    bundles: block.bundles.map((b) => ({
-                      id: b.id,
-                      position: b.position,
-                      mutationCount: b.mutations.length,
-                    })),
-                  };
-            enqueue(sse("block", payload));
-          }) satisfies BlockCb;
-          on("block", cb as BlockCb);
-        }
+        sinks.add(sink);
         keepalive = setInterval(
-          () => enqueue(encoder.encode(": ping\n\n")),
+          () => sink(sseEncoder.encode(": ping\n\n")),
           15000,
         );
       },
       cancel() {
         clearInterval(keepalive);
-        off(event, cb);
+        sinks.delete(sink);
       },
     });
   }
