@@ -93,13 +93,13 @@ export function MutationPage() {
         </section>
 
         {mutation?.type === "marketOrder" ? (
-          <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
+          <section className="flex-1 min-w-0 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
             <h2 className="text-2xl font-bold mb-2">Resolution</h2>
             <MarketOrderFills mutation={mutation} />
           </section>
         ) : null}
 
-        <section className="flex-1 p-4 flex flex-col gap-2">
+        <section className="flex-1 min-w-0 p-4 flex flex-col gap-2">
           <h2 className="text-2xl font-bold mb-2">Signature</h2>
           <code>
             account:{" "}

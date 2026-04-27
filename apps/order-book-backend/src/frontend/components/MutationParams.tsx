@@ -68,7 +68,7 @@ function formatAmount(amount: string, asset: Address) {
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <code>
+    <code className="break-all">
       {label}: {value}
     </code>
   );
