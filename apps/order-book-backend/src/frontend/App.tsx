@@ -1,9 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { USD } from "order-book-sdk";
 import { useState } from "react";
+import { Deposit } from "./components/Deposit";
 import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
+import { useBalances } from "./hooks/useBalances";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
 import "./index.css";
@@ -42,22 +45,47 @@ function Auth() {
   );
 }
 
-function ExchangePage() {
+function ExchangeRoute() {
   const { account, loading } = useAccountContext();
-  if (loading) return null;
-  if (!account) return <Auth />;
+  const balances = useBalances(account?.accountId);
+  if (loading) return <Shell compact />;
+  if (!account)
+    return (
+      <Shell compact>
+        <Auth />
+      </Shell>
+    );
+  if (!balances.data) return <Shell compact />;
+  const usdRaw = BigInt(balances.data.balances[USD] ?? "0");
+  if (usdRaw === 0n) {
+    return (
+      <Shell compact>
+        <main className="flex-1 flex items-center justify-center pt-6">
+          <Deposit />
+        </main>
+      </Shell>
+    );
+  }
   return (
-    <main className="flex-1 pt-6">
-      <Exchange />
-      <LiveBlocks />
-    </main>
+    <Shell>
+      <main className="flex-1 pt-6">
+        <Exchange />
+        <LiveBlocks />
+      </main>
+    </Shell>
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({
+  children,
+  compact = false,
+}: {
+  children?: React.ReactNode;
+  compact?: boolean;
+}) {
   return (
     <div className="min-h-screen w-full flex flex-col">
-      <Header />
+      <Header compact={compact} />
       {children}
     </div>
   );
@@ -71,7 +99,7 @@ function Routes() {
   if (blockMatch) return <Shell><BlockPage /></Shell>;
   if (mutationMatch) return <Shell><MutationPage /></Shell>;
   if (accountMatch) return <Shell><AccountPage /></Shell>;
-  if (path === "/exchange") return <Shell><ExchangePage /></Shell>;
+  if (path === "/exchange") return <ExchangeRoute />;
   if (path === "/about") return <AboutOrderBook />;
   return <AboutOrderBook />;
 }

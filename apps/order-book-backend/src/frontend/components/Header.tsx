@@ -4,7 +4,7 @@ import { useAccount } from "../hooks/useAccount";
 import { useBalances } from "../hooks/useBalances";
 import { Link } from "../lib/router";
 
-export function Header() {
+export function Header({ compact = false }: { compact?: boolean }) {
   const { account, setAccount } = useAccountContext();
   const { data } = useBalances(account?.accountId);
   const accountQuery = useAccount(account?.accountId);
@@ -21,30 +21,34 @@ export function Header() {
       <Link to="/about" className="text-blue-500 hover:underline">
         /about
       </Link>
-      <span className="flex-1" />
-      {account ? (
+      {compact ? null : (
         <>
-          <span>balance: ${balance.toFixed(2)}</span>
-          {serial != null ? (
-            <Link
-              to={`/account/${serial}`}
-              className="text-blue-500 hover:underline"
-            >
-              view account
+          <span className="flex-1" />
+          {account ? (
+            <>
+              <span>balance: ${balance.toFixed(2)}</span>
+              {serial != null ? (
+                <Link
+                  to={`/account/${serial}`}
+                  className="text-blue-500 hover:underline"
+                >
+                  view account
+                </Link>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void setAccount(null)}
+                className="border border-black px-3 py-1 cursor-pointer hover:bg-zinc-50"
+              >
+                sign out
+              </button>
+            </>
+          ) : (
+            <Link to="/exchange" className="text-blue-500 hover:underline">
+              /exchange →
             </Link>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => void setAccount(null)}
-            className="border border-black px-3 py-1 cursor-pointer hover:bg-zinc-50"
-          >
-            sign out
-          </button>
+          )}
         </>
-      ) : (
-        <Link to="/exchange" className="text-blue-500 hover:underline">
-          /exchange →
-        </Link>
       )}
     </header>
   );
