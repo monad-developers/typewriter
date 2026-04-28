@@ -754,6 +754,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
   const bundle = Effect.gen(function* () {
     const position = bundlePosition++;
 
+    const tBundleStart = performance.now();
     const queued = Chunk.toArray(yield* Queue.takeAll(mutationQueue));
     const deferredById = new Map(queued.map((m) => [m.id, m.deferred]));
     let mutations = queued as Extract<
@@ -768,10 +769,18 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
 
     if (mutations.length === 0) return;
 
+    let totalCloneMs = 0;
+    let totalApplyMs = 0;
+    let totalResolveMs = 0;
     while (mutations.length > 0) {
+      const tResolve = performance.now();
       // @ts-ignore hack because ids are passed through
       resolvedMutations = resolveAndOrderMutations(state, mutations);
+      const tClone = performance.now();
+      totalResolveMs += tClone - tResolve;
       const clone = structuredClone(state);
+      const tApply = performance.now();
+      totalCloneMs += tApply - tClone;
       let failedMutation: MutationEvent | null = null;
       let error: unknown;
       for (const resolvedMutation of resolvedMutations) {
@@ -787,10 +796,22 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           break;
         }
       }
+      totalApplyMs += performance.now() - tApply;
       if (failedMutation === null) break;
       // @ts-ignore
       rejections.push({ mutation: failedMutation, error });
     }
+
+    yield* Effect.logInfo("bundle timing").pipe(
+      Effect.annotateLogs({
+        position,
+        mutationCount: queued.length,
+        resolveMs: +totalResolveMs.toFixed(1),
+        cloneMs: +totalCloneMs.toFixed(1),
+        applyMs: +totalApplyMs.toFixed(1),
+        elapsedMs: +(performance.now() - tBundleStart).toFixed(1),
+      }),
+    );
 
     // state, status, deferred, db, emit
 
@@ -1166,6 +1187,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     return Effect.runPromise(
       Effect.gen(function* () {
         const typeName = MutationType[mutation.type];
+        const t0 = performance.now();
 
         yield* Effect.logInfo("received mutation").pipe(
           Effect.annotateLogs({
@@ -1178,12 +1200,15 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           try: () => verifySignature(state, eip712Domain, mutation),
           catch: (err) => err,
         });
+        const tVerify = performance.now();
 
         const id = nextId++;
         yield* Effect.tryPromise({
           try: () => insertPendingMutation(config.db, mutation, id),
           catch: (error) => error as Error,
         });
+        const tInsert = performance.now();
+
         const deferred = yield* Deferred.make<MutationEvent, unknown>();
         yield* Queue.offer(mutationQueue, {
           id,
@@ -1192,6 +1217,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           deferred,
         });
         emitMutation({ id, status: "pending", ...mutation });
+        const tQueued = performance.now();
 
         yield* Effect.logInfo("queued mutation").pipe(
           Effect.annotateLogs({
@@ -1201,9 +1227,24 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           }),
         );
 
-        return (yield* Deferred.await(deferred)) as unknown as {
+        const result = (yield* Deferred.await(deferred)) as unknown as {
           id: number;
         } & Extract<ResolvedMutation, { type: T["type"] }>;
+        const tDone = performance.now();
+
+        yield* Effect.logInfo("execute timing").pipe(
+          Effect.annotateLogs({
+            mutationId: id,
+            type: typeName,
+            verifyMs: +(tVerify - t0).toFixed(1),
+            insertMs: +(tInsert - tVerify).toFixed(1),
+            queueOfferMs: +(tQueued - tInsert).toFixed(1),
+            awaitAcceptMs: +(tDone - tQueued).toFixed(1),
+            totalMs: +(tDone - t0).toFixed(1),
+          }),
+        );
+
+        return result;
       }).pipe(
         Effect.tapError((error) => {
           console.error(error);

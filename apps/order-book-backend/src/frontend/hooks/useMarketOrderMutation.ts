@@ -23,11 +23,15 @@ export function useMarketOrderMutation() {
         bidOrAsk: side === "buy" ? 0 : 1,
       });
 
+      const start = performance.now();
       const res = await fetch("/api/market-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(signed),
       });
+      console.log(
+        `[tx-latency] market-order ${(performance.now() - start).toFixed(1)}ms`,
+      );
 
       if (!res.ok) {
         const err = (await res.json().catch(() => null)) as {
