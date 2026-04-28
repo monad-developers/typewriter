@@ -710,6 +710,11 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     }
   }
 
+  const dbRetry = Effect.retry({
+    times: 8,
+    schedule: Schedule.spaced(Duration.millis(200)),
+  });
+
   const transport = http(config.rpcUrls[0], { retryCount: 0 });
 
   const publicClient = createPublicClient({
@@ -875,7 +880,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           return bundleId;
         }),
       catch: (error) => error as Error,
-    });
+    }).pipe(dbRetry);
 
     emitBundle({
       id: bundleId,
@@ -1033,7 +1038,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
           }
         }),
       catch: (error) => error as Error,
-    });
+    }).pipe(dbRetry);
 
     emitBlock({
       status: "proposed",
@@ -1135,7 +1140,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
             }
           }),
         catch: (error) => error as Error,
-      });
+      }).pipe(dbRetry);
 
       emitBlock({
         status: blockEvent.status,
