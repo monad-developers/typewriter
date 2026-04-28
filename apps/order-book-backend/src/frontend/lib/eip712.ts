@@ -1,7 +1,7 @@
 import type { Address } from "viem";
 export { EIP712_TYPES } from "order-book-sdk";
 
-const EXCHANGE_ADDRESS = (process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ??
+export const EXCHANGE_ADDRESS = (process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ??
   "0x0000000000000000000000000000000000000000") as Address;
 
 const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID ?? "31337");
