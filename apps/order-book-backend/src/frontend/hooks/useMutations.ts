@@ -118,5 +118,6 @@ export function useMutations(blockNumber: string | undefined) {
       return (await res.json()) as ApiMutation[];
     },
     enabled: !!blockNumber,
+    refetchInterval: 1000,
   });
 }

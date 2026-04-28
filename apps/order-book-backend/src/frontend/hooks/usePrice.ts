@@ -16,6 +16,6 @@ export function usePrice(instrumentId: number) {
       if (!res.ok) throw new Error("Failed to fetch price");
       return (await res.json()) as PriceResponse;
     },
-    refetchInterval: 2000,
+    refetchInterval: 500,
   });
 }

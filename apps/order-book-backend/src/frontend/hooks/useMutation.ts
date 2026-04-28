@@ -31,5 +31,7 @@ export function useMutationByNonce(
       return (await res.json()) as ApiMutation;
     },
     enabled: !!account && !!nonce,
+    refetchInterval: (query) =>
+      query.state.data?.status === "verified" ? false : 1000,
   });
 }

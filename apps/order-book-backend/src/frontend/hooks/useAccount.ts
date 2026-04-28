@@ -37,5 +37,6 @@ export function useAccount(idOrAddress: string | undefined) {
       return (await res.json()) as ApiAccount;
     },
     enabled: !!idOrAddress,
+    refetchInterval: 1000,
   });
 }
