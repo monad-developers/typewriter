@@ -54,4 +54,3 @@ if (side === "buy") {
 
 console.log(`placing ${side}: ${quantity.human} @ $${price}...`);
 await limitOrder(account, { instrument, quantity, price, side });
-console.log("done");

@@ -14,6 +14,6 @@ export function useDepth(instrumentId: number) {
       if (!res.ok) throw new Error("Failed to fetch depth");
       return (await res.json()) as DepthResponse;
     },
-    refetchInterval: 2000,
+    refetchInterval: 500,
   });
 }

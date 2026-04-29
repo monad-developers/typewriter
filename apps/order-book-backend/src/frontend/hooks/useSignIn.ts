@@ -1,4 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
+import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import { bytesToHex, hashTypedData, keccak256 } from "viem";
 import { Authentication as ClientAuthentication } from "webauthx/client";
 import { useAccountContext } from "../contexts/AccountContext";
@@ -24,7 +25,7 @@ export function useSignIn() {
         account: accountId,
         expiry: 0,
         keyType: 0,
-        permissions: 0xff,
+        permissions: DEFAULT_NON_ROOT_PERMISSIONS,
         publicKey: sessionPublicKey,
         nonce,
         deadline: MAX_DEADLINE,

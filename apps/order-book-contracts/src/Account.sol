@@ -88,7 +88,7 @@ function verifyChallenge(bytes memory clientDataJSON, uint256 offset, bytes32 di
         if (clientDataJSON[offset++] != table[(triple >> 18) & 0x3F]) revert InvalidSignature();
         if (clientDataJSON[offset++] != table[(triple >> 12) & 0x3F]) revert InvalidSignature();
         if (clientDataJSON[offset++] != table[(triple >> 6) & 0x3F]) revert InvalidSignature();
-        if (offset < clientDataJSON.length) {
+        if (i < 32) {
             if (clientDataJSON[offset++] != table[triple & 0x3F]) revert InvalidSignature();
         }
     }

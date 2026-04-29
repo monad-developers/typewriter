@@ -2,7 +2,7 @@ import type { Address, Hex } from "viem";
 
 export type Side = 0 | 1;
 
-export type KeyType = 0 | 1 | 2 | 3; // P256, WebAuthnP256, Secp256k1, External
+export type KeyType = 0 | 1 | 2; // P256, WebAuthnP256, Secp256k1
 
 export type Key = {
   expiry: number;

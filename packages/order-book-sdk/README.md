@@ -80,6 +80,9 @@ usd.human // ~2400
 | USD    | `0x1111111111111111111111111111111111111111` |
 | GOLD   | `0x2222222222222222222222222222222222222222` |
 | WTIOIL | `0x3333333333333333333333333333333333333333` |
+| EUR    | `0x4444444444444444444444444444444444444444` |
+| SPX    | `0x5555555555555555555555555555555555555555` |
+| BTC  | `0x6666666666666666666666666666666666666666` |
 
 ### Instruments
 
@@ -87,10 +90,13 @@ usd.human // ~2400
 |------------|----|--------|-------|------------|-------------|
 | GOLD/USD   | 0  | GOLD   | USD   | 35         | 46          |
 | WTIOIL/USD | 1  | WTIOIL | USD   | 40         | 46          |
+| EUR/USD    | 2  | EUR    | USD   | 46         | 46          |
+| SPX/USD    | 3  | SPX    | USD   | 34         | 46          |
+| BTC/USD    | 4  | BTC    | USD   | 29         | 46          |
 
 ### Other exports
 
-- `ASSETS` — `[USD, GOLD, WTIOIL]`
+- `ASSETS` — `[USD, GOLD, WTIOIL, EUR, SPX, BTC]`
 - `EIP712_TYPES` — EIP-712 type definitions for all exchange mutations
 - `EXCHANGE_ABI` — Solidity ABI for the Exchange contract
 - `InstrumentConfig` — TypeScript type for instrument configuration

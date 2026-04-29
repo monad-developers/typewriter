@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext } from "react";
 import type { Hex } from "viem";
+import { EXCHANGE_ADDRESS } from "../lib/eip712";
 import {
   clearSessionKey,
   loadSessionKey,
@@ -28,7 +29,22 @@ type AccountContextValue = {
 
 const AccountContext = createContext<AccountContextValue | null>(null);
 
+async function clearStoredAccount(): Promise<void> {
+  localStorage.removeItem("ob:exchangeAddress");
+  localStorage.removeItem("ob:accountId");
+  localStorage.removeItem("ob:keyId");
+  localStorage.removeItem("ob:nonceKey");
+  localStorage.removeItem("ob:seq");
+  await clearSessionKey();
+}
+
 async function loadAccount(): Promise<Account | null> {
+  const storedAddress = localStorage.getItem("ob:exchangeAddress");
+  if (storedAddress && storedAddress !== EXCHANGE_ADDRESS) {
+    await clearStoredAccount();
+    return null;
+  }
+
   const accountId = localStorage.getItem("ob:accountId") as Hex | null;
   const keyIdStr = localStorage.getItem("ob:keyId");
   const nonceKeyStr = localStorage.getItem("ob:nonceKey");
@@ -55,17 +71,15 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
 
   const setAccount = useCallback(
     async (account: Account | null) => {
-      localStorage.removeItem("ob:seq");
       if (account) {
+        localStorage.setItem("ob:exchangeAddress", EXCHANGE_ADDRESS);
         localStorage.setItem("ob:accountId", account.accountId);
         localStorage.setItem("ob:keyId", String(account.keyId));
         localStorage.setItem("ob:nonceKey", account.nonceKey.toString());
+        localStorage.removeItem("ob:seq");
         await saveSessionKey(account.sessionKey);
       } else {
-        localStorage.removeItem("ob:accountId");
-        localStorage.removeItem("ob:keyId");
-        localStorage.removeItem("ob:nonceKey");
-        await clearSessionKey();
+        await clearStoredAccount();
       }
       queryClient.setQueryData(["account"], account);
     },

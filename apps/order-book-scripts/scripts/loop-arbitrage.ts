@@ -1,50 +1,88 @@
-import { fromLots, priceToQ32, TokenAmount } from "order-book-sdk";
+import {
+  fromLots,
+  type InstrumentConfig,
+  priceToQ32,
+  TokenAmount,
+} from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { createAccount, deposit, fetchState, marketOrder } from "../src/sdk";
+import {
+  createAccount,
+  deposit,
+  estimateFillToPrice,
+  marketOrder,
+} from "../src/sdk";
 
 const DEFAULT_INTERVAL = 10_000;
 
 const YAHOO_SYMBOLS = {
   "GOLD/USD": "GC=F",
   "WTIOIL/USD": "CL=F",
+  "EUR/USD": "EURUSD=X",
+  "SPX/USD": "^GSPC",
+  "BTC/USD": "BTC-USD",
 } as const;
 
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
-
-const yahooSymbol = YAHOO_SYMBOLS[instrumentName];
-if (!yahooSymbol) {
-  console.error(`no Yahoo Finance symbol for ${instrumentName}`);
-  process.exit(1);
-}
-
+const targets = resolveTargets();
 const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
 
-const account = await createAccount();
-console.log(`account ${account.address}`);
-console.log(`interval: ${interval}ms, symbol: ${yahooSymbol}`);
-
+let account: Awaited<ReturnType<typeof createAccount>>;
 while (true) {
   try {
-    await tick();
+    account = await createAccount();
+    break;
   } catch (err) {
     console.error(
-      "iteration failed:",
+      "createAccount failed, retrying:",
       err instanceof Error ? err.message : err,
     );
+    await Bun.sleep(interval);
+  }
+}
+console.log(`account ${account.address}`);
+console.log(
+  `interval: ${interval}ms, instruments: ${targets.map((t) => `${t.name}(${t.yahooSymbol})`).join(", ")}`,
+);
+
+while (true) {
+  for (const target of targets) {
+    try {
+      await tick(target.instrument, target.yahooSymbol, target.name);
+    } catch (err) {
+      console.error(
+        `[${target.name}] iteration failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   await Bun.sleep(interval);
+}
+
+function resolveTargets(): {
+  name: keyof typeof INSTRUMENTS;
+  instrument: InstrumentConfig;
+  yahooSymbol: string;
+}[] {
+  if (!process.env.INSTRUMENT) {
+    return (Object.keys(INSTRUMENTS) as (keyof typeof INSTRUMENTS)[]).map(
+      (name) => ({
+        name,
+        instrument: INSTRUMENTS[name],
+        yahooSymbol: YAHOO_SYMBOLS[name],
+      }),
+    );
+  }
+  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
+  const instrument = INSTRUMENTS[name];
+  if (!instrument) {
+    console.error(`unknown instrument: ${name}`);
+    process.exit(1);
+  }
+  const yahooSymbol = YAHOO_SYMBOLS[name];
+  if (!yahooSymbol) {
+    console.error(`no Yahoo Finance symbol for ${name}`);
+    process.exit(1);
+  }
+  return [{ name, instrument, yahooSymbol }];
 }
 
 async function fetchYahooPrice(symbol: string): Promise<number> {
@@ -61,52 +99,49 @@ async function fetchYahooPrice(symbol: string): Promise<number> {
   return data.chart.result[0].meta.regularMarketPrice;
 }
 
-async function tick() {
-  const [realPrice, state] = await Promise.all([
-    fetchYahooPrice(yahooSymbol),
-    fetchState(),
-  ]);
-  console.log(`real price: $${realPrice.toFixed(4)}`);
+async function tick(
+  instrument: InstrumentConfig,
+  yahooSymbol: string,
+  label: string,
+) {
+  const realPrice = await fetchYahooPrice(yahooSymbol);
+  console.log(`[${label}] real price: $${realPrice.toFixed(4)}`);
 
-  const book = state.instruments[instrument.id];
-  if (!book) {
-    console.log("instrument not found on-chain, skipping");
+  const anchorQ32 = priceToQ32(realPrice, instrument);
+
+  let buyEstimate: Awaited<ReturnType<typeof estimateFillToPrice>>;
+  let sellEstimate: Awaited<ReturnType<typeof estimateFillToPrice>>;
+  try {
+    [buyEstimate, sellEstimate] = await Promise.all([
+      estimateFillToPrice({
+        instrumentId: instrument.id,
+        side: "buy",
+        priceQ32: anchorQ32,
+      }),
+      estimateFillToPrice({
+        instrumentId: instrument.id,
+        side: "sell",
+        priceQ32: anchorQ32,
+      }),
+    ]);
+  } catch (err) {
+    console.log(
+      `[${label}] estimate failed, skipping (${err instanceof Error ? err.message : err})`,
+    );
     return;
   }
 
-  const anchorQ32 = Number(priceToQ32(realPrice, instrument));
-
-  const askPrices = Object.keys(book.asks)
-    .map(Number)
-    .filter((p) => BigInt(book.asks[p]!.remainingQuantity) > 0n)
-    .sort((a, b) => a - b);
-  const bidPrices = Object.keys(book.bids)
-    .map(Number)
-    .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n)
-    .sort((a, b) => b - a);
-
-  let buyLots = 0n;
-  let buyQuoteLots = 0n;
-  for (const p of askPrices) {
-    if (p > anchorQ32) break;
-    const available = BigInt(book.asks[p]!.remainingQuantity);
-    buyLots += available;
-    buyQuoteLots += (available * BigInt(p)) >> 32n;
-  }
-
-  let sellLots = 0n;
-  let sellQuoteLots = 0n;
-  for (const p of bidPrices) {
-    if (p < anchorQ32) break;
-    const available = BigInt(book.bids[p]!.remainingQuantity);
-    sellLots += available;
-    sellQuoteLots += (available * BigInt(p)) >> 32n;
-  }
+  const buyLots = buyEstimate.totalQuantity;
+  const buyQuoteLots = buyEstimate.quoteQuantity;
+  const sellLots = sellEstimate.totalQuantity;
+  const sellQuoteLots = sellEstimate.quoteQuantity;
 
   if (buyLots === 0n && sellLots === 0n) {
-    console.log("no arbitrage opportunity");
+    console.log(`[${label}] no arbitrage opportunity`);
     return;
   }
+
+  const legs: Promise<unknown>[] = [];
 
   if (buyLots > 0n) {
     const quantity = TokenAmount.fromRaw(
@@ -119,15 +154,18 @@ async function tick() {
     );
     const avgPrice = depositAmount.human / quantity.human;
     console.log(
-      `arb buy: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
+      `[${label}] arb buy: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
     );
-    await deposit(account, { quantity: depositAmount });
-    await marketOrder(account, {
-      instrument,
-      quantity,
-      minReceived: quantity,
-      side: "buy",
-    });
+    legs.push(
+      (async () => {
+        await deposit(account, { quantity: depositAmount }, { concurrent: true });
+        await marketOrder(
+          account,
+          { instrument, quantity, minReceived: quantity, side: "buy" },
+          { concurrent: true },
+        );
+      })(),
+    );
   }
 
   if (sellLots > 0n) {
@@ -141,14 +179,19 @@ async function tick() {
     );
     const avgPrice = minReceived.human / quantity.human;
     console.log(
-      `arb sell: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
+      `[${label}] arb sell: ${quantity.human.toFixed(4)} base @ avg $${avgPrice.toFixed(4)}`,
     );
-    await deposit(account, { quantity });
-    await marketOrder(account, {
-      instrument,
-      quantity,
-      minReceived,
-      side: "sell",
-    });
+    legs.push(
+      (async () => {
+        await deposit(account, { quantity }, { concurrent: true });
+        await marketOrder(
+          account,
+          { instrument, quantity, minReceived, side: "sell" },
+          { concurrent: true },
+        );
+      })(),
+    );
   }
+
+  await Promise.all(legs);
 }

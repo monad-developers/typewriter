@@ -1,6 +1,6 @@
-import type { State } from "order-book-backend/src/exchange";
-import { EIP712_TYPES } from "order-book-sdk";
+import { DEFAULT_NON_ROOT_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
 import * as Address from "ox/Address";
+import * as Hash from "ox/Hash";
 import type * as Hex from "ox/Hex";
 import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
@@ -11,7 +11,10 @@ console.log(
   `Using API_URL=${API_URL}, CHAIN_ID=${CHAIN_ID}, EXCHANGE_ADDRESS=${EXCHANGE_ADDRESS}`,
 );
 
-const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
+function farDeadline(): bigint {
+  return BigInt(Math.floor(Date.now() / 1000) + 86400);
+}
+const FETCH_TIMEOUT_MS = 30_000;
 
 function domain() {
   return {
@@ -44,6 +47,7 @@ async function post(path: string, body: unknown) {
     body: JSON.stringify(body, (_k, v) =>
       typeof v === "bigint" ? v.toString() : v,
     ),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`${path} failed: ${data.error}`);
@@ -114,32 +118,28 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
   const pk = privateKey ?? Secp256k1.randomPrivateKey();
   const publicKey = Secp256k1.getPublicKey({ privateKey: pk });
   const address = Address.fromPublicKey(publicKey);
-  const accountHex =
+  const rootPublicKey =
     `0x000000000000000000000000${address.slice(2).toLowerCase()}` as Hex.Hex;
+  const accountHex = Hash.keccak256(rootPublicKey);
 
-  const state = await fetchState();
-  const existing = state.accounts[accountHex];
+  const existsRes = await fetch(`${API_URL}/api/account/${accountHex}/exists`, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  const { hasKeys } = (await existsRes.json()) as { hasKeys: boolean };
 
-  if (!existing || existing.keys.length === 0) {
-    const mutation = {
+  if (!hasKeys) {
+    await post("/api/initialize", {
+      account: accountHex,
       expiry: 0,
       rootKeyType: 2,
       keyType: 2,
-      permissions: 0xff,
-      rootPublicKey: accountHex,
-      publicKey: accountHex,
-    };
-    const rawSignature = sign(pk, "Initialize", {
-      account: accountHex,
-      ...mutation,
-    });
-    await post("/api/initialize", {
-      ...mutation,
-      account: accountHex,
+      permissions: DEFAULT_NON_ROOT_PERMISSIONS,
+      rootPublicKey,
+      publicKey: rootPublicKey,
       keyId: 0,
       nonce: "0",
-      deadline: FAR_DEADLINE.toString(),
-      rawSignature,
+      deadline: farDeadline().toString(),
+      rawSignature: "0x",
     });
   }
 
@@ -153,9 +153,141 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
   };
 }
 
-export async function fetchState(): Promise<State> {
-  const res = await fetch(`${API_URL}/api/state`);
-  return res.json() as Promise<State>;
+export async function estimateMarketOrder(params: {
+  instrumentId: number;
+  side: "buy" | "sell";
+  quantityLots: bigint;
+}): Promise<{
+  fills: { quantity: bigint; price: number }[];
+  filledQuantity: bigint;
+  quoteQuantity: bigint;
+}> {
+  const url = `${API_URL}/api/estimate-market-order?instrumentId=${params.instrumentId}&side=${params.side}&quantity=${params.quantityLots}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`estimate-market-order failed: ${data.error}`);
+  return {
+    fills: (data.fills as { quantity: string; price: number }[]).map((f) => ({
+      quantity: BigInt(f.quantity),
+      price: f.price,
+    })),
+    filledQuantity: BigInt(data.filledQuantity as string),
+    quoteQuantity: BigInt(data.quoteQuantity as string),
+  };
+}
+
+export async function fetchPrice(instrumentId: number): Promise<{
+  priceQ32: bigint | null;
+  bestBidQ32: bigint | null;
+  bestAskQ32: bigint | null;
+  spreadQ32: bigint | null;
+}> {
+  const res = await fetch(
+    `${API_URL}/api/price?instrumentId=${instrumentId}`,
+    { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+  );
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`fetch-price failed: ${data.error}`);
+  const toBig = (v: unknown): bigint | null =>
+    v === null || v === undefined ? null : BigInt(Math.round(v as number));
+  return {
+    priceQ32: toBig(data.price),
+    bestBidQ32: toBig(data.bestBid),
+    bestAskQ32: toBig(data.bestAsk),
+    spreadQ32: toBig(data.spread),
+  };
+}
+
+export async function fetchTicks(
+  instrumentId: number,
+  queries: { side: "buy" | "sell"; priceQ32: bigint }[],
+): Promise<({ quantity: bigint; remainingQuantity: bigint; volume: number } | null)[]> {
+  const res = await fetch(`${API_URL}/api/ticks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      instrumentId,
+      queries: queries.map((q) => ({
+        side: q.side,
+        priceQ32: q.priceQ32.toString(),
+      })),
+    }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`fetch-ticks failed: ${data.error}`);
+  return (data.ticks as (
+    | { quantity: string; remainingQuantity: string; volume: number }
+    | null
+  )[]).map((t) =>
+    t === null
+      ? null
+      : {
+          quantity: BigInt(t.quantity),
+          remainingQuantity: BigInt(t.remainingQuantity),
+          volume: t.volume,
+        },
+  );
+}
+
+export type AccountOrder = {
+  orderId: number;
+  quantity: bigint;
+  instrumentId: number;
+  price: bigint;
+  tickVolume: number;
+  side: 0 | 1;
+};
+
+export async function fetchAccountOrders(
+  account: Hex.Hex,
+  instrumentId?: number,
+): Promise<AccountOrder[]> {
+  const url =
+    instrumentId !== undefined
+      ? `${API_URL}/api/account/${account}/orders?instrumentId=${instrumentId}`
+      : `${API_URL}/api/account/${account}/orders`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`fetch-account-orders failed: ${data.error}`);
+  return (data.orders as {
+    orderId: number;
+    quantity: string;
+    instrumentId: number;
+    price: string;
+    tickVolume: number;
+    side: 0 | 1;
+  }[]).map((o) => ({
+    orderId: o.orderId,
+    quantity: BigInt(o.quantity),
+    instrumentId: o.instrumentId,
+    price: BigInt(o.price),
+    tickVolume: o.tickVolume,
+    side: o.side,
+  }));
+}
+
+export async function estimateFillToPrice(params: {
+  instrumentId: number;
+  side: "buy" | "sell";
+  priceQ32: bigint;
+}): Promise<{
+  fills: { quantity: bigint; price: number }[];
+  totalQuantity: bigint;
+  quoteQuantity: bigint;
+}> {
+  const url = `${API_URL}/api/estimate-fill-to-price?instrumentId=${params.instrumentId}&side=${params.side}&priceQ32=${params.priceQ32}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`estimate-fill-to-price failed: ${data.error}`);
+  return {
+    fills: (data.fills as { quantity: string; price: number }[]).map((f) => ({
+      quantity: BigInt(f.quantity),
+      price: f.price,
+    })),
+    totalQuantity: BigInt(data.totalQuantity as string),
+    quoteQuantity: BigInt(data.quoteQuantity as string),
+  };
 }
 
 export async function addInstrument(
@@ -170,6 +302,7 @@ export async function addInstrument(
   opts?: MutationOpts,
 ) {
   const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
   const rawSignature = sign(account.privateKey, "AddInstrument", {
     instrumentId: BigInt(instrument.instrumentId),
     base: instrument.base,
@@ -177,14 +310,14 @@ export async function addInstrument(
     baseLotExp: instrument.baseLotExp,
     quoteLotExp: instrument.quoteLotExp,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
   });
   return postWithNonce(rollback, "/api/add-instrument", {
     ...instrument,
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
     rawSignature,
   });
 }
@@ -196,11 +329,12 @@ export async function deposit(
 ) {
   const { quantity } = params;
   const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
   const rawSignature = sign(account.privateKey, "Deposit", {
     asset: quantity.asset,
     amount: quantity.raw,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
   });
   return postWithNonce(rollback, "/api/mint", {
     asset: quantity.asset,
@@ -208,7 +342,7 @@ export async function deposit(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
     rawSignature,
   });
 }
@@ -228,13 +362,14 @@ export async function limitOrder(
   const q32Price = priceToQ32(params.price, instrument);
   const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
   const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
   const rawSignature = sign(account.privateKey, "LimitOrder", {
     quantity,
     instrumentId: BigInt(instrument.id),
     price: q32Price,
     bidOrAsk,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
   });
   return postWithNonce(rollback, "/api/limit-order", {
     quantity,
@@ -244,7 +379,7 @@ export async function limitOrder(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
     rawSignature,
   });
 }
@@ -269,13 +404,14 @@ export async function marketOrder(
     receivedLotExp,
   );
   const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
   const rawSignature = sign(account.privateKey, "MarketOrder", {
     quantity,
     minReceivedQuantity,
     instrumentId: BigInt(instrument.id),
     bidOrAsk,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
   });
   return postWithNonce(rollback, "/api/market-order", {
     quantity,
@@ -285,7 +421,7 @@ export async function marketOrder(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
     rawSignature,
   });
 }
@@ -296,17 +432,18 @@ export async function closeOrder(
   opts?: MutationOpts,
 ) {
   const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
   const rawSignature = sign(account.privateKey, "CloseOrder", {
     orderId: BigInt(params.orderId),
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
   });
   return postWithNonce(rollback, "/api/close-order", {
     ...params,
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
     rawSignature,
   });
 }
@@ -318,11 +455,12 @@ export async function withdraw(
 ) {
   const { quantity } = params;
   const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
   const rawSignature = sign(account.privateKey, "Withdrawal", {
     asset: quantity.asset,
     amount: quantity.raw,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
   });
   return postWithNonce(rollback, "/api/withdrawal", {
     asset: quantity.asset,
@@ -330,7 +468,7 @@ export async function withdraw(
     account: account.accountHex,
     keyId: account.keyId,
     nonce,
-    deadline: FAR_DEADLINE,
+    deadline,
     rawSignature,
   });
 }
