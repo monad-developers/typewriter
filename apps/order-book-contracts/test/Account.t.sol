@@ -20,7 +20,7 @@ import {
     PERM_LIMIT_ORDER,
     Unauthorized,
     AlreadyInitialized,
-    INITIALIZE_TYPEHASH,
+    InvalidAccount,
     AUTHORIZE_TYPEHASH,
     REVOKE_TYPEHASH
 } from "src/Exchange.sol";
@@ -40,7 +40,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
         keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
 
     function setUp() public {
-        account = bytes32(uint256(uint160(vm.addr(pk1))));
+        account = keccak256(abi.encode(vm.addr(pk1)));
     }
 
     function _sign(uint256 pk, bytes32 structHash) internal view returns (bytes memory) {
@@ -75,21 +75,6 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
         bundles[0] = Bundle({mutations: mutations, mutationData: data, signatures: sigs});
     }
 
-    function _initializeStructHash(Initialize memory init) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                INITIALIZE_TYPEHASH,
-                init.account,
-                init.expiry,
-                init.rootKeyType,
-                init.keyType,
-                init.permissions,
-                keccak256(init.rootPublicKey),
-                keccak256(init.publicKey)
-            )
-        );
-    }
-
     function _initAccount(uint256 rootPk, uint256 subPk, bytes32 acc, uint8 permissions) internal {
         Initialize memory init = Initialize({
             account: acc,
@@ -107,7 +92,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({account: acc, keyId: 0, rawSignature: _sign(rootPk, _initializeStructHash(init))});
+        sigs[0] = Signature({account: acc, keyId: 0, rawSignature: ""});
 
         _exec(muts, data, sigs);
     }
@@ -120,6 +105,31 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
         assertEq(state.accounts[account].keys[0].permissions, type(uint8).max);
         assertEq(state.accounts[account].keys[1].permissions, PERM_DEPOSIT);
         assertEq(state.accounts[account].nonces[0], 0);
+    }
+
+    function test_Initialize_RejectsAccountNotMatchingRootKey() external {
+        bytes32 mismatchedAccount = bytes32(uint256(0xDEADBEEF));
+        Initialize memory init = Initialize({
+            account: mismatchedAccount,
+            expiry: 0,
+            rootKeyType: uint8(KeyType.Secp256k1),
+            keyType: uint8(KeyType.Secp256k1),
+            permissions: PERM_DEPOSIT,
+            rootPublicKey: abi.encode(vm.addr(pk1)),
+            publicKey: abi.encode(vm.addr(pk2))
+        });
+
+        Mutation[] memory muts = new Mutation[](1);
+        bytes[] memory data = new bytes[](1);
+        Signature[] memory sigs = new Signature[](1);
+
+        muts[0] = Mutation.Initialize;
+        data[0] = abi.encode(init);
+        sigs[0] = Signature({account: mismatchedAccount, keyId: 0, rawSignature: ""});
+
+        vm.prank(SCHEDULER);
+        vm.expectRevert(InvalidAccount.selector);
+        this.execute(_bundles(muts, data, sigs));
     }
 
     function test_Initialize_AlreadyInitialized() external {
@@ -141,7 +151,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _sign(pk1, _initializeStructHash(init))});
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: ""});
 
         vm.prank(SCHEDULER);
         vm.expectRevert(AlreadyInitialized.selector);
@@ -281,7 +291,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _sign(pk1, _initializeStructHash(init))});
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: ""});
 
         _exec(muts, data, sigs);
 
@@ -327,8 +337,9 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
     }
 
     function test_Initialize_P256RootKey() external {
+        bytes32 p256Account = keccak256(_p256PublicKey(p256Pk1));
         Initialize memory init = Initialize({
-            account: account,
+            account: p256Account,
             expiry: 0,
             rootKeyType: uint8(KeyType.P256),
             keyType: uint8(KeyType.P256),
@@ -343,15 +354,15 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _signP256(p256Pk1, _initializeStructHash(init))});
+        sigs[0] = Signature({account: p256Account, keyId: 0, rawSignature: ""});
 
         _exec(muts, data, sigs);
 
-        assertEq(state.accounts[account].keys.length, 2);
-        assertEq(uint8(state.accounts[account].keys[0].keyType), uint8(KeyType.P256));
-        assertEq(state.accounts[account].keys[0].permissions, type(uint8).max);
-        assertEq(uint8(state.accounts[account].keys[1].keyType), uint8(KeyType.P256));
-        assertEq(state.accounts[account].keys[1].permissions, 0xff);
+        assertEq(state.accounts[p256Account].keys.length, 2);
+        assertEq(uint8(state.accounts[p256Account].keys[0].keyType), uint8(KeyType.P256));
+        assertEq(state.accounts[p256Account].keys[0].permissions, type(uint8).max);
+        assertEq(uint8(state.accounts[p256Account].keys[1].keyType), uint8(KeyType.P256));
+        assertEq(state.accounts[p256Account].keys[1].permissions, 0xff);
     }
 
     function test_Deposit_P256SessionKey() external {
@@ -371,7 +382,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _sign(pk1, _initializeStructHash(init))});
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: ""});
 
         _exec(muts, data, sigs);
 
@@ -404,7 +415,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({account: account, keyId: 0, rawSignature: _sign(pk1, _initializeStructHash(init))});
+        sigs[0] = Signature({account: account, keyId: 0, rawSignature: ""});
 
         _exec(muts, data, sigs);
 

@@ -3,8 +3,23 @@ import type { Address } from "ox/Address";
 export const USD: Address = "0x1111111111111111111111111111111111111111";
 export const GOLD: Address = "0x2222222222222222222222222222222222222222";
 export const WTIOIL: Address = "0x3333333333333333333333333333333333333333";
+export const EUR: Address = "0x4444444444444444444444444444444444444444";
+export const SPX: Address = "0x5555555555555555555555555555555555555555";
+export const BTC: Address = "0x6666666666666666666666666666666666666666";
 
-export const ASSETS = [USD, GOLD, WTIOIL] as const;
+export const ASSETS = [USD, GOLD, WTIOIL, EUR, SPX, BTC] as const;
+
+export const PERM_AUTHORIZE = 1 << 0;
+export const PERM_REVOKE = 1 << 1;
+export const PERM_CLOSE_ORDER = 1 << 2;
+export const PERM_LIMIT_ORDER = 1 << 3;
+export const PERM_MARKET_ORDER = 1 << 4;
+export const PERM_DEPOSIT = 1 << 5;
+export const PERM_WITHDRAW = 1 << 6;
+export const PERM_ADD_INSTRUMENT = 1 << 7;
+
+export const DEFAULT_NON_ROOT_PERMISSIONS =
+  0xff & ~(PERM_AUTHORIZE | PERM_REVOKE | PERM_WITHDRAW);
 
 export const INSTRUMENTS = {
   "GOLD/USD": {
@@ -19,6 +34,27 @@ export const INSTRUMENTS = {
     base: WTIOIL,
     quote: USD,
     baseLotExp: 40,
+    quoteLotExp: 46,
+  },
+  "EUR/USD": {
+    id: 2,
+    base: EUR,
+    quote: USD,
+    baseLotExp: 46,
+    quoteLotExp: 46,
+  },
+  "SPX/USD": {
+    id: 3,
+    base: SPX,
+    quote: USD,
+    baseLotExp: 34,
+    quoteLotExp: 46,
+  },
+  "BTC/USD": {
+    id: 4,
+    base: BTC,
+    quote: USD,
+    baseLotExp: 29,
     quoteLotExp: 46,
   },
 } as const;

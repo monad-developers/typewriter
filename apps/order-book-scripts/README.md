@@ -19,7 +19,7 @@ EXCHANGE_ADDRESS=0x5fbdb2315678afecb367f032d93f642f64180aa3
 # Monad testnet
 # API_URL=https://order-book-frontend-production.up.railway.app
 # CHAIN_ID=10143
-# EXCHANGE_ADDRESS=0x48f1cCe897fD18AFE30b33191839E2464E85EFF4
+# EXCHANGE_ADDRESS=0xFe5855718EaF6048cBfEF7f2F700CA4cA0F0aA7a
 ```
 
 ## Scripts
@@ -39,6 +39,9 @@ Places a limit order (maker). Deposits the required tokens automatically.
 ```bash
 PRICE=2400 SIDE=buy QUANTITY=1 INSTRUMENT=GOLD/USD bun src/limit-order.ts
 PRICE=70 SIDE=sell QUANTITY=10 INSTRUMENT=WTIOIL/USD bun src/limit-order.ts
+PRICE=1.10 SIDE=buy QUANTITY=1000 INSTRUMENT=EUR/USD bun src/limit-order.ts
+PRICE=5200 SIDE=sell QUANTITY=0.5 INSTRUMENT=SPX/USD bun src/limit-order.ts
+PRICE=95000 SIDE=buy QUANTITY=0.01 INSTRUMENT=BTC/USD bun src/limit-order.ts
 ```
 
 ### market-order
@@ -66,6 +69,9 @@ Trades against mispriced orders. Takes a `PRICE` anchor and executes market orde
 ```bash
 PRICE=2400 INSTRUMENT=GOLD/USD bun src/arbitrage.ts
 PRICE=70 INSTRUMENT=WTIOIL/USD bun src/arbitrage.ts
+PRICE=1.10 INSTRUMENT=EUR/USD bun src/arbitrage.ts
+PRICE=5200 INSTRUMENT=SPX/USD bun src/arbitrage.ts
+PRICE=95000 INSTRUMENT=BTC/USD bun src/arbitrage.ts
 ```
 
 ### retail

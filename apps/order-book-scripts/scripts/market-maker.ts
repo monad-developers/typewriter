@@ -1,11 +1,12 @@
-import {
-  baseToQuote,
-  priceToQ32,
-  q32ToPrice,
-  TokenAmount,
-} from "order-book-sdk";
+import { baseToQuote, priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
-import { createAccount, deposit, fetchState, limitOrder } from "../src/sdk";
+import {
+  createAccount,
+  deposit,
+  fetchPrice,
+  fetchTicks,
+  limitOrder,
+} from "../src/sdk";
 
 const BPS_LEVELS = [1, 5, 10, 25];
 
@@ -31,61 +32,51 @@ if (!instrument) {
 const account = await createAccount();
 console.log(`account ${account.address}`);
 
-const state = await fetchState();
-const book = state.instruments[instrument.id]!;
-
 let midPrice: number;
-
 if (process.env.PRICE) {
   midPrice = Number(process.env.PRICE);
 } else {
-  const bidPrices = Object.keys(book.bids)
-    .map(Number)
-    .filter((p) => BigInt(book.bids[p]!.remainingQuantity) > 0n);
-  const askPrices = Object.keys(book.asks)
-    .map(Number)
-    .filter((p) => BigInt(book.asks[p]!.remainingQuantity) > 0n);
-  const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
-  const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
-
-  let midQ32: number | null = null;
-  if (bestBid !== null && bestAsk !== null) {
-    midQ32 = (bestBid + bestAsk) / 2;
-  } else if (bestBid !== null) {
-    midQ32 = bestBid;
-  } else if (bestAsk !== null) {
-    midQ32 = bestAsk;
-  }
-
-  if (midQ32 === null) {
+  const { priceQ32 } = await fetchPrice(instrument.id);
+  if (priceQ32 === null) {
     console.error("no existing liquidity, provide a PRICE env var as anchor");
     process.exit(1);
   }
-
-  midPrice = q32ToPrice(BigInt(Math.round(midQ32)), instrument);
+  midPrice = q32ToPrice(priceQ32, instrument);
 }
 console.log(`mid price: $${midPrice.toFixed(4)}`);
 
-function isPartiallyFilled(q32Price: bigint, side: "buy" | "sell"): boolean {
-  const ticks = side === "buy" ? book.bids : book.asks;
-  const tick = ticks[Number(q32Price)];
-  if (!tick) return false;
-  return BigInt(tick.remainingQuantity) !== BigInt(tick.quantity);
-}
+const candidates = BPS_LEVELS.flatMap((bps) => [
+  {
+    bps,
+    side: "buy" as const,
+    price: midPrice * (1 - bps / 10000),
+  },
+  {
+    bps,
+    side: "sell" as const,
+    price: midPrice * (1 + bps / 10000),
+  },
+]);
+const tickResults = await fetchTicks(
+  instrument.id,
+  candidates.map((c) => ({
+    side: c.side,
+    priceQ32: priceToQ32(c.price, instrument),
+  })),
+);
 
 const orders: { price: number; side: "buy" | "sell" }[] = [];
-for (const bps of BPS_LEVELS) {
-  const buyPrice = midPrice * (1 - bps / 10000);
-  const sellPrice = midPrice * (1 + bps / 10000);
-  if (!isPartiallyFilled(priceToQ32(buyPrice, instrument), "buy")) {
-    orders.push({ price: buyPrice, side: "buy" });
+for (let i = 0; i < candidates.length; i++) {
+  const c = candidates[i]!;
+  const tick = tickResults[i];
+  const partiallyFilled =
+    tick !== null && tick !== undefined && tick.remainingQuantity !== tick.quantity;
+  if (!partiallyFilled) {
+    orders.push({ price: c.price, side: c.side });
   } else {
-    console.log(`skipping buy @ $${buyPrice.toFixed(4)} (partially filled tick)`);
-  }
-  if (!isPartiallyFilled(priceToQ32(sellPrice, instrument), "sell")) {
-    orders.push({ price: sellPrice, side: "sell" });
-  } else {
-    console.log(`skipping sell @ $${sellPrice.toFixed(4)} (partially filled tick)`);
+    console.log(
+      `skipping ${c.side} @ $${c.price.toFixed(4)} (partially filled tick)`,
+    );
   }
 }
 

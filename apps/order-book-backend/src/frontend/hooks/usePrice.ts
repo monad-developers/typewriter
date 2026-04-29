@@ -3,6 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 type PriceResponse = {
   instrumentId: number;
   price: number | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
 };
 
 export function usePrice(instrumentId: number) {
@@ -13,6 +16,6 @@ export function usePrice(instrumentId: number) {
       if (!res.ok) throw new Error("Failed to fetch price");
       return (await res.json()) as PriceResponse;
     },
-    refetchInterval: 2000,
+    refetchInterval: 500,
   });
 }

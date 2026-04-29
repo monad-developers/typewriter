@@ -2,9 +2,8 @@ import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
 import type { Authentication } from "webauthx/client";
 
 export const RP_ID: string =
-  typeof process !== "undefined"
-    ? process.env.BUN_PUBLIC_RP_ID || origin.split("://")[1]!
-    : origin.split("://")[1]!;
+  (typeof process !== "undefined" ? process.env.BUN_PUBLIC_RP_ID : undefined) ||
+  window.location.hostname;
 export const RP_NAME = "Order Book";
 
 export function splitSignature(hex: Hex): { r: bigint; s: bigint } {
@@ -18,16 +17,25 @@ export function encodeWebAuthnSignature(
   assertion: Authentication.Response,
 ): Hex {
   const { r, s } = splitSignature(assertion.signature);
+  const clientDataJSON = assertion.metadata.clientDataJSON;
+  const marker = '"challenge":"';
+  const markerIndex = clientDataJSON.indexOf(marker);
+  if (markerIndex === -1) {
+    throw new Error("WebAuthn clientDataJSON missing challenge field");
+  }
+  const challengeOffset = BigInt(markerIndex + marker.length);
   return encodeAbiParameters(
     [
       { type: "bytes" },
       { type: "string" },
       { type: "uint256" },
       { type: "uint256" },
+      { type: "uint256" },
     ],
     [
       assertion.metadata.authenticatorData,
-      assertion.metadata.clientDataJSON,
+      clientDataJSON,
+      challengeOffset,
       r,
       s,
     ],

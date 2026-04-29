@@ -454,6 +454,3 @@ console.log("");
   const gas = await marginalGas(account, baseline, extra);
   console.log(`close order:                    ${gas} gas`);
 }
-
-console.log("");
-console.log("done");

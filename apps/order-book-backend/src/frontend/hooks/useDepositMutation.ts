@@ -21,11 +21,15 @@ export function useDepositMutation() {
         amount,
       });
 
+      const start = performance.now();
       const res = await fetch("/api/mint", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(signed),
       });
+      console.log(
+        `[tx-latency] deposit ${(performance.now() - start).toFixed(1)}ms`,
+      );
 
       if (!res.ok) {
         const err = (await res.json().catch(() => null)) as {

@@ -21,8 +21,7 @@ import {
     MutationsOutOfOrder,
     SignatureExpired,
     InvalidNonce,
-    LotExpTooLarge,
-    INITIALIZE_TYPEHASH
+    LotExpTooLarge
 } from "src/Exchange.sol";
 
 import {KeyType, InvalidSignature, KeyNotFound} from "src/Account.sol";
@@ -55,9 +54,9 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     );
 
     function setUp() public {
-        makerAccount = bytes32(uint256(uint160(vm.addr(makerPk))));
-        takerAccount = bytes32(uint256(uint160(vm.addr(takerPk))));
-        adminAccount = bytes32(uint256(uint160(vm.addr(adminPk))));
+        makerAccount = keccak256(abi.encode(vm.addr(makerPk)));
+        takerAccount = keccak256(abi.encode(vm.addr(takerPk)));
+        adminAccount = keccak256(abi.encode(vm.addr(adminPk)));
     }
 
     function _sign(uint256 pk, bytes32 structHash) internal view returns (bytes memory) {
@@ -97,25 +96,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         muts[0] = Mutation.Initialize;
         data[0] = abi.encode(init);
-        sigs[0] = Signature({
-            account: acc,
-            keyId: 0,
-            rawSignature: _sign(
-                pk,
-                keccak256(
-                    abi.encode(
-                        INITIALIZE_TYPEHASH,
-                        init.account,
-                        init.expiry,
-                        init.rootKeyType,
-                        init.keyType,
-                        init.permissions,
-                        keccak256(init.rootPublicKey),
-                        keccak256(init.publicKey)
-                    )
-                )
-            )
-        });
+        sigs[0] = Signature({account: acc, keyId: 0, rawSignature: ""});
 
         _exec(muts, data, sigs);
     }

@@ -6,10 +6,11 @@ import type { Address, Hex } from "viem";
 import {
   decodeAbiParameters,
   hashTypedData,
+  keccak256,
   recoverTypedDataAddress,
   toHex,
 } from "viem";
-import type { Key, KeyType, State, TaggedMutation } from "./exchange";
+import type { State, TaggedMutation } from "./exchange";
 import { getAccount, getNonceSeq, MutationType } from "./exchange";
 
 export type EIP712Domain = {
@@ -136,41 +137,40 @@ export async function verifySignature(
   eip712Domain: EIP712Domain,
   mutation: TaggedMutation,
 ): Promise<void> {
+  if (mutation.type === MutationType.Initialize) {
+    const expected = keccak256(mutation.mutation.rootPublicKey);
+    if (mutation.account.toLowerCase() !== expected.toLowerCase()) {
+      throw new Error(
+        `InvalidAccount: account=${mutation.account}, expected=${expected}`,
+      );
+    }
+    return;
+  }
+
   if (mutation.deadline < BigInt(Math.floor(Date.now() / 1000))) {
     throw new Error(
       `SignatureExpired: deadline=${mutation.deadline}, now=${Math.floor(Date.now() / 1000)}, account=${mutation.account}`,
     );
   }
 
-  let key: Key;
-  if (mutation.type === MutationType.Initialize) {
-    key = {
-      expiry: 0,
-      keyType: mutation.mutation.rootKeyType as KeyType,
-      permissions: 0xff,
-      publicKey: mutation.mutation.rootPublicKey,
-    };
-  } else {
-    const acc = getAccount(state, mutation.account);
-    const k = acc.keys[mutation.keyId];
-    if (!k || k.permissions === 0) {
-      throw new Error(
-        `KeyNotFound: account=${mutation.account}, keyId=${mutation.keyId}`,
-      );
-    }
-    if (k.expiry !== 0 && k.expiry < Math.floor(Date.now() / 1000)) {
-      throw new Error(
-        `KeyExpired: account=${mutation.account}, keyId=${mutation.keyId}, expiry=${k.expiry}, now=${Math.floor(Date.now() / 1000)}`,
-      );
-    }
-    const nonceKey = BigInt(mutation.nonce) >> 64n;
-    const nonceSeq = BigInt(mutation.nonce) & 0xffffffffffffffffn;
-    if (nonceSeq !== getNonceSeq(acc, nonceKey)) {
-      throw new Error(
-        `InvalidNonce: account=${mutation.account}, expected=${getNonceSeq(acc, nonceKey)}, got=${nonceSeq}, nonceKey=${toHex(nonceKey)}`,
-      );
-    }
-    key = k;
+  const acc = getAccount(state, mutation.account);
+  const key = acc.keys[mutation.keyId];
+  if (!key || key.permissions === 0) {
+    throw new Error(
+      `KeyNotFound: account=${mutation.account}, keyId=${mutation.keyId}`,
+    );
+  }
+  if (key.expiry !== 0 && key.expiry < Math.floor(Date.now() / 1000)) {
+    throw new Error(
+      `KeyExpired: account=${mutation.account}, keyId=${mutation.keyId}, expiry=${key.expiry}, now=${Math.floor(Date.now() / 1000)}`,
+    );
+  }
+  const nonceKey = BigInt(mutation.nonce) >> 64n;
+  const nonceSeq = BigInt(mutation.nonce) & 0xffffffffffffffffn;
+  if (nonceSeq !== getNonceSeq(acc, nonceKey)) {
+    throw new Error(
+      `InvalidNonce: account=${mutation.account}, expected=${getNonceSeq(acc, nonceKey)}, got=${nonceSeq}, nonceKey=${toHex(nonceKey)}`,
+    );
   }
 
   const { primaryType, message } = getTypedDataParams(mutation);
@@ -205,15 +205,17 @@ export async function verifySignature(
     }
     case 1: {
       const hash = hashTypedData(typedData);
-      const [authenticatorData, clientDataJSON, r, s] = decodeAbiParameters(
-        [
-          { type: "bytes" },
-          { type: "string" },
-          { type: "uint256" },
-          { type: "uint256" },
-        ],
-        mutation.rawSignature,
-      );
+      const [authenticatorData, clientDataJSON, _challengeOffset, r, s] =
+        decodeAbiParameters(
+          [
+            { type: "bytes" },
+            { type: "string" },
+            { type: "uint256" },
+            { type: "uint256" },
+            { type: "uint256" },
+          ],
+          mutation.rawSignature,
+        );
       const publicKey = PublicKey.from(key.publicKey as `0x${string}`);
       const clientData = JSON.parse(clientDataJSON) as { origin: string };
       const clientOrigin = clientData.origin;

@@ -169,15 +169,12 @@ error SignatureExpired();
 error InvalidNonce();
 error InstrumentAlreadyExists();
 error AlreadyInitialized();
+error InvalidAccount();
 error AmountNotLotMultiple();
 error LotExpTooLarge();
 
 bytes32 constant EIP712_DOMAIN_TYPEHASH =
     keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-
-bytes32 constant INITIALIZE_TYPEHASH = keccak256(
-    "Initialize(bytes32 account,uint40 expiry,uint8 rootKeyType,uint8 keyType,uint8 permissions,bytes rootPublicKey,bytes publicKey)"
-);
 
 bytes32 constant AUTHORIZE_TYPEHASH = keccak256(
     "Authorize(bytes32 account,uint40 expiry,uint8 keyType,uint8 permissions,bytes publicKey,uint256 nonce,uint256 deadline)"
@@ -246,23 +243,9 @@ contract Exchange {
 
                 if (mutation == Mutation.Initialize) {
                     Initialize memory init = abi.decode(data, (Initialize));
+                    if (sig.account != keccak256(init.rootPublicKey)) revert InvalidAccount();
                     Account storage acc = state.accounts[sig.account];
                     if (acc.keys.length != 0) revert AlreadyInitialized();
-
-                    bytes32 structHash = keccak256(
-                        abi.encode(
-                            INITIALIZE_TYPEHASH,
-                            init.account,
-                            init.expiry,
-                            init.rootKeyType,
-                            init.keyType,
-                            init.permissions,
-                            keccak256(init.rootPublicKey),
-                            keccak256(init.publicKey)
-                        )
-                    );
-                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
-                    verifySignature(KeyType(init.rootKeyType), digest, init.rootPublicKey, sig.rawSignature);
 
                     acc.keys.push(Key(0, KeyType(init.rootKeyType), type(uint8).max, init.rootPublicKey));
                     acc.keys.push(Key(init.expiry, KeyType(init.keyType), init.permissions, init.publicKey));
