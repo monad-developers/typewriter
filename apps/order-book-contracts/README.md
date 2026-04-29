@@ -24,6 +24,5 @@ Copy `.env.example.local` or `.env.example.testnet` to `.env`.
 bun install
 forge test          # run the test suite
 bun run build       # forge build
-bun run dev         # anvil + auto-deploy
-bun run deploy      # deploy to configured RPC
+bun run deploy      # deploy to the RPC in .env
 ```
