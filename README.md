@@ -1,79 +1,81 @@
 # tx-lifecycle-demo-app
 
-A demo app for visualizing the lifecycle of Ethereum transactions. Includes a Solidity ERC20 token contract and a React frontend. Supports local development (Anvil) and Monad testnet.
+Demos for visualizing the lifecycle of a transaction on Monad — from user signing through pre-confirmation, voting, and finalization.
+
+The headline demo is an **on-chain order book**: a Bun backend that accepts signed mutations over HTTP, bundles them, submits them to the Exchange contract, and streams every state transition to a live frontend. The repo also includes a simpler ERC20 token demo from an earlier experiment, kept for reference.
+
+## Apps
+
+```
+apps/
+  order-book-backend/   # Bun + React + Postgres backend; live UI showing block/mutation/account state
+  order-book-contracts/ # Exchange.sol + Account.sol; batch execution, EIP-712 signed mutations, P256/WebAuthn auth
+  order-book-scripts/   # CLI scripts emulating market participants (limit, market, market-maker, retail, arbitrage)
+  token-contracts/      # earlier experiment: ERC20 token (Foundry)
+  token-frontend/       # earlier experiment: React frontend showing tx lifecycle for token transfers
+
+packages/
+  order-book-sdk/       # shared types and math (TokenAmount, instruments, price/quantity conversion)
+```
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.3+
-- [Foundry](https://book.getfoundry.sh/getting-started/installation) (forge, anvil, cast)
+- [Foundry **nightly**](https://book.getfoundry.sh/getting-started/installation) — `foundryup --install nightly`. The Exchange contract uses the P256 precompile at `address(0x100)` (RIP-7212), which stable Foundry does not include. Required for both `forge test` and `anvil`.
+- Postgres (for the order-book backend)
 
-## Project Structure
-
-```
-apps/
-  contracts/   # Solidity contracts (ERC20 Token), Foundry project
-  frontend/    # React + Tailwind frontend served via Bun
-```
-
-## Environment Variables
-
-Each app has its own `.env` file. See `.env.example.local` and `.env.example.testnet` in each subdir for ready-to-use templates.
-
-### Frontend (`apps/frontend/.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `DEPLOYER_PRIVATE_KEY` | Yes | Private key used to fund new accounts on sign-in |
-| `BUN_PUBLIC_TOKEN_ADDRESS` | Yes | Deployed token contract address |
-| `BUN_PUBLIC_RPC_URL` | Yes | JSON-RPC URL the app connects to |
-| `BUN_PUBLIC_CHAIN_ID` | Yes | Chain ID (31337 for Anvil, 10143 for Monad testnet) |
-
-### Contracts (`apps/contracts/.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `DEPLOYER_PRIVATE_KEY` | Yes | Private key used to deploy the contract |
-| `RPC_URL` | Yes | JSON-RPC URL for contract deployment |
-
-## Quick Start
-
-Install dependencies:
+## Quick start — order book
 
 ```bash
 bun install
 ```
 
-Set up env files by copying the relevant example in each subdir:
+Deploy the Exchange to local Anvil:
 
 ```bash
-# For local development:
-cp apps/contracts/.env.example.local apps/contracts/.env
-cp apps/frontend/.env.example.local apps/frontend/.env
-
-# For Monad testnet:
-cp apps/contracts/.env.example.testnet apps/contracts/.env
-cp apps/frontend/.env.example.testnet apps/frontend/.env
-# Then fill in DEPLOYER_PRIVATE_KEY and BUN_PUBLIC_TOKEN_ADDRESS
+cd apps/order-book-contracts
+cp .env.example.local .env
+bun run dev    # runs anvil + deploys Exchange
 ```
 
-Start the contracts app (runs Anvil + auto-deploys the token):
+In another terminal, start the backend (which serves the frontend):
 
 ```bash
-cd apps/contracts
-bun run dev
+cd apps/order-book-backend
+cp .env.example.local .env
+bun dev
 ```
 
-In another terminal, start the frontend:
+Open <http://localhost:3000>. Sign up with WebAuthn, deposit, then place orders — or run a participant script:
 
 ```bash
-cd apps/frontend
+cd apps/order-book-scripts
+cp .env.example .env
+bun scripts/add-instrument.ts
+PRICE=2400 SIDE=buy QUANTITY=1 INSTRUMENT=GOLD/USD bun scripts/limit-order.ts
+```
+
+See [apps/order-book-scripts/README.md](apps/order-book-scripts/README.md) for the full script catalog.
+
+## Quick start — token demo (earlier experiment)
+
+A simpler demo from before the order book — useful if you just want to see a single ERC20 transfer move through the lifecycle.
+
+```bash
+cd apps/token-contracts
+cp .env.example.local .env
+bun run dev          # anvil + auto-deploys the token
+
+# in another terminal
+cd apps/token-frontend
+cp .env.example.local .env
 bun dev
 ```
 
 ## Scripts
 
 ```bash
-bun run lint       # Lint all packages
-bun run typecheck  # Type-check all packages
-bun run build      # Build all packages
+bun run lint       # Lint all workspaces
+bun run typecheck  # Type-check all workspaces
+bun run build      # Build all workspaces
 ```
