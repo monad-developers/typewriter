@@ -1,30 +1,39 @@
-# tx-lifecycle-demo-app
+# exchange-demo
 
-Demos for visualizing the lifecycle of a transaction on Monad — from user signing through pre-confirmation, voting, and finalization.
+An experimental on-chain order book on Monad testnet.
 
-The headline demo is an **on-chain order book**: a Bun backend that accepts signed mutations over HTTP, bundles them, submits them to the Exchange contract, and streams every state transition to a live frontend. The repo also includes a simpler ERC20 token demo from an earlier experiment, kept for reference.
+A self-contained exchange stack — contracts, server, and live UI — that demonstrates what becomes possible when transactions confirm in milliseconds. Everything settles onchain; the server is non-custodial, can't front-run, and can be bypassed via a force-exit queue if it stalls.
 
-## Apps
+## Features
+
+- **Cancel prioritization.** Orders are sequenced cancel → limit → market within each batch, so quote updates are never stuck behind incoming flow.
+- **50ms batch windows.** Every order submitted within a window clears together — a burst doesn't advantage whoever's closer to the node.
+- **Pro-rata matching.** Fills at the clearing price are allocated proportionally to order size, not arrival time.
+- **Modern auth.** Passkey at sign-in, ephemeral session keys (P-256, IndexedDB-backed) for order placement.
+- **Self-contained stack.** No third-party sequencers, relays, wallets, or proposer-builder auctions.
+- **Non-custodial with a trustless exit.** Balances, orders, and matching rules all live onchain; users can force-include orders directly against the contract without backend cooperation.
+
+## Layout
 
 ```
 apps/
   order-book-backend/   # Bun + React + Postgres backend; live UI showing block/mutation/account state
   order-book-contracts/ # Exchange.sol + Account.sol; batch execution, EIP-712 signed mutations, P256/WebAuthn auth
   order-book-scripts/   # CLI scripts emulating market participants (limit, market, market-maker, retail, arbitrage)
-  token-contracts/      # earlier experiment: ERC20 token (Foundry)
-  token-frontend/       # earlier experiment: React frontend showing tx lifecycle for token transfers
 
 packages/
   order-book-sdk/       # shared types and math (TokenAmount, instruments, price/quantity conversion)
 ```
 
+The backend serves the frontend, hosts the runtime that batches and submits to the contract, and exposes the API the scripts drive against. See the in-app `/about` page for an architectural walkthrough — message lifecycle, accounts/keys/nonces, censorship resistance, force-exit, gas figures.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.3+
 - [Foundry **nightly**](https://book.getfoundry.sh/getting-started/installation) — `foundryup --install nightly`. The Exchange contract uses the P256 precompile at `address(0x100)` (RIP-7212), which stable Foundry does not include. Required for both `forge test` and `anvil`.
-- Postgres (for the order-book backend)
+- Postgres (for the backend)
 
-## Quick start — order book
+## Quick start
 
 ```bash
 bun install
@@ -57,21 +66,6 @@ PRICE=2400 SIDE=buy QUANTITY=1 INSTRUMENT=GOLD/USD bun scripts/limit-order.ts
 
 See [apps/order-book-scripts/README.md](apps/order-book-scripts/README.md) for the full script catalog.
 
-## Quick start — token demo (earlier experiment)
-
-A simpler demo from before the order book — useful if you just want to see a single ERC20 transfer move through the lifecycle.
-
-```bash
-cd apps/token-contracts
-cp .env.example.local .env
-bun run dev          # anvil + auto-deploys the token
-
-# in another terminal
-cd apps/token-frontend
-cp .env.example.local .env
-bun dev
-```
-
 ## Scripts
 
 ```bash
@@ -79,3 +73,7 @@ bun run lint       # Lint all workspaces
 bun run typecheck  # Type-check all workspaces
 bun run build      # Build all workspaces
 ```
+
+## Earlier experiment
+
+[apps/token-contracts](apps/token-contracts/) and [apps/token-frontend](apps/token-frontend/) are an earlier ERC20 transfer demo, kept for reference. Not the focus of this repo.
