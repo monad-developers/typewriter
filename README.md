@@ -39,12 +39,18 @@ The backend serves the frontend, hosts the runtime that batches and submits to t
 bun install
 ```
 
-Deploy the Exchange to local Anvil:
+Run Anvil:
+
+```bash
+anvil --block-time 0.4
+```
+
+In another terminal, deploy the Exchange to local Anvil:
 
 ```bash
 cd apps/order-book-contracts
 cp .env.example.local .env
-bun run dev    # runs anvil + deploys Exchange
+bun run dev
 ```
 
 In another terminal, start the backend (which serves the frontend):
