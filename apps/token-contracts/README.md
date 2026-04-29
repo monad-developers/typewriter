@@ -1,4 +1,4 @@
-# contracts
+# token-contracts
 
 ERC20 token contract built with [Foundry](https://book.getfoundry.sh/) and [Solmate](https://github.com/transmissions11/solmate).
 

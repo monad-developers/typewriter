@@ -16,8 +16,8 @@ API_URL=http://localhost:3000
 CHAIN_ID=31337
 EXCHANGE_ADDRESS=0x5fbdb2315678afecb367f032d93f642f64180aa3
 
-# Monad testnet
-# API_URL=https://order-book-frontend-production.up.railway.app
+# Monad testnet — point API_URL at your deployed backend
+# API_URL=https://your-backend.example.com
 # CHAIN_ID=10143
 # EXCHANGE_ADDRESS=0xFe5855718EaF6048cBfEF7f2F700CA4cA0F0aA7a
 ```
@@ -29,7 +29,7 @@ EXCHANGE_ADDRESS=0x5fbdb2315678afecb367f032d93f642f64180aa3
 Registers instruments on the exchange. Run this first.
 
 ```bash
-bun src/add-instrument.ts
+bun scripts/add-instrument.ts
 ```
 
 ### limit-order
@@ -37,11 +37,11 @@ bun src/add-instrument.ts
 Places a limit order (maker). Deposits the required tokens automatically.
 
 ```bash
-PRICE=2400 SIDE=buy QUANTITY=1 INSTRUMENT=GOLD/USD bun src/limit-order.ts
-PRICE=70 SIDE=sell QUANTITY=10 INSTRUMENT=WTIOIL/USD bun src/limit-order.ts
-PRICE=1.10 SIDE=buy QUANTITY=1000 INSTRUMENT=EUR/USD bun src/limit-order.ts
-PRICE=5200 SIDE=sell QUANTITY=0.5 INSTRUMENT=SPX/USD bun src/limit-order.ts
-PRICE=95000 SIDE=buy QUANTITY=0.01 INSTRUMENT=BTC/USD bun src/limit-order.ts
+PRICE=2400 SIDE=buy QUANTITY=1 INSTRUMENT=GOLD/USD bun scripts/limit-order.ts
+PRICE=70 SIDE=sell QUANTITY=10 INSTRUMENT=WTIOIL/USD bun scripts/limit-order.ts
+PRICE=1.10 SIDE=buy QUANTITY=1000 INSTRUMENT=EUR/USD bun scripts/limit-order.ts
+PRICE=5200 SIDE=sell QUANTITY=0.5 INSTRUMENT=SPX/USD bun scripts/limit-order.ts
+PRICE=95000 SIDE=buy QUANTITY=0.01 INSTRUMENT=BTC/USD bun scripts/limit-order.ts
 ```
 
 ### market-order
@@ -49,8 +49,8 @@ PRICE=95000 SIDE=buy QUANTITY=0.01 INSTRUMENT=BTC/USD bun src/limit-order.ts
 Places a market order (taker). Reads the order book to determine the exact fill, deposits accordingly.
 
 ```bash
-SIDE=buy QUANTITY=0.5 INSTRUMENT=GOLD/USD bun src/market-order.ts
-SIDE=sell QUANTITY=2 INSTRUMENT=GOLD/USD bun src/market-order.ts
+SIDE=buy QUANTITY=0.5 INSTRUMENT=GOLD/USD bun scripts/market-order.ts
+SIDE=sell QUANTITY=2 INSTRUMENT=GOLD/USD bun scripts/market-order.ts
 ```
 
 ### market-maker
@@ -58,8 +58,8 @@ SIDE=sell QUANTITY=2 INSTRUMENT=GOLD/USD bun src/market-order.ts
 Places limit orders on both sides of the book at 1bp, 5bp, 10bp, and 25bp from the mid price. Reads the current price from the book, or accepts `PRICE` as an anchor if there's no existing liquidity.
 
 ```bash
-QUANTITY=1 INSTRUMENT=GOLD/USD bun src/market-maker.ts
-QUANTITY=2 INSTRUMENT=GOLD/USD PRICE=2400 bun src/market-maker.ts
+QUANTITY=1 INSTRUMENT=GOLD/USD bun scripts/market-maker.ts
+QUANTITY=2 INSTRUMENT=GOLD/USD PRICE=2400 bun scripts/market-maker.ts
 ```
 
 ### arbitrage
@@ -67,11 +67,11 @@ QUANTITY=2 INSTRUMENT=GOLD/USD PRICE=2400 bun src/market-maker.ts
 Trades against mispriced orders. Takes a `PRICE` anchor and executes market orders against any asks below or bids above that price.
 
 ```bash
-PRICE=2400 INSTRUMENT=GOLD/USD bun src/arbitrage.ts
-PRICE=70 INSTRUMENT=WTIOIL/USD bun src/arbitrage.ts
-PRICE=1.10 INSTRUMENT=EUR/USD bun src/arbitrage.ts
-PRICE=5200 INSTRUMENT=SPX/USD bun src/arbitrage.ts
-PRICE=95000 INSTRUMENT=BTC/USD bun src/arbitrage.ts
+PRICE=2400 INSTRUMENT=GOLD/USD bun scripts/arbitrage.ts
+PRICE=70 INSTRUMENT=WTIOIL/USD bun scripts/arbitrage.ts
+PRICE=1.10 INSTRUMENT=EUR/USD bun scripts/arbitrage.ts
+PRICE=5200 INSTRUMENT=SPX/USD bun scripts/arbitrage.ts
+PRICE=95000 INSTRUMENT=BTC/USD bun scripts/arbitrage.ts
 ```
 
 ### retail
@@ -79,16 +79,17 @@ PRICE=95000 INSTRUMENT=BTC/USD bun src/arbitrage.ts
 Simulates a retail trader. Picks a random side (50/50) and random quantity from a fixed set, then executes a market order.
 
 ```bash
-INSTRUMENT=GOLD/USD bun src/retail.ts
+INSTRUMENT=GOLD/USD bun scripts/retail.ts
 ```
 
 ## Writing a script
 
-Create a new `.ts` file in `src/`. Import what you need from `order-book-sdk` and the local SDK:
+Create a new `.ts` file in `scripts/`. Import what you need from `order-book-sdk` and the local SDK in `src/`:
 
 ```ts
-import { TokenAmount, INSTRUMENTS } from "order-book-sdk";
-import { createAccount, deposit, limitOrder } from "./sdk";
+import { TokenAmount } from "order-book-sdk";
+import { INSTRUMENTS } from "../src/constants";
+import { createAccount, deposit, limitOrder } from "../src/sdk";
 
 const inst = INSTRUMENTS["GOLD/USD"];
 const account = await createAccount();
@@ -105,7 +106,7 @@ await limitOrder(account, {
 });
 ```
 
-Run it with `bun src/my-script.ts`.
+Run it with `bun scripts/my-script.ts` from `apps/order-book-scripts/`.
 
 ## SDK reference
 
