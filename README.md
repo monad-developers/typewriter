@@ -50,7 +50,7 @@ In another terminal, deploy the Exchange to local Anvil:
 ```bash
 cd apps/order-book-contracts
 cp .env.example.local .env
-bun run dev
+bun run deploy
 ```
 
 In another terminal, start the backend (which serves the frontend):
