@@ -1,6 +1,6 @@
-# frontend
+# token-frontend
 
-React + Tailwind frontend for the tx-lifecycle-demo-app, served via [Bun](https://bun.sh).
+React + Tailwind frontend for the token-transfer demo, served via [Bun](https://bun.sh). Earlier experiment kept for reference; see the repo root README for the current focus.
 
 ## Environment Variables
 
