@@ -113,7 +113,9 @@ function renderRows(mutation: ApiMutation) {
         </>
       );
     case "revoke":
-      return <Row label="revoked key id" value={mutation.payload.revokedKeyId} />;
+      return (
+        <Row label="revoked key id" value={mutation.payload.revokedKeyId} />
+      );
     case "closeOrder":
       return <Row label="order id" value={mutation.payload.orderId} />;
     case "limitOrder": {
@@ -132,10 +134,7 @@ function renderRows(mutation: ApiMutation) {
             label="quantity"
             value={formatBaseQuantity(mutation.payload.quantity, id)}
           />
-          <Row
-            label="price"
-            value={formatPrice(mutation.payload.price, id)}
-          />
+          <Row label="price" value={formatPrice(mutation.payload.price, id)} />
         </>
       );
     }
@@ -165,7 +164,10 @@ function renderRows(mutation: ApiMutation) {
             label="min received"
             value={
               receivedAsset
-                ? formatAmount(mutation.payload.minReceivedQuantity, receivedAsset)
+                ? formatAmount(
+                    mutation.payload.minReceivedQuantity,
+                    receivedAsset,
+                  )
                 : mutation.payload.minReceivedQuantity
             }
           />
@@ -188,7 +190,10 @@ function renderRows(mutation: ApiMutation) {
           <Row label="asset" value={assetSymbol(mutation.payload.asset)} />
           <Row
             label="amount"
-            value={formatAmount(mutation.payload.amount, mutation.payload.asset)}
+            value={formatAmount(
+              mutation.payload.amount,
+              mutation.payload.asset,
+            )}
           />
         </>
       );
@@ -198,7 +203,10 @@ function renderRows(mutation: ApiMutation) {
           <Row label="asset" value={assetSymbol(mutation.payload.asset)} />
           <Row
             label="amount"
-            value={formatAmount(mutation.payload.amount, mutation.payload.asset)}
+            value={formatAmount(
+              mutation.payload.amount,
+              mutation.payload.asset,
+            )}
           />
         </>
       );

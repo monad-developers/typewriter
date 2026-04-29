@@ -12,7 +12,8 @@ export function useBalances(account: Address | undefined) {
     queryKey: ["balances", account],
     queryFn: async () => {
       const res = await fetch(`/api/balances?account=${account}`);
-      if (res.status === 404) return { account: account!, balances: {} } as BalancesResponse;
+      if (res.status === 404)
+        return { account: account!, balances: {} } as BalancesResponse;
       if (!res.ok) throw new Error("Failed to fetch balances");
       return (await res.json()) as BalancesResponse;
     },

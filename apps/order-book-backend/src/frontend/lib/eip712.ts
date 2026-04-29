@@ -1,4 +1,5 @@
 import type { Address } from "viem";
+
 export { EIP712_TYPES } from "order-book-sdk";
 
 export const EXCHANGE_ADDRESS = (process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ??

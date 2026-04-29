@@ -1,4 +1,9 @@
-import { baseToQuote, priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
+import {
+  baseToQuote,
+  priceToQ32,
+  q32ToPrice,
+  TokenAmount,
+} from "order-book-sdk";
 import { INSTRUMENTS } from "../src/constants";
 import {
   createAccount,
@@ -70,7 +75,9 @@ for (let i = 0; i < candidates.length; i++) {
   const c = candidates[i]!;
   const tick = tickResults[i];
   const partiallyFilled =
-    tick !== null && tick !== undefined && tick.remainingQuantity !== tick.quantity;
+    tick !== null &&
+    tick !== undefined &&
+    tick.remainingQuantity !== tick.quantity;
   if (!partiallyFilled) {
     orders.push({ price: c.price, side: c.side });
   } else {

@@ -198,12 +198,7 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
 
         _executeMarketOrder(
             MarketOrder({
-                quantity: 10 << 18,
-                minReceivedQuantity: 0,
-                instrumentId: 0,
-                bidOrAsk: 0,
-                nonce: 0,
-                deadline: 0
+                quantity: 10 << 18, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
             MarketOrderResolution({fills: fills}),
             ACCOUNT

@@ -182,8 +182,7 @@ bytes32 constant AUTHORIZE_TYPEHASH = keccak256(
 
 bytes32 constant REVOKE_TYPEHASH = keccak256("Revoke(bytes32 account,uint64 keyId,uint256 nonce,uint256 deadline)");
 
-bytes32 constant CLOSE_ORDER_TYPEHASH =
-    keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
+bytes32 constant CLOSE_ORDER_TYPEHASH = keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
 
 bytes32 constant LIMIT_ORDER_TYPEHASH = keccak256(
     "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
@@ -193,8 +192,7 @@ bytes32 constant MARKET_ORDER_TYPEHASH = keccak256(
     "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
 );
 
-bytes32 constant DEPOSIT_TYPEHASH =
-    keccak256("Deposit(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
+bytes32 constant DEPOSIT_TYPEHASH = keccak256("Deposit(address asset,uint256 amount,uint256 nonce,uint256 deadline)");
 
 bytes32 constant WITHDRAWAL_TYPEHASH =
     keccak256("Withdrawal(address asset,uint256 amount,uint256 nonce,uint256 deadline)");

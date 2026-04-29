@@ -785,13 +785,13 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
     let totalResolveMs = 0;
     if (allSafe) {
       const tResolve = performance.now();
-      // @ts-ignore hack because ids are passed through
+      // @ts-expect-error hack because ids are passed through
       resolvedMutations = resolveAndOrderMutations(state, mutations);
       totalResolveMs += performance.now() - tResolve;
     } else {
       while (mutations.length > 0) {
         const tResolve = performance.now();
-        // @ts-ignore hack because ids are passed through
+        // @ts-expect-error hack because ids are passed through
         resolvedMutations = resolveAndOrderMutations(state, mutations);
         const tClone = performance.now();
         totalResolveMs += tClone - tResolve;
@@ -815,7 +815,7 @@ export function startRuntime(config: RuntimeConfig): RuntimeHandle {
         }
         totalApplyMs += performance.now() - tApply;
         if (failedMutation === null) break;
-        // @ts-ignore
+        // @ts-expect-error
         rejections.push({ mutation: failedMutation, error });
       }
     }

@@ -243,7 +243,6 @@ export function AccountPage() {
           </tbody>
         </table>
       </section>
-
     </div>
   );
 }
