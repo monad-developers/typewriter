@@ -21,16 +21,15 @@
     "effect": "^3.21.0",
     "lucide-react": "^0.545.0",
     "order-book-sdk": "workspace:*",
-    "ox": "^0.14.13",
+    "ox": "catalog:",
     "react": "^19",
     "react-dom": "^19",
     "shiki": "^4.0.2",
     "tailwind-merge": "^3.3.1",
-    "viem": "^2.47.1",
-    "webauthx": "^0.1.1"
+    "viem": "catalog:",
+    "webauthx": "^0.1.0"
   },
   "devDependencies": {
-    "@types/bun": "latest",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "drizzle-kit": "^0.31.10",

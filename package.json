@@ -7,16 +7,19 @@
     "packages/*",
     "apps/*"
   ],
+  "catalog": {
+    "ox": "0.14.10",
+    "typescript": "^5",
+    "viem": "2.47.6"
+  },
   "scripts": {
     "lint": "biome check . && bun run --filter '*' lint",
     "typecheck": "bun run --filter '*' typecheck",
     "build": "bun run --filter '*' build"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.6",
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
+    "@biomejs/biome": "2.4.6",
+    "@types/bun": "latest",
+    "typescript": "catalog:"
   }
 }

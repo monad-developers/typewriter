@@ -4,12 +4,9 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "ox": "^0.14.13"
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
+    "ox": "catalog:"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "catalog:"
   }
 }

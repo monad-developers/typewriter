@@ -20,9 +20,10 @@ apps/
   order-book-backend/   # Bun + React + Postgres backend; live UI showing block/mutation/account state
   order-book-contracts/ # Exchange.sol + Account.sol; batch execution, EIP-712 signed mutations, P256/WebAuthn auth
   order-book-scripts/   # CLI scripts emulating market participants (limit, market, market-maker, retail, arbitrage)
+  order-book-sdk/       # shared types and math for the order-book app (TokenAmount, instruments, price/quantity conversion)
 
 packages/
-  order-book-sdk/       # shared types and math (TokenAmount, instruments, price/quantity conversion)
+  ffca/                 # framework for crypto apps (work in progress)
 ```
 
 The backend serves the frontend, hosts the runtime that batches and submits to the contract, and exposes the API the scripts drive against. See the in-app `/about` page for an architectural walkthrough — message lifecycle, accounts/keys/nonces, censorship resistance, force-exit, gas figures.
