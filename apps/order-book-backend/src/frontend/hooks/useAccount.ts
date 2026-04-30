@@ -32,8 +32,7 @@ export function useAccount(idOrAddress: string | undefined) {
     queryKey: ["account", idOrAddress],
     queryFn: async () => {
       const res = await fetch(`/api/account/${idOrAddress}`);
-      if (!res.ok)
-        throw new Error(`Failed to fetch account ${idOrAddress}`);
+      if (!res.ok) throw new Error(`Failed to fetch account ${idOrAddress}`);
       return (await res.json()) as ApiAccount;
     },
     enabled: !!idOrAddress,

@@ -158,7 +158,11 @@ async function tick(
     );
     legs.push(
       (async () => {
-        await deposit(account, { quantity: depositAmount }, { concurrent: true });
+        await deposit(
+          account,
+          { quantity: depositAmount },
+          { concurrent: true },
+        );
         await marketOrder(
           account,
           { instrument, quantity, minReceived: quantity, side: "buy" },

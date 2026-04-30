@@ -190,7 +190,10 @@ async function loadMutationsByIds(
           .select()
           .from(schema.fills)
           .where(inArray(schema.fills.marketOrderId, marketIds))
-          .orderBy(asc(schema.fills.marketOrderId), asc(schema.fills.fillIndex)),
+          .orderBy(
+            asc(schema.fills.marketOrderId),
+            asc(schema.fills.fillIndex),
+          ),
   ]);
 
   const payloadById = new Map<number, unknown>();
@@ -740,7 +743,10 @@ serve({
           .orderBy(desc(schema.mutations.id))
           .limit(50);
         const mutations = (
-          await loadMutationsByIds(readerDb, idRows.map((r) => r.id))
+          await loadMutationsByIds(
+            readerDb,
+            idRows.map((r) => r.id),
+          )
         ).reverse();
 
         const nonces: Record<string, string> = {};

@@ -32,9 +32,7 @@ function BlockColumn({ block }: { block: LiveBlock }) {
       to={`/block/${block.number}`}
       className="border border-black flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-zinc-50"
     >
-      <div className="text-sm shrink-0 truncate">
-        block {block.number}
-      </div>
+      <div className="text-sm shrink-0 truncate">block {block.number}</div>
       <div
         className="grid gap-1 flex-1 min-h-0"
         style={{

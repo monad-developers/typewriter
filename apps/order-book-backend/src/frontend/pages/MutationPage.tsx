@@ -44,7 +44,9 @@ export function MutationPage() {
 
   const timestamps = mutation ? stageTimestamps(mutation) : undefined;
 
-  const requiresNonce = mutation?.nonce ? computeRequiresNonce(mutation.nonce) : null;
+  const requiresNonce = mutation?.nonce
+    ? computeRequiresNonce(mutation.nonce)
+    : null;
   const requires = useMutationByNonce(
     mutation?.account,
     requiresNonce ?? undefined,
@@ -65,10 +67,7 @@ export function MutationPage() {
         <code>
           block:{" "}
           {mutation?.blockNumber ? (
-            <Link
-              to={`/block/${mutation.blockNumber}`}
-              className={linkClass}
-            >
+            <Link to={`/block/${mutation.blockNumber}`} className={linkClass}>
               {mutation.blockNumber}
             </Link>
           ) : (
@@ -79,10 +78,7 @@ export function MutationPage() {
 
       <section className="w-full border-b p-4">
         <h2 className="text-2xl font-bold mb-4">Lifecycle</h2>
-        <MutationLifecycle
-          status={mutation?.status}
-          timestamps={timestamps}
-        />
+        <MutationLifecycle status={mutation?.status} timestamps={timestamps} />
       </section>
 
       <div className="w-full border-b flex flex-col md:flex-row">

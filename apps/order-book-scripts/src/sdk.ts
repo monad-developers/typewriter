@@ -163,7 +163,9 @@ export async function estimateMarketOrder(params: {
   quoteQuantity: bigint;
 }> {
   const url = `${API_URL}/api/estimate-market-order?instrumentId=${params.instrumentId}&side=${params.side}&quantity=${params.quantityLots}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`estimate-market-order failed: ${data.error}`);
   return {
@@ -182,10 +184,9 @@ export async function fetchPrice(instrumentId: number): Promise<{
   bestAskQ32: bigint | null;
   spreadQ32: bigint | null;
 }> {
-  const res = await fetch(
-    `${API_URL}/api/price?instrumentId=${instrumentId}`,
-    { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
-  );
+  const res = await fetch(`${API_URL}/api/price?instrumentId=${instrumentId}`, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`fetch-price failed: ${data.error}`);
   const toBig = (v: unknown): bigint | null =>
@@ -201,7 +202,9 @@ export async function fetchPrice(instrumentId: number): Promise<{
 export async function fetchTicks(
   instrumentId: number,
   queries: { side: "buy" | "sell"; priceQ32: bigint }[],
-): Promise<({ quantity: bigint; remainingQuantity: bigint; volume: number } | null)[]> {
+): Promise<
+  ({ quantity: bigint; remainingQuantity: bigint; volume: number } | null)[]
+> {
   const res = await fetch(`${API_URL}/api/ticks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -216,10 +219,13 @@ export async function fetchTicks(
   });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`fetch-ticks failed: ${data.error}`);
-  return (data.ticks as (
-    | { quantity: string; remainingQuantity: string; volume: number }
-    | null
-  )[]).map((t) =>
+  return (
+    data.ticks as ({
+      quantity: string;
+      remainingQuantity: string;
+      volume: number;
+    } | null)[]
+  ).map((t) =>
     t === null
       ? null
       : {
@@ -247,17 +253,21 @@ export async function fetchAccountOrders(
     instrumentId !== undefined
       ? `${API_URL}/api/account/${account}/orders?instrumentId=${instrumentId}`
       : `${API_URL}/api/account/${account}/orders`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`fetch-account-orders failed: ${data.error}`);
-  return (data.orders as {
-    orderId: number;
-    quantity: string;
-    instrumentId: number;
-    price: string;
-    tickVolume: number;
-    side: 0 | 1;
-  }[]).map((o) => ({
+  return (
+    data.orders as {
+      orderId: number;
+      quantity: string;
+      instrumentId: number;
+      price: string;
+      tickVolume: number;
+      side: 0 | 1;
+    }[]
+  ).map((o) => ({
     orderId: o.orderId,
     quantity: BigInt(o.quantity),
     instrumentId: o.instrumentId,
@@ -277,7 +287,9 @@ export async function estimateFillToPrice(params: {
   quoteQuantity: bigint;
 }> {
   const url = `${API_URL}/api/estimate-fill-to-price?instrumentId=${params.instrumentId}&side=${params.side}&priceQ32=${params.priceQ32}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(`estimate-fill-to-price failed: ${data.error}`);
   return {

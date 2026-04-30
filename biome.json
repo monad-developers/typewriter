@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!apps/token-contracts/broadcast/"]
+    "includes": [
+      "**",
+      "!**/broadcast",
+      "!**/cache",
+      "!**/dist",
+      "!**/drizzle",
+      "!**/out"
+    ]
   },
   "formatter": {
     "enabled": true,

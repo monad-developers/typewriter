@@ -152,14 +152,7 @@ contract LimitOrderTest is Test, Exchange(address(0)) {
         state.instruments[0].quoteLotExp = 6;
 
         try this.callLimitOrder(
-            LimitOrder({
-                quantity: (10 << 18) + 1,
-                instrumentId: 0,
-                price: 5 * Q32,
-                bidOrAsk: 1,
-                nonce: 0,
-                deadline: 0
-            }),
+            LimitOrder({quantity: (10 << 18) + 1, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0}),
             ACCOUNT
         ) {
             fail();

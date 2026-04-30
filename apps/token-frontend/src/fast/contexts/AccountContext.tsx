@@ -41,11 +41,17 @@ function txStorageKey(address: Address) {
   return `fast:txs:${address}`;
 }
 
+type SerializedTx = Omit<Tx, "amount" | "cost" | "blockNumber"> & {
+  amount: string;
+  cost: string | null;
+  blockNumber: string;
+};
+
 function loadTxs(address: Address): Tx[] {
   try {
     const raw = localStorage.getItem(txStorageKey(address));
     if (!raw) return [];
-    return JSON.parse(raw).map((tx: any) => ({
+    return (JSON.parse(raw) as SerializedTx[]).map((tx) => ({
       ...tx,
       amount: BigInt(tx.amount),
       cost: tx.cost != null ? BigInt(tx.cost) : null,

@@ -70,10 +70,9 @@ function formatBaseQuantity(
   if (quantity == null) return "?";
   const entry = INSTRUMENT_BY_ID.get(instrumentId);
   if (!entry) return String(quantity);
-  return TokenAmount.fromRaw(
-    BigInt(quantity),
-    entry.config.base,
-  ).human.toFixed(2);
+  return TokenAmount.fromRaw(BigInt(quantity), entry.config.base).human.toFixed(
+    2,
+  );
 }
 
 function formatPrice(
