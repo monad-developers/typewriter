@@ -1,5 +1,5 @@
 {
-  "name": "tx-lifecycle-demo-app",
+  "name": "exchange-demo",
   "module": "index.ts",
   "type": "module",
   "private": true,
