@@ -92,3 +92,12 @@ This is a Bun project; default to Bun APIs over Node/npm equivalents.
 - Files: prefer `Bun.file` over `node:fs`. Shell: `Bun.$` over `execa`.
 - WebSockets: built-in `WebSocket`, no `ws`.
 - Frontend: HTML imports with `Bun.serve()` (no Vite). `<script type="module" src="./frontend.tsx">` and `import './index.css'` work directly.
+
+## Gotchas
+
+Things that aren't obvious and that agents trip on:
+
+- **`apps/token-*` is not part of the order book.** Earlier ERC-20 demo, kept for reference only. Don't grep these for examples or copy patterns from them.
+- **App-table schema changes don't auto-apply.** Tables under `d_<n>` are generated once when a deployment is first seen. After editing `app-schema.ts`, drop the schema (or the DB) and restart — there is no `drizzle-kit generate` step for app tables.
+- **A new mutation type touches many files.** `Exchange.sol`, EIP-712 types in `packages/order-book-sdk`, `app-schema.ts` (the central `mutations` row + a type-specific table), `loadMutationsByIds` in `src/index.ts`, runtime sequencing in `src/runtime.ts`, and the frontend builder. No single extension point.
+- **`/about` is the canonical architecture walkthrough.** When writing user-facing prose about the message lifecycle, force-exit, or gas figures, edit that page rather than starting a parallel doc.
