@@ -79,7 +79,3 @@ bun run lint       # Lint all workspaces
 bun run typecheck  # Type-check all workspaces
 bun run build      # Build all workspaces
 ```
-
-## Earlier experiment
-
-[apps/token-contracts](apps/token-contracts/) and [apps/token-frontend](apps/token-frontend/) are an earlier ERC20 transfer demo, kept for reference. Not the focus of this repo.

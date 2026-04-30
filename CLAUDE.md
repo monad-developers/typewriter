@@ -10,7 +10,6 @@ An on-chain order book demo on Monad testnet. A Bun monorepo (workspaces under `
 - `apps/order-book-backend` — Bun + React (HTML imports) + Postgres (Drizzle). Single `Bun.serve` process serves the API, the React UI, and runs the runtime that batches incoming signed mutations, sequences them (cancel → limit → market with uniform clearing for market orders), and submits to `Exchange.execute()`.
 - `apps/order-book-scripts` — TS scripts emulating market participants (limit, market, market-maker, retail, arbitrage, gas). Drives the backend's HTTP API; uses `order-book-backend` workspace import for its SDK helpers.
 - `packages/order-book-sdk` — shared types/constants (instruments, assets, EIP-712 type defs, permission bits, `TokenAmount`/lot math, exchange ABI).
-- `apps/token-contracts` and `apps/token-frontend` — earlier ERC-20 transfer demo, kept for reference. Not the focus.
 
 The backend is non-custodial: it can't forge mutations (every mutation is user-signed), can't reorder within a batch (sequencing rules are enforced onchain), and can be bypassed via `forceInclude` if it stalls.
 
@@ -76,7 +75,7 @@ The app tables (`mutations`, `bundles`, `accounts`, …) are **not** versioned m
 
 **Frontend.** `Bun.serve` + HTML imports, no Vite. Entry is `src/frontend/index.html` mounted at `/*`. React 19, TanStack Query, Tailwind v4 via `bun-plugin-tailwind` (configured in `bunfig.toml`). The `/about` page is the architectural walkthrough — message lifecycle, force-exit, gas figures.
 
-**Lint/format.** Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. Biome ignores `apps/token-contracts/broadcast/`. `noNonNullAssertion` is off — `!` is allowed.
+**Lint/format.** Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.
 
 ## Bun-first conventions
 
@@ -110,7 +109,6 @@ Two authenticated CLIs are expected to be available. Validate before relying on 
 
 Things that aren't obvious and that agents trip on:
 
-- **`apps/token-*` is not part of the order book.** Earlier ERC-20 demo, kept for reference only. Don't grep these for examples or copy patterns from them.
 - **App-table schema changes don't auto-apply.** Tables under `d_<n>` are generated once when a deployment is first seen. After editing `app-schema.ts`, drop the schema (or the DB) and restart — there is no `drizzle-kit generate` step for app tables.
 - **A new mutation type touches many files.** `Exchange.sol`, EIP-712 types in `packages/order-book-sdk`, `app-schema.ts` (the central `mutations` row + a type-specific table), `loadMutationsByIds` in `src/index.ts`, runtime sequencing in `src/runtime.ts`, and the frontend builder. No single extension point.
 - **`/about` is the canonical architecture walkthrough.** When writing user-facing prose about the message lifecycle, force-exit, or gas figures, edit that page rather than starting a parallel doc.
