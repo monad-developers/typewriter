@@ -93,6 +93,19 @@ This is a Bun project; default to Bun APIs over Node/npm equivalents.
 - WebSockets: built-in `WebSocket`, no `ws`.
 - Frontend: HTML imports with `Bun.serve()` (no Vite). `<script type="module" src="./frontend.tsx">` and `import './index.css'` work directly.
 
+## Available CLIs
+
+Two authenticated CLIs are expected to be available. Validate before relying on them; if a check fails, **stop and ask the user to fix it** rather than working around it.
+
+- **`gh`** — GitHub CLI. Use it for issues, PRs, checks, releases, and arbitrary `gh api` calls. The repo is `monad-exp/exchange-demo`.
+  - Validate: `gh auth status` (should report logged in with `repo`, `workflow`, `read:org` scopes at minimum).
+  - If missing: ask the user to install (`brew install gh` / [cli.github.com](https://cli.github.com/)) and run `gh auth login`. If authed but lacking org access, ask them to request an invite to `monad-exp`.
+- **`railway`** — Railway CLI. The repo should be linked to the `exchange demo` project (`production` environment) under the `MF Experimental` team. Link config lives in `~/.railway/config.json`, not in the repo. The project hosts multiple services that don't map cleanly onto `apps/*`, so **no default service is set** — always pass `--service <name>` explicitly (e.g. `railway logs --service backend`). Deploys are driven by the Railway GitHub App on pushes to `main`, so prefer read-only commands (`railway logs`, `railway status`, `railway variables`) over `railway up`.
+  - Validate: `railway whoami` (logged in) and `railway status` (should print `Project: exchange demo`).
+  - If not logged in: ask the user to install ([docs.railway.com/guides/cli](https://docs.railway.com/guides/cli)) and run `railway login` — it's a browser-based pairing flow they have to do themselves.
+  - If logged in but `railway status` says no linked project: ask them to run `railway link` from the repo root and pick `MF Experimental` → `exchange demo`. It's interactive, so they need to run it (suggest the `! ` prefix so the output lands in the conversation).
+  - If they don't see the project at all: they likely need an invite to the `MF Experimental` Railway team — ask a maintainer.
+
 ## Gotchas
 
 Things that aren't obvious and that agents trip on:
