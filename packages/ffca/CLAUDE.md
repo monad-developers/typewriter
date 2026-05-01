@@ -18,6 +18,7 @@ What we believe that makes ffca different.
 - **Blockchains are the database, not the backend.** They occupy the persistence layer of the stack; everything else — sequencing, validation, application logic — lives above them.
 - **Write logic once.** Contract and backend shouldn't duplicate the same logic in two places. Pick one home for each piece and let the other defer to it.
 - **Distillation over invention.** Reducing existing ideas to their simplest form does more for the framework than inventing new ones.
+- **Pragmatism over assembly.** Everything ffca enables is technically possible today by stitching together L2 rollups, account abstraction providers, and other middleware. ffca delivers the same results without the cruft.
 
 ## Feedback loops
 
