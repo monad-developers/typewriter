@@ -71,6 +71,7 @@
     "packages/ffca": {
       "name": "ffca",
       "dependencies": {
+        "abitype": "1.2.3",
         "ox": "catalog:",
         "viem": "catalog:",
       },
