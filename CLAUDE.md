@@ -44,6 +44,8 @@ Cross-workspace dependency versions live in the root `package.json`'s `"catalog"
 
 Don't add a new dependency unless explicitly directed. Before reaching for `bun add`, check whether the runtime, Bun's stdlib, or an already-installed package covers the need (e.g. Bun ships `expectTypeOf` in `bun:test`, so `expect-type` isn't needed). If a new dependency seems warranted, ask first.
 
+Pin exact versions for security — no `^` or `~` ranges. `bun add` defaults to a caret range; strip it after install. The lockfile gives reproducibility, but exact versions in `package.json` make supply-chain review easier and prevent silent minor-version drift on fresh installs that race the lockfile.
+
 ## Lint / format
 
 Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.
