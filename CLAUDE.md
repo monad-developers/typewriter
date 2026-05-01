@@ -40,6 +40,10 @@ Prefer **ox** over **viem** wherever both work. ox is lower-level and lighter-we
 
 Cross-workspace dependency versions live in the root `package.json`'s `"catalog"` field. Workspaces reference them as `"<pkg>": "catalog:"`. Add a package to the catalog when it's used in 2+ workspaces; don't move things in speculatively. `@types/bun` is declared once at the root only — it hoists to the root `node_modules` and TS finds it from any workspace.
 
+## Adding new dependencies
+
+Don't add a new dependency unless explicitly directed. Before reaching for `bun add`, check whether the runtime, Bun's stdlib, or an already-installed package covers the need (e.g. Bun ships `expectTypeOf` in `bun:test`, so `expect-type` isn't needed). If a new dependency seems warranted, ask first.
+
 ## Lint / format
 
 Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.
