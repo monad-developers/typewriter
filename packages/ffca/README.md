@@ -14,8 +14,19 @@ Work in progress. Under active development.
 
 ## Concepts
 
+### State
+
+### Mutations
+
+### Force inclusion
+
 ## Getting started
 
 ## Examples
+
+## Failure modes
+
+- missed submissions
+- reorgs
 
 ## API reference

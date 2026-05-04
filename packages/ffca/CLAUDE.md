@@ -6,6 +6,8 @@ Instructions for agents working on `packages/ffca`.
 
 `ffca` ("framework for crypto apps") is a generic framework being extracted from `apps/order-book-backend`. The order book is the first consumer. The package itself must not contain any order-book-specific code.
 
+ffca is a framework, not a runtime that adapts to arbitrary contracts. It prescribes the shape of the contracts that use it — execution surface, storage layout conventions, event conventions — so that the runtime, decode layer, and tooling above it can be sharp and opinionated rather than defensive. Conformance is the API.
+
 ## Motivations
 
 ffca exists to push what crypto app experiences can be, by giving ambitious teams a foundation to build on. Applications are the fundamental unit to optimize for: they define the requirements that everything below them — sequencing, accounts, confirmations, settlement — has to answer to.
@@ -17,7 +19,7 @@ What we believe that makes ffca different.
 - **Compete on technical merit, not ideology.** The next generation of crypto apps will be defined by what works, not by adherence to existing camps.
 - **Blockchains are the database, not the backend.** They occupy the persistence layer of the stack; everything else — sequencing, validation, application logic — lives above them.
 - **Write logic once.** Contract and backend shouldn't duplicate the same logic in two places. Pick one home for each piece and let the other defer to it.
-- **Distillation over invention.** Reducing existing ideas to their simplest form does more for the framework than inventing new ones.
+- **Focus compounds.** Outcomes follow a power law, so doubling down on the core idea beats spreading thin across adjacent ones. Every new surface dilutes the one that matters.
 - **Pragmatism over assembly.** Everything ffca enables is technically possible today by stitching together L2 rollups, account abstraction providers, and other middleware. ffca delivers the same results without the cruft.
 
 ## Feedback loops
@@ -32,6 +34,27 @@ High-level signals for whether ffca is on the right track. None are precisely me
 ## Status
 
 Scaffolded but empty. `createFFCA` is a stub. Nothing imports from it yet.
+
+## Ideas
+
+Future directions, recorded so they aren't lost. Not commitments — each needs to be evaluated against the beliefs and feedback loops above when its time comes.
+
+### revm as the server execution engine
+
+Today `apps/order-book-backend/src/exchange.ts` reimplements the contract's matching and settlement logic in TypeScript. The state shape, lot math, tick accounting, and balance updates all exist twice — once in Solidity, once in JS — and have to be kept in sync by hand. This violates "write logic once" and won't be acceptable for production.
+
+The idea: ffca ships with a revm-backed runtime. The server runs the same bytecode that's deployed onchain (possibly with minor augmentations), with the EVM as the source of truth for pending state between batches. The chain catches up asynchronously.
+
+**Wins:**
+- No duplicated execution logic. The contract is the spec.
+- Local gas estimation and access-list generation without RPC round-trips.
+- A local-only development mode that doesn't need a chain to reconcile against.
+- A granular state-diff stream falls out for free, enabling a "state-sync" feature where clients subscribe to specific state slots and receive updates as they change.
+
+**Costs / open problems:**
+- revm's view of the world is encoded: calldata for transactions, storage slots for state. Neither is directly interpretable by users, the frontend, or human operators. The in-memory state and the Postgres tables that back HTTP GETs need a decoded, human-readable layer on top.
+- The decode layer should be derived from the contract — Solidity types → table shapes via storage layout, with matching JS and SQL decoders producing the same logical shape the rest of the stack already expects. Codegen for primitives and flat structs is straightforward; mappings-of-structs and dynamic arrays are the hard part. SQL side is most likely views over a raw `(slot, value)` table unless there's a strong reason to materialize.
+- Where matching lives is unsettled. Options: keep off-chain matching and pass resolutions as calldata (closest to today), or move matching into Solidity so the contract itself produces fills (cleaner, possibly expensive). To be decided when this work is picked up.
 
 ## Working in this package
 
