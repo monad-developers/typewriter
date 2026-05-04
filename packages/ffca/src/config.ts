@@ -5,6 +5,7 @@ export type FFCA = {
   state: Readonly<unknown>;
 };
 
+// TODO(kyle) add encode/decode, db schema,
 export type FFCAMutationConfig =
   | {
       params: readonly AbiParameter[];
@@ -19,6 +20,7 @@ export type FFCAMutationConfig =
 
 export type FFCAConfig = {
   address: Address.Address;
+  domain: { name: string; version: string };
   abi: Abi.Abi;
   account: PrivateKeyAccount;
   chainId: number;
@@ -26,6 +28,7 @@ export type FFCAConfig = {
   state: { initial: unknown };
   mutations: { [name: string]: FFCAMutationConfig };
   // sequencing
+  // account model
 };
 
 export function createFFCA(config: FFCAConfig): FFCA {
