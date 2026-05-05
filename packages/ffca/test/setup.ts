@@ -1,4 +1,3 @@
-import { afterAll, beforeAll, beforeEach } from "bun:test";
 import { Instance, Server } from "prool";
 import type { Address, Hex } from "viem";
 import {
@@ -34,60 +33,58 @@ const walletClient = createWalletClient({
   account: schedulerAccount,
 });
 
-export let counterAddress: Address;
-// biome-ignore lint/suspicious/noExplicitAny: forge artifact JSON shape
-export let counterAbi: any;
+// One-time setup at module load. bun:test imports `setup.ts` once across all
+// test files in a run, so this runs once: compile contracts, boot anvil,
+// deploy Counter. The per-file snapshot/revert lives in beforeEach below.
 
-let teardown: (() => Promise<void>) | undefined;
-let snapshotId: Hex;
-
-beforeAll(async () => {
-  // Compile the test contracts. Forge caches incrementally, so this is fast
-  // after the first run. If forge isn't installed, the error surfaces here.
-  const proc = Bun.spawn(["forge", "build"], {
-    cwd: `${import.meta.dir}/contracts`,
-    stderr: "pipe",
-    stdout: "pipe",
-  });
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
-    throw new Error(`forge build failed:\n${stderr}`);
-  }
-
-  // Boot anvil on a port distinct from order-book-backend's tests so the two
-  // suites can run in parallel.
-  const server = Server.create({ instance: Instance.anvil(), port: 8546 });
-  teardown = await server.start();
-  process.on("exit", () => teardown?.());
-
-  // Deploy Counter once; tests revert to this snapshot for isolation.
-  const artifact = await Bun.file(
-    `${import.meta.dir}/contracts/out/Counter.sol/Counter.json`,
-  ).json();
-  counterAbi = artifact.abi;
-  const hash = await walletClient.deployContract({
-    abi: artifact.abi,
-    bytecode: artifact.bytecode.object as Hex,
-    args: [],
-  });
-  const receipt = await publicClient.waitForTransactionReceipt({ hash });
-  if (
-    receipt.contractAddress === null ||
-    receipt.contractAddress === undefined
-  ) {
-    throw new Error("Counter deploy missing address");
-  }
-  counterAddress = receipt.contractAddress;
-
-  snapshotId = await testClient.snapshot();
+// Compile test contracts. Forge caches incrementally, so this is fast after
+// the first run. If forge isn't installed, the error surfaces here.
+const buildProc = Bun.spawn(["forge", "build"], {
+  cwd: `${import.meta.dir}/contracts`,
+  stderr: "pipe",
+  stdout: "pipe",
 });
+const buildExit = await buildProc.exited;
+if (buildExit !== 0) {
+  const stderr = await new Response(buildProc.stderr).text();
+  throw new Error(`forge build failed:\n${stderr}`);
+}
 
-beforeEach(async () => {
+// Boot anvil on a port distinct from order-book-backend's tests so the two
+// suites can run in parallel.
+const server = Server.create({ instance: Instance.anvil(), port: 8546 });
+const teardown = await server.start();
+process.on("exit", () => teardown());
+
+const artifact = await Bun.file(
+  `${import.meta.dir}/contracts/out/Counter.sol/Counter.json`,
+).json();
+// biome-ignore lint/suspicious/noExplicitAny: forge artifact JSON shape
+export const counterAbi: any = artifact.abi;
+
+const deployHash = await walletClient.deployContract({
+  abi: artifact.abi,
+  bytecode: artifact.bytecode.object as Hex,
+  args: [],
+});
+const deployReceipt = await publicClient.waitForTransactionReceipt({
+  hash: deployHash,
+});
+if (
+  deployReceipt.contractAddress === null ||
+  deployReceipt.contractAddress === undefined
+) {
+  throw new Error("Counter deploy missing address");
+}
+export const counterAddress: Address = deployReceipt.contractAddress;
+
+let snapshotId: Hex = await testClient.snapshot();
+
+// Revert chain state to the last snapshot and take a fresh one. Test files
+// call this from their own `beforeEach` if they want isolation; bun:test
+// scopes hooks to the file that registered them, so a `beforeEach` here
+// wouldn't apply to other importers.
+export async function resetChain(): Promise<void> {
   await testClient.revert({ id: snapshotId });
   snapshotId = await testClient.snapshot();
-});
-
-afterAll(async () => {
-  await teardown?.();
-});
+}

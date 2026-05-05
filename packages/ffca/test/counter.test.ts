@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import {
   createPublicClient,
   createWalletClient,
@@ -6,7 +6,15 @@ import {
   http,
 } from "viem";
 import { anvil } from "viem/chains";
-import { counterAbi, counterAddress, rpcUrl, schedulerAccount } from "./setup";
+import {
+  counterAbi,
+  counterAddress,
+  resetChain,
+  rpcUrl,
+  schedulerAccount,
+} from "./setup";
+
+beforeEach(resetChain);
 
 const publicClient = createPublicClient({
   chain: anvil,
