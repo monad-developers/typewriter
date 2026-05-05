@@ -64,6 +64,8 @@ Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the
 
 Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.
 
+Prefer specific validity checks over truthy/falsy shortcuts: `if (mutation === undefined)` over `if (!mutation)`, `if (xs.length === 0)` over `if (!xs.length)`. `!x` collapses undefined / null / 0 / "" / false / NaN into one branch — for domain values that could legitimately be `0` or `""` it silently wrong-paths, and even when those cases can't occur the explicit form makes the intended invariant readable. Reach for `!x` only on actual booleans.
+
 ## Gotcha: `bun install` blocked by `minimum-release-age`
 
 The repo's `bunfig.toml` enforces `minimumReleaseAge = 2419200` (28 days) as a supply-chain defense — bun refuses any version younger than that. If `bun.lock` or a `package.json` constraint pins a too-recent version, install fails with "No version matching X found / blocked by minimum-release-age". Fix: `bun remove <pkg> && bun add <pkg>` — `bun add` walks back to find a version that satisfies the constraint *and* clears the age gate.
