@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
-import { encodeMutation } from "./encoding";
+import { encodeMutationCalldata } from "./encoding";
 
-test("encodeMutation without resolution", () => {
+test("encodeMutationCalldata without resolution", () => {
   const mutation = {
     params: parseAbiParameters("address from, address to, uint256 amount"),
     apply: () => {},
@@ -14,12 +14,12 @@ test("encodeMutation without resolution", () => {
     100n,
   ] as const;
 
-  const encoded = encodeMutation(mutation, args);
+  const encoded = encodeMutationCalldata(mutation, args);
 
   expect(AbiParameters.decode(mutation.params, encoded)).toEqual(args);
 });
 
-test("encodeMutation with resolution", () => {
+test("encodeMutationCalldata with resolution", () => {
   const mutation = {
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
@@ -34,12 +34,9 @@ test("encodeMutation with resolution", () => {
     ],
   ] as const;
 
-  const encoded = encodeMutation(mutation, args, resolution);
+  const encoded = encodeMutationCalldata(mutation, args, resolution);
 
   expect(
-    AbiParameters.decode(
-      [...mutation.params, ...mutation.resolution],
-      encoded,
-    ),
+    AbiParameters.decode([...mutation.params, ...mutation.resolution], encoded),
   ).toEqual([...args, ...resolution]);
 });

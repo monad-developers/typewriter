@@ -3,7 +3,7 @@ import { parseAbiParameters } from "abitype";
 import type { TypedData } from "ox";
 import { hashTypedData } from "viem";
 import type { FFCAMutationConfig } from "./config";
-import { hashMutation } from "./eip712";
+import { hashMutationEip712 } from "./eip712";
 
 const domain: TypedData.Domain = {
   name: "ffca-test",
@@ -12,7 +12,7 @@ const domain: TypedData.Domain = {
   verifyingContract: "0x0000000000000000000000000000000000000001",
 };
 
-test("hashMutation matches viem hashTypedData for a flat mutation", () => {
+test("hashMutationEip712 matches viem hashTypedData for a flat mutation", () => {
   const mutation: FFCAMutationConfig = {
     params: parseAbiParameters("address from, address to, uint256 amount"),
     apply: () => {},
@@ -23,7 +23,7 @@ test("hashMutation matches viem hashTypedData for a flat mutation", () => {
     amount: 100n,
   };
 
-  const got = hashMutation(mutation, "Transfer", args, domain);
+  const got = hashMutationEip712(mutation, "Transfer", args, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -40,14 +40,14 @@ test("hashMutation matches viem hashTypedData for a flat mutation", () => {
   expect(got).toBe(want);
 });
 
-test("hashMutation handles a tuple param via synthesized struct name", () => {
+test("hashMutationEip712 handles a tuple param via synthesized struct name", () => {
   const mutation: FFCAMutationConfig = {
     params: parseAbiParameters("(uint256 price, uint256 size) fill"),
     apply: () => {},
   };
   const args = { fill: { price: 100n, size: 6n } };
 
-  const got = hashMutation(mutation, "Settle", args, domain);
+  const got = hashMutationEip712(mutation, "Settle", args, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -64,7 +64,7 @@ test("hashMutation handles a tuple param via synthesized struct name", () => {
   expect(got).toBe(want);
 });
 
-test("hashMutation handles tuple[] arrays", () => {
+test("hashMutationEip712 handles tuple[] arrays", () => {
   const mutation: FFCAMutationConfig = {
     params: parseAbiParameters(
       "address taker, (uint256 price, uint256 size)[] fills",
@@ -79,7 +79,7 @@ test("hashMutation handles tuple[] arrays", () => {
     ],
   };
 
-  const got = hashMutation(mutation, "Batch", args, domain);
+  const got = hashMutationEip712(mutation, "Batch", args, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -99,7 +99,7 @@ test("hashMutation handles tuple[] arrays", () => {
   expect(got).toBe(want);
 });
 
-test("hashMutation handles nested tuples", () => {
+test("hashMutationEip712 handles nested tuples", () => {
   const mutation: FFCAMutationConfig = {
     params: parseAbiParameters(
       "(address account, (uint256 price, uint256 size) fill) order",
@@ -113,7 +113,7 @@ test("hashMutation handles nested tuples", () => {
     },
   };
 
-  const got = hashMutation(mutation, "PlaceOrder", args, domain);
+  const got = hashMutationEip712(mutation, "PlaceOrder", args, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -134,7 +134,7 @@ test("hashMutation handles nested tuples", () => {
   expect(got).toBe(want);
 });
 
-test("hashMutation uses internalType struct name when present", () => {
+test("hashMutationEip712 uses internalType struct name when present", () => {
   const mutation: FFCAMutationConfig = {
     params: [
       {
@@ -151,7 +151,7 @@ test("hashMutation uses internalType struct name when present", () => {
   };
   const args = { fill: { price: 100n, size: 6n } };
 
-  const got = hashMutation(mutation, "Settle", args, domain);
+  const got = hashMutationEip712(mutation, "Settle", args, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -168,13 +168,13 @@ test("hashMutation uses internalType struct name when present", () => {
   expect(got).toBe(want);
 });
 
-test("hashMutation rejects unnamed params", () => {
+test("hashMutationEip712 rejects unnamed params", () => {
   const mutation: FFCAMutationConfig = {
     params: parseAbiParameters("uint256"),
     apply: () => {},
   };
 
-  expect(() => hashMutation(mutation, "X", [1n], domain)).toThrow(
+  expect(() => hashMutationEip712(mutation, "X", [1n], domain)).toThrow(
     /every param must have a name/,
   );
 });

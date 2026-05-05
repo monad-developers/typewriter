@@ -2,21 +2,27 @@ import type { AbiParameter } from "abitype";
 import { type Hex, TypedData } from "ox";
 import type { FFCAMutationConfig } from "./config";
 
-export function hashMutation(
+export function hashMutationEip712(
   mutation: FFCAMutationConfig,
   name: string,
   args: unknown,
   domain: TypedData.Domain,
 ): Hex.Hex {
-  const types: Record<string, { name: string; type: string }[]> = {};
-  types[name] = mutation.params.map((p) => buildField(p, name, types));
-
   return TypedData.getSignPayload({
     domain,
-    types,
+    types: buildEip712Types(mutation, name),
     primaryType: name,
     message: args as Record<string, unknown>,
   });
+}
+
+export function buildEip712Types(
+  mutation: FFCAMutationConfig,
+  name: string,
+): Record<string, { name: string; type: string }[]> {
+  const types: Record<string, { name: string; type: string }[]> = {};
+  types[name] = mutation.params.map((p) => buildField(p, name, types));
+  return types;
 }
 
 function buildField(
@@ -25,9 +31,7 @@ function buildField(
   types: Record<string, { name: string; type: string }[]>,
 ): { name: string; type: string } {
   if (!p.name) {
-    throw new Error(
-      `hashMutation: every param must have a name (in ${parentTypeName})`,
-    );
+    throw new Error(`every param must have a name (in ${parentTypeName})`);
   }
 
   const isTuple = p.type === "tuple" || p.type.startsWith("tuple[");
@@ -35,7 +39,7 @@ function buildField(
 
   if (!("components" in p) || !p.components) {
     throw new Error(
-      `hashMutation: tuple param missing components (${parentTypeName}.${p.name})`,
+      `tuple param missing components (${parentTypeName}.${p.name})`,
     );
   }
 

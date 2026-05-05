@@ -1,7 +1,7 @@
 import { AbiParameters, type Hex } from "ox";
 import type { FFCAMutationConfig } from "./config";
 
-export function encodeMutation(
+export function encodeMutationCalldata(
   mutation: FFCAMutationConfig,
   args: unknown,
   resolution?: unknown,
