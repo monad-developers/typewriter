@@ -13,6 +13,9 @@
     "ox": "catalog:",
     "viem": "catalog:"
   },
+  "devDependencies": {
+    "prool": "0.2.4"
+  },
   "peerDependencies": {
     "typescript": "catalog:"
   }
