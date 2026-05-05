@@ -33,44 +33,78 @@ High-level signals for whether ffca is on the right track. None are precisely me
 
 ## Status
 
-Scaffolded but empty. `createFFCA` is a stub. Nothing imports from it yet.
+~720 lines across config, types, runtime, eip712, encoding. End-to-end against anvil. The runtime drains a mutation queue, sorts by `config.sequence`, runs `resolve` then `apply` per mutation against a structuredClone-based snapshot (revert on throw), then submits bundles via simulate → access list → estimate → sign → broadcast → block lookup. EIP-712 typed-data verification (state-independent half) and `(uint8[], bytes[], bytes[])[]` calldata encoding are wired. Event fan-out via `on(event, cb) → unsubscribe` for mutation/bundle/block. 26 tests including 5 e2e against a real chain. No persistence, no watch loop, no account model, no signature codec.
 
 ## Tests
 
 `bunfig.toml` preloads `test/setup.ts`, which compiles the test contracts (`test/contracts/`), boots anvil via `prool` on port 8545, and registers a global `beforeEach` that snapshot-reverts chain state between tests. Each test deploys its own contracts via `deployCounter` / `deployHarness` from `test/utils.ts` — there's no shared deployment to remember.
 
-## Ideas
+## Roadmap
 
-Future directions, recorded so they aren't lost. Not commitments — each needs to be evaluated against the beliefs and feedback loops above when its time comes.
+The frame: every change is purpose-built for making it easier to build apps with ffca, or for making the apps built better. Apps come first; the framework follows them. The goal is to port `apps/order-book-backend` onto ffca and have it back to demo-grade reliability — knowing the ffca-backed version will be temporarily worse than what it replaces.
 
-### Derive from the contract via AST + storage layout
+### Lanes
 
-A lot of what the backend currently hand-authors could be read from the contract instead — bundle tuple shape, mutation enum → int tags, per-mutation param ABI, EIP-712 domain pieces, state shape from storage layout, event ABI, error selectors. The mechanics are `forge build`'s Solidity AST and `forge inspect ... storageLayout`. TypeScript can't read those at type-check time, so backend code that wants typed access will likely need codegen output as a derived artifact — but runtime behavior (encoding, tag mapping, layout reads) can come straight from the contract.
+The work catalog. Non-sequenced — items in different lanes can run in parallel.
 
-### Scheduler key management
+**1. Missing implementation.** Things that are part of the framework but aren't there yet.
+- Watch loop + reorg handling
+- Force inclusion
+- Signed receipts / client-side equivocation proving
+- Alternative sequencing (FIFO and beyond)
+- Signature wire-format codec (port-blocker for order-book — contract expects `(bytes32 account, uint64 keyId, bytes rawSig)[]`, ffca emits opaque `bytes[]`)
+- Persistence hooks
+- Backpressure on the mutation/submit queues
 
-Today `FFCAConfig.account: PrivateKeyAccount` is in-process key material — fine for development, a footgun for production. Three directions worth keeping together because they share the same seam (the framework's signing identity):
+**2. Production readiness.** Hardening for running real apps.
+- Effect.ts usage for HTTP and DB handlers
+- Shutdown testing (deterministic drain)
+- Nonce recovery on conflict
+- Scheduler KMS / better account system
+- Recovery from submit-fiber crashes (today: `Effect.orDie`)
 
-- **KMS / remote signer support.** Drop the assumption that ffca holds the private key. The `account` field becomes a signer abstraction (`signTransaction`, `address`) that can be backed by AWS KMS, GCP KMS, Web3Signer, hardware, or a passkey. Operators get key custody without changing app code.
-- **Nonce recovery on conflict.** The local `nextNonce` cache assumes ffca is the sole user of the scheduler key. If another process submits with the same key (operator override, parallel deployment, manual tx), the cached nonce goes stale and every subsequent broadcast fails. On submit error: refetch from `eth_getTransactionCount(pending)` and retry. Cheap fix, removes a class of foot-shoot.
-- **User-shaped signing on-contract.** The contract's check for the scheduler's signature could use the same recovery path it uses for user accounts — the scheduler is just an account with a key. That unifies the auth model (one verification primitive instead of two), unlocks rotation, and lets the scheduler key live in the same key registry as user keys with the same policy controls (expiry, scopes, revocation).
+**3. Developer experience.** Usability — make the framework feel small and composable.
+- State sync (granular slot subscriptions; falls out of revm)
+- Type inference from contracts (extract mutation and state types from Solidity)
+- AST parsing for conformance + runtime values (validate contract shape, extract EIP-712 domain automatically)
+- Zod schemas for HTTP endpoint enforcement
+- Automatic deployment management (no copying addresses into env vars)
+- CLI scaffolding (`ffca dev` with anvil + fixture contract)
 
-### revm as the server execution engine
+**4. Documentation.** Someone should be able to read the docs and form a clear picture of how ffca works. Today it's almost empty.
+- Architecture diagram (mutation → bundle → submit → watch + the four loops)
+- "What ffca prescribes vs. what the app owns" matrix
+- Migration / port playbook (evergreen output of the order-book port)
 
-Today `apps/order-book-backend/src/exchange.ts` reimplements the contract's matching and settlement logic in TypeScript. The state shape, lot math, tick accounting, and balance updates all exist twice — once in Solidity, once in JS — and have to be kept in sync by hand. This violates "write logic once" and won't be acceptable for production.
+### Initiatives
 
-The idea: ffca ships with a revm-backed runtime. The server runs the same bytecode that's deployed onchain (possibly with minor augmentations), with the EVM as the source of truth for pending state between batches. The chain catches up asynchronously.
+Multi-week projects that span lanes. Each has its own internal sequence.
 
-**Wins:**
-- No duplicated execution logic. The contract is the spec.
-- Local gas estimation and access-list generation without RPC round-trips.
-- A local-only development mode that doesn't need a chain to reconcile against.
-- A granular state-diff stream falls out for free, enabling a "state-sync" feature where clients subscribe to specific state slots and receive updates as they change.
+**revm as the server execution engine.** The biggest single change. Replaces the TS reimplementation of contract logic with the actual EVM bytecode running locally — the contract becomes the spec instead of a thing to keep in sync by hand. Subsumes failure isolation (free state revert), changes persistence shape (raw slots in memory + decoded tables for the consumable layer), and unlocks state-sync. Decoding mappings-of-structs and dynamic arrays is the hard part. Tracked in the background; doesn't gate the one-week port.
 
-**Costs / open problems:**
-- revm's view of the world is encoded: calldata for transactions, storage slots for state. Neither is directly interpretable by users, the frontend, or human operators. The in-memory state and the Postgres tables that back HTTP GETs need a decoded, human-readable layer on top.
-- The decode layer should be derived from the contract — Solidity types → table shapes via storage layout, with matching JS and SQL decoders producing the same logical shape the rest of the stack already expects. Codegen for primitives and flat structs is straightforward; mappings-of-structs and dynamic arrays are the hard part. SQL side is most likely views over a raw `(slot, value)` table unless there's a strong reason to materialize.
-- Where matching lives is unsettled. Options: keep off-chain matching and pass resolutions as calldata (closest to today), or move matching into Solidity so the contract itself produces fills (cleaner, possibly expensive). To be decided when this work is picked up.
+**Account model.** ffca has no concept of accounts/keys/nonces today. The order-book contract demands one specific shape (32-byte account ids, key registry with P-256/WebAuthn/secp256k1, parallel nonces by `(account, keyIndex)`). The signature codec is the symptom; the underlying design call is whether ffca *prescribes* this model (every ffca app gets it) or exposes it as an *interface* (apps plug their own in). The decision needs more contract iteration before it can be made — see Open decisions.
+
+**AST + storage-layout codegen.** A lot of what the backend currently hand-authors could be read from the contract instead — bundle tuple shape, mutation tag enum, per-mutation param ABI, EIP-712 domain, state shape, event ABI, error selectors. Mechanics are `forge build`'s AST and `forge inspect storageLayout`. TS can't read those at type-check time, so typed access requires codegen as a derived artifact. Runtime behavior (encoding, tag mapping, layout reads) can come straight from the contract without codegen.
+
+**Scheduler key management.** Today `FFCAConfig.account: PrivateKeyAccount` is in-process key material — fine for dev, a footgun for production. Three pieces share the same seam (the framework's signing identity): KMS / remote signer support, nonce recovery on conflict, and user-shaped signing on-contract (scheduler key in the same registry as user keys, with rotation/expiry/scopes).
+
+### This week (sequenced)
+
+The active sequence. Demo-grade reliability by end of week.
+
+1. **Account model decision.** Prescribed vs. interface. Blocked on more contract iteration.
+2. **Watch loop.** ~80 lines. Polls latest block, advances proposed → voted → finalized → verified by configurable confirmation depth. Account-agnostic; can land before #1.
+3. **Signature codec.** Falls out of #1 — once `account`/`keyId` are ffca concepts, the wire format is mechanical.
+4. **Order-book port.** Replace `apps/order-book-backend/src/runtime.ts` with `createFFCA` + listeners. App keeps DB, HTTP, signature verification, nonces.
+5. **Demo-readiness sweep.** Backpressure, deterministic shutdown, timing logs, remove `process.exit(1)` from the fiber-died handler.
+
+### Open decisions
+
+Forks that gate sequencing. Listed so they don't get rediscovered every session.
+
+- **Account model: prescribed vs. interface.** Does ffca ship with the order-book account model as the default (every ffca app gets 32-byte ids + key registry + parallel nonces), or does it expose an interface and apps plug in (EOAs, custom key types, etc.)? Needs more contract iteration before it can be answered.
+- **Persistence shape.** Decoded tables (the order-book pattern: typed Postgres rows the app GETs directly) vs. raw `(slot, value)` storage with decoders on top (the revm-native pattern). Tentatively leaning decoded — the consumable layer needs to be human-readable either way, and revm's in-memory state is the runtime source.
+- **Resolution language.** Off-chain matching is settled. Open question: is the resolution itself written in TypeScript (today's order-book) or in Solidity (a view function the runtime calls)? Solidity-side resolutions remove the TS/Sol drift but are gas/perf-sensitive and harder to debug.
 
 ## Working in this package
 
