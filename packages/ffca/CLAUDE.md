@@ -35,6 +35,10 @@ High-level signals for whether ffca is on the right track. None are precisely me
 
 Scaffolded but empty. `createFFCA` is a stub. Nothing imports from it yet.
 
+## Tests
+
+`bunfig.toml` preloads `test/setup.ts`, which compiles the test contracts (`test/contracts/`), boots anvil via `prool` on port 8545, and registers a global `beforeEach` that snapshot-reverts chain state between tests. Each test deploys its own contracts via `deployCounter` / `deployHarness` from `test/utils.ts` — there's no shared deployment to remember.
+
 ## Ideas
 
 Future directions, recorded so they aren't lost. Not commitments — each needs to be evaluated against the beliefs and feedback loops above when its time comes.

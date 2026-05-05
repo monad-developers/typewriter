@@ -1,18 +1,21 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import type { TypedData } from "ox";
-import { createPublicClient, http } from "viem";
 import { anvil } from "viem/chains";
 import {
-  counterAbi,
-  counterAddress,
-  resetChain,
-  rpcUrl,
-  schedulerAccount,
+  SCHEDULER_ACCOUNT,
+  TEST_PUBLIC_CLIENT,
+  TEST_RPC_URL,
 } from "../test/setup";
-import type { FFCAConfig } from "./config";
+import {
+  COUNTER_MUTATIONS,
+  type CounterState,
+  deployCounter,
+  deployHarness,
+  HARNESS_MUTATIONS,
+  type HarnessState,
+} from "../test/utils";
 import { createFFCA, verifyMutation } from "./runtime";
-import type { SubmittedMutation } from "./types";
 
 const domain: TypedData.Domain = {
   name: "ffca-test",
@@ -21,64 +24,49 @@ const domain: TypedData.Domain = {
   verifyingContract: "0x0000000000000000000000000000000000000001",
 };
 
-const transferConfig = {
-  address: "0x0000000000000000000000000000000000000000",
-  abi: [],
-  // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
-  account: {} as any,
-  chainId: 1,
-  rpcUrl: "http://localhost:8545",
-  domain: { name: "ffca-test", version: "1" },
-  state: { initial: {} },
-  mutations: {
-    transfer: {
-      tag: 0,
-      params: parseAbiParameters("address from, address to, uint256 amount"),
-      apply: () => {},
-    },
-  },
-} satisfies FFCAConfig;
-
-const transferMutation = transferConfig.mutations.transfer;
-
-const submit = (args: unknown): SubmittedMutation => ({
-  name: "transfer",
-  args,
-  signature: "0x",
-});
-
 test("verifyMutation accepts a well-formed mutation", () => {
   expect(() =>
     verifyMutation(
-      transferMutation,
-      submit({
-        from: "0x0000000000000000000000000000000000000001",
-        to: "0x0000000000000000000000000000000000000002",
-        amount: 5n,
-      }),
+      HARNESS_MUTATIONS.credit,
+      {
+        name: "credit",
+        args: {
+          account: "0x0000000000000000000000000000000000000001",
+          amount: 5n,
+        },
+        signature: "0x",
+      },
       domain,
     ),
   ).not.toThrow();
 });
 
 test("verifyMutation throws when args is not an object", () => {
-  expect(() => verifyMutation(transferMutation, submit(null), domain)).toThrow(
-    /args must be an object/,
-  );
   expect(() =>
-    verifyMutation(transferMutation, submit("string"), domain),
+    verifyMutation(
+      HARNESS_MUTATIONS.credit,
+      { name: "credit", args: null, signature: "0x" },
+      domain,
+    ),
+  ).toThrow(/args must be an object/);
+  expect(() =>
+    verifyMutation(
+      HARNESS_MUTATIONS.credit,
+      { name: "credit", args: "string", signature: "0x" },
+      domain,
+    ),
   ).toThrow(/args must be an object/);
 });
 
 test("verifyMutation throws on missing required field", () => {
   expect(() =>
     verifyMutation(
-      transferMutation,
-      submit({
-        from: "0x0000000000000000000000000000000000000001",
-        to: "0x0000000000000000000000000000000000000002",
-        // missing amount
-      }),
+      HARNESS_MUTATIONS.credit,
+      {
+        name: "credit",
+        args: { account: "0x0000000000000000000000000000000000000001" },
+        signature: "0x",
+      },
       domain,
     ),
   ).toThrow(/missing field: amount/);
@@ -87,12 +75,12 @@ test("verifyMutation throws on missing required field", () => {
 test("verifyMutation throws on invalid address", () => {
   expect(() =>
     verifyMutation(
-      transferMutation,
-      submit({
-        from: "not-an-address",
-        to: "0x0000000000000000000000000000000000000002",
-        amount: 5n,
-      }),
+      HARNESS_MUTATIONS.credit,
+      {
+        name: "credit",
+        args: { account: "not-an-address", amount: 5n },
+        signature: "0x",
+      },
       domain,
     ),
   ).toThrow(/Address.*invalid/);
@@ -101,12 +89,15 @@ test("verifyMutation throws on invalid address", () => {
 test("verifyMutation throws on uint overflow", () => {
   expect(() =>
     verifyMutation(
-      transferMutation,
-      submit({
-        from: "0x0000000000000000000000000000000000000001",
-        to: "0x0000000000000000000000000000000000000002",
-        amount: 2n ** 256n,
-      }),
+      HARNESS_MUTATIONS.credit,
+      {
+        name: "credit",
+        args: {
+          account: "0x0000000000000000000000000000000000000001",
+          amount: 2n ** 256n,
+        },
+        signature: "0x",
+      },
       domain,
     ),
   ).toThrow(/safe 256-bit unsigned integer range/);
@@ -114,23 +105,30 @@ test("verifyMutation throws on uint overflow", () => {
 
 test("ffca.domain is derived from config", async () => {
   const ffca = createFFCA({
-    ...transferConfig,
     address: "0x000000000000000000000000000000000000abcd",
-    chainId: 137,
+    abi: [],
+    // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
+    account: {} as any,
+    chainId: 1,
+    rpcUrl: "http://localhost:8545",
     domain: { name: "my-app", version: "2" },
+    state: { initial: {} },
+    mutations: {},
   });
 
-  expect(ffca.domain).toEqual({
-    name: "my-app",
-    version: "2",
-    chainId: 137,
-    verifyingContract: "0x000000000000000000000000000000000000abcd",
-  });
+  expect(ffca.domain).toMatchInlineSnapshot(`
+    {
+      "chainId": 1,
+      "name": "my-app",
+      "verifyingContract": "0x000000000000000000000000000000000000abcd",
+      "version": "2",
+    }
+  `);
 
   await ffca.stop();
 });
 
-test("execute applies mutations in config.sequence order within a bundle", async () => {
+test("bundle applies mutations in config.sequence order within a bundle", async () => {
   const applied: string[] = [];
   const noop = parseAbiParameters("uint256 nonce");
   const ffca = createFFCA({
@@ -168,22 +166,15 @@ test("execute applies mutations in config.sequence order within a bundle", async
     },
   });
 
-  const sub = (name: string, nonce: bigint): SubmittedMutation => ({
-    name,
-    args: { nonce },
-    signature: "0x",
-  });
-
   // Submit out of order; queue together so they land in the same bundle.
   await Promise.all([
-    ffca.execute(sub("market", 1n)),
-    ffca.execute(sub("cancel", 2n)),
-    ffca.execute(sub("limit", 3n)),
-    ffca.execute(sub("limit", 4n)),
-    ffca.execute(sub("cancel", 5n)),
+    ffca.execute({ name: "market", args: { nonce: 1n }, signature: "0x" }),
+    ffca.execute({ name: "cancel", args: { nonce: 2n }, signature: "0x" }),
+    ffca.execute({ name: "limit", args: { nonce: 3n }, signature: "0x" }),
+    ffca.execute({ name: "limit", args: { nonce: 4n }, signature: "0x" }),
+    ffca.execute({ name: "cancel", args: { nonce: 5n }, signature: "0x" }),
   ]);
 
-  // cancels first (insertion order), then limits (insertion order), then market.
   expect(applied).toEqual(["cancel", "cancel", "limit", "limit", "market"]);
 
   await ffca.stop();
@@ -191,80 +182,286 @@ test("execute applies mutations in config.sequence order within a bundle", async
 
 test("execute rejects mutations whose name isn't in sequence", async () => {
   const ffca = createFFCA({
-    ...transferConfig,
+    address: "0x0000000000000000000000000000000000000000",
+    abi: [],
+    // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
+    account: {} as any,
+    chainId: 1,
+    rpcUrl: "http://localhost:8545",
+    domain: { name: "ffca-test", version: "1" },
+    state: { initial: {} },
+    mutations: { credit: HARNESS_MUTATIONS.credit },
     sequence: ["other"],
   });
 
   await expect(
     ffca.execute({
-      name: "transfer",
+      name: "credit",
       args: {
-        from: "0x0000000000000000000000000000000000000001",
-        to: "0x0000000000000000000000000000000000000002",
+        account: "0x0000000000000000000000000000000000000001",
         amount: 5n,
       },
       signature: "0x",
     }),
-  ).rejects.toThrow(/mutation not in sequence: transfer/);
+  ).rejects.toThrow(/mutation not in sequence: credit/);
 
   await ffca.stop();
 });
 
-// End-to-end submit against a real chain. Uses the Counter test fixture from
-// ../test/setup; see that file for the anvil + Counter deployment.
-test("submit lands a bundle on chain via Counter", async () => {
-  await resetChain();
-
-  const publicClient = createPublicClient({
-    chain: anvil,
-    transport: http(rpcUrl),
-  });
-  const readBundleCount = () =>
-    publicClient.readContract({
-      abi: counterAbi,
-      address: counterAddress,
-      functionName: "bundleCount",
-    }) as Promise<bigint>;
-  const readMutationCount = () =>
-    publicClient.readContract({
-      abi: counterAbi,
-      address: counterAddress,
-      functionName: "mutationCount",
-    }) as Promise<bigint>;
+// Counter: a single mutation lands on chain with the right value.
+test("e2e Counter: single mutation", async () => {
+  const { address, abi } = await deployCounter();
 
   const ffca = createFFCA({
-    address: counterAddress,
+    address,
     domain: { name: "ffca-test", version: "1" },
-    abi: counterAbi,
-    account: schedulerAccount,
+    abi,
+    account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
-    rpcUrl,
-    state: { initial: {} },
-    mutations: {
-      noop: {
-        tag: 0,
-        params: parseAbiParameters("uint256 nonce"),
-        apply: () => {},
-      },
-    },
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { total: 0n } as CounterState },
+    mutations: COUNTER_MUTATIONS,
   });
 
-  // Three mutations submitted concurrently should batch into one bundle.
+  await ffca.execute({ name: "add", args: { amount: 7n }, signature: "0x" });
+
+  const readTotal = () =>
+    TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "state",
+    }) as Promise<bigint>;
+  const deadline = Date.now() + 5000;
+  while ((await readTotal()) === 0n) {
+    if (Date.now() > deadline) throw new Error("mutation never landed onchain");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(await readTotal()).toBe(7n);
+  expect((ffca.state as CounterState).total).toBe(7n);
+
+  await ffca.stop();
+});
+
+// Counter: multiple mutations in one bundle each contribute to onchain state.
+// Catches any bug where bundle encoding loses or aliases per-mutation data.
+test("e2e Counter: multiple mutations in one bundle", async () => {
+  const { address, abi } = await deployCounter();
+
+  const ffca = createFFCA({
+    address,
+    domain: { name: "ffca-test", version: "1" },
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { total: 0n } as CounterState },
+    mutations: COUNTER_MUTATIONS,
+  });
+
   await Promise.all([
-    ffca.execute({ name: "noop", args: { nonce: 1n }, signature: "0x" }),
-    ffca.execute({ name: "noop", args: { nonce: 2n }, signature: "0x" }),
-    ffca.execute({ name: "noop", args: { nonce: 3n }, signature: "0x" }),
+    ffca.execute({ name: "add", args: { amount: 5n }, signature: "0x" }),
+    ffca.execute({ name: "add", args: { amount: 7n }, signature: "0x" }),
+    ffca.execute({ name: "add", args: { amount: 11n }, signature: "0x" }),
   ]);
 
-  // Wait for the submit cycle (default 400ms) to land the bundle on chain.
+  const readTotal = () =>
+    TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "state",
+    }) as Promise<bigint>;
   const deadline = Date.now() + 5000;
-  while ((await readBundleCount()) === 0n) {
+  while ((await readTotal()) === 0n) {
     if (Date.now() > deadline) throw new Error("bundle never landed onchain");
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  expect(await readBundleCount()).toBe(1n);
-  expect(await readMutationCount()).toBe(3n);
+  expect(await readTotal()).toBe(23n);
+  expect((ffca.state as CounterState).total).toBe(23n);
+
+  await ffca.stop();
+});
+
+// Harness: a debit's resolve runs against credited local state and the contract
+// accepts the resolution. Exercises the resolve → encode → onchain verify path.
+test("e2e Harness: mutation with resolution", async () => {
+  const { address, abi } = await deployHarness();
+  const alice = "0x00000000000000000000000000000000000a11ce" as const;
+
+  const ffca = createFFCA({
+    address,
+    domain: { name: "ffca-test", version: "1" },
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { balances: {} } as HarnessState },
+    mutations: {
+      credit: HARNESS_MUTATIONS.credit,
+      debit: HARNESS_MUTATIONS.debit,
+    },
+  });
+
+  // Submit in dependency order; no `sequence` needed.
+  await ffca.execute({
+    name: "credit",
+    args: { account: alice, amount: 100n },
+    signature: "0x",
+  });
+  await ffca.execute({
+    name: "debit",
+    args: { account: alice, amount: 30n },
+    signature: "0x",
+  });
+
+  const readBalance = () =>
+    TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "balances",
+      args: [alice],
+    }) as Promise<bigint>;
+  const deadline = Date.now() + 5000;
+  while ((await readBalance()) !== 70n) {
+    if (Date.now() > deadline) {
+      throw new Error(`balance never reached 70; saw ${await readBalance()}`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(await readBalance()).toBe(70n);
+  expect((ffca.state as HarnessState).balances[alice]).toBe(70n);
+
+  await ffca.stop();
+});
+
+// Harness: when mutations arrive out of order, `sequence` sorts them so the
+// debit's resolve runs against post-credit state. If sort were broken, debit's
+// resolve would underflow and the bundle would never encode.
+test("e2e Harness: mutations reorded by sequence", async () => {
+  const { address, abi } = await deployHarness();
+  const alice = "0x00000000000000000000000000000000000a11ce" as const;
+
+  const ffca = createFFCA({
+    address,
+    domain: { name: "ffca-test", version: "1" },
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { balances: {} } as HarnessState },
+    sequence: ["credit", "debit"],
+    mutations: {
+      credit: HARNESS_MUTATIONS.credit,
+      debit: HARNESS_MUTATIONS.debit,
+    },
+  });
+
+  // Submit debit before credit — sequence must sort credit first.
+  await Promise.all([
+    ffca.execute({
+      name: "debit",
+      args: { account: alice, amount: 30n },
+      signature: "0x",
+    }),
+    ffca.execute({
+      name: "credit",
+      args: { account: alice, amount: 100n },
+      signature: "0x",
+    }),
+  ]);
+
+  const readBalance = () =>
+    TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "balances",
+      args: [alice],
+    }) as Promise<bigint>;
+  const deadline = Date.now() + 5000;
+  while ((await readBalance()) !== 70n) {
+    if (Date.now() > deadline) {
+      throw new Error(`balance never reached 70; saw ${await readBalance()}`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(await readBalance()).toBe(70n);
+  expect((ffca.state as HarnessState).balances[alice]).toBe(70n);
+
+  await ffca.stop();
+});
+
+// Harness: an apply that throws (debit against zero balance) rejects that
+// mutation's execute() promise without crashing the runtime; sibling mutations
+// in the same bundle still land, and a follow-up mutation works.
+test("e2e Harness: apply error rejects without crashing", async () => {
+  const { address, abi } = await deployHarness();
+  const alice = "0x00000000000000000000000000000000000a11ce" as const;
+  const bob = "0x0000000000000000000000000000000000000b0b" as const;
+
+  const ffca = createFFCA({
+    address,
+    domain: { name: "ffca-test", version: "1" },
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { balances: {} } as HarnessState },
+    sequence: ["credit", "debit"],
+    mutations: {
+      credit: HARNESS_MUTATIONS.credit,
+      debit: HARNESS_MUTATIONS.debit,
+    },
+  });
+
+  const readBalance = (account: string) =>
+    TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "balances",
+      args: [account],
+    }) as Promise<bigint>;
+
+  await Promise.all([
+    expect(
+      ffca.execute({
+        name: "debit",
+        args: { account: alice, amount: 30n },
+        signature: "0x",
+      }),
+    ).rejects.toThrow(/insufficient balance/),
+    ffca.execute({
+      name: "credit",
+      args: { account: bob, amount: 50n },
+      signature: "0x",
+    }),
+  ]);
+
+  const deadline = Date.now() + 5000;
+  while ((await readBalance(bob)) === 0n) {
+    if (Date.now() > deadline) {
+      throw new Error("credit never landed onchain");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  expect(await readBalance(bob)).toBe(50n);
+  expect(await readBalance(alice)).toBe(0n);
+
+  // Runtime survived: a follow-up mutation lands.
+  await ffca.execute({
+    name: "credit",
+    args: { account: bob, amount: 7n },
+    signature: "0x",
+  });
+  while ((await readBalance(bob)) === 50n) {
+    if (Date.now() > deadline) {
+      throw new Error("follow-up credit never landed");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  expect(await readBalance(bob)).toBe(57n);
 
   await ffca.stop();
 });

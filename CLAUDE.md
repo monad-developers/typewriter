@@ -58,7 +58,7 @@ Pin exact versions for security — no `^` or `~` ranges. `bun add` defaults to 
 
 ## Tests
 
-Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the expected value is non-trivial. Snapshots are easier to read, easier to update, and surface unintended diffs faster than `.toEqual({...})` against a hand-maintained literal. Reach for `.toBe` / `.toEqual` only for small primitives where the snapshot would be noisier than the assertion.
+Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the expected value is non-trivial. Snapshots are easier to read, easier to update, and surface unintended diffs faster than `.toEqual({...})` against a hand-maintained literal.
 
 ## Lint / format
 
