@@ -10,12 +10,25 @@ import {
   Schedule,
 } from "effect";
 import { TypedData } from "ox";
+import {
+  createPublicClient,
+  createWalletClient,
+  encodeFunctionData,
+  extractChain,
+  http,
+  keccak256,
+} from "viem";
+import { sendRawTransactionSync } from "viem/actions";
+import * as chains from "viem/chains";
 import type { BundleView, FFCAConfig, FFCAMutationConfig } from "./config";
 import { buildEip712Types } from "./eip712";
+import { encodeBundleArg } from "./encoding";
 import type {
+  AnchoredBundle,
   BundleEvent,
   MutationEvent,
   PendingMutation,
+  ResolvedMutation,
   SubmittedMutation,
 } from "./types";
 
@@ -99,6 +112,37 @@ export function createFFCA(config: FFCAConfig): FFCA {
     verifyingContract: config.address,
   };
 
+  const rpcUrls = Array.isArray(config.rpcUrl)
+    ? config.rpcUrl
+    : [config.rpcUrl];
+  // viem's `extractChain` is typed with a literal-union of known chain ids;
+  // we accept any number at the framework boundary and cast through.
+  const chain = extractChain({
+    chains: Object.values(chains),
+    id: config.chainId as 1,
+  });
+  const transport = http(rpcUrls[0], { retryCount: 0 });
+  const publicClient = createPublicClient({ chain, transport });
+  const walletClient = createWalletClient({
+    account: config.account,
+    chain,
+    transport,
+  });
+
+  // Local nonce cache. Lazy-initialized on first use; incremented per submit.
+  // TODO recover from gaps and chain divergence; per-key parallelism when
+  //   the account model lands.
+  let txNonce = -1;
+  const nextNonce = async (): Promise<number> => {
+    if (txNonce === -1) {
+      txNonce = await publicClient.getTransactionCount({
+        address: config.account.address,
+        blockTag: "pending",
+      });
+    }
+    return txNonce++;
+  };
+
   const mutationQueue = Effect.runSync(
     Queue.unbounded<{
       pending: PendingMutation;
@@ -166,18 +210,137 @@ export function createFFCA(config: FFCAConfig): FFCA {
     yield* Queue.offer(submitQueue, bundleEvent);
   });
 
-  // submit: drain bundle queue, build calldata, broadcast to chain
+  // submit: drain bundle queue, build calldata, broadcast to chain.
+  // Single-RPC for now; multiplexing is a future step.
+  // TODO error policy: today an RPC failure that survives retry crashes the
+  //   submit fiber (Effect.orDie below). The bundle's mutation Deferreds have
+  //   already been resolved as "accepted", so callers don't see this. Real
+  //   fix is per-bundle status updates + event fan-out.
   const submit = Effect.gen(function* () {
     bundlePosition = 0;
-    const bundles = Chunk.toArray(yield* Queue.takeAll(submitQueue));
-    if (bundles.length === 0) return;
+    const accepted = Chunk.toArray(yield* Queue.takeAll(submitQueue));
+    if (accepted.length === 0) return;
 
-    // TODO for each bundle: encodeBundle(config, bundle.mutations) → calldata.
-    //   Then simulate, access-list, estimate, sign, broadcast, race RPCs.
-    //   See apps/order-book-backend/src/runtime.ts:936-1089.
+    // submitQueue only holds AcceptedBundle today; narrow for the rest of
+    // the body.
+    const bundles = accepted as Extract<BundleEvent, { status: "accepted" }>[];
 
-    // TODO update bundle/mutation statuses to "proposed", emit block event,
-    //   persist block + bundle-block link
+    const rpcRetry = Effect.retry({
+      times: 8,
+      schedule: Schedule.spaced(Duration.millis(200)),
+    });
+
+    const args = bundles.map((b) => encodeBundleArg(b.mutations));
+    const calldata = encodeFunctionData({
+      abi: config.abi,
+      functionName: "execute",
+      args: [args],
+    });
+
+    yield* Effect.tryPromise({
+      try: () =>
+        publicClient.simulateContract({
+          account: config.account.address,
+          abi: config.abi,
+          address: config.address,
+          functionName: "execute",
+          args: [args],
+        }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    const { accessList } = yield* Effect.tryPromise({
+      try: () =>
+        publicClient.createAccessList({
+          account: config.account.address,
+          to: config.address,
+          data: calldata,
+        }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    const gasUsed = yield* Effect.tryPromise({
+      try: () =>
+        publicClient.estimateGas({
+          account: config.account.address,
+          to: config.address,
+          data: calldata,
+          accessList,
+        }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    const nonce = yield* Effect.tryPromise({
+      try: () => nextNonce(),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    const request = yield* Effect.tryPromise({
+      try: () =>
+        walletClient.prepareTransactionRequest({
+          to: config.address,
+          data: calldata,
+          accessList,
+          gas: gasUsed + gasUsed / 100n,
+          nonce,
+        }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    const signed = yield* Effect.tryPromise({
+      try: () => walletClient.signTransaction(request),
+      catch: (error) => error as Error,
+    });
+
+    const transactionHash = keccak256(signed);
+
+    const receipt = yield* Effect.tryPromise({
+      try: () =>
+        sendRawTransactionSync(walletClient, {
+          serializedTransaction: signed,
+        }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    const block = yield* Effect.tryPromise({
+      try: () => publicClient.getBlock({ blockHash: receipt.blockHash }),
+      catch: (error) => error as Error,
+    }).pipe(rpcRetry);
+
+    // Promote each bundle from accepted → proposed by constructing a fresh
+    // AnchoredBundle (the union members have different shapes — can't mutate
+    // in place and stay typed).
+    const anchored = bundles.map((b): AnchoredBundle => {
+      const proposedMutations = b.mutations.map(
+        (m): Extract<ResolvedMutation, { status: "proposed" }> => ({
+          ...m,
+          status: "proposed",
+        }),
+      );
+      return {
+        id: b.id,
+        status: "proposed",
+        position: b.position,
+        mutations: proposedMutations,
+        number: block.number,
+        hash: block.hash,
+        transactionHash,
+      };
+    });
+
+    yield* Effect.logInfo("bundles proposed").pipe(
+      Effect.annotateLogs({
+        bundleIds: bundles.map((b) => b.id),
+        bundleCount: bundles.length,
+        mutationCount: bundles.reduce((n, b) => n + b.mutations.length, 0),
+        blockNumber: block.number.toString(),
+        transactionHash,
+      }),
+    );
+
+    // TODO emit block + per-bundle events when fan-out lands. The anchored
+    //   bundles are the value future subscribers want.
+    void anchored;
   });
 
   // watch: poll latest block, advance proposed bundles → voted/finalized/verified

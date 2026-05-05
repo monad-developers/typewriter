@@ -43,6 +43,14 @@ Future directions, recorded so they aren't lost. Not commitments — each needs 
 
 A lot of what the backend currently hand-authors could be read from the contract instead — bundle tuple shape, mutation enum → int tags, per-mutation param ABI, EIP-712 domain pieces, state shape from storage layout, event ABI, error selectors. The mechanics are `forge build`'s Solidity AST and `forge inspect ... storageLayout`. TypeScript can't read those at type-check time, so backend code that wants typed access will likely need codegen output as a derived artifact — but runtime behavior (encoding, tag mapping, layout reads) can come straight from the contract.
 
+### Scheduler key management
+
+Today `FFCAConfig.account: PrivateKeyAccount` is in-process key material — fine for development, a footgun for production. Three directions worth keeping together because they share the same seam (the framework's signing identity):
+
+- **KMS / remote signer support.** Drop the assumption that ffca holds the private key. The `account` field becomes a signer abstraction (`signTransaction`, `address`) that can be backed by AWS KMS, GCP KMS, Web3Signer, hardware, or a passkey. Operators get key custody without changing app code.
+- **Nonce recovery on conflict.** The local `nextNonce` cache assumes ffca is the sole user of the scheduler key. If another process submits with the same key (operator override, parallel deployment, manual tx), the cached nonce goes stale and every subsequent broadcast fails. On submit error: refetch from `eth_getTransactionCount(pending)` and retry. Cheap fix, removes a class of foot-shoot.
+- **User-shaped signing on-contract.** The contract's check for the scheduler's signature could use the same recovery path it uses for user accounts — the scheduler is just an account with a key. That unifies the auth model (one verification primitive instead of two), unlocks rotation, and lets the scheduler key live in the same key registry as user keys with the same policy controls (expiry, scopes, revocation).
+
 ### revm as the server execution engine
 
 Today `apps/order-book-backend/src/exchange.ts` reimplements the contract's matching and settlement logic in TypeScript. The state shape, lot math, tick accounting, and balance updates all exist twice — once in Solidity, once in JS — and have to be kept in sync by hand. This violates "write logic once" and won't be acceptable for production.

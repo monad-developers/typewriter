@@ -70,7 +70,7 @@ type AcceptedBundle = {
   mutations: Extract<ResolvedMutation, { status: "accepted" }>[];
 };
 
-type AnchoredBundle = {
+export type AnchoredBundle = {
   id: number;
   status: Exclude<BundleStatus, "accepted">;
   position: number;

@@ -32,13 +32,23 @@ const BUNDLE_PARAMS = AbiParameters.from(
 );
 
 export function encodeBundleCalldata(mutations: ResolvedMutation[]): Hex.Hex {
-  return AbiParameters.encode(BUNDLE_PARAMS, [
-    {
-      mutations: mutations.map((m) => m.config.tag),
-      mutationData: mutations.map((m) =>
-        encodeMutationCalldata(m.config, m.args, m.resolution),
-      ),
-      signatures: mutations.map((m) => m.signature),
-    },
-  ]);
+  return AbiParameters.encode(BUNDLE_PARAMS, [encodeBundleArg(mutations)]);
+}
+
+// Same Bundle shape as above, but as a structured value rather than bytes.
+// Use when the caller will pass it through viem's `encodeFunctionData` (which
+// needs unencoded values to slot into an ABI shape) — e.g. to wrap multiple
+// bundles into a single `execute(Bundle[])` call.
+export function encodeBundleArg(mutations: ResolvedMutation[]): {
+  mutations: number[];
+  mutationData: Hex.Hex[];
+  signatures: Hex.Hex[];
+} {
+  return {
+    mutations: mutations.map((m) => m.config.tag),
+    mutationData: mutations.map((m) =>
+      encodeMutationCalldata(m.config, m.args, m.resolution),
+    ),
+    signatures: mutations.map((m) => m.signature),
+  };
 }
