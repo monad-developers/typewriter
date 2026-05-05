@@ -3,6 +3,7 @@ import { parseAbiParameters } from "abitype";
 import type { TypedData } from "ox";
 import type { FFCAConfig } from "./config";
 import { createFFCA, verifyMutation } from "./runtime";
+import type { SubmittedMutation } from "./types";
 
 const domain: TypedData.Domain = {
   name: "ffca-test",
@@ -22,52 +23,53 @@ const transferConfig = {
   state: { initial: {} },
   mutations: {
     transfer: {
+      tag: 0,
       params: parseAbiParameters("address from, address to, uint256 amount"),
       apply: () => {},
     },
   },
 } satisfies FFCAConfig;
 
+const transferMutation = transferConfig.mutations.transfer;
+
+const submit = (args: unknown): SubmittedMutation => ({
+  name: "transfer",
+  args,
+  signature: "0x",
+});
+
 test("verifyMutation accepts a well-formed mutation", () => {
   expect(() =>
     verifyMutation(
-      transferConfig,
-      "transfer",
-      {
+      transferMutation,
+      submit({
         from: "0x0000000000000000000000000000000000000001",
         to: "0x0000000000000000000000000000000000000002",
         amount: 5n,
-      },
+      }),
       domain,
     ),
   ).not.toThrow();
 });
 
-test("verifyMutation throws on unknown mutation name", () => {
-  expect(() => verifyMutation(transferConfig, "nope", {}, domain)).toThrow(
-    /unknown mutation: nope/,
-  );
-});
-
 test("verifyMutation throws when args is not an object", () => {
+  expect(() => verifyMutation(transferMutation, submit(null), domain)).toThrow(
+    /args must be an object/,
+  );
   expect(() =>
-    verifyMutation(transferConfig, "transfer", null, domain),
-  ).toThrow(/args must be an object/);
-  expect(() =>
-    verifyMutation(transferConfig, "transfer", "string", domain),
+    verifyMutation(transferMutation, submit("string"), domain),
   ).toThrow(/args must be an object/);
 });
 
 test("verifyMutation throws on missing required field", () => {
   expect(() =>
     verifyMutation(
-      transferConfig,
-      "transfer",
-      {
+      transferMutation,
+      submit({
         from: "0x0000000000000000000000000000000000000001",
         to: "0x0000000000000000000000000000000000000002",
         // missing amount
-      },
+      }),
       domain,
     ),
   ).toThrow(/missing field: amount/);
@@ -76,13 +78,12 @@ test("verifyMutation throws on missing required field", () => {
 test("verifyMutation throws on invalid address", () => {
   expect(() =>
     verifyMutation(
-      transferConfig,
-      "transfer",
-      {
+      transferMutation,
+      submit({
         from: "not-an-address",
         to: "0x0000000000000000000000000000000000000002",
         amount: 5n,
-      },
+      }),
       domain,
     ),
   ).toThrow(/Address.*invalid/);
@@ -91,13 +92,12 @@ test("verifyMutation throws on invalid address", () => {
 test("verifyMutation throws on uint overflow", () => {
   expect(() =>
     verifyMutation(
-      transferConfig,
-      "transfer",
-      {
+      transferMutation,
+      submit({
         from: "0x0000000000000000000000000000000000000001",
         to: "0x0000000000000000000000000000000000000002",
         amount: 2n ** 256n,
-      },
+      }),
       domain,
     ),
   ).toThrow(/safe 256-bit unsigned integer range/);
@@ -117,6 +117,86 @@ test("ffca.domain is derived from config", async () => {
     chainId: 137,
     verifyingContract: "0x000000000000000000000000000000000000abcd",
   });
+
+  await ffca.stop();
+});
+
+test("execute applies mutations in config.sequence order within a bundle", async () => {
+  const applied: string[] = [];
+  const noop = parseAbiParameters("uint256 nonce");
+  const ffca = createFFCA({
+    address: "0x0000000000000000000000000000000000000000",
+    abi: [],
+    // biome-ignore lint/suspicious/noExplicitAny: stub field
+    account: {} as any,
+    chainId: 1,
+    rpcUrl: "http://localhost:8545",
+    domain: { name: "ffca-test", version: "1" },
+    state: { initial: {} },
+    sequence: ["cancel", "limit", "market"],
+    mutations: {
+      cancel: {
+        tag: 0,
+        params: noop,
+        apply: () => {
+          applied.push("cancel");
+        },
+      },
+      limit: {
+        tag: 1,
+        params: noop,
+        apply: () => {
+          applied.push("limit");
+        },
+      },
+      market: {
+        tag: 2,
+        params: noop,
+        apply: () => {
+          applied.push("market");
+        },
+      },
+    },
+  });
+
+  const sub = (name: string, nonce: bigint): SubmittedMutation => ({
+    name,
+    args: { nonce },
+    signature: "0x",
+  });
+
+  // Submit out of order; queue together so they land in the same bundle.
+  await Promise.all([
+    ffca.execute(sub("market", 1n)),
+    ffca.execute(sub("cancel", 2n)),
+    ffca.execute(sub("limit", 3n)),
+    ffca.execute(sub("limit", 4n)),
+    ffca.execute(sub("cancel", 5n)),
+  ]);
+
+  // cancels first (insertion order), then limits (insertion order), then market.
+  expect(applied).toEqual(["cancel", "cancel", "limit", "limit", "market"]);
+
+  await ffca.stop();
+});
+
+test("execute rejects mutations whose name isn't in sequence", async () => {
+  const ffca = createFFCA({
+    ...transferConfig,
+    sequence: ["other"],
+  });
+
+  await expect(
+    ffca.execute({
+      name: "transfer",
+      args: {
+        from: "0x0000000000000000000000000000000000000001",
+        to: "0x0000000000000000000000000000000000000002",
+        amount: 5n,
+      },
+      signature: "0x",
+    }),
+  ).rejects.toThrow(/mutation not in sequence: transfer/);
 
   await ffca.stop();
 });

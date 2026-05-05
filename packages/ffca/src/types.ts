@@ -1,4 +1,5 @@
 import type { Hex } from "ox";
+import type { FFCAMutationConfig } from "./config";
 
 // What a client posts to ffca.execute(). The signature blob is key-type-
 // polymorphic for now (matches order-book-backend); the dispatch lives in the
@@ -21,10 +22,15 @@ export type MutationStatus =
 export type BundleStatus = Exclude<MutationStatus, "pending" | "rejected">;
 export type BlockStatus = BundleStatus;
 
+// `config` is the resolved per-mutation entry from FFCAConfig.mutations,
+// attached at execute() time. Note: it carries the user's apply/resolve
+// function references — drop it before serializing events to a wire or DB.
+
 // A mutation in the queue, before the bundle loop has touched it.
-type PendingMutation = SubmittedMutation & {
+export type PendingMutation = SubmittedMutation & {
   id: number;
   status: "pending";
+  config: FFCAMutationConfig;
 };
 
 // A mutation that failed apply (or was rejected upstream).
@@ -32,14 +38,20 @@ type RejectedMutation = SubmittedMutation & {
   id: number;
   status: "rejected";
   error: unknown;
+  config: FFCAMutationConfig;
 };
 
 // A mutation after resolve+apply have run. resolution is undefined for
 // mutations without a `resolve` step. Distributed over BundleStatus so
 // `Extract<MutationEvent, { status: "accepted" }>` narrows correctly.
-type ResolvedMutation = BundleStatus extends infer S
+export type ResolvedMutation = BundleStatus extends infer S
   ? S extends BundleStatus
-    ? SubmittedMutation & { id: number; status: S; resolution?: unknown }
+    ? SubmittedMutation & {
+        id: number;
+        status: S;
+        resolution?: unknown;
+        config: FFCAMutationConfig;
+      }
     : never
   : never;
 

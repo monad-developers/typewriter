@@ -39,6 +39,10 @@ Scaffolded but empty. `createFFCA` is a stub. Nothing imports from it yet.
 
 Future directions, recorded so they aren't lost. Not commitments — each needs to be evaluated against the beliefs and feedback loops above when its time comes.
 
+### Derive from the contract via AST + storage layout
+
+A lot of what the backend currently hand-authors could be read from the contract instead — bundle tuple shape, mutation enum → int tags, per-mutation param ABI, EIP-712 domain pieces, state shape from storage layout, event ABI, error selectors. The mechanics are `forge build`'s Solidity AST and `forge inspect ... storageLayout`. TypeScript can't read those at type-check time, so backend code that wants typed access will likely need codegen output as a derived artifact — but runtime behavior (encoding, tag mapping, layout reads) can come straight from the contract.
+
 ### revm as the server execution engine
 
 Today `apps/order-book-backend/src/exchange.ts` reimplements the contract's matching and settlement logic in TypeScript. The state shape, lot math, tick accounting, and balance updates all exist twice — once in Solidity, once in JS — and have to be kept in sync by hand. This violates "write logic once" and won't be acceptable for production.

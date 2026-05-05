@@ -27,6 +27,7 @@ test("createFFCA mutation", async () => {
     state: { initial: new Map<string, { balance: bigint }>() },
     mutations: {
       transfer: {
+        tag: 0,
         params: parseAbiParameters("address from, address to, uint256 amount"),
         apply: (state: unknown, args: unknown) => {
           const { from, to, amount } = args as {
@@ -56,6 +57,7 @@ test("createFFCA mutation with resolution", async () => {
     state: { initial: { bids: [] as { price: bigint; size: bigint }[] } },
     mutations: {
       marketOrder: {
+        tag: 1,
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
         resolve: (state, args) => {

@@ -10,11 +10,17 @@ import {
   Schedule,
 } from "effect";
 import { TypedData } from "ox";
-import type { FFCAConfig } from "./config";
+import type { BundleView, FFCAConfig, FFCAMutationConfig } from "./config";
 import { buildEip712Types } from "./eip712";
-import type { BundleEvent, MutationEvent, SubmittedMutation } from "./types";
+import type {
+  BundleEvent,
+  MutationEvent,
+  PendingMutation,
+  SubmittedMutation,
+} from "./types";
 
-// TODO sequencing: pluggable, for now FIFO over the queue
+// TODO sequencing: name-list works (config.sequence). Next is a state-aware
+//   callback (state, mutations) => ordered for fee-priority / fairness rules.
 // TODO state cloning: today the order-book runtime structuredClones state per
 //   bundle for failure isolation. Major perf pain point — needs a different
 //   model (e.g. fallible-resolve / infallible-apply contract, or a journaled
@@ -43,14 +49,11 @@ export type FFCA = {
 //   args/envelope isn't decided yet.
 //   See apps/order-book-backend/src/signature.ts:135-260.
 export function verifyMutation(
-  config: FFCAConfig,
-  name: string,
-  args: unknown,
+  mutation: FFCAMutationConfig,
+  submitted: SubmittedMutation,
   domain: TypedData.Domain,
 ): void {
-  const mutation = config.mutations[name];
-  if (!mutation) throw new Error(`unknown mutation: ${name}`);
-
+  const { name, args } = submitted;
   if (args === null || typeof args !== "object") {
     throw new Error(`args must be an object (mutation=${name})`);
   }
@@ -70,29 +73,21 @@ export function verifyMutation(
 }
 
 function applyMutation(
-  config: FFCAConfig,
+  pending: PendingMutation,
   state: unknown,
-  name: string,
-  args: unknown,
+  bundle: BundleView,
 ): { resolution?: unknown } {
-  const mutation = config.mutations[name];
-  if (!mutation) throw new Error(`unknown mutation: ${name}`);
-
-  if ("resolve" in mutation) {
-    const resolution = mutation.resolve(state, args);
+  const { config, args } = pending;
+  if ("resolve" in config) {
+    const resolution = config.resolve(state, args, bundle);
     // biome-ignore lint/suspicious/noExplicitAny: resolution shape user-defined
-    (mutation.apply as any)(state, args, resolution);
+    (config.apply as any)(state, args, resolution);
     return { resolution };
   }
 
-  mutation.apply(state, args);
+  config.apply(state, args);
   return {};
 }
-
-// TODO encodeBundle(config, mutations) — wraps the contract's execute() call.
-//   The order-book version hardcodes the Bundle tuple shape; ffca needs to
-//   derive it from the contract ABI. Add when submit calls it.
-//   See apps/order-book-backend/src/runtime.ts:529-543.
 
 export function createFFCA(config: FFCAConfig): FFCA {
   const state = config.state.initial;
@@ -106,14 +101,14 @@ export function createFFCA(config: FFCAConfig): FFCA {
 
   const mutationQueue = Effect.runSync(
     Queue.unbounded<{
-      id: number;
-      submitted: SubmittedMutation;
+      pending: PendingMutation;
       deferred: Deferred.Deferred<MutationEvent, unknown>;
     }>(),
   );
   const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
 
-  let nextId = 0;
+  let mutationId = 0;
+  let bundleId = 0;
   let bundlePosition = 0;
 
   // bundle: drain the mutation queue, apply each, hand off to submit
@@ -122,21 +117,32 @@ export function createFFCA(config: FFCAConfig): FFCA {
     const queued = Chunk.toArray(yield* Queue.takeAll(mutationQueue));
     if (queued.length === 0) return;
 
+    // Stable sort by config.sequence (FIFO if unset). Names not in sequence
+    // are rejected at execute() time, so .indexOf returning -1 shouldn't
+    // happen here.
+    if (config.sequence) {
+      const order = config.sequence;
+      queued.sort(
+        (a, b) => order.indexOf(a.pending.name) - order.indexOf(b.pending.name),
+      );
+    }
+
     const accepted: Extract<MutationEvent, { status: "accepted" }>[] = [];
+
+    // Snapshot the bundle's mutations for `resolve` to read. Built once;
+    // doesn't reflect failures or mid-bundle state changes.
+    const bundleView: BundleView = queued.map((q) => ({
+      name: q.pending.name,
+      args: q.pending.args,
+    }));
 
     for (const item of queued) {
       // TODO state cloning / failure isolation. For now we trust apply not to
       //   throw. When apply does throw we currently corrupt state.
       try {
-        const { resolution } = applyMutation(
-          config,
-          state,
-          item.submitted.name,
-          item.submitted.args,
-        );
+        const { resolution } = applyMutation(item.pending, state, bundleView);
         const event = {
-          ...item.submitted,
-          id: item.id,
+          ...item.pending,
           status: "accepted" as const,
           resolution,
         };
@@ -151,7 +157,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
 
     // TODO persist bundle + mutations here
     const bundleEvent: BundleEvent = {
-      id: position, // TODO real bundle id from db
+      id: bundleId++,
       status: "accepted",
       position,
       mutations: accepted,
@@ -213,11 +219,23 @@ export function createFFCA(config: FFCAConfig): FFCA {
   function execute(submitted: SubmittedMutation): Promise<MutationEvent> {
     return Effect.runPromise(
       Effect.gen(function* () {
-        verifyMutation(config, submitted.name, submitted.args, domain);
+        const mutation = config.mutations[submitted.name];
+        if (mutation === undefined) {
+          throw new Error(`unknown mutation: ${submitted.name}`);
+        }
+        if (config.sequence && !config.sequence.includes(submitted.name)) {
+          throw new Error(`mutation not in sequence: ${submitted.name}`);
+        }
+        verifyMutation(mutation, submitted, domain);
 
-        const id = nextId++;
+        const pending: PendingMutation = {
+          ...submitted,
+          id: mutationId++,
+          status: "pending",
+          config: mutation,
+        };
         const deferred = yield* Deferred.make<MutationEvent, unknown>();
-        yield* Queue.offer(mutationQueue, { id, submitted, deferred });
+        yield* Queue.offer(mutationQueue, { pending, deferred });
         return yield* Deferred.await(deferred);
       }).pipe(Effect.provide(Logger.json)),
     );
