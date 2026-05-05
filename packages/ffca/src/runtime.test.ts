@@ -16,6 +16,7 @@ import {
   type HarnessState,
 } from "../test/utils";
 import { createFFCA, verifyMutation } from "./runtime";
+import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
 const domain: TypedData.Domain = {
   name: "ffca-test",
@@ -462,6 +463,72 @@ test("e2e Harness: apply error rejects without crashing", async () => {
     await new Promise((r) => setTimeout(r, 50));
   }
   expect(await readBalance(bob)).toBe(57n);
+
+  await ffca.stop();
+});
+
+// Fan-out: a single happy-path mutation produces the full lifecycle of events
+// to subscribers — pending/accepted/proposed for the mutation, accepted/proposed
+// for its bundle and block. Off-then-on confirms unsubscribe works.
+test("e2e Counter: subscribers receive lifecycle events", async () => {
+  const { address, abi } = await deployCounter();
+
+  const ffca = createFFCA({
+    address,
+    domain: { name: "ffca-test", version: "1" },
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { total: 0n } as CounterState },
+    mutations: COUNTER_MUTATIONS,
+  });
+
+  const mutationEvents: MutationEvent[] = [];
+  const bundleEvents: BundleEvent[] = [];
+  const blockEvents: BlockEvent[] = [];
+
+  const offMutation = ffca.on("mutation", (e) => mutationEvents.push(e));
+  ffca.on("bundle", (e) => bundleEvents.push(e));
+  ffca.on("block", (e) => blockEvents.push(e));
+
+  await ffca.execute({ name: "add", args: { amount: 7n }, signature: "0x" });
+
+  // Wait for the proposed events (submit cycle adds ~400ms after accept).
+  const deadline = Date.now() + 5000;
+  while (
+    !mutationEvents.some((e) => e.status === "proposed") ||
+    !blockEvents.some((e) => e.status === "proposed")
+  ) {
+    if (Date.now() > deadline) {
+      throw new Error("proposed events never arrived");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(mutationEvents.map((e) => e.status)).toEqual([
+    "pending",
+    "accepted",
+    "proposed",
+  ]);
+  expect(bundleEvents.map((e) => e.status)).toEqual(["accepted", "proposed"]);
+  expect(blockEvents.map((e) => e.status)).toEqual(["accepted", "proposed"]);
+
+  // The disposer returned by on() unsubscribes that listener.
+  offMutation();
+  await ffca.execute({ name: "add", args: { amount: 3n }, signature: "0x" });
+  while (bundleEvents.length < 4) {
+    if (Date.now() > deadline) {
+      throw new Error("second bundle's proposed event never arrived");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  // Same three statuses as before — no new mutation events after unsubscribe.
+  expect(mutationEvents.map((e) => e.status)).toEqual([
+    "pending",
+    "accepted",
+    "proposed",
+  ]);
 
   await ffca.stop();
 });

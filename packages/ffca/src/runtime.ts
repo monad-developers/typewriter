@@ -25,6 +25,7 @@ import { buildEip712Types } from "./eip712";
 import { encodeBundleArg } from "./encoding";
 import type {
   AnchoredBundle,
+  BlockEvent,
   BundleEvent,
   MutationEvent,
   PendingMutation,
@@ -46,10 +47,17 @@ const BUNDLE_INTERVAL_MS = 50;
 const SUBMIT_INTERVAL_MS = 400;
 const BLOCK_POLLING_INTERVAL_MS = 200;
 
+type MutationListener = (event: MutationEvent) => void;
+type BundleListener = (event: BundleEvent) => void;
+type BlockListener = (event: BlockEvent) => void;
+
 export type FFCA = {
   readonly state: unknown;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Promise<MutationEvent>;
+  on(event: "mutation", cb: MutationListener): () => void;
+  on(event: "bundle", cb: BundleListener): () => void;
+  on(event: "block", cb: BlockListener): () => void;
   stop(): Promise<void>;
 };
 
@@ -151,6 +159,33 @@ export function createFFCA(config: FFCAConfig): FFCA {
   );
   const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
 
+  // Event fan-out. Listeners are in-process; HTTP / SSE shaping is the app's
+  // job. A throwing listener is swallowed so it can't take the runtime down.
+  const mutationListeners = new Set<MutationListener>();
+  const bundleListeners = new Set<BundleListener>();
+  const blockListeners = new Set<BlockListener>();
+  const emitMutation = (event: MutationEvent) => {
+    for (const cb of mutationListeners) {
+      try {
+        cb(event);
+      } catch {}
+    }
+  };
+  const emitBundle = (event: BundleEvent) => {
+    for (const cb of bundleListeners) {
+      try {
+        cb(event);
+      } catch {}
+    }
+  };
+  const emitBlock = (event: BlockEvent) => {
+    for (const cb of blockListeners) {
+      try {
+        cb(event);
+      } catch {}
+    }
+  };
+
   let mutationId = 0;
   let bundleId = 0;
   let bundlePosition = 0;
@@ -191,8 +226,15 @@ export function createFFCA(config: FFCAConfig): FFCA {
           resolution,
         };
         accepted.push(event);
+        emitMutation(event);
         yield* Deferred.succeed(item.deferred, event);
       } catch (error) {
+        const rejected: MutationEvent = {
+          ...item.pending,
+          status: "rejected",
+          error,
+        };
+        emitMutation(rejected);
         yield* Deferred.fail(item.deferred, error);
       }
     }
@@ -207,6 +249,8 @@ export function createFFCA(config: FFCAConfig): FFCA {
       mutations: accepted,
     };
 
+    emitBundle(bundleEvent);
+    emitBlock({ status: "accepted", bundles: [bundleEvent] });
     yield* Queue.offer(submitQueue, bundleEvent);
   });
 
@@ -338,9 +382,17 @@ export function createFFCA(config: FFCAConfig): FFCA {
       }),
     );
 
-    // TODO emit block + per-bundle events when fan-out lands. The anchored
-    //   bundles are the value future subscribers want.
-    void anchored;
+    for (const b of anchored) {
+      emitBundle(b);
+      for (const m of b.mutations) emitMutation(m);
+    }
+    emitBlock({
+      status: "proposed",
+      number: block.number,
+      hash: block.hash,
+      timestamp: block.timestamp,
+      bundles: anchored,
+    });
   });
 
   // watch: poll latest block, advance proposed bundles → voted/finalized/verified
@@ -397,6 +449,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
           status: "pending",
           config: mutation,
         };
+        emitMutation(pending);
         const deferred = yield* Deferred.make<MutationEvent, unknown>();
         yield* Queue.offer(mutationQueue, { pending, deferred });
         return yield* Deferred.await(deferred);
@@ -414,12 +467,35 @@ export function createFFCA(config: FFCAConfig): FFCA {
     );
   }
 
+  function on(event: "mutation", cb: MutationListener): () => void;
+  function on(event: "bundle", cb: BundleListener): () => void;
+  function on(event: "block", cb: BlockListener): () => void;
+  function on(
+    event: "mutation" | "bundle" | "block",
+    cb: MutationListener | BundleListener | BlockListener,
+  ): () => void {
+    if (event === "mutation") {
+      const listener = cb as MutationListener;
+      mutationListeners.add(listener);
+      return () => mutationListeners.delete(listener);
+    }
+    if (event === "bundle") {
+      const listener = cb as BundleListener;
+      bundleListeners.add(listener);
+      return () => bundleListeners.delete(listener);
+    }
+    const listener = cb as BlockListener;
+    blockListeners.add(listener);
+    return () => blockListeners.delete(listener);
+  }
+
   return {
     get state() {
       return state;
     },
     domain,
     execute,
+    on,
     stop,
   };
 }
