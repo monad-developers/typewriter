@@ -35,10 +35,10 @@ import type {
 
 // TODO sequencing: name-list works (config.sequence). Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
-// TODO state cloning: today the order-book runtime structuredClones state per
-//   bundle for failure isolation. Major perf pain point — needs a different
-//   model (e.g. fallible-resolve / infallible-apply contract, or a journaled
-//   apply that can undo).
+// TODO state cloning: today we structuredClone the bundle's state up front and
+//   apply against the clone, reverting to a fresh snapshot on apply throws.
+//   Same pattern the order-book runtime uses. revm subsumes this once it lands
+//   (free state revert), so the perf hit is temporary.
 // TODO account model + signature verification (verifyMutation stub below)
 // TODO persistence: nothing wired here yet
 // TODO event fan-out / SSE: skipped for the scaffold
@@ -93,25 +93,37 @@ export function verifyMutation(
   });
 }
 
-function applyMutation(
-  pending: PendingMutation,
+function resolveMutation(
+  config: FFCAMutationConfig,
+  args: unknown,
   state: unknown,
   bundle: BundleView,
-): { resolution?: unknown } {
-  const { config, args } = pending;
+): unknown {
   if ("resolve" in config) {
-    const resolution = config.resolve(state, args, bundle);
+    return config.resolve(state, args, bundle);
+  }
+  return undefined;
+}
+
+function applyMutation(
+  config: FFCAMutationConfig,
+  args: unknown,
+  state: unknown,
+  resolution: unknown,
+): void {
+  if ("resolve" in config) {
     // biome-ignore lint/suspicious/noExplicitAny: resolution shape user-defined
     (config.apply as any)(state, args, resolution);
-    return { resolution };
+  } else {
+    // biome-ignore lint/suspicious/noExplicitAny: args shape user-defined
+    (config.apply as any)(state, args);
   }
-
-  config.apply(state, args);
-  return {};
 }
 
 export function createFFCA(config: FFCAConfig): FFCA {
-  const state = config.state.initial;
+  // Mutable so failure-isolation can swap the binding back to a snapshot
+  // when a mutation's apply throws mid-mutation. Exposed via getter below.
+  let state = config.state.initial;
 
   const domain: TypedData.Domain = {
     name: config.domain.name,
@@ -207,6 +219,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
     }
 
     const accepted: Extract<MutationEvent, { status: "accepted" }>[] = [];
+    const rejections: { item: (typeof queued)[number]; error: unknown }[] = [];
 
     // Snapshot the bundle's mutations for `resolve` to read. Built once;
     // doesn't reflect failures or mid-bundle state changes.
@@ -215,28 +228,42 @@ export function createFFCA(config: FFCAConfig): FFCA {
       args: q.pending.args,
     }));
 
+    // Failure isolation. `resolve` is pure (reads state, returns the
+    // resolution). `apply` mutates in place. Snapshot before each apply so
+    // a partially-mutating throw can be rolled back to the pre-apply state.
+    // TODO perf: structuredClone(state) per mutation is O(state). revm
+    //   subsumes this with native revert; until then, the cost is paid.
     for (const item of queued) {
-      // TODO state cloning / failure isolation. For now we trust apply not to
-      //   throw. When apply does throw we currently corrupt state.
+      const { config, args } = item.pending;
+      const snapshot = structuredClone(state);
       try {
-        const { resolution } = applyMutation(item.pending, state, bundleView);
-        const event = {
+        const resolution = resolveMutation(config, args, state, bundleView);
+        applyMutation(config, args, state, resolution);
+        accepted.push({
           ...item.pending,
           status: "accepted" as const,
           resolution,
-        };
-        accepted.push(event);
-        emitMutation(event);
-        yield* Deferred.succeed(item.deferred, event);
+        });
       } catch (error) {
-        const rejected: MutationEvent = {
-          ...item.pending,
-          status: "rejected",
-          error,
-        };
-        emitMutation(rejected);
-        yield* Deferred.fail(item.deferred, error);
+        state = snapshot;
+        rejections.push({ item, error });
       }
+    }
+
+    for (const a of accepted) {
+      emitMutation(a);
+      const item = queued.find((q) => q.pending.id === a.id)!;
+      yield* Deferred.succeed(item.deferred, a);
+    }
+
+    for (const { item, error } of rejections) {
+      const rejected: MutationEvent = {
+        ...item.pending,
+        status: "rejected",
+        error,
+      };
+      emitMutation(rejected);
+      yield* Deferred.fail(item.deferred, error);
     }
 
     if (accepted.length === 0) return;
