@@ -10,15 +10,19 @@ test("encodeMutationCalldata without resolution", () => {
     params: parseAbiParameters("address from, address to, uint256 amount"),
     apply: () => {},
   };
-  const args = [
-    "0x0000000000000000000000000000000000000001",
-    "0x0000000000000000000000000000000000000002",
-    100n,
-  ] as const;
+  const args = {
+    from: "0x0000000000000000000000000000000000000001",
+    to: "0x0000000000000000000000000000000000000002",
+    amount: 100n,
+  } as const;
 
   const encoded = encodeMutationCalldata(mutation, args);
 
-  expect(AbiParameters.decode(mutation.params, encoded)).toEqual(args);
+  expect(AbiParameters.decode(mutation.params, encoded)).toEqual([
+    args.from,
+    args.to,
+    args.amount,
+  ]);
 });
 
 test("encodeMutationCalldata with resolution", () => {
@@ -29,19 +33,19 @@ test("encodeMutationCalldata with resolution", () => {
     resolve: () => ({ fills: [] }),
     apply: () => {},
   };
-  const args = [10n] as const;
-  const resolution = [
-    [
+  const args = { size: 10n };
+  const resolution = {
+    fills: [
       { price: 100n, size: 6n },
       { price: 99n, size: 4n },
     ],
-  ] as const;
+  };
 
   const encoded = encodeMutationCalldata(mutation, args, resolution);
 
   expect(
     AbiParameters.decode([...mutation.params, ...mutation.resolution], encoded),
-  ).toEqual([...args, ...resolution]);
+  ).toEqual([args.size, resolution.fills]);
 });
 
 test("encodeBundleCalldata round-trips through ABI decode", () => {
@@ -62,11 +66,11 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     id: 0,
     status: "accepted",
     name: "transfer",
-    args: [
-      "0x0000000000000000000000000000000000000001",
-      "0x0000000000000000000000000000000000000002",
-      100n,
-    ],
+    args: {
+      from: "0x0000000000000000000000000000000000000001",
+      to: "0x0000000000000000000000000000000000000002",
+      amount: 100n,
+    },
     signature: "0xaa",
     config: transfer,
   };
@@ -74,14 +78,14 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     id: 1,
     status: "accepted",
     name: "market",
-    args: [10n],
+    args: { size: 10n },
     signature: "0xbb",
-    resolution: [
-      [
+    resolution: {
+      fills: [
         { price: 100n, size: 6n },
         { price: 99n, size: 4n },
       ],
-    ],
+    },
     config: market,
   };
 

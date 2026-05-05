@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import type { TypedData } from "ox";
+import { createPublicClient, http } from "viem";
+import { anvil } from "viem/chains";
+import {
+  counterAbi,
+  counterAddress,
+  resetChain,
+  rpcUrl,
+  schedulerAccount,
+} from "../test/setup";
 import type { FFCAConfig } from "./config";
 import { createFFCA, verifyMutation } from "./runtime";
 import type { SubmittedMutation } from "./types";
@@ -197,6 +206,65 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
       signature: "0x",
     }),
   ).rejects.toThrow(/mutation not in sequence: transfer/);
+
+  await ffca.stop();
+});
+
+// End-to-end submit against a real chain. Uses the Counter test fixture from
+// ../test/setup; see that file for the anvil + Counter deployment.
+test("submit lands a bundle on chain via Counter", async () => {
+  await resetChain();
+
+  const publicClient = createPublicClient({
+    chain: anvil,
+    transport: http(rpcUrl),
+  });
+  const readBundleCount = () =>
+    publicClient.readContract({
+      abi: counterAbi,
+      address: counterAddress,
+      functionName: "bundleCount",
+    }) as Promise<bigint>;
+  const readMutationCount = () =>
+    publicClient.readContract({
+      abi: counterAbi,
+      address: counterAddress,
+      functionName: "mutationCount",
+    }) as Promise<bigint>;
+
+  const ffca = createFFCA({
+    address: counterAddress,
+    domain: { name: "ffca-test", version: "1" },
+    abi: counterAbi,
+    account: schedulerAccount,
+    chainId: anvil.id,
+    rpcUrl,
+    state: { initial: {} },
+    mutations: {
+      noop: {
+        tag: 0,
+        params: parseAbiParameters("uint256 nonce"),
+        apply: () => {},
+      },
+    },
+  });
+
+  // Three mutations submitted concurrently should batch into one bundle.
+  await Promise.all([
+    ffca.execute({ name: "noop", args: { nonce: 1n }, signature: "0x" }),
+    ffca.execute({ name: "noop", args: { nonce: 2n }, signature: "0x" }),
+    ffca.execute({ name: "noop", args: { nonce: 3n }, signature: "0x" }),
+  ]);
+
+  // Wait for the submit cycle (default 400ms) to land the bundle on chain.
+  const deadline = Date.now() + 5000;
+  while ((await readBundleCount()) === 0n) {
+    if (Date.now() > deadline) throw new Error("bundle never landed onchain");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(await readBundleCount()).toBe(1n);
+  expect(await readMutationCount()).toBe(3n);
 
   await ffca.stop();
 });

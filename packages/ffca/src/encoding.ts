@@ -2,13 +2,13 @@ import { AbiParameters, type Hex } from "ox";
 import type { FFCAMutationConfig } from "./config";
 import type { ResolvedMutation } from "./types";
 
-// Args may be passed positionally (array) or by name (object); normalize to
-// the positional form ABI-encode expects, in the order declared by `params`.
-function toTuple(
+// Mutation args are objects keyed by param name (the form clients sign over
+// and the form `apply`/`resolve` consume). ABI-encode wants a positional
+// tuple in declaration order; project the object to that tuple.
+function mutationArgsToTuple(
   params: readonly AbiParameters.Parameter[],
   args: unknown,
 ): readonly unknown[] {
-  if (Array.isArray(args)) return args;
   const record = args as Record<string, unknown>;
   return params.map((p) => record[p.name ?? ""]);
 }
@@ -24,11 +24,14 @@ export function encodeMutationCalldata(
       mutation.resolution as readonly AbiParameters.Parameter[];
     return AbiParameters.encode(
       [...params, ...resolutionParams],
-      [...toTuple(params, args), ...toTuple(resolutionParams, resolution)],
+      [
+        ...mutationArgsToTuple(params, args),
+        ...mutationArgsToTuple(resolutionParams, resolution),
+      ],
     );
   }
 
-  return AbiParameters.encode(params, toTuple(params, args));
+  return AbiParameters.encode(params, mutationArgsToTuple(params, args));
 }
 
 // ffca expects the contract's `execute` to take `Bundle[]` where
