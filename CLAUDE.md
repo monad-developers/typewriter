@@ -17,6 +17,16 @@ bun run typecheck   # tsc --noEmit per workspace
 bun run build       # per-workspace builds
 ```
 
+## Before declaring work complete
+
+Run all three checks at the repo root before saying a task is done — not just one:
+
+- `bun run lint` — Biome formatter + linter (catches formatting drift, unused vars, style violations)
+- `bun run typecheck` — `tsc --noEmit` per workspace
+- `bun test` — relevant test files (whole repo when changes are broad)
+
+`bun run typecheck` alone is not sufficient: Biome catches things TS doesn't (formatting, unused imports under different rules), and TS catches things Biome doesn't (`noUnusedLocals`, type narrowing). Pre-existing failures unrelated to your changes are fine to flag and skip past, but don't introduce new ones.
+
 ## Bun-first conventions
 
 This is a Bun project; default to Bun APIs over Node/npm equivalents.
@@ -45,6 +55,10 @@ Cross-workspace dependency versions live in the root `package.json`'s `"catalog"
 Don't add a new dependency unless explicitly directed. Before reaching for `bun add`, check whether the runtime, Bun's stdlib, or an already-installed package covers the need (e.g. Bun ships `expectTypeOf` in `bun:test`, so `expect-type` isn't needed). If a new dependency seems warranted, ask first.
 
 Pin exact versions for security — no `^` or `~` ranges. `bun add` defaults to a caret range; strip it after install. The lockfile gives reproducibility, but exact versions in `package.json` make supply-chain review easier and prevent silent minor-version drift on fresh installs that race the lockfile.
+
+## Tests
+
+Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the expected value is non-trivial. Snapshots are easier to read, easier to update, and surface unintended diffs faster than `.toEqual({...})` against a hand-maintained literal. Reach for `.toBe` / `.toEqual` only for small primitives where the snapshot would be noisier than the assertion.
 
 ## Lint / format
 

@@ -1,10 +1,6 @@
 import type { Abi, Address } from "ox";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 
-export type FFCA = {
-  state: Readonly<unknown>;
-};
-
 // TODO(kyle) add encode/decode, db schema,
 export type FFCAMutationConfig =
   | {
@@ -30,10 +26,3 @@ export type FFCAConfig = {
   // sequencing
   // account model
 };
-
-export function createFFCA(config: FFCAConfig): FFCA {
-  const state = config.state.initial;
-
-  // @ts-expect-error
-  return { state };
-}

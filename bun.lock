@@ -72,6 +72,7 @@
       "name": "ffca",
       "dependencies": {
         "abitype": "1.2.3",
+        "effect": "^3.21.0",
         "ox": "catalog:",
         "viem": "catalog:",
       },
