@@ -16,6 +16,26 @@ export const SCHEDULER_ACCOUNT = privateKeyToAccount(
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
 );
 
+// Anvil's second default account — used as the user-side signer in tests so
+// scheduler ≠ signer matches real-app usage.
+export const USER_PRIVATE_KEY: Hex =
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+export const USER_ACCOUNT = privateKeyToAccount(USER_PRIVATE_KEY);
+
+// Anvil's third and fourth — used when a test needs two distinct user
+// identities (e.g. multi-account Harness tests).
+export const ALICE_PRIVATE_KEY: Hex =
+  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
+export const ALICE_ACCOUNT = privateKeyToAccount(ALICE_PRIVATE_KEY);
+export const BOB_PRIVATE_KEY: Hex =
+  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
+export const BOB_ACCOUNT = privateKeyToAccount(BOB_PRIVATE_KEY);
+
+// Deterministic P-256 private key for tests. Not an Anvil account — P-256
+// keys aren't EOAs; they only exist inside the Harness key registry.
+export const P256_PRIVATE_KEY: Hex =
+  "0x1db0e88607f75d3f7fd7fd568b6929551c25e893aa1cbdce2536ad478d8f43b1";
+
 // Port chosen to avoid colliding with order-book-backend's tests so the two
 // suites can run in parallel.
 export const TEST_RPC_URL = "http://localhost:8545/1";

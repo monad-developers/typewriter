@@ -14,6 +14,9 @@ const baseConfig = {
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   domain: { name: "", version: "1" },
+  signature: {
+    params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
+  },
 } as const;
 
 test("createFFCA state", () => {

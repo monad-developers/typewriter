@@ -301,7 +301,9 @@ export function createFFCA(config: FFCAConfig): FFCA {
       schedule: Schedule.spaced(Duration.millis(200)),
     });
 
-    const args = bundles.map((b) => encodeBundleArg(b.mutations));
+    const args = bundles.map((b) =>
+      encodeBundleArg(b.mutations, config.signature.params),
+    );
     const calldata = encodeFunctionData({
       abi: config.abi,
       functionName: "execute",

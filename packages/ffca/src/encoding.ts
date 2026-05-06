@@ -2,15 +2,15 @@ import { AbiParameters, type Hex } from "ox";
 import type { FFCAMutationConfig } from "./config";
 import type { ResolvedMutation } from "./types";
 
-// Mutation args are objects keyed by param name (the form clients sign over
-// and the form `apply`/`resolve` consume). ABI-encode wants a positional
-// tuple in declaration order; project the object to that tuple.
-function mutationArgsToTuple(
+// Records keyed by param name are ffca's canonical shape for both args and
+// signatures (the form clients post and the form `apply`/`resolve` consume).
+// ABI-encode wants a positional tuple in declaration order; project to it.
+function abiTupleFromRecord(
   params: readonly AbiParameters.Parameter[],
-  args: unknown,
+  record: unknown,
 ): readonly unknown[] {
-  const record = args as Record<string, unknown>;
-  return params.map((p) => record[p.name ?? ""]);
+  const r = record as Record<string, unknown>;
+  return params.map((p) => r[p.name ?? ""]);
 }
 
 export function encodeMutationCalldata(
@@ -25,41 +25,67 @@ export function encodeMutationCalldata(
     return AbiParameters.encode(
       [...params, ...resolutionParams],
       [
-        ...mutationArgsToTuple(params, args),
-        ...mutationArgsToTuple(resolutionParams, resolution),
+        ...abiTupleFromRecord(params, args),
+        ...abiTupleFromRecord(resolutionParams, resolution),
       ],
     );
   }
 
-  return AbiParameters.encode(params, mutationArgsToTuple(params, args));
+  return AbiParameters.encode(params, abiTupleFromRecord(params, args));
 }
 
 // ffca expects the contract's `execute` to take `Bundle[]` where
-//   Bundle = { uint8[] mutations, bytes[] mutationData, bytes[] signatures }
-// Signatures pass through opaquely; account-system shaping is the caller's
-// problem.
-const BUNDLE_PARAMS = AbiParameters.from(
-  "(uint8[] mutations, bytes[] mutationData, bytes[] signatures)",
-);
+//   Bundle = { uint8[] mutations, bytes[] mutationData, Sig[] signatures }
+// and `Sig` is shaped by `FFCAConfig.signature.params` — a tuple in
+// declaration order with whatever fields the app's contract expects.
+function bundleParams(
+  sigParams: readonly AbiParameters.Parameter[],
+): readonly AbiParameters.Parameter[] {
+  return AbiParameters.from([
+    {
+      type: "tuple",
+      components: [
+        { name: "mutations", type: "uint8[]" },
+        { name: "mutationData", type: "bytes[]" },
+        {
+          name: "signatures",
+          type: "tuple[]",
+          components: sigParams as AbiParameters.Parameter[],
+        },
+      ],
+    },
+  ]);
+}
 
-export function encodeBundleCalldata(mutations: ResolvedMutation[]): Hex.Hex {
-  return AbiParameters.encode(BUNDLE_PARAMS, [encodeBundleArg(mutations)]);
+export function encodeBundleCalldata(
+  mutations: ResolvedMutation[],
+  sigParams: readonly AbiParameters.Parameter[],
+): Hex.Hex {
+  return AbiParameters.encode(bundleParams(sigParams), [
+    encodeBundleArg(mutations, sigParams),
+  ]);
 }
 
 // Same Bundle shape as above, but as a structured value rather than bytes.
 // Use when the caller will pass it through viem's `encodeFunctionData` (which
 // needs unencoded values to slot into an ABI shape) — e.g. to wrap multiple
-// bundles into a single `execute(Bundle[])` call.
-export function encodeBundleArg(mutations: ResolvedMutation[]): {
+// bundles into a single `execute(Bundle[])` call. Each signature is a
+// positional tuple matching `sigParams` declaration order.
+export function encodeBundleArg(
+  mutations: ResolvedMutation[],
+  sigParams: readonly AbiParameters.Parameter[],
+): {
   mutations: number[];
   mutationData: Hex.Hex[];
-  signatures: Hex.Hex[];
+  signatures: readonly unknown[][];
 } {
   return {
     mutations: mutations.map((m) => m.config.tag),
     mutationData: mutations.map((m) =>
       encodeMutationCalldata(m.config, m.args, m.resolution),
     ),
-    signatures: mutations.map((m) => m.signature),
+    signatures: mutations.map(
+      (m) => abiTupleFromRecord(sigParams, m.signature) as unknown[],
+    ),
   };
 }

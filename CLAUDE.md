@@ -60,6 +60,8 @@ Pin exact versions for security — no `^` or `~` ranges. `bun add` defaults to 
 
 Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the expected value is non-trivial. Snapshots are easier to read, easier to update, and surface unintended diffs faster than `.toEqual({...})` against a hand-maintained literal.
 
+When a suite-wide test run reports many failures, especially with `beforeEach`/`afterEach` timeouts or "Unhandled error between tests", run a single test in isolation to see the actual error. Cascading setup failures hide the root cause — `bun test -t "name fragment"` (or `bun test path/to/file.test.ts`) cuts through the noise and surfaces the real exception in the first failing test.
+
 ## Lint / format
 
 Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.

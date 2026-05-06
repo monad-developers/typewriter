@@ -1,7 +1,17 @@
 import { parseAbiParameters } from "abitype";
+import {
+  AbiParameters,
+  Hash,
+  Hex as OxHex,
+  P256,
+  Secp256k1,
+  type TypedData,
+} from "ox";
+import { Authentication } from "ox/webauthn";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
 import type { FFCAMutationConfig } from "../src/config";
+import { hashMutationEip712 } from "../src/eip712";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
@@ -12,22 +22,71 @@ import {
 // (which can't appear in JS); we represent them as `Record<address, ...>`.
 
 // Counter.State on-chain. Tests that use COUNTER_MUTATIONS should pass
-// `{ initial: { total: 0n } as CounterState }` as the FFCAConfig.state.
+// `{ initial: { total: 0n, nonce: 0n } as CounterState }` as
+// FFCAConfig.state.
 export type CounterState = {
   total: bigint;
+  nonce: bigint;
 };
 
-// Harness.State on-chain. Tests that use HARNESS_MUTATIONS should pass
-// `{ initial: { balances: {} } as HarnessState }` as the FFCAConfig.state.
-export type HarnessState = {
-  balances: Record<string, bigint>;
+// Counter's signature wire shape. ffca encodes it into bundle.signatures[i]
+// matching the contract's `Signature` struct.
+export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
+  "uint8 keyType, bytes rawSignature",
+);
+
+// Counter's EIP-712 domain. Matches the constructor args used in
+// deployCounter() so client-side digests align with the on-chain
+// domainSeparator.
+export const COUNTER_DOMAIN = { name: "Counter", version: "1" } as const;
+
+// Harness.State on-chain. `accounts[id].keys` mirrors the contract's key
+// registry; `accounts[id].nonces` mirrors per-(account, nonceKey)
+// sequences. `balances` is keyed by the same bytes32 account id.
+export type HarnessKey = { keyType: number; publicKey: Hex };
+export type HarnessAccount = {
+  keys: HarnessKey[];
+  nonces: Record<string, bigint>;
 };
+export type HarnessState = {
+  accounts: Record<Hex, HarnessAccount>;
+  balances: Record<Hex, bigint>;
+};
+
+export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
+export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
+  "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
+);
+
+function getHarnessAccount(state: HarnessState, id: Hex): HarnessAccount {
+  if (state.accounts[id] === undefined) {
+    state.accounts[id] = { keys: [], nonces: {} };
+  }
+  return state.accounts[id];
+}
+
+function checkAndBumpNonce(
+  acc: HarnessAccount,
+  nonce: bigint,
+  account: Hex,
+): void {
+  const nonceKey = (nonce >> 64n).toString();
+  const seq = nonce & 0xffffffffffffffffn;
+  const stored = acc.nonces[nonceKey] ?? 0n;
+  if (seq !== stored) {
+    throw new Error(
+      `harness: nonce mismatch account=${account} key=${nonceKey} expected=${stored} got=${seq}`,
+    );
+  }
+  acc.nonces[nonceKey] = stored + 1n;
+}
 
 // Deploy a forge-built contract by name. Reads the artifact from the
 // contracts workspace, broadcasts via the test wallet, waits for the
 // receipt, returns address + abi.
 async function deployContract(
   name: string,
+  args?: readonly unknown[],
   // biome-ignore lint/suspicious/noExplicitAny: forge artifact JSON shape
 ): Promise<{ address: Address; abi: any }> {
   const artifact = await Bun.file(
@@ -38,6 +97,8 @@ async function deployContract(
     bytecode: artifact.bytecode.object as Hex,
     account: SCHEDULER_ACCOUNT,
     chain: anvil,
+    // biome-ignore lint/suspicious/noExplicitAny: viem deployContract args type
+    args: args as any,
   });
   const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
   if (
@@ -49,73 +110,324 @@ async function deployContract(
   return { address: receipt.contractAddress, abi: artifact.abi };
 }
 
-export const deployCounter = () => deployContract("Counter");
+// Deploy Counter wired to a single secp256k1 signer. The contract hardcodes
+// its EIP-712 domain (name="Counter", version="1"); only the signer is a
+// constructor arg.
+export async function deployCounter(signerAddress: Address) {
+  return deployContract("Counter", [signerAddress]);
+}
+
 export const deployHarness = () => deployContract("Harness");
 
 // Mutation definitions for the Counter test fixture. Each `add` contributes
 // `amount` to a running total; ffca's local apply mirrors the contract.
+// Local apply also bumps the nonce so the next mutation in the same bundle
+// signs over the right value.
 export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
   add: {
     tag: 0,
-    params: parseAbiParameters("uint256 amount"),
+    params: parseAbiParameters("uint256 amount, uint256 nonce"),
     // @ts-ignore
-    apply: (state: CounterState, { amount }: { amount: bigint }) => {
+    apply: (
+      state: CounterState,
+      { amount, nonce }: { amount: bigint; nonce: bigint },
+    ) => {
+      if (nonce !== state.nonce) {
+        throw new Error(
+          `add: nonce mismatch (expected=${state.nonce}, got=${nonce})`,
+        );
+      }
       state.total += amount;
+      state.nonce += 1n;
     },
   },
 };
 
+// Sign Counter's `add` mutation. Counter is a single-signer secp256k1
+// fixture, so this always returns a secp256k1 rawSignature.
+export function signCounter(params: {
+  privateKey: Hex;
+  amount: bigint;
+  nonce: bigint;
+  address: Address;
+  chainId: number;
+}): { keyType: 2; rawSignature: Hex } {
+  const domain: TypedData.Domain = {
+    name: COUNTER_DOMAIN.name,
+    version: COUNTER_DOMAIN.version,
+    chainId: params.chainId,
+    verifyingContract: params.address,
+  };
+  const digest = hashMutationEip712(
+    COUNTER_MUTATIONS.add,
+    "add",
+    { amount: params.amount, nonce: params.nonce },
+    domain,
+  );
+  return {
+    keyType: 2,
+    rawSignature: signSecp256k1Raw(digest, params.privateKey),
+  };
+}
+
 // Mutation definitions for the Harness test fixture. Tags match the contract:
-//   credit (0): adds amount to balance.
-//   debit  (1): resolve computes newBalance from local state; the contract
-//                rejects the bundle if the resolution doesn't match its
-//                own pre-state. Exercises the resolve→encode→verify path.
-//   assert (2): read-only check; the contract reverts if balance != expected.
-//                No state effect, so the local apply is intentionally empty.
+//   initialize (0): bootstraps an account with a root key. Account id is
+//                    derived as keccak256(rootPublicKey); no signature.
+//   authorize  (1): adds a key to an existing account. Signed by an
+//                    existing key.
+//   credit     (2): adds amount to balance. Signed.
+//   debit      (3): resolve computes newBalance from local state; the
+//                    contract rejects the bundle if the resolution doesn't
+//                    match its own pre-state. Signed.
+//   assert     (4): read-only check; the contract reverts if balance !=
+//                    expected. Signed.
+type InitializeArgs = { rootKeyType: number; rootPublicKey: Hex };
+type AuthorizeArgs = {
+  account: Hex;
+  keyId: bigint;
+  keyType: number;
+  publicKey: Hex;
+  nonce: bigint;
+};
+type CreditArgs = {
+  account: Hex;
+  keyId: bigint;
+  amount: bigint;
+  nonce: bigint;
+};
+type DebitArgs = CreditArgs;
+type AssertArgs = {
+  account: Hex;
+  keyId: bigint;
+  expected: bigint;
+  nonce: bigint;
+};
+
 export const HARNESS_MUTATIONS: {
+  initialize: FFCAMutationConfig;
+  authorize: FFCAMutationConfig;
   credit: FFCAMutationConfig;
   debit: FFCAMutationConfig;
   assert: FFCAMutationConfig;
 } = {
-  credit: {
+  initialize: {
     tag: 0,
-    params: parseAbiParameters("address account, uint256 amount"),
+    params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
     // @ts-ignore
-    apply: (
-      state: HarnessState,
-      { account, amount }: { account: string; amount: bigint },
-    ) => {
-      state.balances[account] = (state.balances[account] ?? 0n) + amount;
+    apply: (state: HarnessState, args: InitializeArgs) => {
+      const id = Hash.keccak256(args.rootPublicKey) as Hex;
+      const acc = getHarnessAccount(state, id);
+      if (acc.keys.length !== 0) {
+        throw new Error(`initialize: account ${id} already initialized`);
+      }
+      acc.keys.push({
+        keyType: args.rootKeyType,
+        publicKey: args.rootPublicKey,
+      });
+    },
+  },
+  authorize: {
+    tag: 1,
+    params: parseAbiParameters(
+      "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
+    ),
+    // @ts-ignore
+    apply: (state: HarnessState, args: AuthorizeArgs) => {
+      const acc = getHarnessAccount(state, args.account);
+      checkAndBumpNonce(acc, args.nonce, args.account);
+      acc.keys.push({ keyType: args.keyType, publicKey: args.publicKey });
+    },
+  },
+  credit: {
+    tag: 2,
+    params: parseAbiParameters(
+      "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
+    ),
+    // @ts-ignore
+    apply: (state: HarnessState, args: CreditArgs) => {
+      const acc = getHarnessAccount(state, args.account);
+      checkAndBumpNonce(acc, args.nonce, args.account);
+      state.balances[args.account] =
+        (state.balances[args.account] ?? 0n) + args.amount;
     },
   },
   debit: {
-    tag: 1,
-    params: parseAbiParameters("address account, uint256 amount"),
+    tag: 3,
+    params: parseAbiParameters(
+      "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
+    ),
     resolution: parseAbiParameters("uint256 newBalance"),
     // @ts-ignore
-    resolve: (
-      state: HarnessState,
-      { account, amount }: { account: string; amount: bigint },
-    ) => {
-      return { newBalance: (state.balances[account] ?? 0n) - amount };
+    resolve: (state: HarnessState, args: DebitArgs) => {
+      return {
+        newBalance: (state.balances[args.account] ?? 0n) - args.amount,
+      };
     },
     // @ts-ignore
     apply: (
       state: HarnessState,
-      { account }: { account: string },
+      args: DebitArgs,
       { newBalance }: { newBalance: bigint },
     ) => {
-      // Mirrors the contract's require: insufficient balance reverts.
+      const acc = getHarnessAccount(state, args.account);
+      checkAndBumpNonce(acc, args.nonce, args.account);
       if (newBalance < 0n) {
-        throw new Error(`debit: insufficient balance for ${account}`);
+        throw new Error(`debit: insufficient balance for ${args.account}`);
       }
-      state.balances[account] = newBalance;
+      state.balances[args.account] = newBalance;
     },
   },
   assert: {
-    tag: 2,
-    params: parseAbiParameters("address account, uint256 expected"),
-    // Read-only on-chain; no local state effect to mirror.
-    apply: () => {},
+    tag: 4,
+    params: parseAbiParameters(
+      "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
+    ),
+    // @ts-ignore
+    apply: (state: HarnessState, args: AssertArgs) => {
+      const acc = getHarnessAccount(state, args.account);
+      checkAndBumpNonce(acc, args.nonce, args.account);
+      const balance = state.balances[args.account] ?? 0n;
+      if (balance !== args.expected) {
+        throw new Error(
+          `assert: account=${args.account} balance=${balance} expected=${args.expected}`,
+        );
+      }
+    },
   },
 };
+
+// Derive the bytes32 account id from a public key (matches Harness.sol's
+// `keccak256(rootPublicKey)` bootstrap rule).
+export function harnessAccountId(publicKey: Hex): Hex {
+  return Hash.keccak256(publicKey) as Hex;
+}
+
+// secp256k1 public key for an EOA, in the abi.encode(address) form
+// Account.sol's verifySecp256k1 expects.
+export function secp256k1PublicKey(address: Address): Hex {
+  return AbiParameters.encode(parseAbiParameters("address"), [address]);
+}
+
+// P-256 public key for a private key, in the abi.encode(uint256 x, uint256 y)
+// form Account.sol's verifyP256 / decodeP256PublicKey accepts.
+export function p256PublicKey(privateKey: Hex): Hex {
+  const pk = P256.getPublicKey({ privateKey });
+  return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
+    pk.x,
+    pk.y,
+  ]);
+}
+
+// Sign a digest with a P-256 private key. Returns rawSignature in the
+// abi.encode(uint256 r, uint256 s) form. The contract sha256s the digest
+// before passing to the precompile, so we sign with hash: true to match.
+export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
+  const sig = P256.sign({ payload: digest, privateKey, hash: true });
+  return AbiParameters.encode(parseAbiParameters("uint256 r, uint256 s"), [
+    sig.r,
+    sig.s,
+  ]);
+}
+
+// Sign a digest as a WebAuthn-P256 challenge. Returns rawSignature in the
+// abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset,
+// uint256 r, uint256 s) form Account.sol's verifyWebAuthnP256 expects.
+//
+// rpId/origin are fixed to empty strings — Account.sol doesn't inspect
+// either, so their values don't affect on-chain verification. Real apps
+// that care about origin enforcement would do that check off-chain
+// (browser refuses to sign for the wrong RP ID anyway).
+export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
+  const { metadata, payload } = Authentication.getSignPayload({
+    challenge: digest,
+    rpId: "",
+    origin: "",
+    userVerification: "required",
+  });
+  const sig = P256.sign({ payload, privateKey, hash: true });
+  // Account.sol's verifyChallenge expects the byte offset at which the
+  // base64url-encoded challenge VALUE starts inside clientDataJSON. ox's
+  // `challengeIndex` points at the JSON key (`"challenge":"`), so add 13
+  // to land on the first byte of the value.
+  const challengeOffset =
+    metadata.clientDataJSON.indexOf('"challenge":"') + '"challenge":"'.length;
+  return AbiParameters.encode(
+    parseAbiParameters(
+      "bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s",
+    ),
+    [
+      metadata.authenticatorData,
+      OxHex.fromString(metadata.clientDataJSON),
+      BigInt(challengeOffset),
+      sig.r,
+      sig.s,
+    ],
+  );
+}
+
+// Sign one of Harness's signed mutation types. Returns the structured
+// signature ffca encodes into bundle.signatures[i].
+export function signHarness(params: {
+  keyType: number;
+  privateKey: Hex;
+  mutation: "authorize" | "credit" | "debit" | "assert";
+  args: Record<string, unknown>;
+  address: Address;
+  chainId: number;
+}): Hex {
+  const domain: TypedData.Domain = {
+    name: HARNESS_DOMAIN.name,
+    version: HARNESS_DOMAIN.version,
+    chainId: params.chainId,
+    verifyingContract: params.address,
+  };
+  const digest = hashMutationEip712(
+    HARNESS_MUTATIONS[params.mutation],
+    params.mutation,
+    params.args,
+    domain,
+  );
+  if (params.keyType === 0) return signP256Raw(digest, params.privateKey);
+  if (params.keyType === 1)
+    return signWebAuthnP256Raw(digest, params.privateKey);
+  if (params.keyType === 2) return signSecp256k1Raw(digest, params.privateKey);
+  throw new Error(`signHarness: unknown keyType ${params.keyType}`);
+}
+
+function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
+  const signature = Secp256k1.sign({ payload: digest, privateKey });
+  return AbiParameters.encode(
+    parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
+    [
+      signature.yParity + 27,
+      OxHex.fromNumber(signature.r, { size: 32 }),
+      OxHex.fromNumber(signature.s, { size: 32 }),
+    ],
+  );
+}
+
+// Bootstrap an account by submitting an `initialize` mutation. Returns the
+// derived account id so callers can reference it. The signature is unused
+// by the contract (initialize is bootstrap) but ffca's wire format still
+// requires a structured value, so we pass a stub.
+export async function setupHarnessAccount(
+  // biome-ignore lint/suspicious/noExplicitAny: structural typing for the ffca instance
+  ffca: { execute: (m: any) => Promise<any> },
+  params: { rootKeyType: number; rootPublicKey: Hex },
+): Promise<Hex> {
+  const account = harnessAccountId(params.rootPublicKey);
+  await ffca.execute({
+    name: "initialize",
+    args: {
+      rootKeyType: params.rootKeyType,
+      rootPublicKey: params.rootPublicKey,
+    },
+    signature: {
+      account,
+      keyId: 0n,
+      keyType: params.rootKeyType,
+      rawSignature: "0x",
+    },
+  });
+  return account;
+}

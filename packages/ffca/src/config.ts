@@ -39,6 +39,10 @@ export type FFCAConfig = {
   chainId: number;
   rpcUrl: string | string[];
   state: { initial: unknown };
+  // ABI shape of one entry in the contract's `bundle.signatures[]` array.
+  // Must include `keyType: uint8` and `rawSignature: bytes`; apps add
+  // whatever else (account, keyId, …) the contract expects.
+  signature: { params: readonly AbiParameter[] };
   mutations: { [name: string]: FFCAMutationConfig };
   // Order in which queued mutations are sorted within a bundle, before
   // resolve+apply. Every mutation submitted to the runtime must have a name

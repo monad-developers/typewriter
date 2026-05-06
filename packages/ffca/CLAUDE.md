@@ -33,7 +33,7 @@ High-level signals for whether ffca is on the right track. None are precisely me
 
 ## Status
 
-~720 lines across config, types, runtime, eip712, encoding. End-to-end against anvil. The runtime drains a mutation queue, sorts by `config.sequence`, runs `resolve` then `apply` per mutation against a structuredClone-based snapshot (revert on throw), then submits bundles via simulate → access list → estimate → sign → broadcast → block lookup. EIP-712 typed-data verification (state-independent half) and `(uint8[], bytes[], bytes[])[]` calldata encoding are wired. Event fan-out via `on(event, cb) → unsubscribe` for mutation/bundle/block. 26 tests including 5 e2e against a real chain. No persistence, no watch loop, no account model, no signature codec.
+~720 lines across config, types, runtime, eip712, encoding. End-to-end against anvil. The runtime drains a mutation queue, sorts by `config.sequence`, runs `resolve` then `apply` per mutation against a structuredClone-based snapshot (revert on throw), then submits bundles via simulate → access list → estimate → sign → broadcast → block lookup. EIP-712 typed-data verification (state-independent half) is wired. Calldata is `(uint8[] tags, bytes[] mutationData, bytes[] signatures)[]` where each `signatures[i]` is the ABI-encoding of one structured signature against the app-supplied `FFCAConfig.signature.params`. Event fan-out via `on(event, cb) → unsubscribe` for mutation/bundle/block. 27 tests including 5 e2e against a real chain. No persistence, no watch loop, no authorize hook, no native signature verifiers.
 
 ## Tests
 
@@ -52,7 +52,7 @@ The work catalog. Non-sequenced — items in different lanes can run in parallel
 - Force inclusion
 - Signed receipts / client-side equivocation proving
 - Alternative sequencing (FIFO and beyond)
-- Signature wire-format codec (port-blocker for order-book — contract expects `(bytes32 account, uint64 keyId, bytes rawSig)[]`, ffca emits opaque `bytes[]`)
+- Authorize hook + native signature verifiers (P-256, WebAuthn-P256, secp256k1). Wire-format codec is in place — apps declare `signature.params` and ffca ABI-encodes structured signatures into `bundle.signatures[]`. See `PLAN_account.md`.
 - Persistence hooks
 - Backpressure on the mutation/submit queues
 

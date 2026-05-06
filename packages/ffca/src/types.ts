@@ -1,13 +1,14 @@
 import type { Hex } from "ox";
 import type { FFCAMutationConfig } from "./config";
 
-// What a client posts to ffca.execute(). The signature blob is key-type-
-// polymorphic for now (matches order-book-backend); the dispatch lives in the
-// future state-dependent verifier.
+// What a client posts to ffca.execute(). `signature` is a structured value
+// matching `FFCAConfig.signature.params` — ffca ABI-encodes it into the
+// contract's `bundle.signatures[]`. Must include `keyType` and
+// `rawSignature` fields once the authorize hook lands.
 export type SubmittedMutation = {
   name: string;
   args: unknown;
-  signature: Hex.Hex;
+  signature: unknown;
 };
 
 export type MutationStatus =

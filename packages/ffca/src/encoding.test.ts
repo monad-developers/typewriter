@@ -48,6 +48,68 @@ test("encodeMutationCalldata with resolution", () => {
   ).toEqual([args.size, resolution.fills]);
 });
 
+test("encodeBundleCalldata signatures are typed against signature params", () => {
+  const transfer = {
+    tag: 0,
+    params: parseAbiParameters("address to, uint256 amount"),
+    apply: () => {},
+  };
+  const sigParams = parseAbiParameters(
+    "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
+  );
+
+  const m: ResolvedMutation = {
+    id: 0,
+    status: "accepted",
+    name: "transfer",
+    args: {
+      to: "0x0000000000000000000000000000000000000002",
+      amount: 100n,
+    },
+    signature: {
+      account:
+        "0x1111111111111111111111111111111111111111111111111111111111111111",
+      keyId: 7n,
+      keyType: 2,
+      rawSignature: "0xdeadbeef",
+    },
+    config: transfer,
+  };
+
+  const encoded = encodeBundleCalldata([m], sigParams);
+  const [bundle] = AbiParameters.decode(
+    AbiParameters.from([
+      {
+        type: "tuple",
+        components: [
+          { name: "mutations", type: "uint8[]" },
+          { name: "mutationData", type: "bytes[]" },
+          {
+            name: "signatures",
+            type: "tuple[]",
+            components: sigParams as unknown as readonly {
+              name: string;
+              type: string;
+            }[],
+          },
+        ],
+      },
+    ]),
+    encoded,
+  );
+
+  expect(bundle.signatures).toMatchInlineSnapshot(`
+    [
+      {
+        "account": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "keyId": 7n,
+        "keyType": 2,
+        "rawSignature": "0xdeadbeef",
+      },
+    ]
+  `);
+});
+
 test("encodeBundleCalldata round-trips through ABI decode", () => {
   const transfer = {
     tag: 0,
@@ -71,7 +133,7 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
       to: "0x0000000000000000000000000000000000000002",
       amount: 100n,
     },
-    signature: "0xaa",
+    signature: { keyType: 0, rawSignature: "0xaa" },
     config: transfer,
   };
   const marketResolved: ResolvedMutation = {
@@ -79,7 +141,7 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     status: "accepted",
     name: "market",
     args: { size: 10n },
-    signature: "0xbb",
+    signature: { keyType: 1, rawSignature: "0xbb" },
     resolution: {
       fills: [
         { price: 100n, size: 6n },
@@ -89,12 +151,30 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     config: market,
   };
 
-  const encoded = encodeBundleCalldata([transferResolved, marketResolved]);
+  const sigParams = parseAbiParameters("uint8 keyType, bytes rawSignature");
+  const encoded = encodeBundleCalldata(
+    [transferResolved, marketResolved],
+    sigParams,
+  );
 
   const [bundle] = AbiParameters.decode(
-    AbiParameters.from(
-      "(uint8[] mutations, bytes[] mutationData, bytes[] signatures)",
-    ),
+    AbiParameters.from([
+      {
+        type: "tuple",
+        components: [
+          { name: "mutations", type: "uint8[]" },
+          { name: "mutationData", type: "bytes[]" },
+          {
+            name: "signatures",
+            type: "tuple[]",
+            components: sigParams as unknown as readonly {
+              name: string;
+              type: string;
+            }[],
+          },
+        ],
+      },
+    ]),
     encoded,
   );
 
@@ -109,8 +189,14 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
         1,
       ],
       "signatures": [
-        "0xaa",
-        "0xbb",
+        {
+          "keyType": 0,
+          "rawSignature": "0xaa",
+        },
+        {
+          "keyType": 1,
+          "rawSignature": "0xbb",
+        },
       ],
     }
   `);
