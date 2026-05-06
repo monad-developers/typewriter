@@ -8,6 +8,7 @@
     "apps/*"
   ],
   "catalog": {
+    "effect": "3.21.0",
     "ox": "0.14.10",
     "typescript": "^5",
     "viem": "2.47.6"

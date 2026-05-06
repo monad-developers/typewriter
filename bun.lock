@@ -39,7 +39,7 @@
     "packages/evm": {
       "name": "evm",
       "dependencies": {
-        "effect": "3.21.0",
+        "effect": "catalog:",
         "ox": "catalog:",
       },
       "peerDependencies": {
@@ -52,7 +52,7 @@
         "abitype": "1.2.3",
         "drizzle-kit": "0.31.10",
         "drizzle-orm": "0.45.2",
-        "effect": "3.21.0",
+        "effect": "catalog:",
         "ox": "catalog:",
         "viem": "catalog:",
       },
@@ -65,6 +65,7 @@
     },
   },
   "catalog": {
+    "effect": "3.21.0",
     "ox": "0.14.10",
     "typescript": "^5",
     "viem": "2.47.6",
