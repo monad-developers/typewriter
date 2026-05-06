@@ -1,0 +1,19 @@
+{
+  "name": "evm",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "cargo build --release",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "cargo fmt --check && cargo clippy -- -D warnings"
+  },
+  "dependencies": {
+    "effect": "3.21.0",
+    "ox": "catalog:"
+  },
+  "peerDependencies": {
+    "typescript": "catalog:"
+  }
+}
