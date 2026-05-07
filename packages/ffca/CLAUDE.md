@@ -37,7 +37,9 @@ High-level signals for whether ffca is on the right track. None are precisely me
 
 ## Tests
 
-`bunfig.toml` preloads `test/setup.ts`, which compiles the test contracts (`test/contracts/`), boots anvil via `prool` on port 8545, and registers a global `beforeEach` that snapshot-reverts chain state between tests. Each test deploys its own contracts via `deployCounter` / `deployHarness` from `test/utils.ts` — there's no shared deployment to remember.
+`bunfig.toml` preloads `test/setup.ts`, which compiles the test contracts (`test/contracts/`), boots anvil via `prool` on port 8545, creates an isolated Postgres database per test from `DATABASE_URL`, and registers a global `beforeEach` that snapshot-reverts chain state between tests. Each test deploys its own contracts via `deployCounter` / `deployHarness` from `test/utils.ts` — there's no shared deployment to remember.
+
+If broad test runs fail during setup, run `DATABASE_URL=postgres://postgres@localhost:5432/postgres bun test packages/ffca/test/setup.test.ts` first to isolate Anvil/Postgres environment failures before debugging app logic.
 
 ## Roadmap
 

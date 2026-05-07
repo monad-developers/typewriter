@@ -6,13 +6,6 @@ import { TEST_DB_CONNECTION } from "../test/setup";
 import { HARNESS_SCHEMA } from "../test/utils";
 import { migrate, updateSchema } from "./migrate";
 
-test("temporary smoke: beforeEach opens an isolated test database", async () => {
-  const rows = await TEST_DB_CONNECTION<{ database: string }[]>`
-    SELECT current_database() AS database
-  `;
-  expect(rows[0]?.database.startsWith("ffca_test_")).toBe(true);
-});
-
 test("migrate creates the configured schema", async () => {
   const chainId = 31337;
   const address =
