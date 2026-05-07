@@ -1,10 +1,10 @@
 // Sidecar that wraps monad-revm and speaks line-delimited JSON over stdio.
 //
-// Five operations:
+// Six operations:
 //   init           — one-shot setup: spec, chain id, block context, accounts.
 //   beginBundle    — open a journal checkpoint.
 //   execute        — run one tx inside the open bundle.
-//   commitBundle   — drain the journal and persist writes to the DB.
+//   commitBundles  — drain all journals and keep writes in the DB.
 //   revertBundle   — roll the journal back to the bundle's open checkpoint.
 
 use std::collections::BTreeMap;
@@ -17,12 +17,13 @@ use monad_revm::{
 use revm::{
     context::TxEnv,
     context_interface::{
-        journaled_state::JournalCheckpoint,
         result::{ExecutionResult, Output},
+        transaction::{AccessList, AccessListItem},
         JournalTr,
     },
     database::InMemoryDB,
-    primitives::{Address, Bytes, TxKind, U256},
+    inspector::JournalExt,
+    primitives::{Address, Bytes, TxKind, B256, U256},
     state::{AccountInfo, Bytecode},
     ExecuteCommitEvm, ExecuteEvm,
 };
@@ -37,7 +38,8 @@ enum Request {
     Init { id: u64, params: InitParams },
     BeginBundle { id: u64 },
     Execute { id: u64, params: ExecuteParams },
-    CommitBundle { id: u64 },
+    Simulate { id: u64, params: ExecuteParams },
+    CommitBundles { id: u64 },
     RevertBundle { id: u64 },
 }
 
@@ -100,6 +102,7 @@ struct ExecuteOk {
     success: bool,
     gas_used: u64,
     output: String,
+    access_list: BTreeMap<String, Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
 }
@@ -116,9 +119,20 @@ type Evm = monad_revm::api::builder::DefaultMonadEvm<
     monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
 >;
 
+// Per-bundle pre/post-image record. revm 34's `transact_one` clears its
+// internal journal log on success, so cross-tx isolation has to live in
+// userland: we capture pre-images on first touch within a bundle, post-
+// images each time. revertBundle writes pre-images back; simulate
+// un-applies the whole stack, runs the simulation, re-applies post-images.
+#[derive(Default)]
+struct BundleJournal {
+    accounts: std::collections::HashMap<Address, (AccountInfo, AccountInfo)>,
+    storage: std::collections::HashMap<(Address, U256), (U256, U256)>,
+}
+
 struct EvmHarness {
     evm: Evm,
-    bundle: Option<JournalCheckpoint>,
+    bundles: Vec<BundleJournal>,
     initialized: bool,
 }
 
@@ -129,7 +143,7 @@ impl EvmHarness {
         let evm = ctx.build_monad();
         Self {
             evm,
-            bundle: None,
+            bundles: Vec::new(),
             initialized: false,
         }
     }
@@ -194,39 +208,150 @@ impl EvmHarness {
     }
 
     fn begin_bundle(&mut self) -> Result<(), String> {
-        if self.bundle.is_some() {
-            return Err("a bundle is already open".into());
-        }
-        let cp = self.evm.0.ctx.journaled_state.checkpoint();
-        self.bundle = Some(cp);
+        self.bundles.push(BundleJournal::default());
         Ok(())
     }
 
-    fn commit_bundle(&mut self) -> Result<CommitOk, String> {
-        if self.bundle.take().is_none() {
+    fn commit_bundles(&mut self) -> Result<CommitOk, String> {
+        if self.bundles.is_empty() {
             return Err("no bundle is open".into());
         }
-        self.evm.0.ctx.journaled_state.checkpoint_commit();
-        let state = self.evm.finalize();
-        let state_diff = encode_state_diff(&state);
-        self.evm.commit(state);
+        // commit drops every bundle's pre-image record. Writes are already
+        // in the DB (each execute committed there); we just lose the ability
+        // to rewind.
+        let mut state_diff = std::collections::BTreeMap::<String, AccountDiff>::new();
+        for bundle in self.bundles.drain(..) {
+            for (addr, (pre, post)) in bundle.accounts {
+                let entry = state_diff.entry(format!("0x{addr:x}")).or_default();
+                if pre.balance != post.balance {
+                    entry.balance = Some(format!("0x{:x}", post.balance));
+                }
+                if pre.nonce != post.nonce {
+                    entry.nonce = Some(post.nonce);
+                }
+                if pre.code_hash != post.code_hash {
+                    if let Some(code) = post.code.as_ref() {
+                        entry.code = Some(format!("0x{}", hex::encode(code.original_byte_slice())));
+                    }
+                }
+            }
+            for ((addr, slot), (pre, post)) in bundle.storage {
+                if pre == post {
+                    continue;
+                }
+                let entry = state_diff.entry(format!("0x{addr:x}")).or_default();
+                let storage = entry.storage.get_or_insert_with(Default::default);
+                storage.insert(format!("0x{slot:064x}"), format!("0x{post:064x}"));
+            }
+        }
         Ok(CommitOk { state_diff })
     }
 
     fn revert_bundle(&mut self) -> Result<(), String> {
-        let cp = self
-            .bundle
-            .take()
+        let bundle = self
+            .bundles
+            .pop()
             .ok_or_else(|| "no bundle is open".to_string())?;
-        self.evm.0.ctx.journaled_state.checkpoint_revert(cp);
-        let _ = self.evm.finalize();
+        rewind(self.evm.0.ctx.journaled_state.db_mut(), &bundle);
         Ok(())
     }
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
-        if self.bundle.is_none() {
+        if self.bundles.is_empty() {
             return Err("execute requires an open bundle".into());
         }
+        let result = match self.run_two_pass(params) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.evm.finalize();
+                return Err(error);
+            }
+        };
+        if result.success {
+            self.record_into_top_bundle();
+            // Commit the journaled state into the DB so future reads and
+            // writes see the post-tx state.
+            self.flush_journal_to_db();
+        } else {
+            // A failed tx is observable as a rejection, not as local state.
+            // Drain and discard any journal state left by revm.
+            let _ = self.evm.finalize();
+        }
+        Ok(result)
+    }
+
+    fn simulate(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
+        // Un-apply every bundle (LIFO) so the DB is at pre-bundle-stack state,
+        // run the two-pass, then re-apply (FIFO).
+        {
+            let db = self.evm.0.ctx.journaled_state.db_mut();
+            for bundle in self.bundles.iter().rev() {
+                rewind(db, bundle);
+            }
+        }
+
+        let result = self.run_two_pass(params);
+
+        // Drop pass 2's journal-state writes so they never reach the DB.
+        let _ = self.evm.finalize();
+
+        // Re-apply post-images in original order regardless of simulate's
+        // success — the bundle stack's logical state must be restored exactly.
+        {
+            let db = self.evm.0.ctx.journaled_state.db_mut();
+            for bundle in self.bundles.iter() {
+                replay(db, bundle);
+            }
+        }
+
+        result
+    }
+
+    // Walk the journal's post-tx state and merge it into the top bundle:
+    //   - record (pre, post) on first sighting of an account/slot
+    //   - update only `post` on subsequent sightings (`pre` is already
+    //     the bundle's earliest-known pre-image).
+    fn record_into_top_bundle(&mut self) {
+        let bundle = self
+            .bundles
+            .last_mut()
+            .expect("execute requires an open bundle");
+        let state = self.evm.0.ctx.journaled_state.evm_state();
+        for (addr, account) in state.iter() {
+            let post_info = account.info.clone();
+            let pre_info = (*account.original_info).clone();
+            bundle
+                .accounts
+                .entry(*addr)
+                .and_modify(|(_, post)| *post = post_info.clone())
+                .or_insert((pre_info, post_info));
+
+            for (slot, slot_state) in account.storage.iter() {
+                let pre = slot_state.original_value();
+                let post = slot_state.present_value();
+                bundle
+                    .storage
+                    .entry((*addr, *slot))
+                    .and_modify(|(_, p)| *p = post)
+                    .or_insert((pre, post));
+            }
+        }
+    }
+
+    fn flush_journal_to_db(&mut self) {
+        let state = self.evm.finalize();
+        self.evm.commit(state);
+    }
+
+    // Two-pass execution. Pass 1 discovers the access list; pass 2 runs with
+    // those addresses/slots pre-warmed so the metered gas matches what the
+    // chain will charge for a tx broadcast with the discovered access list.
+    //
+    // After pass 1, finalize drains the journal state and we discard it so
+    // pass 2 starts from the same DB state. The alternative —
+    // checkpoint_revert — doesn't work because transact_one calls commit_tx
+    // after success, which clears the revertable journal log.
+    fn run_two_pass(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         let from = parse_address(&params.from)?;
         let to = parse_address(&params.to)?;
         let data = parse_bytes(&params.data)?;
@@ -234,24 +359,36 @@ impl EvmHarness {
             Some(v) => parse_u256(v)?,
             None => U256::ZERO,
         };
+        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
 
-        let tx = TxEnv::builder()
-            .caller(from)
-            .kind(TxKind::Call(to))
-            .gas_limit(u64::MAX)
-            .gas_price(0)
-            .value(value)
-            .data(data)
-            .build_fill();
+        let build_tx = |access_list: AccessList| {
+            TxEnv::builder()
+                .caller(from)
+                .chain_id(Some(chain_id))
+                .kind(TxKind::Call(to))
+                .gas_limit(u64::MAX)
+                .gas_price(0)
+                .value(value)
+                .data(data.clone())
+                .access_list(access_list)
+                .build_fill()
+        };
 
+        // Pass 1 — discover the access list from touched accounts/slots.
+        let _ = self
+            .evm
+            .transact_one(build_tx(AccessList::default()))
+            .map_err(|e| format!("transact (pass 1): {e:?}"))?;
+        let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
+        // Drain pass 1's journal state without committing it.
+        let _ = self.evm.finalize();
+
+        // Pass 2 — measure with pre-warmed access list.
         let result = self
             .evm
-            .transact_one(tx)
-            .map_err(|e| format!("transact: {e:?}"))?;
+            .transact_one(build_tx(touched.clone()))
+            .map_err(|e| format!("transact (pass 2): {e:?}"))?;
 
-        // Don't finalize here — leave journal entries in place so revertBundle
-        // can roll them back. finalize() + commit() happen once in
-        // commit_bundle, draining the bundle's accumulated writes.
         let (success, gas_used, output, revert_data) = match &result {
             ExecutionResult::Success {
                 gas_used, output, ..
@@ -276,57 +413,69 @@ impl EvmHarness {
             ),
         };
 
+        let access_list_wire = encode_access_list(&touched);
+
         Ok(ExecuteOk {
             success,
             gas_used,
             output,
+            access_list: access_list_wire,
             revert_data,
         })
+    }
+}
+
+fn rewind(db: &mut InMemoryDB, bundle: &BundleJournal) {
+    for (addr, (pre, _post)) in bundle.accounts.iter() {
+        db.insert_account_info(*addr, pre.clone());
+    }
+    for ((addr, slot), (pre, _post)) in bundle.storage.iter() {
+        let _ = db.insert_account_storage(*addr, *slot, *pre);
+    }
+}
+
+fn replay(db: &mut InMemoryDB, bundle: &BundleJournal) {
+    for (addr, (_pre, post)) in bundle.accounts.iter() {
+        db.insert_account_info(*addr, post.clone());
+    }
+    for ((addr, slot), (_pre, post)) in bundle.storage.iter() {
+        let _ = db.insert_account_storage(*addr, *slot, *post);
     }
 }
 
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-fn encode_state_diff(state: &revm::state::EvmState) -> BTreeMap<String, AccountDiff> {
-    let mut out: BTreeMap<String, AccountDiff> = BTreeMap::new();
+// Walk the journal's post-tx state, collecting every account that was
+// touched and the storage slots that were loaded for it. This is what we
+// pass to pass 2 as the access list, and what we serialize back to TS.
+fn collect_access_list(state: &revm::state::EvmState) -> AccessList {
+    let mut items: Vec<AccessListItem> = Vec::new();
     for (address, account) in state.iter() {
-        let mut writes = AccountDiff::default();
-        let mut changed = false;
-        let info = &account.info;
+        let storage_keys: Vec<B256> = account
+            .storage
+            .keys()
+            .map(|slot| B256::from(slot.to_be_bytes()))
+            .collect();
+        items.push(AccessListItem {
+            address: *address,
+            storage_keys,
+        });
+    }
+    AccessList(items)
+}
 
-        let mut storage = BTreeMap::new();
-        for (slot, entry) in account.storage.iter() {
-            if entry.original_value() != entry.present_value() {
-                storage.insert(
-                    format!("0x{slot:064x}"),
-                    format!("0x{:064x}", entry.present_value()),
-                );
-            }
-        }
-        if !storage.is_empty() {
-            writes.storage = Some(storage);
-            changed = true;
-        }
-
-        if info.balance != U256::ZERO {
-            writes.balance = Some(format!("0x{:x}", info.balance));
-            changed = true;
-        }
-        if info.nonce != 0 {
-            writes.nonce = Some(info.nonce);
-            changed = true;
-        }
-        if let Some(code) = info.code.as_ref() {
-            if !code.is_empty() {
-                writes.code = Some(format!("0x{}", hex::encode(code.original_byte_slice())));
-                changed = true;
-            }
-        }
-
-        if changed {
-            out.insert(format!("0x{address:x}"), writes);
-        }
+fn encode_access_list(list: &AccessList) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for item in &list.0 {
+        let keys: Vec<String> = item
+            .storage_keys
+            .iter()
+            .map(|k| format!("0x{}", hex::encode(k.as_slice())))
+            .collect();
+        let mut keys = keys;
+        keys.sort();
+        out.insert(format!("0x{:x}", item.address), keys);
     }
     out
 }
@@ -392,7 +541,11 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
             Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
             Err(e) => err(id, e),
         },
-        Request::CommitBundle { id } => match harness.commit_bundle() {
+        Request::Simulate { id, params } => match harness.simulate(&params) {
+            Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
+            Err(e) => err(id, e),
+        },
+        Request::CommitBundles { id } => match harness.commit_bundles() {
             Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
             Err(e) => err(id, e),
         },

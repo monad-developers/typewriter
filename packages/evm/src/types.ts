@@ -47,6 +47,7 @@ export type ExecuteResult = {
   success: boolean;
   gas_used: number;
   output: Hex.Hex;
+  access_list: { [address: Address.Address]: Hex.Hex[] };
   revert_data?: Hex.Hex;
 };
 
@@ -58,7 +59,8 @@ export type Request =
   | { method: "init"; id: number; params: InitParams }
   | { method: "beginBundle"; id: number }
   | { method: "execute"; id: number; params: ExecuteParams }
-  | { method: "commitBundle"; id: number }
+  | { method: "simulate"; id: number; params: ExecuteParams }
+  | { method: "commitBundles"; id: number }
   | { method: "revertBundle"; id: number };
 
 export type Response<T = unknown> =

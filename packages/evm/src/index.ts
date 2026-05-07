@@ -31,7 +31,11 @@ export class EvmCallError extends Data.TaggedError("EvmCallError")<{
   readonly error: string;
 }> {}
 
-export type EvmError = EvmCrashed | EvmCallError;
+export class EvmProtocolError extends Data.TaggedError("EvmProtocolError")<{
+  readonly reason: string;
+}> {}
+
+export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
 
 // -----------------------------------------------------------------------------
 // Public API
@@ -42,7 +46,10 @@ export type EVM = {
   readonly execute: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
-  readonly commitBundle: () => Effect.Effect<CommitResult, EvmError>;
+  readonly simulate: (
+    params: ExecuteParams,
+  ) => Effect.Effect<ExecuteResult, EvmError>;
+  readonly commitBundles: () => Effect.Effect<CommitResult, EvmError>;
   readonly revertBundle: () => Effect.Effect<void, EvmError>;
 };
 
@@ -117,6 +124,13 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             });
 
             const res = yield* Queue.take(responses);
+            if (res.id !== id) {
+              return yield* Effect.fail(
+                new EvmProtocolError({
+                  reason: `response id mismatch: expected ${id}, got ${res.id}`,
+                }),
+              );
+            }
             if (!res.ok) {
               return yield* Effect.fail(
                 new EvmCallError({ method, error: res.error }),
@@ -142,9 +156,15 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             id,
             params,
           })),
-        commitBundle: () =>
-          call<CommitResult>("commitBundle", (id) => ({
-            method: "commitBundle",
+        simulate: (params) =>
+          call<ExecuteResult>("simulate", (id) => ({
+            method: "simulate",
+            id,
+            params,
+          })),
+        commitBundles: () =>
+          call<CommitResult>("commitBundles", (id) => ({
+            method: "commitBundles",
             id,
           })),
         revertBundle: () =>
