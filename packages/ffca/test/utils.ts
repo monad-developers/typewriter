@@ -1,4 +1,14 @@
 import { parseAbiParameters } from "abitype";
+import { eq } from "drizzle-orm";
+import {
+  bigint,
+  char,
+  numeric,
+  pgTable,
+  primaryKey,
+  smallint,
+  text,
+} from "drizzle-orm/pg-core";
 import {
   AbiParameters,
   Hash,
@@ -10,8 +20,9 @@ import {
 import { Authentication } from "ox/webauthn";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
-import type { FFCAMutationConfig } from "../src/config";
+import type { FFCAMutationConfig, FFCAPersistContext } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
+import { mutationColumns } from "../src/schema";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
@@ -57,6 +68,124 @@ export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
 export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
   "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
 );
+
+// Persisted shape of HarnessState. Mirrors Harness.sol's State struct: the
+// `accounts` mapping fans out to (accounts, keys, nonces); `balances` is its
+// own table keyed by the same bytes32 account id.
+//
+// Column-type aliases mirror ffca's shared column helpers where possible.
+// uint192 is the high bits of a parallel nonce (Harness.sol stores
+// `mapping(uint192 => uint64)`) — needs >64 bits, so numeric rather than
+// bigint.
+const uint8 = () => smallint();
+const uint64 = () => bigint({ mode: "bigint" });
+const uint192 = () => numeric({ precision: 58, scale: 0 });
+const uint256 = () => numeric({ precision: 78, scale: 0 });
+const bytes32 = () => char({ length: 66 });
+
+export const harnessSignatureColumns = {
+  account: bytes32().notNull(),
+  keyId: uint64().notNull(),
+  keyType: uint8().notNull(),
+  rawSignature: text().notNull(),
+};
+
+export const counterAddMutations = pgTable("counter_add_mutations", {
+  ...mutationColumns(),
+  keyType: uint8().notNull(),
+  rawSignature: text().notNull(),
+  amount: uint256().notNull(),
+  nonce: uint256().notNull(),
+});
+
+export const testMutationSchema = pgTable("test_mutations", {
+  ...mutationColumns(),
+});
+
+export const harnessInitializeMutations = pgTable("harness_initializes", {
+  ...mutationColumns(),
+  ...harnessSignatureColumns,
+  rootKeyType: uint8().notNull(),
+  rootPublicKey: text().notNull(),
+});
+
+export const harnessAuthorizeMutations = pgTable("harness_authorizes", {
+  ...mutationColumns(),
+  ...harnessSignatureColumns,
+  newKeyType: uint8().notNull(),
+  publicKey: text().notNull(),
+  nonce: uint256().notNull(),
+});
+
+export const harnessCreditMutations = pgTable("harness_credits", {
+  ...mutationColumns(),
+  ...harnessSignatureColumns,
+  amount: uint256().notNull(),
+  nonce: uint256().notNull(),
+});
+
+export const harnessDebitMutations = pgTable("harness_debits", {
+  ...mutationColumns(),
+  ...harnessSignatureColumns,
+  amount: uint256().notNull(),
+  nonce: uint256().notNull(),
+  newBalance: uint256().notNull(),
+});
+
+export const harnessAssertMutations = pgTable("harness_asserts", {
+  ...mutationColumns(),
+  ...harnessSignatureColumns,
+  expected: uint256().notNull(),
+  nonce: uint256().notNull(),
+});
+
+export const harnessAccounts = pgTable("accounts", {
+  id: bytes32().primaryKey(),
+});
+
+export const harnessKeys = pgTable(
+  "keys",
+  {
+    account: bytes32()
+      .notNull()
+      .references(() => harnessAccounts.id),
+    keyIndex: uint64().notNull(),
+    keyType: uint8().notNull(),
+    publicKey: text().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.account, t.keyIndex] })],
+);
+
+export const harnessNonces = pgTable(
+  "nonces",
+  {
+    account: bytes32()
+      .notNull()
+      .references(() => harnessAccounts.id),
+    nonceKey: uint192().notNull(),
+    sequence: uint64().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.account, t.nonceKey] })],
+);
+
+export const harnessBalances = pgTable("balances", {
+  account: bytes32()
+    .primaryKey()
+    .references(() => harnessAccounts.id),
+  amount: uint256().notNull(),
+});
+
+export const HARNESS_SCHEMA = {
+  initializeMutations: harnessInitializeMutations,
+  authorizeMutations: harnessAuthorizeMutations,
+  creditMutations: harnessCreditMutations,
+  debitMutations: harnessDebitMutations,
+  assertMutations: harnessAssertMutations,
+  accounts: harnessAccounts,
+  keys: harnessKeys,
+  nonces: harnessNonces,
+  balances: harnessBalances,
+};
 
 function getHarnessAccount(state: HarnessState, id: Hex): HarnessAccount {
   if (state.accounts[id] === undefined) {
@@ -126,8 +255,9 @@ export const deployHarness = () => deployContract("Harness");
 export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
   add: {
     tag: 0,
+    table: counterAddMutations,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
-    // @ts-ignore
+    // @ts-expect-error
     apply: (
       state: CounterState,
       { amount, nonce }: { amount: bigint; nonce: bigint },
@@ -203,6 +333,140 @@ type AssertArgs = {
   nonce: bigint;
 };
 
+type HarnessSignature = {
+  account: Hex;
+  keyId: bigint;
+  keyType: number;
+  rawSignature: Hex;
+};
+
+type HarnessPersistedMutation<TArgs, TResolution = unknown> = {
+  id: number;
+  status: string;
+  args: TArgs;
+  signature: HarnessSignature;
+  resolution?: TResolution;
+};
+
+type HarnessPersistBundle = {
+  id?: number;
+  mutationIndex?: number;
+};
+
+type HarnessPersistBlock = {
+  number?: bigint;
+  hash?: Hex;
+  timestamp?: bigint;
+  transactionHash?: Hex;
+};
+
+function harnessDb(tx: unknown) {
+  // biome-ignore lint/suspicious/noExplicitAny: persistence fixture accepts any Drizzle transaction shape
+  return tx as any;
+}
+
+function harnessBaseMutationRow<TArgs>(
+  ctx: FFCAPersistContext,
+  mutation: HarnessPersistedMutation<TArgs>,
+) {
+  const bundle = ctx.bundle as HarnessPersistBundle | undefined;
+  const block = ctx.block as HarnessPersistBlock | undefined;
+  return {
+    id: mutation.id,
+    bundleId: bundle?.id,
+    bundlePosition: bundle?.mutationIndex,
+    blockNumber: block?.number?.toString(),
+    blockHash: block?.hash,
+    blockTimestamp: block?.timestamp?.toString(),
+    transactionHash: block?.transactionHash,
+    status: mutation.status,
+    account: mutation.signature.account,
+    keyId: mutation.signature.keyId,
+    keyType: mutation.signature.keyType,
+    rawSignature: mutation.signature.rawSignature,
+  };
+}
+
+async function persistHarnessLifecycle(
+  ctx: FFCAPersistContext,
+  // biome-ignore lint/suspicious/noExplicitAny: works with any mutation table in this fixture
+  table: any,
+) {
+  const mutation = ctx.mutation as HarnessPersistedMutation<unknown>;
+  const block = ctx.block as HarnessPersistBlock | undefined;
+  await harnessDb(ctx.tx)
+    .update(table)
+    .set({
+      status: mutation.status,
+      blockNumber: block?.number?.toString(),
+      blockHash: block?.hash,
+      blockTimestamp: block?.timestamp?.toString(),
+      transactionHash: block?.transactionHash,
+    })
+    .where(eq(table.id, mutation.id));
+}
+
+async function persistHarnessAccount(ctx: FFCAPersistContext, account: Hex) {
+  await harnessDb(ctx.tx)
+    .insert(harnessAccounts)
+    .values({ id: account })
+    .onConflictDoNothing();
+}
+
+async function persistHarnessKey(
+  ctx: FFCAPersistContext,
+  account: Hex,
+  keyIndex: number,
+) {
+  const state = ctx.state as HarnessState;
+  const key = state.accounts[account]?.keys[keyIndex];
+  if (key === undefined) return;
+  await harnessDb(ctx.tx)
+    .insert(harnessKeys)
+    .values({
+      account,
+      keyIndex: BigInt(keyIndex),
+      keyType: key.keyType,
+      publicKey: key.publicKey,
+    })
+    .onConflictDoUpdate({
+      target: [harnessKeys.account, harnessKeys.keyIndex],
+      set: {
+        keyType: key.keyType,
+        publicKey: key.publicKey,
+      },
+    });
+}
+
+async function persistHarnessNonce(
+  ctx: FFCAPersistContext,
+  account: Hex,
+  nonce: bigint,
+) {
+  const state = ctx.state as HarnessState;
+  const nonceKey = (nonce >> 64n).toString();
+  const sequence = state.accounts[account]?.nonces[nonceKey] ?? 0n;
+  await harnessDb(ctx.tx)
+    .insert(harnessNonces)
+    .values({ account, nonceKey, sequence })
+    .onConflictDoUpdate({
+      target: [harnessNonces.account, harnessNonces.nonceKey],
+      set: { sequence },
+    });
+}
+
+async function persistHarnessBalance(ctx: FFCAPersistContext, account: Hex) {
+  const state = ctx.state as HarnessState;
+  const amount = state.balances[account] ?? 0n;
+  await harnessDb(ctx.tx)
+    .insert(harnessBalances)
+    .values({ account, amount: amount.toString() })
+    .onConflictDoUpdate({
+      target: harnessBalances.account,
+      set: { amount: amount.toString() },
+    });
+}
+
 export const HARNESS_MUTATIONS: {
   initialize: FFCAMutationConfig;
   authorize: FFCAMutationConfig;
@@ -212,8 +476,9 @@ export const HARNESS_MUTATIONS: {
 } = {
   initialize: {
     tag: 0,
+    table: harnessInitializeMutations,
     params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
-    // @ts-ignore
+    // @ts-expect-error
     apply: (state: HarnessState, args: InitializeArgs) => {
       const id = Hash.keccak256(args.rootPublicKey) as Hex;
       const acc = getHarnessAccount(state, id);
@@ -228,10 +493,11 @@ export const HARNESS_MUTATIONS: {
   },
   authorize: {
     tag: 1,
+    table: harnessAuthorizeMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
     ),
-    // @ts-ignore
+    // @ts-expect-error
     apply: (state: HarnessState, args: AuthorizeArgs) => {
       const acc = getHarnessAccount(state, args.account);
       checkAndBumpNonce(acc, args.nonce, args.account);
@@ -240,10 +506,11 @@ export const HARNESS_MUTATIONS: {
   },
   credit: {
     tag: 2,
+    table: harnessCreditMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
-    // @ts-ignore
+    // @ts-expect-error
     apply: (state: HarnessState, args: CreditArgs) => {
       const acc = getHarnessAccount(state, args.account);
       checkAndBumpNonce(acc, args.nonce, args.account);
@@ -253,17 +520,18 @@ export const HARNESS_MUTATIONS: {
   },
   debit: {
     tag: 3,
+    table: harnessDebitMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
     resolution: parseAbiParameters("uint256 newBalance"),
-    // @ts-ignore
+    // @ts-expect-error
     resolve: (state: HarnessState, args: DebitArgs) => {
       return {
         newBalance: (state.balances[args.account] ?? 0n) - args.amount,
       };
     },
-    // @ts-ignore
+    // @ts-expect-error
     apply: (
       state: HarnessState,
       args: DebitArgs,
@@ -279,10 +547,11 @@ export const HARNESS_MUTATIONS: {
   },
   assert: {
     tag: 4,
+    table: harnessAssertMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
     ),
-    // @ts-ignore
+    // @ts-expect-error
     apply: (state: HarnessState, args: AssertArgs) => {
       const acc = getHarnessAccount(state, args.account);
       checkAndBumpNonce(acc, args.nonce, args.account);
@@ -292,6 +561,146 @@ export const HARNESS_MUTATIONS: {
           `assert: account=${args.account} balance=${balance} expected=${args.expected}`,
         );
       }
+    },
+  },
+};
+
+// Same Harness behavior as HARNESS_MUTATIONS, with user-owned persistence
+// callbacks attached. This fixture is intentionally not wired into runtime
+// tests yet; it sketches the database contract the app would own.
+export const HARNESS_PERSISTED_MUTATIONS: {
+  initialize: FFCAMutationConfig;
+  authorize: FFCAMutationConfig;
+  credit: FFCAMutationConfig;
+  debit: FFCAMutationConfig;
+  assert: FFCAMutationConfig;
+} = {
+  initialize: {
+    ...HARNESS_MUTATIONS.initialize,
+    persistMutation: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<InitializeArgs>;
+      await harnessDb(ctx.tx)
+        .insert(harnessInitializeMutations)
+        .values({
+          ...harnessBaseMutationRow(ctx, mutation),
+          rootKeyType: mutation.args.rootKeyType,
+          rootPublicKey: mutation.args.rootPublicKey,
+        });
+    },
+    persistLifecycle: (ctx) =>
+      persistHarnessLifecycle(ctx, harnessInitializeMutations),
+    persistState: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<InitializeArgs>;
+      const account = mutation.signature.account;
+      await persistHarnessAccount(ctx, account);
+      await persistHarnessKey(ctx, account, 0);
+    },
+  },
+  authorize: {
+    ...HARNESS_MUTATIONS.authorize,
+    persistMutation: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<AuthorizeArgs>;
+      await harnessDb(ctx.tx)
+        .insert(harnessAuthorizeMutations)
+        .values({
+          ...harnessBaseMutationRow(ctx, mutation),
+          newKeyType: mutation.args.keyType,
+          publicKey: mutation.args.publicKey,
+          nonce: mutation.args.nonce.toString(),
+        });
+    },
+    persistLifecycle: (ctx) =>
+      persistHarnessLifecycle(ctx, harnessAuthorizeMutations),
+    persistState: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<AuthorizeArgs>;
+      const state = ctx.state as HarnessState;
+      const keyIndex =
+        (state.accounts[mutation.args.account]?.keys.length ?? 1) - 1;
+      await persistHarnessAccount(ctx, mutation.args.account);
+      await persistHarnessKey(ctx, mutation.args.account, keyIndex);
+      await persistHarnessNonce(
+        ctx,
+        mutation.args.account,
+        mutation.args.nonce,
+      );
+    },
+  },
+  credit: {
+    ...HARNESS_MUTATIONS.credit,
+    persistMutation: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<CreditArgs>;
+      await harnessDb(ctx.tx)
+        .insert(harnessCreditMutations)
+        .values({
+          ...harnessBaseMutationRow(ctx, mutation),
+          amount: mutation.args.amount.toString(),
+          nonce: mutation.args.nonce.toString(),
+        });
+    },
+    persistLifecycle: (ctx) =>
+      persistHarnessLifecycle(ctx, harnessCreditMutations),
+    persistState: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<CreditArgs>;
+      await persistHarnessAccount(ctx, mutation.args.account);
+      await persistHarnessBalance(ctx, mutation.args.account);
+      await persistHarnessNonce(
+        ctx,
+        mutation.args.account,
+        mutation.args.nonce,
+      );
+    },
+  },
+  debit: {
+    ...HARNESS_MUTATIONS.debit,
+    persistMutation: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<
+        DebitArgs,
+        { newBalance: bigint }
+      >;
+      await harnessDb(ctx.tx)
+        .insert(harnessDebitMutations)
+        .values({
+          ...harnessBaseMutationRow(ctx, mutation),
+          amount: mutation.args.amount.toString(),
+          nonce: mutation.args.nonce.toString(),
+          newBalance: mutation.resolution?.newBalance.toString(),
+        });
+    },
+    persistLifecycle: (ctx) =>
+      persistHarnessLifecycle(ctx, harnessDebitMutations),
+    persistState: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<DebitArgs>;
+      await persistHarnessAccount(ctx, mutation.args.account);
+      await persistHarnessBalance(ctx, mutation.args.account);
+      await persistHarnessNonce(
+        ctx,
+        mutation.args.account,
+        mutation.args.nonce,
+      );
+    },
+  },
+  assert: {
+    ...HARNESS_MUTATIONS.assert,
+    persistMutation: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<AssertArgs>;
+      await harnessDb(ctx.tx)
+        .insert(harnessAssertMutations)
+        .values({
+          ...harnessBaseMutationRow(ctx, mutation),
+          expected: mutation.args.expected.toString(),
+          nonce: mutation.args.nonce.toString(),
+        });
+    },
+    persistLifecycle: (ctx) =>
+      persistHarnessLifecycle(ctx, harnessAssertMutations),
+    persistState: async (ctx) => {
+      const mutation = ctx.mutation as HarnessPersistedMutation<AssertArgs>;
+      await persistHarnessAccount(ctx, mutation.args.account);
+      await persistHarnessNonce(
+        ctx,
+        mutation.args.account,
+        mutation.args.nonce,
+      );
     },
   },
 };

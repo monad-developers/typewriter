@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import { $ } from "bun";
 import { Instance, Server } from "prool";
 import type { Hex } from "viem";
@@ -39,6 +39,53 @@ export const P256_PRIVATE_KEY: Hex =
 // Port chosen to avoid colliding with order-book-backend's tests so the two
 // suites can run in parallel.
 export const TEST_RPC_URL = "http://localhost:8545/1";
+const testEnv = process.env as {
+  DATABASE_URL?: string;
+};
+const TEST_ADMIN_DB_CONNECTION = new Bun.SQL({
+  url: testEnv.DATABASE_URL,
+  max: 1,
+});
+export let TEST_DB_CONNECTION!: Bun.SQL;
+
+function quoteTestIdentifier(identifier: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(identifier)) {
+    throw new Error(`Invalid test database identifier: ${identifier}`);
+  }
+  return `"${identifier}"`;
+}
+
+function testDatabaseUrl(databaseName: string): string {
+  if (testEnv.DATABASE_URL === undefined) {
+    throw new Error("DATABASE_URL is required for Postgres tests");
+  }
+
+  const databaseUrl = new URL(testEnv.DATABASE_URL);
+  databaseUrl.pathname = `/${databaseName}`;
+  return databaseUrl.toString();
+}
+
+export async function dropTestDatabase(databaseName: string): Promise<void> {
+  await TEST_ADMIN_DB_CONNECTION`
+    SELECT pg_terminate_backend(pid)
+    FROM pg_stat_activity
+    WHERE datname = ${databaseName}
+      AND pid <> pg_backend_pid()
+  `;
+  await TEST_ADMIN_DB_CONNECTION.unsafe(
+    `DROP DATABASE IF EXISTS ${quoteTestIdentifier(databaseName)}`,
+  );
+}
+
+export async function createTestDatabaseConnection(
+  databaseName: string,
+): Promise<Bun.SQL> {
+  await dropTestDatabase(databaseName);
+  await TEST_ADMIN_DB_CONNECTION.unsafe(
+    `CREATE DATABASE ${quoteTestIdentifier(databaseName)}`,
+  );
+  return new Bun.SQL({ url: testDatabaseUrl(databaseName), max: 1 });
+}
 
 export const TEST_CLIENT = createTestClient({
   chain: anvil,
@@ -62,6 +109,7 @@ export const TEST_WALLET_CLIENT = createWalletClient({
 
 let teardown!: () => Promise<void>;
 let snapshotId!: Hex;
+let testDatabaseName!: string;
 
 beforeAll(async () => {
   // Verify forge is available before trying to use it; otherwise the build
@@ -89,10 +137,18 @@ beforeAll(async () => {
 
 // Revert chain state between every test, regardless of file.
 beforeEach(async () => {
+  testDatabaseName = `ffca_test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  TEST_DB_CONNECTION = await createTestDatabaseConnection(testDatabaseName);
   await TEST_CLIENT.revert({ id: snapshotId });
   snapshotId = await TEST_CLIENT.snapshot();
 });
 
+afterEach(async () => {
+  await TEST_DB_CONNECTION.close();
+  await dropTestDatabase(testDatabaseName);
+});
+
 afterAll(async () => {
+  await TEST_ADMIN_DB_CONNECTION.close();
   await teardown();
 });

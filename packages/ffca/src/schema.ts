@@ -1,0 +1,38 @@
+import { char, integer, numeric, pgEnum, serial } from "drizzle-orm/pg-core";
+
+// const uint8 = () => smallint();
+// const uint16 = () => integer();
+// const uint32 = () => bigint({ mode: "number" });
+// const uint40 = () => bigint({ mode: "number" });
+// const uint64 = () => bigint({ mode: "bigint" });
+const uint256 = () => numeric({ precision: 78, scale: 0 });
+const bytes32 = () => char({ length: 66 });
+
+export const mutationStatusEnum = pgEnum("mutation_status", [
+  "accepted",
+  "proposed",
+  "voted",
+  "finalized",
+  "verified",
+]);
+
+// Shared column builders for app-owned mutation tables. FFCA does not provide
+// built-in tables for apps to join against; apps spread these columns into the
+// tables they own, then add their own signature/account/payload columns.
+//
+// Persisted mutation rows start at "accepted". Pending mutations live only in
+// memory and are not part of the database model.
+export const mutationColumns = () => ({
+  // Unique within the table that owns these columns. Apps that split mutations
+  // across tables can add their own global id/sequence if they need one.
+  id: serial().primaryKey(),
+  bundleId: integer(),
+  bundlePosition: integer(),
+  blockNumber: uint256(),
+  blockHash: bytes32(),
+  blockTimestamp: uint256(),
+  transactionHash: bytes32(),
+
+  // Lifecycle tracking. Apps that want timestamps can add their own columns.
+  status: mutationStatusEnum().notNull(),
+});

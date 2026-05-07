@@ -27,7 +27,8 @@ export type BlockStatus = BundleStatus;
 // attached at execute() time. Note: it carries the user's apply/resolve
 // function references — drop it before serializing events to a wire or DB.
 
-// A mutation in the queue, before the bundle loop has touched it.
+// A mutation in the in-memory queue, before the bundle loop has touched it.
+// Pending mutations are not persisted.
 export type PendingMutation = SubmittedMutation & {
   id: number;
   status: "pending";

@@ -9,6 +9,8 @@
   },
   "dependencies": {
     "abitype": "1.2.3",
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "0.45.2",
     "effect": "3.21.0",
     "ox": "catalog:",
     "viem": "catalog:"
