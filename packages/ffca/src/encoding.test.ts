@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
+import { testMutationSchema } from "../test/utils";
 import { encodeBundleCalldata, encodeMutationCalldata } from "./encoding";
 import type { ResolvedMutation } from "./types";
 
 test("encodeMutationCalldata without resolution", () => {
   const mutation = {
     tag: 0,
+    table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
     apply: () => {},
   };
@@ -28,6 +30,7 @@ test("encodeMutationCalldata without resolution", () => {
 test("encodeMutationCalldata with resolution", () => {
   const mutation = {
     tag: 1,
+    table: testMutationSchema,
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
@@ -51,6 +54,7 @@ test("encodeMutationCalldata with resolution", () => {
 test("encodeBundleCalldata signatures are typed against signature params", () => {
   const transfer = {
     tag: 0,
+    table: testMutationSchema,
     params: parseAbiParameters("address to, uint256 amount"),
     apply: () => {},
   };
@@ -113,11 +117,13 @@ test("encodeBundleCalldata signatures are typed against signature params", () =>
 test("encodeBundleCalldata round-trips through ABI decode", () => {
   const transfer = {
     tag: 0,
+    table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
     apply: () => {},
   };
   const market = {
     tag: 1,
+    table: testMutationSchema,
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),

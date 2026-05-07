@@ -40,7 +40,7 @@ import type {
 //   Same pattern the order-book runtime uses. revm subsumes this once it lands
 //   (free state revert), so the perf hit is temporary.
 // TODO account model + signature verification (verifyMutation stub below)
-// TODO persistence: nothing wired here yet
+// TODO persistence hooks: user-owned DB writes are not wired here yet.
 // TODO event fan-out / SSE: skipped for the scaffold
 
 const BUNDLE_INTERVAL_MS = 50;
@@ -148,6 +148,8 @@ export function createFFCA(config: FFCAConfig): FFCA {
     chain,
     transport,
   });
+
+  // TODO(kyle) create drizzle here
 
   // Local nonce cache. Lazy-initialized on first use; incremented per submit.
   // TODO recover from gaps and chain divergence; per-key parallelism when
@@ -268,7 +270,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
 
     if (accepted.length === 0) return;
 
-    // TODO persist bundle + mutations here
+    // TODO call user persistence hooks for accepted bundle + mutations.
     const bundleEvent: BundleEvent = {
       id: bundleId++,
       status: "accepted",
@@ -427,7 +429,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
   // watch: poll latest block, advance proposed bundles → voted/finalized/verified
   const watch = Effect.gen(function* () {
     // TODO poll publicClient.getBlock, advance status by confirmation depth,
-    //   persist transitions, emit block events.
+    //   call user persistence hooks for transitions, emit block events.
     //   See apps/order-book-backend/src/runtime.ts:1098-1176.
   });
 

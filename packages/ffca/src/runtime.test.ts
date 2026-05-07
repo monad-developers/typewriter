@@ -31,6 +31,7 @@ import {
   setupHarnessAccount,
   signCounter,
   signHarness,
+  testMutationSchema,
 } from "../test/utils";
 import { createFFCA, verifyMutation } from "./runtime";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
@@ -50,6 +51,7 @@ const TEST_SIGNATURE = {
 // Harness/Counter so their evolving param lists don't drift these.
 const SHAPE_MUTATION = {
   tag: 0,
+  table: testMutationSchema,
   params: parseAbiParameters("address account, uint256 amount"),
   apply: () => {},
 };
@@ -184,6 +186,7 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
     mutations: {
       cancel: {
         tag: 0,
+        table: testMutationSchema,
         params: noop,
         apply: () => {
           applied.push("cancel");
@@ -191,6 +194,7 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
       },
       limit: {
         tag: 1,
+        table: testMutationSchema,
         params: noop,
         apply: () => {
           applied.push("limit");
@@ -198,6 +202,7 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
       },
       market: {
         tag: 2,
+        table: testMutationSchema,
         params: noop,
         apply: () => {
           applied.push("market");
