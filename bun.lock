@@ -43,7 +43,9 @@
         "ox": "catalog:",
       },
       "devDependencies": {
+        "prool": "catalog:",
         "solmate": "github:transmissions11/solmate",
+        "viem": "catalog:",
       },
       "peerDependencies": {
         "typescript": "catalog:",
@@ -60,7 +62,7 @@
         "viem": "catalog:",
       },
       "devDependencies": {
-        "prool": "0.2.4",
+        "prool": "catalog:",
       },
       "peerDependencies": {
         "typescript": "catalog:",
@@ -70,6 +72,7 @@
   "catalog": {
     "effect": "3.21.0",
     "ox": "0.14.10",
+    "prool": "0.2.4",
     "typescript": "^5",
     "viem": "2.47.6",
   },

@@ -9,7 +9,6 @@
 import { type Subprocess, spawn } from "bun";
 import { Data, Effect, Fiber, Queue, Ref, type Scope } from "effect";
 import type {
-  CommitResult,
   ExecuteParams,
   ExecuteResult,
   InitParams,
@@ -17,7 +16,7 @@ import type {
   Response,
 } from "./types";
 
-const BINARY_PATH = `${import.meta.dir}/../target/release/evm`;
+const BINARY_PATH = `${import.meta.dir}/../target/${Bun.env.NODE_ENV === "test" ? "debug" : "release"}/evm`;
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -49,7 +48,7 @@ export type EVM = {
   readonly simulate: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
-  readonly commitBundles: () => Effect.Effect<CommitResult, EvmError>;
+  readonly commitBundles: () => Effect.Effect<void, EvmError>;
   readonly revertBundle: () => Effect.Effect<void, EvmError>;
 };
 
@@ -163,10 +162,10 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             params,
           })),
         commitBundles: () =>
-          call<CommitResult>("commitBundles", (id) => ({
+          call<unknown>("commitBundles", (id) => ({
             method: "commitBundles",
             id,
-          })),
+          })).pipe(Effect.asVoid),
         revertBundle: () =>
           call<unknown>("revertBundle", (id) => ({
             method: "revertBundle",

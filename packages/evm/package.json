@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "cargo build --release",
-    "test": "cargo build --release && bun test",
+    "test": "cargo build && bun test",
     "typecheck": "tsc --noEmit",
     "lint": "cargo fmt --check && cargo clippy -- -D warnings && forge fmt --check test/contracts"
   },
@@ -14,7 +14,9 @@
     "ox": "catalog:"
   },
   "devDependencies": {
-    "solmate": "github:transmissions11/solmate"
+    "prool": "catalog:",
+    "solmate": "github:transmissions11/solmate",
+    "viem": "catalog:"
   },
   "peerDependencies": {
     "typescript": "catalog:"

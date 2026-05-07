@@ -16,7 +16,7 @@
     "viem": "catalog:"
   },
   "devDependencies": {
-    "prool": "0.2.4"
+    "prool": "catalog:"
   },
   "peerDependencies": {
     "typescript": "catalog:"

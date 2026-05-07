@@ -36,23 +36,12 @@ export type ExecuteParams = {
   value?: Hex.Hex;
 };
 
-export type AccountDiff = {
-  balance?: Hex.Hex;
-  nonce?: number;
-  code?: Hex.Hex;
-  storage?: { [slot: Hex.Hex]: Hex.Hex };
-};
-
 export type ExecuteResult = {
   success: boolean;
   gas_used: number;
   output: Hex.Hex;
-  access_list: { [address: Address.Address]: Hex.Hex[] };
+  access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
   revert_data?: Hex.Hex;
-};
-
-export type CommitResult = {
-  state_diff: { [address: Address.Address]: AccountDiff };
 };
 
 export type Request =

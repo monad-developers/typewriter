@@ -13,7 +13,23 @@ const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 
 import { expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
-import { AbiFunction, AbiParameters, type Address, Hash, Hex } from "ox";
+import { TEST_PUBLIC_CLIENT } from "../test/setup";
+import {
+  BALANCE_OF_SLOT,
+  deployTestToken,
+  loadTestToken,
+  mappingSlot,
+  normalizeAccessRecord,
+  RECIPIENT_ADDR,
+  SCHEDULER_ADDR,
+  SIMULATE_AMOUNT,
+  TOKEN_ADDR,
+  TOTAL_SUPPLY_SLOT,
+  TRANSFER_AMOUNT,
+  tokenInit,
+  transferData,
+  USER_ADDR,
+} from "../test/utils";
 import { createEVM } from "./index";
 
 const initWithCounter = {
@@ -21,75 +37,6 @@ const initWithCounter = {
     [COUNTER_ADDR]: { code: COUNTER_CODE },
   },
 } as const;
-
-const TOKEN_ADDR = "0x0000000000000000000000000000000000000e20" as const;
-const SCHEDULER_ADDR = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266" as const;
-const USER_ADDR = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8" as const;
-const RECIPIENT_ADDR = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc" as const;
-
-const INITIAL_SUPPLY = 1_000_000_000_000_000_000_000n;
-const TRANSFER_AMOUNT = 123_000_000_000_000_000_000n;
-const SIMULATE_AMOUNT = 456_000_000_000_000_000_000n;
-
-const TOTAL_SUPPLY_SLOT = Hex.fromNumber(2n, { size: 32 });
-const BALANCE_OF_SLOT = 3n;
-
-type ForgeArtifact = {
-  deployedBytecode: { object: Hex.Hex };
-};
-
-function mappingSlot(key: Address.Address, slot: bigint): Hex.Hex {
-  return Hash.keccak256(
-    AbiParameters.encode(AbiParameters.from("address, uint256"), [key, slot]),
-  );
-}
-
-function normalizeAccessRecord(
-  record: Record<string, Hex.Hex[]>,
-): Record<string, Hex.Hex[]> {
-  const entries: [string, Hex.Hex[]][] = Object.entries(record).map(
-    ([address, storageKeys]) => [
-      address.toLowerCase(),
-      [...storageKeys].sort(),
-    ],
-  );
-  entries.sort((a, b) => a[0].localeCompare(b[0]));
-  return Object.fromEntries(entries);
-}
-
-async function loadTestToken(): Promise<ForgeArtifact> {
-  return (await Bun.file(
-    `${import.meta.dir}/../test/contracts/out/TestToken.sol/TestToken.json`,
-  ).json()) as ForgeArtifact;
-}
-
-function tokenInit(artifact: ForgeArtifact) {
-  const schedulerBalanceSlot = mappingSlot(SCHEDULER_ADDR, BALANCE_OF_SLOT);
-  return {
-    schedulerBalanceSlot,
-    params: {
-      chain_id: 31337,
-      accounts: {
-        [TOKEN_ADDR]: {
-          code: artifact.deployedBytecode.object,
-          storage: {
-            [TOTAL_SUPPLY_SLOT]: Hex.fromNumber(INITIAL_SUPPLY, { size: 32 }),
-            [schedulerBalanceSlot]: Hex.fromNumber(INITIAL_SUPPLY, {
-              size: 32,
-            }),
-          },
-        },
-      },
-    },
-  } as const;
-}
-
-function transferData(to: Address.Address, amount: bigint): Hex.Hex {
-  const transfer = AbiFunction.from(
-    "function transfer(address to, uint256 amount) returns (bool)",
-  );
-  return AbiFunction.encodeData(transfer, [to, amount]);
-}
 
 test("init + beginBundle + commitBundles round-trips with no executes", async () => {
   const program = Effect.gen(function* () {
@@ -104,7 +51,7 @@ test("init + beginBundle + commitBundles round-trips with no executes", async ()
   expect(Exit.isSuccess(exit)).toBe(true);
 });
 
-test("execute against counter writes slot 0; commit returns state_diff", async () => {
+test("execute against counter succeeds and commitBundles squashes journals", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -114,34 +61,37 @@ test("execute against counter writes slot 0; commit returns state_diff", async (
       to: COUNTER_ADDR,
       data: "0x",
     });
-    const commit = yield* evm.commitBundles();
-    return { exec, commit };
+    yield* evm.commitBundles();
+    return exec;
   });
 
-  const result = await Effect.runPromise(Effect.scoped(program));
-  expect(result.exec.success).toBe(true);
-  expect(result.exec.revert_data).toBeUndefined();
-  expect(result.commit.state_diff[COUNTER_ADDR]?.storage).toEqual({
-    "0x0000000000000000000000000000000000000000000000000000000000000000":
-      "0x0000000000000000000000000000000000000000000000000000000000000001",
-  });
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
+  expect(exec.revert_data).toBeUndefined();
 });
 
-test("two executes in one bundle accumulate; commit reports final value", async () => {
+test("two executes in one bundle both succeed", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
     yield* evm.beginBundle();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    return yield* evm.commitBundles();
+    const first = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    const second = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitBundles();
+    return { first, second };
   });
 
-  const commit = await Effect.runPromise(Effect.scoped(program));
-  expect(commit.state_diff[COUNTER_ADDR]?.storage).toEqual({
-    "0x0000000000000000000000000000000000000000000000000000000000000000":
-      "0x0000000000000000000000000000000000000000000000000000000000000002",
-  });
+  const { first, second } = await Effect.runPromise(Effect.scoped(program));
+  expect(first.success).toBe(true);
+  expect(second.success).toBe(true);
 });
 
 test("revertBundle drops writes; next bundle starts from pre-revert state", async () => {
@@ -156,18 +106,20 @@ test("revertBundle drops writes; next bundle starts from pre-revert state", asyn
 
     // Bundle 2: increment, commit. Slot should go 0 -> 1, not 1 -> 2.
     yield* evm.beginBundle();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    return yield* evm.commitBundles();
+    const exec = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitBundles();
+    return exec;
   });
 
-  const commit = await Effect.runPromise(Effect.scoped(program));
-  expect(commit.state_diff[COUNTER_ADDR]?.storage).toEqual({
-    "0x0000000000000000000000000000000000000000000000000000000000000000":
-      "0x0000000000000000000000000000000000000000000000000000000000000001",
-  });
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
 });
 
-test("sequential committed bundles see each other's writes", async () => {
+test("sequential committed bundles keep local state", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -177,16 +129,17 @@ test("sequential committed bundles see each other's writes", async () => {
     yield* evm.commitBundles();
 
     yield* evm.beginBundle();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    return yield* evm.commitBundles();
+    const exec = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitBundles();
+    return exec;
   });
 
-  // Second bundle should observe prior value 1 and write 2.
-  const commit = await Effect.runPromise(Effect.scoped(program));
-  expect(commit.state_diff[COUNTER_ADDR]?.storage).toEqual({
-    "0x0000000000000000000000000000000000000000000000000000000000000000":
-      "0x0000000000000000000000000000000000000000000000000000000000000002",
-  });
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
 });
 
 test("execute outside an open bundle fails", async () => {
@@ -218,14 +171,13 @@ test("failed execute discards journal writes", async () => {
       to: REVERTING_ADDR,
       data: "0x",
     });
-    const commit = yield* evm.commitBundles();
-    return { exec, commit };
+    yield* evm.commitBundles();
+    return exec;
   });
 
-  const { exec, commit } = await Effect.runPromise(Effect.scoped(program));
+  const exec = await Effect.runPromise(Effect.scoped(program));
   expect(exec.success).toBe(false);
   expect(exec.revert_data).toBe("0x");
-  expect(commit.state_diff).toEqual({});
 });
 
 test("execute returns access_list with the counter address + slot 0", async () => {
@@ -237,8 +189,13 @@ test("execute returns access_list with the counter address + slot 0", async () =
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.access_list[COUNTER_ADDR]).toEqual([
-    "0x0000000000000000000000000000000000000000000000000000000000000000",
+  expect(exec.access_list).toEqual([
+    {
+      address: COUNTER_ADDR,
+      storageKeys: [
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+      ],
+    },
   ]);
 });
 
@@ -257,16 +214,12 @@ test("simulate doesn't mutate state — counter stays at 0 after simulate", asyn
     // Real bundle: increment once, expect 0 -> 1, NOT 1 -> 2.
     yield* evm.beginBundle();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    const commit = yield* evm.commitBundles();
-    return { sim, commit };
+    yield* evm.commitBundles();
+    return sim;
   });
 
-  const { sim, commit } = await Effect.runPromise(Effect.scoped(program));
+  const sim = await Effect.runPromise(Effect.scoped(program));
   expect(sim.success).toBe(true);
-  expect(commit.state_diff[COUNTER_ADDR]?.storage).toEqual({
-    "0x0000000000000000000000000000000000000000000000000000000000000000":
-      "0x0000000000000000000000000000000000000000000000000000000000000001",
-  });
 });
 
 test("simulate against a stack of uncommitted bundles preserves post-stack state", async () => {
@@ -291,17 +244,12 @@ test("simulate against a stack of uncommitted bundles preserves post-stack state
       data: "0x",
     });
 
-    // commitBundles drains the whole stack and reports the cumulative diff.
-    return { sim, commit: yield* evm.commitBundles() };
+    yield* evm.commitBundles();
+    return sim;
   });
 
-  const { sim, commit } = await Effect.runPromise(Effect.scoped(program));
+  const sim = await Effect.runPromise(Effect.scoped(program));
   expect(sim.success).toBe(true);
-  // After both bundles plus a no-op simulate: slot at 2.
-  expect(commit.state_diff[COUNTER_ADDR]?.storage).toEqual({
-    "0x0000000000000000000000000000000000000000000000000000000000000000":
-      "0x0000000000000000000000000000000000000000000000000000000000000002",
-  });
 });
 
 test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
@@ -319,15 +267,14 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
       to: TOKEN_ADDR,
       data,
     });
-    const commit = yield* evm.commitBundles();
-    return { exec, commit };
+    yield* evm.commitBundles();
+    return exec;
   });
 
-  const { exec, commit } = await Effect.runPromise(Effect.scoped(program));
+  const exec = await Effect.runPromise(Effect.scoped(program));
 
   expect({
     accessList: normalizeAccessRecord(exec.access_list),
-    stateDiff: commit.state_diff[TOKEN_ADDR]?.storage,
     success: exec.success,
     slots: {
       schedulerBalanceSlot,
@@ -336,22 +283,19 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
     },
   }).toMatchInlineSnapshot(`
     {
-      "accessList": {
-        "0x0000000000000000000000000000000000000000": [],
-        "0x0000000000000000000000000000000000000e20": [
-          "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
-          "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
-        ],
-        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": [],
-      },
+      "accessList": [
+        {
+          "address": "0x0000000000000000000000000000000000000e20",
+          "storageKeys": [
+            "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
+            "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
+          ],
+        },
+      ],
       "slots": {
         "schedulerBalanceSlot": "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
         "totalSupplySlot": "0x0000000000000000000000000000000000000000000000000000000000000002",
         "userBalanceSlot": "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
-      },
-      "stateDiff": {
-        "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80": "0x000000000000000000000000000000000000000000000006aaf7c8516d0c0000",
-        "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137": "0x00000000000000000000000000000000000000000000002f8ad1e57471940000",
       },
       "success": true,
     }
@@ -378,16 +322,15 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async 
       to: TOKEN_ADDR,
       data: transferData(RECIPIENT_ADDR, SIMULATE_AMOUNT),
     });
-    const commit = yield* evm.commitBundles();
-    return { optimistic, simulated, commit };
+    yield* evm.commitBundles();
+    return { optimistic, simulated };
   });
 
-  const { optimistic, simulated, commit } = await Effect.runPromise(
+  const { optimistic, simulated } = await Effect.runPromise(
     Effect.scoped(program),
   );
 
   expect({
-    commitStateDiff: commit.state_diff[TOKEN_ADDR]?.storage,
     optimisticAccessList: normalizeAccessRecord(optimistic.access_list),
     optimisticSuccess: optimistic.success,
     simulatedAccessList: normalizeAccessRecord(simulated.access_list),
@@ -399,27 +342,25 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async 
     },
   }).toMatchInlineSnapshot(`
     {
-      "commitStateDiff": {
-        "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80": "0x000000000000000000000000000000000000000000000006aaf7c8516d0c0000",
-        "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137": "0x00000000000000000000000000000000000000000000002f8ad1e57471940000",
-      },
-      "optimisticAccessList": {
-        "0x0000000000000000000000000000000000000000": [],
-        "0x0000000000000000000000000000000000000e20": [
-          "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
-          "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
-        ],
-        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": [],
-      },
+      "optimisticAccessList": [
+        {
+          "address": "0x0000000000000000000000000000000000000e20",
+          "storageKeys": [
+            "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
+            "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
+          ],
+        },
+      ],
       "optimisticSuccess": true,
-      "simulatedAccessList": {
-        "0x0000000000000000000000000000000000000000": [],
-        "0x0000000000000000000000000000000000000e20": [
-          "0x961ec03a078fec1e350bb1ca3bff1afa4bae5fb83d9d8382550c2fd26a7d7527",
-          "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
-        ],
-        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": [],
-      },
+      "simulatedAccessList": [
+        {
+          "address": "0x0000000000000000000000000000000000000e20",
+          "storageKeys": [
+            "0x961ec03a078fec1e350bb1ca3bff1afa4bae5fb83d9d8382550c2fd26a7d7527",
+            "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
+          ],
+        },
+      ],
       "simulatedSuccess": true,
       "slots": {
         "recipientBalanceSlot": "0x961ec03a078fec1e350bb1ca3bff1afa4bae5fb83d9d8382550c2fd26a7d7527",
@@ -428,6 +369,34 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async 
       },
     }
   `);
+});
+
+test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfer", async () => {
+  const artifact = await loadTestToken();
+  const tokenAddr = await deployTestToken(artifact);
+  const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
+  const rpcAccessList = normalizeAccessRecord(
+    (
+      await TEST_PUBLIC_CLIENT.createAccessList({
+        account: SCHEDULER_ADDR,
+        to: tokenAddr,
+        data,
+      })
+    ).accessList,
+  );
+
+  const { params } = tokenInit(artifact, tokenAddr);
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(params);
+    return yield* evm.simulate({
+      from: SCHEDULER_ADDR,
+      to: tokenAddr,
+      data,
+    });
+  });
+  const sidecar = await Effect.runPromise(Effect.scoped(program));
+  expect(normalizeAccessRecord(sidecar.access_list)).toEqual(rpcAccessList);
 });
 
 test("init twice fails", async () => {

@@ -85,31 +85,21 @@ struct Response {
     error: Option<String>,
 }
 
-#[derive(Serialize, Default)]
-struct AccountDiff {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    balance: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    nonce: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    storage: Option<BTreeMap<String, String>>,
-}
-
 #[derive(Serialize)]
 struct ExecuteOk {
     success: bool,
     gas_used: u64,
     output: String,
-    access_list: BTreeMap<String, Vec<String>>,
+    access_list: Vec<AccessListEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
 }
 
 #[derive(Serialize)]
-struct CommitOk {
-    state_diff: BTreeMap<String, AccountDiff>,
+struct AccessListEntry {
+    address: String,
+    #[serde(rename = "storageKeys")]
+    storage_keys: Vec<String>,
 }
 
 // -----------------------------------------------------------------------------
@@ -212,39 +202,14 @@ impl EvmHarness {
         Ok(())
     }
 
-    fn commit_bundles(&mut self) -> Result<CommitOk, String> {
+    fn commit_bundles(&mut self) -> Result<(), String> {
         if self.bundles.is_empty() {
             return Err("no bundle is open".into());
         }
-        // commit drops every bundle's pre-image record. Writes are already
-        // in the DB (each execute committed there); we just lose the ability
-        // to rewind.
-        let mut state_diff = std::collections::BTreeMap::<String, AccountDiff>::new();
-        for bundle in self.bundles.drain(..) {
-            for (addr, (pre, post)) in bundle.accounts {
-                let entry = state_diff.entry(format!("0x{addr:x}")).or_default();
-                if pre.balance != post.balance {
-                    entry.balance = Some(format!("0x{:x}", post.balance));
-                }
-                if pre.nonce != post.nonce {
-                    entry.nonce = Some(post.nonce);
-                }
-                if pre.code_hash != post.code_hash {
-                    if let Some(code) = post.code.as_ref() {
-                        entry.code = Some(format!("0x{}", hex::encode(code.original_byte_slice())));
-                    }
-                }
-            }
-            for ((addr, slot), (pre, post)) in bundle.storage {
-                if pre == post {
-                    continue;
-                }
-                let entry = state_diff.entry(format!("0x{addr:x}")).or_default();
-                let storage = entry.storage.get_or_insert_with(Default::default);
-                storage.insert(format!("0x{slot:064x}"), format!("0x{post:064x}"));
-            }
-        }
-        Ok(CommitOk { state_diff })
+        // Writes are already in the DB (each successful execute committed
+        // there). Committing bundles just drops rewind metadata.
+        self.bundles.clear();
+        Ok(())
     }
 
     fn revert_bundle(&mut self) -> Result<(), String> {
@@ -465,8 +430,8 @@ fn collect_access_list(state: &revm::state::EvmState) -> AccessList {
     AccessList(items)
 }
 
-fn encode_access_list(list: &AccessList) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
+    let mut out: Vec<AccessListEntry> = Vec::new();
     for item in &list.0 {
         let keys: Vec<String> = item
             .storage_keys
@@ -475,8 +440,15 @@ fn encode_access_list(list: &AccessList) -> BTreeMap<String, Vec<String>> {
             .collect();
         let mut keys = keys;
         keys.sort();
-        out.insert(format!("0x{:x}", item.address), keys);
+        if keys.is_empty() {
+            continue;
+        }
+        out.push(AccessListEntry {
+            address: format!("0x{:x}", item.address),
+            storage_keys: keys,
+        });
     }
+    out.sort_by(|a, b| a.address.cmp(&b.address));
     out
 }
 
@@ -546,7 +518,7 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
             Err(e) => err(id, e),
         },
         Request::CommitBundles { id } => match harness.commit_bundles() {
-            Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
+            Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
         Request::RevertBundle { id } => match harness.revert_bundle() {
