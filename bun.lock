@@ -51,6 +51,20 @@
         "solmate": "github:transmissions11/solmate",
       },
     },
+    "apps/order-book-ffca": {
+      "name": "order-book-ffca",
+      "version": "0.1.0",
+      "dependencies": {
+        "drizzle-orm": "0.45.2",
+        "ffca": "workspace:*",
+        "order-book-sdk": "workspace:*",
+        "ox": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "prool": "0.2.4",
+      },
+    },
     "apps/order-book-scripts": {
       "name": "order-book-scripts",
       "dependencies": {
@@ -433,6 +447,8 @@
     "order-book-backend": ["order-book-backend@workspace:apps/order-book-backend"],
 
     "order-book-contracts": ["order-book-contracts@workspace:apps/order-book-contracts"],
+
+    "order-book-ffca": ["order-book-ffca@workspace:apps/order-book-ffca"],
 
     "order-book-scripts": ["order-book-scripts@workspace:apps/order-book-scripts"],
 

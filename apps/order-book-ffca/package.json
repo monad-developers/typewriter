@@ -1,0 +1,23 @@
+{
+  "name": "order-book-ffca",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "NODE_ENV=production bun src/index.ts",
+    "test": "bun test --timeout 60000",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "ffca": "workspace:*",
+    "order-book-sdk": "workspace:*",
+    "ox": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "prool": "0.2.4"
+  }
+}
