@@ -1,0 +1,38 @@
+{
+  "name": "order-book",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "NODE_ENV=production bun src/index.ts",
+    "test": "bun test --timeout 60000",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "contracts:build": "forge build --root contracts",
+    "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
+    "deploy": ". .env && forge build --root contracts && forge script --root contracts ./script/OrderBook.s.sol:OrderBookScript --broadcast --fork-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.96.1",
+    "clsx": "2.1.1",
+    "drizzle-orm": "0.45.2",
+    "ffca": "workspace:*",
+    "ox": "catalog:",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "shiki": "4.0.2",
+    "tailwind-merge": "3.5.0",
+    "viem": "catalog:",
+    "webauthx": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "bun-plugin-tailwind": "0.1.2",
+    "forge-std": "github:foundry-rs/forge-std#620536f",
+    "prool": "0.2.4",
+    "tailwindcss": "4.2.2",
+    "tw-animate-css": "1.4.0"
+  }
+}

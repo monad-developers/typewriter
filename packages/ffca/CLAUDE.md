@@ -4,7 +4,7 @@ Instructions for agents working on `packages/ffca`.
 
 ## What this package is
 
-`ffca` ("framework for crypto apps") is a generic framework being extracted from `apps/order-book-backend`. The order book is the first consumer. The package itself must not contain any order-book-specific code.
+`ffca` ("framework for crypto apps") is a generic framework being extracted alongside `apps/order-book`. The order book is the first consumer. The package itself must not contain any order-book-specific code.
 
 ffca is a framework, not a runtime that adapts to arbitrary contracts. It prescribes the shape of the contracts that use it — execution surface, storage layout conventions, event conventions — so that the runtime, decode layer, and tooling above it can be sharp and opinionated rather than defensive. Conformance is the API.
 
@@ -48,7 +48,7 @@ If broad test runs fail during setup, run `DATABASE_URL=postgres://postgres@loca
 
 ## Roadmap
 
-The frame: every change is purpose-built for making it easier to build apps with ffca, or for making the apps built better. Apps come first; the framework follows them. The goal is to port `apps/order-book-backend` onto ffca and have it back to demo-grade reliability — knowing the ffca-backed version will be temporarily worse than what it replaces.
+The frame: every change is purpose-built for making it easier to build apps with ffca, or for making the apps built better. Apps come first; the framework follows them. The goal is to keep `apps/order-book` demo-grade while extracting reusable framework seams into ffca.
 
 ### Lanes
 
@@ -102,7 +102,7 @@ The active sequence. Demo-grade reliability by end of week.
 1. **Account model decision.** Prescribed vs. interface. Blocked on more contract iteration.
 2. **Watch loop.** ~80 lines. Polls latest block, advances proposed → voted → finalized → verified by configurable confirmation depth. Account-agnostic; can land before #1.
 3. **Signature codec.** Falls out of #1 — once `account`/`keyId` are ffca concepts, the wire format is mechanical.
-4. **Order-book port.** Replace `apps/order-book-backend/src/runtime.ts` with `createFFCA` + listeners. App keeps DB, HTTP, signature verification, nonces.
+4. **Order-book port.** Keep `apps/order-book` on `createFFCA` + listeners. App keeps DB, HTTP, signature verification, nonces.
 5. **Demo-readiness sweep.** Backpressure, deterministic shutdown, timing logs, remove `process.exit(1)` from the fiber-died handler.
 
 ### Open decisions
@@ -115,7 +115,7 @@ Forks that gate sequencing. Listed so they don't get rediscovered every session.
 
 ## Working in this package
 
-- **Don't add speculative surface.** Every exported type, function, and config field must have a real call site that needs it. If nothing in the order-book backend (or another consumer) calls it, delete it. We'll build the surface up one extraction at a time.
+- **Don't add speculative surface.** Every exported type, function, and config field must have a real call site that needs it. If nothing in the order-book app (or another consumer) calls it, delete it. We'll build the surface up one extraction at a time.
 - **Don't write README/doc sections ahead of code.** Document features after they work, not before.
 - **The README is evidence, not argument.** It should describe what ffca is and does so readers can draw their own conclusions about why it's impactful. Don't editorialize or make the case for the framework in it.
 - **Don't leak order-book vocabulary.** No mention of `instrument`, `order`, `fill`, `tick`, etc. in ffca code. If a concept feels generic but the only example is order-book, it probably isn't generic yet.

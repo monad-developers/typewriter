@@ -17,16 +17,13 @@ A self-contained exchange stack — contracts, server, and live UI — that demo
 
 ```
 apps/
-  order-book-backend/   # Bun + React + Postgres backend; live UI showing block/mutation/account state
-  order-book-contracts/ # Exchange.sol + Account.sol; batch execution, EIP-712 signed mutations, P256/WebAuthn auth
-  order-book-scripts/   # CLI scripts emulating market participants (limit, market, market-maker, retail, arbitrage)
-  order-book-sdk/       # shared types and math for the order-book app (TokenAmount, instruments, price/quantity conversion)
+  order-book/           # FFCA-backed order book app, contracts, frontend, SDK, scripts, tests, and docs
 
 packages/
   ffca/                 # framework for crypto apps (work in progress)
 ```
 
-The backend serves the frontend, hosts the runtime that batches and submits to the contract, and exposes the API the scripts drive against. See the in-app `/about` page for an architectural walkthrough — message lifecycle, accounts/keys/nonces, censorship resistance, force-exit, gas figures.
+The app serves the frontend, hosts the FFCA runtime that batches and submits to the contract, and exposes the API the scripts drive against. See the in-app `/about` page for an architectural walkthrough — message lifecycle, accounts/keys/nonces, censorship resistance, force-exit, gas figures.
 
 ## Prerequisites
 
@@ -49,7 +46,7 @@ anvil --block-time 0.4
 In another terminal, deploy the Exchange to local Anvil:
 
 ```bash
-cd apps/order-book-contracts
+cd apps/order-book
 cp .env.example.local .env
 bun run deploy
 ```
@@ -57,7 +54,7 @@ bun run deploy
 In another terminal, start the backend (which serves the frontend):
 
 ```bash
-cd apps/order-book-backend
+cd apps/order-book
 cp .env.example.local .env
 bun dev
 ```
@@ -65,13 +62,13 @@ bun dev
 Open <http://localhost:3000>. Sign up with WebAuthn, deposit, then place orders — or run a participant script:
 
 ```bash
-cd apps/order-book-scripts
+cd apps/order-book
 cp .env.example .env
 bun scripts/add-instrument.ts
 PRICE=2400 SIDE=buy QUANTITY=1 INSTRUMENT=GOLD/USD bun scripts/limit-order.ts
 ```
 
-See [apps/order-book-scripts/README.md](apps/order-book-scripts/README.md) for the full script catalog.
+See [apps/order-book/scripts/README.md](apps/order-book/scripts/README.md) for the full script catalog.
 
 ## Scripts
 

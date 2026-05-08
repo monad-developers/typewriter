@@ -87,7 +87,7 @@ export type FFCA = {
 //   key lookup, key-expiry check, nonce sequence check, and deadline check.
 //   The deadline check is skipped here because where `deadline` lives in
 //   args/envelope isn't decided yet.
-//   See apps/order-book-backend/src/signature.ts:135-260.
+//   See apps/order-book/src/signature.ts:135-260.
 export function verifyMutation(
   mutation: FFCAMutationConfig,
   signatureParams: readonly AbiParameters.Parameter[],
@@ -650,7 +650,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
   const watch = Effect.gen(function* () {
     // TODO poll publicClient.getBlock, advance status by confirmation depth,
     //   call user persistence hooks for transitions, emit block events.
-    //   See apps/order-book-backend/src/runtime.ts:1098-1176.
+    //   See the pre-FFCA order-book runtime watch loop.
   }).pipe(Effect.withLogSpan("watch"));
 
   const bundleProgram = Effect.repeat(

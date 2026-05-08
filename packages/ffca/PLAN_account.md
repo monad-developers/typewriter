@@ -21,9 +21,9 @@ contract expects — `account`, `keyId`, etc.
 - ⏳ Authorize hook — single seam where ffca passes the digest, signature,
   args, and state to the app. Open question: one hook (app calls ffca's
   crypto) vs. two hooks (app supplies key, ffca verifies).
-- ⏳ Native sig verification primitives (P-256, WebAuthn-P256, secp256k1).
-  Extracted from `apps/order-book-backend/src/signature.ts:135-260`.
-- ⏳ EIP-712 digest construction at the seam — ffca builds, never accepts a
+- ✅ Native sig verification primitives (P-256, WebAuthn-P256, secp256k1).
+  Extracted from `apps/order-book/src/signature.ts:135-260`.
+- ✅ EIP-712 digest construction at the seam — ffca builds, never accepts a
   client-supplied digest.
 
 ## Open decisions
@@ -40,7 +40,7 @@ ffca pre-flights every mutation via `eth_call` against it.
 **For:**
 - Single source of truth. The contract's `execute()` already does this work
   on-chain; a view function reuses the same Solidity. No TS reimplementation
-  to keep in sync. Order-book's `apps/order-book-backend/src/signature.ts`
+  to keep in sync. Order-book's `apps/order-book/src/signature.ts`
   is exactly the kind of mirror that rots — this kills the mirror.
 - Apps that change auth semantics change Solidity only. ffca and the TS
   surface are stable.
@@ -109,4 +109,4 @@ two-hook concept. Worth re-trying with a clearer name (`getSigner`?
    internally).
 6. Validate `signature.params` includes `keyType` + `rawSignature` at
    `createFFCA` time.
-7. Port `apps/order-book-backend` onto the new seam.
+7. Port `apps/order-book` onto the new seam.

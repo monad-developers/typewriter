@@ -36,7 +36,7 @@ export const BOB_ACCOUNT = privateKeyToAccount(BOB_PRIVATE_KEY);
 export const P256_PRIVATE_KEY: Hex =
   "0x1db0e88607f75d3f7fd7fd568b6929551c25e893aa1cbdce2536ad478d8f43b1";
 
-// Port chosen to avoid colliding with order-book-backend's tests so the two
+// Port chosen to avoid colliding with order-book tests so the two
 // suites can run in parallel.
 export const TEST_RPC_URL = "http://localhost:8545/1";
 const testEnv = process.env as {
