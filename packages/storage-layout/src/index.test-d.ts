@@ -159,12 +159,18 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
     typeof layout,
     "metadata.lastUpdate"
   >;
+  type NestedPath = StoragePathToPrimitiveType<
+    typeof layout,
+    {
+      root: "metadata";
+      segments: readonly [{ kind: "field"; name: "paused" }];
+    }
+  >;
 
   expectTypeOf<Owner>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<SupplyPath>().toEqualTypeOf<bigint>();
-  expectTypeOf<Nested>().toEqualTypeOf<
-    ["Error: Nested storage path string typing is not implemented yet."]
-  >();
+  expectTypeOf<Nested>().toEqualTypeOf<bigint>();
+  expectTypeOf<NestedPath>().toEqualTypeOf<boolean>();
 });
 
 test("storage layout extraction helpers preserve layout names", () => {
@@ -182,9 +188,14 @@ test("storage layout extraction helpers preserve layout names", () => {
     | { root: "supply"; segments: readonly [] }
     | { root: "flags"; segments: readonly [] }
     | { root: "owner"; segments: readonly [] }
-    | { root: "metadata"; segments: readonly [] }
-    | { root: "numbers"; segments: readonly [] }
-    | { root: "balances"; segments: readonly [] }
+    | {
+        root: "metadata";
+        segments: readonly [{ kind: "field"; name: "lastUpdate" }];
+      }
+    | {
+        root: "metadata";
+        segments: readonly [{ kind: "field"; name: "paused" }];
+      }
   >();
 });
 

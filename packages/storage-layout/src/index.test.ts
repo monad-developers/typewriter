@@ -17,6 +17,9 @@ const PACKED_OWNER_PAUSED =
 const PACKED_OWNER_UNPAUSED =
   `0x${"00".repeat(12)}${OWNER.slice(2)}` as HexString;
 const SALT = `0x${"ff".repeat(32)}` as HexString;
+const METADATA_PACKED =
+  `0x${"00".repeat(23)}01${"00".repeat(7)}2a` as HexString;
+const PADDED_OWNER = `0x${"00".repeat(12)}${OWNER.slice(2)}` as HexString;
 
 const layout = {
   storage: [
@@ -63,9 +66,17 @@ const layout = {
     {
       astId: 6,
       contract: "src/Test.sol:Test",
-      label: "balances",
+      label: "metadata",
       offset: 0,
       slot: "4",
+      type: "t_struct(Metadata)20_storage",
+    },
+    {
+      astId: 7,
+      contract: "src/Test.sol:Test",
+      label: "balances",
+      offset: 0,
+      slot: "7",
       type: "t_mapping(t_address,t_uint256)",
     },
   ],
@@ -97,10 +108,69 @@ const layout = {
       numberOfBytes: "32",
       value: "t_uint256",
     },
+    "t_struct(Inner)19_storage": {
+      encoding: "inplace",
+      label: "struct Test.Inner",
+      members: [
+        {
+          astId: 11,
+          contract: "src/Test.sol:Test",
+          label: "count",
+          offset: 0,
+          slot: "0",
+          type: "t_uint256",
+        },
+      ],
+      numberOfBytes: "32",
+    },
+    "t_struct(Metadata)20_storage": {
+      encoding: "inplace",
+      label: "struct Test.Metadata",
+      members: [
+        {
+          astId: 8,
+          contract: "src/Test.sol:Test",
+          label: "lastUpdate",
+          offset: 0,
+          slot: "0",
+          type: "t_uint64",
+        },
+        {
+          astId: 9,
+          contract: "src/Test.sol:Test",
+          label: "active",
+          offset: 8,
+          slot: "0",
+          type: "t_bool",
+        },
+        {
+          astId: 10,
+          contract: "src/Test.sol:Test",
+          label: "admin",
+          offset: 0,
+          slot: "1",
+          type: "t_address",
+        },
+        {
+          astId: 12,
+          contract: "src/Test.sol:Test",
+          label: "inner",
+          offset: 0,
+          slot: "2",
+          type: "t_struct(Inner)19_storage",
+        },
+      ],
+      numberOfBytes: "96",
+    },
     t_uint256: {
       encoding: "inplace",
       label: "uint256",
       numberOfBytes: "32",
+    },
+    t_uint64: {
+      encoding: "inplace",
+      label: "uint64",
+      numberOfBytes: "8",
     },
   },
 } as const satisfies StorageLayout;
@@ -182,6 +252,89 @@ test("getStorageSlot resolves top-level value types", () => {
   `);
 });
 
+test("getStorageSlot resolves struct fields and whole structs", () => {
+  expect(getStorageSlot(layout, "metadata.lastUpdate")).toMatchInlineSnapshot(`
+    [
+      {
+        "numberOfBytes": 8,
+        "offset": 0,
+        "path": {
+          "root": "metadata",
+          "segments": [
+            {
+              "kind": "field",
+              "name": "lastUpdate",
+            },
+          ],
+        },
+        "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
+        "type": "uint64",
+      },
+    ]
+  `);
+  expect(
+    getStorageSlot(layout, "metadata").map(({ path }) =>
+      formatStoragePath(path),
+    ),
+  ).toMatchInlineSnapshot(`
+      [
+        "metadata.lastUpdate",
+        "metadata.active",
+        "metadata.admin",
+        "metadata.inner.count",
+      ]
+    `);
+});
+
+test("getStorageSlot rejects whole structs with dynamic fields", () => {
+  const dynamicStructLayout = {
+    storage: [
+      {
+        astId: 20,
+        contract: "src/Test.sol:Test",
+        label: "holder",
+        offset: 0,
+        slot: "0",
+        type: "t_struct(HasDynamic)21_storage",
+      },
+    ],
+    types: {
+      ...layout.types,
+      "t_struct(HasDynamic)21_storage": {
+        encoding: "inplace",
+        label: "struct Test.HasDynamic",
+        members: [
+          {
+            astId: 21,
+            contract: "src/Test.sol:Test",
+            label: "value",
+            offset: 0,
+            slot: "0",
+            type: "t_uint256",
+          },
+          {
+            astId: 22,
+            contract: "src/Test.sol:Test",
+            label: "balances",
+            offset: 0,
+            slot: "1",
+            type: "t_mapping(t_address,t_uint256)",
+          },
+        ],
+        numberOfBytes: "64",
+      },
+    },
+  } as const satisfies StorageLayout;
+
+  expect(
+    getStaticStoragePaths(dynamicStructLayout).map(formatStoragePath),
+  ).toEqual(["holder.value"]);
+  expect(getStorageSlot(dynamicStructLayout, "holder.value")).toHaveLength(1);
+  expect(() => getStorageSlot(dynamicStructLayout, "holder")).toThrow(
+    "unsupported storage path type 'mapping(address => uint256)' for holder.balances",
+  );
+});
+
 test("getStoragePath maps changed slots to generated static paths", () => {
   expect(
     getStoragePath(layout, ["0x1"]).map(formatStoragePath),
@@ -215,6 +368,21 @@ test("getStaticStoragePaths omits mappings", () => {
         "paused",
         "debt",
         "salt",
+        "metadata.lastUpdate",
+        "metadata.active",
+        "metadata.admin",
+        "metadata.inner.count",
+      ]
+    `);
+});
+
+test("getStoragePath returns struct leaf paths", () => {
+  expect(
+    getStoragePath(layout, ["0x4"]).map(formatStoragePath),
+  ).toMatchInlineSnapshot(`
+      [
+        "metadata.lastUpdate",
+        "metadata.active",
       ]
     `);
 });
@@ -225,6 +393,9 @@ test("decodeStorage decodes value types from raw slots", () => {
     "0x1": PACKED_OWNER_PAUSED,
     "0x2": "0xffff",
     "0x3": SALT,
+    "0x4": METADATA_PACKED,
+    "0x5": PADDED_OWNER,
+    "0x6": "0x63",
   } as const;
 
   expect(decodeStorage(layout, "totalSupply", storage)).toBe(42n);
@@ -232,6 +403,14 @@ test("decodeStorage decodes value types from raw slots", () => {
   expect(decodeStorage(layout, "paused", storage)).toBe(true);
   expect(decodeStorage(layout, "debt", storage)).toBe(-1);
   expect(decodeStorage(layout, "salt", storage)).toBe(SALT);
+  expect(decodeStorage(layout, "metadata.lastUpdate", storage)).toBe(42n);
+  expect(decodeStorage(layout, "metadata.active", storage)).toBe(true);
+  expect(decodeStorage(layout, "metadata", storage)).toEqual({
+    active: true,
+    admin: OWNER,
+    inner: { count: 99n },
+    lastUpdate: 42n,
+  });
 });
 
 test("encodeStorage encodes full-slot value types", () => {
@@ -264,6 +443,62 @@ test("encodeStorage preserves neighboring bytes for packed values", () => {
   ]);
 });
 
+test("encodeStorage encodes nested struct fields and whole structs", () => {
+  const storage = {
+    "0x4": METADATA_PACKED,
+    "0x5": PADDED_OWNER,
+    "0x6": "0x63",
+  } as const;
+
+  expect(encodeStorage(layout, "metadata.active", false, storage)).toEqual([
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000004",
+      value:
+        "0x000000000000000000000000000000000000000000000000000000000000002a",
+    },
+  ]);
+  expect(
+    encodeStorage(
+      layout,
+      "metadata",
+      {
+        active: false,
+        admin: OWNER,
+        inner: { count: 100n },
+        lastUpdate: 43n,
+      },
+      storage,
+    ),
+  ).toEqual([
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000004",
+      value:
+        "0x000000000000000000000000000000000000000000000000000000000000002b",
+    },
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000005",
+      value: PADDED_OWNER,
+    },
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000006",
+      value:
+        "0x0000000000000000000000000000000000000000000000000000000000000064",
+    },
+  ]);
+});
+
+test("encodeStorage rejects missing struct fields", () => {
+  expect(() =>
+    encodeStorage(
+      layout,
+      "metadata",
+      // @ts-expect-error intentional runtime validation case
+      { active: false, admin: OWNER, lastUpdate: 43n },
+      { "0x4": METADATA_PACKED, "0x5": PADDED_OWNER, "0x6": "0x63" },
+    ),
+  ).toThrow("missing value for storage path: metadata.inner.count");
+});
+
 test("encodeStorage requires existing slots for packed values", () => {
   expect(() => encodeStorage(layout, "paused", false)).toThrow(
     "existing storage value is required to encode packed path: paused",
@@ -272,7 +507,7 @@ test("encodeStorage requires existing slots for packed values", () => {
 
 test("nested and dynamic paths fail explicitly until implemented", () => {
   expect(() => getStorageSlot(layout, "balances[0x1234]")).toThrow(
-    "nested storage paths are not supported yet: balances[0x1234]",
+    "subscript storage paths are not supported yet: balances[0x1234]",
   );
   expect(() => getStorageSlot(layout, "balances")).toThrow(
     "unsupported storage path type 'mapping(address => uint256)' for balances",
