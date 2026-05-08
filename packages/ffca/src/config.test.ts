@@ -46,11 +46,7 @@ test("createFFCA mutation", () => {
         tag: 0,
         table: testMutationSchema,
         params: parseAbiParameters("address from, address to, uint256 amount"),
-        // FFCAMutationConfig's variants share field names; TS can't pick one
-        // from the absence of `resolve` alone, so it widens these params to
-        // `any` and noImplicitAny errors.
-        // @ts-expect-error
-        apply: (_state, _args) => {},
+        apply: () => {},
       },
     },
   });
@@ -66,8 +62,8 @@ test("createFFCA mutation with resolution", () => {
         table: testMutationSchema,
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-        resolve: (_state, _args, _signature, _bundle) => {},
-        apply: (_state, _args, _resolution, _signature) => {},
+        resolve: () => {},
+        apply: () => {},
       },
     },
   });

@@ -31,6 +31,7 @@ export type BlockStatus = BundleStatus;
 export type PendingMutation = SubmittedMutation & {
   id: number;
   status: "pending";
+  digest: Hex.Hex;
   config: FFCAMutationConfig;
 };
 
@@ -38,6 +39,7 @@ export type PendingMutation = SubmittedMutation & {
 type RejectedMutation = SubmittedMutation & {
   id: number;
   status: "rejected";
+  digest: Hex.Hex;
   error: unknown;
   config: FFCAMutationConfig;
 };
@@ -50,6 +52,7 @@ export type ResolvedMutation = BundleStatus extends infer S
     ? SubmittedMutation & {
         id: number;
         status: S;
+        digest: Hex.Hex;
         resolution?: unknown;
         config: FFCAMutationConfig;
       }

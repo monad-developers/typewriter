@@ -1,8 +1,9 @@
 import { eq } from "drizzle-orm";
-import type { FFCAConfig } from "ffca";
+import { type FFCAConfig, verifySignature as verifyKeySignature } from "ffca";
 import {
   encodeAbiParameters,
   type Hex,
+  keccak256,
   parseAbiParameters,
   parseSignature,
 } from "viem";
@@ -12,7 +13,7 @@ import {
   type Authorize,
   type CloseOrder,
   type Deposit,
-  getAccount,
+  getNonceSeq,
   handleAddInstrument,
   handleAuthorize,
   handleCloseOrder,
@@ -28,6 +29,14 @@ import {
   type MarketOrder,
   type MarketOrderResolution,
   MutationType,
+  PERM_ADD_INSTRUMENT,
+  PERM_AUTHORIZE,
+  PERM_CLOSE_ORDER,
+  PERM_DEPOSIT,
+  PERM_LIMIT_ORDER,
+  PERM_MARKET_ORDER,
+  PERM_REVOKE,
+  PERM_WITHDRAW,
   type Revoke,
   type State,
   type Withdrawal,
@@ -35,6 +44,7 @@ import {
 import { resolveMarketOrder } from "./resolution";
 
 type OrderBookState = State<bigint>;
+const UINT64_MASK = 0xffffffffffffffffn;
 
 export const ORDER_BOOK_SIGNATURE_PARAMS = parseAbiParameters(
   "bytes32 account, uint64 keyId, bytes rawSignature",
@@ -97,12 +107,67 @@ export const ORDER_BOOK_SEQUENCE = [
   "Withdrawal",
 ] as const;
 
-function bumpNonce(
+function verifyInitializeSignature(
+  args: InitializeArgs,
+  signature: OrderBookSignature,
+): void {
+  const expected = keccak256(args.rootPublicKey);
+  if (signature.account.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error(
+      `InvalidAccount: account=${signature.account}, expected=${expected}`,
+    );
+  }
+}
+
+function verifySignedMutation(
   state: OrderBookState,
   signature: OrderBookSignature,
   args: SignedArgs,
+  digest: Hex,
+  permission: number,
 ): void {
-  incrementNonce(getAccount(state, signature.account), args.nonce >> 64n);
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  if (args.deadline < now) {
+    throw new Error(
+      `SignatureExpired: deadline=${args.deadline}, now=${now}, account=${signature.account}`,
+    );
+  }
+
+  const acc = state.accounts[signature.account];
+  const key = acc?.keys[Number(signature.keyId)];
+  if (acc === undefined || key === undefined || key.permissions === 0) {
+    throw new Error(
+      `KeyNotFound: account=${signature.account}, keyId=${signature.keyId}`,
+    );
+  }
+  if (key.expiry !== 0 && BigInt(key.expiry) < now) {
+    throw new Error(
+      `KeyExpired: account=${signature.account}, keyId=${signature.keyId}, expiry=${key.expiry}, now=${now}`,
+    );
+  }
+
+  verifyKeySignature(
+    key.keyType,
+    digest,
+    key.publicKey,
+    signature.rawSignature,
+  );
+
+  const nonceKey = args.nonce >> 64n;
+  const nonceSeq = args.nonce & UINT64_MASK;
+  const stored = getNonceSeq(acc, nonceKey);
+  if (nonceSeq !== stored) {
+    throw new Error(
+      `InvalidNonce: account=${signature.account}, expected=${stored}, got=${nonceSeq}, nonceKey=${nonceKey}`,
+    );
+  }
+  incrementNonce(acc, nonceKey);
+
+  if ((key.permissions & permission) === 0) {
+    throw new Error(
+      `Unauthorized: account=${signature.account}, keyId=${signature.keyId}, permissions=${key.permissions}, required=${permission}`,
+    );
+  }
 }
 
 function applyInitialize(
@@ -110,6 +175,7 @@ function applyInitialize(
   args: InitializeArgs,
   signature: OrderBookSignature,
 ): void {
+  verifyInitializeSignature(args, signature);
   handleInitialize(state, args, signature.account);
 }
 
@@ -117,36 +183,40 @@ function applyAuthorize(
   state: OrderBookState,
   args: AuthorizeArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_AUTHORIZE);
   handleAuthorize(state, args, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function applyRevoke(
   state: OrderBookState,
   args: RevokeArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_REVOKE);
   handleRevoke(state, args, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function applyCloseOrder(
   state: OrderBookState,
   args: CloseOrderArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_CLOSE_ORDER);
   handleCloseOrder(state, args, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function applyLimitOrder(
   state: OrderBookState,
   args: LimitOrderArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_LIMIT_ORDER);
   handleLimitOrder(state, args, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function applyMarketOrder(
@@ -154,36 +224,40 @@ function applyMarketOrder(
   args: MarketOrderArgs,
   resolution: MarketOrderResolution<bigint>,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_MARKET_ORDER);
   handleMarketOrder(state, args, resolution, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function applyAddInstrument(
   state: OrderBookState,
   args: AddInstrumentArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_ADD_INSTRUMENT);
   handleAddInstrument(state, args);
-  bumpNonce(state, signature, args);
 }
 
 function applyDeposit(
   state: OrderBookState,
   args: DepositArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_DEPOSIT);
   handleDeposit(state, args, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function applyWithdrawal(
   state: OrderBookState,
   args: WithdrawalArgs,
   signature: OrderBookSignature,
+  digest: Hex,
 ): void {
+  verifySignedMutation(state, signature, args, digest, PERM_WITHDRAW);
   handleWithdrawal(state, args, signature.account);
-  bumpNonce(state, signature, args);
 }
 
 function resolveMarket(
@@ -203,12 +277,21 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint8 permissions, bytes rootPublicKey, bytes publicKey",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyInitialize(
           state as OrderBookState,
           args as InitializeArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+        ),
     },
     Authorize: {
       tag: MutationType.Authorize,
@@ -216,12 +299,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "bytes32 account, uint40 expiry, uint8 keyType, uint8 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyAuthorize(
           state as OrderBookState,
           args as AuthorizeArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
     Revoke: {
       tag: MutationType.Revoke,
@@ -229,12 +323,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyRevoke(
           state as OrderBookState,
           args as RevokeArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
     CloseOrder: {
       tag: MutationType.CloseOrder,
@@ -242,12 +347,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "uint64 orderId, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyCloseOrder(
           state as OrderBookState,
           args as CloseOrderArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
     LimitOrder: {
       tag: MutationType.LimitOrder,
@@ -255,12 +371,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyLimitOrder(
           state as OrderBookState,
           args as LimitOrderArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
     MarketOrder: {
       tag: MutationType.MarketOrder,
@@ -269,28 +396,35 @@ export function baseMutations(): FFCAConfig["mutations"] {
         "uint256 quantity, uint256 minReceivedQuantity, uint64 instrumentId, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
       ),
       resolution: parseAbiParameters("(uint64 quantity, uint64 price)[] fills"),
-      resolve: ((state: unknown, args: unknown) =>
-        resolveMarket(state as OrderBookState, args as MarketOrderArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => unknown,
-      apply: ((
-        state: unknown,
-        args: unknown,
-        resolution: unknown,
-        signature: unknown,
-      ) =>
+      resolve: ({
+        state,
+        args,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        bundle: readonly { name: string; args: unknown }[];
+      }) => resolveMarket(state as OrderBookState, args as MarketOrderArgs),
+      apply: ({
+        state,
+        args,
+        resolution,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+        resolution: unknown;
+      }) =>
         applyMarketOrder(
           state as OrderBookState,
           args as MarketOrderArgs,
           resolution as MarketOrderResolution<bigint>,
           signature as OrderBookSignature,
-        )) as (
-        state: unknown,
-        args: unknown,
-        resolution: unknown,
-        signature: unknown,
-      ) => void,
+          digest,
+        ),
     },
     AddInstrument: {
       tag: MutationType.AddInstrument,
@@ -298,12 +432,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyAddInstrument(
           state as OrderBookState,
           args as AddInstrumentArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
     Deposit: {
       tag: MutationType.Deposit,
@@ -311,12 +456,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyDeposit(
           state as OrderBookState,
           args as DepositArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
     Withdrawal: {
       tag: MutationType.Withdrawal,
@@ -324,12 +480,23 @@ export function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown, signature: unknown) =>
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
         applyWithdrawal(
           state as OrderBookState,
           args as WithdrawalArgs,
           signature as OrderBookSignature,
-        )) as (state: unknown, args: unknown, signature: unknown) => void,
+          digest,
+        ),
     },
   };
 }
@@ -420,91 +587,185 @@ async function persistLifecycle(
   }
 }
 
-async function persistWholeState(tx: unknown, state: OrderBookState) {
+async function persistAccount(tx: unknown, account: Hex) {
   const db = txDb(tx);
-  await db.delete(schema.orders);
-  await db.delete(schema.ticks);
-  await db.delete(schema.balances);
-  await db.delete(schema.nonces);
-  await db.delete(schema.keys);
-  await db.delete(schema.accounts);
-  await db.delete(schema.instruments);
+  await db
+    .insert(schema.accounts)
+    .values({ id: account })
+    .onConflictDoNothing();
+}
 
-  const instrumentRows: (typeof schema.instruments.$inferInsert)[] = [];
-  const tickRows: (typeof schema.ticks.$inferInsert)[] = [];
-  for (const [id, instrument] of Object.entries(state.instruments)) {
-    instrumentRows.push({
-      id: BigInt(id),
-      base: instrument.base,
-      baseLotExp: instrument.baseLotExp,
-      quote: instrument.quote,
-      quoteLotExp: instrument.quoteLotExp,
-    });
-    for (const [side, ticks] of [
-      [0, instrument.bids],
-      [1, instrument.asks],
-    ] as const) {
-      for (const [price, tick] of Object.entries(ticks)) {
-        tickRows.push({
-          instrumentId: BigInt(id),
-          side,
-          price: BigInt(price),
-          quantity: tick.quantity,
-          remainingQuantity: tick.remainingQuantity,
-          volume: tick.volume,
-        });
-      }
-    }
-  }
-
-  if (instrumentRows.length > 0)
-    await db.insert(schema.instruments).values(instrumentRows);
-  if (tickRows.length > 0) await db.insert(schema.ticks).values(tickRows);
-
-  const accountRows: (typeof schema.accounts.$inferInsert)[] = [];
-  const keyRows: (typeof schema.keys.$inferInsert)[] = [];
-  const nonceRows: (typeof schema.nonces.$inferInsert)[] = [];
-  const balanceRows: (typeof schema.balances.$inferInsert)[] = [];
-  const orderRows: (typeof schema.orders.$inferInsert)[] = [];
-
-  for (const [account, acc] of Object.entries(state.accounts)) {
-    accountRows.push({ id: account });
-    for (const [keyIndex, key] of acc.keys.entries()) {
-      keyRows.push({
-        account,
-        keyIndex: BigInt(keyIndex),
+async function persistKey(
+  tx: unknown,
+  state: OrderBookState,
+  account: Hex,
+  keyIndex: number,
+) {
+  const key = state.accounts[account]?.keys[keyIndex];
+  if (key === undefined) return;
+  await persistAccount(tx, account);
+  await txDb(tx)
+    .insert(schema.keys)
+    .values({
+      account,
+      keyIndex: BigInt(keyIndex),
+      expiry: key.expiry,
+      keyType: key.keyType,
+      permissions: key.permissions,
+      publicKey: key.publicKey,
+    })
+    .onConflictDoUpdate({
+      target: [schema.keys.account, schema.keys.keyIndex],
+      set: {
         expiry: key.expiry,
         keyType: key.keyType,
         permissions: key.permissions,
         publicKey: key.publicKey,
-      });
-    }
-    for (const [nonceKey, sequence] of Object.entries(acc.nonces)) {
-      nonceRows.push({ account, nonceKey, sequence });
-    }
-    for (const [asset, amount] of Object.entries(acc.balances)) {
-      balanceRows.push({ account, asset, amount: amount.toString() });
-    }
-    for (const [orderIndex, order] of acc.orders.entries()) {
-      orderRows.push({
-        account,
-        orderIndex: BigInt(orderIndex),
+      },
+    });
+}
+
+async function persistKeys(tx: unknown, state: OrderBookState, account: Hex) {
+  const acc = state.accounts[account];
+  if (acc === undefined) return;
+  for (const keyIndex of acc.keys.keys()) {
+    await persistKey(tx, state, account, keyIndex);
+  }
+}
+
+async function persistNonce(tx: unknown, account: Hex, nonce: bigint) {
+  await persistAccount(tx, account);
+  const nonceKey = nonce >> 64n;
+  const sequence = (nonce & UINT64_MASK) + 1n;
+  await txDb(tx)
+    .insert(schema.nonces)
+    .values({ account, nonceKey: nonceKey.toString(), sequence })
+    .onConflictDoUpdate({
+      target: [schema.nonces.account, schema.nonces.nonceKey],
+      set: { sequence },
+    });
+}
+
+async function persistBalance(
+  tx: unknown,
+  state: OrderBookState,
+  account: Hex,
+  asset: Hex,
+) {
+  const amount = state.accounts[account]?.balances[asset] ?? 0n;
+  await persistAccount(tx, account);
+  await txDb(tx)
+    .insert(schema.balances)
+    .values({ account, asset, amount: amount.toString() })
+    .onConflictDoUpdate({
+      target: [schema.balances.account, schema.balances.asset],
+      set: { amount: amount.toString() },
+    });
+}
+
+async function persistInstrument(
+  tx: unknown,
+  state: OrderBookState,
+  instrumentId: number,
+) {
+  const instrument = state.instruments[instrumentId];
+  if (instrument === undefined) return;
+  await txDb(tx)
+    .insert(schema.instruments)
+    .values({
+      id: BigInt(instrumentId),
+      base: instrument.base,
+      baseLotExp: instrument.baseLotExp,
+      quote: instrument.quote,
+      quoteLotExp: instrument.quoteLotExp,
+    })
+    .onConflictDoUpdate({
+      target: schema.instruments.id,
+      set: {
+        base: instrument.base,
+        baseLotExp: instrument.baseLotExp,
+        quote: instrument.quote,
+        quoteLotExp: instrument.quoteLotExp,
+      },
+    });
+}
+
+async function persistTick(
+  tx: unknown,
+  state: OrderBookState,
+  instrumentId: number,
+  side: 0 | 1,
+  price: bigint,
+) {
+  const instrument = state.instruments[instrumentId];
+  const tick = (side === 0 ? instrument?.bids : instrument?.asks)?.[
+    Number(price)
+  ];
+  if (tick === undefined) return;
+  await persistInstrument(tx, state, instrumentId);
+  await txDb(tx)
+    .insert(schema.ticks)
+    .values({
+      instrumentId: BigInt(instrumentId),
+      side,
+      price,
+      quantity: tick.quantity,
+      remainingQuantity: tick.remainingQuantity,
+      volume: tick.volume,
+    })
+    .onConflictDoUpdate({
+      target: [
+        schema.ticks.instrumentId,
+        schema.ticks.side,
+        schema.ticks.price,
+      ],
+      set: {
+        quantity: tick.quantity,
+        remainingQuantity: tick.remainingQuantity,
+        volume: tick.volume,
+      },
+    });
+}
+
+async function persistOrder(
+  tx: unknown,
+  state: OrderBookState,
+  account: Hex,
+  orderIndex: number,
+) {
+  const order = state.accounts[account]?.orders[orderIndex];
+  if (order === undefined) return;
+  await persistAccount(tx, account);
+  await persistInstrument(tx, state, order.instrumentId);
+  await txDb(tx)
+    .insert(schema.orders)
+    .values({
+      account,
+      orderIndex: BigInt(orderIndex),
+      quantity: order.quantity,
+      instrumentId: BigInt(order.instrumentId),
+      price: order.price,
+      tickVolume: order.tickVolume,
+      side: order.side,
+    })
+    .onConflictDoUpdate({
+      target: [schema.orders.account, schema.orders.orderIndex],
+      set: {
         quantity: order.quantity,
         instrumentId: BigInt(order.instrumentId),
         price: order.price,
         tickVolume: order.tickVolume,
         side: order.side,
-      });
-    }
-  }
+      },
+    });
+}
 
-  if (accountRows.length > 0)
-    await db.insert(schema.accounts).values(accountRows);
-  if (keyRows.length > 0) await db.insert(schema.keys).values(keyRows);
-  if (nonceRows.length > 0) await db.insert(schema.nonces).values(nonceRows);
-  if (balanceRows.length > 0)
-    await db.insert(schema.balances).values(balanceRows);
-  if (orderRows.length > 0) await db.insert(schema.orders).values(orderRows);
+async function persistOrders(tx: unknown, state: OrderBookState, account: Hex) {
+  const acc = state.accounts[account];
+  if (acc === undefined) return;
+  for (const orderIndex of acc.orders.keys()) {
+    await persistOrder(tx, state, account, orderIndex);
+  }
 }
 
 export function persistedMutations(
@@ -529,7 +790,11 @@ export function persistedMutations(
           publicKey: args.publicKey,
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const signature = mutationSignature(mutation);
+      await persistAccount(tx, signature.account);
+      await persistKeys(tx, state, signature.account);
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.initializes),
   };
@@ -549,7 +814,12 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<AuthorizeArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistKeys(tx, state, signature.account);
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.authorizes),
   };
@@ -566,7 +836,12 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<RevokeArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistKey(tx, state, signature.account, args.keyId);
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.revokes),
   };
@@ -583,7 +858,27 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<CloseOrderArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      const order = state.accounts[signature.account]?.orders[args.orderId];
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistOrder(tx, state, signature.account, args.orderId);
+      if (order !== undefined) {
+        const instrument = state.instruments[order.instrumentId];
+        if (instrument !== undefined) {
+          await persistBalance(tx, state, signature.account, instrument.base);
+          await persistBalance(tx, state, signature.account, instrument.quote);
+          await persistTick(
+            tx,
+            state,
+            order.instrumentId,
+            order.side,
+            order.price,
+          );
+        }
+      }
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.closeOrders),
   };
@@ -603,7 +898,28 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<LimitOrderArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      const instrument = state.instruments[args.instrumentId];
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistOrders(tx, state, signature.account);
+      await persistTick(
+        tx,
+        state,
+        args.instrumentId,
+        args.bidOrAsk,
+        args.price,
+      );
+      if (instrument !== undefined) {
+        await persistBalance(
+          tx,
+          state,
+          signature.account,
+          args.bidOrAsk === 0 ? instrument.quote : instrument.base,
+        );
+      }
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.limitOrders),
   };
@@ -636,7 +952,26 @@ export function persistedMutations(
           );
       }
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<MarketOrderArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      const resolution = mutation.resolution as MarketOrderResolution<bigint>;
+      const instrument = state.instruments[args.instrumentId];
+      await persistNonce(tx, signature.account, args.nonce);
+      if (instrument !== undefined) {
+        await persistBalance(tx, state, signature.account, instrument.base);
+        await persistBalance(tx, state, signature.account, instrument.quote);
+        for (const fill of resolution.fills) {
+          await persistTick(
+            tx,
+            state,
+            args.instrumentId,
+            args.bidOrAsk === 0 ? 1 : 0,
+            fill.price,
+          );
+        }
+      }
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.marketOrders),
   };
@@ -657,7 +992,12 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<AddInstrumentArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistInstrument(tx, state, args.instrumentId);
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.addInstruments),
   };
@@ -675,7 +1015,12 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<DepositArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistBalance(tx, state, signature.account, args.asset);
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.deposits),
   };
@@ -693,7 +1038,12 @@ export function persistedMutations(
           deadline: args.deadline.toString(),
         });
     },
-    persistState: (tx) => persistWholeState(tx, state),
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<WithdrawalArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistBalance(tx, state, signature.account, args.asset);
+    },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.withdrawals),
   };

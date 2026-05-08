@@ -26,6 +26,7 @@ import type {
 } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
 import { mutationColumns } from "../src/schema";
+import { verifySignature } from "../src/signature";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
@@ -213,6 +214,29 @@ function checkAndBumpNonce(
   acc.nonces[nonceKey] = stored + 1n;
 }
 
+function verifyHarnessSignature(
+  state: HarnessState,
+  signature: HarnessSignature,
+  digest: Hex,
+  nonce: bigint,
+): void {
+  const acc = state.accounts[signature.account];
+  const key = acc?.keys[Number(signature.keyId)];
+  if (acc === undefined || key === undefined) {
+    throw new Error(
+      `harness: key missing account=${signature.account} keyId=${signature.keyId}`,
+    );
+  }
+  if (key.keyType !== signature.keyType) {
+    throw new Error(
+      `harness: key type mismatch account=${signature.account} keyId=${signature.keyId} expected=${key.keyType} got=${signature.keyType}`,
+    );
+  }
+
+  verifySignature(key.keyType, digest, key.publicKey, signature.rawSignature);
+  checkAndBumpNonce(acc, nonce, signature.account);
+}
+
 // Deploy a forge-built contract by name. Reads the artifact from the
 // contracts workspace, broadcasts via the test wallet, waits for the
 // receipt, returns address + abi.
@@ -260,18 +284,24 @@ export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
     tag: 0,
     table: counterAddMutations,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
-    // @ts-expect-error
-    apply: (
-      state: CounterState,
-      { amount, nonce }: { amount: bigint; nonce: bigint },
-    ) => {
-      if (nonce !== state.nonce) {
+    apply: ({
+      state,
+      args,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      digest: Hex;
+    }) => {
+      const counter = state as CounterState;
+      const { amount, nonce } = args as { amount: bigint; nonce: bigint };
+      if (nonce !== counter.nonce) {
         throw new Error(
-          `add: nonce mismatch (expected=${state.nonce}, got=${nonce})`,
+          `add: nonce mismatch (expected=${counter.nonce}, got=${nonce})`,
         );
       }
-      state.total += amount;
-      state.nonce += 1n;
+      counter.total += amount;
+      counter.nonce += 1n;
     },
   },
 };
@@ -494,16 +524,25 @@ export const HARNESS_MUTATIONS: {
     tag: 0,
     table: harnessInitializeMutations,
     params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
-    // @ts-expect-error
-    apply: (state: HarnessState, args: InitializeArgs) => {
-      const id = Hash.keccak256(args.rootPublicKey) as Hex;
-      const acc = getHarnessAccount(state, id);
+    apply: ({
+      state,
+      args,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      digest: Hex;
+    }) => {
+      const harnessState = state as HarnessState;
+      const init = args as InitializeArgs;
+      const id = Hash.keccak256(init.rootPublicKey) as Hex;
+      const acc = getHarnessAccount(harnessState, id);
       if (acc.keys.length !== 0) {
         throw new Error(`initialize: account ${id} already initialized`);
       }
       acc.keys.push({
-        keyType: args.rootKeyType,
-        publicKey: args.rootPublicKey,
+        keyType: init.rootKeyType,
+        publicKey: init.rootPublicKey,
       });
     },
   },
@@ -513,11 +552,23 @@ export const HARNESS_MUTATIONS: {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
     ),
-    // @ts-expect-error
-    apply: (state: HarnessState, args: AuthorizeArgs) => {
-      const acc = getHarnessAccount(state, args.account);
-      checkAndBumpNonce(acc, args.nonce, args.account);
-      acc.keys.push({ keyType: args.keyType, publicKey: args.publicKey });
+    apply: ({
+      state,
+      args,
+      signature,
+      digest,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      digest: Hex;
+    }) => {
+      const auth = args as AuthorizeArgs;
+      const harnessState = state as HarnessState;
+      const sig = signature as HarnessSignature;
+      verifyHarnessSignature(harnessState, sig, digest as Hex, auth.nonce);
+      const acc = getHarnessAccount(harnessState, sig.account);
+      acc.keys.push({ keyType: auth.keyType, publicKey: auth.publicKey });
     },
   },
   credit: {
@@ -526,12 +577,23 @@ export const HARNESS_MUTATIONS: {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
-    // @ts-expect-error
-    apply: (state: HarnessState, args: CreditArgs) => {
-      const acc = getHarnessAccount(state, args.account);
-      checkAndBumpNonce(acc, args.nonce, args.account);
-      state.balances[args.account] =
-        (state.balances[args.account] ?? 0n) + args.amount;
+    apply: ({
+      state,
+      args,
+      signature,
+      digest,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      digest: Hex;
+    }) => {
+      const harnessState = state as HarnessState;
+      const credit = args as CreditArgs;
+      const sig = signature as HarnessSignature;
+      verifyHarnessSignature(harnessState, sig, digest as Hex, credit.nonce);
+      harnessState.balances[sig.account] =
+        (harnessState.balances[sig.account] ?? 0n) + credit.amount;
     },
   },
   debit: {
@@ -541,24 +603,43 @@ export const HARNESS_MUTATIONS: {
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
     resolution: parseAbiParameters("uint256 newBalance"),
-    // @ts-expect-error
-    resolve: (state: HarnessState, args: DebitArgs) => {
+    resolve: ({
+      state,
+      args,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      bundle: readonly { name: string; args: unknown }[];
+    }) => {
+      const harnessState = state as HarnessState;
+      const debit = args as DebitArgs;
       return {
-        newBalance: (state.balances[args.account] ?? 0n) - args.amount,
+        newBalance: (harnessState.balances[debit.account] ?? 0n) - debit.amount,
       };
     },
-    // @ts-expect-error
-    apply: (
-      state: HarnessState,
-      args: DebitArgs,
-      { newBalance }: { newBalance: bigint },
-    ) => {
-      const acc = getHarnessAccount(state, args.account);
-      checkAndBumpNonce(acc, args.nonce, args.account);
+    apply: ({
+      state,
+      args,
+      resolution,
+      signature,
+      digest,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      digest: Hex;
+      resolution: unknown;
+    }) => {
+      const harnessState = state as HarnessState;
+      const debit = args as DebitArgs;
+      const sig = signature as HarnessSignature;
+      const { newBalance } = resolution as { newBalance: bigint };
+      verifyHarnessSignature(harnessState, sig, digest as Hex, debit.nonce);
       if (newBalance < 0n) {
-        throw new Error(`debit: insufficient balance for ${args.account}`);
+        throw new Error(`debit: insufficient balance for ${sig.account}`);
       }
-      state.balances[args.account] = newBalance;
+      harnessState.balances[sig.account] = newBalance;
     },
   },
   assert: {
@@ -567,14 +648,25 @@ export const HARNESS_MUTATIONS: {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
     ),
-    // @ts-expect-error
-    apply: (state: HarnessState, args: AssertArgs) => {
-      const acc = getHarnessAccount(state, args.account);
-      checkAndBumpNonce(acc, args.nonce, args.account);
-      const balance = state.balances[args.account] ?? 0n;
-      if (balance !== args.expected) {
+    apply: ({
+      state,
+      args,
+      signature,
+      digest,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+      digest: Hex;
+    }) => {
+      const harnessState = state as HarnessState;
+      const asserted = args as AssertArgs;
+      const sig = signature as HarnessSignature;
+      verifyHarnessSignature(harnessState, sig, digest as Hex, asserted.nonce);
+      const balance = harnessState.balances[sig.account] ?? 0n;
+      if (balance !== asserted.expected) {
         throw new Error(
-          `assert: account=${args.account} balance=${balance} expected=${args.expected}`,
+          `assert: account=${sig.account} balance=${balance} expected=${asserted.expected}`,
         );
       }
     },

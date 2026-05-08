@@ -80,24 +80,30 @@ export type FFCAMutationConfig =
   | (FFCAMutationPersistence & {
       tag: number;
       params: readonly AbiParameter[];
-      apply: (state: unknown, args: unknown, signature: unknown) => void;
+      apply: (params: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex.Hex;
+      }) => void;
     })
   | (FFCAMutationPersistence & {
       tag: number;
       params: readonly AbiParameter[];
       resolution: readonly AbiParameter[];
-      resolve: (
-        state: unknown,
-        args: unknown,
-        signature: unknown,
-        bundle: BundleView,
-      ) => unknown;
-      apply: (
-        state: unknown,
-        args: unknown,
-        resolution: unknown,
-        signature: unknown,
-      ) => void;
+      resolve: (params: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        bundle: BundleView;
+      }) => unknown;
+      apply: (params: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex.Hex;
+        resolution: unknown;
+      }) => void;
     });
 
 export type FFCAConfig = {

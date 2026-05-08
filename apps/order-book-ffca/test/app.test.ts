@@ -7,6 +7,7 @@ import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
 import {
+  baseMutations,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
   ORDER_BOOK_SIGNATURE_PARAMS,
@@ -212,6 +213,60 @@ async function waitForProposed(
   }
   throw new Error(`${label} never reached proposed`);
 }
+
+test("ffca order book rejects invalid signatures before applying", async () => {
+  const address = await deployExchange();
+  const state: State<bigint> = { accounts: {}, instruments: {} };
+  const app = createFFCA({
+    address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: state },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: baseMutations(),
+  });
+
+  const maker = await setupAccount({
+    app,
+    state,
+    account: MAKER_ACCOUNT.address,
+    privateKey: MAKER_PRIVATE_KEY,
+    contract: address,
+  });
+  const signed = await signedMutation({
+    name: "Deposit",
+    address,
+    privateKey: MAKER_PRIVATE_KEY,
+    signerKeyId: 1n,
+    account: maker,
+    args: {
+      asset: BASE,
+      amount: 11n,
+      nonce: 0n,
+      deadline: FAR_DEADLINE,
+    },
+  });
+
+  await expect(
+    executeOrderBookMutation(app, state, {
+      ...signed,
+      args: {
+        asset: BASE,
+        amount: 10n,
+        nonce: 0n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  ).rejects.toThrow(/InvalidSignature/);
+
+  expect(state.accounts[maker]!.balances[BASE]).toBeUndefined();
+  expect(state.accounts[maker]!.nonces["0"]).toBeUndefined();
+  await app.stop();
+});
 
 test("ffca order book persists and submits market-order flow", async () => {
   const address = await deployExchange();

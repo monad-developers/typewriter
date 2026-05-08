@@ -95,6 +95,8 @@ test("encodeBundleCalldata signatures are typed against signature params", () =>
   const m: ResolvedMutation = {
     id: 0,
     status: "accepted",
+    digest:
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     name: "transfer",
     args: {
       to: "0x0000000000000000000000000000000000000002",
@@ -163,6 +165,8 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
   const transferResolved: ResolvedMutation = {
     id: 0,
     status: "accepted",
+    digest:
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     name: "transfer",
     args: {
       from: "0x0000000000000000000000000000000000000001",
@@ -175,6 +179,8 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
   const marketResolved: ResolvedMutation = {
     id: 1,
     status: "accepted",
+    digest:
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
     name: "market",
     args: { size: 10n },
     signature: { keyType: 1, rawSignature: "0xbb" },

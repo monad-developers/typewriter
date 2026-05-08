@@ -45,6 +45,7 @@ import {
   signHarness,
   testMutationSchema,
 } from "../test/utils";
+import { hashMutationEip712 } from "./eip712";
 import { createFFCA, verifyMutation, verifyResolution } from "./runtime";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
@@ -363,9 +364,30 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
   await ffca.stop();
 });
 
-test("resolve and apply receive submitted signature", async () => {
+test("resolve and apply receive submitted signature and apply receives digest", async () => {
   const signatures: unknown[] = [];
+  const digests: unknown[] = [];
   const signature = { keyType: 7, rawSignature: "0x1234" };
+  const mutation = {
+    tag: 0,
+    table: testMutationSchema,
+    params: parseAbiParameters("uint256 amount"),
+    resolution: parseAbiParameters("uint8 keyType"),
+    resolve: ({ signature: submittedSignature }: { signature: unknown }) => {
+      signatures.push(submittedSignature);
+      return { keyType: signature.keyType };
+    },
+    apply: ({
+      signature: submittedSignature,
+      digest,
+    }: {
+      signature: unknown;
+      digest: unknown;
+    }) => {
+      signatures.push(submittedSignature);
+      digests.push(digest);
+    },
+  };
   const ffca = createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
@@ -377,19 +399,7 @@ test("resolve and apply receive submitted signature", async () => {
     state: { initial: {} },
     signature: TEST_SIGNATURE,
     mutations: {
-      shape: {
-        tag: 0,
-        table: testMutationSchema,
-        params: parseAbiParameters("uint256 amount"),
-        resolution: parseAbiParameters("uint8 keyType"),
-        resolve: (_state, _args, submittedSignature) => {
-          signatures.push(submittedSignature);
-          return { keyType: signature.keyType };
-        },
-        apply: (_state, _args, _resolution, submittedSignature) => {
-          signatures.push(submittedSignature);
-        },
-      },
+      shape: mutation,
     },
   });
 
@@ -400,7 +410,56 @@ test("resolve and apply receive submitted signature", async () => {
   });
 
   expect(signatures).toEqual([signature, signature]);
+  expect(digests).toEqual([
+    hashMutationEip712(mutation, "shape", { amount: 5n }, ffca.domain),
+  ]);
 
+  await ffca.stop();
+});
+
+test("Harness apply rejects invalid signatures using callback digest", async () => {
+  const address = "0x0000000000000000000000000000000000000000";
+  const state: HarnessState = { accounts: {}, balances: {} };
+  const ffca = createFFCA({
+    address,
+    domain: HARNESS_DOMAIN,
+    abi: [],
+    // biome-ignore lint/suspicious/noExplicitAny: no chain submission in this rejection test
+    account: {} as any,
+    chainId: 1,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: state },
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
+    mutations: HARNESS_MUTATIONS,
+  });
+
+  const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
+  const account = await setupHarnessAccount(ffca, {
+    rootKeyType: 2,
+    rootPublicKey,
+  });
+
+  await expect(
+    ffca.execute({
+      name: "credit",
+      args: { account, keyId: 0n, amount: 1n, nonce: 0n },
+      signature: {
+        account,
+        keyId: 0n,
+        keyType: 2,
+        rawSignature: signHarness({
+          keyType: 2,
+          privateKey: USER_PRIVATE_KEY,
+          mutation: "credit",
+          args: { account, keyId: 0n, amount: 2n, nonce: 0n },
+          address,
+          chainId: 1,
+        }),
+      },
+    }),
+  ).rejects.toThrow(/InvalidSignature: keyType=2/);
+
+  expect(state.balances[account]).toBeUndefined();
   await ffca.stop();
 });
 

@@ -12,7 +12,7 @@ import {
   Queue,
   Schedule,
 } from "effect";
-import { AbiParameters, TypedData } from "ox";
+import { AbiParameters, type Hex, TypedData } from "ox";
 import {
   createPublicClient,
   createWalletClient,
@@ -29,7 +29,7 @@ import type {
   FFCADatabase,
   FFCAMutationConfig,
 } from "./config";
-import { buildEip712Types } from "./eip712";
+import { buildEip712Types, hashMutationEip712 } from "./eip712";
 import { encodeBundleArg } from "./encoding";
 import {
   deploymentLockKey,
@@ -93,7 +93,7 @@ export function verifyMutation(
   signatureParams: readonly AbiParameters.Parameter[],
   submitted: SubmittedMutation,
   domain: TypedData.Domain,
-): void {
+): Hex.Hex {
   const { name, args } = submitted;
   if (args === null || typeof args !== "object") {
     throw new Error(`args must be an object (mutation=${name})`);
@@ -113,6 +113,7 @@ export function verifyMutation(
   });
 
   verifyAbiRecord("signature", signatureParams, submitted.signature, name);
+  return hashMutationEip712(mutation, name, argsRecord, domain);
 }
 
 export function verifyResolution(
@@ -158,7 +159,7 @@ function resolveMutation(
   bundle: BundleView,
 ): unknown {
   if ("resolve" in config) {
-    return config.resolve(state, args, signature, bundle);
+    return config.resolve({ state, args, signature, bundle });
   }
   return undefined;
 }
@@ -169,13 +170,12 @@ function applyMutation(
   state: unknown,
   resolution: unknown,
   signature: unknown,
+  digest: Hex.Hex,
 ): void {
   if ("resolve" in config) {
-    // biome-ignore lint/suspicious/noExplicitAny: resolution shape user-defined
-    (config.apply as any)(state, args, resolution, signature);
+    config.apply({ state, args, resolution, signature, digest });
   } else {
-    // biome-ignore lint/suspicious/noExplicitAny: args shape user-defined
-    (config.apply as any)(state, args, signature);
+    config.apply({ state, args, signature, digest });
   }
 }
 
@@ -408,7 +408,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
     // TODO perf: structuredClone(state) per mutation is O(state). revm
     //   subsumes this with native revert; until then, the cost is paid.
     for (const item of queued) {
-      const { config, args, signature } = item.pending;
+      const { config, args, signature, digest } = item.pending;
       const snapshot = structuredClone(state);
       try {
         const resolution = resolveMutation(
@@ -419,7 +419,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
           bundleView,
         );
         verifyResolution(config, resolution, item.pending.name);
-        applyMutation(config, args, state, resolution, signature);
+        applyMutation(config, args, state, resolution, signature, digest);
         const acceptedMutation = {
           ...item.pending,
           status: "accepted" as const,
@@ -698,12 +698,18 @@ export function createFFCA(config: FFCAConfig): FFCA {
         if (config.sequence && !config.sequence.includes(submitted.name)) {
           throw new Error(`mutation not in sequence: ${submitted.name}`);
         }
-        verifyMutation(mutation, config.signature.params, submitted, domain);
+        const digest = verifyMutation(
+          mutation,
+          config.signature.params,
+          submitted,
+          domain,
+        );
 
         const pending: PendingMutation = {
           ...submitted,
           id: mutationId++,
           status: "pending",
+          digest,
           config: mutation,
         };
         emitMutation(pending);
