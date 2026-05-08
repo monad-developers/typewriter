@@ -1,20 +1,16 @@
 import { eq } from "drizzle-orm";
-import { createFFCA, type FFCA, type FFCAConfig } from "ffca";
-import { EXCHANGE_ABI } from "order-book-sdk";
+import type { FFCAConfig } from "ffca";
 import {
-  type Address,
   encodeAbiParameters,
   type Hex,
   parseAbiParameters,
   parseSignature,
 } from "viem";
-import type { PrivateKeyAccount } from "viem/accounts";
 import * as schema from "./app-schema";
 import {
   type AddInstrument,
   type Authorize,
   type CloseOrder,
-  createState,
   type Deposit,
   getAccount,
   handleAddInstrument,
@@ -34,10 +30,9 @@ import {
   MutationType,
   type Revoke,
   type State,
-  type TaggedMutation,
+  type Withdrawal,
 } from "./exchange";
 import { resolveMarketOrder } from "./resolution";
-import { type EIP712Domain, verifySignature } from "./signature";
 
 type OrderBookState = State<bigint>;
 
@@ -51,18 +46,18 @@ export type OrderBookSignature = {
   rawSignature: Hex;
 };
 
-type LocalAccountArg = { account: Hex };
-type SignedArgs = LocalAccountArg & { nonce: bigint; deadline: bigint };
+type AccountArg = { account: Hex };
+type SignedArgs = { nonce: bigint; deadline: bigint };
 
-export type InitializeArgs = Initialize & LocalAccountArg;
-export type AuthorizeArgs = Authorize & SignedArgs;
-export type RevokeArgs = Revoke & SignedArgs;
+export type InitializeArgs = Initialize & AccountArg;
+export type AuthorizeArgs = Authorize & AccountArg & SignedArgs;
+export type RevokeArgs = Revoke & AccountArg & SignedArgs;
 export type CloseOrderArgs = CloseOrder & SignedArgs;
 export type LimitOrderArgs = LimitOrder<bigint> & SignedArgs;
 export type MarketOrderArgs = MarketOrder<bigint> & SignedArgs;
 export type AddInstrumentArgs = AddInstrument & SignedArgs;
 export type DepositArgs = Deposit<bigint> & SignedArgs;
-export type WithdrawalArgs = Deposit<bigint> & SignedArgs;
+export type WithdrawalArgs = Withdrawal<bigint> & SignedArgs;
 
 export type OrderBookMutationName =
   | "Initialize"
@@ -90,76 +85,105 @@ export type SubmittedOrderBookMutation = {
   signature: OrderBookSignature;
 };
 
-export type OrderBookFFCA = Omit<FFCA, "execute"> & {
-  execute(
-    submitted: SubmittedOrderBookMutation,
-  ): Promise<Awaited<ReturnType<FFCA["execute"]>>>;
-};
+export const ORDER_BOOK_SEQUENCE = [
+  "Initialize",
+  "Authorize",
+  "Revoke",
+  "CloseOrder",
+  "LimitOrder",
+  "MarketOrder",
+  "AddInstrument",
+  "Deposit",
+  "Withdrawal",
+] as const;
 
-export type OrderBookFFCAConfig = {
-  address: Address;
-  account: PrivateKeyAccount;
-  chainId: number;
-  rpcUrl: string | string[];
-  database?: { connection: Bun.SQL };
-  initialState?: OrderBookState;
-  rpId?: string;
-  origin?: string | string[];
-};
-
-function bumpNonce(state: OrderBookState, args: SignedArgs): void {
-  incrementNonce(getAccount(state, args.account), args.nonce >> 64n);
+function bumpNonce(
+  state: OrderBookState,
+  signature: OrderBookSignature,
+  args: SignedArgs,
+): void {
+  incrementNonce(getAccount(state, signature.account), args.nonce >> 64n);
 }
 
-function applyInitialize(state: OrderBookState, args: InitializeArgs): void {
-  handleInitialize(state, args, args.account);
+function applyInitialize(
+  state: OrderBookState,
+  args: InitializeArgs,
+  signature: OrderBookSignature,
+): void {
+  handleInitialize(state, args, signature.account);
 }
 
-function applyAuthorize(state: OrderBookState, args: AuthorizeArgs): void {
-  handleAuthorize(state, args, args.account);
-  bumpNonce(state, args);
+function applyAuthorize(
+  state: OrderBookState,
+  args: AuthorizeArgs,
+  signature: OrderBookSignature,
+): void {
+  handleAuthorize(state, args, signature.account);
+  bumpNonce(state, signature, args);
 }
 
-function applyRevoke(state: OrderBookState, args: RevokeArgs): void {
-  handleRevoke(state, args, args.account);
-  bumpNonce(state, args);
+function applyRevoke(
+  state: OrderBookState,
+  args: RevokeArgs,
+  signature: OrderBookSignature,
+): void {
+  handleRevoke(state, args, signature.account);
+  bumpNonce(state, signature, args);
 }
 
-function applyCloseOrder(state: OrderBookState, args: CloseOrderArgs): void {
-  handleCloseOrder(state, args, args.account);
-  bumpNonce(state, args);
+function applyCloseOrder(
+  state: OrderBookState,
+  args: CloseOrderArgs,
+  signature: OrderBookSignature,
+): void {
+  handleCloseOrder(state, args, signature.account);
+  bumpNonce(state, signature, args);
 }
 
-function applyLimitOrder(state: OrderBookState, args: LimitOrderArgs): void {
-  handleLimitOrder(state, args, args.account);
-  bumpNonce(state, args);
+function applyLimitOrder(
+  state: OrderBookState,
+  args: LimitOrderArgs,
+  signature: OrderBookSignature,
+): void {
+  handleLimitOrder(state, args, signature.account);
+  bumpNonce(state, signature, args);
 }
 
 function applyMarketOrder(
   state: OrderBookState,
   args: MarketOrderArgs,
   resolution: MarketOrderResolution<bigint>,
+  signature: OrderBookSignature,
 ): void {
-  handleMarketOrder(state, args, resolution, args.account);
-  bumpNonce(state, args);
+  handleMarketOrder(state, args, resolution, signature.account);
+  bumpNonce(state, signature, args);
 }
 
 function applyAddInstrument(
   state: OrderBookState,
   args: AddInstrumentArgs,
+  signature: OrderBookSignature,
 ): void {
   handleAddInstrument(state, args);
-  bumpNonce(state, args);
+  bumpNonce(state, signature, args);
 }
 
-function applyDeposit(state: OrderBookState, args: DepositArgs): void {
-  handleDeposit(state, args, args.account);
-  bumpNonce(state, args);
+function applyDeposit(
+  state: OrderBookState,
+  args: DepositArgs,
+  signature: OrderBookSignature,
+): void {
+  handleDeposit(state, args, signature.account);
+  bumpNonce(state, signature, args);
 }
 
-function applyWithdrawal(state: OrderBookState, args: WithdrawalArgs): void {
-  handleWithdrawal(state, args, args.account);
-  bumpNonce(state, args);
+function applyWithdrawal(
+  state: OrderBookState,
+  args: WithdrawalArgs,
+  signature: OrderBookSignature,
+): void {
+  handleWithdrawal(state, args, signature.account);
+  bumpNonce(state, signature, args);
 }
 
 function resolveMarket(
@@ -171,7 +195,7 @@ function resolveMarket(
   return resolveMarketOrder(instrument, args, new Map());
 }
 
-function baseMutations(): FFCAConfig["mutations"] {
+export function baseMutations(): FFCAConfig["mutations"] {
   return {
     Initialize: {
       tag: MutationType.Initialize,
@@ -179,11 +203,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint8 permissions, bytes rootPublicKey, bytes publicKey",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyInitialize(state as OrderBookState, args as InitializeArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyInitialize(
+          state as OrderBookState,
+          args as InitializeArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     Authorize: {
       tag: MutationType.Authorize,
@@ -191,11 +216,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "bytes32 account, uint40 expiry, uint8 keyType, uint8 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyAuthorize(state as OrderBookState, args as AuthorizeArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyAuthorize(
+          state as OrderBookState,
+          args as AuthorizeArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     Revoke: {
       tag: MutationType.Revoke,
@@ -203,11 +229,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyRevoke(state as OrderBookState, args as RevokeArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyRevoke(
+          state as OrderBookState,
+          args as RevokeArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     CloseOrder: {
       tag: MutationType.CloseOrder,
@@ -215,11 +242,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "uint64 orderId, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyCloseOrder(state as OrderBookState, args as CloseOrderArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyCloseOrder(
+          state as OrderBookState,
+          args as CloseOrderArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     LimitOrder: {
       tag: MutationType.LimitOrder,
@@ -227,11 +255,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyLimitOrder(state as OrderBookState, args as LimitOrderArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyLimitOrder(
+          state as OrderBookState,
+          args as LimitOrderArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     MarketOrder: {
       tag: MutationType.MarketOrder,
@@ -245,12 +274,23 @@ function baseMutations(): FFCAConfig["mutations"] {
         state: unknown,
         args: unknown,
       ) => unknown,
-      apply: ((state: unknown, args: unknown, resolution: unknown) =>
+      apply: ((
+        state: unknown,
+        args: unknown,
+        resolution: unknown,
+        signature: unknown,
+      ) =>
         applyMarketOrder(
           state as OrderBookState,
           args as MarketOrderArgs,
           resolution as MarketOrderResolution<bigint>,
-        )) as (state: unknown, args: unknown, resolution: unknown) => void,
+          signature as OrderBookSignature,
+        )) as (
+        state: unknown,
+        args: unknown,
+        resolution: unknown,
+        signature: unknown,
+      ) => void,
     },
     AddInstrument: {
       tag: MutationType.AddInstrument,
@@ -258,11 +298,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
         applyAddInstrument(
           state as OrderBookState,
           args as AddInstrumentArgs,
-        )) as (state: unknown, args: unknown) => void,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     Deposit: {
       tag: MutationType.Deposit,
@@ -270,11 +311,12 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyDeposit(state as OrderBookState, args as DepositArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyDeposit(
+          state as OrderBookState,
+          args as DepositArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
     Withdrawal: {
       tag: MutationType.Withdrawal,
@@ -282,160 +324,17 @@ function baseMutations(): FFCAConfig["mutations"] {
       params: parseAbiParameters(
         "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      apply: ((state: unknown, args: unknown) =>
-        applyWithdrawal(state as OrderBookState, args as WithdrawalArgs)) as (
-        state: unknown,
-        args: unknown,
-      ) => void,
+      apply: ((state: unknown, args: unknown, signature: unknown) =>
+        applyWithdrawal(
+          state as OrderBookState,
+          args as WithdrawalArgs,
+          signature as OrderBookSignature,
+        )) as (state: unknown, args: unknown, signature: unknown) => void,
     },
   };
 }
 
-function mutationToTagged(
-  submitted: SubmittedOrderBookMutation,
-): TaggedMutation {
-  const signature = submitted.signature;
-  switch (submitted.name) {
-    case "Initialize": {
-      const args = submitted.args as InitializeArgs;
-      return {
-        type: MutationType.Initialize,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: 0n,
-        deadline: 0n,
-        rawSignature: signature.rawSignature,
-        mutation: {
-          expiry: args.expiry,
-          rootKeyType: args.rootKeyType,
-          keyType: args.keyType,
-          permissions: args.permissions,
-          rootPublicKey: args.rootPublicKey,
-          publicKey: args.publicKey,
-        },
-      };
-    }
-    case "Authorize": {
-      const args = submitted.args as AuthorizeArgs;
-      return {
-        type: MutationType.Authorize,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: {
-          expiry: args.expiry,
-          keyType: args.keyType,
-          permissions: args.permissions,
-          publicKey: args.publicKey,
-        },
-      };
-    }
-    case "Revoke": {
-      const args = submitted.args as RevokeArgs;
-      return {
-        type: MutationType.Revoke,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: { keyId: args.keyId },
-      };
-    }
-    case "CloseOrder": {
-      const args = submitted.args as CloseOrderArgs;
-      return {
-        type: MutationType.CloseOrder,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: { orderId: args.orderId },
-      };
-    }
-    case "LimitOrder": {
-      const args = submitted.args as LimitOrderArgs;
-      return {
-        type: MutationType.LimitOrder,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: {
-          quantity: args.quantity,
-          instrumentId: args.instrumentId,
-          price: args.price,
-          bidOrAsk: args.bidOrAsk,
-        },
-      };
-    }
-    case "MarketOrder": {
-      const args = submitted.args as MarketOrderArgs;
-      return {
-        type: MutationType.MarketOrder,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: {
-          quantity: args.quantity,
-          minReceivedQuantity: args.minReceivedQuantity,
-          instrumentId: args.instrumentId,
-          bidOrAsk: args.bidOrAsk,
-        },
-      };
-    }
-    case "AddInstrument": {
-      const args = submitted.args as AddInstrumentArgs;
-      return {
-        type: MutationType.AddInstrument,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: {
-          instrumentId: args.instrumentId,
-          base: args.base,
-          quote: args.quote,
-          baseLotExp: args.baseLotExp,
-          quoteLotExp: args.quoteLotExp,
-        },
-      };
-    }
-    case "Deposit": {
-      const args = submitted.args as DepositArgs;
-      return {
-        type: MutationType.Deposit,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: { asset: args.asset, amount: args.amount },
-      };
-    }
-    case "Withdrawal": {
-      const args = submitted.args as WithdrawalArgs;
-      return {
-        type: MutationType.Withdrawal,
-        account: args.account,
-        keyId: Number(signature.keyId),
-        nonce: args.nonce,
-        deadline: args.deadline,
-        rawSignature: signature.rawSignature,
-        mutation: { asset: args.asset, amount: args.amount },
-      };
-    }
-  }
-}
-
-function normalizeSignatureForContract(
+export function normalizeSignatureForContract(
   state: OrderBookState,
   signature: OrderBookSignature,
 ): OrderBookSignature {
@@ -474,7 +373,7 @@ function baseMutationRow(
   bundle: { id: number; mutationIndex: number },
 ) {
   const signature = mutationSignature(mutation);
-  const args = mutation.args as LocalAccountArg;
+  const args = mutation.args as Partial<AccountArg>;
   return {
     id: mutation.id,
     bundleId: bundle.id,
@@ -483,7 +382,7 @@ function baseMutationRow(
     account: signature.account,
     keyId: signature.keyId,
     rawSignature: signature.rawSignature,
-    accountArg: args.account,
+    accountArg: args.account ?? signature.account,
   };
 }
 
@@ -608,7 +507,9 @@ async function persistWholeState(tx: unknown, state: OrderBookState) {
   if (orderRows.length > 0) await db.insert(schema.orders).values(orderRows);
 }
 
-function persistedMutations(state: OrderBookState): FFCAConfig["mutations"] {
+export function persistedMutations(
+  state: OrderBookState,
+): FFCAConfig["mutations"] {
   const mutations = baseMutations();
 
   mutations.Initialize = {
@@ -798,69 +699,4 @@ function persistedMutations(state: OrderBookState): FFCAConfig["mutations"] {
   };
 
   return mutations;
-}
-
-export function createOrderBookFFCA(
-  config: OrderBookFFCAConfig,
-): OrderBookFFCA {
-  const state = config.initialState ?? createState();
-  const domain: EIP712Domain = {
-    name: "Exchange",
-    version: "1",
-    chainId: config.chainId,
-    verifyingContract: config.address,
-    rpId: config.rpId,
-    origin: config.origin,
-  };
-
-  const ffca = createFFCA({
-    address: config.address,
-    domain: { name: "Exchange", version: "1" },
-    abi: EXCHANGE_ABI,
-    account: config.account,
-    chainId: config.chainId,
-    rpcUrl: config.rpcUrl,
-    database: config.database,
-    state: {
-      initial: state,
-      ...(config.database === undefined ? {} : { schema: schema.APP_SCHEMA }),
-    },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
-    sequence: [
-      "Initialize",
-      "Authorize",
-      "Revoke",
-      "CloseOrder",
-      "LimitOrder",
-      "MarketOrder",
-      "AddInstrument",
-      "Deposit",
-      "Withdrawal",
-    ],
-    mutations:
-      config.database === undefined
-        ? baseMutations()
-        : persistedMutations(state),
-  });
-
-  async function execute(submitted: SubmittedOrderBookMutation) {
-    const tagged = mutationToTagged(submitted);
-    await verifySignature(state, domain, tagged);
-    return ffca.execute({
-      ...submitted,
-      signature: normalizeSignatureForContract(state, submitted.signature),
-    });
-  }
-
-  return {
-    get state() {
-      return ffca.state;
-    },
-    get domain() {
-      return ffca.domain;
-    },
-    execute,
-    on: ffca.on,
-    stop: ffca.stop,
-  };
 }

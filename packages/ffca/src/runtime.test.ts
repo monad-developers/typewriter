@@ -303,6 +303,47 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
   await ffca.stop();
 });
 
+test("resolve and apply receive submitted signature", async () => {
+  const signatures: unknown[] = [];
+  const signature = { keyType: 7, rawSignature: "0x1234" };
+  const ffca = createFFCA({
+    address: "0x0000000000000000000000000000000000000000",
+    abi: [],
+    // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
+    account: {} as any,
+    chainId: 1,
+    rpcUrl: "http://localhost:8545",
+    domain: { name: "ffca-test", version: "1" },
+    state: { initial: {} },
+    signature: TEST_SIGNATURE,
+    mutations: {
+      shape: {
+        tag: 0,
+        table: testMutationSchema,
+        params: parseAbiParameters("uint256 amount"),
+        resolution: parseAbiParameters("uint8 keyType"),
+        resolve: (_state, _args, submittedSignature) => {
+          signatures.push(submittedSignature);
+          return { keyType: signature.keyType };
+        },
+        apply: (_state, _args, _resolution, submittedSignature) => {
+          signatures.push(submittedSignature);
+        },
+      },
+    },
+  });
+
+  await ffca.execute({
+    name: "shape",
+    args: { amount: 5n },
+    signature,
+  });
+
+  expect(signatures).toEqual([signature, signature]);
+
+  await ffca.stop();
+});
+
 // Counter: a single mutation, signed by the user, lands on chain.
 // End-to-end through real EIP-712 signing and on-chain secp256k1 recovery.
 test("e2e Counter: single mutation", async () => {

@@ -3,8 +3,7 @@ import type { FFCAMutationConfig } from "./config";
 
 // What a client posts to ffca.execute(). `signature` is a structured value
 // matching `FFCAConfig.signature.params` — ffca ABI-encodes it into the
-// contract's `bundle.signatures[]`. Must include `keyType` and
-// `rawSignature` fields once the authorize hook lands.
+// contract's `bundle.signatures[]` and passes it to mutation callbacks.
 export type SubmittedMutation = {
   name: string;
   args: unknown;

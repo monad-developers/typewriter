@@ -115,11 +115,12 @@ export function verifyMutation(
 function resolveMutation(
   config: FFCAMutationConfig,
   args: unknown,
+  signature: unknown,
   state: unknown,
   bundle: BundleView,
 ): unknown {
   if ("resolve" in config) {
-    return config.resolve(state, args, bundle);
+    return config.resolve(state, args, signature, bundle);
   }
   return undefined;
 }
@@ -129,13 +130,14 @@ function applyMutation(
   args: unknown,
   state: unknown,
   resolution: unknown,
+  signature: unknown,
 ): void {
   if ("resolve" in config) {
     // biome-ignore lint/suspicious/noExplicitAny: resolution shape user-defined
-    (config.apply as any)(state, args, resolution);
+    (config.apply as any)(state, args, resolution, signature);
   } else {
     // biome-ignore lint/suspicious/noExplicitAny: args shape user-defined
-    (config.apply as any)(state, args);
+    (config.apply as any)(state, args, signature);
   }
 }
 
@@ -368,11 +370,17 @@ export function createFFCA(config: FFCAConfig): FFCA {
     // TODO perf: structuredClone(state) per mutation is O(state). revm
     //   subsumes this with native revert; until then, the cost is paid.
     for (const item of queued) {
-      const { config, args } = item.pending;
+      const { config, args, signature } = item.pending;
       const snapshot = structuredClone(state);
       try {
-        const resolution = resolveMutation(config, args, state, bundleView);
-        applyMutation(config, args, state, resolution);
+        const resolution = resolveMutation(
+          config,
+          args,
+          signature,
+          state,
+          bundleView,
+        );
+        applyMutation(config, args, state, resolution, signature);
         const acceptedMutation = {
           ...item.pending,
           status: "accepted" as const,

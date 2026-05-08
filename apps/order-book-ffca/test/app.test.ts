@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
-import { EIP712_TYPES } from "order-book-sdk";
+import { createFFCA, type FFCA } from "ffca";
+import { EIP712_TYPES, EXCHANGE_ABI } from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
 import {
-  createOrderBookFFCA,
+  normalizeSignatureForContract,
+  ORDER_BOOK_SEQUENCE,
+  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookMutationName,
+  persistedMutations,
   type SubmittedOrderBookMutation,
 } from "../src/app";
 import * as schema from "../src/app-schema";
@@ -119,6 +123,7 @@ async function signedMutation(params: {
   signerKeyId: bigint;
   privateKey: Hex;
   address: Address;
+  account: Hex;
 }): Promise<SubmittedOrderBookMutation> {
   const rawSignature =
     params.name === "Initialize"
@@ -142,7 +147,7 @@ async function signedMutation(params: {
     name: params.name,
     args: params.args,
     signature: {
-      account: (params.args as { account: Hex }).account,
+      account: params.account,
       keyId: params.signerKeyId,
       rawSignature,
     },
@@ -150,19 +155,23 @@ async function signedMutation(params: {
 }
 
 async function setupAccount(params: {
-  app: ReturnType<typeof createOrderBookFFCA>;
+  app: FFCA;
+  state: State<bigint>;
   account: Address;
   privateKey: Hex;
   contract: Address;
 }): Promise<Hex> {
   const publicKey = secp256k1PublicKey(params.account);
   const id = accountId(publicKey);
-  await params.app.execute(
+  await executeOrderBookMutation(
+    params.app,
+    params.state,
     await signedMutation({
       name: "Initialize",
       address: params.contract,
       privateKey: params.privateKey,
       signerKeyId: 0n,
+      account: id,
       args: {
         account: id,
         expiry: 0,
@@ -175,6 +184,17 @@ async function setupAccount(params: {
     }),
   );
   return id;
+}
+
+function executeOrderBookMutation(
+  app: FFCA,
+  state: State<bigint>,
+  submitted: SubmittedOrderBookMutation,
+) {
+  return app.execute({
+    ...submitted,
+    signature: normalizeSignatureForContract(state, submitted.signature),
+  });
 }
 
 async function waitForProposed(
@@ -196,13 +216,18 @@ async function waitForProposed(
 test("ffca order book persists and submits market-order flow", async () => {
   const address = await deployExchange();
   const state: State<bigint> = { accounts: {}, instruments: {} };
-  const app = createOrderBookFFCA({
+  const app = createFFCA({
     address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { connection: TEST_DB_CONNECTION },
-    initialState: state,
+    state: { initial: state, schema: schema.APP_SCHEMA },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: persistedMutations(state),
   });
   const db = drizzle(TEST_DB_CONNECTION, {
     schema: schema.APP_SCHEMA,
@@ -211,26 +236,30 @@ test("ffca order book persists and submits market-order flow", async () => {
 
   const maker = await setupAccount({
     app,
+    state,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   const taker = await setupAccount({
     app,
+    state,
     account: TAKER_ACCOUNT.address,
     privateKey: TAKER_PRIVATE_KEY,
     contract: address,
   });
   await waitForProposed(db, schema.initializes, "initialize");
 
-  await app.execute(
+  await executeOrderBookMutation(
+    app,
+    state,
     await signedMutation({
       name: "AddInstrument",
       address,
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
+      account: maker,
       args: {
-        account: maker,
         instrumentId: 0,
         base: BASE,
         quote: QUOTE,
@@ -241,14 +270,16 @@ test("ffca order book persists and submits market-order flow", async () => {
       },
     }),
   );
-  await app.execute(
+  await executeOrderBookMutation(
+    app,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
+      account: maker,
       args: {
-        account: maker,
         asset: BASE,
         amount: 10n,
         nonce: 1n,
@@ -256,14 +287,16 @@ test("ffca order book persists and submits market-order flow", async () => {
       },
     }),
   );
-  await app.execute(
+  await executeOrderBookMutation(
+    app,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
       privateKey: TAKER_PRIVATE_KEY,
       signerKeyId: 1n,
+      account: taker,
       args: {
-        account: taker,
         asset: QUOTE,
         amount: 100n,
         nonce: 0n,
@@ -271,14 +304,16 @@ test("ffca order book persists and submits market-order flow", async () => {
       },
     }),
   );
-  await app.execute(
+  await executeOrderBookMutation(
+    app,
+    state,
     await signedMutation({
       name: "LimitOrder",
       address,
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
+      account: maker,
       args: {
-        account: maker,
         quantity: 10n,
         instrumentId: 0,
         price: 10n * Q32,
@@ -288,14 +323,16 @@ test("ffca order book persists and submits market-order flow", async () => {
       },
     }),
   );
-  const result = await app.execute(
+  const result = await executeOrderBookMutation(
+    app,
+    state,
     await signedMutation({
       name: "MarketOrder",
       address,
       privateKey: TAKER_PRIVATE_KEY,
       signerKeyId: 1n,
+      account: taker,
       args: {
-        account: taker,
         quantity: 10n,
         minReceivedQuantity: 10n,
         instrumentId: 0,

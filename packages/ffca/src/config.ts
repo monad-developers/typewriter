@@ -21,11 +21,11 @@ export type FFCADatabaseTransaction = Parameters<
 // by this mutation. `persistLifecycle` handles post-acceptance transitions like
 // proposed/finalized/verified.
 //
-// `resolve` must be pure: read-only over `state` and `bundle`, no side
-// effects. The runtime calls it once per mutation immediately before `apply`,
-// and treats its return value as canonical (it's encoded into calldata and
-// passed to `apply`). A `resolve` that mutates state breaks failure isolation
-// and replay determinism.
+// `resolve` must be pure: read-only over `state`, `signature`, and `bundle`, no
+// side effects. The runtime calls it once per mutation immediately before
+// `apply`, and treats its return value as canonical (it's encoded into calldata
+// and passed to `apply`). A `resolve` that mutates state breaks failure
+// isolation and replay determinism.
 //
 // `bundle` is a read-only view of every mutation in this bundle (in
 // post-sequence order, including this one). Use it for batch-aware decisions
@@ -80,14 +80,24 @@ export type FFCAMutationConfig =
   | (FFCAMutationPersistence & {
       tag: number;
       params: readonly AbiParameter[];
-      apply: (state: unknown, args: unknown) => void;
+      apply: (state: unknown, args: unknown, signature: unknown) => void;
     })
   | (FFCAMutationPersistence & {
       tag: number;
       params: readonly AbiParameter[];
       resolution: readonly AbiParameter[];
-      resolve: (state: unknown, args: unknown, bundle: BundleView) => unknown;
-      apply: (state: unknown, args: unknown, resolution: unknown) => void;
+      resolve: (
+        state: unknown,
+        args: unknown,
+        signature: unknown,
+        bundle: BundleView,
+      ) => unknown;
+      apply: (
+        state: unknown,
+        args: unknown,
+        resolution: unknown,
+        signature: unknown,
+      ) => void;
     });
 
 export type FFCAConfig = {

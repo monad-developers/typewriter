@@ -1,13 +1,20 @@
 import { serve } from "bun";
+import { createFFCA } from "ffca";
+import { EXCHANGE_ABI } from "order-book-sdk";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
-  createOrderBookFFCA,
+  normalizeSignatureForContract,
+  ORDER_BOOK_SEQUENCE,
+  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookMutationName,
   type OrderBookSignature,
+  persistedMutations,
   type SubmittedOrderBookMutation,
 } from "./app";
+import { APP_SCHEMA } from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
+import { createState } from "./exchange";
 
 if (process.env.DEPLOYER_PRIVATE_KEY === undefined) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
@@ -22,15 +29,20 @@ const account = privateKeyToAccount(
 const database = {
   connection: new Bun.SQL({ url: process.env.DATABASE_URL, max: 25 }),
 };
+const state = createState();
 
-const app = createOrderBookFFCA({
+const app = createFFCA({
   address: EXCHANGE_ADDRESS,
+  domain: { name: "Exchange", version: "1" },
+  abi: EXCHANGE_ABI,
   account,
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
   database,
-  rpId: process.env.BUN_PUBLIC_RP_ID,
-  origin: process.env.BUN_PUBLIC_ORIGIN,
+  state: { initial: state, schema: APP_SCHEMA },
+  signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+  sequence: ORDER_BOOK_SEQUENCE,
+  mutations: persistedMutations(state),
 });
 
 function json(value: unknown, init?: ResponseInit): Response {
@@ -60,10 +72,11 @@ async function submit(
 ) {
   const body = (await req.json()) as Record<string, unknown>;
   try {
+    const signature = signatureFromBody(body);
     const result = await app.execute({
       name,
       args: buildArgs(body),
-      signature: signatureFromBody(body),
+      signature: normalizeSignatureForContract(state, signature),
     });
     return json({ id: result.id, status: result.status });
   } catch (error) {
@@ -113,7 +126,6 @@ serve({
     "/api/mint": {
       POST: (req) =>
         submit(req, "Deposit", (body) => ({
-          account: body.account as Hex,
           asset: body.asset as Address,
           amount: BigInt(body.amount as string | number | bigint),
           nonce: BigInt(body.nonce as string | number | bigint),
@@ -123,7 +135,6 @@ serve({
     "/api/withdrawal": {
       POST: (req) =>
         submit(req, "Withdrawal", (body) => ({
-          account: body.account as Hex,
           asset: body.asset as Address,
           amount: BigInt(body.amount as string | number | bigint),
           nonce: BigInt(body.nonce as string | number | bigint),
@@ -133,7 +144,6 @@ serve({
     "/api/market-order": {
       POST: (req) =>
         submit(req, "MarketOrder", (body) => ({
-          account: body.account as Hex,
           quantity: BigInt(body.quantity as string | number | bigint),
           minReceivedQuantity: BigInt(
             body.minReceivedQuantity as string | number | bigint,
@@ -147,7 +157,6 @@ serve({
     "/api/limit-order": {
       POST: (req) =>
         submit(req, "LimitOrder", (body) => ({
-          account: body.account as Hex,
           quantity: BigInt(body.quantity as string | number | bigint),
           instrumentId: Number(body.instrumentId),
           price: BigInt(body.price as string | number | bigint),
@@ -159,7 +168,6 @@ serve({
     "/api/close-order": {
       POST: (req) =>
         submit(req, "CloseOrder", (body) => ({
-          account: body.account as Hex,
           orderId: Number(body.orderId),
           nonce: BigInt(body.nonce as string | number | bigint),
           deadline: BigInt(body.deadline as string | number | bigint),
@@ -168,7 +176,6 @@ serve({
     "/api/add-instrument": {
       POST: (req) =>
         submit(req, "AddInstrument", (body) => ({
-          account: body.account as Hex,
           instrumentId: Number(body.instrumentId),
           base: body.base as Address,
           quote: body.quote as Address,

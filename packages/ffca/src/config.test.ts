@@ -66,8 +66,8 @@ test("createFFCA mutation with resolution", () => {
         table: testMutationSchema,
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-        resolve: (_state, _args) => {},
-        apply: (_state, _args, _resolution) => {},
+        resolve: (_state, _args, _signature, _bundle) => {},
+        apply: (_state, _args, _resolution, _signature) => {},
       },
     },
   });
