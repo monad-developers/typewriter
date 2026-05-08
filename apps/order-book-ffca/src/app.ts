@@ -165,10 +165,10 @@ function applyWithdrawal(state: OrderBookState, args: WithdrawalArgs): void {
 function resolveMarket(
   state: OrderBookState,
   args: MarketOrderArgs,
-): { resolution: MarketOrderResolution<bigint> } {
+): MarketOrderResolution<bigint> {
   const instrument = state.instruments[args.instrumentId];
-  if (instrument === undefined) return { resolution: { fills: [] } };
-  return { resolution: resolveMarketOrder(instrument, args, new Map()) };
+  if (instrument === undefined) return { fills: [] };
+  return resolveMarketOrder(instrument, args, new Map());
 }
 
 function baseMutations(): FFCAConfig["mutations"] {
@@ -177,7 +177,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Initialize,
       table: schema.initializes,
       params: parseAbiParameters(
-        "(bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint8 permissions, bytes rootPublicKey, bytes publicKey) init",
+        "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint8 permissions, bytes rootPublicKey, bytes publicKey",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyInitialize(state as OrderBookState, args as InitializeArgs)) as (
@@ -189,7 +189,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Authorize,
       table: schema.authorizes,
       params: parseAbiParameters(
-        "(bytes32 account, uint40 expiry, uint8 keyType, uint8 permissions, bytes publicKey, uint256 nonce, uint256 deadline) auth",
+        "bytes32 account, uint40 expiry, uint8 keyType, uint8 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyAuthorize(state as OrderBookState, args as AuthorizeArgs)) as (
@@ -201,7 +201,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Revoke,
       table: schema.revokes,
       params: parseAbiParameters(
-        "(bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline) rev",
+        "bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyRevoke(state as OrderBookState, args as RevokeArgs)) as (
@@ -213,7 +213,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.CloseOrder,
       table: schema.closeOrders,
       params: parseAbiParameters(
-        "(uint64 orderId, uint256 nonce, uint256 deadline) close",
+        "uint64 orderId, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyCloseOrder(state as OrderBookState, args as CloseOrderArgs)) as (
@@ -225,7 +225,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.LimitOrder,
       table: schema.limitOrders,
       params: parseAbiParameters(
-        "(uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline) order",
+        "uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyLimitOrder(state as OrderBookState, args as LimitOrderArgs)) as (
@@ -237,11 +237,9 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.MarketOrder,
       table: schema.marketOrders,
       params: parseAbiParameters(
-        "(uint256 quantity, uint256 minReceivedQuantity, uint64 instrumentId, uint8 bidOrAsk, uint256 nonce, uint256 deadline) order",
+        "uint256 quantity, uint256 minReceivedQuantity, uint64 instrumentId, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
       ),
-      resolution: parseAbiParameters(
-        "((uint64 quantity, uint64 price)[] fills) resolution",
-      ),
+      resolution: parseAbiParameters("(uint64 quantity, uint64 price)[] fills"),
       resolve: ((state: unknown, args: unknown) =>
         resolveMarket(state as OrderBookState, args as MarketOrderArgs)) as (
         state: unknown,
@@ -251,15 +249,14 @@ function baseMutations(): FFCAConfig["mutations"] {
         applyMarketOrder(
           state as OrderBookState,
           args as MarketOrderArgs,
-          (resolution as { resolution: MarketOrderResolution<bigint> })
-            .resolution,
+          resolution as MarketOrderResolution<bigint>,
         )) as (state: unknown, args: unknown, resolution: unknown) => void,
     },
     AddInstrument: {
       tag: MutationType.AddInstrument,
       table: schema.addInstruments,
       params: parseAbiParameters(
-        "(uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline) p",
+        "uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyAddInstrument(
@@ -271,7 +268,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Deposit,
       table: schema.deposits,
       params: parseAbiParameters(
-        "(address asset, uint256 amount, uint256 nonce, uint256 deadline) d",
+        "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyDeposit(state as OrderBookState, args as DepositArgs)) as (
@@ -283,7 +280,7 @@ function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Withdrawal,
       table: schema.withdrawals,
       params: parseAbiParameters(
-        "(address asset, uint256 amount, uint256 nonce, uint256 deadline) w",
+        "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
       apply: ((state: unknown, args: unknown) =>
         applyWithdrawal(state as OrderBookState, args as WithdrawalArgs)) as (
@@ -455,33 +452,6 @@ function normalizeSignatureForContract(
       [Number(v), r, s],
     ),
   };
-}
-
-function addCalldataTupleArgs(
-  submitted: SubmittedOrderBookMutation,
-): SubmittedOrderBookMutation {
-  const args = submitted.args;
-  const withTuple = (key: string) =>
-    ({ ...args, [key]: args }) as unknown as SubmittedOrderBookMutation["args"];
-  switch (submitted.name) {
-    case "Initialize":
-      return { ...submitted, args: withTuple("init") };
-    case "Authorize":
-      return { ...submitted, args: withTuple("auth") };
-    case "Revoke":
-      return { ...submitted, args: withTuple("rev") };
-    case "CloseOrder":
-      return { ...submitted, args: withTuple("close") };
-    case "LimitOrder":
-    case "MarketOrder":
-      return { ...submitted, args: withTuple("order") };
-    case "AddInstrument":
-      return { ...submitted, args: withTuple("p") };
-    case "Deposit":
-      return { ...submitted, args: withTuple("d") };
-    case "Withdrawal":
-      return { ...submitted, args: withTuple("w") };
-  }
 }
 
 function txDb(tx: unknown) {
@@ -740,11 +710,7 @@ function persistedMutations(state: OrderBookState): FFCAConfig["mutations"] {
     ...mutations.MarketOrder,
     persistMutation: async (tx, { mutation, bundle }) => {
       const args = mutationArgs<MarketOrderArgs>(mutation);
-      const resolution = (
-        mutation.resolution as {
-          resolution: MarketOrderResolution<bigint>;
-        }
-      ).resolution;
+      const resolution = mutation.resolution as MarketOrderResolution<bigint>;
       await txDb(tx)
         .insert(schema.marketOrders)
         .values({
@@ -880,10 +846,9 @@ export function createOrderBookFFCA(
   async function execute(submitted: SubmittedOrderBookMutation) {
     const tagged = mutationToTagged(submitted);
     await verifySignature(state, domain, tagged);
-    const ffcaSubmitted = addCalldataTupleArgs(submitted);
     return ffca.execute({
-      ...ffcaSubmitted,
-      signature: normalizeSignatureForContract(state, ffcaSubmitted.signature),
+      ...submitted,
+      signature: normalizeSignatureForContract(state, submitted.signature),
     });
   }
 

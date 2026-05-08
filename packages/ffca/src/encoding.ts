@@ -13,6 +13,16 @@ function abiTupleFromRecord(
   return params.map((p) => r[p.name ?? ""]);
 }
 
+// FFCA mutation params are the flat semantic fields used for EIP-712. Contract
+// calldata encodes those fields as one top-level Solidity struct. This assumes
+// each mutation's calldata shape is exactly one struct whose components are
+// `mutation.params`.
+function calldataStructParams(
+  params: readonly AbiParameters.Parameter[],
+): readonly AbiParameters.Parameter[] {
+  return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
+}
+
 export function encodeMutationCalldata(
   mutation: FFCAMutationConfig,
   args: unknown,
@@ -23,15 +33,15 @@ export function encodeMutationCalldata(
     const resolutionParams =
       mutation.resolution as readonly AbiParameters.Parameter[];
     return AbiParameters.encode(
-      [...params, ...resolutionParams],
       [
-        ...abiTupleFromRecord(params, args),
-        ...abiTupleFromRecord(resolutionParams, resolution),
+        ...calldataStructParams(params),
+        ...calldataStructParams(resolutionParams),
       ],
+      [args, resolution],
     );
   }
 
-  return AbiParameters.encode(params, abiTupleFromRecord(params, args));
+  return AbiParameters.encode(calldataStructParams(params), [args]);
 }
 
 // ffca expects the contract's `execute` to take `Bundle[]` where

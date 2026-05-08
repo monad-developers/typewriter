@@ -20,6 +20,11 @@ struct State {
     uint256 nonce;
 }
 
+struct AddMutation {
+    uint256 amount;
+    uint256 nonce;
+}
+
 /// Single-signer secp256k1 fixture for ffca's submit path. `add` mutations
 /// must be EIP-712-signed by the address set at construction time. ffca's
 /// local `apply` mirrors the addition; the contract enforces the signature
@@ -57,15 +62,15 @@ contract Counter {
     function _apply(uint8 tag, bytes calldata data, Signature calldata sig) internal {
         if (tag != ADD) revert UnknownTag();
 
-        (uint256 amount, uint256 nonce) = abi.decode(data, (uint256, uint256));
-        if (nonce != state.nonce) revert InvalidNonce();
+        AddMutation memory add = abi.decode(data, (AddMutation));
+        if (add.nonce != state.nonce) revert InvalidNonce();
 
-        bytes32 structHash = keccak256(abi.encode(ADD_TYPEHASH, amount, nonce));
+        bytes32 structHash = keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
 
         verifySignature(KeyType(sig.keyType), digest, abi.encode(signer), sig.rawSignature);
 
-        state.total += amount;
+        state.total += add.amount;
         state.nonce++;
     }
 }

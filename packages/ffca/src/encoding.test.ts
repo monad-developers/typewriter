@@ -5,6 +5,12 @@ import { testMutationSchema } from "../test/utils";
 import { encodeBundleCalldata, encodeMutationCalldata } from "./encoding";
 import type { ResolvedMutation } from "./types";
 
+function calldataStructParams(
+  params: readonly AbiParameters.Parameter[],
+): readonly AbiParameters.Parameter[] {
+  return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
+}
+
 test("encodeMutationCalldata without resolution", () => {
   const mutation = {
     tag: 0,
@@ -20,11 +26,29 @@ test("encodeMutationCalldata without resolution", () => {
 
   const encoded = encodeMutationCalldata(mutation, args);
 
-  expect(AbiParameters.decode(mutation.params, encoded)).toEqual([
-    args.from,
-    args.to,
-    args.amount,
-  ]);
+  expect(
+    AbiParameters.decode(calldataStructParams(mutation.params), encoded),
+  ).toEqual([args]);
+});
+
+test("encodeMutationCalldata wraps dynamic params as one struct", () => {
+  const mutation = {
+    tag: 0,
+    table: testMutationSchema,
+    params: parseAbiParameters("bytes32 account, bytes publicKey"),
+    apply: () => {},
+  };
+  const args = {
+    account:
+      "0x1111111111111111111111111111111111111111111111111111111111111111",
+    publicKey: "0x1234",
+  } as const;
+
+  const encoded = encodeMutationCalldata(mutation, args);
+
+  expect(
+    AbiParameters.decode(calldataStructParams(mutation.params), encoded),
+  ).toEqual([args]);
 });
 
 test("encodeMutationCalldata with resolution", () => {
@@ -47,8 +71,14 @@ test("encodeMutationCalldata with resolution", () => {
   const encoded = encodeMutationCalldata(mutation, args, resolution);
 
   expect(
-    AbiParameters.decode([...mutation.params, ...mutation.resolution], encoded),
-  ).toEqual([args.size, resolution.fills]);
+    AbiParameters.decode(
+      [
+        ...calldataStructParams(mutation.params),
+        ...calldataStructParams(mutation.resolution),
+      ],
+      encoded,
+    ),
+  ).toEqual([args, resolution]);
 });
 
 test("encodeBundleCalldata signatures are typed against signature params", () => {
@@ -188,7 +218,7 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     {
       "mutationData": [
         "0x000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000064",
-        "0x000000000000000000000000000000000000000000000000000000000000000a000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000064000000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000630000000000000000000000000000000000000000000000000000000000000004",
+        "0x000000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000064000000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000630000000000000000000000000000000000000000000000000000000000000004",
       ],
       "mutations": [
         0,

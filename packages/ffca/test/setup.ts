@@ -103,8 +103,8 @@ export const TEST_WALLET_CLIENT = createWalletClient({
   account: SCHEDULER_ACCOUNT,
 });
 
-// bunfig.toml's `[test] preload` points at this file, so the hooks below
-// fire globally — beforeAll once at run start, afterAll once at run end.
+// packages/ffca/bunfig.toml's `[test] preload` points at this file, so run
+// tests from this package or through `bun run --filter ffca test`.
 // Each test deploys its own contracts via the helpers in ./utils.
 
 let teardown!: () => Promise<void>;

@@ -35,6 +35,44 @@ struct State {
     mapping(bytes32 => uint256) balances;
 }
 
+struct InitializeMutation {
+    uint8 rootKeyType;
+    bytes rootPublicKey;
+}
+
+struct AuthorizeMutation {
+    bytes32 account;
+    uint64 keyId;
+    uint8 keyType;
+    bytes publicKey;
+    uint256 nonce;
+}
+
+struct CreditMutation {
+    bytes32 account;
+    uint64 keyId;
+    uint256 amount;
+    uint256 nonce;
+}
+
+struct DebitMutation {
+    bytes32 account;
+    uint64 keyId;
+    uint256 amount;
+    uint256 nonce;
+}
+
+struct DebitResolution {
+    uint256 newBalance;
+}
+
+struct AssertMutation {
+    bytes32 account;
+    uint64 keyId;
+    uint256 expected;
+    uint256 nonce;
+}
+
 /// Multi-key fixture for ffca's submit path. Accounts are 32-byte ids; each
 /// holds a list of keys (any of the three KeyTypes from Account.sol).
 /// Signatures carry (account, keyId, keyType, rawSignature). All mutations
@@ -57,12 +95,9 @@ contract Harness {
     bytes32 constant INITIALIZE_TYPEHASH = keccak256("initialize(uint8 rootKeyType,bytes rootPublicKey)");
     bytes32 constant AUTHORIZE_TYPEHASH =
         keccak256("authorize(bytes32 account,uint64 keyId,uint8 keyType,bytes publicKey,uint256 nonce)");
-    bytes32 constant CREDIT_TYPEHASH =
-        keccak256("credit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
-    bytes32 constant DEBIT_TYPEHASH =
-        keccak256("debit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
-    bytes32 constant ASSERT_TYPEHASH =
-        keccak256("assert(bytes32 account,uint64 keyId,uint256 expected,uint256 nonce)");
+    bytes32 constant CREDIT_TYPEHASH = keccak256("credit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
+    bytes32 constant DEBIT_TYPEHASH = keccak256("debit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
+    bytes32 constant ASSERT_TYPEHASH = keccak256("assert(bytes32 account,uint64 keyId,uint256 expected,uint256 nonce)");
 
     State internal state;
 
@@ -129,37 +164,41 @@ contract Harness {
 
     function _apply(uint8 tag, bytes calldata data, Signature calldata sig) internal {
         if (tag == INITIALIZE) {
-            (uint8 rootKeyType, bytes memory rootPublicKey) = abi.decode(data, (uint8, bytes));
-            bytes32 expected = keccak256(rootPublicKey);
+            InitializeMutation memory init = abi.decode(data, (InitializeMutation));
+            bytes32 expected = keccak256(init.rootPublicKey);
             if (sig.account != expected) revert InvalidAccount();
             if (state.accounts[expected].keys.length != 0) revert AlreadyInitialized();
-            state.accounts[expected].keys.push(Key(rootKeyType, rootPublicKey));
+            state.accounts[expected].keys.push(Key(init.rootKeyType, init.rootPublicKey));
         } else if (tag == AUTHORIZE) {
-            (bytes32 account, uint64 keyId, uint8 keyType, bytes memory publicKey, uint256 nonce) =
-                abi.decode(data, (bytes32, uint64, uint8, bytes, uint256));
-            bytes32 structHash =
-                keccak256(abi.encode(AUTHORIZE_TYPEHASH, account, keyId, keyType, keccak256(publicKey), nonce));
-            _verifySig(structHash, nonce, sig);
-            state.accounts[sig.account].keys.push(Key(keyType, publicKey));
+            AuthorizeMutation memory auth = abi.decode(data, (AuthorizeMutation));
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    AUTHORIZE_TYPEHASH, auth.account, auth.keyId, auth.keyType, keccak256(auth.publicKey), auth.nonce
+                )
+            );
+            _verifySig(structHash, auth.nonce, sig);
+            state.accounts[sig.account].keys.push(Key(auth.keyType, auth.publicKey));
         } else if (tag == CREDIT) {
-            (bytes32 account, uint64 keyId, uint256 amount, uint256 nonce) =
-                abi.decode(data, (bytes32, uint64, uint256, uint256));
-            bytes32 structHash = keccak256(abi.encode(CREDIT_TYPEHASH, account, keyId, amount, nonce));
-            _verifySig(structHash, nonce, sig);
-            state.balances[sig.account] += amount;
+            CreditMutation memory credit = abi.decode(data, (CreditMutation));
+            bytes32 structHash =
+                keccak256(abi.encode(CREDIT_TYPEHASH, credit.account, credit.keyId, credit.amount, credit.nonce));
+            _verifySig(structHash, credit.nonce, sig);
+            state.balances[sig.account] += credit.amount;
         } else if (tag == DEBIT) {
-            (bytes32 account, uint64 keyId, uint256 amount, uint256 nonce, uint256 newBalance) =
-                abi.decode(data, (bytes32, uint64, uint256, uint256, uint256));
-            bytes32 structHash = keccak256(abi.encode(DEBIT_TYPEHASH, account, keyId, amount, nonce));
-            _verifySig(structHash, nonce, sig);
-            require(state.balances[sig.account] == newBalance + amount, "debit: stale resolution");
-            state.balances[sig.account] = newBalance;
+            (DebitMutation memory debit, DebitResolution memory resolution) =
+                abi.decode(data, (DebitMutation, DebitResolution));
+            bytes32 structHash =
+                keccak256(abi.encode(DEBIT_TYPEHASH, debit.account, debit.keyId, debit.amount, debit.nonce));
+            _verifySig(structHash, debit.nonce, sig);
+            require(state.balances[sig.account] == resolution.newBalance + debit.amount, "debit: stale resolution");
+            state.balances[sig.account] = resolution.newBalance;
         } else if (tag == ASSERT) {
-            (bytes32 account, uint64 keyId, uint256 expected, uint256 nonce) =
-                abi.decode(data, (bytes32, uint64, uint256, uint256));
-            bytes32 structHash = keccak256(abi.encode(ASSERT_TYPEHASH, account, keyId, expected, nonce));
-            _verifySig(structHash, nonce, sig);
-            require(state.balances[sig.account] == expected, "assert failed");
+            AssertMutation memory assertion = abi.decode(data, (AssertMutation));
+            bytes32 structHash = keccak256(
+                abi.encode(ASSERT_TYPEHASH, assertion.account, assertion.keyId, assertion.expected, assertion.nonce)
+            );
+            _verifySig(structHash, assertion.nonce, sig);
+            require(state.balances[sig.account] == assertion.expected, "assert failed");
         } else {
             revert UnknownTag();
         }
