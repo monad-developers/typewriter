@@ -14,6 +14,25 @@ The central abstraction is `StoragePath`: a structured representation of a Solid
 
 The first implementation slice supports top-level value types only. Add capabilities incrementally in this order: struct fields, fixed arrays, dynamic arrays, mappings, nested combinations, then `bytes` / `string` payload decoding.
 
+## Solidity Type Inventory
+
+The initial implementation should be driven by Solidity's storage-layout categories, not just ABI categories. Solidity compiler `storageLayout.types[*].encoding` uses four broad encodings: `inplace`, `mapping`, `dynamic_array`, and `bytes`.
+
+Types to account for:
+
+- Value types: `bool`, `uint<M>`, `int<M>`, `address`, `address payable`, `bytes1` through `bytes32`, enums, contract types, user-defined value types.
+- ABI-visible dynamic byte types: `bytes`, `string`. In storage layout these use `encoding: "bytes"`, including Solidity's short-value in-slot optimization.
+- Fixed composite types: structs and fixed-size arrays. These use `encoding: "inplace"`, but may span slots and may contain packed members.
+- Dynamic composite types: dynamic arrays and mappings. Dynamic arrays use `encoding: "dynamic_array"`; mappings use `encoding: "mapping"` and require known keys.
+- Nested combinations: arrays of structs, structs with mappings, mappings to structs, mappings to arrays, arrays of arrays, etc.
+- Solidity language types that need an explicit policy: fixed/ufixed decimal types, function types, contract types, user-defined value types, constants, immutables, and transient storage.
+
+Notes:
+
+- Constants and immutables are not ordinary storage-layout entries in the same sense as state variables; do not assume they can be decoded from account storage.
+- Transient storage has separate semantics from persistent storage. Treat it as out of scope until there is a concrete revm/ffca use case.
+- Use `abitype` for Solidity-to-TypeScript primitive type mapping where possible, but storage-specific decoding still needs Solidity storage rules for packing, signed integers, short bytes/string, mappings, and dynamic arrays.
+
 ## Important Limitation
 
 `storageLayout + slots => StoragePath` is not generally possible from storage layout alone.
