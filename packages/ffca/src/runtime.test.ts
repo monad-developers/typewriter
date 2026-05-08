@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sql";
 import type { TypedData } from "ox";
 import type { Hex } from "viem";
 import { anvil } from "viem/chains";
@@ -10,6 +12,7 @@ import {
   BOB_PRIVATE_KEY,
   P256_PRIVATE_KEY,
   SCHEDULER_ACCOUNT,
+  TEST_DB_CONNECTION,
   TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
   USER_ACCOUNT,
@@ -24,8 +27,17 @@ import {
   deployHarness,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
+  HARNESS_PERSISTED_MUTATIONS,
+  HARNESS_SCHEMA,
   HARNESS_SIGNATURE_PARAMS,
   type HarnessState,
+  harnessAccounts,
+  harnessBalances,
+  harnessCreditMutations,
+  harnessDebitMutations,
+  harnessInitializeMutations,
+  harnessKeys,
+  harnessNonces,
   p256PublicKey,
   secp256k1PublicKey,
   setupHarnessAccount,
@@ -167,6 +179,23 @@ test("ffca.domain is derived from config", async () => {
   `);
 
   await ffca.stop();
+});
+
+test("createFFCA rejects partially configured persistence", async () => {
+  expect(() =>
+    createFFCA({
+      address: "0x000000000000000000000000000000000000abcd",
+      abi: [],
+      // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
+      account: {} as any,
+      chainId: 1,
+      rpcUrl: "http://localhost:8545",
+      domain: { name: "my-app", version: "2" },
+      state: { initial: {}, schema: HARNESS_SCHEMA },
+      signature: TEST_SIGNATURE,
+      mutations: { shape: SHAPE_MUTATION },
+    }),
+  ).toThrow(/persistence must be fully configured/);
 });
 
 test("bundle applies mutations in config.sequence order within a bundle", async () => {
@@ -472,6 +501,306 @@ test("e2e Harness: mutation with resolution", async () => {
 
   expect(await readBalance()).toBe(70n);
   expect((ffca.state as HarnessState).balances[aliceId]).toBe(70n);
+
+  await ffca.stop();
+});
+
+test("e2e Harness: persistence callbacks write accepted and proposed state", async () => {
+  const { address, abi } = await deployHarness();
+
+  const ffca = createFFCA({
+    address,
+    domain: HARNESS_DOMAIN,
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    database: { connection: TEST_DB_CONNECTION },
+    state: {
+      initial: { accounts: {}, balances: {} } as HarnessState,
+      schema: HARNESS_SCHEMA,
+    },
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
+    mutations: {
+      initialize: HARNESS_PERSISTED_MUTATIONS.initialize,
+      credit: HARNESS_PERSISTED_MUTATIONS.credit,
+      debit: HARNESS_PERSISTED_MUTATIONS.debit,
+    },
+  });
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: HARNESS_SCHEMA,
+    casing: "snake_case",
+  });
+
+  const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
+  const aliceId = await setupHarnessAccount(ffca, {
+    rootKeyType: 2,
+    rootPublicKey,
+  });
+
+  await ffca.execute({
+    name: "credit",
+    args: { account: aliceId, keyId: 0n, amount: 100n, nonce: 0n },
+    signature: {
+      account: aliceId,
+      keyId: 0n,
+      keyType: 2,
+      rawSignature: signHarness({
+        privateKey: ALICE_PRIVATE_KEY,
+        keyType: 2,
+        mutation: "credit",
+        args: { account: aliceId, keyId: 0n, amount: 100n, nonce: 0n },
+        address,
+        chainId: anvil.id,
+      }),
+    },
+  });
+  await ffca.execute({
+    name: "debit",
+    args: { account: aliceId, keyId: 0n, amount: 30n, nonce: 1n },
+    signature: {
+      account: aliceId,
+      keyId: 0n,
+      keyType: 2,
+      rawSignature: signHarness({
+        privateKey: ALICE_PRIVATE_KEY,
+        keyType: 2,
+        mutation: "debit",
+        args: { account: aliceId, keyId: 0n, amount: 30n, nonce: 1n },
+        address,
+        chainId: anvil.id,
+      }),
+    },
+  });
+
+  const readBalance = () =>
+    TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "balances",
+      args: [aliceId],
+    }) as Promise<bigint>;
+  const deadline = Date.now() + 5000;
+  while ((await readBalance()) !== 70n) {
+    if (Date.now() > deadline) {
+      throw new Error(`balance never reached 70; saw ${await readBalance()}`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  const [account] = await db
+    .select()
+    .from(harnessAccounts)
+    .where(eq(harnessAccounts.id, aliceId));
+  const [key] = await db
+    .select()
+    .from(harnessKeys)
+    .where(eq(harnessKeys.account, aliceId));
+  const [nonce] = await db
+    .select()
+    .from(harnessNonces)
+    .where(eq(harnessNonces.account, aliceId));
+  const [balance] = await db
+    .select()
+    .from(harnessBalances)
+    .where(eq(harnessBalances.account, aliceId));
+  const readPersistedMutations = async () => {
+    const [initialize] = await db.select().from(harnessInitializeMutations);
+    const [credit] = await db.select().from(harnessCreditMutations);
+    const [debit] = await db.select().from(harnessDebitMutations);
+    return { initialize, credit, debit };
+  };
+  const waitForPersistedStatus = async (status: string) => {
+    const statusDeadline = Date.now() + 5000;
+    while (true) {
+      const rows = await readPersistedMutations();
+      if (
+        rows.initialize?.status === status &&
+        rows.credit?.status === status &&
+        rows.debit?.status === status
+      ) {
+        return rows;
+      }
+      if (Date.now() > statusDeadline) {
+        const rows = await readPersistedMutations();
+        throw new Error(
+          `mutations never reached ${status}; saw ${JSON.stringify({
+            initialize: rows.initialize?.status,
+            credit: rows.credit?.status,
+            debit: rows.debit?.status,
+          })}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  const { initialize, credit, debit } =
+    await waitForPersistedStatus("proposed");
+
+  expect(account).toEqual({ id: aliceId });
+  expect(key).toEqual({
+    account: aliceId,
+    keyIndex: 0n,
+    keyType: 2,
+    publicKey: rootPublicKey,
+  });
+  expect(nonce).toEqual({ account: aliceId, nonceKey: "0", sequence: 2n });
+  expect(balance).toEqual({ account: aliceId, amount: "70" });
+  expect(initialize).toMatchObject({
+    id: 0,
+    status: "proposed",
+    account: aliceId,
+    rootKeyType: 2,
+    rootPublicKey,
+  });
+  expect(credit).toMatchObject({
+    id: 1,
+    status: "proposed",
+    account: aliceId,
+    amount: "100",
+    nonce: "0",
+  });
+  expect(debit).toMatchObject({
+    id: 2,
+    status: "proposed",
+    account: aliceId,
+    amount: "30",
+    nonce: "1",
+    newBalance: "70",
+  });
+  expect(credit?.blockNumber).not.toBeNull();
+  expect(debit?.transactionHash).toMatch(/^0x/);
+
+  await ffca.stop();
+});
+
+test("e2e Harness: authorize persistence writes per-mutation key rows", async () => {
+  const { address, abi } = await deployHarness();
+
+  const ffca = createFFCA({
+    address,
+    domain: HARNESS_DOMAIN,
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    database: { connection: TEST_DB_CONNECTION },
+    state: {
+      initial: { accounts: {}, balances: {} } as HarnessState,
+      schema: HARNESS_SCHEMA,
+    },
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
+    sequence: ["initialize", "authorize"],
+    mutations: {
+      initialize: HARNESS_PERSISTED_MUTATIONS.initialize,
+      authorize: HARNESS_PERSISTED_MUTATIONS.authorize,
+    },
+  });
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: HARNESS_SCHEMA,
+    casing: "snake_case",
+  });
+
+  const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
+  const aliceId = await setupHarnessAccount(ffca, {
+    rootKeyType: 2,
+    rootPublicKey,
+  });
+  const bobPublicKey = secp256k1PublicKey(BOB_ACCOUNT.address);
+  const p256Pk = p256PublicKey(P256_PRIVATE_KEY);
+  const bobAuthorizeArgs = {
+    account: aliceId,
+    keyId: 1n,
+    keyType: 2,
+    publicKey: bobPublicKey,
+    nonce: 0n,
+  };
+  const p256AuthorizeArgs = {
+    account: aliceId,
+    keyId: 2n,
+    keyType: 0,
+    publicKey: p256Pk,
+    nonce: 1n,
+  };
+
+  await Promise.all([
+    ffca.execute({
+      name: "authorize",
+      args: bobAuthorizeArgs,
+      signature: {
+        account: aliceId,
+        keyId: 0n,
+        keyType: 2,
+        rawSignature: signHarness({
+          privateKey: ALICE_PRIVATE_KEY,
+          keyType: 2,
+          mutation: "authorize",
+          args: bobAuthorizeArgs,
+          address,
+          chainId: anvil.id,
+        }),
+      },
+    }),
+    ffca.execute({
+      name: "authorize",
+      args: p256AuthorizeArgs,
+      signature: {
+        account: aliceId,
+        keyId: 0n,
+        keyType: 2,
+        rawSignature: signHarness({
+          privateKey: ALICE_PRIVATE_KEY,
+          keyType: 2,
+          mutation: "authorize",
+          args: p256AuthorizeArgs,
+          address,
+          chainId: anvil.id,
+        }),
+      },
+    }),
+  ]);
+
+  const deadline = Date.now() + 5000;
+  while (
+    ((await TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "nonceOf",
+      args: [aliceId, 0n],
+    })) as bigint) !== 2n
+  ) {
+    if (Date.now() > deadline) {
+      throw new Error("authorize bundle never landed");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  const keys = await db
+    .select()
+    .from(harnessKeys)
+    .where(eq(harnessKeys.account, aliceId));
+  keys.sort((a, b) => Number(a.keyIndex - b.keyIndex));
+
+  expect(keys).toEqual([
+    {
+      account: aliceId,
+      keyIndex: 0n,
+      keyType: 2,
+      publicKey: rootPublicKey,
+    },
+    {
+      account: aliceId,
+      keyIndex: 1n,
+      keyType: 2,
+      publicKey: bobPublicKey,
+    },
+    {
+      account: aliceId,
+      keyIndex: 2n,
+      keyType: 0,
+      publicKey: p256Pk,
+    },
+  ]);
 
   await ffca.stop();
 });
@@ -1065,13 +1394,15 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     mutations: COUNTER_MUTATIONS,
   });
 
-  const mutationEvents: MutationEvent[] = [];
-  const bundleEvents: BundleEvent[] = [];
-  const blockEvents: BlockEvent[] = [];
+  const mutationStatuses: MutationEvent["status"][] = [];
+  const bundleStatuses: BundleEvent["status"][] = [];
+  const blockStatuses: BlockEvent["status"][] = [];
 
-  const offMutation = ffca.on("mutation", (e) => mutationEvents.push(e));
-  ffca.on("bundle", (e) => bundleEvents.push(e));
-  ffca.on("block", (e) => blockEvents.push(e));
+  const offMutation = ffca.on("mutation", (e) =>
+    mutationStatuses.push(e.status),
+  );
+  ffca.on("bundle", (e) => bundleStatuses.push(e.status));
+  ffca.on("block", (e) => blockStatuses.push(e.status));
 
   const sign = (args: { amount: bigint; nonce: bigint }) =>
     signCounter({
@@ -1091,8 +1422,8 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
   // Wait for the proposed events (submit cycle adds ~400ms after accept).
   const deadline = Date.now() + 5000;
   while (
-    !mutationEvents.some((e) => e.status === "proposed") ||
-    !blockEvents.some((e) => e.status === "proposed")
+    !mutationStatuses.includes("proposed") ||
+    !blockStatuses.includes("proposed")
   ) {
     if (Date.now() > deadline) {
       throw new Error("proposed events never arrived");
@@ -1100,13 +1431,9 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  expect(mutationEvents.map((e) => e.status)).toEqual([
-    "pending",
-    "accepted",
-    "proposed",
-  ]);
-  expect(bundleEvents.map((e) => e.status)).toEqual(["accepted", "proposed"]);
-  expect(blockEvents.map((e) => e.status)).toEqual(["accepted", "proposed"]);
+  expect(mutationStatuses).toEqual(["pending", "accepted", "proposed"]);
+  expect(bundleStatuses).toEqual(["accepted", "proposed"]);
+  expect(blockStatuses).toEqual(["accepted", "proposed"]);
 
   // The disposer returned by on() unsubscribes that listener.
   offMutation();
@@ -1115,18 +1442,14 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     args: { amount: 3n, nonce: 1n },
     signature: sign({ amount: 3n, nonce: 1n }),
   });
-  while (bundleEvents.length < 4) {
+  while (bundleStatuses.length < 4) {
     if (Date.now() > deadline) {
       throw new Error("second bundle's proposed event never arrived");
     }
     await new Promise((r) => setTimeout(r, 50));
   }
   // Same three statuses as before — no new mutation events after unsubscribe.
-  expect(mutationEvents.map((e) => e.status)).toEqual([
-    "pending",
-    "accepted",
-    "proposed",
-  ]);
+  expect(mutationStatuses).toEqual(["pending", "accepted", "proposed"]);
 
   await ffca.stop();
 });
