@@ -45,7 +45,7 @@ import {
   signHarness,
   testMutationSchema,
 } from "../test/utils";
-import { createFFCA, verifyMutation } from "./runtime";
+import { createFFCA, verifyMutation, verifyResolution } from "./runtime";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
 const domain: TypedData.Domain = {
@@ -72,6 +72,7 @@ test("verifyMutation accepts a well-formed mutation", () => {
   expect(() =>
     verifyMutation(
       SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
       {
         name: "shape",
         args: {
@@ -89,6 +90,7 @@ test("verifyMutation throws when args is not an object", () => {
   expect(() =>
     verifyMutation(
       SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
       {
         name: "shape",
         args: null,
@@ -100,6 +102,7 @@ test("verifyMutation throws when args is not an object", () => {
   expect(() =>
     verifyMutation(
       SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
       {
         name: "shape",
         args: "string",
@@ -114,6 +117,7 @@ test("verifyMutation throws on missing required field", () => {
   expect(() =>
     verifyMutation(
       SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
       {
         name: "shape",
         args: { account: "0x0000000000000000000000000000000000000001" },
@@ -128,6 +132,7 @@ test("verifyMutation throws on invalid address", () => {
   expect(() =>
     verifyMutation(
       SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
       {
         name: "shape",
         args: { account: "not-an-address", amount: 5n },
@@ -142,6 +147,7 @@ test("verifyMutation throws on uint overflow", () => {
   expect(() =>
     verifyMutation(
       SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
       {
         name: "shape",
         args: {
@@ -152,6 +158,60 @@ test("verifyMutation throws on uint overflow", () => {
       },
       domain,
     ),
+  ).toThrow(/safe 256-bit unsigned integer range/);
+});
+
+test("verifyMutation throws on malformed signature", () => {
+  expect(() =>
+    verifyMutation(
+      SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
+      {
+        name: "shape",
+        args: {
+          account: "0x0000000000000000000000000000000000000001",
+          amount: 5n,
+        },
+        signature: { keyType: 0 },
+      },
+      domain,
+    ),
+  ).toThrow(/missing signature field: rawSignature/);
+  expect(() =>
+    verifyMutation(
+      SHAPE_MUTATION,
+      TEST_SIGNATURE.params,
+      {
+        name: "shape",
+        args: {
+          account: "0x0000000000000000000000000000000000000001",
+          amount: 5n,
+        },
+        signature: { keyType: 256, rawSignature: "0x" },
+      },
+      domain,
+    ),
+  ).toThrow(/8-bit unsigned integer range/);
+});
+
+test("verifyResolution validates resolved shape", () => {
+  const mutation = {
+    tag: 0,
+    table: testMutationSchema,
+    params: parseAbiParameters("uint256 amount"),
+    resolution: parseAbiParameters("uint256 newBalance"),
+    resolve: () => ({ newBalance: 0n }),
+    apply: () => {},
+  };
+
+  expect(() =>
+    verifyResolution(mutation, { newBalance: 1n }, "shape"),
+  ).not.toThrow();
+  expect(() => verifyResolution(mutation, {}, "shape")).toThrow(
+    /missing resolution field: newBalance/,
+  );
+  expect(() =>
+    verifyResolution(mutation, { newBalance: -1n }, "shape"),
   ).toThrow(/safe 256-bit unsigned integer range/);
 });
 
@@ -1000,7 +1060,7 @@ test("e2e Harness: apply error rejects without crashing", async () => {
           }),
         },
       }),
-    ).rejects.toThrow(/insufficient balance/),
+    ).rejects.toThrow(/safe 256-bit unsigned integer range/),
     ffca.execute({
       name: "credit",
       args: { account: bobId, keyId: 0n, amount: 50n, nonce: 0n },

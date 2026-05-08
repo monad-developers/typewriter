@@ -12,7 +12,7 @@ import {
   Queue,
   Schedule,
 } from "effect";
-import { TypedData } from "ox";
+import { AbiParameters, TypedData } from "ox";
 import {
   createPublicClient,
   createWalletClient,
@@ -90,6 +90,7 @@ export type FFCA = {
 //   See apps/order-book-backend/src/signature.ts:135-260.
 export function verifyMutation(
   mutation: FFCAMutationConfig,
+  signatureParams: readonly AbiParameters.Parameter[],
   submitted: SubmittedMutation,
   domain: TypedData.Domain,
 ): void {
@@ -110,6 +111,43 @@ export function verifyMutation(
     primaryType: name,
     message: argsRecord,
   });
+
+  verifyAbiRecord("signature", signatureParams, submitted.signature, name);
+}
+
+export function verifyResolution(
+  mutation: FFCAMutationConfig,
+  resolution: unknown,
+  name: string,
+): void {
+  if ("resolution" in mutation) {
+    verifyAbiRecord("resolution", mutation.resolution, resolution, name);
+  }
+}
+
+function verifyAbiRecord(
+  label: string,
+  params: readonly AbiParameters.Parameter[],
+  value: unknown,
+  mutationName: string,
+): void {
+  if (value === null || typeof value !== "object") {
+    throw new Error(`${label} must be an object (mutation=${mutationName})`);
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const param of params) {
+    if (param.name && !(param.name in record)) {
+      throw new Error(
+        `missing ${label} field: ${param.name} (mutation=${mutationName})`,
+      );
+    }
+  }
+
+  AbiParameters.encode(
+    params,
+    params.map((param) => record[param.name ?? ""]),
+  );
 }
 
 function resolveMutation(
@@ -380,6 +418,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
           state,
           bundleView,
         );
+        verifyResolution(config, resolution, item.pending.name);
         applyMutation(config, args, state, resolution, signature);
         const acceptedMutation = {
           ...item.pending,
@@ -659,7 +698,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
         if (config.sequence && !config.sequence.includes(submitted.name)) {
           throw new Error(`mutation not in sequence: ${submitted.name}`);
         }
-        verifyMutation(mutation, submitted, domain);
+        verifyMutation(mutation, config.signature.params, submitted, domain);
 
         const pending: PendingMutation = {
           ...submitted,
