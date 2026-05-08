@@ -12,7 +12,10 @@ test("migrate creates the configured schema", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31337_0x000000000000000000000000000000000000ffca";
 
-  const db = drizzle(TEST_DB_CONNECTION, { schema: HARNESS_SCHEMA });
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: HARNESS_SCHEMA,
+    casing: "snake_case",
+  });
   const schemaName = await migrate(db, chainId, address);
   updateSchema(HARNESS_SCHEMA, schemaName);
 
@@ -78,7 +81,10 @@ test("migrate is idempotent when schema already exists", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31338_0x000000000000000000000000000000000000ffca";
 
-  const db = drizzle(TEST_DB_CONNECTION, { schema: HARNESS_SCHEMA });
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: HARNESS_SCHEMA,
+    casing: "snake_case",
+  });
   const firstSchemaName = await migrate(db, chainId, address);
   const secondSchemaName = await migrate(db, chainId, address);
 

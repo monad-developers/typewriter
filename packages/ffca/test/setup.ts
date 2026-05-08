@@ -84,7 +84,7 @@ export async function createTestDatabaseConnection(
   await TEST_ADMIN_DB_CONNECTION.unsafe(
     `CREATE DATABASE ${quoteTestIdentifier(databaseName)}`,
   );
-  return new Bun.SQL({ url: testDatabaseUrl(databaseName), max: 1 });
+  return new Bun.SQL({ url: testDatabaseUrl(databaseName), max: 2 });
 }
 
 export const TEST_CLIENT = createTestClient({

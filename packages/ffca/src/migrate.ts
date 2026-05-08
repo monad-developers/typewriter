@@ -43,7 +43,7 @@ export function updateSchema<TSchema extends Record<string, unknown>>(
   return schema;
 }
 
-function deploymentSchemaName(
+export function deploymentSchemaName(
   chainId: number,
   address: Address.Address,
 ): string {
@@ -53,8 +53,15 @@ function deploymentSchemaName(
   return `ffca_${chainId}_${address.toLowerCase()}`;
 }
 
-function migrationLockKey(schemaName: string): bigint {
+function lockKey(schemaName: string): bigint {
   return BigInt.asIntN(64, BigInt(Bun.hash.wyhash(schemaName)));
+}
+
+export function deploymentLockKey(
+  chainId: number,
+  address: Address.Address,
+): bigint {
+  return lockKey(deploymentSchemaName(chainId, address));
 }
 
 async function doesSchemaExist(
@@ -85,7 +92,6 @@ export async function migrate(
   address: Address.Address,
 ): Promise<string> {
   const schemaName = deploymentSchemaName(chainId, address);
-  const lockKey = migrationLockKey(schemaName);
   const targetSchema = {
     mutationStatusEnum,
     ...updateSchema(db._.fullSchema, schemaName),
@@ -106,7 +112,6 @@ export async function migrate(
 
   await db.transaction(async (tx) => {
     await tx.execute(sql.raw("SET LOCAL lock_timeout = '60s'"));
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockKey})`);
     await tx.execute(sql.raw(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`));
 
     if (await doesSchemaExist(tx, schemaName)) {

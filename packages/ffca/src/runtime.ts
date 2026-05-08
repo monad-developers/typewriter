@@ -1,3 +1,6 @@
+import { drizzle } from "drizzle-orm/bun-sql";
+import type { PgTable } from "drizzle-orm/pg-core";
+import { getTableName } from "drizzle-orm/table";
 import {
   Cause,
   Chunk,
@@ -20,9 +23,20 @@ import {
 } from "viem";
 import { sendRawTransactionSync } from "viem/actions";
 import * as chains from "viem/chains";
-import type { BundleView, FFCAConfig, FFCAMutationConfig } from "./config";
+import type {
+  BundleView,
+  FFCAConfig,
+  FFCADatabase,
+  FFCAMutationConfig,
+} from "./config";
 import { buildEip712Types } from "./eip712";
 import { encodeBundleArg } from "./encoding";
+import {
+  deploymentLockKey,
+  deploymentSchemaName,
+  migrate,
+  updateSchema,
+} from "./migrate";
 import type {
   AnchoredBundle,
   BlockEvent,
@@ -50,6 +64,11 @@ const BLOCK_POLLING_INTERVAL_MS = 200;
 type MutationListener = (event: MutationEvent) => void;
 type BundleListener = (event: BundleEvent) => void;
 type BlockListener = (event: BlockEvent) => void;
+
+type DeploymentLock = {
+  connection: Bun.ReservedSQL;
+  key: bigint;
+};
 
 export type FFCA = {
   readonly state: unknown;
@@ -120,6 +139,117 @@ function applyMutation(
   }
 }
 
+function hasAllPersistenceHooks(mutation: FFCAMutationConfig): boolean {
+  return (
+    mutation.persistMutation !== undefined &&
+    mutation.persistState !== undefined &&
+    mutation.persistLifecycle !== undefined
+  );
+}
+
+function hasAnyPersistenceHook(mutation: FFCAMutationConfig): boolean {
+  return (
+    mutation.persistMutation !== undefined ||
+    mutation.persistState !== undefined ||
+    mutation.persistLifecycle !== undefined
+  );
+}
+
+function collectPersistenceSchema(config: FFCAConfig): Record<string, PgTable> {
+  const schema: Record<string, PgTable> = { ...(config.state.schema ?? {}) };
+  for (const mutation of Object.values(config.mutations)) {
+    schema[getTableName(mutation.table)] = mutation.table;
+  }
+  return schema;
+}
+
+function createPersistenceSchema(
+  config: FFCAConfig,
+): Record<string, PgTable> | undefined {
+  const mutations = Object.values(config.mutations);
+  const hasDatabase = config.database !== undefined;
+  const hasStateSchema = config.state.schema !== undefined;
+  const hasAnyHooks = mutations.some(hasAnyPersistenceHook);
+  const hasAllHooks = mutations.every(hasAllPersistenceHooks);
+  const persistenceEnabled = hasDatabase && hasStateSchema && hasAllHooks;
+  const persistenceDisabled = !hasDatabase && !hasStateSchema && !hasAnyHooks;
+
+  if (persistenceDisabled) {
+    return undefined;
+  }
+  if (!persistenceEnabled) {
+    throw new Error(
+      "FFCA persistence must be fully configured: database, state.schema, and all mutation persistence hooks are required together",
+    );
+  }
+  const database = config.database;
+  if (database === undefined) {
+    throw new Error("FFCA persistence database is required");
+  }
+
+  const schemaName = deploymentSchemaName(config.chainId, config.address);
+  return updateSchema(collectPersistenceSchema(config), schemaName);
+}
+
+async function acquireDeploymentLock(
+  config: FFCAConfig,
+): Promise<DeploymentLock | undefined> {
+  if (config.database === undefined) return undefined;
+
+  const connection = await config.database.connection.reserve();
+  const key = deploymentLockKey(config.chainId, config.address);
+  try {
+    const [{ locked = false } = { locked: false }] = await connection<
+      { locked: boolean }[]
+    >`SELECT pg_try_advisory_lock(${key}) AS locked`;
+    if (locked === false) {
+      throw new Error(
+        `FFCA deployment is already locked: chainId=${config.chainId} address=${config.address}`,
+      );
+    }
+    return { connection, key };
+  } catch (error) {
+    connection.release();
+    throw error;
+  }
+}
+
+async function releaseDeploymentLock(lock: DeploymentLock): Promise<void> {
+  try {
+    await lock.connection`SELECT pg_advisory_unlock(${lock.key})`;
+  } finally {
+    lock.connection.release();
+  }
+}
+
+async function startPersistence(
+  config: FFCAConfig,
+  schema: Record<string, PgTable> | undefined,
+): Promise<{ db: FFCADatabase; lock: DeploymentLock } | undefined> {
+  if (schema === undefined) return undefined;
+
+  const lock = await acquireDeploymentLock(config);
+  try {
+    if (lock === undefined) {
+      throw new Error("FFCA deployment lock is required");
+    }
+    if (config.database === undefined) {
+      throw new Error("FFCA persistence database is required");
+    }
+    const db = drizzle(config.database.connection, {
+      schema,
+      casing: "snake_case",
+    }) as FFCADatabase;
+    await migrate(db, config.chainId, config.address);
+    return { db, lock };
+  } catch (error) {
+    if (lock !== undefined) {
+      await releaseDeploymentLock(lock);
+    }
+    throw error;
+  }
+}
+
 export function createFFCA(config: FFCAConfig): FFCA {
   // Mutable so failure-isolation can swap the binding back to a snapshot
   // when a mutation's apply throws mid-mutation. Exposed via getter below.
@@ -149,7 +279,9 @@ export function createFFCA(config: FFCAConfig): FFCA {
     transport,
   });
 
-  // TODO(kyle) create drizzle here
+  const persistenceSchema = createPersistenceSchema(config);
+  let db: FFCADatabase | undefined;
+  let deploymentLock: DeploymentLock | undefined;
 
   // Local nonce cache. Lazy-initialized on first use; incremented per submit.
   // TODO recover from gaps and chain divergence; per-key parallelism when
@@ -241,21 +373,16 @@ export function createFFCA(config: FFCAConfig): FFCA {
       try {
         const resolution = resolveMutation(config, args, state, bundleView);
         applyMutation(config, args, state, resolution);
-        accepted.push({
+        const acceptedMutation = {
           ...item.pending,
           status: "accepted" as const,
           resolution,
-        });
+        };
+        accepted.push(acceptedMutation);
       } catch (error) {
         state = snapshot;
         rejections.push({ item, error });
       }
-    }
-
-    for (const a of accepted) {
-      emitMutation(a);
-      const item = queued.find((q) => q.pending.id === a.id)!;
-      yield* Deferred.succeed(item.deferred, a);
     }
 
     for (const { item, error } of rejections) {
@@ -270,13 +397,39 @@ export function createFFCA(config: FFCAConfig): FFCA {
 
     if (accepted.length === 0) return;
 
-    // TODO call user persistence hooks for accepted bundle + mutations.
     const bundleEvent: BundleEvent = {
       id: bundleId++,
       status: "accepted",
       position,
       mutations: accepted,
     };
+
+    yield* Effect.tryPromise({
+      try: async () => {
+        if (db === undefined) return;
+        await db.transaction(async (tx) => {
+          for (const [
+            mutationIndex,
+            mutation,
+          ] of bundleEvent.mutations.entries()) {
+            await mutation.config.persistMutation!(tx, {
+              mutation,
+              bundle: { id: bundleEvent.id, mutationIndex },
+            });
+            await mutation.config.persistState!(tx, {
+              mutation,
+            });
+          }
+        });
+      },
+      catch: (error) => error as Error,
+    });
+
+    for (const a of accepted) {
+      emitMutation(a);
+      const item = queued.find((q) => q.pending.id === a.id)!;
+      yield* Deferred.succeed(item.deferred, a);
+    }
 
     emitBundle(bundleEvent);
     emitBlock({ status: "accepted", bundles: [bundleEvent] });
@@ -382,26 +535,17 @@ export function createFFCA(config: FFCAConfig): FFCA {
       catch: (error) => error as Error,
     }).pipe(rpcRetry);
 
-    // Promote each bundle from accepted → proposed by constructing a fresh
-    // AnchoredBundle (the union members have different shapes — can't mutate
-    // in place and stay typed).
-    const anchored = bundles.map((b): AnchoredBundle => {
-      const proposedMutations = b.mutations.map(
-        (m): Extract<ResolvedMutation, { status: "proposed" }> => ({
-          ...m,
-          status: "proposed",
-        }),
-      );
-      return {
-        id: b.id,
-        status: "proposed",
-        position: b.position,
-        mutations: proposedMutations,
-        number: block.number,
-        hash: block.hash,
-        transactionHash,
-      };
-    });
+    for (const bundle of bundles) {
+      for (const mutation of bundle.mutations) {
+        (mutation as ResolvedMutation).status = "proposed";
+      }
+      const anchoredBundle = bundle as unknown as AnchoredBundle;
+      anchoredBundle.status = "proposed";
+      anchoredBundle.number = block.number;
+      anchoredBundle.hash = block.hash;
+      anchoredBundle.transactionHash = transactionHash;
+    }
+    const anchored = bundles as unknown as AnchoredBundle[];
 
     yield* Effect.logInfo("bundles proposed").pipe(
       Effect.annotateLogs({
@@ -413,17 +557,46 @@ export function createFFCA(config: FFCAConfig): FFCA {
       }),
     );
 
-    for (const b of anchored) {
-      emitBundle(b);
-      for (const m of b.mutations) emitMutation(m);
-    }
-    emitBlock({
+    const proposedBlock: Exclude<BlockEvent, { status: "accepted" }> = {
       status: "proposed",
       number: block.number,
       hash: block.hash,
       timestamp: block.timestamp,
       bundles: anchored,
+    };
+
+    yield* Effect.tryPromise({
+      try: async () => {
+        if (db === undefined) return;
+        await db.transaction(async (tx) => {
+          for (const bundle of anchored) {
+            for (const mutation of bundle.mutations) {
+              await mutation.config.persistLifecycle!(tx, {
+                lifecycle: "proposed",
+                mutation: mutation as Extract<
+                  ResolvedMutation,
+                  { status: "proposed" }
+                >,
+                block: {
+                  number: block.number,
+                  hash: block.hash,
+                  timestamp: block.timestamp,
+                  transactionHash,
+                },
+                calldata,
+              });
+            }
+          }
+        });
+      },
+      catch: (error) => error as Error,
     });
+
+    for (const b of anchored) {
+      emitBundle(b);
+      for (const m of b.mutations) emitMutation(m);
+    }
+    emitBlock(proposedBlock);
   });
 
   // watch: poll latest block, advance proposed bundles → voted/finalized/verified
@@ -431,7 +604,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
     // TODO poll publicClient.getBlock, advance status by confirmation depth,
     //   call user persistence hooks for transitions, emit block events.
     //   See apps/order-book-backend/src/runtime.ts:1098-1176.
-  });
+  }).pipe(Effect.withLogSpan("watch"));
 
   const bundleProgram = Effect.repeat(
     bundle,
@@ -449,6 +622,12 @@ export function createFFCA(config: FFCAConfig): FFCA {
   ).pipe(Effect.orDie);
 
   const runtimeEffect = Effect.gen(function* () {
+    const persistence = yield* Effect.tryPromise({
+      try: () => startPersistence(config, persistenceSchema),
+      catch: (error) => error as Error,
+    });
+    db = persistence?.db;
+    deploymentLock = persistence?.lock;
     yield* Effect.logInfo("ffca runtime started");
     yield* Effect.all([bundleProgram, submitProgram, watchProgram], {
       concurrency: "unbounded",
@@ -494,6 +673,13 @@ export function createFFCA(config: FFCAConfig): FFCA {
         yield* Queue.shutdown(mutationQueue);
         yield* Queue.shutdown(submitQueue);
         yield* Fiber.interrupt(fiber);
+        if (deploymentLock !== undefined) {
+          yield* Effect.tryPromise({
+            try: () => releaseDeploymentLock(deploymentLock!),
+            catch: (error) => error as Error,
+          });
+          deploymentLock = undefined;
+        }
       }).pipe(Effect.provide(Logger.json)),
     );
   }
