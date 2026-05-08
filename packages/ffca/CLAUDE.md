@@ -112,6 +112,7 @@ Forks that gate sequencing. Listed so they don't get rediscovered every session.
 - **Account model: prescribed vs. interface.** Does ffca ship with the order-book account model as the default (every ffca app gets 32-byte ids + key registry + parallel nonces), or does it expose an interface and apps plug in (EOAs, custom key types, etc.)? Needs more contract iteration before it can be answered.
 - **Persistence shape.** Decoded tables (the order-book pattern: typed Postgres rows the app GETs directly) vs. raw `(slot, value)` storage with decoders on top (the revm-native pattern). Tentatively leaning decoded — the consumable layer needs to be human-readable either way, and revm's in-memory state is the runtime source.
 - **Resolution language.** Off-chain matching is settled. Open question: is the resolution itself written in TypeScript (today's order-book) or in Solidity (a view function the runtime calls)? Solidity-side resolutions remove the TS/Sol drift but are gas/perf-sensitive and harder to debug.
+- **Force-inclusion queue enforcement.** Production contracts should make it hard for the scheduler to leave old force-inclusion entries pending forever. The current Counter fixture preserves ordered queue execution, but it does not enforce mandatory draining of all entries older than `FORCE_INCLUSION_DELAY`. That likely wants a stronger queue data structure plus an immutable age threshold.
 
 ## Working in this package
 

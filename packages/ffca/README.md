@@ -26,7 +26,14 @@ Work in progress. Under active development.
 
 ## Failure modes
 
-- missed submissions
-- reorgs
+### Missed submissions
+
+### Reorgs
+
+## Trust assumptions
+
+### Inclusion
+
+### Equivocation
 
 ## API reference
