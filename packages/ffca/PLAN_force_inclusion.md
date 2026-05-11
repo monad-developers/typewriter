@@ -133,24 +133,10 @@ and useful for tests, but not sufficient as a production policy.
 
 ## ABI And Runtime
 
-Changing the contract `execute` signature requires coordinated runtime changes.
-
-Current ffca runtime encodes:
-
-```ts
-execute(bundles)
-```
-
-Force inclusion may require something like:
+The current force-inclusion ABI is:
 
 ```ts
 execute(bundles, forceExecuteIndexes)
-```
-
-or:
-
-```ts
-execute(forceExecuteIndexes, bundles)
 ```
 
 The ABI, runtime `encodeFunctionData`, simulation, access-list creation, gas
