@@ -139,6 +139,21 @@ export function resolveStoragePath(
         type = resolved.type;
         continue;
       }
+      if (isMappingType(type)) {
+        const resolved = resolveMappingValue(
+          layout,
+          item,
+          type,
+          absoluteSlot,
+          segment,
+          resolvedPath,
+        );
+        item = resolved.item;
+        baseSlot = resolved.baseSlot;
+        resolvedPath = resolved.path;
+        type = resolved.type;
+        continue;
+      }
       if (isFixedArrayType(type) === false) {
         throw new Error(
           `subscript storage paths are not supported yet: ${formatStoragePath({
@@ -223,6 +238,11 @@ export function resolveStoragePath(
         baseSlot,
       },
     ];
+  }
+  if (isMappingType(type)) {
+    throw new Error(
+      `mapping storage paths require a key: ${formatStoragePath(resolvedPath)}`,
+    );
   }
 
   throw new Error(
@@ -378,7 +398,9 @@ function expandFixedArraySlots(
       continue;
     }
     if (resolved.type.encoding === "mapping") {
-      throw new Error(mappingSlotError(resolved.path));
+      throw new Error(
+        `mapping storage paths require a key: ${formatStoragePath(resolved.path)}`,
+      );
     }
     throw new Error(
       `unsupported storage path type '${resolved.type.label}' for ${formatStoragePath(resolved.path)}`,
@@ -439,6 +461,31 @@ function resolveDynamicArrayElement(
   };
 }
 
+function resolveMappingValue(
+  layout: StorageLayout,
+  item: StorageItem,
+  type: StorageType & { key: string; value: string },
+  absoluteSlot: bigint,
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  path: StoragePath,
+): ResolvedStorageItem {
+  const valueType = findStorageType(layout, type.value);
+  const keyType = findStorageType(layout, type.key);
+  return {
+    path: { root: path.root, segments: [...path.segments, segment] },
+    item: {
+      astId: item.astId,
+      contract: item.contract,
+      label: `${item.label}[${formatSubscript(segment)}]`,
+      offset: 0,
+      slot: "0",
+      type: type.value,
+    },
+    type: valueType,
+    baseSlot: mappingValueBaseSlot(keyType, segment, absoluteSlot, path),
+  };
+}
+
 function fixedArrayElementLocation(
   type: StorageType,
   index: number,
@@ -468,6 +515,131 @@ function arrayElementLocation(
 
 function dynamicArrayDataBaseSlot(slot: bigint): bigint {
   return BigInt(Hash.keccak256(Hex.fromNumber(slot, { size: 32 })));
+}
+
+function mappingValueBaseSlot(
+  keyType: StorageType,
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  slot: bigint,
+  path: StoragePath,
+): bigint {
+  return BigInt(
+    Hash.keccak256(
+      Hex.concat(
+        encodeMappingKey(keyType, segment, path),
+        Hex.fromNumber(slot, { size: 32 }),
+      ),
+    ),
+  );
+}
+
+function encodeMappingKey(
+  keyType: StorageType,
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  path: StoragePath,
+): Hex.Hex {
+  const label = keyType.label;
+  if (label === "address") {
+    if (segment.value.kind !== "hex") {
+      throw new Error(
+        `mapping key for '${formatStoragePath(path)}' must be an address hex string`,
+      );
+    }
+    if (Hex.size(segment.value.value) !== 20) {
+      throw new Error(
+        `mapping key for '${formatStoragePath(path)}' must be 20 bytes`,
+      );
+    }
+    return Hex.padLeft(segment.value.value, 32);
+  }
+  if (label === "bool") {
+    if (segment.value.kind !== "bool") {
+      throw new Error(
+        `mapping key for '${formatStoragePath(path)}' must be a boolean`,
+      );
+    }
+    return Hex.fromNumber(segment.value.value ? 1 : 0, { size: 32 });
+  }
+  if (label.startsWith("uint")) {
+    return encodeMappingIntegerKey(label, "uint", segment, path);
+  }
+  if (label.startsWith("int")) {
+    return encodeMappingIntegerKey(label, "int", segment, path);
+  }
+  if (/^bytes([1-9]|[12][0-9]|3[0-2])$/.test(label)) {
+    if (segment.value.kind !== "hex") {
+      throw new Error(
+        `mapping key for '${formatStoragePath(path)}' must be a fixed bytes hex string`,
+      );
+    }
+    const size = Number(label.slice("bytes".length));
+    if (Hex.size(segment.value.value) !== size) {
+      throw new Error(
+        `mapping key for '${formatStoragePath(path)}' must be ${size} bytes`,
+      );
+    }
+    return Hex.padRight(segment.value.value, 32);
+  }
+
+  // TODO: Solidity supports dynamic bytes/string mapping keys, but their slot
+  // derivation hashes the raw key bytes rather than ABI-padding a fixed-width key.
+  // Leave them unsupported until we add explicit tests for those storage rules.
+  throw new Error(`unsupported mapping key type: ${label}`);
+}
+
+function encodeMappingIntegerKey(
+  label: string,
+  kind: "uint" | "int",
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  path: StoragePath,
+): Hex.Hex {
+  if (segment.value.kind !== "number") {
+    throw new Error(
+      `mapping key for '${formatStoragePath(path)}' must be an integer`,
+    );
+  }
+  const bits = integerBits(label, kind);
+  const value = segment.value.value;
+  if (kind === "uint") {
+    const max = 1n << BigInt(bits);
+    if (value < 0n || value >= max) {
+      throw new Error(`mapping key does not fit in ${bits} bits`);
+    }
+    return Hex.fromNumber(value, { size: 32 });
+  }
+
+  const min = -(1n << BigInt(bits - 1));
+  const max = (1n << BigInt(bits - 1)) - 1n;
+  if (value < min || value > max) {
+    throw new Error(`mapping key does not fit in ${bits} bits`);
+  }
+  return Hex.fromNumber(value >= 0n ? value : (1n << 256n) + value, {
+    size: 32,
+  });
+}
+
+function integerBits(label: string, prefix: "uint" | "int"): number {
+  const suffix = label.slice(prefix.length);
+  const bits = suffix === "" ? 256 : Number(suffix);
+  if (!Number.isInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0) {
+    throw new Error(`invalid Solidity integer type: ${label}`);
+  }
+  return bits;
+}
+
+function formatSubscript(
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+): string {
+  switch (segment.value.kind) {
+    case "number":
+      return segment.value.value.toString();
+    case "hex":
+      return segment.value.value;
+    case "string":
+      return JSON.stringify(segment.value.value);
+    case "bool":
+      return String(segment.value.value);
+  }
 }
 
 function fixedArrayIndex(
@@ -574,12 +746,18 @@ function isDynamicArrayType(
   return type.encoding === "dynamic_array" && type.base !== undefined;
 }
 
-function isBytesType(type: StorageType): boolean {
-  return type.encoding === "bytes";
+function isMappingType(
+  type: StorageType,
+): type is StorageType & { key: string; value: string } {
+  return (
+    type.encoding === "mapping" &&
+    type.key !== undefined &&
+    type.value !== undefined
+  );
 }
 
-function mappingSlotError(path: StoragePath): string {
-  return `cannot infer storage path for mapping '${formatStoragePath(path)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`;
+function isBytesType(type: StorageType): boolean {
+  return type.encoding === "bytes";
 }
 
 type StorageItemPaths<
@@ -597,7 +775,40 @@ type StorageTypePaths<
   Layout extends StorageLayout,
   Type,
   Prefix extends string,
-> = Prefix | StorageTypeChildPaths<Layout, Type, Prefix>;
+> = Type extends {
+  encoding: "mapping";
+  key: infer Key extends string;
+  value: infer Value extends string;
+}
+  ? MappingStoragePaths<Layout, Key, Value, Prefix>
+  : Prefix | StorageTypeChildPaths<Layout, Type, Prefix>;
+
+type MappingStoragePaths<
+  Layout extends StorageLayout,
+  Key extends string,
+  Value extends string,
+  Prefix extends string,
+> =
+  MappingKeyPath<Layout, Key> extends infer KeyPath extends string
+    ? StorageTypePaths<
+        Layout,
+        StorageTypeForId<Layout, Value>,
+        `${Prefix}[${KeyPath}]`
+      >
+    : never;
+
+type MappingKeyPath<Layout extends StorageLayout, Key extends string> =
+  StorageTypeForId<Layout, Key> extends infer KeyType extends StorageType
+    ? KeyType["label"] extends "address"
+      ? Hex.Hex
+      : KeyType["label"] extends "bool"
+        ? "true" | "false"
+        : KeyType["label"] extends `uint${string}` | `int${string}`
+          ? `${number}`
+          : KeyType["label"] extends `bytes${number}`
+            ? Hex.Hex
+            : never
+    : never;
 
 type StorageTypeChildPaths<
   Layout extends StorageLayout,
@@ -700,20 +911,24 @@ type StoragePathSegmentsToStorageType<
       : CustomTypeError<"Storage path field requires a struct.">
     : StoragePathSegmentsToStorageType<
         Layout,
-        ArrayElementStorageType<Layout, Type>,
+        SubscriptStorageType<Layout, Type>,
         Rest
       >
   : Type;
 
-type ArrayElementStorageType<
-  Layout extends StorageLayout,
-  Type,
-> = Type extends { base: infer Base extends string }
-  ? StorageTypeForId<Layout, Base>
-  : CustomTypeError<"Storage path subscript requires an array.">;
+type SubscriptStorageType<Layout extends StorageLayout, Type> = Type extends {
+  encoding: "mapping";
+  value: infer Value extends string;
+}
+  ? StorageTypeForId<Layout, Value>
+  : Type extends { base: infer Base extends string }
+    ? StorageTypeForId<Layout, Base>
+    : CustomTypeError<"Storage path subscript requires an array or mapping.">;
 
 type IsStoragePathTypeSingleSlot<Type> = Type extends StorageType
-  ? IsStorageTypeSingleSlot<Type>
+  ? Type["encoding"] extends "mapping"
+    ? CustomTypeError<`Unsupported type '${Type["label"]}'.`>
+    : IsStorageTypeSingleSlot<Type>
   : Type;
 
 type StorageTypeForStructField<
@@ -739,7 +954,7 @@ type StorageTypeToPrimitiveType<
   Type extends StorageType,
   Layout extends StorageLayout,
 > = Type["encoding"] extends "mapping"
-  ? CustomTypeError<`Unsupported type '${Type["label"]}'.`>
+  ? StorageMappingToPrimitiveType<Layout, Type>
   : Type extends { members: readonly StorageItem[] }
     ? Pretty<StorageMembersToObject<Layout, Type["members"]>>
     : Type["label"] extends `enum ${string}`
@@ -766,6 +981,21 @@ type StorageTypeToPrimitiveType<
             : Type["label"] extends `${infer Element}[${infer Length extends number}]`
               ? FixedArray<SolidityLabelToPrimitiveType<Element>, Length>
               : SolidityLabelToPrimitiveType<Type["label"]>;
+
+type StorageMappingToPrimitiveType<
+  Layout extends StorageLayout,
+  Type extends StorageType,
+> = Type extends {
+  key: infer Key extends string;
+  value: infer Value extends string;
+}
+  ? [MappingKeyPath<Layout, Key>] extends [never]
+    ? CustomTypeError<`Unsupported mapping key type '${StorageTypeForId<Layout, Key> extends StorageType ? StorageTypeForId<Layout, Key>["label"] : Key}'.`>
+    : Record<
+        MappingKeyPath<Layout, Key>,
+        StorageTypeToPrimitiveType<StorageTypeForId<Layout, Value>, Layout>
+      >
+  : CustomTypeError<`Mapping type '${Type["label"]}' is missing key or value type.`>;
 
 type StorageMembersToObject<
   Layout extends StorageLayout,

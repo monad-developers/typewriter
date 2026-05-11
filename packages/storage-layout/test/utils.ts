@@ -100,6 +100,14 @@ export const layout = {
       slot: "12",
       type: "t_string_storage",
     },
+    {
+      astId: 17,
+      contract: "src/Test.sol:Test",
+      label: "allowances",
+      offset: 0,
+      slot: "13",
+      type: "t_mapping(t_address,t_mapping(t_address,t_uint256))",
+    },
   ],
   types: {
     t_address: {
@@ -128,6 +136,13 @@ export const layout = {
       label: "mapping(address => uint256)",
       numberOfBytes: "32",
       value: "t_uint256",
+    },
+    "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+      encoding: "mapping",
+      key: "t_address",
+      label: "mapping(address => mapping(address => uint256))",
+      numberOfBytes: "32",
+      value: "t_mapping(t_address,t_uint256)",
     },
     "t_struct(Inner)19_storage": {
       encoding: "inplace",

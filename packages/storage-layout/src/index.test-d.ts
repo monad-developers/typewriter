@@ -1,4 +1,5 @@
 import { expectTypeOf, test } from "bun:test";
+import type { Hex } from "ox";
 import type {
   ExtractStoragePaths,
   ExtractVariableNames,
@@ -65,11 +66,19 @@ const layout = {
       type: "t_mapping(t_address,t_uint256)",
     },
     {
+      astId: 7,
+      contract: "src/Test.sol:Test",
+      label: "allowances",
+      offset: 0,
+      slot: "6",
+      type: "t_mapping(t_address,t_mapping(t_address,t_uint256))",
+    },
+    {
       astId: 9,
       contract: "src/Test.sol:Test",
       label: "fixedNumbers",
       offset: 0,
-      slot: "6",
+      slot: "7",
       type: "t_array(t_uint128)3_storage",
     },
     {
@@ -77,7 +86,7 @@ const layout = {
       contract: "src/Test.sol:Test",
       label: "rawBytes",
       offset: 0,
-      slot: "8",
+      slot: "9",
       type: "t_bytes_storage",
     },
     {
@@ -85,7 +94,7 @@ const layout = {
       contract: "src/Test.sol:Test",
       label: "message",
       offset: 0,
-      slot: "9",
+      slot: "10",
       type: "t_string_storage",
     },
   ],
@@ -107,6 +116,13 @@ const layout = {
       label: "mapping(address => uint256)",
       numberOfBytes: "32",
       value: "t_uint256",
+    },
+    "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+      encoding: "mapping",
+      key: "t_address",
+      label: "mapping(address => mapping(address => uint256))",
+      numberOfBytes: "32",
+      value: "t_mapping(t_address,t_uint256)",
     },
     "t_struct(Metadata)10_storage": {
       encoding: "inplace",
@@ -268,7 +284,8 @@ test("StorageLayoutToPrimitiveType maps top-level Solidity types", () => {
     owner: `0x${string}`;
     metadata: { lastUpdate: bigint; paused: boolean };
     numbers: readonly bigint[];
-    balances: [`Error: Unsupported type 'mapping(address => uint256)'.`];
+    balances: Record<Hex.Hex, bigint>;
+    allowances: Record<Hex.Hex, Record<Hex.Hex, bigint>>;
     fixedNumbers: readonly [bigint, bigint, bigint];
     rawBytes: `0x${string}`;
     message: string;
@@ -310,6 +327,14 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
     typeof layout,
     "numbers[0]"
   >;
+  type MappingValue = StoragePathToPrimitiveType<
+    typeof layout,
+    `balances[${Hex.Hex}]`
+  >;
+  type NestedMappingValue = StoragePathToPrimitiveType<
+    typeof layout,
+    `allowances[${Hex.Hex}][${Hex.Hex}]`
+  >;
   type RawBytes = StoragePathToPrimitiveType<typeof layout, "rawBytes">;
   type Message = StoragePathToPrimitiveType<typeof layout, "message">;
 
@@ -320,6 +345,8 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   expectTypeOf<FixedArrayElement>().toEqualTypeOf<bigint>();
   expectTypeOf<DynamicArray>().toEqualTypeOf<readonly bigint[]>();
   expectTypeOf<DynamicArrayElement>().toEqualTypeOf<bigint>();
+  expectTypeOf<MappingValue>().toEqualTypeOf<bigint>();
+  expectTypeOf<NestedMappingValue>().toEqualTypeOf<bigint>();
   expectTypeOf<RawBytes>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<Message>().toEqualTypeOf<string>();
 });
@@ -335,6 +362,7 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "metadata"
     | "numbers"
     | "balances"
+    | "allowances"
     | "fixedNumbers"
     | "rawBytes"
     | "message"
@@ -348,7 +376,8 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "metadata.paused"
     | "numbers"
     | `numbers[${number}]`
-    | "balances"
+    | `balances[${Hex.Hex}]`
+    | `allowances[${Hex.Hex}][${Hex.Hex}]`
     | "fixedNumbers"
     | "fixedNumbers[0]"
     | "fixedNumbers[1]"

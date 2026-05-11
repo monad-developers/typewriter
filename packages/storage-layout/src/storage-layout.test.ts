@@ -268,6 +268,32 @@ test("resolveStoragePath resolves bytes and strings", () => {
   `);
 });
 
+test("resolveStoragePath resolves keyed mappings", () => {
+  expect(
+    resolveStoragePath(
+      layout,
+      parseStoragePath("balances[0x1111111111111111111111111111111111111234]"),
+    ).map(summarizeResolvedStorageItem),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "baseSlot": 49388279509293316078577064985078118302854491611548467545929961713850579549116n,
+        "item": {
+          "label": "balances[0x1111111111111111111111111111111111111234]",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint256",
+        },
+        "path": "balances[0x1111111111111111111111111111111111111234]",
+        "type": "uint256",
+      },
+    ]
+  `);
+  expect(() =>
+    resolveStoragePath(layout, parseStoragePath("balances")),
+  ).toThrow("mapping storage paths require a key: balances");
+});
+
 test("resolveStoragePath resolves arrays of structs", () => {
   expect(
     resolveStoragePath(complexLayout, parseStoragePath("orders[1].amount")).map(
@@ -431,12 +457,10 @@ test("resolveStoragePath resolves arrays of arrays", () => {
 test("resolveStoragePath rejects unsupported paths", () => {
   expect(() =>
     resolveStoragePath(layout, parseStoragePath("balances")),
-  ).toThrow(
-    "unsupported storage path type 'mapping(address => uint256)' for balances",
-  );
+  ).toThrow("mapping storage paths require a key: balances");
   expect(() =>
     resolveStoragePath(layout, parseStoragePath("balances[0x1234]")),
-  ).toThrow("subscript storage paths are not supported yet: balances[0x1234]");
+  ).toThrow("mapping key for 'balances' must be 20 bytes");
   expect(() =>
     resolveStoragePath(layout, parseStoragePath("fixedNumbers[3]")),
   ).toThrow("fixed array index out of bounds: fixedNumbers[3]");
@@ -475,7 +499,5 @@ test("isStoragePathEnd identifies terminal paths", () => {
   );
   expect(() =>
     storagePathEndsAtValue(layout, parseStoragePath("balances")),
-  ).toThrow(
-    "unsupported storage path type 'mapping(address => uint256)' for balances",
-  );
+  ).toThrow("mapping storage paths require a key: balances");
 });

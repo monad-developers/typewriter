@@ -19,11 +19,14 @@ import {
 
 const reversibleLayout = {
   ...layout,
-  storage: layout.storage.filter((item) => item.label !== "balances"),
+  storage: layout.storage.filter(
+    (item) => layout.types[item.type]?.encoding !== "mapping",
+  ),
 } satisfies StorageLayout;
 
 const PACKED_FIXED_NUMBERS =
   "0x0000000000000000000000000000000200000000000000000000000000000001";
+const SPENDER = "0x2222222222222222222222222222222222221234" as const;
 
 function writesToStorage(writes: SlotWrite[]) {
   return Object.fromEntries(writes.map((write) => [write.slot, write.value]));
@@ -87,6 +90,23 @@ test("getStorageSlot resolves bytes and strings", () => {
   );
   expect(getStorageSlot(layout, "message")).toBe(
     "0x000000000000000000000000000000000000000000000000000000000000000c",
+  );
+});
+
+test("getStorageSlot resolves keyed mappings", () => {
+  expect(getStorageSlot(layout, `balances[${OWNER}]`)).toMatchInlineSnapshot(
+    `"0x6d30c68d4703e3ad11b778e8635b89709aaecadb8bd3f2e0e0cff25a4ee1fbbc"`,
+  );
+  expect(
+    getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`),
+  ).toMatchInlineSnapshot(
+    `"0x66bb189fb8ad2dc06d80417b1df23596990027a61c5f41caf2342b38c5163744"`,
+  );
+  expect(() => getStorageSlot(layout, "balances")).toThrow(
+    "mapping storage paths require a key: balances",
+  );
+  expect(() => getStorageSlot(layout, `allowances[${OWNER}]`)).toThrow(
+    `mapping storage paths require a key: allowances[${OWNER}]`,
   );
 });
 
@@ -184,10 +204,10 @@ test("getStorageSlot rejects whole structs with dynamic fields", () => {
 
 test("getStorageSlot rejects unsupported paths", () => {
   expect(() => getStorageSlot(layout, "balances[0x1234]")).toThrow(
-    "subscript storage paths are not supported yet: balances[0x1234]",
+    "mapping key for 'balances' must be 20 bytes",
   );
   expect(() => getStorageSlot(layout, "balances")).toThrow(
-    "unsupported storage path type 'mapping(address => uint256)' for balances",
+    "mapping storage paths require a key: balances",
   );
   expect(() => getStorageSlot(layout, "fixedNumbers[3]")).toThrow(
     "fixed array index out of bounds: fixedNumbers[3]",
@@ -299,6 +319,21 @@ test("decodeStorage decodes bytes and strings", () => {
   expect(decodeStorage(layout, "message", shortStorage)).toBe("hello");
   expect(decodeStorage(layout, "rawBytes", longStorage)).toBe(longBytes);
   expect(decodeStorage(layout, "message", longStorage)).toBe(longString);
+});
+
+test("decodeStorage decodes keyed mappings", () => {
+  const storage = {
+    [getStorageSlot(layout, `balances[${OWNER}]`)]: "0x2a",
+    [getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`)]: "0x64",
+  } as const;
+
+  expect(decodeStorage(layout, `balances[${OWNER}]`, storage)).toBe(42n);
+  expect(
+    decodeStorage(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
+  ).toBe(100n);
+  expect(() => decodeStorage(layout, `allowances[${OWNER}]`, storage)).toThrow(
+    `mapping storage paths require a key: allowances[${OWNER}]`,
+  );
 });
 
 test("encodeStorage encodes full-slot value types", () => {
@@ -430,6 +465,19 @@ test("encodeStorage encodes bytes and strings", () => {
       {
         "slot": "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01dba",
         "value": "0x1100000000000000000000000000000000000000000000000000000000000000",
+      },
+    ]
+  `);
+});
+
+test("encodeStorage encodes keyed mappings", () => {
+  expect(
+    encodeStorage(layout, `balances[${OWNER}]`, 42n),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "slot": "0x6d30c68d4703e3ad11b778e8635b89709aaecadb8bd3f2e0e0cff25a4ee1fbbc",
+        "value": "0x000000000000000000000000000000000000000000000000000000000000002a",
       },
     ]
   `);
