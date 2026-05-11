@@ -62,6 +62,14 @@ const layout = {
       slot: "5",
       type: "t_mapping(t_address,t_uint256)",
     },
+    {
+      astId: 9,
+      contract: "src/Test.sol:Test",
+      label: "fixedNumbers",
+      offset: 0,
+      slot: "6",
+      type: "t_array(t_uint128)3_storage",
+    },
   ],
   types: {
     t_address: {
@@ -125,6 +133,17 @@ const layout = {
       label: "uint256",
       numberOfBytes: "32",
     },
+    t_uint128: {
+      encoding: "inplace",
+      label: "uint128",
+      numberOfBytes: "16",
+    },
+    "t_array(t_uint128)3_storage": {
+      base: "t_uint128",
+      encoding: "inplace",
+      label: "uint128[3]",
+      numberOfBytes: "64",
+    },
   },
 } as const satisfies StorageLayout;
 
@@ -181,6 +200,7 @@ test("StorageLayoutToVariableTypes maps top-level Solidity types", () => {
     metadata: { lastUpdate: bigint; paused: boolean };
     numbers: readonly bigint[];
     balances: [`Error: Unsupported type 'mapping(address => uint256)'.`];
+    fixedNumbers: readonly [bigint, bigint, bigint];
   }>();
 });
 
@@ -210,11 +230,16 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
       segments: readonly [{ kind: "field"; name: "paused" }];
     }
   >;
+  type FixedArrayElement = StoragePathToPrimitiveType<
+    typeof layout,
+    "fixedNumbers[0]"
+  >;
 
   expectTypeOf<Owner>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<SupplyPath>().toEqualTypeOf<bigint>();
   expectTypeOf<Nested>().toEqualTypeOf<bigint>();
   expectTypeOf<NestedPath>().toEqualTypeOf<boolean>();
+  expectTypeOf<FixedArrayElement>().toEqualTypeOf<bigint>();
 });
 
 test("storage layout extraction helpers preserve layout names", () => {
@@ -223,7 +248,13 @@ test("storage layout extraction helpers preserve layout names", () => {
   type MappingKey = ExtractMappingType<typeof layout, "balances", "key">;
 
   expectTypeOf<Names>().toEqualTypeOf<
-    "supply" | "flags" | "owner" | "metadata" | "numbers" | "balances"
+    | "supply"
+    | "flags"
+    | "owner"
+    | "metadata"
+    | "numbers"
+    | "balances"
+    | "fixedNumbers"
   >();
   expectTypeOf<MappingNames>().toEqualTypeOf<"balances">();
   expectTypeOf<MappingKey>().toEqualTypeOf<`0x${string}`>();
@@ -241,6 +272,7 @@ test("IsVariableSingleSlot follows storage layout byte counts", () => {
 test("getStorageSlot return type follows IsSingleSlot", () => {
   const ownerSlot = getStorageSlot(layout, "owner");
   const metadataSlot = getStorageSlot(layout, "metadata");
+  const fixedNumbersSlot = getStorageSlot(layout, "fixedNumbers");
   const multiSlotMetadata = getStorageSlot(multiSlotLayout, "metadata");
 
   expectTypeOf<IsSingleSlot<typeof layout, "owner">>().toEqualTypeOf<true>();
@@ -248,9 +280,16 @@ test("getStorageSlot return type follows IsSingleSlot", () => {
     IsSingleSlot<typeof layout, "metadata.lastUpdate">
   >().toEqualTypeOf<true>();
   expectTypeOf<
+    IsSingleSlot<typeof layout, "fixedNumbers[0]">
+  >().toEqualTypeOf<true>();
+  expectTypeOf<
+    IsSingleSlot<typeof layout, "fixedNumbers">
+  >().toEqualTypeOf<false>();
+  expectTypeOf<
     IsSingleSlot<typeof multiSlotLayout, "metadata">
   >().toEqualTypeOf<false>();
   expectTypeOf(ownerSlot).toEqualTypeOf<`0x${string}`>();
   expectTypeOf(metadataSlot).toEqualTypeOf<`0x${string}`>();
+  expectTypeOf(fixedNumbersSlot).toEqualTypeOf<`0x${string}`[]>();
   expectTypeOf(multiSlotMetadata).toEqualTypeOf<`0x${string}`[]>();
 });

@@ -68,6 +68,14 @@ export const layout = {
       slot: "7",
       type: "t_mapping(t_address,t_uint256)",
     },
+    {
+      astId: 13,
+      contract: "src/Test.sol:Test",
+      label: "fixedNumbers",
+      offset: 0,
+      slot: "8",
+      type: "t_array(t_uint128)3_storage",
+    },
   ],
   types: {
     t_address: {
@@ -160,6 +168,137 @@ export const layout = {
       encoding: "inplace",
       label: "uint64",
       numberOfBytes: "8",
+    },
+    t_uint128: {
+      encoding: "inplace",
+      label: "uint128",
+      numberOfBytes: "16",
+    },
+    "t_array(t_uint128)3_storage": {
+      base: "t_uint128",
+      encoding: "inplace",
+      label: "uint128[3]",
+      numberOfBytes: "64",
+    },
+  },
+} as const satisfies StorageLayout;
+
+export const complexLayout = {
+  storage: [
+    {
+      astId: 30,
+      contract: "src/Test.sol:Test",
+      label: "orders",
+      offset: 0,
+      slot: "0",
+      type: "t_array(t_struct(Order)31_storage)2_storage",
+    },
+    {
+      astId: 40,
+      contract: "src/Test.sol:Test",
+      label: "book",
+      offset: 0,
+      slot: "10",
+      type: "t_struct(Book)40_storage",
+    },
+    {
+      astId: 50,
+      contract: "src/Test.sol:Test",
+      label: "matrix",
+      offset: 0,
+      slot: "20",
+      type: "t_array(t_array(t_uint128)2_storage)2_storage",
+    },
+  ],
+  types: {
+    t_uint128: {
+      encoding: "inplace",
+      label: "uint128",
+      numberOfBytes: "16",
+    },
+    t_uint256: {
+      encoding: "inplace",
+      label: "uint256",
+      numberOfBytes: "32",
+    },
+    "t_array(t_struct(Order)31_storage)2_storage": {
+      base: "t_struct(Order)31_storage",
+      encoding: "inplace",
+      label: "struct Test.Order[2]",
+      numberOfBytes: "128",
+    },
+    "t_array(t_uint128)2_storage": {
+      base: "t_uint128",
+      encoding: "inplace",
+      label: "uint128[2]",
+      numberOfBytes: "32",
+    },
+    "t_array(t_array(t_uint128)2_storage)2_storage": {
+      base: "t_array(t_uint128)2_storage",
+      encoding: "inplace",
+      label: "uint128[2][2]",
+      numberOfBytes: "64",
+    },
+    "t_struct(Book)40_storage": {
+      encoding: "inplace",
+      label: "struct Test.Book",
+      members: [
+        {
+          astId: 41,
+          contract: "src/Test.sol:Test",
+          label: "priceLevels",
+          offset: 0,
+          slot: "0",
+          type: "t_array(t_uint128)2_storage",
+        },
+        {
+          astId: 42,
+          contract: "src/Test.sol:Test",
+          label: "inner",
+          offset: 0,
+          slot: "1",
+          type: "t_struct(Inner)43_storage",
+        },
+      ],
+      numberOfBytes: "64",
+    },
+    "t_struct(Inner)43_storage": {
+      encoding: "inplace",
+      label: "struct Test.Inner",
+      members: [
+        {
+          astId: 43,
+          contract: "src/Test.sol:Test",
+          label: "count",
+          offset: 0,
+          slot: "0",
+          type: "t_uint256",
+        },
+      ],
+      numberOfBytes: "32",
+    },
+    "t_struct(Order)31_storage": {
+      encoding: "inplace",
+      label: "struct Test.Order",
+      members: [
+        {
+          astId: 31,
+          contract: "src/Test.sol:Test",
+          label: "price",
+          offset: 0,
+          slot: "0",
+          type: "t_uint256",
+        },
+        {
+          astId: 32,
+          contract: "src/Test.sol:Test",
+          label: "amount",
+          offset: 0,
+          slot: "1",
+          type: "t_uint256",
+        },
+      ],
+      numberOfBytes: "64",
     },
   },
 } as const satisfies StorageLayout;

@@ -161,6 +161,29 @@ export function resolveStoragePath(
 
   for (const segment of path.segments) {
     const absoluteSlot = baseSlot + BigInt(item.slot);
+    if (segment.kind === "subscript") {
+      if (isFixedArrayType(type) === false) {
+        throw new Error(
+          `subscript storage paths are not supported yet: ${formatStoragePath({
+            root: path.root,
+            segments: [...resolvedPath.segments, segment],
+          })}`,
+        );
+      }
+      const resolved = resolveFixedArrayElement(
+        layout,
+        item,
+        type,
+        absoluteSlot,
+        segment,
+        resolvedPath,
+      );
+      item = resolved.item;
+      baseSlot = resolved.baseSlot;
+      resolvedPath = resolved.path;
+      type = resolved.type;
+      continue;
+    }
     if (segment.kind !== "field") {
       throw new Error(
         `subscript storage paths are not supported yet: ${formatStoragePath({
@@ -207,6 +230,15 @@ export function resolveStoragePath(
   }
   if (isStructType(type)) {
     return expandStructSlots(layout, type, absoluteSlot, resolvedPath, true);
+  }
+  if (isFixedArrayType(type)) {
+    return expandFixedArraySlots(
+      layout,
+      item,
+      type,
+      absoluteSlot,
+      resolvedPath,
+    );
   }
 
   throw new Error(
@@ -261,6 +293,18 @@ function expandStructSlots(
       );
       continue;
     }
+    if (isFixedArrayType(memberType)) {
+      slots.push(
+        ...expandFixedArraySlots(
+          layout,
+          member,
+          memberType,
+          memberSlot,
+          memberPath,
+        ),
+      );
+      continue;
+    }
     if (strict) {
       if (memberType.encoding === "mapping") {
         throw new Error(
@@ -273,6 +317,141 @@ function expandStructSlots(
     }
   }
   return slots;
+}
+
+function expandFixedArraySlots(
+  layout: StorageLayout,
+  item: StorageItem,
+  type: StorageType & { base: string },
+  baseSlot: bigint,
+  path: StoragePath,
+): ResolvedStorageItem[] {
+  const slots: ResolvedStorageItem[] = [];
+  const length = fixedArrayLength(type);
+  for (let index = 0; index < length; index++) {
+    const resolved = resolveFixedArrayElement(
+      layout,
+      item,
+      type,
+      baseSlot,
+      { kind: "subscript", value: { kind: "number", value: BigInt(index) } },
+      path,
+    );
+    if (isValueType(resolved.type)) {
+      slots.push(resolved);
+      continue;
+    }
+    const elementSlot = resolved.baseSlot + BigInt(resolved.item.slot);
+    if (isStructType(resolved.type)) {
+      slots.push(
+        ...expandStructSlots(
+          layout,
+          resolved.type,
+          elementSlot,
+          resolved.path,
+          true,
+        ),
+      );
+      continue;
+    }
+    if (isFixedArrayType(resolved.type)) {
+      slots.push(
+        ...expandFixedArraySlots(
+          layout,
+          resolved.item,
+          resolved.type,
+          elementSlot,
+          resolved.path,
+        ),
+      );
+      continue;
+    }
+    if (resolved.type.encoding === "mapping") {
+      throw new Error(mappingSlotError(resolved.path));
+    }
+    throw new Error(
+      `unsupported storage path type '${resolved.type.label}' for ${formatStoragePath(resolved.path)}`,
+    );
+  }
+  return slots;
+}
+
+function resolveFixedArrayElement(
+  layout: StorageLayout,
+  item: StorageItem,
+  type: StorageType & { base: string },
+  baseSlot: bigint,
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  path: StoragePath,
+): ResolvedStorageItem {
+  const index = fixedArrayIndex(segment, type, path);
+  const baseType = findStorageType(layout, type.base);
+  const { slot, offset } = fixedArrayElementLocation(baseType, index);
+  return {
+    path: { root: path.root, segments: [...path.segments, segment] },
+    item: {
+      astId: item.astId,
+      contract: item.contract,
+      label: `${item.label}[${index}]`,
+      offset,
+      slot: String(slot) as `${number}`,
+      type: type.base,
+    },
+    type: baseType,
+    baseSlot,
+  };
+}
+
+function fixedArrayElementLocation(
+  type: StorageType,
+  index: number,
+): { slot: number; offset: number } {
+  const numberOfBytes = Number(type.numberOfBytes);
+  if (isValueType(type)) {
+    const valuesPerSlot = Math.floor(32 / numberOfBytes);
+    return {
+      slot: Math.floor(index / valuesPerSlot),
+      offset: (index % valuesPerSlot) * numberOfBytes,
+    };
+  }
+  return {
+    slot: index * Math.ceil(numberOfBytes / 32),
+    offset: 0,
+  };
+}
+
+function fixedArrayIndex(
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  type: StorageType,
+  path: StoragePath,
+): number {
+  if (segment.value.kind !== "number") {
+    throw new Error(
+      `fixed array index must be a number: ${formatStoragePath({
+        root: path.root,
+        segments: [...path.segments, segment],
+      })}`,
+    );
+  }
+  const length = fixedArrayLength(type);
+  const index = Number(segment.value.value);
+  if (!Number.isSafeInteger(index) || index < 0 || index >= length) {
+    throw new Error(
+      `fixed array index out of bounds: ${formatStoragePath({
+        root: path.root,
+        segments: [...path.segments, segment],
+      })}`,
+    );
+  }
+  return index;
+}
+
+function fixedArrayLength(type: StorageType): number {
+  const match = /\[([0-9]+)\]$/.exec(type.label);
+  if (match === null) {
+    throw new Error(`fixed array type '${type.label}' is missing length`);
+  }
+  return Number(match[1]);
 }
 
 function findStorageItem(layout: StorageLayout, label: string): StorageItem {
@@ -310,46 +489,90 @@ function isStructType(
   return type.encoding === "inplace" && type.members !== undefined;
 }
 
+function isFixedArrayType(
+  type: StorageType,
+): type is StorageType & { base: string } {
+  return type.encoding === "inplace" && type.base !== undefined;
+}
+
+function mappingSlotError(path: StoragePath): string {
+  return `cannot infer storage path for mapping '${formatStoragePath(path)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`;
+}
+
 type StoragePathStringToPrimitiveType<
   Layout extends StorageLayout,
   Path extends string,
-> = Path extends `${string}[${string}]${string}`
-  ? CustomTypeError<"Subscript storage path string typing is not implemented yet.">
-  : Path extends `${infer Root}.${infer Rest}`
-    ? Root extends ExtractVariableNames<Layout>
-      ? StoragePathTailToPrimitiveType<
-          Layout,
-          StorageTypeForItem<
-            Layout,
-            Extract<Layout["storage"][number], { label: Root }>
-          >,
-          Rest
-        >
-      : CustomTypeError<"Storage path root was not found in storage layout.">
-    : Path extends ExtractVariableNames<Layout>
-      ? StorageLayoutToVariableType<Layout, Path>
-      : CustomTypeError<"Storage path root was not found in storage layout.">;
+> = Path extends `${infer Head}.${infer Rest}`
+  ? StoragePathTailToPrimitiveType<
+      Layout,
+      StoragePathRootSegmentToStorageType<Layout, Head>,
+      Rest
+    >
+  : StoragePathTypeToPrimitiveType<
+      Layout,
+      StoragePathRootSegmentToStorageType<Layout, Path>
+    >;
 
 type StoragePathTailToPrimitiveType<
   Layout extends StorageLayout,
-  Type extends StorageType,
+  Type,
   Tail extends string,
-> = Type extends { members: readonly StorageItem[] }
-  ? Tail extends `${infer Field}.${infer Rest}`
-    ? StoragePathTailToPrimitiveType<
+> = Tail extends `${infer Head}.${infer Rest}`
+  ? StoragePathTailToPrimitiveType<
+      Layout,
+      StoragePathSegmentStringToStorageType<Layout, Type, Head>,
+      Rest
+    >
+  : StoragePathTypeToPrimitiveType<
+      Layout,
+      StoragePathSegmentStringToStorageType<Layout, Type, Tail>
+    >;
+
+type StoragePathTypeToPrimitiveType<
+  Layout extends StorageLayout,
+  Type,
+> = Type extends StorageType ? StorageTypeToPrimitiveType<Type, Layout> : Type;
+
+type StoragePathRootSegmentToStorageType<
+  Layout extends StorageLayout,
+  Segment extends string,
+> = Segment extends `${infer Root}[${string}]`
+  ? Root extends ExtractVariableNames<Layout>
+    ? ArrayElementStorageType<
         Layout,
-        StorageTypeForStructField<Layout, Type["members"], Field>,
-        Rest
+        StorageTypeForItem<
+          Layout,
+          Extract<Layout["storage"][number], { label: Root }>
+        >
       >
-    : StorageTypeToPrimitiveType<
-        StorageTypeForStructField<Layout, Type["members"], Tail>,
-        Layout
+    : CustomTypeError<"Storage path root was not found in storage layout.">
+  : Segment extends ExtractVariableNames<Layout>
+    ? StorageTypeForItem<
+        Layout,
+        Extract<Layout["storage"][number], { label: Segment }>
       >
-  : CustomTypeError<"Storage path field requires a struct.">;
+    : CustomTypeError<"Storage path root was not found in storage layout.">;
+
+type StoragePathSegmentStringToStorageType<
+  Layout extends StorageLayout,
+  Type,
+  Segment extends string,
+> = Segment extends `${infer Field}[${string}]`
+  ? Type extends { members: readonly StorageItem[] }
+    ? ArrayElementStorageType<
+        Layout,
+        StorageTypeForStructField<Layout, Type["members"], Field>
+      >
+    : Segment extends `[${string}]`
+      ? ArrayElementStorageType<Layout, Type>
+      : CustomTypeError<"Storage path field requires a struct.">
+  : Type extends { members: readonly StorageItem[] }
+    ? StorageTypeForStructField<Layout, Type["members"], Segment>
+    : CustomTypeError<"Storage path field requires a struct.">;
 
 type StoragePathSegmentsToPrimitiveType<
   Layout extends StorageLayout,
-  Type extends StorageType,
+  Type,
   Segments extends readonly StoragePathSegment[],
 > = Segments extends readonly [
   infer Segment extends StoragePathSegment,
@@ -363,8 +586,12 @@ type StoragePathSegmentsToPrimitiveType<
           Rest
         >
       : CustomTypeError<"Storage path field requires a struct.">
-    : CustomTypeError<"Subscript StoragePath typing is not implemented yet.">
-  : StorageTypeToPrimitiveType<Type, Layout>;
+    : StoragePathSegmentsToPrimitiveType<
+        Layout,
+        ArrayElementStorageType<Layout, Type>,
+        Rest
+      >
+  : StoragePathTypeToPrimitiveType<Layout, Type>;
 
 type StorageTypeForPath<
   Layout extends StorageLayout,
@@ -397,43 +624,29 @@ type StoragePathStringToStorageType<
   ?
       | StorageType
       | CustomTypeError<"StoragePath root was not found in storage layout.">
-  : Path extends `${string}[${string}]${string}`
-    ? CustomTypeError<"Subscript storage path string typing is not implemented yet.">
-    : Path extends `${infer Root}.${infer Rest}`
-      ? Root extends ExtractVariableNames<Layout>
-        ? StoragePathTailToStorageType<
-            Layout,
-            StorageTypeForItem<
-              Layout,
-              Extract<Layout["storage"][number], { label: Root }>
-            >,
-            Rest
-          >
-        : CustomTypeError<"Storage path root was not found in storage layout.">
-      : Path extends ExtractVariableNames<Layout>
-        ? StorageTypeForItem<
-            Layout,
-            Extract<Layout["storage"][number], { label: Path }>
-          >
-        : CustomTypeError<"Storage path root was not found in storage layout.">;
+  : Path extends `${infer Head}.${infer Rest}`
+    ? StoragePathTailToStorageType<
+        Layout,
+        StoragePathRootSegmentToStorageType<Layout, Head>,
+        Rest
+      >
+    : StoragePathRootSegmentToStorageType<Layout, Path>;
 
 type StoragePathTailToStorageType<
   Layout extends StorageLayout,
-  Type extends StorageType,
+  Type,
   Tail extends string,
-> = Type extends { members: readonly StorageItem[] }
-  ? Tail extends `${infer Field}.${infer Rest}`
-    ? StoragePathTailToStorageType<
-        Layout,
-        StorageTypeForStructField<Layout, Type["members"], Field>,
-        Rest
-      >
-    : StorageTypeForStructField<Layout, Type["members"], Tail>
-  : CustomTypeError<"Storage path field requires a struct.">;
+> = Tail extends `${infer Head}.${infer Rest}`
+  ? StoragePathTailToStorageType<
+      Layout,
+      StoragePathSegmentStringToStorageType<Layout, Type, Head>,
+      Rest
+    >
+  : StoragePathSegmentStringToStorageType<Layout, Type, Tail>;
 
 type StoragePathSegmentsToStorageType<
   Layout extends StorageLayout,
-  Type extends StorageType,
+  Type,
   Segments extends readonly StoragePathSegment[],
 > = Segments extends readonly [
   infer Segment extends StoragePathSegment,
@@ -447,8 +660,19 @@ type StoragePathSegmentsToStorageType<
           Rest
         >
       : CustomTypeError<"Storage path field requires a struct.">
-    : CustomTypeError<"Subscript StoragePath typing is not implemented yet.">
+    : StoragePathSegmentsToStorageType<
+        Layout,
+        ArrayElementStorageType<Layout, Type>,
+        Rest
+      >
   : Type;
+
+type ArrayElementStorageType<
+  Layout extends StorageLayout,
+  Type,
+> = Type extends { base: infer Base extends string }
+  ? StorageTypeForId<Layout, Base>
+  : CustomTypeError<"Storage path subscript requires an array.">;
 
 type IsStoragePathTypeSingleSlot<Type> = Type extends StorageType
   ? IsStorageTypeSingleSlot<Type>

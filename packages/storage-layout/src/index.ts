@@ -240,6 +240,26 @@ function assertReversibleStorageItem(
     throw new Error(mappingPathError(path));
   }
   if (type.members === undefined) {
+    if (type.encoding === "inplace" && type.base !== undefined) {
+      assertReversibleStorageItem(
+        layout,
+        {
+          astId: item.astId,
+          contract: item.contract,
+          label: `${item.label}[0]`,
+          offset: 0,
+          slot: "0",
+          type: type.base,
+        },
+        {
+          root: path.root,
+          segments: [
+            ...path.segments,
+            { kind: "subscript", value: { kind: "number", value: 0n } },
+          ],
+        },
+      );
+    }
     return;
   }
   for (const member of type.members) {
