@@ -36,10 +36,126 @@ export type StoragePathSubscript =
   | { kind: "string"; value: string }
   | { kind: "bool"; value: boolean };
 
+export type ParsedStoragePath = {
+  root: string;
+  segments: readonly ParsedStoragePathSegment[];
+};
+
+export type ParsedStoragePathSegment =
+  | { kind: "field"; name: string }
+  | { kind: "subscript" };
+
+export type ParseStoragePath<Path extends string> =
+  Path extends `${infer Head}.${infer Tail}`
+    ? ParseStoragePathRoot<Head> extends infer Parsed extends ParsedStoragePath
+      ? {
+          root: Parsed["root"];
+          segments: readonly [
+            ...Parsed["segments"],
+            ...ParseStoragePathTail<Tail>,
+          ];
+        }
+      : never
+    : ParseStoragePathRoot<Path>;
+
+export type FormatStoragePath<Path extends StoragePath> =
+  `${Path["root"]}${FormatStoragePathSegments<Path["segments"]>}`;
+
+export type NormalizeStoragePath<Path extends string | StoragePath> =
+  Path extends string
+    ? ParseStoragePath<Path>
+    : Path extends {
+          root: infer Root extends string;
+          segments: infer Segments extends readonly StoragePathSegment[];
+        }
+      ? {
+          root: Root;
+          segments: NormalizeStoragePathSegments<Segments>;
+        }
+      : never;
+
 export const HEX_STRING_PATTERN = /^0x[0-9a-fA-F]*$/;
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DECIMAL = /^(0|[1-9][0-9]*)$/;
+
+type ParseStoragePathRoot<Segment extends string> =
+  Segment extends `${infer Root}[${string}]${infer Rest}`
+    ? {
+        root: Root;
+        segments: readonly [
+          { kind: "subscript" },
+          ...ParseStoragePathSubscripts<Rest>,
+        ];
+      }
+    : { root: Segment; segments: readonly [] };
+
+type ParseStoragePathTail<Tail extends string> =
+  Tail extends `${infer Head}.${infer Rest}`
+    ? readonly [...ParseStoragePathSegment<Head>, ...ParseStoragePathTail<Rest>]
+    : ParseStoragePathSegment<Tail>;
+
+type ParseStoragePathSegment<Segment extends string> =
+  Segment extends `${infer Field}[${string}]${infer Rest}`
+    ? Field extends ""
+      ? readonly [{ kind: "subscript" }, ...ParseStoragePathSubscripts<Rest>]
+      : readonly [
+          { kind: "field"; name: Field },
+          { kind: "subscript" },
+          ...ParseStoragePathSubscripts<Rest>,
+        ]
+    : readonly [{ kind: "field"; name: Segment }];
+
+type ParseStoragePathSubscripts<Tail extends string> =
+  Tail extends `[${string}]${infer Rest}`
+    ? readonly [{ kind: "subscript" }, ...ParseStoragePathSubscripts<Rest>]
+    : readonly [];
+
+type FormatStoragePathSegments<Segments extends readonly StoragePathSegment[]> =
+  Segments extends readonly [
+    infer Segment extends StoragePathSegment,
+    ...infer Rest extends readonly StoragePathSegment[],
+  ]
+    ? `${FormatStoragePathSegment<Segment>}${FormatStoragePathSegments<Rest>}`
+    : "";
+
+type FormatStoragePathSegment<Segment extends StoragePathSegment> =
+  Segment extends { kind: "field"; name: infer Name extends string }
+    ? `.${Name}`
+    : Segment extends {
+          kind: "subscript";
+          value: infer Subscript extends StoragePathSubscript;
+        }
+      ? `[${FormatStoragePathSubscript<Subscript>}]`
+      : never;
+
+type FormatStoragePathSubscript<Subscript extends StoragePathSubscript> =
+  Subscript extends { kind: "number"; value: infer Value extends bigint }
+    ? `${Value}`
+    : Subscript extends { kind: "hex"; value: infer Value extends Hex.Hex }
+      ? Value
+      : Subscript extends { kind: "string"; value: infer Value extends string }
+        ? `"${Value}"`
+        : Subscript extends { kind: "bool"; value: infer Value extends boolean }
+          ? `${Value}`
+          : never;
+
+type NormalizeStoragePathSegments<
+  Segments extends readonly StoragePathSegment[],
+> = Segments extends readonly [
+  infer Segment extends StoragePathSegment,
+  ...infer Rest extends readonly StoragePathSegment[],
+]
+  ? readonly [
+      NormalizeStoragePathSegment<Segment>,
+      ...NormalizeStoragePathSegments<Rest>,
+    ]
+  : readonly [];
+
+type NormalizeStoragePathSegment<Segment extends StoragePathSegment> =
+  Segment extends { kind: "field"; name: infer Name extends string }
+    ? { kind: "field"; name: Name }
+    : { kind: "subscript" };
 
 /**
  * Parse a human-readable Solidity storage path into structured form.

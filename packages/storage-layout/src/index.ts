@@ -17,26 +17,15 @@ import {
 } from "./storage-path";
 
 export type {
-  CustomTypeError,
-  ExtractMappingType,
-  ExtractMappingVariableNames,
+  ExtractStoragePaths,
   ExtractVariableNames,
   IsSingleSlot,
-  IsVariableSingleSlot,
-  Pretty,
-  ResolvedStorageItem,
-  StorageItem,
   StorageLayout,
-  StorageLayoutToVariableType,
-  StorageLayoutToVariableTypes,
+  StorageLayoutToPrimitiveType,
   StoragePathToPrimitiveType,
   StorageType,
 } from "./storage-layout";
-export type {
-  StoragePath,
-  StoragePathSegment,
-  StoragePathSubscript,
-} from "./storage-path";
+export type { StoragePath } from "./storage-path";
 export { formatStoragePath, parseStoragePath } from "./storage-path";
 
 export type StorageVariableUpdate = ResolvedStorageItem & {

@@ -1,6 +1,9 @@
 import type { AbiParameterToPrimitiveType, AbiType } from "abitype";
 import {
   formatStoragePath,
+  type NormalizeStoragePath,
+  type ParsedStoragePath,
+  type ParsedStoragePathSegment,
   type StoragePath,
   type StoragePathSegment,
 } from "./storage-path";
@@ -65,85 +68,28 @@ export type ResolvedStorageItem = {
   baseSlot: bigint;
 };
 
-export type Pretty<T> = { [K in keyof T]: T[K] } & unknown;
+type Pretty<T> = { [K in keyof T]: T[K] } & unknown;
 
-export type CustomTypeError<Message extends string> = [`Error: ${Message}`];
+type CustomTypeError<Message extends string> = [`Error: ${Message}`];
 
 export type ExtractVariableNames<Layout extends StorageLayout> =
   Layout["storage"][number]["label"];
 
-export type StorageLayoutToVariableTypes<Layout extends StorageLayout> =
+export type ExtractStoragePaths<Layout extends StorageLayout> =
+  StorageItemPaths<Layout, Layout["storage"][number]>;
+
+export type StorageLayoutToPrimitiveType<Layout extends StorageLayout> =
   Pretty<{
-    [Name in ExtractVariableNames<Layout>]: StorageLayoutToVariableType<
+    [Name in ExtractVariableNames<Layout>]: StoragePathToPrimitiveType<
       Layout,
       Name
     >;
   }>;
 
-export type StorageLayoutToVariableType<
-  Layout extends StorageLayout,
-  Name extends ExtractVariableNames<Layout>,
-> = StorageTypeToPrimitiveType<
-  StorageTypeForItem<
-    Layout,
-    Extract<Layout["storage"][number], { label: Name }>
-  >,
-  Layout
->;
-
 export type StoragePathToPrimitiveType<
   Layout extends StorageLayout,
   Path extends string | StoragePath,
-> = Path extends string
-  ? StoragePathStringToPrimitiveType<Layout, Path>
-  : Path extends {
-        root: infer Root extends ExtractVariableNames<Layout>;
-        segments: infer Segments;
-      }
-    ? Segments extends readonly []
-      ? StorageLayoutToVariableType<Layout, Root>
-      : StoragePathSegmentsToPrimitiveType<
-          Layout,
-          StorageTypeForItem<
-            Layout,
-            Extract<Layout["storage"][number], { label: Root }>
-          >,
-          Extract<Segments, readonly StoragePathSegment[]>
-        >
-    : CustomTypeError<"StoragePath root was not found in storage layout.">;
-
-export type ExtractMappingVariableNames<Layout extends StorageLayout> = Extract<
-  Layout["storage"][number],
-  { type: MappingTypeIds<Layout> }
->["label"];
-
-export type ExtractMappingType<
-  Layout extends StorageLayout,
-  Name extends ExtractMappingVariableNames<Layout>,
-  KeyOrValue extends "key" | "value",
-> = StorageTypeToPrimitiveType<
-  StorageTypeForId<
-    Layout,
-    Extract<
-      StorageTypeForItem<
-        Layout,
-        Extract<Layout["storage"][number], { label: Name }>
-      >[KeyOrValue],
-      string
-    >
-  >,
-  Layout
->;
-
-export type IsVariableSingleSlot<
-  Layout extends StorageLayout,
-  Name extends ExtractVariableNames<Layout>,
-> = IsStorageTypeSingleSlot<
-  StorageTypeForItem<
-    Layout,
-    Extract<Layout["storage"][number], { label: Name }>
-  >
->;
+> = StoragePathTypeToPrimitiveType<Layout, StorageTypeForPath<Layout, Path>>;
 
 export type IsSingleSlot<
   Layout extends StorageLayout,
@@ -499,158 +445,113 @@ function mappingSlotError(path: StoragePath): string {
   return `cannot infer storage path for mapping '${formatStoragePath(path)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`;
 }
 
-type StoragePathStringToPrimitiveType<
+type StorageItemPaths<
   Layout extends StorageLayout,
-  Path extends string,
-> = Path extends `${infer Head}.${infer Rest}`
-  ? StoragePathTailToPrimitiveType<
+  Item extends StorageItem,
+> = Item extends StorageItem
+  ? StorageTypePaths<
       Layout,
-      StoragePathRootSegmentToStorageType<Layout, Head>,
-      Rest
+      StorageTypeForItem<Layout, Item>,
+      Extract<Item["label"], string>
     >
-  : StoragePathTypeToPrimitiveType<
-      Layout,
-      StoragePathRootSegmentToStorageType<Layout, Path>
-    >;
+  : never;
 
-type StoragePathTailToPrimitiveType<
+type StorageTypePaths<
   Layout extends StorageLayout,
   Type,
-  Tail extends string,
-> = Tail extends `${infer Head}.${infer Rest}`
-  ? StoragePathTailToPrimitiveType<
-      Layout,
-      StoragePathSegmentStringToStorageType<Layout, Type, Head>,
-      Rest
-    >
-  : StoragePathTypeToPrimitiveType<
-      Layout,
-      StoragePathSegmentStringToStorageType<Layout, Type, Tail>
-    >;
+  Prefix extends string,
+> = Prefix | StorageTypeChildPaths<Layout, Type, Prefix>;
+
+type StorageTypeChildPaths<
+  Layout extends StorageLayout,
+  Type,
+  Prefix extends string,
+> = Type extends { members: readonly StorageItem[] }
+  ? StructMemberPaths<Layout, Type["members"], Prefix>
+  : Type extends {
+        base: infer Base extends string;
+        encoding: "dynamic_array";
+      }
+    ? StorageTypePaths<
+        Layout,
+        StorageTypeForId<Layout, Base>,
+        `${Prefix}[${number}]`
+      >
+    : Type extends { base: infer Base extends string }
+      ? Type extends { label: `${string}[${infer Length extends number}]` }
+        ? FixedArrayIndex<Length> extends infer Index extends number
+          ? StorageTypePaths<
+              Layout,
+              StorageTypeForId<Layout, Base>,
+              `${Prefix}[${Index}]`
+            >
+          : never
+        : never
+      : never;
+
+type StructMemberPaths<
+  Layout extends StorageLayout,
+  Members extends readonly StorageItem[],
+  Prefix extends string,
+> = Members[number] extends infer Member extends StorageItem
+  ? Member extends StorageItem
+    ? StorageTypePaths<
+        Layout,
+        StorageTypeForItem<Layout, Member>,
+        `${Prefix}.${Extract<Member["label"], string>}`
+      >
+    : never
+  : never;
+
+type FixedArrayIndex<
+  Length extends number,
+  Acc extends readonly unknown[] = [],
+> = number extends Length
+  ? number
+  : Acc["length"] extends Length
+    ? never
+    : Acc["length"] | FixedArrayIndex<Length, readonly [...Acc, unknown]>;
 
 type StoragePathTypeToPrimitiveType<
   Layout extends StorageLayout,
   Type,
 > = Type extends StorageType ? StorageTypeToPrimitiveType<Type, Layout> : Type;
 
-type StoragePathRootSegmentToStorageType<
-  Layout extends StorageLayout,
-  Segment extends string,
-> = Segment extends `${infer Root}[${string}]`
-  ? Root extends ExtractVariableNames<Layout>
-    ? ArrayElementStorageType<
-        Layout,
-        StorageTypeForItem<
-          Layout,
-          Extract<Layout["storage"][number], { label: Root }>
-        >
-      >
-    : CustomTypeError<"Storage path root was not found in storage layout.">
-  : Segment extends ExtractVariableNames<Layout>
-    ? StorageTypeForItem<
-        Layout,
-        Extract<Layout["storage"][number], { label: Segment }>
-      >
-    : CustomTypeError<"Storage path root was not found in storage layout.">;
-
-type StoragePathSegmentStringToStorageType<
-  Layout extends StorageLayout,
-  Type,
-  Segment extends string,
-> = Segment extends `${infer Field}[${string}]`
-  ? Type extends { members: readonly StorageItem[] }
-    ? ArrayElementStorageType<
-        Layout,
-        StorageTypeForStructField<Layout, Type["members"], Field>
-      >
-    : Segment extends `[${string}]`
-      ? ArrayElementStorageType<Layout, Type>
-      : CustomTypeError<"Storage path field requires a struct.">
-  : Type extends { members: readonly StorageItem[] }
-    ? StorageTypeForStructField<Layout, Type["members"], Segment>
-    : CustomTypeError<"Storage path field requires a struct.">;
-
-type StoragePathSegmentsToPrimitiveType<
-  Layout extends StorageLayout,
-  Type,
-  Segments extends readonly StoragePathSegment[],
-> = Segments extends readonly [
-  infer Segment extends StoragePathSegment,
-  ...infer Rest extends StoragePathSegment[],
-]
-  ? Segment extends { kind: "field"; name: infer Field extends string }
-    ? Type extends { members: readonly StorageItem[] }
-      ? StoragePathSegmentsToPrimitiveType<
-          Layout,
-          StorageTypeForStructField<Layout, Type["members"], Field>,
-          Rest
-        >
-      : CustomTypeError<"Storage path field requires a struct.">
-    : StoragePathSegmentsToPrimitiveType<
-        Layout,
-        ArrayElementStorageType<Layout, Type>,
-        Rest
-      >
-  : StoragePathTypeToPrimitiveType<Layout, Type>;
-
 type StorageTypeForPath<
   Layout extends StorageLayout,
   Path extends string | StoragePath,
 > = Path extends string
-  ? StoragePathStringToStorageType<Layout, Path>
-  : Path extends {
-        root: infer Root extends ExtractVariableNames<Layout>;
-        segments: infer Segments;
-      }
-    ? Segments extends readonly []
-      ? StorageTypeForItem<
-          Layout,
-          Extract<Layout["storage"][number], { label: Root }>
-        >
-      : StoragePathSegmentsToStorageType<
-          Layout,
-          StorageTypeForItem<
-            Layout,
-            Extract<Layout["storage"][number], { label: Root }>
-          >,
-          Extract<Segments, readonly StoragePathSegment[]>
-        >
-    : CustomTypeError<"StoragePath root was not found in storage layout.">;
+  ? string extends Path
+    ?
+        | StorageType
+        | CustomTypeError<"StoragePath root was not found in storage layout.">
+    : StorageTypeForParsedPath<Layout, NormalizeStoragePath<Path>>
+  : StorageTypeForParsedPath<Layout, NormalizeStoragePath<Path>>;
 
-type StoragePathStringToStorageType<
+type StorageTypeForParsedPath<
   Layout extends StorageLayout,
-  Path extends string,
-> = string extends Path
-  ?
-      | StorageType
-      | CustomTypeError<"StoragePath root was not found in storage layout.">
-  : Path extends `${infer Head}.${infer Rest}`
-    ? StoragePathTailToStorageType<
-        Layout,
-        StoragePathRootSegmentToStorageType<Layout, Head>,
-        Rest
-      >
-    : StoragePathRootSegmentToStorageType<Layout, Path>;
-
-type StoragePathTailToStorageType<
-  Layout extends StorageLayout,
-  Type,
-  Tail extends string,
-> = Tail extends `${infer Head}.${infer Rest}`
-  ? StoragePathTailToStorageType<
+  Path extends ParsedStoragePath,
+> = Path extends {
+  root: infer Root extends ExtractVariableNames<Layout>;
+  segments: infer Segments extends readonly ParsedStoragePathSegment[];
+}
+  ? StoragePathSegmentsToStorageType<
       Layout,
-      StoragePathSegmentStringToStorageType<Layout, Type, Head>,
-      Rest
+      StorageTypeForItem<
+        Layout,
+        Extract<Layout["storage"][number], { label: Root }>
+      >,
+      Segments
     >
-  : StoragePathSegmentStringToStorageType<Layout, Type, Tail>;
+  : CustomTypeError<"StoragePath root was not found in storage layout.">;
 
 type StoragePathSegmentsToStorageType<
   Layout extends StorageLayout,
   Type,
-  Segments extends readonly StoragePathSegment[],
+  Segments extends readonly ParsedStoragePathSegment[],
 > = Segments extends readonly [
-  infer Segment extends StoragePathSegment,
-  ...infer Rest extends StoragePathSegment[],
+  infer Segment extends ParsedStoragePathSegment,
+  ...infer Rest extends ParsedStoragePathSegment[],
 ]
   ? Segment extends { kind: "field"; name: infer Field extends string }
     ? Type extends { members: readonly StorageItem[] }
@@ -683,7 +584,9 @@ type StorageTypeForStructField<
   Members extends readonly StorageItem[],
   Field extends string,
   Member extends StorageItem = Extract<Members[number], { label: Field }>,
-> = [Member] extends [never] ? never : StorageTypeForItem<Layout, Member>;
+> = [Member] extends [never]
+  ? CustomTypeError<"Storage path field was not found in struct.">
+  : StorageTypeForItem<Layout, Member>;
 
 type StorageTypeForItem<
   Layout extends StorageLayout,
@@ -742,12 +645,6 @@ type SolidityLabelToPrimitiveType<Label extends string> = Label extends AbiType
   : Label extends `enum ${string}`
     ? number
     : CustomTypeError<`Unsupported type '${Label}'.`>;
-
-type MappingTypeIds<Layout extends StorageLayout> = {
-  [TypeId in keyof Layout["types"]]: Layout["types"][TypeId]["encoding"] extends "mapping"
-    ? TypeId
-    : never;
-}[keyof Layout["types"]];
 
 type IsStorageTypeSingleSlot<Type extends StorageType> =
   Type["numberOfBytes"] extends SingleSlotByteCount ? true : false;

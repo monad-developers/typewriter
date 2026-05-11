@@ -1,16 +1,18 @@
 import { expectTypeOf, test } from "bun:test";
 import type {
-  ExtractMappingType,
-  ExtractMappingVariableNames,
+  ExtractStoragePaths,
   ExtractVariableNames,
   IsSingleSlot,
-  IsVariableSingleSlot,
   StorageLayout,
-  StorageLayoutToVariableType,
-  StorageLayoutToVariableTypes,
+  StorageLayoutToPrimitiveType,
   StoragePathToPrimitiveType,
 } from "./index";
 import { getStorageSlot } from "./index";
+import type {
+  FormatStoragePath,
+  NormalizeStoragePath,
+  ParseStoragePath,
+} from "./storage-path";
 
 const layout = {
   storage: [
@@ -190,8 +192,49 @@ const multiSlotLayout = {
   },
 } as const satisfies StorageLayout;
 
-test("StorageLayoutToVariableTypes maps top-level Solidity types", () => {
-  type Variables = StorageLayoutToVariableTypes<typeof layout>;
+test("type-level storage path helpers match runtime path shape", () => {
+  type Parsed = ParseStoragePath<"accounts[0xabcd][1].orders[3][4].price">;
+  type Formatted = FormatStoragePath<{
+    root: "accounts";
+    segments: readonly [
+      { kind: "subscript"; value: { kind: "hex"; value: "0xabcd" } },
+      { kind: "field"; name: "orders" },
+      { kind: "subscript"; value: { kind: "number"; value: 3n } },
+    ];
+  }>;
+  type Normalized = NormalizeStoragePath<{
+    root: "accounts";
+    segments: readonly [
+      { kind: "subscript"; value: { kind: "hex"; value: "0xabcd" } },
+      { kind: "field"; name: "orders" },
+      { kind: "subscript"; value: { kind: "number"; value: 3n } },
+    ];
+  }>;
+
+  expectTypeOf<Parsed>().toEqualTypeOf<{
+    root: "accounts";
+    segments: readonly [
+      { kind: "subscript" },
+      { kind: "subscript" },
+      { kind: "field"; name: "orders" },
+      { kind: "subscript" },
+      { kind: "subscript" },
+      { kind: "field"; name: "price" },
+    ];
+  }>();
+  expectTypeOf<Formatted>().toEqualTypeOf<"accounts[0xabcd].orders[3]">();
+  expectTypeOf<Normalized>().toEqualTypeOf<{
+    root: "accounts";
+    segments: readonly [
+      { kind: "subscript" },
+      { kind: "field"; name: "orders" },
+      { kind: "subscript" },
+    ];
+  }>();
+});
+
+test("StorageLayoutToPrimitiveType maps top-level Solidity types", () => {
+  type Variables = StorageLayoutToPrimitiveType<typeof layout>;
 
   expectTypeOf<Variables>().toEqualTypeOf<{
     supply: bigint;
@@ -204,8 +247,8 @@ test("StorageLayoutToVariableTypes maps top-level Solidity types", () => {
   }>();
 });
 
-test("StorageLayoutToVariableType extracts one variable", () => {
-  type Metadata = StorageLayoutToVariableType<typeof layout, "metadata">;
+test("StoragePathToPrimitiveType extracts one variable", () => {
+  type Metadata = StoragePathToPrimitiveType<typeof layout, "metadata">;
 
   expectTypeOf<Metadata>().toEqualTypeOf<{
     lastUpdate: bigint;
@@ -244,8 +287,7 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
 
 test("storage layout extraction helpers preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
-  type MappingNames = ExtractMappingVariableNames<typeof layout>;
-  type MappingKey = ExtractMappingType<typeof layout, "balances", "key">;
+  type Paths = ExtractStoragePaths<typeof layout>;
 
   expectTypeOf<Names>().toEqualTypeOf<
     | "supply"
@@ -256,17 +298,21 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "balances"
     | "fixedNumbers"
   >();
-  expectTypeOf<MappingNames>().toEqualTypeOf<"balances">();
-  expectTypeOf<MappingKey>().toEqualTypeOf<`0x${string}`>();
-});
-
-test("IsVariableSingleSlot follows storage layout byte counts", () => {
-  expectTypeOf<
-    IsVariableSingleSlot<typeof layout, "supply">
-  >().toEqualTypeOf<true>();
-  expectTypeOf<
-    IsVariableSingleSlot<typeof layout, "metadata">
-  >().toEqualTypeOf<true>();
+  expectTypeOf<Paths>().toEqualTypeOf<
+    | "supply"
+    | "flags"
+    | "owner"
+    | "metadata"
+    | "metadata.lastUpdate"
+    | "metadata.paused"
+    | "numbers"
+    | `numbers[${number}]`
+    | "balances"
+    | "fixedNumbers"
+    | "fixedNumbers[0]"
+    | "fixedNumbers[1]"
+    | "fixedNumbers[2]"
+  >();
 });
 
 test("getStorageSlot return type follows IsSingleSlot", () => {
