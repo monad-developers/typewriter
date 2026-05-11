@@ -506,10 +506,11 @@ export function createFFCA(config: FFCAConfig): FFCA {
     const args = bundles.map((b) =>
       encodeBundleArg(b.mutations, config.signature.params),
     );
+    const forceExecuteIndexes: bigint[] = [];
     const calldata = encodeFunctionData({
       abi: config.abi,
       functionName: "execute",
-      args: [args],
+      args: [args, forceExecuteIndexes],
     });
 
     yield* Effect.tryPromise({
@@ -519,7 +520,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
           abi: config.abi,
           address: config.address,
           functionName: "execute",
-          args: [args],
+          args: [args, forceExecuteIndexes],
         }),
       catch: (error) => error as Error,
     }).pipe(rpcRetry);

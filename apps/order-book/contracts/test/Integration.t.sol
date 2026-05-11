@@ -18,10 +18,13 @@ import {
     CloseOrder,
     Fill,
     PERM_AUTHORIZE,
+    FORCE_INCLUSION_DELAY,
     MutationsOutOfOrder,
     SignatureExpired,
     InvalidNonce,
-    LotExpTooLarge
+    LotExpTooLarge,
+    TooEarly,
+    AlreadyExecuted
 } from "src/Exchange.sol";
 
 import {KeyType} from "ffca/Account.sol";
@@ -67,7 +70,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(_bundles(mutations, data, sigs));
+        this.execute(_bundles(mutations, data, sigs), new uint256[](0));
     }
 
     function _bundles(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
@@ -640,7 +643,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(MutationsOutOfOrder.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_AddInstrument_LotExpTooLarge() external {
@@ -684,7 +687,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(LotExpTooLarge.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_SignatureExpired() external {
@@ -714,7 +717,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(SignatureExpired.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_InvalidNonce() external {
@@ -742,7 +745,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidNonce.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_KeyNotFound() external {
@@ -770,6 +773,88 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert();
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
+    }
+
+    function test_ForceExecute_DepositAfterDelay() external {
+        vm.pauseGasMetering();
+
+        _setupInstrument();
+        _initAccount(makerPk, makerAccount);
+        vm.roll(100);
+
+        Deposit memory d = Deposit({asset: QUOTE, amount: 100, nonce: 0, deadline: type(uint256).max});
+        Signature memory sig = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline))
+            )
+        });
+        uint256 index = this.enqueue(Mutation.Deposit, abi.encode(d), sig);
+
+        vm.resumeGasMetering();
+
+        vm.expectRevert(TooEarly.selector);
+        this.forceExecute(index);
+
+        vm.roll(block.number + FORCE_INCLUSION_DELAY);
+        this.forceExecute(index);
+
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 100);
+    }
+
+    function test_ForceExecute_ReplayReverts() external {
+        vm.pauseGasMetering();
+
+        _setupInstrument();
+        _initAccount(makerPk, makerAccount);
+        vm.roll(100);
+
+        Deposit memory d = Deposit({asset: QUOTE, amount: 100, nonce: 0, deadline: type(uint256).max});
+        Signature memory sig = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline))
+            )
+        });
+        uint256 index = this.enqueue(Mutation.Deposit, abi.encode(d), sig);
+        vm.roll(block.number + FORCE_INCLUSION_DELAY);
+
+        vm.resumeGasMetering();
+
+        this.forceExecute(index);
+
+        vm.expectRevert(AlreadyExecuted.selector);
+        this.forceExecute(index);
+    }
+
+    function test_Execute_CanIncludeQueuedMutation() external {
+        vm.pauseGasMetering();
+
+        _setupInstrument();
+        _initAccount(makerPk, makerAccount);
+
+        Deposit memory d = Deposit({asset: QUOTE, amount: 100, nonce: 0, deadline: type(uint256).max});
+        Signature memory sig = Signature({
+            account: makerAccount,
+            keyId: 0,
+            rawSignature: _sign(
+                makerPk, keccak256(abi.encode(_DEPOSIT_TYPEHASH, d.asset, d.amount, d.nonce, d.deadline))
+            )
+        });
+        uint256 index = this.enqueue(Mutation.Deposit, abi.encode(d), sig);
+
+        Bundle[] memory bundles = new Bundle[](0);
+        uint256[] memory forceExecuteIndexes = new uint256[](1);
+        forceExecuteIndexes[0] = index;
+
+        vm.resumeGasMetering();
+
+        vm.prank(SCHEDULER);
+        this.execute(bundles, forceExecuteIndexes);
+
+        assertEq(state.accounts[makerAccount].balances[QUOTE], 100);
     }
 }

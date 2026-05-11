@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {EIP712_DOMAIN_TYPEHASH} from "ffca/FFCA.sol";
-import {KeyType, verifySignature} from "ffca/Account.sol";
+import {KeyType, verifySignature, verifySignatureMemory} from "ffca/Account.sol";
 
 struct Signature {
     bytes32 account;
@@ -15,6 +15,13 @@ struct Bundle {
     uint8[] mutations;
     bytes[] mutationData;
     Signature[] signatures;
+}
+
+struct QueuedMutation {
+    uint8 mutation;
+    bytes mutationData;
+    Signature sig;
+    uint256 enqueuedBlock;
 }
 
 struct Key {
@@ -73,6 +80,9 @@ struct AssertMutation {
     uint256 nonce;
 }
 
+// .0001 downtime / month / (.4 s / block) * 2,629,800 s / month
+uint256 constant FORCE_INCLUSION_DELAY = 658;
+
 /// Multi-key fixture for ffca's submit path. Accounts are 32-byte ids; each
 /// holds a list of keys (any of the three KeyTypes from Account.sol).
 /// Signatures carry (account, keyId, keyType, rawSignature). All mutations
@@ -103,6 +113,8 @@ contract Harness {
 
     bytes32 public immutable domainSeparator;
 
+    QueuedMutation[] private queue;
+
     uint8 constant INITIALIZE = 0;
     uint8 constant AUTHORIZE = 1;
     uint8 constant CREDIT = 2;
@@ -113,6 +125,8 @@ contract Harness {
     error AlreadyInitialized();
     error InvalidNonce();
     error UnknownTag();
+    error TooEarly();
+    error AlreadyExecuted();
 
     constructor() {
         domainSeparator = keccak256(
@@ -135,13 +149,51 @@ contract Harness {
         return state.accounts[account].nonces[nonceKey];
     }
 
-    function execute(Bundle[] calldata bundles) external {
+    function execute(Bundle[] calldata bundles, uint256[] calldata forceExecuteIndexes) external {
+        for (uint256 i; i < forceExecuteIndexes.length; i++) {
+            uint256 index = forceExecuteIndexes[i];
+            QueuedMutation storage queued = queue[index];
+
+            if (queued.enqueuedBlock == 0) revert AlreadyExecuted();
+
+            uint8 mutation = queued.mutation;
+            bytes memory mutationData = queued.mutationData;
+            Signature memory sig = queued.sig;
+
+            delete queue[index];
+
+            _applyMemory(mutation, mutationData, sig);
+        }
+
         for (uint256 b; b < bundles.length; b++) {
             Bundle calldata bundle = bundles[b];
             for (uint256 i; i < bundle.mutations.length; i++) {
                 _apply(bundle.mutations[i], bundle.mutationData[i], bundle.signatures[i]);
             }
         }
+    }
+
+    function enqueue(uint8 mutation, bytes calldata mutationData, Signature calldata sig) external returns (uint256) {
+        uint256 index = queue.length;
+        queue.push(
+            QueuedMutation({mutation: mutation, mutationData: mutationData, sig: sig, enqueuedBlock: block.number})
+        );
+        return index;
+    }
+
+    function forceExecute(uint256 index) external {
+        QueuedMutation storage queued = queue[index];
+
+        if (queued.enqueuedBlock == 0) revert AlreadyExecuted();
+        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) revert TooEarly();
+
+        uint8 mutation = queued.mutation;
+        bytes memory mutationData = queued.mutationData;
+        Signature memory sig = queued.sig;
+
+        delete queue[index];
+
+        _applyMemory(mutation, mutationData, sig);
     }
 
     function _digest(bytes32 structHash) internal view returns (bytes32) {
@@ -155,6 +207,20 @@ contract Harness {
 
         bytes32 digest = _digest(structHash);
         verifySignature(KeyType(sig.keyType), digest, key.publicKey, sig.rawSignature);
+
+        uint192 nonceKey = uint192(nonce >> 64);
+        uint64 nonceSeq = uint64(nonce);
+        if (nonceSeq != acc.nonces[nonceKey]) revert InvalidNonce();
+        acc.nonces[nonceKey] = nonceSeq + 1;
+    }
+
+    function _verifySigMemory(bytes32 structHash, uint256 nonce, Signature memory sig) internal {
+        Account storage acc = state.accounts[sig.account];
+        Key storage key = acc.keys[sig.keyId];
+        if (key.keyType != sig.keyType) revert InvalidAccount();
+
+        bytes32 digest = _digest(structHash);
+        verifySignatureMemory(KeyType(sig.keyType), digest, key.publicKey, sig.rawSignature);
 
         uint192 nonceKey = uint192(nonce >> 64);
         uint64 nonceSeq = uint64(nonce);
@@ -198,6 +264,48 @@ contract Harness {
                 abi.encode(ASSERT_TYPEHASH, assertion.account, assertion.keyId, assertion.expected, assertion.nonce)
             );
             _verifySig(structHash, assertion.nonce, sig);
+            require(state.balances[sig.account] == assertion.expected, "assert failed");
+        } else {
+            revert UnknownTag();
+        }
+    }
+
+    function _applyMemory(uint8 tag, bytes memory data, Signature memory sig) internal {
+        if (tag == INITIALIZE) {
+            InitializeMutation memory init = abi.decode(data, (InitializeMutation));
+            bytes32 expected = keccak256(init.rootPublicKey);
+            if (sig.account != expected) revert InvalidAccount();
+            if (state.accounts[expected].keys.length != 0) revert AlreadyInitialized();
+            state.accounts[expected].keys.push(Key(init.rootKeyType, init.rootPublicKey));
+        } else if (tag == AUTHORIZE) {
+            AuthorizeMutation memory auth = abi.decode(data, (AuthorizeMutation));
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    AUTHORIZE_TYPEHASH, auth.account, auth.keyId, auth.keyType, keccak256(auth.publicKey), auth.nonce
+                )
+            );
+            _verifySigMemory(structHash, auth.nonce, sig);
+            state.accounts[sig.account].keys.push(Key(auth.keyType, auth.publicKey));
+        } else if (tag == CREDIT) {
+            CreditMutation memory credit = abi.decode(data, (CreditMutation));
+            bytes32 structHash =
+                keccak256(abi.encode(CREDIT_TYPEHASH, credit.account, credit.keyId, credit.amount, credit.nonce));
+            _verifySigMemory(structHash, credit.nonce, sig);
+            state.balances[sig.account] += credit.amount;
+        } else if (tag == DEBIT) {
+            (DebitMutation memory debit, DebitResolution memory resolution) =
+                abi.decode(data, (DebitMutation, DebitResolution));
+            bytes32 structHash =
+                keccak256(abi.encode(DEBIT_TYPEHASH, debit.account, debit.keyId, debit.amount, debit.nonce));
+            _verifySigMemory(structHash, debit.nonce, sig);
+            require(state.balances[sig.account] == resolution.newBalance + debit.amount, "debit: stale resolution");
+            state.balances[sig.account] = resolution.newBalance;
+        } else if (tag == ASSERT) {
+            AssertMutation memory assertion = abi.decode(data, (AssertMutation));
+            bytes32 structHash = keccak256(
+                abi.encode(ASSERT_TYPEHASH, assertion.account, assertion.keyId, assertion.expected, assertion.nonce)
+            );
+            _verifySigMemory(structHash, assertion.nonce, sig);
             require(state.balances[sig.account] == assertion.expected, "assert failed");
         } else {
             revert UnknownTag();

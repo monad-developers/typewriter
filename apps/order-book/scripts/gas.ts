@@ -222,7 +222,7 @@ async function estimate(bundle: BundleArg): Promise<bigint> {
   const data = encodeFunctionData({
     abi: EXCHANGE_ABI,
     functionName: "execute",
-    args: [[bundle]],
+    args: [[bundle], []],
   });
   const { accessList } = await publicClient.createAccessList({
     account: SCHEDULER,

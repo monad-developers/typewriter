@@ -44,10 +44,10 @@ export function encodeMutationCalldata(
   return AbiParameters.encode(calldataStructParams(params), [args]);
 }
 
-// ffca expects the contract's `execute` to take `Bundle[]` where
+// ffca expects the contract's `execute` to take `(Bundle[], uint256[])` where
 //   Bundle = { uint8[] mutations, bytes[] mutationData, Sig[] signatures }
-// and `Sig` is shaped by `FFCAConfig.signature.params` — a tuple in
-// declaration order with whatever fields the app's contract expects.
+// `Sig` is shaped by `FFCAConfig.signature.params`, and the second argument is
+// a list of force-inclusion queue indexes the scheduler wants to execute.
 function bundleParams(
   sigParams: readonly AbiParameters.Parameter[],
 ): readonly AbiParameters.Parameter[] {
@@ -79,8 +79,8 @@ export function encodeBundleCalldata(
 // Same Bundle shape as above, but as a structured value rather than bytes.
 // Use when the caller will pass it through viem's `encodeFunctionData` (which
 // needs unencoded values to slot into an ABI shape) — e.g. to wrap multiple
-// bundles into a single `execute(Bundle[])` call. Each signature is a
-// positional tuple matching `sigParams` declaration order.
+// bundles into a single `execute(Bundle[], uint256[])` call. Each signature is
+// a positional tuple matching `sigParams` declaration order.
 export function encodeBundleArg(
   mutations: ResolvedMutation[],
   sigParams: readonly AbiParameters.Parameter[],

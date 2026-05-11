@@ -13,7 +13,7 @@ contract ExecuteTest is Test, Exchange(address(1)) {
         bundles[0].signatures = new Signature[](0);
 
         vm.expectRevert(Unauthorized.selector);
-        this.execute(bundles);
+        this.execute(bundles, new uint256[](0));
     }
 
     function test_Execute_LengthMismatch() external {
@@ -24,6 +24,6 @@ contract ExecuteTest is Test, Exchange(address(1)) {
 
         vm.prank(address(1));
         vm.expectRevert(LengthMismatch.selector);
-        this.execute(bundles);
+        this.execute(bundles, new uint256[](0));
     }
 }
