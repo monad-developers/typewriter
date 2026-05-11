@@ -1,0 +1,632 @@
+import type { AbiParameterToPrimitiveType, AbiType } from "abitype";
+import { Hex } from "ox";
+import {
+  formatStoragePath,
+  type HexString,
+  type StoragePath,
+  type StoragePathSegment,
+} from "./storage-path";
+
+/**
+ * Storage item as defined in the JSON output of the Solidity compiler.
+ *
+ * @see https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html#json-output
+ */
+export type StorageItem = {
+  /** ID of the AST node of the state variable's declaration. */
+  astId: number;
+  /** Name of the contract including its path as prefix. */
+  contract: `${string}:${string}`;
+  /** Name of the state variable. */
+  label: string;
+  /** Offset in bytes within the storage slot according to the encoding. */
+  offset: number;
+  /** Storage slot where the state variable resides or starts. */
+  slot: `${number}`;
+  /** Identifier used as key to the variable's type information. */
+  type: string;
+};
+
+/**
+ * Storage type as defined in the JSON output of the Solidity compiler.
+ *
+ * @see https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html#json-output
+ */
+export type StorageType = {
+  /** How the data is encoded in storage. */
+  encoding: "inplace" | "dynamic_array" | "bytes" | "mapping";
+  /** Canonical type name. */
+  label: string;
+  /** Number of used bytes. If greater than 32, the value spans multiple slots. */
+  numberOfBytes: `${number}`;
+  /** Members for struct types. */
+  members?: readonly StorageItem[];
+  /** Base type for array types. */
+  base?: string;
+  /** Key type for mapping types. */
+  key?: string;
+  /** Value type for mapping types. */
+  value?: string;
+};
+
+/**
+ * Storage layout as defined in the JSON output of the Solidity compiler.
+ *
+ * @see https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html#json-output
+ */
+export type StorageLayout = {
+  storage: readonly StorageItem[];
+  types: Record<string, StorageType>;
+};
+
+/** Concrete slot location for a resolved `StoragePath`. */
+export type StorageSlot = {
+  path: StoragePath;
+  slot: HexString;
+  offset: number;
+  numberOfBytes: number;
+  type: string;
+};
+
+export type Pretty<T> = { [K in keyof T]: T[K] } & unknown;
+
+export type CustomTypeError<Message extends string> = [`Error: ${Message}`];
+
+export type ExtractVariableNames<Layout extends StorageLayout> =
+  Layout["storage"][number]["label"];
+
+export type StorageLayoutToVariableTypes<Layout extends StorageLayout> =
+  Pretty<{
+    [Name in ExtractVariableNames<Layout>]: StorageLayoutToVariableType<
+      Layout,
+      Name
+    >;
+  }>;
+
+export type StorageLayoutToVariableType<
+  Layout extends StorageLayout,
+  Name extends ExtractVariableNames<Layout>,
+> = StorageTypeToPrimitiveType<
+  StorageTypeForItem<
+    Layout,
+    Extract<Layout["storage"][number], { label: Name }>
+  >,
+  Layout
+>;
+
+export type StaticStoragePath<Layout extends StorageLayout> =
+  StaticStoragePathForItems<Layout>;
+
+export type StoragePathToPrimitiveType<
+  Layout extends StorageLayout,
+  Path extends string | StoragePath,
+> = Path extends string
+  ? StoragePathStringToPrimitiveType<Layout, Path>
+  : Path extends {
+        root: infer Root extends ExtractVariableNames<Layout>;
+        segments: infer Segments;
+      }
+    ? Segments extends readonly []
+      ? StorageLayoutToVariableType<Layout, Root>
+      : StoragePathSegmentsToPrimitiveType<
+          Layout,
+          StorageTypeForItem<
+            Layout,
+            Extract<Layout["storage"][number], { label: Root }>
+          >,
+          Extract<Segments, readonly StoragePathSegment[]>
+        >
+    : CustomTypeError<"StoragePath root was not found in storage layout.">;
+
+export type ExtractMappingVariableNames<Layout extends StorageLayout> = Extract<
+  Layout["storage"][number],
+  { type: MappingTypeIds<Layout> }
+>["label"];
+
+export type ExtractMappingType<
+  Layout extends StorageLayout,
+  Name extends ExtractMappingVariableNames<Layout>,
+  KeyOrValue extends "key" | "value",
+> = StorageTypeToPrimitiveType<
+  StorageTypeForId<
+    Layout,
+    Extract<
+      StorageTypeForItem<
+        Layout,
+        Extract<Layout["storage"][number], { label: Name }>
+      >[KeyOrValue],
+      string
+    >
+  >,
+  Layout
+>;
+
+export type IsVariableSingleSlot<
+  Layout extends StorageLayout,
+  Name extends ExtractVariableNames<Layout>,
+> = IsStorageTypeSingleSlot<
+  StorageTypeForItem<
+    Layout,
+    Extract<Layout["storage"][number], { label: Name }>
+  >
+>;
+
+export function resolveStoragePath(
+  layout: StorageLayout,
+  path: StoragePath,
+): StorageSlot[] {
+  const item = findStorageItem(layout, path.root);
+  return resolveStoragePathFromItem(
+    layout,
+    item,
+    0n,
+    { root: path.root, segments: [] },
+    [...path.segments],
+  );
+}
+
+export function collectStaticStoragePaths(
+  layout: StorageLayout,
+): StoragePath[] {
+  const paths: StoragePath[] = [];
+  for (const item of layout.storage) {
+    paths.push(
+      ...collectStaticLeafPaths(layout, item, {
+        root: item.label,
+        segments: [],
+      }),
+    );
+  }
+  return paths;
+}
+
+export function storagePathEndsAtValue(
+  layout: StorageLayout,
+  path: StoragePath,
+): boolean {
+  const type = resolveStoragePathType(layout, path);
+  return (
+    isStructType(type) === false &&
+    type.encoding !== "mapping" &&
+    type.encoding !== "dynamic_array" &&
+    type.base === undefined
+  );
+}
+
+function resolveStoragePathFromItem(
+  layout: StorageLayout,
+  item: StorageItem,
+  baseSlot: bigint,
+  path: StoragePath,
+  segments: StoragePathSegment[],
+): StorageSlot[] {
+  const type = findStorageType(layout, item.type);
+  const absoluteSlot = baseSlot + BigInt(item.slot);
+
+  if (segments.length === 0) {
+    if (isValueType(type)) {
+      return [
+        {
+          path,
+          slot: Hex.fromNumber(absoluteSlot, { size: 32 }),
+          offset: item.offset,
+          numberOfBytes: Number(type.numberOfBytes),
+          type: type.label,
+        },
+      ];
+    }
+    if (isStructType(type)) {
+      return expandStructSlots(layout, type, absoluteSlot, path, true);
+    }
+    throw new Error(
+      `unsupported storage path type '${type.label}' for ${formatStoragePath(path)}`,
+    );
+  }
+
+  const [segment, ...rest] = segments;
+  if (segment === undefined) {
+    throw new Error(`invalid storage path: ${formatStoragePath(path)}`);
+  }
+  if (segment.kind !== "field") {
+    throw new Error(
+      `subscript storage paths are not supported yet: ${formatStoragePath({
+        root: path.root,
+        segments: [...path.segments, segment],
+      })}`,
+    );
+  }
+  if (isStructType(type) === false) {
+    throw new Error(
+      `storage path field '${segment.name}' requires a struct: ${formatStoragePath(path)}`,
+    );
+  }
+
+  const member = type.members.find(
+    (candidate) => candidate.label === segment.name,
+  );
+  if (member === undefined) {
+    throw new Error(
+      `struct field not found: ${formatStoragePath(path)}.${segment.name}`,
+    );
+  }
+  return resolveStoragePathFromItem(
+    layout,
+    member,
+    absoluteSlot,
+    { root: path.root, segments: [...path.segments, segment] },
+    rest,
+  );
+}
+
+function collectStaticLeafPaths(
+  layout: StorageLayout,
+  item: StorageItem,
+  path: StoragePath,
+): StoragePath[] {
+  const type = findStorageType(layout, item.type);
+  if (isValueType(type)) {
+    return [path];
+  }
+  if (isStructType(type) === false) {
+    return [];
+  }
+
+  const paths: StoragePath[] = [];
+  for (const member of type.members) {
+    paths.push(
+      ...collectStaticLeafPaths(layout, member, {
+        root: path.root,
+        segments: [...path.segments, { kind: "field", name: member.label }],
+      }),
+    );
+  }
+  return paths;
+}
+
+function expandStructSlots(
+  layout: StorageLayout,
+  type: StorageType & { members: readonly StorageItem[] },
+  baseSlot: bigint,
+  path: StoragePath,
+  strict: boolean,
+): StorageSlot[] {
+  const slots: StorageSlot[] = [];
+  for (const member of type.members) {
+    const memberType = findStorageType(layout, member.type);
+    const memberPath: StoragePath = {
+      root: path.root,
+      segments: [...path.segments, { kind: "field", name: member.label }],
+    };
+    const memberSlot = baseSlot + BigInt(member.slot);
+    if (isValueType(memberType)) {
+      slots.push({
+        path: memberPath,
+        slot: Hex.fromNumber(memberSlot, { size: 32 }),
+        offset: member.offset,
+        numberOfBytes: Number(memberType.numberOfBytes),
+        type: memberType.label,
+      });
+      continue;
+    }
+    if (isStructType(memberType)) {
+      slots.push(
+        ...expandStructSlots(
+          layout,
+          memberType,
+          memberSlot,
+          memberPath,
+          strict,
+        ),
+      );
+      continue;
+    }
+    if (strict) {
+      throw new Error(
+        `unsupported storage path type '${memberType.label}' for ${formatStoragePath(memberPath)}`,
+      );
+    }
+  }
+  return slots;
+}
+
+function resolveStoragePathType(
+  layout: StorageLayout,
+  path: StoragePath,
+): StorageType {
+  let type = findStorageType(layout, findStorageItem(layout, path.root).type);
+
+  for (const segment of path.segments) {
+    if (segment.kind === "field") {
+      if (isStructType(type) === false) {
+        throw new Error(
+          `storage path field '${segment.name}' requires a struct: ${formatStoragePath(path)}`,
+        );
+      }
+      const member = type.members.find(
+        (candidate) => candidate.label === segment.name,
+      );
+      if (member === undefined) {
+        throw new Error(`struct field not found: ${segment.name}`);
+      }
+      type = findStorageType(layout, member.type);
+      continue;
+    }
+
+    if (type.encoding === "mapping") {
+      if (type.value === undefined) {
+        throw new Error(`mapping type '${type.label}' is missing value type`);
+      }
+      type = findStorageType(layout, type.value);
+      continue;
+    }
+    if (type.encoding === "dynamic_array" || type.base !== undefined) {
+      if (type.base === undefined) {
+        throw new Error(`array type '${type.label}' is missing base type`);
+      }
+      type = findStorageType(layout, type.base);
+      continue;
+    }
+    throw new Error(
+      `subscript storage paths are not supported yet: ${formatStoragePath(path)}`,
+    );
+  }
+
+  return type;
+}
+
+function findStorageItem(layout: StorageLayout, label: string): StorageItem {
+  const item = layout.storage.find((candidate) => candidate.label === label);
+  if (item === undefined) {
+    throw new Error(`storage variable not found: ${label}`);
+  }
+  return item;
+}
+
+function findStorageType(layout: StorageLayout, typeId: string): StorageType {
+  const type = layout.types[typeId];
+  if (type === undefined) {
+    throw new Error(`storage type not found: ${typeId}`);
+  }
+  return type;
+}
+
+function isValueType(type: StorageType): boolean {
+  if (type.encoding !== "inplace" || type.members !== undefined) {
+    return false;
+  }
+  return (
+    /^u?int[0-9]*$/.test(type.label) ||
+    type.label === "address" ||
+    type.label === "bool" ||
+    /^bytes([1-9]|[12][0-9]|3[0-2])$/.test(type.label) ||
+    type.label.startsWith("enum ")
+  );
+}
+
+function isStructType(
+  type: StorageType,
+): type is StorageType & { members: readonly StorageItem[] } {
+  return type.encoding === "inplace" && type.members !== undefined;
+}
+
+type StoragePathStringToPrimitiveType<
+  Layout extends StorageLayout,
+  Path extends string,
+> = Path extends `${string}[${string}]${string}`
+  ? CustomTypeError<"Subscript storage path string typing is not implemented yet.">
+  : Path extends `${infer Root}.${infer Rest}`
+    ? Root extends ExtractVariableNames<Layout>
+      ? StoragePathTailToPrimitiveType<
+          Layout,
+          StorageTypeForItem<
+            Layout,
+            Extract<Layout["storage"][number], { label: Root }>
+          >,
+          Rest
+        >
+      : CustomTypeError<"Storage path root was not found in storage layout.">
+    : Path extends ExtractVariableNames<Layout>
+      ? StorageLayoutToVariableType<Layout, Path>
+      : CustomTypeError<"Storage path root was not found in storage layout.">;
+
+type StoragePathTailToPrimitiveType<
+  Layout extends StorageLayout,
+  Type extends StorageType,
+  Tail extends string,
+> = Type extends { members: readonly StorageItem[] }
+  ? Tail extends `${infer Field}.${infer Rest}`
+    ? StoragePathTailToPrimitiveType<
+        Layout,
+        StorageTypeForStructField<Layout, Type["members"], Field>,
+        Rest
+      >
+    : StorageTypeToPrimitiveType<
+        StorageTypeForStructField<Layout, Type["members"], Tail>,
+        Layout
+      >
+  : CustomTypeError<"Storage path field requires a struct.">;
+
+type StoragePathSegmentsToPrimitiveType<
+  Layout extends StorageLayout,
+  Type extends StorageType,
+  Segments extends readonly StoragePathSegment[],
+> = Segments extends readonly [
+  infer Segment extends StoragePathSegment,
+  ...infer Rest extends StoragePathSegment[],
+]
+  ? Segment extends { kind: "field"; name: infer Field extends string }
+    ? Type extends { members: readonly StorageItem[] }
+      ? StoragePathSegmentsToPrimitiveType<
+          Layout,
+          StorageTypeForStructField<Layout, Type["members"], Field>,
+          Rest
+        >
+      : CustomTypeError<"Storage path field requires a struct.">
+    : CustomTypeError<"Subscript StoragePath typing is not implemented yet.">
+  : StorageTypeToPrimitiveType<Type, Layout>;
+
+type StaticStoragePathForItems<
+  Layout extends StorageLayout,
+  Item extends StorageItem = Layout["storage"][number],
+> = Item extends StorageItem
+  ? StaticStoragePathForItem<
+      Layout,
+      Item,
+      { root: Item["label"]; segments: readonly [] }
+    >
+  : never;
+
+type StaticStoragePathForItem<
+  Layout extends StorageLayout,
+  Item extends StorageItem,
+  Path extends StoragePath,
+  Type extends StorageType = StorageTypeForItem<Layout, Item>,
+> = Type extends { members: readonly StorageItem[] }
+  ? StaticStoragePathForMembers<Layout, Type["members"], Path>
+  : Type["encoding"] extends "inplace"
+    ? Type["label"] extends AbiType | `enum ${string}`
+      ? Path
+      : never
+    : never;
+
+type StaticStoragePathForMembers<
+  Layout extends StorageLayout,
+  Members extends readonly StorageItem[],
+  Path extends StoragePath,
+  Member extends StorageItem = Members[number],
+> = Member extends StorageItem
+  ? StaticStoragePathForItem<
+      Layout,
+      Member,
+      AppendStructFieldPath<Path, Member["label"]>
+    >
+  : never;
+
+type AppendStructFieldPath<
+  Path extends StoragePath,
+  Field extends string,
+> = Path extends {
+  root: infer Root extends string;
+  segments: infer Segments extends readonly StoragePathSegment[];
+}
+  ? {
+      root: Root;
+      segments: readonly [...Segments, { kind: "field"; name: Field }];
+    }
+  : never;
+
+type StorageTypeForStructField<
+  Layout extends StorageLayout,
+  Members extends readonly StorageItem[],
+  Field extends string,
+  Member extends StorageItem = Extract<Members[number], { label: Field }>,
+> = [Member] extends [never] ? never : StorageTypeForItem<Layout, Member>;
+
+type StorageTypeForItem<
+  Layout extends StorageLayout,
+  Item extends StorageItem,
+> = StorageTypeForId<Layout, Item["type"]>;
+
+type StorageTypeForId<
+  Layout extends StorageLayout,
+  TypeId extends string,
+> = TypeId extends keyof Layout["types"] ? Layout["types"][TypeId] : never;
+
+type StorageTypeToPrimitiveType<
+  Type extends StorageType,
+  Layout extends StorageLayout,
+> = Type["encoding"] extends "mapping"
+  ? CustomTypeError<`Unsupported type '${Type["label"]}'.`>
+  : Type extends { members: readonly StorageItem[] }
+    ? Pretty<StorageMembersToObject<Layout, Type["members"]>>
+    : Type["label"] extends `enum ${string}`
+      ? number
+      : Type["label"] extends AbiType
+        ? AbiParameterToPrimitiveType<{ type: Type["label"] }>
+        : Type["encoding"] extends "dynamic_array"
+          ? Type extends { base: infer Base extends string }
+            ? readonly StorageTypeToPrimitiveType<
+                StorageTypeForId<Layout, Base>,
+                Layout
+              >[]
+            : CustomTypeError<`Array type '${Type["label"]}' is missing base type.`>
+          : Type extends { base: infer Base extends string }
+            ? Type["label"] extends `${string}[${infer Length extends number}]`
+              ? FixedArray<
+                  StorageTypeToPrimitiveType<
+                    StorageTypeForId<Layout, Base>,
+                    Layout
+                  >,
+                  Length
+                >
+              : SolidityLabelToPrimitiveType<Type["label"]>
+            : Type["label"] extends `${infer Element}[${infer Length extends number}]`
+              ? FixedArray<SolidityLabelToPrimitiveType<Element>, Length>
+              : SolidityLabelToPrimitiveType<Type["label"]>;
+
+type StorageMembersToObject<
+  Layout extends StorageLayout,
+  Members extends readonly StorageItem[],
+> = {
+  [Member in Members[number] as Member["label"]]: StorageTypeToPrimitiveType<
+    StorageTypeForItem<Layout, Member>,
+    Layout
+  >;
+};
+
+type SolidityLabelToPrimitiveType<Label extends string> = Label extends AbiType
+  ? AbiParameterToPrimitiveType<{ type: Label }>
+  : Label extends `enum ${string}`
+    ? number
+    : CustomTypeError<`Unsupported type '${Label}'.`>;
+
+type MappingTypeIds<Layout extends StorageLayout> = {
+  [TypeId in keyof Layout["types"]]: Layout["types"][TypeId]["encoding"] extends "mapping"
+    ? TypeId
+    : never;
+}[keyof Layout["types"]];
+
+type IsStorageTypeSingleSlot<Type extends StorageType> =
+  Type["numberOfBytes"] extends SingleSlotByteCount ? true : false;
+
+type SingleSlotByteCount =
+  | "1"
+  | "2"
+  | "3"
+  | "4"
+  | "5"
+  | "6"
+  | "7"
+  | "8"
+  | "9"
+  | "10"
+  | "11"
+  | "12"
+  | "13"
+  | "14"
+  | "15"
+  | "16"
+  | "17"
+  | "18"
+  | "19"
+  | "20"
+  | "21"
+  | "22"
+  | "23"
+  | "24"
+  | "25"
+  | "26"
+  | "27"
+  | "28"
+  | "29"
+  | "30"
+  | "31"
+  | "32";
+
+type FixedArray<
+  Element,
+  Length extends number,
+  Acc extends readonly Element[] = [],
+> = Acc["length"] extends Length
+  ? Acc
+  : FixedArray<Element, Length, readonly [...Acc, Element]>;
