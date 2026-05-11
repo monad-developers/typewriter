@@ -55,7 +55,6 @@ Static finite paths can be generated from layout on demand. Mapping paths and ne
 - `getStoragePath(layout, slots, { knownPaths })` identifies which known paths were touched by slot updates.
 - `decodeStorage(layout, path, storage)` decodes a path from raw account storage.
 - `encodeStorage(layout, path, value, storage?)` encodes a path value into raw slot writes. Existing storage is required for packed values so neighboring bytes are preserved.
-- `getStaticStoragePaths(layout)` enumerates finite paths knowable from layout alone. This is primarily a support utility for `getStoragePath`.
 
 Lower-level value encode/decode helpers are implementation details for now. Keep the public API storage-oriented so callers do not have to reason directly about masks, byte offsets, or two's-complement encoding.
 

@@ -4,7 +4,6 @@ import type {
   ExtractMappingVariableNames,
   ExtractVariableNames,
   IsVariableSingleSlot,
-  StaticStoragePath,
   StorageLayout,
   StorageLayoutToVariableType,
   StorageLayoutToVariableTypes,
@@ -177,26 +176,12 @@ test("storage layout extraction helpers preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
   type MappingNames = ExtractMappingVariableNames<typeof layout>;
   type MappingKey = ExtractMappingType<typeof layout, "balances", "key">;
-  type Path = StaticStoragePath<typeof layout>;
 
   expectTypeOf<Names>().toEqualTypeOf<
     "supply" | "flags" | "owner" | "metadata" | "numbers" | "balances"
   >();
   expectTypeOf<MappingNames>().toEqualTypeOf<"balances">();
   expectTypeOf<MappingKey>().toEqualTypeOf<`0x${string}`>();
-  expectTypeOf<Path>().toEqualTypeOf<
-    | { root: "supply"; segments: readonly [] }
-    | { root: "flags"; segments: readonly [] }
-    | { root: "owner"; segments: readonly [] }
-    | {
-        root: "metadata";
-        segments: readonly [{ kind: "field"; name: "lastUpdate" }];
-      }
-    | {
-        root: "metadata";
-        segments: readonly [{ kind: "field"; name: "paused" }];
-      }
-  >();
 });
 
 test("IsVariableSingleSlot follows storage layout byte counts", () => {

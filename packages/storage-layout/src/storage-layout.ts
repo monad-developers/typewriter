@@ -94,9 +94,6 @@ export type StorageLayoutToVariableType<
   Layout
 >;
 
-export type StaticStoragePath<Layout extends StorageLayout> =
-  StaticStoragePathForItems<Layout>;
-
 export type StoragePathToPrimitiveType<
   Layout extends StorageLayout,
   Path extends string | StoragePath,
@@ -163,21 +160,6 @@ export function resolveStoragePath(
     { root: path.root, segments: [] },
     [...path.segments],
   );
-}
-
-export function collectStaticStoragePaths(
-  layout: StorageLayout,
-): StoragePath[] {
-  const paths: StoragePath[] = [];
-  for (const item of layout.storage) {
-    paths.push(
-      ...collectStaticLeafPaths(layout, item, {
-        root: item.label,
-        segments: [],
-      }),
-    );
-  }
-  return paths;
 }
 
 export function storagePathEndsAtValue(
@@ -256,31 +238,6 @@ function resolveStoragePathFromItem(
     { root: path.root, segments: [...path.segments, segment] },
     rest,
   );
-}
-
-function collectStaticLeafPaths(
-  layout: StorageLayout,
-  item: StorageItem,
-  path: StoragePath,
-): StoragePath[] {
-  const type = findStorageType(layout, item.type);
-  if (isValueType(type)) {
-    return [path];
-  }
-  if (isStructType(type) === false) {
-    return [];
-  }
-
-  const paths: StoragePath[] = [];
-  for (const member of type.members) {
-    paths.push(
-      ...collectStaticLeafPaths(layout, member, {
-        root: path.root,
-        segments: [...path.segments, { kind: "field", name: member.label }],
-      }),
-    );
-  }
-  return paths;
 }
 
 function expandStructSlots(
@@ -464,56 +421,6 @@ type StoragePathSegmentsToPrimitiveType<
       : CustomTypeError<"Storage path field requires a struct.">
     : CustomTypeError<"Subscript StoragePath typing is not implemented yet.">
   : StorageTypeToPrimitiveType<Type, Layout>;
-
-type StaticStoragePathForItems<
-  Layout extends StorageLayout,
-  Item extends StorageItem = Layout["storage"][number],
-> = Item extends StorageItem
-  ? StaticStoragePathForItem<
-      Layout,
-      Item,
-      { root: Item["label"]; segments: readonly [] }
-    >
-  : never;
-
-type StaticStoragePathForItem<
-  Layout extends StorageLayout,
-  Item extends StorageItem,
-  Path extends StoragePath,
-  Type extends StorageType = StorageTypeForItem<Layout, Item>,
-> = Type extends { members: readonly StorageItem[] }
-  ? StaticStoragePathForMembers<Layout, Type["members"], Path>
-  : Type["encoding"] extends "inplace"
-    ? Type["label"] extends AbiType | `enum ${string}`
-      ? Path
-      : never
-    : never;
-
-type StaticStoragePathForMembers<
-  Layout extends StorageLayout,
-  Members extends readonly StorageItem[],
-  Path extends StoragePath,
-  Member extends StorageItem = Members[number],
-> = Member extends StorageItem
-  ? StaticStoragePathForItem<
-      Layout,
-      Member,
-      AppendStructFieldPath<Path, Member["label"]>
-    >
-  : never;
-
-type AppendStructFieldPath<
-  Path extends StoragePath,
-  Field extends string,
-> = Path extends {
-  root: infer Root extends string;
-  segments: infer Segments extends readonly StoragePathSegment[];
-}
-  ? {
-      root: Root;
-      segments: readonly [...Segments, { kind: "field"; name: Field }];
-    }
-  : never;
 
 type StorageTypeForStructField<
   Layout extends StorageLayout,

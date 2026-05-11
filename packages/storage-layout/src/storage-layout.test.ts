@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { layout, OWNER } from "../test/utils";
 import {
   formatStoragePath,
-  getStaticStoragePaths,
   getStorageSlot,
   isStoragePathEnd,
   type StorageLayout,
@@ -113,13 +112,6 @@ test("getStorageSlot rejects whole structs with dynamic fields", () => {
     },
   } as const satisfies StorageLayout;
 
-  expect(
-    getStaticStoragePaths(dynamicStructLayout).map(formatStoragePath),
-  ).toMatchInlineSnapshot(`
-    [
-      "holder.value",
-    ]
-  `);
   expect(getStorageSlot(dynamicStructLayout, "holder.value")).toHaveLength(1);
   expect(() => getStorageSlot(dynamicStructLayout, "holder")).toThrow(
     "unsupported storage path type 'mapping(address => uint256)' for holder.balances",
@@ -133,24 +125,6 @@ test("isStoragePathEnd identifies terminal paths", () => {
   expect(isStoragePathEnd(layout, "metadata.inner")).toBe(false);
   expect(isStoragePathEnd(layout, "balances")).toBe(false);
   expect(isStoragePathEnd(layout, `${"balances"}[${OWNER}]`)).toBe(true);
-});
-
-test("getStaticStoragePaths omits mappings", () => {
-  expect(
-    getStaticStoragePaths(layout).map(formatStoragePath),
-  ).toMatchInlineSnapshot(`
-      [
-        "totalSupply",
-        "owner",
-        "paused",
-        "debt",
-        "salt",
-        "metadata.lastUpdate",
-        "metadata.active",
-        "metadata.admin",
-        "metadata.inner.count",
-      ]
-    `);
 });
 
 test("nested and dynamic paths fail explicitly until implemented", () => {

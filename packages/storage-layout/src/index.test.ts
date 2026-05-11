@@ -13,9 +13,17 @@ import {
   getStoragePath,
 } from "./index";
 
-test("getStoragePath maps changed slots to generated static paths", () => {
+test("getStoragePath returns no matches without known paths", () => {
   expect(
     getStoragePath(layout, ["0x1"]).map(formatStoragePath),
+  ).toMatchInlineSnapshot(`[]`);
+});
+
+test("getStoragePath maps changed slots to known paths", () => {
+  expect(
+    getStoragePath(layout, ["0x1"], { knownPaths: ["owner", "paused"] }).map(
+      formatStoragePath,
+    ),
   ).toMatchInlineSnapshot(`
       [
         "owner",
@@ -38,7 +46,14 @@ test("getStoragePath accepts explicit known paths", () => {
 
 test("getStoragePath returns struct leaf paths", () => {
   expect(
-    getStoragePath(layout, ["0x4"]).map(formatStoragePath),
+    getStoragePath(layout, ["0x4"], {
+      knownPaths: [
+        "metadata.lastUpdate",
+        "metadata.active",
+        "metadata.admin",
+        "metadata.inner.count",
+      ],
+    }).map(formatStoragePath),
   ).toMatchInlineSnapshot(`
       [
         "metadata.lastUpdate",
