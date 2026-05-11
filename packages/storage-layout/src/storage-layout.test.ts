@@ -1,73 +1,25 @@
 import { expect, test } from "bun:test";
-import { layout, OWNER } from "../test/utils";
-import {
-  formatStoragePath,
-  getStorageSlot,
-  isStoragePathEnd,
-  type StorageLayout,
-} from "./index";
+import { layout } from "../test/utils";
+import { getStorageSlot, isStoragePathEnd, type StorageLayout } from "./index";
 
 test("getStorageSlot resolves top-level value types", () => {
-  expect(getStorageSlot(layout, "owner")).toMatchInlineSnapshot(`
-    [
-      {
-        "numberOfBytes": 20,
-        "offset": 0,
-        "path": {
-          "root": "owner",
-          "segments": [],
-        },
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
-        "type": "address",
-      },
-    ]
-  `);
-  expect(getStorageSlot(layout, "paused")).toMatchInlineSnapshot(`
-    [
-      {
-        "numberOfBytes": 1,
-        "offset": 20,
-        "path": {
-          "root": "paused",
-          "segments": [],
-        },
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
-        "type": "bool",
-      },
-    ]
-  `);
+  expect(getStorageSlot(layout, "owner")).toBe(
+    "0x0000000000000000000000000000000000000000000000000000000000000001",
+  );
+  expect(getStorageSlot(layout, "paused")).toBe(
+    "0x0000000000000000000000000000000000000000000000000000000000000001",
+  );
 });
 
 test("getStorageSlot resolves struct fields and whole structs", () => {
-  expect(getStorageSlot(layout, "metadata.lastUpdate")).toMatchInlineSnapshot(`
-    [
-      {
-        "numberOfBytes": 8,
-        "offset": 0,
-        "path": {
-          "root": "metadata",
-          "segments": [
-            {
-              "kind": "field",
-              "name": "lastUpdate",
-            },
-          ],
-        },
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
-        "type": "uint64",
-      },
-    ]
-  `);
-  expect(
-    getStorageSlot(layout, "metadata").map(({ path }) =>
-      formatStoragePath(path),
-    ),
-  ).toMatchInlineSnapshot(`
+  expect(getStorageSlot(layout, "metadata.lastUpdate")).toBe(
+    "0x0000000000000000000000000000000000000000000000000000000000000004",
+  );
+  expect(getStorageSlot(layout, "metadata")).toMatchInlineSnapshot(`
       [
-        "metadata.lastUpdate",
-        "metadata.active",
-        "metadata.admin",
-        "metadata.inner.count",
+        "0x0000000000000000000000000000000000000000000000000000000000000004",
+        "0x0000000000000000000000000000000000000000000000000000000000000005",
+        "0x0000000000000000000000000000000000000000000000000000000000000006",
       ]
     `);
 });
@@ -112,9 +64,11 @@ test("getStorageSlot rejects whole structs with dynamic fields", () => {
     },
   } as const satisfies StorageLayout;
 
-  expect(getStorageSlot(dynamicStructLayout, "holder.value")).toHaveLength(1);
+  expect(getStorageSlot(dynamicStructLayout, "holder.value")).toBe(
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+  );
   expect(() => getStorageSlot(dynamicStructLayout, "holder")).toThrow(
-    "unsupported storage path type 'mapping(address => uint256)' for holder.balances",
+    "cannot infer storage path for mapping 'holder.balances' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone",
   );
 });
 
@@ -123,8 +77,9 @@ test("isStoragePathEnd identifies terminal paths", () => {
   expect(isStoragePathEnd(layout, "metadata")).toBe(false);
   expect(isStoragePathEnd(layout, "metadata.lastUpdate")).toBe(true);
   expect(isStoragePathEnd(layout, "metadata.inner")).toBe(false);
-  expect(isStoragePathEnd(layout, "balances")).toBe(false);
-  expect(isStoragePathEnd(layout, `${"balances"}[${OWNER}]`)).toBe(true);
+  expect(() => isStoragePathEnd(layout, "balances")).toThrow(
+    "unsupported storage path type 'mapping(address => uint256)' for balances",
+  );
 });
 
 test("nested and dynamic paths fail explicitly until implemented", () => {

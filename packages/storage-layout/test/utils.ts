@@ -1,13 +1,14 @@
-import type { HexString, StorageLayout } from "../src/index";
+import type { Hex } from "ox";
+import type { StorageLayout } from "../src/index";
 
 export const OWNER = "0x1111111111111111111111111111111111111234" as const;
 export const PACKED_OWNER_PAUSED =
-  `0x${"00".repeat(11)}01${OWNER.slice(2)}` as HexString;
+  `0x${"00".repeat(11)}01${OWNER.slice(2)}` as Hex.Hex;
 export const PACKED_OWNER_UNPAUSED =
-  `0x${"00".repeat(12)}${OWNER.slice(2)}` as HexString;
-export const SALT = `0x${"ff".repeat(32)}` as HexString;
+  `0x${"00".repeat(12)}${OWNER.slice(2)}` as Hex.Hex;
+export const SALT = `0x${"ff".repeat(32)}` as Hex.Hex;
 export const METADATA_PACKED =
-  `0x${"00".repeat(23)}01${"00".repeat(7)}2a` as HexString;
+  `0x${"00".repeat(23)}01${"00".repeat(7)}2a` as Hex.Hex;
 
 export const layout = {
   storage: [

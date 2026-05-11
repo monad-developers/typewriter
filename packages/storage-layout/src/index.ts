@@ -1,15 +1,16 @@
 import { Hex } from "ox";
 import {
+  type IsSingleSlot,
+  type ResolvedStorageItem,
   resolveStoragePath,
+  type StorageItem,
   type StorageLayout,
   type StoragePathToPrimitiveType,
-  type StorageSlot,
   storagePathEndsAtValue,
 } from "./storage-layout";
 import {
   formatStoragePath,
   HEX_STRING_PATTERN,
-  type HexString,
   normalizePath,
   pathToString,
   type StoragePath,
@@ -20,42 +21,38 @@ export type {
   ExtractMappingType,
   ExtractMappingVariableNames,
   ExtractVariableNames,
+  IsSingleSlot,
   IsVariableSingleSlot,
   Pretty,
+  ResolvedStorageItem,
   StorageItem,
   StorageLayout,
   StorageLayoutToVariableType,
   StorageLayoutToVariableTypes,
   StoragePathToPrimitiveType,
-  StorageSlot,
   StorageType,
 } from "./storage-layout";
 export type {
-  HexString,
   StoragePath,
   StoragePathSegment,
   StoragePathSubscript,
 } from "./storage-path";
 export { formatStoragePath, parseStoragePath } from "./storage-path";
 
-export type StorageSlotChange =
-  | HexString
-  | { slot: HexString; value?: HexString };
-
-export type StorageVariableUpdate = StorageSlot & {
-  value?: HexString;
+export type StorageVariableUpdate = ResolvedStorageItem & {
+  value?: Hex.Hex;
 };
 
 export type SlotWrite = {
-  slot: HexString;
-  value: HexString;
+  slot: Hex.Hex;
+  value: Hex.Hex;
 };
 
 /**
  * Key-value map of storage slots to their hex values.
  */
 export type AccountStorage = {
-  [slot: HexString]: HexString;
+  [slot: Hex.Hex]: Hex.Hex;
 };
 
 /**
@@ -64,11 +61,22 @@ export type AccountStorage = {
  * @param layout - Solidity compiler `storageLayout` output.
  * @param pathInput - Human-readable or structured storage path.
  */
-export function getStorageSlot(
-  layout: StorageLayout,
-  pathInput: string | StoragePath,
-): StorageSlot[] {
-  return resolveStoragePath(layout, normalizePath(pathInput));
+export function getStorageSlot<
+  Layout extends StorageLayout,
+  Path extends string | StoragePath,
+>(
+  layout: Layout,
+  pathInput: Path,
+): IsSingleSlot<Layout, Path> extends true ? Hex.Hex : Hex.Hex[] {
+  const slots = uniqueSlots(
+    resolveStoragePath(layout, normalizePath(pathInput)),
+  );
+  return (slots.length === 1 ? slots[0]! : slots) as IsSingleSlot<
+    Layout,
+    Path
+  > extends true
+    ? Hex.Hex
+    : Hex.Hex[];
 }
 
 /**
@@ -82,40 +90,42 @@ export function isStoragePathEnd(
 }
 
 /**
- * Match raw storage slot changes back to known Solidity storage paths.
+ * Match raw storage slots back to known Solidity storage paths.
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param changes - Changed slots, optionally with new values.
- * @param knownPaths - Universe of paths that may be matched.
+ * @param slot - Changed slot or slots.
  *
- * @dev Mappings are not reversible from a raw slot alone. Pass known keyed paths once mapping support is implemented.
+ * @dev Mappings are not reversible from a raw slot alone, so layouts containing mappings throw instead of silently omitting them.
  */
 export function getStoragePath(
   layout: StorageLayout,
-  changes: readonly StorageSlotChange[],
-  options: { knownPaths?: readonly (string | StoragePath)[] } = {},
+  slot: Hex.Hex | Hex.Hex[],
 ): StoragePath[] {
-  const knownPaths = options.knownPaths ?? [];
+  const knownSlots: ResolvedStorageItem[] = [];
+  for (const item of layout.storage) {
+    assertReversibleStorageItem(layout, item, {
+      root: item.label,
+      segments: [],
+    });
+    knownSlots.push(
+      ...resolveStoragePath(layout, { root: item.label, segments: [] }),
+    );
+  }
   const matches: StoragePath[] = [];
   const seen = new Set<string>();
 
-  for (const change of changes) {
-    const slot = normalizeSlot(
-      typeof change === "string" ? change : change.slot,
-    );
-    for (const knownPath of knownPaths) {
-      const knownSlots = getStorageSlot(layout, knownPath);
+  for (const changedSlot of Array.isArray(slot) ? slot : [slot]) {
+    const normalizedSlot = normalizeSlot(changedSlot);
+    for (const knownItem of knownSlots) {
       if (
-        knownSlots.some(
-          (known) => known.slot.toLowerCase() === slot.toLowerCase(),
-        )
+        storageSlot(knownItem).toLowerCase() === normalizedSlot.toLowerCase()
       ) {
-        const path = normalizePath(knownPath);
-        const key = formatStoragePath(path);
-        if (!seen.has(key)) {
-          seen.add(key);
-          matches.push(path);
+        const key = formatStoragePath(knownItem.path);
+        if (seen.has(key)) {
+          continue;
         }
+        seen.add(key);
+        matches.push(knownItem.path);
       }
     }
   }
@@ -144,15 +154,16 @@ export function decodeStorage<
     );
   }
 
-  const [slot] = getStorageSlot(layout, path);
+  const [slot] = resolveStoragePath(layout, normalizePath(path));
   if (slot === undefined) {
     throw new Error(
       `storage path did not resolve to a slot: ${pathToString(path)}`,
     );
   }
-  const value = getSlotValue(storage, slot.slot);
+  const slotHex = storageSlot(slot);
+  const value = getSlotValue(storage, slotHex);
   if (value === undefined) {
-    throw new Error(`storage value not found for slot: ${slot.slot}`);
+    throw new Error(`storage value not found for slot: ${slotHex}`);
   }
   return decodeValue(slot, value) as StoragePathToPrimitiveType<Layout, Path>;
 }
@@ -180,13 +191,14 @@ export function encodeStorage<
     );
   }
 
-  const [slot] = getStorageSlot(layout, path);
+  const [slot] = resolveStoragePath(layout, normalizePath(path));
   if (slot === undefined) {
     throw new Error(
       `storage path did not resolve to a slot: ${pathToString(path)}`,
     );
   }
-  const existing = getSlotValue(storage, slot.slot);
+  const slotHex = storageSlot(slot);
+  const existing = getSlotValue(storage, slotHex);
   if (isPartialSlot(slot) && existing === undefined) {
     throw new Error(
       `existing storage value is required to encode packed path: ${formatStoragePath(slot.path)}`,
@@ -194,24 +206,76 @@ export function encodeStorage<
   }
   return [
     {
-      slot: slot.slot,
+      slot: slotHex,
       value: encodeValue(slot, value, existing),
     },
   ];
 }
 
-function normalizeSlot(slot: HexString): HexString {
+function uniqueSlots(slots: readonly ResolvedStorageItem[]): Hex.Hex[] {
+  const unique: Hex.Hex[] = [];
+  const seen = new Set<string>();
+  for (const resolved of slots) {
+    const slot = storageSlot(resolved);
+    const key = slot.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(slot);
+  }
+  return unique;
+}
+
+function assertReversibleStorageItem(
+  layout: StorageLayout,
+  item: StorageItem,
+  path: StoragePath,
+): void {
+  const type = layout.types[item.type];
+  if (type === undefined) {
+    throw new Error(`storage type not found: ${item.type}`);
+  }
+  if (type.encoding === "mapping") {
+    throw new Error(mappingPathError(path));
+  }
+  if (type.members === undefined) {
+    return;
+  }
+  for (const member of type.members) {
+    assertReversibleStorageItem(layout, member, {
+      root: path.root,
+      segments: [...path.segments, { kind: "field", name: member.label }],
+    });
+  }
+}
+
+function mappingPathError(path: StoragePath): string {
+  return `cannot infer storage path for mapping '${formatStoragePath(path)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`;
+}
+
+function normalizeSlot(slot: Hex.Hex): Hex.Hex {
   return Hex.fromNumber(BigInt(slot), { size: 32 });
 }
 
-function normalizeSlotValue(value: HexString): HexString {
+function normalizeSlotValue(value: Hex.Hex): Hex.Hex {
   return Hex.fromNumber(BigInt(value), { size: 32 });
+}
+
+function storageSlot(resolved: ResolvedStorageItem): Hex.Hex {
+  return Hex.fromNumber(resolved.baseSlot + BigInt(resolved.item.slot), {
+    size: 32,
+  });
+}
+
+function storageItemByteLength(resolved: ResolvedStorageItem): number {
+  return Number(resolved.type.numberOfBytes);
 }
 
 function getSlotValue(
   storage: AccountStorage,
-  requestedSlot: HexString,
-): HexString | undefined {
+  requestedSlot: Hex.Hex,
+): Hex.Hex | undefined {
   const normalized = normalizeSlot(requestedSlot);
   const direct = storage[normalized];
   if (direct !== undefined) {
@@ -220,52 +284,56 @@ function getSlotValue(
 
   for (const [slot, value] of Object.entries(storage)) {
     if (
-      normalizeSlot(slot as HexString).toLowerCase() ===
-      normalized.toLowerCase()
+      normalizeSlot(slot as Hex.Hex).toLowerCase() === normalized.toLowerCase()
     ) {
-      return normalizeSlotValue(value as HexString);
+      return normalizeSlotValue(value as Hex.Hex);
     }
   }
   return undefined;
 }
 
-function isPartialSlot(slot: StorageSlot): boolean {
-  return slot.offset !== 0 || slot.numberOfBytes !== 32;
+function isPartialSlot(resolved: ResolvedStorageItem): boolean {
+  return resolved.item.offset !== 0 || storageItemByteLength(resolved) !== 32;
 }
 
-function decodeValue(slot: StorageSlot, slotValue: HexString): unknown {
+function decodeValue(
+  resolved: ResolvedStorageItem,
+  slotValue: Hex.Hex,
+): unknown {
+  const numberOfBytes = storageItemByteLength(resolved);
   const value = extractField(
     BigInt(slotValue),
-    slot.offset,
-    slot.numberOfBytes,
+    resolved.item.offset,
+    numberOfBytes,
   );
-  const info = parseValueType(slot.type, slot.numberOfBytes);
+  const info = parseValueType(resolved.type.label, numberOfBytes);
   switch (info.kind) {
     case "uint":
-      return integerResult(value, slot.numberOfBytes);
+      return integerResult(value, numberOfBytes);
     case "int":
-      return integerResult(decodeSigned(value, info.bits), slot.numberOfBytes);
+      return integerResult(decodeSigned(value, info.bits), numberOfBytes);
     case "address":
       return Hex.fromNumber(value, { size: 20 });
     case "bool":
       return value !== 0n;
     case "bytes":
-      return Hex.fromNumber(value, { size: slot.numberOfBytes });
+      return Hex.fromNumber(value, { size: numberOfBytes });
     case "enum":
       return Number(value);
   }
 }
 
 function encodeValue(
-  slot: StorageSlot,
+  resolved: ResolvedStorageItem,
   value: unknown,
-  existingSlotValue: HexString | undefined,
-): HexString {
-  const info = parseValueType(slot.type, slot.numberOfBytes);
-  const encoded = encodeField(info, slot.numberOfBytes, value);
+  existingSlotValue: Hex.Hex | undefined,
+): Hex.Hex {
+  const numberOfBytes = storageItemByteLength(resolved);
+  const info = parseValueType(resolved.type.label, numberOfBytes);
+  const encoded = encodeField(info, numberOfBytes, value);
   const base = existingSlotValue === undefined ? 0n : BigInt(existingSlotValue);
-  const shift = BigInt(slot.offset * 8);
-  const mask = fieldMask(slot.numberOfBytes) << shift;
+  const shift = BigInt(resolved.item.offset * 8);
+  const mask = fieldMask(numberOfBytes) << shift;
   const next = (base & ~mask) | (encoded << shift);
   return Hex.fromNumber(next, { size: 32 });
 }

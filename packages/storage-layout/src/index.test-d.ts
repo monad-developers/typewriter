@@ -3,12 +3,14 @@ import type {
   ExtractMappingType,
   ExtractMappingVariableNames,
   ExtractVariableNames,
+  IsSingleSlot,
   IsVariableSingleSlot,
   StorageLayout,
   StorageLayoutToVariableType,
   StorageLayoutToVariableTypes,
   StoragePathToPrimitiveType,
 } from "./index";
+import { getStorageSlot } from "./index";
 
 const layout = {
   storage: [
@@ -126,6 +128,49 @@ const layout = {
   },
 } as const satisfies StorageLayout;
 
+const multiSlotLayout = {
+  storage: [
+    {
+      astId: 1,
+      contract: "src/Test.sol:Test",
+      label: "metadata",
+      offset: 0,
+      slot: "0",
+      type: "t_struct(Metadata)10_storage",
+    },
+  ],
+  types: {
+    "t_struct(Metadata)10_storage": {
+      encoding: "inplace",
+      label: "struct Test.Metadata",
+      members: [
+        {
+          astId: 2,
+          contract: "src/Test.sol:Test",
+          label: "first",
+          offset: 0,
+          slot: "0",
+          type: "t_uint256",
+        },
+        {
+          astId: 3,
+          contract: "src/Test.sol:Test",
+          label: "second",
+          offset: 0,
+          slot: "1",
+          type: "t_uint256",
+        },
+      ],
+      numberOfBytes: "64",
+    },
+    t_uint256: {
+      encoding: "inplace",
+      label: "uint256",
+      numberOfBytes: "32",
+    },
+  },
+} as const satisfies StorageLayout;
+
 test("StorageLayoutToVariableTypes maps top-level Solidity types", () => {
   type Variables = StorageLayoutToVariableTypes<typeof layout>;
 
@@ -191,4 +236,21 @@ test("IsVariableSingleSlot follows storage layout byte counts", () => {
   expectTypeOf<
     IsVariableSingleSlot<typeof layout, "metadata">
   >().toEqualTypeOf<true>();
+});
+
+test("getStorageSlot return type follows IsSingleSlot", () => {
+  const ownerSlot = getStorageSlot(layout, "owner");
+  const metadataSlot = getStorageSlot(layout, "metadata");
+  const multiSlotMetadata = getStorageSlot(multiSlotLayout, "metadata");
+
+  expectTypeOf<IsSingleSlot<typeof layout, "owner">>().toEqualTypeOf<true>();
+  expectTypeOf<
+    IsSingleSlot<typeof layout, "metadata.lastUpdate">
+  >().toEqualTypeOf<true>();
+  expectTypeOf<
+    IsSingleSlot<typeof multiSlotLayout, "metadata">
+  >().toEqualTypeOf<false>();
+  expectTypeOf(ownerSlot).toEqualTypeOf<`0x${string}`>();
+  expectTypeOf(metadataSlot).toEqualTypeOf<`0x${string}`>();
+  expectTypeOf(multiSlotMetadata).toEqualTypeOf<`0x${string}`[]>();
 });

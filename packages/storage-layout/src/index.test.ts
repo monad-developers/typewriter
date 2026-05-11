@@ -11,19 +11,23 @@ import {
   encodeStorage,
   formatStoragePath,
   getStoragePath,
+  type StorageLayout,
 } from "./index";
 
-test("getStoragePath returns no matches without known paths", () => {
+const reversibleLayout = {
+  ...layout,
+  storage: layout.storage.filter((item) => item.label !== "balances"),
+} satisfies StorageLayout;
+
+test("getStoragePath returns no matches for untouched slots", () => {
   expect(
-    getStoragePath(layout, ["0x1"]).map(formatStoragePath),
+    getStoragePath(reversibleLayout, ["0x123"]).map(formatStoragePath),
   ).toMatchInlineSnapshot(`[]`);
 });
 
-test("getStoragePath maps changed slots to known paths", () => {
+test("getStoragePath maps changed slots to storage paths", () => {
   expect(
-    getStoragePath(layout, ["0x1"], { knownPaths: ["owner", "paused"] }).map(
-      formatStoragePath,
-    ),
+    getStoragePath(reversibleLayout, "0x1").map(formatStoragePath),
   ).toMatchInlineSnapshot(`
       [
         "owner",
@@ -32,34 +36,21 @@ test("getStoragePath maps changed slots to known paths", () => {
     `);
 });
 
-test("getStoragePath accepts explicit known paths", () => {
-  expect(
-    getStoragePath(layout, ["0x1"], { knownPaths: ["paused"] }).map(
-      formatStoragePath,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      "paused",
-    ]
-  `);
-});
-
 test("getStoragePath returns struct leaf paths", () => {
   expect(
-    getStoragePath(layout, ["0x4"], {
-      knownPaths: [
-        "metadata.lastUpdate",
-        "metadata.active",
-        "metadata.admin",
-        "metadata.inner.count",
-      ],
-    }).map(formatStoragePath),
+    getStoragePath(reversibleLayout, ["0x4"]).map(formatStoragePath),
   ).toMatchInlineSnapshot(`
       [
         "metadata.lastUpdate",
         "metadata.active",
       ]
     `);
+});
+
+test("getStoragePath rejects mappings because keys cannot be reversed", () => {
+  expect(() => getStoragePath(layout, ["0x1"])).toThrow(
+    "cannot infer storage path for mapping 'balances' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone",
+  );
 });
 
 test("decodeStorage decodes value types from raw slots", () => {

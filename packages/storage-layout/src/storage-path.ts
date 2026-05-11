@@ -1,8 +1,5 @@
 import type { Hex } from "ox";
 
-/** Hex string with `0x` prefix. */
-export type HexString = Hex.Hex;
-
 /**
  * Structured representation of a Solidity storage variable or sub-value.
  *
@@ -35,7 +32,7 @@ export type StoragePathSegment =
 /** Human-entered bracket selector. Resolution decides whether this is an array index or mapping key. */
 export type StoragePathSubscript =
   | { kind: "number"; value: bigint }
-  | { kind: "hex"; value: HexString }
+  | { kind: "hex"; value: Hex.Hex }
   | { kind: "string"; value: string }
   | { kind: "bool"; value: boolean };
 
@@ -130,7 +127,7 @@ function parseSubscript(raw: string): StoragePathSubscript {
     throw new Error("storage path subscript cannot be empty");
   }
   if (HEX_STRING_PATTERN.test(raw)) {
-    return { kind: "hex", value: raw as HexString };
+    return { kind: "hex", value: raw as Hex.Hex };
   }
   if (DECIMAL.test(raw)) {
     return { kind: "number", value: BigInt(raw) };

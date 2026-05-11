@@ -51,8 +51,8 @@ Static finite paths can be generated from layout on demand. Mapping paths and ne
 
 - `parseStoragePath(path)` parses human-readable paths into `StoragePath`.
 - `formatStoragePath(path)` formats `StoragePath` back into human-readable form.
-- `getStorageSlot(layout, path)` computes slots for one concrete `StoragePath`.
-- `getStoragePath(layout, slots, { knownPaths })` identifies which known paths were touched by slot updates.
+- `getStorageSlot(layout, path)` computes storage slot hex values for one concrete `StoragePath`.
+- `getStoragePath(layout, slots)` identifies which reversible non-mapping paths were touched by slot updates. It errors for mappings because mapping keys cannot be recovered from raw slots.
 - `decodeStorage(layout, path, storage)` decodes a path from raw account storage.
 - `encodeStorage(layout, path, value, storage?)` encodes a path value into raw slot writes. Existing storage is required for packed values so neighboring bytes are preserved.
 
