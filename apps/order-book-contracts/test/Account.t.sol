@@ -63,7 +63,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(_bundles(mutations, data, sigs));
+        this.execute(_bundles(mutations, data, sigs), new uint256[](0));
     }
 
     function _bundles(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
@@ -129,7 +129,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidAccount.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_Initialize_AlreadyInitialized() external {
@@ -155,7 +155,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(AlreadyInitialized.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_Authorize() external {
@@ -247,7 +247,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_Revoke() external {
@@ -309,7 +309,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(KeyExpired.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_PermissionEnforcement() external {
@@ -333,7 +333,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 
     function test_Initialize_P256RootKey() external {
@@ -428,6 +428,6 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidSignature.selector);
-        this.execute(_bundles(muts, data, sigs));
+        this.execute(_bundles(muts, data, sigs), new uint256[](0));
     }
 }

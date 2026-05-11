@@ -117,10 +117,12 @@ contract Counter {
         }
     }
 
-    function enqueue(uint8 mutation, bytes calldata mutationData, Signature calldata sig) external {
+    function enqueue(uint8 mutation, bytes calldata mutationData, Signature calldata sig) external returns (uint256) {
+        uint256 index = queue.length;
         queue.push(
             QueuedMutation({mutation: mutation, mutationData: mutationData, sig: sig, enqueuedBlock: block.number})
         );
+        return index;
     }
 
     function forceExecute(uint256 index) external {
