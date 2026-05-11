@@ -47,6 +47,9 @@ export type AccountStorage = {
 /**
  * Compute storage slots for a concrete Solidity storage path.
  *
+ * Dynamic array roots resolve to their length slot. Indexed dynamic-array paths
+ * resolve to element slot(s).
+ *
  * @param layout - Solidity compiler `storageLayout` output.
  * @param pathInput - Human-readable or structured storage path.
  */
@@ -137,13 +140,23 @@ export function decodeStorage<
   path: Path,
   storage: AccountStorage,
 ): StoragePathToPrimitiveType<Layout, Path> {
-  if (!isStoragePathEnd(layout, path)) {
+  const normalizedPath = normalizePath(path);
+  const resolved = resolveStoragePath(layout, normalizedPath);
+  if (isDynamicArrayRoot(resolved, normalizedPath)) {
+    return decodeDynamicArray(
+      layout,
+      normalizedPath,
+      resolved[0]!,
+      storage,
+    ) as StoragePathToPrimitiveType<Layout, Path>;
+  }
+  if (!resolvedPathEndsAtValue(resolved, normalizedPath)) {
     throw new Error(
       `storage path does not point to a leaf value: ${pathToString(path)}`,
     );
   }
 
-  const [slot] = resolveStoragePath(layout, normalizePath(path));
+  const [slot] = resolved;
   if (slot === undefined) {
     throw new Error(
       `storage path did not resolve to a slot: ${pathToString(path)}`,
@@ -174,13 +187,23 @@ export function encodeStorage<
   value: StoragePathToPrimitiveType<Layout, Path>,
   storage: AccountStorage = {},
 ): SlotWrite[] {
-  if (!isStoragePathEnd(layout, path)) {
+  const normalizedPath = normalizePath(path);
+  const resolved = resolveStoragePath(layout, normalizedPath);
+  if (isDynamicArrayRoot(resolved, normalizedPath)) {
+    // TODO: Full dynamic-array encoding needs an explicit stale-slot policy for
+    // shrinking arrays. Solidity updates the length, but old element slots remain
+    // unless deleted, so callers may need opt-in clearing semantics.
+    throw new Error(
+      `encoding dynamic array roots is not implemented yet: ${pathToString(path)}`,
+    );
+  }
+  if (!resolvedPathEndsAtValue(resolved, normalizedPath)) {
     throw new Error(
       `storage path does not point to a leaf value: ${pathToString(path)}`,
     );
   }
 
-  const [slot] = resolveStoragePath(layout, normalizePath(path));
+  const [slot] = resolved;
   if (slot === undefined) {
     throw new Error(
       `storage path did not resolve to a slot: ${pathToString(path)}`,
@@ -214,6 +237,72 @@ function uniqueSlots(slots: readonly ResolvedStorageItem[]): Hex.Hex[] {
     unique.push(slot);
   }
   return unique;
+}
+
+function resolvedPathEndsAtValue(
+  resolved: readonly ResolvedStorageItem[],
+  path: StoragePath,
+): boolean {
+  return (
+    resolved.length === 1 &&
+    resolved[0]!.type.encoding !== "dynamic_array" &&
+    formatStoragePath(resolved[0]!.path) === formatStoragePath(path)
+  );
+}
+
+function isDynamicArrayRoot(
+  resolved: readonly ResolvedStorageItem[],
+  path: StoragePath,
+): boolean {
+  return (
+    resolved.length === 1 &&
+    resolved[0]!.type.encoding === "dynamic_array" &&
+    formatStoragePath(resolved[0]!.path) === formatStoragePath(path)
+  );
+}
+
+function decodeDynamicArray(
+  layout: StorageLayout,
+  path: StoragePath,
+  arraySlot: ResolvedStorageItem,
+  storage: AccountStorage,
+): unknown[] {
+  const lengthSlot = storageSlot(arraySlot);
+  const lengthValue = getSlotValue(storage, lengthSlot);
+  if (lengthValue === undefined) {
+    throw new Error(`storage value not found for slot: ${lengthSlot}`);
+  }
+  const length = dynamicArrayLength(lengthValue, path);
+  const values: unknown[] = [];
+  for (let index = 0; index < length; index++) {
+    values.push(
+      decodeStorage(
+        layout,
+        {
+          root: path.root,
+          segments: [
+            ...path.segments,
+            {
+              kind: "subscript",
+              value: { kind: "number", value: BigInt(index) },
+            },
+          ],
+        },
+        storage,
+      ),
+    );
+  }
+  return values;
+}
+
+function dynamicArrayLength(value: Hex.Hex, path: StoragePath): number {
+  const length = BigInt(value);
+  if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `dynamic array length is too large to decode: ${formatStoragePath(path)}`,
+    );
+  }
+  return Number(length);
 }
 
 function assertReversibleStorageItem(

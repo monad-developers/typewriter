@@ -1,4 +1,5 @@
 import type { AbiParameterToPrimitiveType, AbiType } from "abitype";
+import { Hash, Hex } from "ox";
 import {
   formatStoragePath,
   type NormalizeStoragePath,
@@ -108,6 +109,36 @@ export function resolveStoragePath(
   for (const segment of path.segments) {
     const absoluteSlot = baseSlot + BigInt(item.slot);
     if (segment.kind === "subscript") {
+      if (isFixedArrayType(type)) {
+        const resolved = resolveFixedArrayElement(
+          layout,
+          item,
+          type,
+          absoluteSlot,
+          segment,
+          resolvedPath,
+        );
+        item = resolved.item;
+        baseSlot = resolved.baseSlot;
+        resolvedPath = resolved.path;
+        type = resolved.type;
+        continue;
+      }
+      if (isDynamicArrayType(type)) {
+        const resolved = resolveDynamicArrayElement(
+          layout,
+          item,
+          type,
+          absoluteSlot,
+          segment,
+          resolvedPath,
+        );
+        item = resolved.item;
+        baseSlot = resolved.baseSlot;
+        resolvedPath = resolved.path;
+        type = resolved.type;
+        continue;
+      }
       if (isFixedArrayType(type) === false) {
         throw new Error(
           `subscript storage paths are not supported yet: ${formatStoragePath({
@@ -116,19 +147,6 @@ export function resolveStoragePath(
           })}`,
         );
       }
-      const resolved = resolveFixedArrayElement(
-        layout,
-        item,
-        type,
-        absoluteSlot,
-        segment,
-        resolvedPath,
-      );
-      item = resolved.item;
-      baseSlot = resolved.baseSlot;
-      resolvedPath = resolved.path;
-      type = resolved.type;
-      continue;
     }
     if (segment.kind !== "field") {
       throw new Error(
@@ -186,6 +204,16 @@ export function resolveStoragePath(
       resolvedPath,
     );
   }
+  if (isDynamicArrayType(type)) {
+    return [
+      {
+        path: resolvedPath,
+        item,
+        type,
+        baseSlot,
+      },
+    ];
+  }
 
   throw new Error(
     `unsupported storage path type '${type.label}' for ${formatStoragePath(resolvedPath)}`,
@@ -199,6 +227,7 @@ export function storagePathEndsAtValue(
   const resolved = resolveStoragePath(layout, path);
   return (
     resolved.length === 1 &&
+    resolved[0]!.type.encoding !== "dynamic_array" &&
     formatStoragePath(resolved[0]!.path) === formatStoragePath(path)
   );
 }
@@ -249,6 +278,15 @@ function expandStructSlots(
           memberPath,
         ),
       );
+      continue;
+    }
+    if (isDynamicArrayType(memberType)) {
+      slots.push({
+        path: memberPath,
+        item: member,
+        type: memberType,
+        baseSlot,
+      });
       continue;
     }
     if (strict) {
@@ -312,6 +350,10 @@ function expandFixedArraySlots(
       );
       continue;
     }
+    if (isDynamicArrayType(resolved.type)) {
+      slots.push(resolved);
+      continue;
+    }
     if (resolved.type.encoding === "mapping") {
       throw new Error(mappingSlotError(resolved.path));
     }
@@ -348,22 +390,61 @@ function resolveFixedArrayElement(
   };
 }
 
+function resolveDynamicArrayElement(
+  layout: StorageLayout,
+  item: StorageItem,
+  type: StorageType & { base: string },
+  absoluteSlot: bigint,
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  path: StoragePath,
+): ResolvedStorageItem {
+  const index = dynamicArrayIndex(segment, path);
+  const baseType = findStorageType(layout, type.base);
+  const { slot, offset } = arrayElementLocation(baseType, index);
+  return {
+    path: { root: path.root, segments: [...path.segments, segment] },
+    item: {
+      astId: item.astId,
+      contract: item.contract,
+      label: `${item.label}[${index}]`,
+      offset,
+      slot: String(slot) as `${number}`,
+      type: type.base,
+    },
+    type: baseType,
+    baseSlot: dynamicArrayDataBaseSlot(absoluteSlot),
+  };
+}
+
 function fixedArrayElementLocation(
   type: StorageType,
   index: number,
 ): { slot: number; offset: number } {
+  const location = arrayElementLocation(type, BigInt(index));
+  return { slot: Number(location.slot), offset: location.offset };
+}
+
+function arrayElementLocation(
+  type: StorageType,
+  index: bigint,
+): { slot: bigint; offset: number } {
   const numberOfBytes = Number(type.numberOfBytes);
   if (isValueType(type)) {
     const valuesPerSlot = Math.floor(32 / numberOfBytes);
+    const valuesPerSlotBigInt = BigInt(valuesPerSlot);
     return {
-      slot: Math.floor(index / valuesPerSlot),
-      offset: (index % valuesPerSlot) * numberOfBytes,
+      slot: index / valuesPerSlotBigInt,
+      offset: Number(index % valuesPerSlotBigInt) * numberOfBytes,
     };
   }
   return {
-    slot: index * Math.ceil(numberOfBytes / 32),
+    slot: index * BigInt(Math.ceil(numberOfBytes / 32)),
     offset: 0,
   };
+}
+
+function dynamicArrayDataBaseSlot(slot: bigint): bigint {
+  return BigInt(Hash.keccak256(Hex.fromNumber(slot, { size: 32 })));
 }
 
 function fixedArrayIndex(
@@ -390,6 +471,29 @@ function fixedArrayIndex(
     );
   }
   return index;
+}
+
+function dynamicArrayIndex(
+  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
+  path: StoragePath,
+): bigint {
+  if (segment.value.kind !== "number") {
+    throw new Error(
+      `dynamic array index must be a number: ${formatStoragePath({
+        root: path.root,
+        segments: [...path.segments, segment],
+      })}`,
+    );
+  }
+  if (segment.value.value < 0n) {
+    throw new Error(
+      `dynamic array index out of bounds: ${formatStoragePath({
+        root: path.root,
+        segments: [...path.segments, segment],
+      })}`,
+    );
+  }
+  return segment.value.value;
 }
 
 function fixedArrayLength(type: StorageType): number {
@@ -439,6 +543,12 @@ function isFixedArrayType(
   type: StorageType,
 ): type is StorageType & { base: string } {
   return type.encoding === "inplace" && type.base !== undefined;
+}
+
+function isDynamicArrayType(
+  type: StorageType,
+): type is StorageType & { base: string } {
+  return type.encoding === "dynamic_array" && type.base !== undefined;
 }
 
 function mappingSlotError(path: StoragePath): string {

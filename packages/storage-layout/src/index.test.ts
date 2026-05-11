@@ -64,6 +64,18 @@ test("getStorageSlot resolves fixed arrays", () => {
   `);
 });
 
+test("getStorageSlot resolves dynamic arrays", () => {
+  expect(getStorageSlot(layout, "dynamicNumbers")).toBe(
+    "0x000000000000000000000000000000000000000000000000000000000000000a",
+  );
+  expect(getStorageSlot(layout, "dynamicNumbers[0]")).toBe(
+    "0xc65a7bb8d6351c1cf70c95a316cc6a92839c986682d98bc35f958f4883f9d2a8",
+  );
+  expect(getStorageSlot(layout, "dynamicNumbers[1]")).toBe(
+    "0xc65a7bb8d6351c1cf70c95a316cc6a92839c986682d98bc35f958f4883f9d2a9",
+  );
+});
+
 test("getStorageSlot resolves fixed arrays of structs", () => {
   expect(getStorageSlot(complexLayout, "orders[1].amount")).toBe(
     "0x0000000000000000000000000000000000000000000000000000000000000003",
@@ -246,6 +258,17 @@ test("decodeStorage decodes fixed array elements", () => {
   );
 });
 
+test("decodeStorage decodes dynamic arrays", () => {
+  const storage = {
+    [getStorageSlot(layout, "dynamicNumbers")]: "0x2",
+    [getStorageSlot(layout, "dynamicNumbers[0]")]: "0x1",
+    [getStorageSlot(layout, "dynamicNumbers[1]")]: "0x2",
+  } as const;
+
+  expect(decodeStorage(layout, "dynamicNumbers", storage)).toEqual([1n, 2n]);
+  expect(decodeStorage(layout, "dynamicNumbers[1]", storage)).toBe(2n);
+});
+
 test("encodeStorage encodes full-slot value types", () => {
   expect(encodeStorage(layout, "totalSupply", 42n)).toMatchInlineSnapshot(`
     [
@@ -327,6 +350,20 @@ test("encodeStorage encodes fixed array elements", () => {
       },
     ]
   `);
+});
+
+test("encodeStorage encodes dynamic array elements", () => {
+  expect(encodeStorage(layout, "dynamicNumbers[1]", 3n)).toMatchInlineSnapshot(`
+    [
+      {
+        "slot": "0xc65a7bb8d6351c1cf70c95a316cc6a92839c986682d98bc35f958f4883f9d2a9",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000003",
+      },
+    ]
+  `);
+  expect(() => encodeStorage(layout, "dynamicNumbers", [1n, 2n])).toThrow(
+    "encoding dynamic array roots is not implemented yet: dynamicNumbers",
+  );
 });
 
 test("encodeStorage requires existing slots for packed values", () => {

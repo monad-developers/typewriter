@@ -277,12 +277,19 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
     typeof layout,
     "fixedNumbers[0]"
   >;
+  type DynamicArray = StoragePathToPrimitiveType<typeof layout, "numbers">;
+  type DynamicArrayElement = StoragePathToPrimitiveType<
+    typeof layout,
+    "numbers[0]"
+  >;
 
   expectTypeOf<Owner>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<SupplyPath>().toEqualTypeOf<bigint>();
   expectTypeOf<Nested>().toEqualTypeOf<bigint>();
   expectTypeOf<NestedPath>().toEqualTypeOf<boolean>();
   expectTypeOf<FixedArrayElement>().toEqualTypeOf<bigint>();
+  expectTypeOf<DynamicArray>().toEqualTypeOf<readonly bigint[]>();
+  expectTypeOf<DynamicArrayElement>().toEqualTypeOf<bigint>();
 });
 
 test("storage layout extraction helpers preserve layout names", () => {
@@ -318,6 +325,7 @@ test("storage layout extraction helpers preserve layout names", () => {
 test("getStorageSlot return type follows IsSingleSlot", () => {
   const ownerSlot = getStorageSlot(layout, "owner");
   const metadataSlot = getStorageSlot(layout, "metadata");
+  const dynamicNumbersSlot = getStorageSlot(layout, "numbers");
   const fixedNumbersSlot = getStorageSlot(layout, "fixedNumbers");
   const multiSlotMetadata = getStorageSlot(multiSlotLayout, "metadata");
 
@@ -328,6 +336,7 @@ test("getStorageSlot return type follows IsSingleSlot", () => {
   expectTypeOf<
     IsSingleSlot<typeof layout, "fixedNumbers[0]">
   >().toEqualTypeOf<true>();
+  expectTypeOf<IsSingleSlot<typeof layout, "numbers">>().toEqualTypeOf<true>();
   expectTypeOf<
     IsSingleSlot<typeof layout, "fixedNumbers">
   >().toEqualTypeOf<false>();
@@ -336,6 +345,7 @@ test("getStorageSlot return type follows IsSingleSlot", () => {
   >().toEqualTypeOf<false>();
   expectTypeOf(ownerSlot).toEqualTypeOf<`0x${string}`>();
   expectTypeOf(metadataSlot).toEqualTypeOf<`0x${string}`>();
+  expectTypeOf(dynamicNumbersSlot).toEqualTypeOf<`0x${string}`>();
   expectTypeOf(fixedNumbersSlot).toEqualTypeOf<`0x${string}`[]>();
   expectTypeOf(multiSlotMetadata).toEqualTypeOf<`0x${string}`[]>();
 });

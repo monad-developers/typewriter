@@ -186,6 +186,47 @@ test("resolveStoragePath expands fixed arrays", () => {
   `);
 });
 
+test("resolveStoragePath resolves dynamic arrays", () => {
+  expect(
+    resolveStoragePath(layout, parseStoragePath("dynamicNumbers")).map(
+      summarizeResolvedStorageItem,
+    ),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "baseSlot": 0n,
+        "item": {
+          "label": "dynamicNumbers",
+          "offset": 0,
+          "slot": "10",
+          "type": "t_array(t_uint256)dyn_storage",
+        },
+        "path": "dynamicNumbers",
+        "type": "uint256[]",
+      },
+    ]
+  `);
+  expect(
+    resolveStoragePath(layout, parseStoragePath("dynamicNumbers[1]")).map(
+      summarizeResolvedStorageItem,
+    ),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "baseSlot": 89717814153306320011181716697424560163256864414616650038987186496166826726056n,
+        "item": {
+          "label": "dynamicNumbers[1]",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256",
+        },
+        "path": "dynamicNumbers[1]",
+        "type": "uint256",
+      },
+    ]
+  `);
+});
+
 test("resolveStoragePath resolves arrays of structs", () => {
   expect(
     resolveStoragePath(complexLayout, parseStoragePath("orders[1].amount")).map(
@@ -378,6 +419,12 @@ test("isStoragePathEnd identifies terminal paths", () => {
   );
   expect(
     storagePathEndsAtValue(layout, parseStoragePath("fixedNumbers[0]")),
+  ).toBe(true);
+  expect(
+    storagePathEndsAtValue(layout, parseStoragePath("dynamicNumbers")),
+  ).toBe(false);
+  expect(
+    storagePathEndsAtValue(layout, parseStoragePath("dynamicNumbers[0]")),
   ).toBe(true);
   expect(() =>
     storagePathEndsAtValue(layout, parseStoragePath("balances")),

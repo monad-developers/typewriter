@@ -76,6 +76,14 @@ export const layout = {
       slot: "8",
       type: "t_array(t_uint128)3_storage",
     },
+    {
+      astId: 14,
+      contract: "src/Test.sol:Test",
+      label: "dynamicNumbers",
+      offset: 0,
+      slot: "10",
+      type: "t_array(t_uint256)dyn_storage",
+    },
   ],
   types: {
     t_address: {
@@ -179,6 +187,12 @@ export const layout = {
       encoding: "inplace",
       label: "uint128[3]",
       numberOfBytes: "64",
+    },
+    "t_array(t_uint256)dyn_storage": {
+      base: "t_uint256",
+      encoding: "dynamic_array",
+      label: "uint256[]",
+      numberOfBytes: "32",
     },
   },
 } as const satisfies StorageLayout;
