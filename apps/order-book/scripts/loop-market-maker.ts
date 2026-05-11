@@ -9,6 +9,7 @@ import { INSTRUMENTS } from "./src/constants";
 import {
   type Account,
   type AccountOrder,
+  changeOrder,
   closeOrder,
   createAccount,
   deposit,
@@ -147,16 +148,38 @@ async function tick(instrument: InstrumentConfig, label: string) {
 
   const covered = getCoveredRanges(orders, tickLookup, midPrice, instrument);
   const needed = getMissingOrders(covered, candidates, tickLookup, instrument);
+  const movable = getMovableOrders(orders, tickLookup, midPrice, instrument);
+  const changes = pairChanges(movable, needed);
+  const changedTargets = new Set(changes.map((change) => change.target));
+  const newOrders = needed.filter((order) => !changedTargets.has(order));
 
   if (needed.length === 0) {
     console.log(`[${label}] all ranges covered`);
     return;
   }
 
-  await depositForOrders(account, needed, instrument, label);
+  await depositForOrders(
+    account,
+    [...changes.map((c) => c.target), ...newOrders],
+    instrument,
+    label,
+  );
 
   await Promise.all(
-    needed.map((order) => {
+    changes.map(({ order, target }) => {
+      console.log(
+        `[${label}] changing ${target.side} order ${order.orderId}: $${q32ToPrice(order.price, instrument).toFixed(4)} -> $${target.price.toFixed(4)}`,
+      );
+      return changeOrder(
+        account,
+        { orderId: order.orderId, instrument, price: target.price },
+        { concurrent: true },
+      );
+    }),
+  );
+
+  await Promise.all(
+    newOrders.map((order) => {
       const quantity = TokenAmount.from(humanQuantity, instrument.base);
       console.log(
         `[${label}] placing ${order.side}: ${quantity.human} @ $${order.price.toFixed(4)}`,
@@ -169,7 +192,9 @@ async function tick(instrument: InstrumentConfig, label: string) {
     }),
   );
 
-  console.log(`[${label}] placed ${needed.length} orders`);
+  console.log(
+    `[${label}] changed ${changes.length} orders, placed ${newOrders.length} orders`,
+  );
 }
 
 function orderBps(
@@ -247,6 +272,53 @@ function getMissingOrders(
   }
 
   return out;
+}
+
+function getMovableOrders(
+  orders: AccountOrder[],
+  tickLookup: TickLookup,
+  midPrice: number,
+  instrument: InstrumentConfig,
+): AccountOrder[] {
+  const out: AccountOrder[] = [];
+  for (const order of orders) {
+    if (order.quantity === 0n) continue;
+    const tick = tickLookup(order.side, order.price);
+    if (
+      tick === null ||
+      tick.volume !== order.tickVolume ||
+      tick.remainingQuantity !== tick.quantity
+    ) {
+      continue;
+    }
+    if (findRangeIndex(orderBps(order, midPrice, instrument)) === null) {
+      out.push(order);
+    }
+  }
+  return out;
+}
+
+function pairChanges(
+  movable: AccountOrder[],
+  needed: { price: number; side: "buy" | "sell" }[],
+): { order: AccountOrder; target: { price: number; side: "buy" | "sell" } }[] {
+  const used = new Set<number>();
+  const changes: {
+    order: AccountOrder;
+    target: { price: number; side: "buy" | "sell" };
+  }[] = [];
+
+  for (const target of needed) {
+    const side = target.side === "buy" ? 0 : 1;
+    const order = movable.find(
+      (candidate) => candidate.side === side && !used.has(candidate.orderId),
+    );
+    if (order === undefined) continue;
+    used.add(order.orderId);
+    changes.push({ order, target });
+  }
+
+  return changes;
 }
 
 function findFilledOrders(

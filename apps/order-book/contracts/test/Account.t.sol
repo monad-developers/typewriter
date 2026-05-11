@@ -69,7 +69,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
         bundles[0] = Bundle({mutations: mutations, mutationData: data, signatures: sigs});
     }
 
-    function _initAccount(uint256 rootPk, uint256 subPk, bytes32 acc, uint8 permissions) internal {
+    function _initAccount(uint256 rootPk, uint256 subPk, bytes32 acc, uint16 permissions) internal {
         Initialize memory init = Initialize({
             account: acc,
             expiry: 0,
@@ -96,7 +96,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         assertEq(state.accounts[account].keys.length, 2);
         assertEq(uint8(state.accounts[account].keys[0].keyType), uint8(KeyType.Secp256k1));
-        assertEq(state.accounts[account].keys[0].permissions, type(uint8).max);
+        assertEq(state.accounts[account].keys[0].permissions, type(uint16).max);
         assertEq(state.accounts[account].keys[1].permissions, PERM_DEPOSIT);
         assertEq(state.accounts[account].nonces[0], 0);
     }
@@ -274,7 +274,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
             expiry: uint40(block.timestamp + 100),
             rootKeyType: uint8(KeyType.Secp256k1),
             keyType: uint8(KeyType.Secp256k1),
-            permissions: type(uint8).max,
+            permissions: type(uint16).max,
             rootPublicKey: abi.encode(vm.addr(pk1)),
             publicKey: abi.encode(vm.addr(pk2))
         });
@@ -337,7 +337,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
             expiry: 0,
             rootKeyType: uint8(KeyType.P256),
             keyType: uint8(KeyType.P256),
-            permissions: 0xff,
+            permissions: 0x1ff,
             rootPublicKey: _p256PublicKey(p256Pk1),
             publicKey: _p256PublicKey(p256Pk2)
         });
@@ -354,8 +354,8 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         assertEq(state.accounts[p256Account].keys.length, 2);
         assertEq(uint8(state.accounts[p256Account].keys[0].keyType), uint8(KeyType.P256));
-        assertEq(state.accounts[p256Account].keys[0].permissions, type(uint8).max);
+        assertEq(state.accounts[p256Account].keys[0].permissions, type(uint16).max);
         assertEq(uint8(state.accounts[p256Account].keys[1].keyType), uint8(KeyType.P256));
-        assertEq(state.accounts[p256Account].keys[1].permissions, 0xff);
+        assertEq(state.accounts[p256Account].keys[1].permissions, 0x1ff);
     }
 }

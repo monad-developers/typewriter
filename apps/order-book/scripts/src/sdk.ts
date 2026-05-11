@@ -460,6 +460,31 @@ export async function closeOrder(
   });
 }
 
+export async function changeOrder(
+  account: Account,
+  params: { orderId: number; instrument: InstrumentConfig; price: number },
+  opts?: MutationOpts,
+) {
+  const price = priceToQ32(params.price, params.instrument);
+  const { nonce, rollback } = reserveNonce(account, opts);
+  const deadline = farDeadline();
+  const rawSignature = sign(account.privateKey, "ChangeOrder", {
+    orderId: BigInt(params.orderId),
+    price,
+    nonce,
+    deadline,
+  });
+  return postWithNonce(rollback, "/api/change-order", {
+    orderId: params.orderId,
+    price,
+    account: account.accountHex,
+    keyId: account.keyId,
+    nonce,
+    deadline,
+    rawSignature,
+  });
+}
+
 export async function withdraw(
   account: Account,
   params: { quantity: TokenAmount },

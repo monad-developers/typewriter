@@ -73,6 +73,13 @@ type Mut =
       orderId: number;
       nonce: bigint;
       deadline: bigint;
+    }
+  | {
+      type: MutationType.ChangeOrder;
+      orderId: number;
+      price: bigint;
+      nonce: bigint;
+      deadline: bigint;
     };
 
 function encodeMutationData(m: Mut): Hex {
@@ -163,6 +170,28 @@ function encodeMutationData(m: Mut): Hex {
           },
         ],
       );
+    case MutationType.ChangeOrder:
+      return encodeAbiParameters(
+        [
+          {
+            type: "tuple",
+            components: [
+              { type: "uint64", name: "orderId" },
+              { type: "uint64", name: "price" },
+              { type: "uint256", name: "nonce" },
+              { type: "uint256", name: "deadline" },
+            ],
+          },
+        ],
+        [
+          {
+            orderId: BigInt(m.orderId),
+            price: m.price,
+            nonce: m.nonce,
+            deadline: m.deadline,
+          },
+        ],
+      );
   }
 }
 
@@ -189,6 +218,13 @@ function signMutation(account: Account, m: Mut): Hex {
     case MutationType.CloseOrder:
       return sign(account.privateKey, "CloseOrder", {
         orderId: BigInt(m.orderId),
+        nonce: m.nonce,
+        deadline: m.deadline,
+      });
+    case MutationType.ChangeOrder:
+      return sign(account.privateKey, "ChangeOrder", {
+        orderId: BigInt(m.orderId),
+        price: m.price,
         nonce: m.nonce,
         deadline: m.deadline,
       });

@@ -11,11 +11,13 @@ import * as schema from "./app-schema";
 import {
   type AddInstrument,
   type Authorize,
+  type ChangeOrder,
   type CloseOrder,
   type Deposit,
   getNonceSeq,
   handleAddInstrument,
   handleAuthorize,
+  handleChangeOrder,
   handleCloseOrder,
   handleDeposit,
   handleInitialize,
@@ -31,6 +33,7 @@ import {
   MutationType,
   PERM_ADD_INSTRUMENT,
   PERM_AUTHORIZE,
+  PERM_CHANGE_ORDER,
   PERM_CLOSE_ORDER,
   PERM_DEPOSIT,
   PERM_LIMIT_ORDER,
@@ -63,6 +66,7 @@ export type InitializeArgs = Initialize & AccountArg;
 export type AuthorizeArgs = Authorize & AccountArg & SignedArgs;
 export type RevokeArgs = Revoke & AccountArg & SignedArgs;
 export type CloseOrderArgs = CloseOrder & SignedArgs;
+export type ChangeOrderArgs = ChangeOrder<bigint> & SignedArgs;
 export type LimitOrderArgs = LimitOrder<bigint> & SignedArgs;
 export type MarketOrderArgs = MarketOrder<bigint> & SignedArgs;
 export type AddInstrumentArgs = AddInstrument & SignedArgs;
@@ -74,6 +78,7 @@ export type OrderBookMutationName =
   | "Authorize"
   | "Revoke"
   | "CloseOrder"
+  | "ChangeOrder"
   | "LimitOrder"
   | "MarketOrder"
   | "AddInstrument"
@@ -87,6 +92,7 @@ export type SubmittedOrderBookMutation = {
     | AuthorizeArgs
     | RevokeArgs
     | CloseOrderArgs
+    | ChangeOrderArgs
     | LimitOrderArgs
     | MarketOrderArgs
     | AddInstrumentArgs
@@ -100,6 +106,7 @@ export const ORDER_BOOK_SEQUENCE = [
   "Authorize",
   "Revoke",
   "CloseOrder",
+  "ChangeOrder",
   "LimitOrder",
   "MarketOrder",
   "AddInstrument",
@@ -163,7 +170,7 @@ function verifySignedMutation(
   }
   incrementNonce(acc, nonceKey);
 
-  if ((key.permissions & permission) === 0) {
+  if ((key.permissions & permission) !== permission) {
     throw new Error(
       `Unauthorized: account=${signature.account}, keyId=${signature.keyId}, permissions=${key.permissions}, required=${permission}`,
     );
@@ -217,6 +224,16 @@ function applyLimitOrder(
 ): void {
   verifySignedMutation(state, signature, args, digest, PERM_LIMIT_ORDER);
   handleLimitOrder(state, args, signature.account);
+}
+
+function applyChangeOrder(
+  state: OrderBookState,
+  args: ChangeOrderArgs,
+  signature: OrderBookSignature,
+  digest: Hex,
+): void {
+  verifySignedMutation(state, signature, args, digest, PERM_CHANGE_ORDER);
+  handleChangeOrder(state, args, signature.account);
 }
 
 function applyMarketOrder(
@@ -275,7 +292,7 @@ export function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Initialize,
       table: schema.initializes,
       params: parseAbiParameters(
-        "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint8 permissions, bytes rootPublicKey, bytes publicKey",
+        "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint16 permissions, bytes rootPublicKey, bytes publicKey",
       ),
       apply: ({
         state,
@@ -297,7 +314,7 @@ export function baseMutations(): FFCAConfig["mutations"] {
       tag: MutationType.Authorize,
       table: schema.authorizes,
       params: parseAbiParameters(
-        "bytes32 account, uint40 expiry, uint8 keyType, uint8 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
+        "bytes32 account, uint40 expiry, uint8 keyType, uint16 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
       ),
       apply: ({
         state,
@@ -361,6 +378,30 @@ export function baseMutations(): FFCAConfig["mutations"] {
         applyCloseOrder(
           state as OrderBookState,
           args as CloseOrderArgs,
+          signature as OrderBookSignature,
+          digest,
+        ),
+    },
+    ChangeOrder: {
+      tag: MutationType.ChangeOrder,
+      table: schema.changeOrders,
+      params: parseAbiParameters(
+        "uint64 orderId, uint64 price, uint256 nonce, uint256 deadline",
+      ),
+      apply: ({
+        state,
+        args,
+        signature,
+        digest,
+      }: {
+        state: unknown;
+        args: unknown;
+        signature: unknown;
+        digest: Hex;
+      }) =>
+        applyChangeOrder(
+          state as OrderBookState,
+          args as ChangeOrderArgs,
           signature as OrderBookSignature,
           digest,
         ),
@@ -881,6 +922,50 @@ export function persistedMutations(
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.closeOrders),
+  };
+  mutations.ChangeOrder = {
+    ...mutations.ChangeOrder,
+    persistMutation: async (tx, { mutation, bundle }) => {
+      const args = mutationArgs<ChangeOrderArgs>(mutation);
+      await txDb(tx)
+        .insert(schema.changeOrders)
+        .values({
+          ...baseMutationRow(mutation, bundle),
+          orderId: BigInt(args.orderId),
+          price: args.price,
+          nonce: args.nonce.toString(),
+          deadline: args.deadline.toString(),
+        });
+    },
+    persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<ChangeOrderArgs>(mutation);
+      const signature = mutationSignature(mutation);
+      const order = state.accounts[signature.account]?.orders[args.orderId];
+      const instrument =
+        order !== undefined ? state.instruments[order.instrumentId] : undefined;
+      await persistNonce(tx, signature.account, args.nonce);
+      await persistOrders(tx, state, signature.account);
+      if (order !== undefined && instrument !== undefined) {
+        await persistBalance(tx, state, signature.account, instrument.base);
+        await persistBalance(tx, state, signature.account, instrument.quote);
+        await persistTick(
+          tx,
+          state,
+          order.instrumentId,
+          order.side,
+          order.price,
+        );
+        await persistTick(
+          tx,
+          state,
+          order.instrumentId,
+          order.side,
+          args.price,
+        );
+      }
+    },
+    persistLifecycle: (tx, params) =>
+      persistLifecycle(tx, params, schema.changeOrders),
   };
   mutations.LimitOrder = {
     ...mutations.LimitOrder,

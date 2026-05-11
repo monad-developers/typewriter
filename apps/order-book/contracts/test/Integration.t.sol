@@ -88,7 +88,7 @@ contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
             expiry: 0,
             rootKeyType: uint8(KeyType.Secp256k1),
             keyType: uint8(KeyType.Secp256k1),
-            permissions: type(uint8).max,
+            permissions: type(uint16).max,
             rootPublicKey: abi.encode(vm.addr(pk)),
             publicKey: abi.encode(vm.addr(pk))
         });

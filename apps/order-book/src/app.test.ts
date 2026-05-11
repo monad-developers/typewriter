@@ -26,7 +26,7 @@ import {
   type SubmittedOrderBookMutation,
 } from "./app";
 import * as schema from "./app-schema";
-import type { State } from "./exchange";
+import { ALL_PERMISSIONS, type State } from "./exchange";
 
 const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
@@ -76,6 +76,13 @@ function messageFor(
     case "CloseOrder":
       return {
         orderId: BigInt(args.orderId as number),
+        nonce: args.nonce,
+        deadline: args.deadline,
+      };
+    case "ChangeOrder":
+      return {
+        orderId: BigInt(args.orderId as number),
+        price: args.price,
         nonce: args.nonce,
         deadline: args.deadline,
       };
@@ -178,7 +185,7 @@ async function setupAccount(params: {
         expiry: 0,
         rootKeyType: 2,
         keyType: 2,
-        permissions: 0xff,
+        permissions: ALL_PERMISSIONS,
         rootPublicKey: publicKey,
         publicKey,
       },
@@ -421,4 +428,116 @@ test("ffca order book persists and submits market-order flow", async () => {
   expect(balance).toMatchObject({ account: taker, asset: QUOTE, amount: "0" });
   expect(fill).toMatchObject({ quantity: 10n, price: 10n * Q32 });
   expect(market?.status).toBe("proposed");
+});
+
+test("ffca order book changes an unfilled order to a new price", async () => {
+  const address = await deployExchange();
+  const state: State<bigint> = { accounts: {}, instruments: {} };
+  const app = createFFCA({
+    address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: state },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: baseMutations(),
+  });
+
+  const maker = await setupAccount({
+    app,
+    state,
+    account: MAKER_ACCOUNT.address,
+    privateKey: MAKER_PRIVATE_KEY,
+    contract: address,
+  });
+  await executeOrderBookMutation(
+    app,
+    state,
+    await signedMutation({
+      name: "AddInstrument",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        instrumentId: 0,
+        base: BASE,
+        quote: QUOTE,
+        baseLotExp: 0,
+        quoteLotExp: 0,
+        nonce: 0n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+  await executeOrderBookMutation(
+    app,
+    state,
+    await signedMutation({
+      name: "Deposit",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        asset: QUOTE,
+        amount: 100n,
+        nonce: 1n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+  await executeOrderBookMutation(
+    app,
+    state,
+    await signedMutation({
+      name: "LimitOrder",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        quantity: 10n,
+        instrumentId: 0,
+        price: 5n * Q32,
+        bidOrAsk: 0,
+        nonce: 2n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+
+  const result = await executeOrderBookMutation(
+    app,
+    state,
+    await signedMutation({
+      name: "ChangeOrder",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        orderId: 0,
+        price: 6n * Q32,
+        nonce: 3n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+
+  await app.stop();
+
+  expect(result.status).toBe("accepted");
+  expect(state.accounts[maker]!.orders[0]!.quantity).toBe(0n);
+  expect(state.accounts[maker]!.orders[1]).toMatchObject({
+    quantity: 10n,
+    instrumentId: 0,
+    price: 6n * Q32,
+    side: 0,
+  });
+  expect(state.instruments[0]!.bids[Number(5n * Q32)]!.quantity).toBe(0n);
+  expect(state.instruments[0]!.bids[Number(6n * Q32)]!.quantity).toBe(10n);
 });

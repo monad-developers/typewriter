@@ -4,3 +4,5 @@ out = "out"
 libs = ["../node_modules", "node_modules"]
 allow_paths = ["../node_modules", "../node_modules/forge-std/src", "../../../packages/ffca/src"]
 isolate = true
+optimizer = true
+optimizer_runs = 200

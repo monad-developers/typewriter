@@ -34,7 +34,7 @@ export const keys = pgTable(
     keyIndex: uint64().notNull(),
     expiry: uint40().notNull(),
     keyType: uint8().notNull(),
-    permissions: uint8().notNull(),
+    permissions: uint16().notNull(),
     publicKey: text().notNull(),
   },
   (t) => [primaryKey({ columns: [t.account, t.keyIndex] })],
@@ -118,7 +118,7 @@ export const initializes = pgTable("initializes", {
   expiry: uint40().notNull(),
   rootKeyType: uint8().notNull(),
   keyType: uint8().notNull(),
-  permissions: uint8().notNull(),
+  permissions: uint16().notNull(),
   rootPublicKey: text().notNull(),
   publicKey: text().notNull(),
 });
@@ -129,7 +129,7 @@ export const authorizes = pgTable("authorizes", {
   accountArg: bytes32().notNull(),
   expiry: uint40().notNull(),
   keyType: uint8().notNull(),
-  permissions: uint8().notNull(),
+  permissions: uint16().notNull(),
   publicKey: text().notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
@@ -149,6 +149,16 @@ export const closeOrders = pgTable("close_orders", {
   ...signatureColumns,
   accountArg: bytes32().notNull(),
   orderId: uint64().notNull(),
+  nonce: uint256().notNull(),
+  deadline: uint256().notNull(),
+});
+
+export const changeOrders = pgTable("change_orders", {
+  ...mutationColumns(),
+  ...signatureColumns,
+  accountArg: bytes32().notNull(),
+  orderId: uint64().notNull(),
+  price: uint64().notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
 });
@@ -232,6 +242,7 @@ export const APP_SCHEMA = {
   authorizes,
   revokes,
   closeOrders,
+  changeOrders,
   limitOrders,
   marketOrders,
   fills,

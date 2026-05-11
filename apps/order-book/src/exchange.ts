@@ -19,6 +19,17 @@ export const PERM_MARKET_ORDER = 1 << 4;
 export const PERM_DEPOSIT = 1 << 5;
 export const PERM_WITHDRAW = 1 << 6;
 export const PERM_ADD_INSTRUMENT = 1 << 7;
+export const PERM_CHANGE_ORDER = 1 << 8;
+export const ALL_PERMISSIONS =
+  PERM_AUTHORIZE |
+  PERM_REVOKE |
+  PERM_CLOSE_ORDER |
+  PERM_LIMIT_ORDER |
+  PERM_MARKET_ORDER |
+  PERM_DEPOSIT |
+  PERM_WITHDRAW |
+  PERM_ADD_INSTRUMENT |
+  PERM_CHANGE_ORDER;
 
 export type State<quantity = string> = {
   accounts: Record<Hex, Account<quantity>>;
@@ -82,6 +93,11 @@ export type CloseOrder = {
   orderId: number;
 };
 
+export type ChangeOrder<quantity = string> = {
+  orderId: number;
+  price: quantity;
+};
+
 export type Deposit<quantity = string> = {
   asset: Address;
   amount: quantity;
@@ -135,11 +151,12 @@ export enum MutationType {
   Authorize = 1,
   Revoke = 2,
   CloseOrder = 3,
-  LimitOrder = 4,
-  MarketOrder = 5,
-  AddInstrument = 6,
-  Deposit = 7,
-  Withdrawal = 8,
+  ChangeOrder = 4,
+  LimitOrder = 5,
+  MarketOrder = 6,
+  AddInstrument = 7,
+  Deposit = 8,
+  Withdrawal = 9,
 }
 
 export type Signed<quantity = string> = {
@@ -155,6 +172,10 @@ export type TaggedMutation =
   | ({ type: MutationType.Authorize; mutation: Authorize } & Signed<bigint>)
   | ({ type: MutationType.Revoke; mutation: Revoke } & Signed<bigint>)
   | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
+  | ({
+      type: MutationType.ChangeOrder;
+      mutation: ChangeOrder<bigint>;
+    } & Signed<bigint>)
   | ({
       type: MutationType.LimitOrder;
       mutation: LimitOrder<bigint>;
@@ -178,6 +199,10 @@ export type ResolvedMutation =
   | ({ type: MutationType.Authorize; mutation: Authorize } & Signed<bigint>)
   | ({ type: MutationType.Revoke; mutation: Revoke } & Signed<bigint>)
   | ({ type: MutationType.CloseOrder; mutation: CloseOrder } & Signed<bigint>)
+  | ({
+      type: MutationType.ChangeOrder;
+      mutation: ChangeOrder<bigint>;
+    } & Signed<bigint>)
   | ({
       type: MutationType.LimitOrder;
       mutation: LimitOrder<bigint>;
@@ -411,6 +436,14 @@ export function encodeLimitOrder(o: LimitOrder<bigint>): LimitOrder {
     price: s(o.price),
     bidOrAsk: o.bidOrAsk,
   };
+}
+
+export function decodeChangeOrder(o: ChangeOrder): ChangeOrder<bigint> {
+  return { orderId: o.orderId, price: n(o.price) };
+}
+
+export function encodeChangeOrder(o: ChangeOrder<bigint>): ChangeOrder {
+  return { orderId: o.orderId, price: s(o.price) };
 }
 
 export function decodeDeposit(d: Deposit): Deposit<bigint> {
@@ -691,6 +724,61 @@ export function handleCloseOrder(
   order.quantity = 0n;
 }
 
+export function handleChangeOrder(
+  state: State<bigint>,
+  change: ChangeOrder<bigint>,
+  account: Hex,
+): void {
+  const acc = getAccount(state, account);
+  const order = acc.orders[change.orderId];
+  if (order === undefined || order.quantity === 0n)
+    throw new Error(
+      `OrderNotFound: orderId=${change.orderId} ordersLength=${acc.orders.length} quantity=${order?.quantity ?? "missing"} account=${account}`,
+    );
+
+  const instrument = state.instruments[order.instrumentId];
+  if (instrument === undefined)
+    throw new Error(
+      `InvalidInstrument: handleChangeOrder instrumentId=${order.instrumentId} orderId=${change.orderId} account=${account}`,
+    );
+
+  const ticks = order.side === 0 ? instrument.bids : instrument.asks;
+  const tick = ticks[Number(order.price)];
+  if (
+    tick === undefined ||
+    tick.volume !== order.tickVolume ||
+    tick.remainingQuantity !== tick.quantity
+  )
+    throw new Error(
+      `TickPartiallyFilled: price=${order.price} side=${order.side === 0 ? "bid" : "ask"} tick.quantity=${tick?.quantity ?? "missing"} tick.remainingQuantity=${tick?.remainingQuantity ?? "missing"} tick.volume=${tick?.volume ?? "missing"} orderTickVolume=${order.tickVolume} account=${account}`,
+    );
+
+  tick.quantity -= order.quantity;
+  tick.remainingQuantity -= order.quantity;
+
+  if (order.side === 0) {
+    acc.balances[instrument.quote] =
+      (acc.balances[instrument.quote] ?? 0n) +
+      (((order.quantity * order.price) >> 32n) <<
+        BigInt(instrument.quoteLotExp));
+  } else {
+    acc.balances[instrument.base] =
+      (acc.balances[instrument.base] ?? 0n) +
+      (order.quantity << BigInt(instrument.baseLotExp));
+  }
+
+  const quantity = order.quantity << BigInt(instrument.baseLotExp);
+  const instrumentId = order.instrumentId;
+  const bidOrAsk = order.side;
+  order.quantity = 0n;
+
+  handleLimitOrder(
+    state,
+    { quantity, instrumentId, price: change.price, bidOrAsk },
+    account,
+  );
+}
+
 export function handleDeposit(
   state: State<bigint>,
   params: Deposit<bigint>,
@@ -750,7 +838,7 @@ export function handleInitialize(
   acc.keys.push({
     expiry: 0,
     keyType: params.rootKeyType as KeyType,
-    permissions: 0xff,
+    permissions: ALL_PERMISSIONS,
     publicKey: params.rootPublicKey,
   });
   acc.keys.push({

@@ -129,6 +129,12 @@ function mutationPayload(mutation: RuntimeMutation): unknown {
       return { id: mutation.id, revokedKeyId: stringValue(args.keyId) };
     case "CloseOrder":
       return { id: mutation.id, orderId: stringValue(args.orderId) };
+    case "ChangeOrder":
+      return {
+        id: mutation.id,
+        orderId: stringValue(args.orderId),
+        price: stringValue(args.price),
+      };
     case "LimitOrder":
       return {
         id: mutation.id,
@@ -518,6 +524,15 @@ serve({
       POST: (req) =>
         submit(req, "CloseOrder", (body) => ({
           orderId: Number(body.orderId),
+          nonce: BigInt(body.nonce as string | number | bigint),
+          deadline: BigInt(body.deadline as string | number | bigint),
+        })),
+    },
+    "/api/change-order": {
+      POST: (req) =>
+        submit(req, "ChangeOrder", (body) => ({
+          orderId: Number(body.orderId),
+          price: BigInt(body.price as string | number | bigint),
           nonce: BigInt(body.nonce as string | number | bigint),
           deadline: BigInt(body.deadline as string | number | bigint),
         })),

@@ -17,9 +17,21 @@ export const PERM_MARKET_ORDER = 1 << 4;
 export const PERM_DEPOSIT = 1 << 5;
 export const PERM_WITHDRAW = 1 << 6;
 export const PERM_ADD_INSTRUMENT = 1 << 7;
+export const PERM_CHANGE_ORDER = 1 << 8;
+
+export const ALL_PERMISSIONS =
+  PERM_AUTHORIZE |
+  PERM_REVOKE |
+  PERM_CLOSE_ORDER |
+  PERM_LIMIT_ORDER |
+  PERM_MARKET_ORDER |
+  PERM_DEPOSIT |
+  PERM_WITHDRAW |
+  PERM_ADD_INSTRUMENT |
+  PERM_CHANGE_ORDER;
 
 export const DEFAULT_NON_ROOT_PERMISSIONS =
-  0xff & ~(PERM_AUTHORIZE | PERM_REVOKE | PERM_WITHDRAW);
+  ALL_PERMISSIONS & ~(PERM_AUTHORIZE | PERM_REVOKE | PERM_WITHDRAW);
 
 export const INSTRUMENTS = {
   "GOLD/USD": {
@@ -65,7 +77,7 @@ export const EIP712_TYPES = {
     { name: "expiry", type: "uint40" },
     { name: "rootKeyType", type: "uint8" },
     { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint8" },
+    { name: "permissions", type: "uint16" },
     { name: "rootPublicKey", type: "bytes" },
     { name: "publicKey", type: "bytes" },
   ],
@@ -73,7 +85,7 @@ export const EIP712_TYPES = {
     { name: "account", type: "bytes32" },
     { name: "expiry", type: "uint40" },
     { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint8" },
+    { name: "permissions", type: "uint16" },
     { name: "publicKey", type: "bytes" },
     { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
@@ -86,6 +98,12 @@ export const EIP712_TYPES = {
   ],
   CloseOrder: [
     { name: "orderId", type: "uint64" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+  ChangeOrder: [
+    { name: "orderId", type: "uint64" },
+    { name: "price", type: "uint64" },
     { name: "nonce", type: "uint256" },
     { name: "deadline", type: "uint256" },
   ],

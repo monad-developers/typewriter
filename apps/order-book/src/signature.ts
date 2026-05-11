@@ -72,6 +72,16 @@ export function getTypedDataParams(mutation: TaggedMutation): {
           deadline: mutation.deadline,
         },
       };
+    case MutationType.ChangeOrder:
+      return {
+        primaryType: "ChangeOrder",
+        message: {
+          orderId: BigInt(mutation.mutation.orderId),
+          price: mutation.mutation.price,
+          nonce: mutation.nonce,
+          deadline: mutation.deadline,
+        },
+      };
     case MutationType.LimitOrder:
       return {
         primaryType: "LimitOrder",
