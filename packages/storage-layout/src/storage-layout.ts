@@ -214,6 +214,16 @@ export function resolveStoragePath(
       },
     ];
   }
+  if (isBytesType(type)) {
+    return [
+      {
+        path: resolvedPath,
+        item,
+        type,
+        baseSlot,
+      },
+    ];
+  }
 
   throw new Error(
     `unsupported storage path type '${type.label}' for ${formatStoragePath(resolvedPath)}`,
@@ -289,6 +299,15 @@ function expandStructSlots(
       });
       continue;
     }
+    if (isBytesType(memberType)) {
+      slots.push({
+        path: memberPath,
+        item: member,
+        type: memberType,
+        baseSlot,
+      });
+      continue;
+    }
     if (strict) {
       if (memberType.encoding === "mapping") {
         throw new Error(
@@ -351,6 +370,10 @@ function expandFixedArraySlots(
       continue;
     }
     if (isDynamicArrayType(resolved.type)) {
+      slots.push(resolved);
+      continue;
+    }
+    if (isBytesType(resolved.type)) {
       slots.push(resolved);
       continue;
     }
@@ -549,6 +572,10 @@ function isDynamicArrayType(
   type: StorageType,
 ): type is StorageType & { base: string } {
   return type.encoding === "dynamic_array" && type.base !== undefined;
+}
+
+function isBytesType(type: StorageType): boolean {
+  return type.encoding === "bytes";
 }
 
 function mappingSlotError(path: StoragePath): string {

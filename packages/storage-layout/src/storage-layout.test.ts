@@ -227,6 +227,47 @@ test("resolveStoragePath resolves dynamic arrays", () => {
   `);
 });
 
+test("resolveStoragePath resolves bytes and strings", () => {
+  expect(
+    resolveStoragePath(layout, parseStoragePath("rawBytes")).map(
+      summarizeResolvedStorageItem,
+    ),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "baseSlot": 0n,
+        "item": {
+          "label": "rawBytes",
+          "offset": 0,
+          "slot": "11",
+          "type": "t_bytes_storage",
+        },
+        "path": "rawBytes",
+        "type": "bytes",
+      },
+    ]
+  `);
+  expect(
+    resolveStoragePath(layout, parseStoragePath("message")).map(
+      summarizeResolvedStorageItem,
+    ),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "baseSlot": 0n,
+        "item": {
+          "label": "message",
+          "offset": 0,
+          "slot": "12",
+          "type": "t_string_storage",
+        },
+        "path": "message",
+        "type": "string",
+      },
+    ]
+  `);
+});
+
 test("resolveStoragePath resolves arrays of structs", () => {
   expect(
     resolveStoragePath(complexLayout, parseStoragePath("orders[1].amount")).map(
@@ -426,6 +467,12 @@ test("isStoragePathEnd identifies terminal paths", () => {
   expect(
     storagePathEndsAtValue(layout, parseStoragePath("dynamicNumbers[0]")),
   ).toBe(true);
+  expect(storagePathEndsAtValue(layout, parseStoragePath("rawBytes"))).toBe(
+    true,
+  );
+  expect(storagePathEndsAtValue(layout, parseStoragePath("message"))).toBe(
+    true,
+  );
   expect(() =>
     storagePathEndsAtValue(layout, parseStoragePath("balances")),
   ).toThrow(

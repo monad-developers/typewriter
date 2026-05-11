@@ -84,6 +84,22 @@ export const layout = {
       slot: "10",
       type: "t_array(t_uint256)dyn_storage",
     },
+    {
+      astId: 15,
+      contract: "src/Test.sol:Test",
+      label: "rawBytes",
+      offset: 0,
+      slot: "11",
+      type: "t_bytes_storage",
+    },
+    {
+      astId: 16,
+      contract: "src/Test.sol:Test",
+      label: "message",
+      offset: 0,
+      slot: "12",
+      type: "t_string_storage",
+    },
   ],
   types: {
     t_address: {
@@ -192,6 +208,16 @@ export const layout = {
       base: "t_uint256",
       encoding: "dynamic_array",
       label: "uint256[]",
+      numberOfBytes: "32",
+    },
+    t_bytes_storage: {
+      encoding: "bytes",
+      label: "bytes",
+      numberOfBytes: "32",
+    },
+    t_string_storage: {
+      encoding: "bytes",
+      label: "string",
       numberOfBytes: "32",
     },
   },

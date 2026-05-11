@@ -13,6 +13,7 @@ import {
   formatStoragePath,
   getStoragePath,
   getStorageSlot,
+  type SlotWrite,
   type StorageLayout,
 } from "./index";
 
@@ -23,6 +24,10 @@ const reversibleLayout = {
 
 const PACKED_FIXED_NUMBERS =
   "0x0000000000000000000000000000000200000000000000000000000000000001";
+
+function writesToStorage(writes: SlotWrite[]) {
+  return Object.fromEntries(writes.map((write) => [write.slot, write.value]));
+}
 
 test("getStorageSlot resolves top-level value types", () => {
   expect(getStorageSlot(layout, "owner")).toBe(
@@ -73,6 +78,15 @@ test("getStorageSlot resolves dynamic arrays", () => {
   );
   expect(getStorageSlot(layout, "dynamicNumbers[1]")).toBe(
     "0xc65a7bb8d6351c1cf70c95a316cc6a92839c986682d98bc35f958f4883f9d2a9",
+  );
+});
+
+test("getStorageSlot resolves bytes and strings", () => {
+  expect(getStorageSlot(layout, "rawBytes")).toBe(
+    "0x000000000000000000000000000000000000000000000000000000000000000b",
+  );
+  expect(getStorageSlot(layout, "message")).toBe(
+    "0x000000000000000000000000000000000000000000000000000000000000000c",
   );
 });
 
@@ -269,6 +283,24 @@ test("decodeStorage decodes dynamic arrays", () => {
   expect(decodeStorage(layout, "dynamicNumbers[1]", storage)).toBe(2n);
 });
 
+test("decodeStorage decodes bytes and strings", () => {
+  const shortStorage = writesToStorage([
+    ...encodeStorage(layout, "rawBytes", "0x1234"),
+    ...encodeStorage(layout, "message", "hello"),
+  ]);
+  const longBytes = `0x${"11".repeat(33)}` as const;
+  const longString = "x".repeat(33);
+  const longStorage = writesToStorage([
+    ...encodeStorage(layout, "rawBytes", longBytes),
+    ...encodeStorage(layout, "message", longString),
+  ]);
+
+  expect(decodeStorage(layout, "rawBytes", shortStorage)).toBe("0x1234");
+  expect(decodeStorage(layout, "message", shortStorage)).toBe("hello");
+  expect(decodeStorage(layout, "rawBytes", longStorage)).toBe(longBytes);
+  expect(decodeStorage(layout, "message", longStorage)).toBe(longString);
+});
+
 test("encodeStorage encodes full-slot value types", () => {
   expect(encodeStorage(layout, "totalSupply", 42n)).toMatchInlineSnapshot(`
     [
@@ -364,6 +396,43 @@ test("encodeStorage encodes dynamic array elements", () => {
   expect(() => encodeStorage(layout, "dynamicNumbers", [1n, 2n])).toThrow(
     "encoding dynamic array roots is not implemented yet: dynamicNumbers",
   );
+});
+
+test("encodeStorage encodes bytes and strings", () => {
+  expect(encodeStorage(layout, "rawBytes", "0x1234")).toMatchInlineSnapshot(`
+    [
+      {
+        "slot": "0x000000000000000000000000000000000000000000000000000000000000000b",
+        "value": "0x1234000000000000000000000000000000000000000000000000000000000004",
+      },
+    ]
+  `);
+  expect(encodeStorage(layout, "message", "hello")).toMatchInlineSnapshot(`
+    [
+      {
+        "slot": "0x000000000000000000000000000000000000000000000000000000000000000c",
+        "value": "0x68656c6c6f00000000000000000000000000000000000000000000000000000a",
+      },
+    ]
+  `);
+  expect(
+    encodeStorage(layout, "rawBytes", `0x${"11".repeat(33)}`),
+  ).toMatchInlineSnapshot(`
+    [
+      {
+        "slot": "0x000000000000000000000000000000000000000000000000000000000000000b",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000043",
+      },
+      {
+        "slot": "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01db9",
+        "value": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      },
+      {
+        "slot": "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01dba",
+        "value": "0x1100000000000000000000000000000000000000000000000000000000000000",
+      },
+    ]
+  `);
 });
 
 test("encodeStorage requires existing slots for packed values", () => {

@@ -1,4 +1,4 @@
-import { Hex } from "ox";
+import { Hash, Hex } from "ox";
 import {
   type IsSingleSlot,
   type ResolvedStorageItem,
@@ -167,6 +167,12 @@ export function decodeStorage<
   if (value === undefined) {
     throw new Error(`storage value not found for slot: ${slotHex}`);
   }
+  if (slot.type.encoding === "bytes") {
+    return decodeBytesValue(slot, value, storage) as StoragePathToPrimitiveType<
+      Layout,
+      Path
+    >;
+  }
   return decodeValue(slot, value) as StoragePathToPrimitiveType<Layout, Path>;
 }
 
@@ -215,6 +221,9 @@ export function encodeStorage<
     throw new Error(
       `existing storage value is required to encode packed path: ${formatStoragePath(slot.path)}`,
     );
+  }
+  if (slot.type.encoding === "bytes") {
+    return encodeBytesValue(slot, value);
   }
   return [
     {
@@ -366,6 +375,10 @@ function storageSlot(resolved: ResolvedStorageItem): Hex.Hex {
   });
 }
 
+function dynamicDataBaseSlot(slot: Hex.Hex): bigint {
+  return BigInt(Hash.keccak256(normalizeSlot(slot)));
+}
+
 function storageItemByteLength(resolved: ResolvedStorageItem): number {
   return Number(resolved.type.numberOfBytes);
 }
@@ -421,6 +434,44 @@ function decodeValue(
   }
 }
 
+function decodeBytesValue(
+  resolved: ResolvedStorageItem,
+  slotValue: Hex.Hex,
+  storage: AccountStorage,
+): Hex.Hex | string {
+  const bytes = decodeBytesPayload(resolved, slotValue, storage);
+  if (resolved.type.label === "string") {
+    return Hex.toString(bytes);
+  }
+  return bytes;
+}
+
+function decodeBytesPayload(
+  resolved: ResolvedStorageItem,
+  slotValue: Hex.Hex,
+  storage: AccountStorage,
+): Hex.Hex {
+  const normalized = normalizeSlotValue(slotValue);
+  const marker = Number(BigInt(Hex.slice(normalized, 31, 32)));
+  if (marker % 2 === 0) {
+    const length = marker / 2;
+    return Hex.slice(normalized, 0, length);
+  }
+
+  const length = bytesLength((BigInt(normalized) - 1n) / 2n, resolved.path);
+  const baseSlot = dynamicDataBaseSlot(storageSlot(resolved));
+  const chunks: Hex.Hex[] = [];
+  for (let index = 0; index < Math.ceil(length / 32); index++) {
+    const slot = Hex.fromNumber(baseSlot + BigInt(index), { size: 32 });
+    const value = getSlotValue(storage, slot);
+    if (value === undefined) {
+      throw new Error(`storage value not found for slot: ${slot}`);
+    }
+    chunks.push(value);
+  }
+  return Hex.slice(Hex.concat(...chunks), 0, length);
+}
+
 function encodeValue(
   resolved: ResolvedStorageItem,
   value: unknown,
@@ -434,6 +485,69 @@ function encodeValue(
   const mask = fieldMask(numberOfBytes) << shift;
   const next = (base & ~mask) | (encoded << shift);
   return Hex.fromNumber(next, { size: 32 });
+}
+
+function encodeBytesValue(
+  resolved: ResolvedStorageItem,
+  value: unknown,
+): SlotWrite[] {
+  const bytes = bytesPayload(resolved, value);
+  if (Hex.size(bytes) <= 31) {
+    return [
+      {
+        slot: storageSlot(resolved),
+        value: encodeShortBytes(bytes),
+      },
+    ];
+  }
+
+  const slot = storageSlot(resolved);
+  const baseSlot = dynamicDataBaseSlot(slot);
+  const writes: SlotWrite[] = [
+    {
+      slot,
+      value: Hex.fromNumber(BigInt(Hex.size(bytes)) * 2n + 1n, { size: 32 }),
+    },
+  ];
+  for (let offset = 0; offset < Hex.size(bytes); offset += 32) {
+    writes.push({
+      slot: Hex.fromNumber(baseSlot + BigInt(offset / 32), { size: 32 }),
+      value: Hex.padRight(Hex.slice(bytes, offset, offset + 32), 32),
+    });
+  }
+  return writes;
+}
+
+function bytesPayload(resolved: ResolvedStorageItem, value: unknown): Hex.Hex {
+  if (resolved.type.label === "string") {
+    if (typeof value !== "string") {
+      throw new Error("string value must be a string");
+    }
+    return Hex.fromString(value);
+  }
+  if (typeof value !== "string" || !HEX_STRING_PATTERN.test(value)) {
+    throw new Error("bytes value must be a hex string");
+  }
+  if ((value.length - 2) % 2 !== 0) {
+    throw new Error("bytes value must have an even number of hex digits");
+  }
+  return value as Hex.Hex;
+}
+
+function encodeShortBytes(bytes: Hex.Hex): Hex.Hex {
+  return Hex.concat(
+    Hex.padRight(bytes, 31),
+    Hex.fromNumber(Hex.size(bytes) * 2, { size: 1 }),
+  );
+}
+
+function bytesLength(length: bigint, path: StoragePath): number {
+  if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      `bytes value is too large to decode: ${formatStoragePath(path)}`,
+    );
+  }
+  return Number(length);
 }
 
 function extractField(

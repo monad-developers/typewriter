@@ -72,6 +72,22 @@ const layout = {
       slot: "6",
       type: "t_array(t_uint128)3_storage",
     },
+    {
+      astId: 10,
+      contract: "src/Test.sol:Test",
+      label: "rawBytes",
+      offset: 0,
+      slot: "8",
+      type: "t_bytes_storage",
+    },
+    {
+      astId: 11,
+      contract: "src/Test.sol:Test",
+      label: "message",
+      offset: 0,
+      slot: "9",
+      type: "t_string_storage",
+    },
   ],
   types: {
     t_address: {
@@ -145,6 +161,16 @@ const layout = {
       encoding: "inplace",
       label: "uint128[3]",
       numberOfBytes: "64",
+    },
+    t_bytes_storage: {
+      encoding: "bytes",
+      label: "bytes",
+      numberOfBytes: "32",
+    },
+    t_string_storage: {
+      encoding: "bytes",
+      label: "string",
+      numberOfBytes: "32",
     },
   },
 } as const satisfies StorageLayout;
@@ -244,6 +270,8 @@ test("StorageLayoutToPrimitiveType maps top-level Solidity types", () => {
     numbers: readonly bigint[];
     balances: [`Error: Unsupported type 'mapping(address => uint256)'.`];
     fixedNumbers: readonly [bigint, bigint, bigint];
+    rawBytes: `0x${string}`;
+    message: string;
   }>();
 });
 
@@ -282,6 +310,8 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
     typeof layout,
     "numbers[0]"
   >;
+  type RawBytes = StoragePathToPrimitiveType<typeof layout, "rawBytes">;
+  type Message = StoragePathToPrimitiveType<typeof layout, "message">;
 
   expectTypeOf<Owner>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<SupplyPath>().toEqualTypeOf<bigint>();
@@ -290,6 +320,8 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   expectTypeOf<FixedArrayElement>().toEqualTypeOf<bigint>();
   expectTypeOf<DynamicArray>().toEqualTypeOf<readonly bigint[]>();
   expectTypeOf<DynamicArrayElement>().toEqualTypeOf<bigint>();
+  expectTypeOf<RawBytes>().toEqualTypeOf<`0x${string}`>();
+  expectTypeOf<Message>().toEqualTypeOf<string>();
 });
 
 test("storage layout extraction helpers preserve layout names", () => {
@@ -304,6 +336,8 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "numbers"
     | "balances"
     | "fixedNumbers"
+    | "rawBytes"
+    | "message"
   >();
   expectTypeOf<Paths>().toEqualTypeOf<
     | "supply"
@@ -319,6 +353,8 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "fixedNumbers[0]"
     | "fixedNumbers[1]"
     | "fixedNumbers[2]"
+    | "rawBytes"
+    | "message"
   >();
 });
 
