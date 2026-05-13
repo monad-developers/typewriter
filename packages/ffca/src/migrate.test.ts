@@ -124,9 +124,9 @@ test("migrate rejects accepted mutations in an existing schema", async () => {
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.harness_credits
-      (status, account, key_id, key_type, raw_signature, amount, nonce)
+      (id, status, account, key_id, key_type, raw_signature, amount, nonce)
     VALUES
-      ('accepted', ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, 0, 0, '0x', 1, 0)
+      (0, 'accepted', ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, 0, 0, '0x', 1, 0)
   `;
 
   await expect(migrate(db, chainId, address)).rejects.toThrow(

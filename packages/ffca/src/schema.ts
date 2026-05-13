@@ -1,4 +1,4 @@
-import { char, integer, numeric, pgEnum, serial } from "drizzle-orm/pg-core";
+import { char, integer, numeric, pgEnum } from "drizzle-orm/pg-core";
 
 // const uint8 = () => smallint();
 // const uint16 = () => integer();
@@ -23,9 +23,10 @@ export const mutationStatusEnum = pgEnum("mutation_status", [
 // Persisted mutation rows start at "accepted". Pending mutations live only in
 // memory and are not part of the database model.
 export const mutationColumns = () => ({
-  // Unique within the table that owns these columns. Apps that split mutations
-  // across tables can add their own global id/sequence if they need one.
-  id: serial().primaryKey(),
+  // Runtime-assigned, globally unique across every table that spreads these
+  // columns. `loadNextIds` resumes from the max id across all mutation tables
+  // on restart, so apps must not assign their own values.
+  id: integer().notNull().primaryKey(),
   bundleId: integer(),
   bundlePosition: integer(),
   blockNumber: uint256(),
