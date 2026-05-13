@@ -18,6 +18,7 @@ import {
 } from "../test/setup";
 import {
   baseMutations,
+  loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
   ORDER_BOOK_SIGNATURE_PARAMS,
@@ -223,15 +224,14 @@ async function waitForProposed(
 
 test("ffca order book rejects invalid signatures before applying", async () => {
   const address = await deployExchange();
-  const state: State<bigint> = { accounts: {}, instruments: {} };
-  const app = createFFCA({
+  const app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: state },
+    state: { initial: { accounts: {}, instruments: {} } as State<bigint> },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: baseMutations(),
@@ -239,7 +239,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
 
   const maker = await setupAccount({
     app,
-    state,
+    state: app.state as State<bigint>,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
@@ -259,7 +259,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
   });
 
   await expect(
-    executeOrderBookMutation(app, state, {
+    executeOrderBookMutation(app, app.state as State<bigint>, {
       ...signed,
       args: {
         asset: BASE,
@@ -270,15 +270,16 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     }),
   ).rejects.toThrow(/InvalidSignature/);
 
-  expect(state.accounts[maker]!.balances[BASE]).toBeUndefined();
-  expect(state.accounts[maker]!.nonces["0"]).toBeUndefined();
+  const runtimeState = app.state as State<bigint>;
+  expect(runtimeState.accounts[maker]!.balances[BASE]).toBeUndefined();
+  expect(runtimeState.accounts[maker]!.nonces["0"]).toBeUndefined();
   await app.stop();
 });
 
 test("ffca order book persists and submits market-order flow", async () => {
   const address = await deployExchange();
   const state: State<bigint> = { accounts: {}, instruments: {} };
-  const app = createFFCA({
+  const app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
@@ -286,10 +287,14 @@ test("ffca order book persists and submits market-order flow", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { connection: TEST_DB_CONNECTION },
-    state: { initial: state, schema: schema.APP_SCHEMA },
+    state: {
+      initial: state,
+      schema: schema.APP_SCHEMA,
+      load: loadOrderBookState,
+    },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
-    mutations: persistedMutations(state),
+    mutations: persistedMutations(),
   });
   const db = drizzle(TEST_DB_CONNECTION, {
     schema: schema.APP_SCHEMA,
@@ -298,14 +303,14 @@ test("ffca order book persists and submits market-order flow", async () => {
 
   const maker = await setupAccount({
     app,
-    state,
+    state: app.state as State<bigint>,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   const taker = await setupAccount({
     app,
-    state,
+    state: app.state as State<bigint>,
     account: TAKER_ACCOUNT.address,
     privateKey: TAKER_PRIVATE_KEY,
     contract: address,
@@ -314,7 +319,7 @@ test("ffca order book persists and submits market-order flow", async () => {
 
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "AddInstrument",
       address,
@@ -334,7 +339,7 @@ test("ffca order book persists and submits market-order flow", async () => {
   );
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "Deposit",
       address,
@@ -351,7 +356,7 @@ test("ffca order book persists and submits market-order flow", async () => {
   );
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "Deposit",
       address,
@@ -368,7 +373,7 @@ test("ffca order book persists and submits market-order flow", async () => {
   );
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "LimitOrder",
       address,
@@ -387,7 +392,7 @@ test("ffca order book persists and submits market-order flow", async () => {
   );
   const result = await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "MarketOrder",
       address,
@@ -406,11 +411,12 @@ test("ffca order book persists and submits market-order flow", async () => {
   );
 
   expect(result.status).toBe("accepted");
-  expect(state.accounts[taker]!.balances[BASE]).toBe(10n);
-  expect(state.accounts[maker]!.orders[0]!.quantity).toBe(10n);
-  expect(state.instruments[0]!.asks[Number(10n * Q32)]!.remainingQuantity).toBe(
-    0n,
-  );
+  const runtimeState = app.state as State<bigint>;
+  expect(runtimeState.accounts[taker]!.balances[BASE]).toBe(10n);
+  expect(runtimeState.accounts[maker]!.orders[0]!.quantity).toBe(10n);
+  expect(
+    runtimeState.instruments[0]!.asks[Number(10n * Q32)]!.remainingQuantity,
+  ).toBe(0n);
 
   await waitForProposed(db, schema.marketOrders, "market order");
 
@@ -433,7 +439,7 @@ test("ffca order book persists and submits market-order flow", async () => {
 test("ffca order book changes an unfilled order to a new price", async () => {
   const address = await deployExchange();
   const state: State<bigint> = { accounts: {}, instruments: {} };
-  const app = createFFCA({
+  const app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
@@ -448,14 +454,14 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
   const maker = await setupAccount({
     app,
-    state,
+    state: app.state as State<bigint>,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "AddInstrument",
       address,
@@ -475,7 +481,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
   );
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "Deposit",
       address,
@@ -492,7 +498,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
   );
   await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "LimitOrder",
       address,
@@ -512,7 +518,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
   const result = await executeOrderBookMutation(
     app,
-    state,
+    app.state as State<bigint>,
     await signedMutation({
       name: "ChangeOrder",
       address,

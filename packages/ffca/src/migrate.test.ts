@@ -109,3 +109,27 @@ test("migrate is idempotent when schema already exists", async () => {
     "nonces",
   ]);
 });
+
+test("migrate rejects accepted mutations in an existing schema", async () => {
+  const chainId = 31339;
+  const address =
+    "0x000000000000000000000000000000000000ffca" as Address.Address;
+  const schemaName = "ffca_31339_0x000000000000000000000000000000000000ffca";
+
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: HARNESS_SCHEMA,
+    casing: "snake_case",
+  });
+  await migrate(db, chainId, address);
+
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.harness_credits
+      (status, account, key_id, key_type, raw_signature, amount, nonce)
+    VALUES
+      ('accepted', ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, 0, 0, '0x', 1, 0)
+  `;
+
+  await expect(migrate(db, chainId, address)).rejects.toThrow(
+    /contains accepted mutations/,
+  );
+});

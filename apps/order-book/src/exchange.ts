@@ -222,10 +222,6 @@ export type ResolvedMutation =
       mutation: Withdrawal<bigint>;
     } & Signed<bigint>);
 
-export function createState(): State<bigint> {
-  return { accounts: {}, instruments: {} };
-}
-
 export function createAccount(): Account<bigint> {
   return { nonces: {}, balances: {}, keys: [], orders: [] };
 }

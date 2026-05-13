@@ -1,5 +1,5 @@
 import { parseAbiParameters } from "abitype";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import {
   bigint,
   char,
@@ -822,6 +822,45 @@ export const HARNESS_PERSISTED_MUTATIONS: {
     },
   },
 };
+
+export async function loadHarnessState(
+  tx: FFCADatabaseTransaction,
+): Promise<HarnessState> {
+  const state: HarnessState = { accounts: {}, balances: {} };
+  const db = harnessDb(tx);
+
+  const accounts = await db.select().from(harnessAccounts);
+  for (const row of accounts) {
+    state.accounts[row.id as Hex] = { keys: [], nonces: {} };
+  }
+
+  const keys = await db
+    .select()
+    .from(harnessKeys)
+    .orderBy(asc(harnessKeys.keyIndex));
+  for (const row of keys) {
+    const account = state.accounts[row.account as Hex];
+    if (account === undefined) continue;
+    account.keys[Number(row.keyIndex)] = {
+      keyType: row.keyType,
+      publicKey: row.publicKey as Hex,
+    };
+  }
+
+  const nonces = await db.select().from(harnessNonces);
+  for (const row of nonces) {
+    const account = state.accounts[row.account as Hex];
+    if (account === undefined) continue;
+    account.nonces[row.nonceKey] = row.sequence;
+  }
+
+  const balances = await db.select().from(harnessBalances);
+  for (const row of balances) {
+    state.balances[row.account as Hex] = BigInt(row.amount);
+  }
+
+  return state;
+}
 
 // Derive the bytes32 account id from a public key (matches Harness.sol's
 // `keccak256(rootPublicKey)` bootstrap rule).

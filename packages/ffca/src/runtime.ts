@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { getTableName } from "drizzle-orm/table";
@@ -219,17 +220,20 @@ function createPersistenceSchema(
   const mutations = Object.values(config.mutations);
   const hasDatabase = config.database !== undefined;
   const hasStateSchema = config.state.schema !== undefined;
+  const hasStateLoad = config.state.load !== undefined;
   const hasAnyHooks = mutations.some(hasAnyPersistenceHook);
   const hasAllHooks = mutations.every(hasAllPersistenceHooks);
-  const persistenceEnabled = hasDatabase && hasStateSchema && hasAllHooks;
-  const persistenceDisabled = !hasDatabase && !hasStateSchema && !hasAnyHooks;
+  const persistenceEnabled =
+    hasDatabase && hasStateSchema && hasStateLoad && hasAllHooks;
+  const persistenceDisabled =
+    !hasDatabase && !hasStateSchema && !hasStateLoad && !hasAnyHooks;
 
   if (persistenceDisabled) {
     return undefined;
   }
   if (!persistenceEnabled) {
     throw new Error(
-      "FFCA persistence must be fully configured: database, state.schema, and all mutation persistence hooks are required together",
+      "FFCA persistence must be fully configured: database, state.schema, state.load, and all mutation persistence hooks are required together",
     );
   }
   const database = config.database;
@@ -300,7 +304,32 @@ async function startPersistence(
   }
 }
 
-export function createFFCA(config: FFCAConfig): FFCA {
+async function loadNextIds(
+  db: FFCADatabase,
+  config: FFCAConfig,
+): Promise<{ mutationId: number; bundleId: number }> {
+  let maxMutationId = -1;
+  let maxBundleId = -1;
+  for (const mutation of Object.values(config.mutations)) {
+    // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
+    const table = mutation.table as any;
+    const [row] = await db
+      .select({
+        maxMutationId: sql<number>`coalesce(max(${table.id}), -1)`,
+        maxBundleId: sql<number>`coalesce(max(${table.bundleId}), -1)`,
+      })
+      .from(mutation.table);
+    if (row !== undefined && row.maxMutationId > maxMutationId) {
+      maxMutationId = row.maxMutationId;
+    }
+    if (row !== undefined && row.maxBundleId > maxBundleId) {
+      maxBundleId = row.maxBundleId;
+    }
+  }
+  return { mutationId: maxMutationId + 1, bundleId: maxBundleId + 1 };
+}
+
+export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
   // Mutable so failure-isolation can swap the binding back to a snapshot
   // when a mutation's apply throws mid-mutation. Exposed via getter below.
   let state = config.state.initial;
@@ -332,6 +361,24 @@ export function createFFCA(config: FFCAConfig): FFCA {
   const persistenceSchema = createPersistenceSchema(config);
   let db: FFCADatabase | undefined;
   let deploymentLock: DeploymentLock | undefined;
+  let mutationId = 0;
+  let bundleId = 0;
+
+  const persistence = await startPersistence(config, persistenceSchema);
+  db = persistence?.db;
+  deploymentLock = persistence?.lock;
+  if (db !== undefined && config.state.load !== undefined) {
+    try {
+      state = await db.transaction((tx) => config.state.load!(tx));
+      ({ mutationId, bundleId } = await loadNextIds(db, config));
+    } catch (error) {
+      if (deploymentLock !== undefined) {
+        await releaseDeploymentLock(deploymentLock);
+        deploymentLock = undefined;
+      }
+      throw error;
+    }
+  }
 
   // Local nonce cache. Lazy-initialized on first use; incremented per submit.
   // TODO recover from gaps and chain divergence; per-key parallelism when
@@ -383,8 +430,6 @@ export function createFFCA(config: FFCAConfig): FFCA {
     }
   };
 
-  let mutationId = 0;
-  let bundleId = 0;
   let bundlePosition = 0;
 
   // bundle: drain the mutation queue, apply each, hand off to submit
@@ -789,12 +834,6 @@ export function createFFCA(config: FFCAConfig): FFCA {
   );
 
   const runtimeEffect = Effect.gen(function* () {
-    const persistence = yield* Effect.tryPromise({
-      try: () => startPersistence(config, persistenceSchema),
-      catch: (error) => error as Error,
-    });
-    db = persistence?.db;
-    deploymentLock = persistence?.lock;
     yield* Effect.logInfo("ffca runtime started");
     yield* Effect.all([bundleProgram, submitProgram, watchProgram], {
       concurrency: "unbounded",

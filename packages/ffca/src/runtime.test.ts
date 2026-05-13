@@ -39,6 +39,7 @@ import {
   harnessInitializeMutations,
   harnessKeys,
   harnessNonces,
+  loadHarnessState,
   p256PublicKey,
   secp256k1PublicKey,
   setupHarnessAccount,
@@ -218,7 +219,7 @@ test("verifyResolution validates resolved shape", () => {
 });
 
 test("ffca.domain is derived from config", async () => {
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address: "0x000000000000000000000000000000000000abcd",
     abi: [],
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
@@ -244,7 +245,7 @@ test("ffca.domain is derived from config", async () => {
 });
 
 test("createFFCA rejects partially configured persistence", async () => {
-  expect(() =>
+  await expect(
     createFFCA({
       address: "0x000000000000000000000000000000000000abcd",
       abi: [],
@@ -257,13 +258,40 @@ test("createFFCA rejects partially configured persistence", async () => {
       signature: TEST_SIGNATURE,
       mutations: { shape: SHAPE_MUTATION },
     }),
-  ).toThrow(/persistence must be fully configured/);
+  ).rejects.toThrow(/persistence must be fully configured/);
+});
+
+test("createFFCA loads persisted state before returning", async () => {
+  const initialState = { accounts: {}, balances: {}, loaded: false };
+  const loadedState = { accounts: {}, balances: {}, loaded: true };
+  const ffca = await createFFCA({
+    address: "0x000000000000000000000000000000000000ffca",
+    abi: [],
+    // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
+    account: {} as any,
+    chainId: 31337,
+    rpcUrl: TEST_RPC_URL,
+    domain: HARNESS_DOMAIN,
+    database: { connection: TEST_DB_CONNECTION },
+    state: {
+      initial: initialState,
+      schema: HARNESS_SCHEMA,
+      load: async () => loadedState,
+    },
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
+    mutations: { initialize: HARNESS_PERSISTED_MUTATIONS.initialize },
+  });
+
+  expect(initialState.loaded).toBe(false);
+  expect(ffca.state).toBe(loadedState);
+
+  await ffca.stop();
 });
 
 test("bundle applies mutations in config.sequence order within a bundle", async () => {
   const applied: string[] = [];
   const noop = parseAbiParameters("uint256 nonce");
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
     // biome-ignore lint/suspicious/noExplicitAny: stub field
@@ -337,7 +365,7 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
 });
 
 test("execute rejects mutations whose name isn't in sequence", async () => {
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
@@ -389,7 +417,7 @@ test("resolve and apply receive submitted signature and apply receives digest", 
       digests.push(digest);
     },
   };
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
@@ -421,7 +449,7 @@ test("resolve and apply receive submitted signature and apply receives digest", 
 test("Harness apply rejects invalid signatures using callback digest", async () => {
   const address = "0x0000000000000000000000000000000000000000";
   const state: HarnessState = { accounts: {}, balances: {} };
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi: [],
@@ -469,7 +497,7 @@ test("Harness apply rejects invalid signatures using callback digest", async () 
 test("e2e Counter: single mutation", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: COUNTER_DOMAIN,
     abi,
@@ -520,7 +548,7 @@ test("e2e Counter: single mutation", async () => {
 test("e2e Counter: multiple mutations in one bundle", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: COUNTER_DOMAIN,
     abi,
@@ -585,7 +613,7 @@ test("e2e Counter: multiple mutations in one bundle", async () => {
 test("e2e Harness: mutation with resolution", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -669,7 +697,7 @@ test("e2e Harness: mutation with resolution", async () => {
 test("e2e Harness: persistence callbacks write accepted and proposed state", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -680,6 +708,7 @@ test("e2e Harness: persistence callbacks write accepted and proposed state", asy
     state: {
       initial: { accounts: {}, balances: {} } as HarnessState,
       schema: HARNESS_SCHEMA,
+      load: loadHarnessState,
     },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     mutations: {
@@ -838,7 +867,7 @@ test("e2e Harness: persistence callbacks write accepted and proposed state", asy
 test("e2e Harness: authorize persistence writes per-mutation key rows", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -849,6 +878,7 @@ test("e2e Harness: authorize persistence writes per-mutation key rows", async ()
     state: {
       initial: { accounts: {}, balances: {} } as HarnessState,
       schema: HARNESS_SCHEMA,
+      load: loadHarnessState,
     },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     sequence: ["initialize", "authorize"],
@@ -972,7 +1002,7 @@ test("e2e Harness: authorize persistence writes per-mutation key rows", async ()
 test("e2e Harness: mutations reordered by sequence", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -1064,7 +1094,7 @@ test("e2e Harness: mutations reordered by sequence", async () => {
 test("e2e Harness: apply error rejects without crashing", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -1186,7 +1216,7 @@ test("e2e Harness: apply error rejects without crashing", async () => {
 test("e2e Harness: secp256k1 authorize flow", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -1319,7 +1349,7 @@ test("e2e Harness: secp256k1 authorize flow", async () => {
 test("e2e Harness: P-256 key authorize and credit", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -1433,7 +1463,7 @@ test("e2e Harness: P-256 key authorize and credit", async () => {
 test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
   const { address, abi } = await deployHarness();
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
     abi,
@@ -1543,7 +1573,7 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
 test("e2e Counter: subscribers receive lifecycle events", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: COUNTER_DOMAIN,
     abi,
@@ -1618,7 +1648,7 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
 test("e2e Counter: watch advances proposed bundles by confirmations", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
-  const ffca = createFFCA({
+  const ffca = await createFFCA({
     address,
     domain: COUNTER_DOMAIN,
     abi,

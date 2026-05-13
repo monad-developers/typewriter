@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { type FFCAConfig, verifySignature as verifyKeySignature } from "ffca";
 import {
   encodeAbiParameters,
@@ -10,6 +10,7 @@ import {
 import * as schema from "./app-schema";
 import {
   type AddInstrument,
+  ALL_PERMISSIONS,
   type Authorize,
   type ChangeOrder,
   type CloseOrder,
@@ -42,6 +43,7 @@ import {
   PERM_WITHDRAW,
   type Revoke,
   type State,
+  toLots,
   type Withdrawal,
 } from "./exchange";
 import { resolveMarketOrder } from "./resolution";
@@ -566,6 +568,94 @@ function txDb(tx: unknown) {
   return tx as any;
 }
 
+export async function loadOrderBookState(
+  tx: Parameters<NonNullable<FFCAConfig["state"]["load"]>>[0],
+): Promise<OrderBookState> {
+  const state: OrderBookState = { accounts: {}, instruments: {} };
+  const db = txDb(tx);
+
+  const accounts = await db.select().from(schema.accounts);
+  for (const row of accounts) {
+    state.accounts[row.id as Hex] = {
+      nonces: {},
+      balances: {},
+      keys: [],
+      orders: [],
+    };
+  }
+
+  const keys = await db
+    .select()
+    .from(schema.keys)
+    .orderBy(asc(schema.keys.keyIndex));
+  for (const row of keys) {
+    const account = state.accounts[row.account as Hex];
+    if (account === undefined) continue;
+    account.keys[Number(row.keyIndex)] = {
+      expiry: row.expiry,
+      keyType: row.keyType,
+      permissions: row.permissions,
+      publicKey: row.publicKey as Hex,
+    };
+  }
+
+  const nonces = await db.select().from(schema.nonces);
+  for (const row of nonces) {
+    const account = state.accounts[row.account as Hex];
+    if (account === undefined) continue;
+    account.nonces[row.nonceKey] = row.sequence;
+  }
+
+  const balances = await db.select().from(schema.balances);
+  for (const row of balances) {
+    const account = state.accounts[row.account as Hex];
+    if (account === undefined) continue;
+    account.balances[row.asset as Hex] = BigInt(row.amount);
+  }
+
+  const instruments = await db.select().from(schema.instruments);
+  for (const row of instruments) {
+    state.instruments[Number(row.id)] = {
+      base: row.base as Hex,
+      baseLotExp: row.baseLotExp,
+      quote: row.quote as Hex,
+      quoteLotExp: row.quoteLotExp,
+      bids: {},
+      asks: {},
+    };
+  }
+
+  const orders = await db
+    .select()
+    .from(schema.orders)
+    .orderBy(asc(schema.orders.orderIndex));
+  for (const row of orders) {
+    const account = state.accounts[row.account as Hex];
+    if (account === undefined) continue;
+    account.orders[Number(row.orderIndex)] = {
+      quantity: row.quantity,
+      instrumentId: Number(row.instrumentId),
+      price: row.price,
+      tickVolume: row.tickVolume,
+      side: row.side,
+    };
+  }
+
+  const ticks = await db.select().from(schema.ticks);
+  for (const row of ticks) {
+    const instrument = state.instruments[Number(row.instrumentId)];
+    if (instrument === undefined) continue;
+    const side = row.side === 0 ? instrument.bids : instrument.asks;
+    side[Number(row.price)] = {
+      quantity: row.quantity,
+      remainingQuantity: row.remainingQuantity,
+      volume: row.volume,
+    };
+  }
+
+  return state;
+}
+
 function mutationArgs<T>(mutation: { args: unknown }): T {
   return mutation.args as T;
 }
@@ -636,44 +726,6 @@ async function persistAccount(tx: unknown, account: Hex) {
     .onConflictDoNothing();
 }
 
-async function persistKey(
-  tx: unknown,
-  state: OrderBookState,
-  account: Hex,
-  keyIndex: number,
-) {
-  const key = state.accounts[account]?.keys[keyIndex];
-  if (key === undefined) return;
-  await persistAccount(tx, account);
-  await txDb(tx)
-    .insert(schema.keys)
-    .values({
-      account,
-      keyIndex: BigInt(keyIndex),
-      expiry: key.expiry,
-      keyType: key.keyType,
-      permissions: key.permissions,
-      publicKey: key.publicKey,
-    })
-    .onConflictDoUpdate({
-      target: [schema.keys.account, schema.keys.keyIndex],
-      set: {
-        expiry: key.expiry,
-        keyType: key.keyType,
-        permissions: key.permissions,
-        publicKey: key.publicKey,
-      },
-    });
-}
-
-async function persistKeys(tx: unknown, state: OrderBookState, account: Hex) {
-  const acc = state.accounts[account];
-  if (acc === undefined) return;
-  for (const keyIndex of acc.keys.keys()) {
-    await persistKey(tx, state, account, keyIndex);
-  }
-}
-
 async function persistNonce(tx: unknown, account: Hex, nonce: bigint) {
   await persistAccount(tx, account);
   const nonceKey = nonce >> 64n;
@@ -687,72 +739,108 @@ async function persistNonce(tx: unknown, account: Hex, nonce: bigint) {
     });
 }
 
-async function persistBalance(
+async function persistKeyValue(
   tx: unknown,
-  state: OrderBookState,
+  account: Hex,
+  keyIndex: bigint,
+  key: { expiry: number; keyType: number; permissions: number; publicKey: Hex },
+) {
+  await persistAccount(tx, account);
+  await txDb(tx)
+    .insert(schema.keys)
+    .values({ account, keyIndex, ...key })
+    .onConflictDoUpdate({
+      target: [schema.keys.account, schema.keys.keyIndex],
+      set: key,
+    });
+}
+
+async function nextKeyIndex(tx: unknown, account: Hex): Promise<bigint> {
+  const [row] = await txDb(tx)
+    .select({
+      next: sql<bigint>`coalesce(max(${schema.keys.keyIndex}), -1) + 1`,
+    })
+    .from(schema.keys)
+    .where(eq(schema.keys.account, account));
+  return row?.next ?? 0n;
+}
+
+async function persistBalanceDelta(
+  tx: unknown,
   account: Hex,
   asset: Hex,
+  delta: bigint,
 ) {
-  const amount = state.accounts[account]?.balances[asset] ?? 0n;
   await persistAccount(tx, account);
   await txDb(tx)
     .insert(schema.balances)
-    .values({ account, asset, amount: amount.toString() })
+    .values({ account, asset, amount: delta.toString() })
     .onConflictDoUpdate({
       target: [schema.balances.account, schema.balances.asset],
-      set: { amount: amount.toString() },
+      set: { amount: sql`${schema.balances.amount} + ${delta.toString()}` },
     });
 }
 
-async function persistInstrument(
-  tx: unknown,
-  state: OrderBookState,
-  instrumentId: number,
-) {
-  const instrument = state.instruments[instrumentId];
-  if (instrument === undefined) return;
-  await txDb(tx)
-    .insert(schema.instruments)
-    .values({
-      id: BigInt(instrumentId),
-      base: instrument.base,
-      baseLotExp: instrument.baseLotExp,
-      quote: instrument.quote,
-      quoteLotExp: instrument.quoteLotExp,
-    })
-    .onConflictDoUpdate({
-      target: schema.instruments.id,
-      set: {
-        base: instrument.base,
-        baseLotExp: instrument.baseLotExp,
-        quote: instrument.quote,
-        quoteLotExp: instrument.quoteLotExp,
-      },
-    });
+async function loadInstrumentRow(tx: unknown, instrumentId: number) {
+  const [instrument] = await txDb(tx)
+    .select()
+    .from(schema.instruments)
+    .where(eq(schema.instruments.id, BigInt(instrumentId)))
+    .limit(1);
+  return instrument;
 }
 
-async function persistTick(
+async function loadTickVolume(
   tx: unknown,
-  state: OrderBookState,
   instrumentId: number,
   side: 0 | 1,
   price: bigint,
+): Promise<number> {
+  const [row] = await txDb(tx)
+    .select({ volume: schema.ticks.volume })
+    .from(schema.ticks)
+    .where(
+      and(
+        eq(schema.ticks.instrumentId, BigInt(instrumentId)),
+        eq(schema.ticks.side, side),
+        eq(schema.ticks.price, price),
+      ),
+    )
+    .limit(1);
+  return row?.volume ?? 0;
+}
+
+async function loadOrderRow(tx: unknown, account: Hex, orderIndex: number) {
+  const [order] = await txDb(tx)
+    .select()
+    .from(schema.orders)
+    .where(
+      and(
+        eq(schema.orders.account, account),
+        eq(schema.orders.orderIndex, BigInt(orderIndex)),
+      ),
+    )
+    .limit(1);
+  return order;
+}
+
+async function upsertTickDelta(
+  tx: unknown,
+  instrumentId: number,
+  side: 0 | 1,
+  price: bigint,
+  quantityDelta: bigint,
+  remainingDelta: bigint,
 ) {
-  const instrument = state.instruments[instrumentId];
-  const tick = (side === 0 ? instrument?.bids : instrument?.asks)?.[
-    Number(price)
-  ];
-  if (tick === undefined) return;
-  await persistInstrument(tx, state, instrumentId);
   await txDb(tx)
     .insert(schema.ticks)
     .values({
       instrumentId: BigInt(instrumentId),
       side,
       price,
-      quantity: tick.quantity,
-      remainingQuantity: tick.remainingQuantity,
-      volume: tick.volume,
+      quantity: quantityDelta,
+      remainingQuantity: remainingDelta,
+      volume: 0,
     })
     .onConflictDoUpdate({
       target: [
@@ -761,57 +849,23 @@ async function persistTick(
         schema.ticks.price,
       ],
       set: {
-        quantity: tick.quantity,
-        remainingQuantity: tick.remainingQuantity,
-        volume: tick.volume,
+        quantity: sql`${schema.ticks.quantity} + ${quantityDelta}`,
+        remainingQuantity: sql`${schema.ticks.remainingQuantity} + ${remainingDelta}`,
       },
     });
 }
 
-async function persistOrder(
-  tx: unknown,
-  state: OrderBookState,
-  account: Hex,
-  orderIndex: number,
-) {
-  const order = state.accounts[account]?.orders[orderIndex];
-  if (order === undefined) return;
-  await persistAccount(tx, account);
-  await persistInstrument(tx, state, order.instrumentId);
-  await txDb(tx)
-    .insert(schema.orders)
-    .values({
-      account,
-      orderIndex: BigInt(orderIndex),
-      quantity: order.quantity,
-      instrumentId: BigInt(order.instrumentId),
-      price: order.price,
-      tickVolume: order.tickVolume,
-      side: order.side,
+async function nextOrderIndex(tx: unknown, account: Hex): Promise<bigint> {
+  const [row] = await txDb(tx)
+    .select({
+      next: sql<bigint>`coalesce(max(${schema.orders.orderIndex}), -1) + 1`,
     })
-    .onConflictDoUpdate({
-      target: [schema.orders.account, schema.orders.orderIndex],
-      set: {
-        quantity: order.quantity,
-        instrumentId: BigInt(order.instrumentId),
-        price: order.price,
-        tickVolume: order.tickVolume,
-        side: order.side,
-      },
-    });
+    .from(schema.orders)
+    .where(eq(schema.orders.account, account));
+  return row?.next ?? 0n;
 }
 
-async function persistOrders(tx: unknown, state: OrderBookState, account: Hex) {
-  const acc = state.accounts[account];
-  if (acc === undefined) return;
-  for (const orderIndex of acc.orders.keys()) {
-    await persistOrder(tx, state, account, orderIndex);
-  }
-}
-
-export function persistedMutations(
-  state: OrderBookState,
-): FFCAConfig["mutations"] {
+export function persistedMutations(): FFCAConfig["mutations"] {
   const mutations = baseMutations();
 
   mutations.Initialize = {
@@ -832,9 +886,21 @@ export function persistedMutations(
         });
     },
     persistState: async (tx, { mutation }) => {
+      const args = mutationArgs<InitializeArgs>(mutation);
       const signature = mutationSignature(mutation);
       await persistAccount(tx, signature.account);
-      await persistKeys(tx, state, signature.account);
+      await persistKeyValue(tx, signature.account, 0n, {
+        expiry: 0,
+        keyType: args.rootKeyType,
+        permissions: ALL_PERMISSIONS,
+        publicKey: args.rootPublicKey,
+      });
+      await persistKeyValue(tx, signature.account, 1n, {
+        expiry: args.expiry,
+        keyType: args.keyType,
+        permissions: args.permissions,
+        publicKey: args.publicKey,
+      });
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.initializes),
@@ -859,7 +925,17 @@ export function persistedMutations(
       const args = mutationArgs<AuthorizeArgs>(mutation);
       const signature = mutationSignature(mutation);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistKeys(tx, state, signature.account);
+      await persistKeyValue(
+        tx,
+        signature.account,
+        await nextKeyIndex(tx, signature.account),
+        {
+          expiry: args.expiry,
+          keyType: args.keyType,
+          permissions: args.permissions,
+          publicKey: args.publicKey,
+        },
+      );
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.authorizes),
@@ -881,7 +957,12 @@ export function persistedMutations(
       const args = mutationArgs<RevokeArgs>(mutation);
       const signature = mutationSignature(mutation);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistKey(tx, state, signature.account, args.keyId);
+      await persistKeyValue(tx, signature.account, BigInt(args.keyId), {
+        expiry: 0,
+        keyType: 0,
+        permissions: 0,
+        publicKey: "0x",
+      });
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.revokes),
@@ -902,21 +983,91 @@ export function persistedMutations(
     persistState: async (tx, { mutation }) => {
       const args = mutationArgs<CloseOrderArgs>(mutation);
       const signature = mutationSignature(mutation);
-      const order = state.accounts[signature.account]?.orders[args.orderId];
+      const order = await loadOrderRow(tx, signature.account, args.orderId);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistOrder(tx, state, signature.account, args.orderId);
       if (order !== undefined) {
-        const instrument = state.instruments[order.instrumentId];
+        const orderQuantity = BigInt(order.quantity);
+        const orderPrice = BigInt(order.price);
+        const orderSide = order.side as 0 | 1;
+        const instrument = await loadInstrumentRow(
+          tx,
+          Number(order.instrumentId),
+        );
         if (instrument !== undefined) {
-          await persistBalance(tx, state, signature.account, instrument.base);
-          await persistBalance(tx, state, signature.account, instrument.quote);
-          await persistTick(
-            tx,
-            state,
-            order.instrumentId,
-            order.side,
-            order.price,
-          );
+          const [tick] = await txDb(tx)
+            .select()
+            .from(schema.ticks)
+            .where(
+              and(
+                eq(schema.ticks.instrumentId, order.instrumentId),
+                eq(schema.ticks.side, order.side),
+                eq(schema.ticks.price, order.price),
+              ),
+            )
+            .limit(1);
+          let filledQuantity: bigint;
+          let unfilledQuantity: bigint;
+          if (tick === undefined || tick.volume > order.tickVolume) {
+            filledQuantity = orderQuantity;
+            unfilledQuantity = 0n;
+          } else {
+            const tickQuantity = BigInt(tick.quantity);
+            const tickRemainingQuantity = BigInt(tick.remainingQuantity);
+            const consumed = tickQuantity - tickRemainingQuantity;
+            filledQuantity =
+              tickQuantity > 0n
+                ? (orderQuantity * consumed) / tickQuantity
+                : 0n;
+            unfilledQuantity = orderQuantity - filledQuantity;
+          }
+          await txDb(tx)
+            .update(schema.orders)
+            .set({ quantity: 0n })
+            .where(
+              and(
+                eq(schema.orders.account, signature.account),
+                eq(schema.orders.orderIndex, BigInt(args.orderId)),
+              ),
+            );
+          if (unfilledQuantity > 0n) {
+            await upsertTickDelta(
+              tx,
+              Number(order.instrumentId),
+              orderSide,
+              orderPrice,
+              -unfilledQuantity,
+              -unfilledQuantity,
+            );
+          }
+          if (orderSide === 0) {
+            await persistBalanceDelta(
+              tx,
+              signature.account,
+              instrument.quote,
+              ((unfilledQuantity * orderPrice) >> 32n) <<
+                BigInt(instrument.quoteLotExp),
+            );
+            await persistBalanceDelta(
+              tx,
+              signature.account,
+              instrument.base,
+              filledQuantity << BigInt(instrument.baseLotExp),
+            );
+          } else {
+            await persistBalanceDelta(
+              tx,
+              signature.account,
+              instrument.base,
+              unfilledQuantity << BigInt(instrument.baseLotExp),
+            );
+            await persistBalanceDelta(
+              tx,
+              signature.account,
+              instrument.quote,
+              ((filledQuantity * orderPrice) >> 32n) <<
+                BigInt(instrument.quoteLotExp),
+            );
+          }
         }
       }
     },
@@ -940,28 +1091,92 @@ export function persistedMutations(
     persistState: async (tx, { mutation }) => {
       const args = mutationArgs<ChangeOrderArgs>(mutation);
       const signature = mutationSignature(mutation);
-      const order = state.accounts[signature.account]?.orders[args.orderId];
+      const order = await loadOrderRow(tx, signature.account, args.orderId);
       const instrument =
-        order !== undefined ? state.instruments[order.instrumentId] : undefined;
+        order !== undefined
+          ? await loadInstrumentRow(tx, Number(order.instrumentId))
+          : undefined;
       await persistNonce(tx, signature.account, args.nonce);
-      await persistOrders(tx, state, signature.account);
       if (order !== undefined && instrument !== undefined) {
-        await persistBalance(tx, state, signature.account, instrument.base);
-        await persistBalance(tx, state, signature.account, instrument.quote);
-        await persistTick(
+        const orderQuantity = BigInt(order.quantity);
+        const orderPrice = BigInt(order.price);
+        const orderSide = order.side as 0 | 1;
+        await upsertTickDelta(
           tx,
-          state,
-          order.instrumentId,
-          order.side,
-          order.price,
+          Number(order.instrumentId),
+          orderSide,
+          orderPrice,
+          -orderQuantity,
+          -orderQuantity,
         );
-        await persistTick(
+        await txDb(tx)
+          .update(schema.orders)
+          .set({ quantity: 0n })
+          .where(
+            and(
+              eq(schema.orders.account, signature.account),
+              eq(schema.orders.orderIndex, BigInt(args.orderId)),
+            ),
+          );
+        const fullQuantity = orderQuantity << BigInt(instrument.baseLotExp);
+        if (orderSide === 0) {
+          await persistBalanceDelta(
+            tx,
+            signature.account,
+            instrument.quote,
+            ((orderQuantity * orderPrice) >> 32n) <<
+              BigInt(instrument.quoteLotExp),
+          );
+        } else {
+          await persistBalanceDelta(
+            tx,
+            signature.account,
+            instrument.base,
+            orderQuantity << BigInt(instrument.baseLotExp),
+          );
+        }
+        const tickVolume = await loadTickVolume(
           tx,
-          state,
-          order.instrumentId,
-          order.side,
+          Number(order.instrumentId),
+          orderSide,
           args.price,
         );
+        await upsertTickDelta(
+          tx,
+          Number(order.instrumentId),
+          orderSide,
+          args.price,
+          orderQuantity,
+          orderQuantity,
+        );
+        const orderIndex = await nextOrderIndex(tx, signature.account);
+        await txDb(tx).insert(schema.orders).values({
+          account: signature.account,
+          orderIndex,
+          quantity: orderQuantity,
+          instrumentId: order.instrumentId,
+          price: args.price,
+          tickVolume,
+          side: orderSide,
+        });
+        if (orderSide === 0) {
+          await persistBalanceDelta(
+            tx,
+            signature.account,
+            instrument.quote,
+            -(
+              ((orderQuantity * args.price) >> 32n) <<
+              BigInt(instrument.quoteLotExp)
+            ),
+          );
+        } else {
+          await persistBalanceDelta(
+            tx,
+            signature.account,
+            instrument.base,
+            -fullQuantity,
+          );
+        }
       }
     },
     persistLifecycle: (tx, params) =>
@@ -986,22 +1201,53 @@ export function persistedMutations(
     persistState: async (tx, { mutation }) => {
       const args = mutationArgs<LimitOrderArgs>(mutation);
       const signature = mutationSignature(mutation);
-      const instrument = state.instruments[args.instrumentId];
+      const instrument = await loadInstrumentRow(tx, args.instrumentId);
+      if (instrument === undefined) return;
+      const quantityLots = toLots(args.quantity, instrument.baseLotExp);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistOrders(tx, state, signature.account);
-      await persistTick(
+      const tickVolume = await loadTickVolume(
         tx,
-        state,
         args.instrumentId,
         args.bidOrAsk,
         args.price,
       );
-      if (instrument !== undefined) {
-        await persistBalance(
+      await upsertTickDelta(
+        tx,
+        args.instrumentId,
+        args.bidOrAsk,
+        args.price,
+        quantityLots,
+        quantityLots,
+      );
+      const orderIndex = await nextOrderIndex(tx, signature.account);
+      await txDb(tx)
+        .insert(schema.orders)
+        .values({
+          account: signature.account,
+          orderIndex,
+          quantity: quantityLots,
+          instrumentId: BigInt(args.instrumentId),
+          price: args.price,
+          tickVolume,
+          side: args.bidOrAsk,
+        });
+      if (args.bidOrAsk === 0) {
+        const locked =
+          ((quantityLots * args.price) >> 32n) <<
+          BigInt(instrument.quoteLotExp);
+        await persistBalanceDelta(
           tx,
-          state,
           signature.account,
-          args.bidOrAsk === 0 ? instrument.quote : instrument.base,
+          instrument.quote,
+          -locked,
+        );
+      } else {
+        const locked = quantityLots << BigInt(instrument.baseLotExp);
+        await persistBalanceDelta(
+          tx,
+          signature.account,
+          instrument.base,
+          -locked,
         );
       }
     },
@@ -1041,20 +1287,50 @@ export function persistedMutations(
       const args = mutationArgs<MarketOrderArgs>(mutation);
       const signature = mutationSignature(mutation);
       const resolution = mutation.resolution as MarketOrderResolution<bigint>;
-      const instrument = state.instruments[args.instrumentId];
+      const instrument = await loadInstrumentRow(tx, args.instrumentId);
       await persistNonce(tx, signature.account, args.nonce);
       if (instrument !== undefined) {
-        await persistBalance(tx, state, signature.account, instrument.base);
-        await persistBalance(tx, state, signature.account, instrument.quote);
+        let baseDelta = 0n;
+        let quoteDelta = 0n;
         for (const fill of resolution.fills) {
-          await persistTick(
-            tx,
-            state,
-            args.instrumentId,
-            args.bidOrAsk === 0 ? 1 : 0,
-            fill.price,
-          );
+          const quoteAmount =
+            ((fill.quantity * fill.price) >> 32n) <<
+            BigInt(instrument.quoteLotExp);
+          const baseAmount = fill.quantity << BigInt(instrument.baseLotExp);
+          if (args.bidOrAsk === 0) {
+            baseDelta += baseAmount;
+            quoteDelta -= quoteAmount;
+          } else {
+            baseDelta -= baseAmount;
+            quoteDelta += quoteAmount;
+          }
+          await txDb(tx)
+            .update(schema.ticks)
+            .set({
+              remainingQuantity: sql`${schema.ticks.remainingQuantity} - ${fill.quantity}`,
+              quantity: sql`case when ${schema.ticks.remainingQuantity} - ${fill.quantity} = 0 then 0 else ${schema.ticks.quantity} end`,
+              volume: sql`case when ${schema.ticks.remainingQuantity} - ${fill.quantity} = 0 then ${schema.ticks.volume} + 1 else ${schema.ticks.volume} end`,
+            })
+            .where(
+              and(
+                eq(schema.ticks.instrumentId, BigInt(args.instrumentId)),
+                eq(schema.ticks.side, args.bidOrAsk === 0 ? 1 : 0),
+                eq(schema.ticks.price, fill.price),
+              ),
+            );
         }
+        await persistBalanceDelta(
+          tx,
+          signature.account,
+          instrument.base,
+          baseDelta,
+        );
+        await persistBalanceDelta(
+          tx,
+          signature.account,
+          instrument.quote,
+          quoteDelta,
+        );
       }
     },
     persistLifecycle: (tx, params) =>
@@ -1081,7 +1357,16 @@ export function persistedMutations(
       const args = mutationArgs<AddInstrumentArgs>(mutation);
       const signature = mutationSignature(mutation);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistInstrument(tx, state, args.instrumentId);
+      await txDb(tx)
+        .insert(schema.instruments)
+        .values({
+          id: BigInt(args.instrumentId),
+          base: args.base,
+          baseLotExp: args.baseLotExp,
+          quote: args.quote,
+          quoteLotExp: args.quoteLotExp,
+        })
+        .onConflictDoNothing();
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.addInstruments),
@@ -1104,7 +1389,7 @@ export function persistedMutations(
       const args = mutationArgs<DepositArgs>(mutation);
       const signature = mutationSignature(mutation);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistBalance(tx, state, signature.account, args.asset);
+      await persistBalanceDelta(tx, signature.account, args.asset, args.amount);
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.deposits),
@@ -1127,7 +1412,12 @@ export function persistedMutations(
       const args = mutationArgs<WithdrawalArgs>(mutation);
       const signature = mutationSignature(mutation);
       await persistNonce(tx, signature.account, args.nonce);
-      await persistBalance(tx, state, signature.account, args.asset);
+      await persistBalanceDelta(
+        tx,
+        signature.account,
+        args.asset,
+        -args.amount,
+      );
     },
     persistLifecycle: (tx, params) =>
       persistLifecycle(tx, params, schema.withdrawals),

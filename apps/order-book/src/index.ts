@@ -5,6 +5,7 @@ import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
+  loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
   ORDER_BOOK_SIGNATURE_PARAMS,
@@ -15,7 +16,7 @@ import {
 } from "./app";
 import { APP_SCHEMA } from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
-import { createState, type State } from "./exchange";
+import type { State } from "./exchange";
 
 if (process.env.DEPLOYER_PRIVATE_KEY === undefined) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
@@ -30,9 +31,8 @@ const account = privateKeyToAccount(
 const database = {
   connection: new Bun.SQL({ url: process.env.DATABASE_URL, max: 25 }),
 };
-const initialState = createState();
 
-const app = createFFCA({
+const app = await createFFCA({
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
   abi: EXCHANGE_ABI,
@@ -40,10 +40,14 @@ const app = createFFCA({
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
   database,
-  state: { initial: initialState, schema: APP_SCHEMA },
+  state: {
+    initial: { accounts: {}, instruments: {} },
+    schema: APP_SCHEMA,
+    load: loadOrderBookState,
+  },
   signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
   sequence: ORDER_BOOK_SEQUENCE,
-  mutations: persistedMutations(initialState),
+  mutations: persistedMutations(),
 });
 
 type MutationStatus =

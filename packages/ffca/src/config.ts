@@ -18,8 +18,8 @@ export type FFCADatabaseTransaction = Parameters<
 //
 // `persistMutation` writes the accepted mutation row. Pending mutations stay
 // in memory and are not persisted. `persistState` writes app state rows changed
-// by this mutation. `persistLifecycle` handles post-acceptance transitions like
-// proposed/finalized/verified.
+// by this mutation from the current runtime state. `persistLifecycle` handles
+// post-acceptance transitions like proposed/finalized/verified.
 //
 // `resolve` must be pure: read-only over `state`, `signature`, and `bundle`, no
 // side effects. The runtime calls it once per mutation immediately before
@@ -114,10 +114,11 @@ export type FFCAConfig = {
   chainId: number;
   rpcUrl: string | string[];
   database?: { connection: Bun.SQL };
-  // `initial` is the in-memory representation; `schema` is the user's Drizzle
-  // schema module for the persisted representation. Apps define their table
-  // shapes and foreign keys; FFCA qualifies/migrates them per deployment when
-  // persistence is enabled.
+  // `initial` is the in-memory representation used without persistence;
+  // `schema` is the user's Drizzle schema module for the persisted
+  // representation; `load` hydrates runtime state from those tables on startup.
+  // Apps define their table shapes and foreign keys; FFCA qualifies/migrates
+  // them per deployment when persistence is enabled.
   //
   // `schema` is optional. Without user-owned persistence hooks, ffca runs
   // in-memory only. Fine for tests and short-lived demos; not enough for any
@@ -129,6 +130,7 @@ export type FFCAConfig = {
   state: {
     initial: unknown;
     schema?: Record<string, PgTable>;
+    load?: (tx: FFCADatabaseTransaction) => Promise<unknown>;
   };
   // ABI shape of one entry in the contract's `bundle.signatures[]` array.
   // Must include `keyType: uint8` and `rawSignature: bytes`; apps add

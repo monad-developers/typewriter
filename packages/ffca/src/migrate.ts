@@ -86,6 +86,41 @@ async function doesSchemaExist(
   return exists;
 }
 
+function quoteIdentifier(identifier: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(identifier)) {
+    throw new Error(`Invalid SQL identifier: ${identifier}`);
+  }
+  return `"${identifier}"`;
+}
+
+async function findAcceptedMutationTable(
+  tx: BunSQLTransaction<Record<string, unknown>, Record<string, never>>,
+  schemaName: string,
+): Promise<string | undefined> {
+  const tables = await tx.execute<{ table_name: string }>(sql`
+    SELECT table_name
+    FROM information_schema.columns
+    WHERE table_schema = ${schemaName}
+      AND column_name = 'status'
+      AND udt_schema = ${schemaName}
+      AND udt_name = 'mutation_status'
+    ORDER BY table_name
+  `);
+
+  for (const { table_name: tableName } of tables) {
+    const [{ exists = false } = { exists: false }] = await tx.execute<{
+      exists: boolean;
+    }>(
+      sql.raw(
+        `SELECT EXISTS (SELECT 1 FROM ${quoteIdentifier(schemaName)}.${quoteIdentifier(tableName)} WHERE status = 'accepted') AS exists`,
+      ),
+    );
+    if (exists) return tableName;
+  }
+
+  return undefined;
+}
+
 export async function migrate(
   db: FFCAMigrateDatabase,
   chainId: number,
@@ -114,12 +149,26 @@ export async function migrate(
     await tx.execute(sql.raw("SET LOCAL lock_timeout = '60s'"));
     await tx.execute(sql.raw(`CREATE SCHEMA IF NOT EXISTS ${schemaName}`));
 
-    if (await doesSchemaExist(tx, schemaName)) {
+    const exists = await doesSchemaExist(tx, schemaName);
+
+    if (exists === false) {
+      for (const statement of statements) {
+        await tx.execute(sql.raw(statement));
+      }
       return;
     }
 
-    for (const statement of statements) {
-      await tx.execute(sql.raw(statement));
+    // TODO: Track the generated schema as deployment metadata and compare it
+    // here before deciding whether an existing schema is safe to reuse.
+
+    const acceptedMutationTable = await findAcceptedMutationTable(
+      tx,
+      schemaName,
+    );
+    if (acceptedMutationTable !== undefined) {
+      throw new Error(
+        `FFCA deployment schema contains accepted mutations and cannot be recovered yet: ${schemaName}.${acceptedMutationTable}`,
+      );
     }
   });
 
