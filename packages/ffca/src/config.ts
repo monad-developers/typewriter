@@ -11,7 +11,7 @@ export type FFCADatabaseTransaction = Parameters<
 
 // `tag` is the contract enum index for this mutation; encoded as the uint8
 // in the bundle's `mutations[]` field. Hand-authored for now — see the
-// "derive from the contract" idea in CLAUDE.md.
+// "derive from the contract" idea in AGENTS.md.
 //
 // `table` is the app-owned table for this mutation type. FFCA uses it for
 // migration and for persistence hook callbacks; apps define the table shape.

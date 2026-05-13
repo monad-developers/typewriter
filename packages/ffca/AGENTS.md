@@ -59,6 +59,7 @@ The work catalog. Non-sequenced — items in different lanes can run in parallel
 - Alternative sequencing beyond FIFO/name-list ordering
 - Signature validation at execute time. EIP-712, native signature verification, and the wire-format codec are in place; the unresolved question is whether ffca should validate signatures during `execute()` admission, instead of waiting until bundle/apply time or on-chain execution.
 - Backpressure on the mutation/submit queues
+- Persistence/restart policy for accepted and in-flight mutations
 
 **2. Production readiness.** Hardening for running real apps.
 - Effect.ts usage for HTTP and DB handlers
@@ -92,12 +93,13 @@ Multi-week projects that span lanes. Each has its own internal sequence.
 
 **Scheduler key management.** Today `FFCAConfig.account: PrivateKeyAccount` is in-process key material — fine for dev, a footgun for production. Three pieces share the same seam (the framework's signing identity): KMS / remote signer support, nonce recovery on conflict, and user-shaped signing on-contract (scheduler key in the same registry as user keys, with rotation/expiry/scopes).
 
-### Near term (sequenced)
+**Force inclusion.** The high-level goal is settled: users need a censorship escape hatch that lets them put signed mutations onchain and eventually execute without scheduler cooperation. The remaining work is policy and observability: scheduler-assisted delay semantics, mandatory draining of old queue entries, invalid/expired queue-head behavior, and the events/views clients need for queue discovery and watcher support. See `PLAN_force_inclusion.md`.
 
-The active sequence. Demo-grade reliability is still the bar, but several earlier items have landed and the remaining work is mostly hardening/integration.
+**Equivocation receipts.** The high-level goal is settled: signed accepted receipts let users prove the scheduler accepted one mutation and settled another. The remaining work is receipt shape and hashing, settled-mutation-hash observability, client-side proof vs optional onchain proof, and server receipt signing identity. See `PLAN_equivocation.md`.
 
-1. **Execute-time signature validation decision.** Decide whether `execute()` should verify the EIP-712 signature immediately, before queue admission, or whether validation should remain app-owned during `resolve`/`apply` and ultimately enforced on-chain.
-2. **Watch hardening.** Runtime consumes the watch loop and advances proposed → voted → finalized → verified. Reorgs are detected, but recovery policy is still fatal.
+**Runtime failure policy.** Today submit/watch failures can still kill the runtime fiber after mutations have already been accepted. Define the lifecycle for accepted-but-not-submitted bundles: retry forever, mark failed, dead-letter, or emit a recoverable status. Clients need a clear way to observe the outcome.
+
+**Persistence/restart policy.** Persistence hooks write accepted/lifecycle state, but the runtime still needs a clear answer for process restart: what happens to queued, accepted-but-unsubmitted, and in-flight bundles; whether they are replayed; and whether ffca owns a minimal mutation log or stays fully app-owned.
 
 ### Open decisions
 
@@ -107,6 +109,17 @@ Forks that gate sequencing. Listed so they don't get rediscovered every session.
 - **Persistence shape.** Decoded tables (the order-book pattern: typed Postgres rows the app GETs directly) vs. raw `(slot, value)` storage with decoders on top (the revm-native pattern). Tentatively leaning decoded — the consumable layer needs to be human-readable either way, and revm's in-memory state is the runtime source.
 - **Resolution language.** Off-chain matching is settled. Open question: is the resolution itself written in TypeScript (today's order-book) or in Solidity (a view function the runtime calls)? Solidity-side resolutions remove the TS/Sol drift but are gas/perf-sensitive and harder to debug.
 - **Force-inclusion queue enforcement.** Production contracts should make it hard for the scheduler to leave old force-inclusion entries pending forever. The current Counter fixture preserves ordered queue execution, but it does not enforce mandatory draining of all entries older than `FORCE_INCLUSION_DELAY`. That likely wants a stronger queue data structure plus an immutable age threshold.
+- **Force-inclusion delay semantics.** Should scheduler-assisted execution of queued mutations inside `execute` obey the same delay as public `forceExecute`, or may the scheduler include queued mutations immediately?
+- **Invalid force-inclusion queue heads.** If an enqueued mutation becomes invalid or expired, does it block the queue, get skipped/marked failed, or should enqueue validate/reserve enough state to prevent invalid heads?
+- **Force-inclusion observability.** Which events/views are required for clients and watchers to discover queued mutations, see whether the scheduler included them, and detect old pending entries?
+- **Equivocation receipt observability.** Should settled mutation hashes be exposed through events, storage commitments, decoded calldata, or app-owned HTTP routes? This determines how clients/watchers compare accepted receipts to chain reality.
+- **Equivocation proof scope.** Should ffca stop at client-side/social proof helpers, or add optional onchain proof storage/events for receipt-vs-settlement conflicts?
+- **Server receipt identity.** What key signs accepted receipts, how is that key advertised, rotated, and scoped to an app/deployment?
+- **revm initial state source.** When revm becomes canonical, does runtime hydrate deployed bytecode/storage from chain at boot or replay the deployment transaction locally?
+- **revm block context.** Before broadcast, what `block.number` and `block.timestamp` does revm execute against: latest+1, wall-clock values, or scheduler-controlled block context?
+- **revm divergence detection.** Can revm detect onchain/offchain divergence by comparing account roots, or does ffca need another settlement/reconciliation signal?
+- **Accepted-but-not-submitted bundles.** If submission fails after optimistic acceptance, are bundles retried indefinitely, marked failed, dead-lettered for manual intervention, or surfaced through a distinct lifecycle state?
+- **Restart semantics.** Which runtime states survive process restart: queued mutations, accepted-but-unsubmitted bundles, proposed-but-unverified bundles, local nonce cache, and deployment locks?
 
 ## Working in this package
 

@@ -1,4 +1,4 @@
-# CLAUDE.md - order-book
+# AGENTS.md - order-book
 
 Order book implementation using `ffca` as the runtime. The app owns order-book domain logic, persistence hooks, HTTP routes, frontend serving, scripts, SDK helpers, and signature/account verification. Do not change `packages/ffca` from this workspace.
 

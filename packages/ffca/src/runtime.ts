@@ -55,9 +55,12 @@ import { layerWatchLive, Watch } from "./watch";
 //   apply against the clone, reverting to a fresh snapshot on apply throws.
 //   Same pattern the order-book runtime uses. revm subsumes this once it lands
 //   (free state revert), so the perf hit is temporary.
-// TODO account model + signature verification (verifyMutation stub below)
-// TODO persistence hooks: user-owned DB writes are not wired here yet.
-// TODO event fan-out / SSE: skipped for the scaffold
+// TODO signature validation: decide whether execute() should verify signatures
+//   before queue admission or leave validation to app-owned resolve/apply logic.
+// TODO runtime failure policy: submit/watch failures still die the fiber; define
+//   bundle status updates and retry/dead-letter behavior.
+// TODO HTTP / SSE shaping: event fan-out exists in-process; network surfaces are
+//   still app-owned.
 
 const BUNDLE_INTERVAL_MS = 50;
 const SUBMIT_INTERVAL_MS = 400;

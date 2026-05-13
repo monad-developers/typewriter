@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Repo-wide guidance. Per-app specifics live in each workspace's own `CLAUDE.md` / `README.md`.
+Repo-wide guidance. Per-app specifics live in each workspace's own `AGENTS.md` / `README.md`.
 
 ## Layout
 

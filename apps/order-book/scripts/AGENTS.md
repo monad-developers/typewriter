@@ -1,4 +1,4 @@
-# CLAUDE.md — order-book/scripts
+# AGENTS.md — order-book/scripts
 
 TS scripts emulating market participants (limit, market, market-maker, retail, arbitrage, gas). Drives the order-book HTTP API.
 
