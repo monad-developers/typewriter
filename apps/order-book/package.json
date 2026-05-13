@@ -11,7 +11,7 @@
     "build": "tsc --noEmit",
     "contracts:build": "forge build --root contracts",
     "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
-    "deploy": ". .env && forge build --root contracts && forge script --root contracts ./script/OrderBook.s.sol:OrderBookScript --broadcast --fork-url $RPC_URL --private-key $DEPLOYER_PRIVATE_KEY"
+    "deploy": ". .env && forge build --root contracts && forge script --root contracts ./contracts/script/OrderBook.s.sol:OrderBookScript --broadcast --fork-url $BUN_PUBLIC_RPC_URL --private-key $DEPLOYER_PRIVATE_KEY"
   },
   "dependencies": {
     "@tanstack/react-query": "5.96.1",
