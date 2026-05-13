@@ -12,6 +12,7 @@ import {
   BOB_PRIVATE_KEY,
   P256_PRIVATE_KEY,
   SCHEDULER_ACCOUNT,
+  TEST_CLIENT,
   TEST_DB_CONNECTION,
   TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
@@ -1610,6 +1611,100 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
   }
   // Same three statuses as before — no new mutation events after unsubscribe.
   expect(mutationStatuses).toEqual(["pending", "accepted", "proposed"]);
+
+  await ffca.stop();
+});
+
+test("e2e Counter: watch advances proposed bundles by confirmations", async () => {
+  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+
+  const ffca = createFFCA({
+    address,
+    domain: COUNTER_DOMAIN,
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { total: 0n, nonce: 0n } as CounterState },
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: COUNTER_MUTATIONS,
+  });
+
+  const mutationStatuses: MutationEvent["status"][] = [];
+  const bundleStatuses: BundleEvent["status"][] = [];
+  const blockStatuses: BlockEvent["status"][] = [];
+
+  ffca.on("mutation", (e) => mutationStatuses.push(e.status));
+  ffca.on("bundle", (e) => bundleStatuses.push(e.status));
+  ffca.on("block", (e) => blockStatuses.push(e.status));
+
+  const waitFor = async (predicate: () => boolean, message: string) => {
+    const deadline = Date.now() + 5000;
+    while (predicate() === false) {
+      if (Date.now() > deadline) {
+        throw new Error(message);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+
+  await ffca.execute({
+    name: "add",
+    args: { amount: 7n, nonce: 0n },
+    signature: signCounter({
+      privateKey: USER_PRIVATE_KEY,
+      amount: 7n,
+      nonce: 0n,
+      address,
+      chainId: anvil.id,
+    }),
+  });
+
+  await waitFor(
+    () => mutationStatuses.includes("proposed"),
+    "proposed event never arrived",
+  );
+
+  await TEST_CLIENT.mine({ blocks: 1 });
+  await waitFor(
+    () => mutationStatuses.includes("voted"),
+    "voted event never arrived",
+  );
+
+  await TEST_CLIENT.mine({ blocks: 1 });
+  await waitFor(
+    () => mutationStatuses.includes("finalized"),
+    "finalized event never arrived",
+  );
+
+  await TEST_CLIENT.mine({ blocks: 3 });
+  await waitFor(
+    () => mutationStatuses.includes("verified"),
+    "verified event never arrived",
+  );
+
+  expect(mutationStatuses).toEqual([
+    "pending",
+    "accepted",
+    "proposed",
+    "voted",
+    "finalized",
+    "verified",
+  ]);
+  expect(bundleStatuses).toEqual([
+    "accepted",
+    "proposed",
+    "voted",
+    "finalized",
+    "verified",
+  ]);
+  expect(blockStatuses).toEqual([
+    "accepted",
+    "proposed",
+    "voted",
+    "finalized",
+    "verified",
+  ]);
 
   await ffca.stop();
 });

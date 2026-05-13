@@ -11,6 +11,7 @@ import {
   Logger,
   Queue,
   Schedule,
+  Stream,
 } from "effect";
 import { AbiParameters, type Hex, TypedData } from "ox";
 import {
@@ -46,6 +47,7 @@ import type {
   ResolvedMutation,
   SubmittedMutation,
 } from "./types";
+import { layerWatchLive, Watch } from "./watch";
 
 // TODO sequencing: name-list works (config.sequence). Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
@@ -60,6 +62,9 @@ import type {
 const BUNDLE_INTERVAL_MS = 50;
 const SUBMIT_INTERVAL_MS = 400;
 const BLOCK_POLLING_INTERVAL_MS = 200;
+const VOTED_CONFIRMATIONS = 1n;
+const FINALIZED_CONFIRMATIONS = 2n;
+const VERIFIED_CONFIRMATIONS = 5n;
 
 type MutationListener = (event: MutationEvent) => void;
 type BundleListener = (event: BundleEvent) => void;
@@ -69,6 +74,8 @@ type DeploymentLock = {
   connection: Bun.ReservedSQL;
   key: bigint;
 };
+
+type UnfinalizedBlock = Exclude<BlockEvent, { status: "accepted" }>;
 
 export type FFCA = {
   readonly state: unknown;
@@ -344,6 +351,7 @@ export function createFFCA(config: FFCAConfig): FFCA {
     }>(),
   );
   const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
+  let unfinalizedBlocks: UnfinalizedBlock[] = [];
 
   // Event fan-out. Listeners are in-process; HTTP / SSE shaping is the app's
   // job. A throwing listener is swallowed so it can't take the runtime down.
@@ -645,13 +653,115 @@ export function createFFCA(config: FFCAConfig): FFCA {
       for (const m of b.mutations) emitMutation(m);
     }
     emitBlock(proposedBlock);
+    unfinalizedBlocks.push(proposedBlock);
   });
 
-  // watch: poll latest block, advance proposed bundles → voted/finalized/verified
   const watch = Effect.gen(function* () {
-    // TODO poll publicClient.getBlock, advance status by confirmation depth,
-    //   call user persistence hooks for transitions, emit block events.
-    //   See the pre-FFCA order-book runtime watch loop.
+    const watchService = yield* Watch;
+    yield* watchService.messages.pipe(
+      Stream.runForEach((message) =>
+        Effect.gen(function* () {
+          if (message._tag === "Reorged") {
+            return yield* Effect.fail(
+              new Error(
+                `chain reorg detected: commonAncestor=${message.commonAncestor?.hash ?? "none"}`,
+              ),
+            );
+          }
+
+          for (const blockEvent of unfinalizedBlocks.filter(
+            (block) => block.number < message.block.number,
+          )) {
+            const confirmations = message.block.number - blockEvent.number;
+            let nextStatus: "voted" | "finalized" | "verified" | undefined;
+
+            if (
+              confirmations >= VERIFIED_CONFIRMATIONS &&
+              blockEvent.status !== "verified"
+            ) {
+              nextStatus = "verified";
+            } else if (
+              confirmations >= FINALIZED_CONFIRMATIONS &&
+              blockEvent.status !== "finalized" &&
+              blockEvent.status !== "verified"
+            ) {
+              nextStatus = "finalized";
+            } else if (
+              confirmations >= VOTED_CONFIRMATIONS &&
+              blockEvent.status !== "voted" &&
+              blockEvent.status !== "finalized" &&
+              blockEvent.status !== "verified"
+            ) {
+              nextStatus = "voted";
+            }
+
+            if (nextStatus === undefined) continue;
+
+            blockEvent.status = nextStatus;
+            for (const bundle of blockEvent.bundles) {
+              bundle.status = nextStatus;
+              for (const mutation of bundle.mutations) {
+                mutation.status = nextStatus;
+              }
+            }
+
+            yield* Effect.tryPromise({
+              try: async () => {
+                if (db === undefined) return;
+                await db.transaction(async (tx) => {
+                  for (const bundle of blockEvent.bundles) {
+                    for (const mutation of bundle.mutations) {
+                      switch (nextStatus) {
+                        case "voted":
+                          await mutation.config.persistLifecycle!(tx, {
+                            lifecycle: "voted",
+                            mutation: mutation as Extract<
+                              ResolvedMutation,
+                              { status: "voted" }
+                            >,
+                          });
+                          break;
+                        case "finalized":
+                          await mutation.config.persistLifecycle!(tx, {
+                            lifecycle: "finalized",
+                            mutation: mutation as Extract<
+                              ResolvedMutation,
+                              { status: "finalized" }
+                            >,
+                          });
+                          break;
+                        case "verified":
+                          await mutation.config.persistLifecycle!(tx, {
+                            lifecycle: "verified",
+                            mutation: mutation as Extract<
+                              ResolvedMutation,
+                              { status: "verified" }
+                            >,
+                          });
+                          break;
+                      }
+                    }
+                  }
+                });
+              },
+              catch: (error) => error as Error,
+            });
+
+            emitBlock(blockEvent);
+            for (const bundle of blockEvent.bundles) {
+              emitBundle(bundle);
+              for (const mutation of bundle.mutations) {
+                emitMutation(mutation);
+              }
+            }
+          }
+
+          unfinalizedBlocks = unfinalizedBlocks.filter(
+            (block) => block.status !== "verified",
+          );
+        }),
+      ),
+    );
   }).pipe(Effect.withLogSpan("watch"));
 
   const bundleProgram = Effect.repeat(
@@ -664,10 +774,16 @@ export function createFFCA(config: FFCAConfig): FFCA {
     Schedule.fixed(Duration.millis(SUBMIT_INTERVAL_MS)),
   ).pipe(Effect.orDie);
 
-  const watchProgram = Effect.repeat(
-    watch,
-    Schedule.spaced(Duration.millis(BLOCK_POLLING_INTERVAL_MS)),
-  ).pipe(Effect.orDie);
+  const watchProgram = watch.pipe(
+    Effect.provide(
+      layerWatchLive({
+        chainId: config.chainId,
+        rpcUrl: config.rpcUrl,
+        pollIntervalMs: BLOCK_POLLING_INTERVAL_MS,
+      }),
+    ),
+    Effect.orDie,
+  );
 
   const runtimeEffect = Effect.gen(function* () {
     const persistence = yield* Effect.tryPromise({
