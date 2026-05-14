@@ -5,7 +5,9 @@ import {
   resolveStoragePath,
   type StorageItem,
   type StorageLayout,
+  type StorageLayoutToPrimitiveType,
   type StoragePathToPrimitiveType,
+  type StorageType,
   storagePathEndsAtValue,
 } from "./storage-layout";
 import {
@@ -14,6 +16,7 @@ import {
   normalizePath,
   pathToString,
   type StoragePath,
+  type StoragePathSubscript,
 } from "./storage-path";
 
 export type {
@@ -240,6 +243,264 @@ export function encodeStorage<
       value: encodeValue(slot, value, existing),
     },
   ];
+}
+
+/**
+ * Encode a decoded, contract-shaped state object into raw storage slots.
+ *
+ * The state shape must mirror {@link StorageLayoutToPrimitiveType}: structs are
+ * objects, fixed/dynamic arrays are arrays, and mappings are records whose keys
+ * are the concrete known mapping keys. Mapping keys do not need to be inferred
+ * from slots in this direction; they come from the decoded object itself.
+ */
+export function encodeStorageState<Layout extends StorageLayout>(
+  layout: Layout,
+  state: StorageLayoutToPrimitiveType<Layout>,
+): AccountStorage {
+  const storage: AccountStorage = {};
+  const root = state as Record<string, unknown>;
+  for (const item of layout.storage) {
+    const type = findStorageType(layout, item.type);
+    const value = root[item.label];
+    encodeStateValue(
+      layout,
+      type,
+      { root: item.label, segments: [] },
+      value,
+      storage,
+    );
+  }
+  return storage;
+}
+
+function encodeStateValue(
+  layout: StorageLayout,
+  type: StorageType,
+  path: StoragePath,
+  value: unknown,
+  storage: AccountStorage,
+): void {
+  if (value === undefined) {
+    throw new Error(
+      `missing decoded state value for path: ${formatStoragePath(path)}`,
+    );
+  }
+
+  if (isLeafStorageType(type)) {
+    mergeStorageWrites(layout, path, value, storage);
+    return;
+  }
+
+  if (type.members !== undefined) {
+    assertRecordValue(value, path);
+    for (const member of type.members) {
+      encodeStateValue(
+        layout,
+        findStorageType(layout, member.type),
+        appendField(path, member.label),
+        value[member.label],
+        storage,
+      );
+    }
+    return;
+  }
+
+  if (type.base !== undefined) {
+    assertArrayValue(value, path);
+    if (type.encoding === "dynamic_array") {
+      writeDynamicArrayLength(layout, path, value.length, storage);
+    } else {
+      const length = fixedArrayLength(type);
+      if (value.length !== length) {
+        throw new Error(
+          `fixed array length mismatch at ${formatStoragePath(path)}: expected ${length}, got ${value.length}`,
+        );
+      }
+    }
+    const baseType = findStorageType(layout, type.base);
+    for (let index = 0; index < value.length; index++) {
+      encodeStateValue(
+        layout,
+        baseType,
+        appendSubscript(path, { kind: "number", value: BigInt(index) }),
+        value[index],
+        storage,
+      );
+    }
+    return;
+  }
+
+  if (type.key !== undefined && type.value !== undefined) {
+    assertRecordValue(value, path);
+    const keyType = findStorageType(layout, type.key);
+    const valueType = findStorageType(layout, type.value);
+    for (const [key, entry] of Object.entries(value)) {
+      encodeStateValue(
+        layout,
+        valueType,
+        appendSubscript(path, subscriptForMappingKey(keyType, key, path)),
+        entry,
+        storage,
+      );
+    }
+    return;
+  }
+
+  throw new Error(
+    `unsupported storage type '${type.label}' at ${formatStoragePath(path)}`,
+  );
+}
+
+function mergeStorageWrites(
+  layout: StorageLayout,
+  path: StoragePath,
+  value: unknown,
+  storage: AccountStorage,
+): void {
+  seedPackedSlot(layout, path, storage);
+  const writes = encodeStorage(layout, path, value as never, storage);
+  for (const write of writes) {
+    storage[write.slot] = write.value;
+  }
+}
+
+function seedPackedSlot(
+  layout: StorageLayout,
+  path: StoragePath,
+  storage: AccountStorage,
+): void {
+  const resolved = resolveStoragePath(layout, path);
+  if (!resolvedPathEndsAtValue(resolved, path)) return;
+  const slot = resolved[0]!;
+  if (!isPartialSlot(slot)) return;
+  const slotHex = storageSlot(slot);
+  if (getSlotValue(storage, slotHex) === undefined) {
+    storage[slotHex] = Hex.fromNumber(0n, { size: 32 });
+  }
+}
+
+function writeDynamicArrayLength(
+  layout: StorageLayout,
+  path: StoragePath,
+  length: number,
+  storage: AccountStorage,
+): void {
+  const resolved = resolveStoragePath(layout, path);
+  if (!isDynamicArrayRoot(resolved, path)) {
+    throw new Error(
+      `storage path is not a dynamic array root: ${formatStoragePath(path)}`,
+    );
+  }
+  storage[storageSlot(resolved[0]!)] = Hex.fromNumber(BigInt(length), {
+    size: 32,
+  });
+}
+
+function appendField(path: StoragePath, name: string): StoragePath {
+  return {
+    root: path.root,
+    segments: [...path.segments, { kind: "field", name }],
+  };
+}
+
+function appendSubscript(
+  path: StoragePath,
+  value: StoragePathSubscript,
+): StoragePath {
+  return {
+    root: path.root,
+    segments: [...path.segments, { kind: "subscript", value }],
+  };
+}
+
+function subscriptForMappingKey(
+  type: StorageType,
+  key: string,
+  path: StoragePath,
+): StoragePathSubscript {
+  const label = type.label;
+  if (label === "address") {
+    if (!HEX_STRING_PATTERN.test(key)) {
+      throw new Error(
+        `mapping key on '${formatStoragePath(path)}' must be a hex string for key type '${label}': '${key}'`,
+      );
+    }
+    return { kind: "hex", value: key as Hex.Hex };
+  }
+  if (label === "bool") {
+    if (key === "true" || key === "false") {
+      return { kind: "bool", value: key === "true" };
+    }
+    throw new Error(
+      `mapping key on '${formatStoragePath(path)}' must be 'true' or 'false' for key type '${label}': '${key}'`,
+    );
+  }
+  if (/^u?int[0-9]*$/.test(label)) {
+    if (!/^-?(0|[1-9][0-9]*)$/.test(key)) {
+      throw new Error(
+        `mapping key on '${formatStoragePath(path)}' must be a decimal integer for key type '${label}': '${key}'`,
+      );
+    }
+    return { kind: "number", value: BigInt(key) };
+  }
+  if (/^bytes([1-9]|[12][0-9]|3[0-2])$/.test(label)) {
+    if (!HEX_STRING_PATTERN.test(key)) {
+      throw new Error(
+        `mapping key on '${formatStoragePath(path)}' must be a hex string for key type '${label}': '${key}'`,
+      );
+    }
+    return { kind: "hex", value: key as Hex.Hex };
+  }
+  throw new Error(
+    `unsupported mapping key type '${label}' on '${formatStoragePath(path)}'`,
+  );
+}
+
+function assertRecordValue(
+  value: unknown,
+  path: StoragePath,
+): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `decoded state value must be an object: ${formatStoragePath(path)}`,
+    );
+  }
+}
+
+function assertArrayValue(
+  value: unknown,
+  path: StoragePath,
+): asserts value is readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `decoded state value must be an array: ${formatStoragePath(path)}`,
+    );
+  }
+}
+
+function findStorageType(layout: StorageLayout, typeId: string): StorageType {
+  const type = layout.types[typeId];
+  if (type === undefined) {
+    throw new Error(`storage type not found: ${typeId}`);
+  }
+  return type;
+}
+
+function isLeafStorageType(type: StorageType): boolean {
+  return isValueStorageType(type) || type.encoding === "bytes";
+}
+
+function isValueStorageType(type: StorageType): boolean {
+  if (type.encoding !== "inplace" || type.members !== undefined) return false;
+  return type.base === undefined && type.key === undefined;
+}
+
+function fixedArrayLength(type: StorageType): number {
+  const match = /\[([0-9]+)\]$/.exec(type.label);
+  if (match === null) {
+    throw new Error(`fixed array type '${type.label}' is missing length`);
+  }
+  return Number(match[1]);
 }
 
 function uniqueSlots(slots: readonly ResolvedStorageItem[]): Hex.Hex[] {

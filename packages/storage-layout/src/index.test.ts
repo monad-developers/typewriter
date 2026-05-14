@@ -10,11 +10,13 @@ import {
 import {
   decodeStorage,
   encodeStorage,
+  encodeStorageState,
   formatStoragePath,
   getStoragePath,
   getStorageSlot,
   type SlotWrite,
   type StorageLayout,
+  type StorageLayoutToPrimitiveType,
 } from "./index";
 
 const reversibleLayout = {
@@ -481,6 +483,80 @@ test("encodeStorage encodes keyed mappings", () => {
       },
     ]
   `);
+});
+
+test("encodeStorageState encodes decoded contract-shaped state", () => {
+  const state = {
+    totalSupply: 42n,
+    owner: OWNER,
+    paused: true,
+    debt: -1,
+    salt: SALT,
+    metadata: {
+      lastUpdate: 42n,
+      active: true,
+      admin: OWNER,
+      inner: { count: 100n },
+    },
+    balances: { [OWNER]: 43n },
+    fixedNumbers: [1n, 2n, 3n],
+    dynamicNumbers: [4n, 5n],
+    rawBytes: "0x1234",
+    message: "hello",
+    allowances: { [OWNER]: { [SPENDER]: 44n } },
+  } satisfies StorageLayoutToPrimitiveType<typeof layout>;
+
+  const storage = encodeStorageState(layout, state);
+
+  expect(decodeStorage(layout, "totalSupply", storage)).toBe(42n);
+  expect(decodeStorage(layout, "owner", storage)).toBe(OWNER);
+  expect(decodeStorage(layout, "paused", storage)).toBe(true);
+  expect(decodeStorage(layout, "debt", storage)).toBe(-1);
+  expect(decodeStorage(layout, "salt", storage)).toBe(SALT);
+  expect(decodeStorage(layout, "metadata.lastUpdate", storage)).toBe(42n);
+  expect(decodeStorage(layout, "metadata.active", storage)).toBe(true);
+  expect(decodeStorage(layout, "metadata.admin", storage)).toBe(OWNER);
+  expect(decodeStorage(layout, "metadata.inner.count", storage)).toBe(100n);
+  expect(decodeStorage(layout, `balances[${OWNER}]`, storage)).toBe(43n);
+  expect(decodeStorage(layout, "fixedNumbers[0]", storage)).toBe(1n);
+  expect(decodeStorage(layout, "fixedNumbers[1]", storage)).toBe(2n);
+  expect(decodeStorage(layout, "fixedNumbers[2]", storage)).toBe(3n);
+  expect(decodeStorage(layout, "dynamicNumbers", storage)).toEqual([4n, 5n]);
+  expect(decodeStorage(layout, "rawBytes", storage)).toBe("0x1234");
+  expect(decodeStorage(layout, "message", storage)).toBe("hello");
+  expect(
+    decodeStorage(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
+  ).toBe(44n);
+});
+
+test("encodeStorageState validates decoded state shape", () => {
+  expect(() =>
+    encodeStorageState(layout, {
+      totalSupply: 42n,
+    } as unknown as StorageLayoutToPrimitiveType<typeof layout>),
+  ).toThrow("missing decoded state value for path: owner");
+
+  expect(() =>
+    encodeStorageState(layout, {
+      totalSupply: 42n,
+      owner: OWNER,
+      paused: true,
+      debt: -1,
+      salt: SALT,
+      metadata: {
+        lastUpdate: 42n,
+        active: true,
+        admin: OWNER,
+        inner: { count: 100n },
+      },
+      balances: {},
+      fixedNumbers: [1n, 2n],
+      dynamicNumbers: [],
+      rawBytes: "0x",
+      message: "",
+      allowances: {},
+    } as unknown as StorageLayoutToPrimitiveType<typeof layout>),
+  ).toThrow("fixed array length mismatch at fixedNumbers: expected 3, got 2");
 });
 
 test("encodeStorage requires existing slots for packed values", () => {
