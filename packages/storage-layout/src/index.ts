@@ -27,6 +27,15 @@ export type {
 } from "./storage-layout";
 export type { StoragePath } from "./storage-path";
 export { formatStoragePath, parseStoragePath } from "./storage-path";
+export type {
+  AsyncSlotGetter,
+  DeepPromise,
+  SlotGetter,
+  SlotMap,
+  StorageProxy,
+  SyncSlotGetter,
+} from "./storage-proxy";
+export { createStorageProxy } from "./storage-proxy";
 
 export type StorageVariableUpdate = ResolvedStorageItem & {
   value?: Hex.Hex;
