@@ -47,9 +47,11 @@ TS path is deleted. No big-bang swap.
   application logic lives.
 - **Persistence becomes derived.** Today apps own `persistMutation` /
   `persistState` and read from the JS state object. Post-swap, apps
-  read from revm — either via view-function `call` or via decoded slot
-  writes. Either way, persistence is a projection of revm's state, not
-  a parallel ledger.
+  read from revm via decoded slot writes — `storage-layout` projects
+  raw `(slot, value)` writes back to typed paths the app consumes.
+  Persistence is a projection of revm's state, not a parallel ledger.
+  No view-function read path: revm doesn't expose `call`; everything
+  reads through slot decoding.
 - **Failure isolation as reorg.** Per-mutation revert and bundle revert
   are the same primitive — a journal checkpoint that may or may not be
   committed. Same primitive serves chain reorg recovery later.
@@ -143,34 +145,24 @@ This step replaces the JS-state read path inside `persistMutation` /
 `persistState`. The callback signatures stay the same; what they
 *receive* changes.
 
-Two routes exist depending on what each persistence hook reads:
+Two cases:
 
 1. **Hooks that already read from `args` only** (the common case for
    `persistMutation`): unaffected. `args` still flows through
    unchanged.
 2. **Hooks that read from `state` to compute persisted rows**
-   (typically `persistState`): need an alternate source. Two options:
+   (typically `persistState`): switch to decoded slot writes.
+   `execute`'s response gains a `slot_writes` field listing
+   `{ slot, prev_value, new_value }` per touched slot;
+   `storage-layout`'s `decodeStorage` projects each write back to a
+   `StoragePath` and primitive value. Requires both new sidecar
+   output and a known-path registry (mappings can't be reverse-
+   decoded from raw slots). See "What we still need to build."
 
-   a. **View functions via sidecar `call`** — apps add view getters to
-      the contract for any state they want to persist; the runtime
-      exposes a `call(to, data)` helper that goes through the sidecar
-      (transact-and-revert against the post-mutation state). Decode
-      with `viem`/`ox` ABI tools. Closest to "the contract is the
-      spec." Requires `call` in the sidecar (see "What we still need
-      to build" below).
-   b. **Decoded slot writes via `storage-layout`** — `execute`'s
-      response gains a `slot_writes` field listing
-      `{ slot, prev_value, new_value }` per touched slot;
-      `storage-layout`'s `decodeStorage` projects each write back to a
-      `StoragePath` and primitive value. Requires both new sidecar
-      output and a known-path registry (mappings can't be reverse-
-      decoded). See "What we still need to build."
-
-Option (a) is the v1 target — fewer moving parts, no
-reverse-mapping problem, fits the existing decoded-table persistence
-shape (Open decision: "Persistence shape" in the package roadmap leans
-this way too). Option (b) becomes useful later for state-sync / slot
-subscriptions.
+Slot decoding is the only route — the sidecar deliberately doesn't
+expose a view-function `call`. Apps that want post-mutation state
+flowing into persistence consume the decoded writes; apps that only
+need `args` see no signature change.
 
 `persistLifecycle` is unaffected — it operates on bundle/block metadata
 and doesn't read state.
@@ -179,7 +171,8 @@ and doesn't read state.
 
 Once persistence is sourced from revm, the JS state object has no
 remaining consumers other than `ffca.state`. `ffca.state` becomes a
-thin facade over the chosen step-5 route (view-function `call` for v1).
+thin facade over `storage-layout` — apps declare paths they want
+exposed, the runtime reads through `getStorage` + `decodeStorage`.
 
 - Delete `config.state.initial`, `config.state.load`,
   `config.state.schema` (state.schema's persistence covered by
@@ -221,35 +214,35 @@ The minimum that has to exist for steps 4 and 5 to land cleanly.
 What's there: `init`, `beginBundle`, `execute`, `simulate`,
 `commitBundles`, `revertBundle`, plus access-list discovery. Gaps:
 
-1. **`call({ from, to, data }) → { output } | { revert_data }`.**
-   View-function read. Transact-and-revert under the current bundle
-   stack; logs/state writes are discarded. Step 5's view-function
-   route requires this. Without it, `ffca.state` has to be backed by
-   slot decoders, which means step 5b ships before step 5a, which is
-   the harder path. Small Rust diff; mostly mirrors `simulate`
-   without recording into the bundle.
-2. **`setBlockContext({ number, timestamp, basefee?, … })`.** Today
+1. **`setBlockContext({ number, timestamp, basefee?, … })`.** Today
    block context is set once via `init`. Step 4 needs to advance it
    per bundle (or per `execute`) so revm's `block.number` /
    `block.timestamp` match what the scheduler will broadcast against.
    Open decision in the package roadmap ("revm block context") gates
    the exact semantics. Sidecar surface is small either way.
-3. **`getStorage({ address, slot }) → value`.** Direct slot read.
-   Needed if step 5b lands ahead of 5a (decoded-slot-write
-   persistence). Also useful for divergence detection — compare
-   revm's account root against on-chain via slot probes.
-4. **Logs + slot writes in `execute` output.** Today `execute`
+2. **Slot writes (and logs) in `execute` output.** Today `execute`
    returns `{ success, gas_used, output, access_list, revert_data? }`.
-   Add `logs: [{ address, topics, data }]` and `slot_writes: [{
-   address, slot, prev_value, new_value }]`. Logs unblock event-
-   driven persistence patterns; slot writes unblock step 5b and slot
-   subscriptions later.
-5. **External account hydration after `init`.** Today every account
+   Add `slot_writes: [{ address, slot, prev_value, new_value }]` —
+   this is what step 5 consumes through `storage-layout` to produce
+   the typed values `persistState` writes. Add `logs: [{ address,
+   topics, data }]` alongside for event-driven persistence patterns
+   and downstream state-sync.
+3. **`getStorage({ address, slot }) → value`.** Direct slot read.
+   Step 6's `ffca.state` facade reads through this for paths that
+   weren't touched by the most recent mutation (i.e. anything outside
+   the latest `slot_writes`). Also useful for divergence detection —
+   compare revm's account root against on-chain via slot probes.
+4. **External account hydration after `init`.** Today every account
    has to be passed in `init.accounts`. For dependencies discovered
    lazily (an ERC-20 referenced via a constructor arg the scheduler
    doesn't know about), the sidecar needs `setAccount({ address,
    code, storage })` post-`init`. Defer until a real case forces it;
    eager hydration covers v1.
+
+Deliberately not on this list: `call` (view-function read). Reading
+state happens through slot decoding, not through view functions —
+`ffca.state` and persistence both read `slot_writes` from `execute`
+and `getStorage` for ambient reads.
 
 ### Storage-layout (`packages/storage-layout`)
 
@@ -258,23 +251,26 @@ including packed slots, structs, fixed/dynamic arrays, mappings with
 most key types, short and long bytes/string. `encodeStorage` for leaf
 values only. `getStoragePath` reverse lookup for non-mapping paths.
 
-Gaps that block step 5b. See `packages/storage-layout/REVIEW_NOTES.md`
+Gaps that block step 5. See `packages/storage-layout/REVIEW_NOTES.md`
 for the full inventory; the ones that gate revm canonical persistence:
 
 1. **`matchStorageWrites(layout, writes, knownPaths)`.** Per
    `REVIEW_NOTES.md` finding 5 / simplification idea 2: the current
    `getStoragePath(layout, slots)` throws if any mapping exists in
-   the layout, even when the changed slot is unrelated. Mappings need
-   a known-path registry. The framework-side shape of that registry
-   is undecided — mutations could declare touched paths up front, or
-   we could derive them from mutation calldata, or maintain a
-   persisted index. Pick one before step 5b.
+   the layout, even when the changed slot is unrelated. Mappings
+   need a known-path registry — without one, slot writes against
+   mapping entries can't be projected back to typed paths. **This is
+   now a hard prerequisite for step 5**, not a contingent one:
+   without `call`, slot decoding is the only read path, and slot
+   decoding doesn't work for mappings without the registry. The
+   framework-side shape of the registry is the open decision below
+   ("How do mutations declare touched paths?").
 2. **Dynamic-array encoding with a stale-slot policy.** Per finding
    2 and the in-code TODO at `src/index.ts:198-205`: shrinking arrays
    leave old element slots behind. Decoding works; encoding is
-   intentionally unimplemented. Only relevant if `ffca` ever wants to
-   write back to revm from TS, which isn't on this plan's path —
-   defer until something needs it.
+   intentionally unimplemented. Not needed for step 5 — encoding is
+   only relevant if TS writes back into revm, which isn't on the
+   plan.
 3. **`bytes` / `string` shrink policy.** Finding 2: long-to-short
    updates can leave old data slots. Same shape as 2; same defer.
 4. **Mapping key support for `bytes` / `string` keys.** Finding 4.
@@ -282,14 +278,12 @@ for the full inventory; the ones that gate revm canonical persistence:
    needed.
 5. **Composite path decode/encode.** Finding 1 / simplification idea
    1: `StoragePathToPrimitiveType` types currently overpromise
-   composite support that runtime rejects. Either narrow the types to
-   leaf paths only, or implement recursive composite projection.
+   composite support that runtime rejects. Either narrow the types
+   to leaf paths only, or implement recursive composite projection.
    Decided in `REVIEW_NOTES.md` as "leaf paths first-class for now,"
-   which is fine for step 5b.
+   which is fine for step 5.
 
-The order-book port is the forcing function for #1. Until ffca has a
-contract using mappings whose persistence shape matters, the registry
-question stays academic.
+The order-book port is the forcing function for #1.
 
 ### ffca runtime
 
@@ -305,11 +299,10 @@ What changes inside `runtime.ts` beyond the per-step diffs above:
    walk against `config.address` at startup. For external token
    dependencies (currently invisible to ffca), apps will need to
    declare them — open decision.
-3. **`ffca.state` facade.** In steps 1–4, unchanged. In step 5a, a
-   thin wrapper around sidecar `call` that decodes view-function
-   output with `viem`/`ox`. Apps declare which getters they call;
-   ffca caches the ABI; the wrapper is mechanical. In step 5b (if
-   ever taken), backed by `getStorage` + `decodeStorage`.
+3. **`ffca.state` facade.** In steps 1–4, unchanged. From step 5 on,
+   backed by `getStorage` + `decodeStorage`. Apps declare which paths
+   they want exposed (the same registry that gates persistence —
+   one source of truth for what state ffca tracks).
 
 ## Decisions
 
@@ -326,13 +319,24 @@ Consequence: `revertBundle` exists in the sidecar API for in-bundle
 failure isolation only. There is no "rollback because chain disagreed"
 path in v1.
 
-### `ffca.state` survives the swap
+### `ffca.state` survives the swap, backed by slot decoding
 
-Stays as a public surface. v1 backs it by view-function `call` (apps
-declare the getter surface, `ffca.state` is a thin facade). When the
-slot-decoder route is justified, it can back `ffca.state` instead with
-no caller-visible change. Deleting `ffca.state` is a future option,
-not now.
+Stays as a public surface. Backed by `storage-layout` over revm's
+`slot_writes` (from `execute`) and `getStorage` (for ambient reads).
+No view-function `call` path — see "no view-function reads" below.
+Apps declare which paths they care about; `ffca.state` projects them.
+Deleting `ffca.state` is a future option, not now.
+
+### No view-function reads
+
+The sidecar does not (and will not) expose `call`. State reads happen
+through slot decoding only. Trade-off: requires the
+`matchStorageWrites` + path-registry work in `storage-layout` before
+step 5 can land. Upside: one read path instead of two, mappings stay
+honest about needing a registry, and slot subscriptions / state-sync
+fall out naturally later. Apps that today reach for view-function
+results in `persistState` will need to switch to decoded slot writes
+or to deriving the same value from `args`.
 
 ### `encodeBundleArg` stays
 
@@ -384,18 +388,26 @@ dependencies get complex.
 
 ### How do mutations declare touched paths?
 
-Needed if step 5b ever lands. Options:
+**Hard prerequisite for step 5** (was contingent in earlier drafts —
+no longer, since slot decoding is now the only read path). Mappings
+can't be reverse-decoded from raw slots, so the runtime needs a
+universe of candidate paths against which to match a slot write.
+
+Options:
 
 - Mutation config declares paths up front (`paths: ["balances[args.from]",
   "balances[args.to]", "totalSupply"]`). Apps own the list; mismatches
   with actual slot writes surface in step 1's mismatch log.
 - Runtime derives paths from mutation calldata (parameter values feed
-  template paths the framework knows about).
+  template paths the framework knows about — closer to "the contract
+  is the spec" but requires layout-aware codegen).
 - Path registry persisted in the database, populated by observation
-  (revm slot writes ∩ candidate paths from the layout).
+  (revm slot writes ∩ candidate paths from the layout, with mapping
+  keys discovered from calldata/events).
 
-No forcing function until 5b is real. Listed so it doesn't get
-rediscovered.
+The first option is the smallest viable shape — pick it for v1
+unless something else forces a richer design. The order-book port is
+the forcing function.
 
 ### Divergence detection
 
@@ -412,14 +424,22 @@ in production to reveal what failure shapes look like.
    concrete piece of work; everything before it is already merged.
 2. **Sidecar `setBlockContext`.** Needed before step 4 for
    determinism. Small Rust diff.
-3. **Sidecar `call`.** Needed for step 5a. Mirrors `simulate`
-   without journaling.
-4. **Step 2 — failure-isolation swap.** Drops `structuredClone`.
-5. **Step 3 — access-list + gas through revm.** Removes three RPC
+3. **Sidecar `slot_writes` (+ `logs`) in `execute` output.** Needed
+   for step 5. Pulls touched slots out of the journal alongside the
+   existing access-list discovery.
+4. **Sidecar `getStorage`.** Direct slot read. Needed for the
+   `ffca.state` facade's ambient reads in step 6 (and for divergence
+   probes).
+5. **Step 2 — failure-isolation swap.** Drops `structuredClone`.
+6. **Step 3 — access-list + gas through revm.** Removes three RPC
    calls from submit.
-6. **Step 4 — revm-decided acceptance.** TS `apply` still runs;
+7. **Step 4 — revm-decided acceptance.** TS `apply` still runs;
    revm decides reject/accept. Mismatch log should already be silent.
-7. **Step 5a — `ffca.state` and persistence through view-function
-   `call`.**
-8. **Step 6 — delete TS state machine.** `config.state.*`,
-   `mutation.apply`, `mutation.resolve` removed.
+8. **`storage-layout` `matchStorageWrites` + path registry shape.**
+   Settle the open decision on how mutations declare paths; ship the
+   helper. Hard prerequisite for step 5.
+9. **Step 5 — persistence callbacks consume decoded slot writes.**
+   `persistState` switches from JS state to decoded `slot_writes`.
+10. **Step 6 — delete TS state machine.** `config.state.*`,
+    `mutation.apply`, `mutation.resolve` removed. `ffca.state`
+    re-backed by `getStorage` + `decodeStorage`.
