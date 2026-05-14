@@ -78,6 +78,10 @@ Prefer specific validity checks over truthy/falsy shortcuts: `if (mutation === u
 
 The repo's `bunfig.toml` enforces `minimumReleaseAge = 2419200` (28 days) as a supply-chain defense — bun refuses any version younger than that. If `bun.lock` or a `package.json` constraint pins a too-recent version, install fails with "No version matching X found / blocked by minimum-release-age". Fix: `bun remove <pkg> && bun add <pkg>` — `bun add` walks back to find a version that satisfies the constraint *and* clears the age gate.
 
+## Gotcha: `bun.lock` merge conflicts
+
+Don't hand-resolve `bun.lock` during a merge or rebase. The file is generated, internally consistent in ways that aren't obvious from the diff, and `<<<<<<< / >>>>>>>` markers will leave it parse-broken. Resolve the `package.json` conflicts manually, then run `bun install` — bun will regenerate `bun.lock` from the merged `package.json` state. If a leftover conflict marker keeps bun from parsing the file at all, `rm bun.lock && bun install` to rebuild from scratch.
+
 ## Available CLIs
 
 Two authenticated CLIs are expected. Validate before relying on them; if a check fails, **stop and ask the user to fix it** rather than working around it.
