@@ -21,6 +21,11 @@
 
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noPropertyAccessFromIndexSignature": true
+    "noPropertyAccessFromIndexSignature": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "evm": ["../evm/src/index.ts"]
+    }
   }
 }

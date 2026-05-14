@@ -14,6 +14,7 @@ import {
   Schedule,
   Stream,
 } from "effect";
+import { createEVM, type EVM } from "evm";
 import { AbiParameters, type Hex, TypedData } from "ox";
 import {
   createPublicClient,
@@ -32,7 +33,7 @@ import type {
   FFCAMutationConfig,
 } from "./config";
 import { buildEip712Types, hashMutationEip712 } from "./eip712";
-import { encodeBundleArg } from "./encoding";
+import { encodeBundleArg, executeAbi } from "./encoding";
 import {
   deploymentLockKey,
   deploymentSchemaName,
@@ -380,6 +381,13 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
     }
   }
 
+  // revm sidecar client. Always spawned: `runtimeEffect` calls `createEVM`
+  // and `init` (with bytecode pulled from chain via `eth_getCode`) before
+  // entering the parallel programs, so the bundle/submit loops can
+  // dereference this unconditionally. Torn down via the runtime's Effect
+  // scope on `stop()`. See `PLAN_revm.md` for the integration plan.
+  let evm!: EVM;
+
   // Local nonce cache. Lazy-initialized on first use; incremented per submit.
   // TODO recover from gaps and chain divergence; per-key parallelism when
   //   the account model lands.
@@ -458,29 +466,66 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
       args: q.pending.args,
     }));
 
+    // Open a revm journal for this bundle. Per-mutation executes record into
+    // it on TS success; if the whole bundle is rejected we pop it below.
+    // Successful bundles are left open and committed by submit's
+    // `commitBundles` after the broadcast lands.
+    yield* evm.beginBundle();
+
     // Failure isolation. `resolve` is pure (reads state, returns the
     // resolution). `apply` mutates in place. Snapshot before each apply so
     // a partially-mutating throw can be rolled back to the pre-apply state.
     // TODO perf: structuredClone(state) per mutation is O(state). revm
     //   subsumes this with native revert; until then, the cost is paid.
     for (const item of queued) {
-      const { config, args, signature, digest } = item.pending;
+      const { config: mutationConfig, args, signature, digest } = item.pending;
       const snapshot = structuredClone(state);
       try {
         const resolution = resolveMutation(
-          config,
+          mutationConfig,
           args,
           signature,
           state,
           bundleView,
         );
-        verifyResolution(config, resolution, item.pending.name);
-        applyMutation(config, args, state, resolution, signature, digest);
+        verifyResolution(mutationConfig, resolution, item.pending.name);
+        applyMutation(
+          mutationConfig,
+          args,
+          state,
+          resolution,
+          signature,
+          digest,
+        );
         const acceptedMutation = {
           ...item.pending,
           status: "accepted" as const,
           resolution,
         };
+
+        // Shadow the TS apply against revm. Build single-mutation
+        // `execute(Bundle[], uint256[])` calldata — the chain would batch
+        // many of these per submit, but revm gets one per accepted mutation
+        // for granular state evolution and (once mismatch logging lands)
+        // per-mutation divergence signals. Uses `executeAbi(sigParams)`
+        // rather than `config.abi` so the encode doesn't depend on the
+        // user's ABI containing an `execute` entry — the bundle shape is
+        // an ffca convention. revm's result is not inspected today;
+        // transport errors propagate up and crash the runtime.
+        const mutationCalldata = encodeFunctionData({
+          abi: executeAbi(config.signature.params),
+          functionName: "execute",
+          args: [
+            [encodeBundleArg([acceptedMutation], config.signature.params)],
+            [],
+          ],
+        });
+        yield* evm.execute({
+          from: config.account.address,
+          to: config.address,
+          data: mutationCalldata,
+        });
+
         accepted.push(acceptedMutation);
       } catch (error) {
         state = snapshot;
@@ -498,7 +543,12 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
       yield* Deferred.fail(item.deferred, error);
     }
 
-    if (accepted.length === 0) return;
+    if (accepted.length === 0) {
+      // Nothing landed; drop the journal we opened above so submit's
+      // `commitBundles` doesn't see leftover empty bundles.
+      yield* evm.revertBundle();
+      return;
+    }
 
     const bundleEvent: BundleEvent = {
       id: bundleId++,
@@ -633,6 +683,14 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
         }),
       catch: (error) => error as Error,
     }).pipe(rpcRetry);
+
+    // The chain has accepted these bundles; commit every open revm journal
+    // (one per bundle picked up from the queue this submit pass) so revm's
+    // canonical state advances in lockstep. Pre-broadcast failures left no
+    // journal to commit because the bundle loop reverts on all-reject; a
+    // partial-batch broadcast failure crashes via `rpcRetry` orDie before
+    // reaching here.
+    yield* evm.commitBundles();
 
     const block = yield* Effect.tryPromise({
       try: () => publicClient.getBlock({ blockHash: receipt.blockHash }),
@@ -834,11 +892,51 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
   );
 
   const runtimeEffect = Effect.gen(function* () {
+    // Spawn the sidecar inside the runtime's scope so its lifetime is bound
+    // to the runtime fiber. `Effect.scoped` below closes the scope (and
+    // shuts down the subprocess) when the fiber finishes or is interrupted
+    // by `stop()`. Init runs sequentially before `Effect.all`, so the
+    // bundle/submit closures see the assigned binding by the time they run.
+    //
+    // Auto-hydration: pull `config.address`'s deployed bytecode from chain
+    // and hand it to the sidecar. Apps don't initialize revm — ffca figures
+    // out what's needed. Today that's bytecode only; non-immutable storage
+    // and dependency contracts (ERC-20s, registries, …) aren't pulled. For
+    // shadow-mode use that's fine when constructor-set state is all
+    // immutables (Counter, Harness, Exchange today) — those slots are
+    // already baked into bytecode and revm sees the same view as the chain.
+    // Contracts that set non-immutable storage in their constructor will
+    // diverge silently here until mismatch logging lands; see `PLAN_revm.md`
+    // open decision "hydration source".
+    //
+    // Missing code (config.address points at an empty account) is tolerated:
+    // ffca logs a warning and inits revm with chain context only. The shadow
+    // executes still run; they no-op against an empty address. Production
+    // misconfiguration surfaces here as a startup log line plus a near-
+    // immediate submit failure when the broadcast tries to call into a
+    // contract that doesn't exist.
+    evm = yield* createEVM();
+    const code = yield* Effect.tryPromise({
+      try: () => publicClient.getCode({ address: config.address }),
+      catch: (error) => error as Error,
+    });
+    if (code === undefined || code === "0x") {
+      yield* Effect.logWarning(
+        `no contract code at config.address=${config.address}; ` +
+          "revm hydration skipped — runtime will continue but revm has no view of contract state",
+      );
+      yield* evm.init({ chain_id: config.chainId });
+    } else {
+      yield* evm.init({
+        chain_id: config.chainId,
+        accounts: { [config.address]: { code } },
+      });
+    }
     yield* Effect.logInfo("ffca runtime started");
     yield* Effect.all([bundleProgram, submitProgram, watchProgram], {
       concurrency: "unbounded",
     });
-  }).pipe(Effect.provide(Logger.json));
+  }).pipe(Effect.scoped, Effect.provide(Logger.json));
 
   const fiber = Effect.runFork(runtimeEffect);
   Effect.runPromiseExit(Fiber.join(fiber)).then((exit) => {

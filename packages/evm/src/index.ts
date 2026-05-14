@@ -16,6 +16,15 @@ import type {
   Response,
 } from "./types";
 
+export type {
+  AccountParams,
+  BlockParams,
+  ExecuteParams,
+  ExecuteResult,
+  InitParams,
+  Spec,
+} from "./types";
+
 const BINARY_PATH = `${import.meta.dir}/../target/${Bun.env.NODE_ENV === "test" ? "debug" : "release"}/evm`;
 
 // -----------------------------------------------------------------------------

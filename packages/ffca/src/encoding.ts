@@ -76,6 +76,39 @@ export function encodeBundleCalldata(
   ]);
 }
 
+// `execute(Bundle[], uint256[])` as a viem-compatible abi item, derived from
+// `sigParams`. The contract's execute selector is a function of the bundle
+// shape (which is fully determined by `sigParams`), so ffca can build this
+// without consulting `FFCAConfig.abi` — useful when calldata is needed for
+// internal purposes like shadowing the bundle into revm, without forcing
+// stub-config tests to declare an `execute` entry on their abi.
+export function executeAbi(sigParams: readonly AbiParameters.Parameter[]) {
+  return [
+    {
+      type: "function",
+      name: "execute",
+      stateMutability: "nonpayable",
+      inputs: [
+        {
+          name: "bundles",
+          type: "tuple[]",
+          components: [
+            { name: "mutations", type: "uint8[]" },
+            { name: "mutationData", type: "bytes[]" },
+            {
+              name: "signatures",
+              type: "tuple[]",
+              components: sigParams as AbiParameters.Parameter[],
+            },
+          ],
+        },
+        { name: "forceExecuteIndexes", type: "uint256[]" },
+      ],
+      outputs: [],
+    },
+  ] as const;
+}
+
 // Same Bundle shape as above, but as a structured value rather than bytes.
 // Use when the caller will pass it through viem's `encodeFunctionData` (which
 // needs unencoded values to slot into an ABI shape) — e.g. to wrap multiple

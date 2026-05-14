@@ -225,7 +225,7 @@ test("ffca.domain is derived from config", async () => {
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
     account: {} as any,
     chainId: 1,
-    rpcUrl: "http://localhost:8545",
+    rpcUrl: TEST_RPC_URL,
     domain: { name: "my-app", version: "2" },
     state: { initial: {} },
     signature: TEST_SIGNATURE,
@@ -252,7 +252,7 @@ test("createFFCA rejects partially configured persistence", async () => {
       // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
       account: {} as any,
       chainId: 1,
-      rpcUrl: "http://localhost:8545",
+      rpcUrl: TEST_RPC_URL,
       domain: { name: "my-app", version: "2" },
       state: { initial: {}, schema: HARNESS_SCHEMA },
       signature: TEST_SIGNATURE,
@@ -294,10 +294,9 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
   const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
-    // biome-ignore lint/suspicious/noExplicitAny: stub field
-    account: {} as any,
+    account: SCHEDULER_ACCOUNT,
     chainId: 1,
-    rpcUrl: "http://localhost:8545",
+    rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
     state: { initial: {} },
     signature: TEST_SIGNATURE,
@@ -371,7 +370,7 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
     account: {} as any,
     chainId: 1,
-    rpcUrl: "http://localhost:8545",
+    rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
     state: { initial: {} },
     signature: TEST_SIGNATURE,
@@ -420,10 +419,9 @@ test("resolve and apply receive submitted signature and apply receives digest", 
   const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
-    // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
-    account: {} as any,
+    account: SCHEDULER_ACCOUNT,
     chainId: 1,
-    rpcUrl: "http://localhost:8545",
+    rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
     state: { initial: {} },
     signature: TEST_SIGNATURE,
@@ -453,8 +451,7 @@ test("Harness apply rejects invalid signatures using callback digest", async () 
     address,
     domain: HARNESS_DOMAIN,
     abi: [],
-    // biome-ignore lint/suspicious/noExplicitAny: no chain submission in this rejection test
-    account: {} as any,
+    account: SCHEDULER_ACCOUNT,
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
     state: { initial: state },

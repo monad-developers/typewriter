@@ -12,6 +12,7 @@
     "drizzle-kit": "0.31.10",
     "drizzle-orm": "0.45.2",
     "effect": "catalog:",
+    "evm": "workspace:*",
     "ox": "catalog:",
     "viem": "catalog:"
   },
