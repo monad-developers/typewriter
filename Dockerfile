@@ -7,6 +7,7 @@
 
 ARG BUN_VERSION=1.3.13
 ARG FOUNDRY_VERSION=nightly-c81fa47fb6da28db8d7a0bf2d4fce861b1f22ed0
+ARG RUST_VERSION=1.90.0
 
 # ---------------------------------------------------------------------------
 # Stage 1: foundry - download and extract the pinned Foundry nightly toolchain.
@@ -33,16 +34,29 @@ RUN curl -L https://foundry.paradigm.xyz | bash \
 # Stage 2: build - install workspace deps, build contracts, build frontend.
 # ---------------------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-debian AS build
+ARG RUST_VERSION
 
 # System deps required by forge build (git for github: deps, libssl/ca-certs
-# for TLS) and by Next.js builds. Kept minimal because oven/bun:*-debian
-# already ships a usable base.
+# for TLS), the Rust sidecar build, and Next.js builds. Rust stays in this
+# build stage; the runtime image receives only the built workspace output.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
+        curl \
         git \
-        libssl3 \
+        libssl-dev \
+        pkg-config \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:${PATH}
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && rustc --version \
+    && cargo --version
 
 # Bring in the Foundry binaries from stage 1.
 COPY --from=foundry /root/.foundry/bin/forge /usr/local/bin/forge
