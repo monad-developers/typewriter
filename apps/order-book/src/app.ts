@@ -704,15 +704,26 @@ async function persistLifecycle(
           blockHash: params.block.hash,
           blockTimestamp: params.block.timestamp.toString(),
           transactionHash: params.block.transactionHash,
+          proposedAt: sql`NOW()`,
         })
         .where(eq(mutationTable.id, params.mutation.id));
       break;
     case "voted":
+      await db
+        .update(table)
+        .set({ status: params.lifecycle, votedAt: sql`NOW()` })
+        .where(eq(mutationTable.id, params.mutation.id));
+      break;
     case "finalized":
+      await db
+        .update(table)
+        .set({ status: params.lifecycle, finalizedAt: sql`NOW()` })
+        .where(eq(mutationTable.id, params.mutation.id));
+      break;
     case "verified":
       await db
         .update(table)
-        .set({ status: params.lifecycle })
+        .set({ status: params.lifecycle, verifiedAt: sql`NOW()` })
         .where(eq(mutationTable.id, params.mutation.id));
       break;
   }

@@ -27,6 +27,13 @@ import {
   type SubmittedOrderBookMutation,
 } from "./app";
 import * as schema from "./app-schema";
+import {
+  loadBlock,
+  loadMutationByAccountNonce,
+  loadMutationById,
+  loadMutationsByAccount,
+  loadMutationsByBlock,
+} from "./db-queries";
 import { ALL_PERMISSIONS, type State } from "./exchange";
 
 const BASE: Address = "0x1111111111111111111111111111111111111111";
@@ -546,4 +553,129 @@ test("ffca order book changes an unfilled order to a new price", async () => {
   });
   expect(state.instruments[0]!.bids[Number(5n * Q32)]!.quantity).toBe(0n);
   expect(state.instruments[0]!.bids[Number(6n * Q32)]!.quantity).toBe(10n);
+});
+
+test("db-queries fan out across per-mutation tables", async () => {
+  const address = await deployExchange();
+  const state: State<bigint> = { accounts: {}, instruments: {} };
+  const app = await createFFCA({
+    address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    database: { connection: TEST_DB_CONNECTION },
+    state: {
+      initial: state,
+      schema: schema.APP_SCHEMA,
+      load: loadOrderBookState,
+    },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: persistedMutations(),
+  });
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: schema.APP_SCHEMA,
+    casing: "snake_case",
+  });
+
+  const maker = await setupAccount({
+    app,
+    state: app.state as State<bigint>,
+    account: MAKER_ACCOUNT.address,
+    privateKey: MAKER_PRIVATE_KEY,
+    contract: address,
+  });
+  await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "AddInstrument",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        instrumentId: 0,
+        base: BASE,
+        quote: QUOTE,
+        baseLotExp: 0,
+        quoteLotExp: 0,
+        nonce: 0n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+  await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "Deposit",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        asset: BASE,
+        amount: 7n,
+        nonce: 1n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+
+  await waitForProposed(db, schema.deposits, "deposit");
+
+  const [depositRow] = await db.select().from(schema.deposits).limit(1);
+  expect(depositRow).toBeDefined();
+  const blockNumber = depositRow!.blockNumber!;
+
+  // loadBlock: any per-type table referencing this block returns its metadata.
+  const block = await loadBlock(db, blockNumber);
+  expect(block).toMatchObject({
+    number: blockNumber,
+    hash: depositRow!.blockHash!,
+    timestamp: depositRow!.blockTimestamp!,
+  });
+
+  // loadMutationById: globally unique id resolves through the right table.
+  const byId = await loadMutationById(db, depositRow!.id);
+  expect(byId).toMatchObject({
+    id: depositRow!.id,
+    type: "deposit",
+    status: "proposed",
+    account: maker,
+    nonce: "1",
+    blockNumber,
+  });
+  expect((byId?.payload as { asset: string; amount: string }).amount).toBe("7");
+
+  // loadMutationByAccountNonce: looks across nonce-bearing tables.
+  const byAccountNonce = await loadMutationByAccountNonce(db, maker, "1");
+  expect(byAccountNonce?.id).toBe(depositRow!.id);
+
+  // loadMutationsByBlock: returns every persisted mutation that landed in
+  // the block, ordered by (bundleId, bundlePosition).
+  const inBlock = await loadMutationsByBlock(db, blockNumber);
+  expect(inBlock.length).toBeGreaterThanOrEqual(1);
+  const typesInBlock = new Set(inBlock.map((m) => m.type));
+  expect(typesInBlock.has("deposit")).toBe(true);
+
+  // loadMutationsByAccount: most recent N mutations for this account across
+  // all per-type tables, ordered by id desc.
+  const recent = await loadMutationsByAccount(db, maker, 10);
+  expect(recent.map((m) => m.type)).toEqual([
+    "deposit",
+    "addInstrument",
+    "initialize",
+  ]);
+  expect(recent.every((m) => m.account === maker)).toBe(true);
+
+  // 404 paths.
+  expect(await loadBlock(db, "999999")).toBeNull();
+  expect(await loadMutationById(db, 999_999)).toBeNull();
+  expect(await loadMutationByAccountNonce(db, maker, "999")).toBeNull();
+
+  await app.stop();
 });

@@ -1,4 +1,4 @@
-import { char, integer, numeric, pgEnum } from "drizzle-orm/pg-core";
+import { char, integer, numeric, pgEnum, timestamp } from "drizzle-orm/pg-core";
 
 // const uint8 = () => smallint();
 // const uint16 = () => integer();
@@ -34,6 +34,13 @@ export const mutationColumns = () => ({
   blockTimestamp: uint256(),
   transactionHash: bytes32(),
 
-  // Lifecycle tracking. Apps that want timestamps can add their own columns.
+  // Lifecycle tracking. `acceptedAt` is set on insert by the column default;
+  // `persistLifecycle` writes the matching `*At` column when the runtime
+  // advances a mutation through proposed → voted → finalized → verified.
   status: mutationStatusEnum().notNull(),
+  acceptedAt: timestamp().notNull().defaultNow(),
+  proposedAt: timestamp(),
+  votedAt: timestamp(),
+  finalizedAt: timestamp(),
+  verifiedAt: timestamp(),
 });

@@ -1,4 +1,5 @@
 import { serve } from "bun";
+import { drizzle } from "drizzle-orm/bun-sql";
 import { createFFCA } from "ffca";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type { Address, Hex } from "viem";
@@ -16,6 +17,14 @@ import {
 } from "./app";
 import { APP_SCHEMA } from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
+import {
+  loadBlock,
+  loadMutationByAccountNonce,
+  loadMutationById,
+  loadMutationsByAccount,
+  loadMutationsByBlock,
+  type QueryDatabase,
+} from "./db-queries";
 import type { State } from "./exchange";
 
 if (process.env.DEPLOYER_PRIVATE_KEY === undefined) {
@@ -49,6 +58,18 @@ const app = await createFFCA({
   sequence: ORDER_BOOK_SEQUENCE,
   mutations: persistedMutations(),
 });
+
+// FFCA's startup mutates the imported `schema.*` tables in place with the
+// per-deployment Postgres schema qualifier (see ffca's `updateSchema`), so by
+// the time we build this read-side Drizzle handle the table references point
+// at the right namespace.
+const readerDb: QueryDatabase = drizzle({
+  client: database.connection,
+  schema: APP_SCHEMA,
+  casing: "snake_case",
+});
+
+const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 
 type MutationStatus =
   | "pending"
@@ -563,22 +584,66 @@ serve({
     "/api/events/bundles": { GET: () => eventStream("bundle") },
     "/api/events/mutations": { GET: () => eventStream("mutation") },
     "/api/blocks/:number": {
-      GET: () =>
-        notImplemented(
-          "TODO: serve blocks from the upcoming Postgres query handler.",
-        ),
+      GET: async (req) => {
+        const number = req.params.number;
+        if (!/^\d+$/.test(number)) {
+          return json({ error: "Invalid block number" }, { status: 400 });
+        }
+        const block = await loadBlock(readerDb, number);
+        if (block === null) {
+          return json({ error: "Block not found" }, { status: 404 });
+        }
+        return json(block);
+      },
     },
     "/api/mutations": {
-      GET: () =>
-        notImplemented(
-          "TODO: serve mutations from the upcoming Postgres query handler.",
-        ),
+      GET: async (req) => {
+        const block = new URL(req.url).searchParams.get("block");
+        if (block === null || !/^\d+$/.test(block)) {
+          return json(
+            { error: "block query parameter required (integer)" },
+            { status: 400 },
+          );
+        }
+        const mutations = await loadMutationsByBlock(readerDb, block);
+        return json(mutations);
+      },
     },
     "/api/mutation": {
-      GET: () =>
-        notImplemented(
-          "TODO: serve mutation history from the upcoming Postgres query handler.",
-        ),
+      GET: async (req) => {
+        const url = new URL(req.url);
+        const idParam = url.searchParams.get("id");
+        const accountParam = url.searchParams.get("account");
+        const nonceParam = url.searchParams.get("nonce");
+        let mutation: Awaited<ReturnType<typeof loadMutationById>> = null;
+        if (idParam !== null) {
+          if (!/^\d+$/.test(idParam)) {
+            return json({ error: "Invalid id" }, { status: 400 });
+          }
+          mutation = await loadMutationById(readerDb, Number(idParam));
+        } else if (accountParam !== null && nonceParam !== null) {
+          if (
+            !/^0x[0-9a-fA-F]{64}$/.test(accountParam) ||
+            !/^\d+$/.test(nonceParam)
+          ) {
+            return json({ error: "Invalid account or nonce" }, { status: 400 });
+          }
+          mutation = await loadMutationByAccountNonce(
+            readerDb,
+            accountParam as Hex,
+            nonceParam,
+          );
+        } else {
+          return json(
+            { error: "Query with id, or account and nonce" },
+            { status: 400 },
+          );
+        }
+        if (mutation === null) {
+          return json({ error: "Mutation not found" }, { status: 404 });
+        }
+        return json(mutation);
+      },
     },
     "/api/account/:id/orders": {
       GET: (req) => {
@@ -611,7 +676,7 @@ serve({
       },
     },
     "/api/account/:id": {
-      GET: (req) => {
+      GET: async (req) => {
         const resolved = accountByParam(req.params.id);
         if (resolved === null) {
           return json({ error: "Invalid account address" }, { status: 400 });
@@ -630,6 +695,11 @@ serve({
         )) {
           nonces[nonceKey] = sequence.toString();
         }
+        const mutations = await loadMutationsByAccount(
+          readerDb,
+          resolved.account,
+          ACCOUNT_MUTATION_HISTORY_LIMIT,
+        );
         return json({
           address: resolved.account,
           serial: resolved.serial,
@@ -637,7 +707,7 @@ serve({
           nonces,
           orders: accountOrders(resolved.account),
           balances,
-          mutations: [],
+          mutations,
         });
       },
     },

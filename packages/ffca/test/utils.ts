@@ -1,5 +1,5 @@
 import { parseAbiParameters } from "abitype";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import {
   bigint,
   char,
@@ -435,15 +435,26 @@ async function persistHarnessLifecycle(
           blockHash: params.block.hash,
           blockTimestamp: params.block.timestamp.toString(),
           transactionHash: params.block.transactionHash,
+          proposedAt: sql`NOW()`,
         })
         .where(eq(table.id, params.mutation.id));
       break;
     case "voted":
+      await harnessDb(tx)
+        .update(table)
+        .set({ status: params.lifecycle, votedAt: sql`NOW()` })
+        .where(eq(table.id, params.mutation.id));
+      break;
     case "finalized":
+      await harnessDb(tx)
+        .update(table)
+        .set({ status: params.lifecycle, finalizedAt: sql`NOW()` })
+        .where(eq(table.id, params.mutation.id));
+      break;
     case "verified":
       await harnessDb(tx)
         .update(table)
-        .set({ status: params.lifecycle })
+        .set({ status: params.lifecycle, verifiedAt: sql`NOW()` })
         .where(eq(table.id, params.mutation.id));
       break;
   }
