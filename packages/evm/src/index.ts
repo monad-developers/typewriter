@@ -12,6 +12,8 @@ import type {
   ExecuteParams,
   ExecuteResult,
   InitParams,
+  ReadStorageParams,
+  ReadStorageResult,
   Request,
   Response,
 } from "./types";
@@ -22,6 +24,8 @@ export type {
   ExecuteParams,
   ExecuteResult,
   InitParams,
+  ReadStorageParams,
+  ReadStorageResult,
   Spec,
 } from "./types";
 
@@ -57,6 +61,9 @@ export type EVM = {
   readonly simulate: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
+  readonly readStorage: (
+    params: ReadStorageParams,
+  ) => Effect.Effect<ReadStorageResult, EvmError>;
   readonly commitBundles: () => Effect.Effect<void, EvmError>;
   readonly revertBundle: () => Effect.Effect<void, EvmError>;
 };
@@ -167,6 +174,12 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
         simulate: (params) =>
           call<ExecuteResult>("simulate", (id) => ({
             method: "simulate",
+            id,
+            params,
+          })),
+        readStorage: (params) =>
+          call<ReadStorageResult>("readStorage", (id) => ({
+            method: "readStorage",
             id,
             params,
           })),

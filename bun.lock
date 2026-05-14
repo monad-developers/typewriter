@@ -45,6 +45,7 @@
       "devDependencies": {
         "prool": "catalog:",
         "solmate": "github:transmissions11/solmate",
+        "storage-layout": "workspace:*",
         "viem": "catalog:",
       },
       "peerDependencies": {

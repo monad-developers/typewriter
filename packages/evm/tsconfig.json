@@ -20,6 +20,11 @@
 
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noPropertyAccessFromIndexSignature": true
+    "noPropertyAccessFromIndexSignature": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "storage-layout": ["../storage-layout/src/index.ts"]
+    }
   }
 }

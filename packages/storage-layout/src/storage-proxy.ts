@@ -35,6 +35,11 @@
 //    path registry, etc.). Future shape: pass that known-path universe into
 //    `createStorageProxy` so `Object.keys(state.balances)` and similar APIs can
 //    enumerate only keys the runtime already knows about.
+// 4. **Array length access.** Fixed-array `.length` can be exposed directly
+//    from the storage layout; dynamic-array `.length` needs to read the array
+//    root slot and decode the stored length. Future shape: reserve `length` for
+//    array proxies and return either a number for sync getters or
+//    `Promise<number>` for async getters.
 
 import { Hash, type Hex } from "ox";
 import {
@@ -68,29 +73,36 @@ export type AsyncSlotGetter = (slots: Hex.Hex[]) => Promise<SlotMap>;
 /** Sync or async slot reader. */
 export type SlotGetter = SyncSlotGetter | AsyncSlotGetter;
 
+type DeepReadonly<T> = [T] extends [readonly unknown[]]
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : [T] extends [object]
+    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+    : T;
+
 /**
  * Recursively wrap every leaf value in `Promise<>`. Composite shapes
- * (objects, tuples, arrays) keep their structure; only the terminal primitive
- * positions become promises. Used to model an async-backed proxy's return
- * type.
+ * (objects, tuples, arrays) keep their readonly structure; only the terminal
+ * primitive positions become promises. Used to model an async-backed proxy's
+ * return type.
  */
 export type DeepPromise<T> = [T] extends [readonly unknown[]]
   ? { readonly [K in keyof T]: DeepPromise<T[K]> }
   : [T] extends [object]
-    ? { [K in keyof T]: DeepPromise<T[K]> }
+    ? { readonly [K in keyof T]: DeepPromise<T[K]> }
     : Promise<T>;
 
 /**
  * Inferred shape of the proxy returned by {@link createStorageProxy}. The
  * structural shape mirrors {@link StorageLayoutToPrimitiveType}; when the
- * getter is asynchronous, leaf positions are wrapped in `Promise<>`.
+ * getter is asynchronous, leaf positions are wrapped in `Promise<>`. The whole
+ * projection is recursively readonly because proxy writes are rejected.
  */
 export type StorageProxy<
   L extends StorageLayout,
   G extends SlotGetter,
 > = G extends AsyncSlotGetter
   ? DeepPromise<StorageLayoutToPrimitiveType<L>>
-  : StorageLayoutToPrimitiveType<L>;
+  : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
 
 // -----------------------------------------------------------------------------
 // Public API

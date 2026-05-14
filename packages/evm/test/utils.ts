@@ -1,4 +1,5 @@
 import { AbiFunction, AbiParameters, type Address, Hash, Hex } from "ox";
+import type { StorageLayout } from "storage-layout";
 import type { Abi, Hex as ViemHex } from "viem";
 import {
   SCHEDULER_ACCOUNT,
@@ -18,6 +19,46 @@ export const SIMULATE_AMOUNT = 456_000_000_000_000_000_000n;
 
 export const TOTAL_SUPPLY_SLOT = Hex.fromNumber(2n, { size: 32 });
 export const BALANCE_OF_SLOT = 3n;
+
+export const tokenStorageLayout = {
+  storage: [
+    {
+      astId: 1,
+      contract: "test/contracts/src/TestToken.sol:TestToken",
+      label: "totalSupply",
+      offset: 0,
+      slot: "2",
+      type: "t_uint256",
+    },
+    {
+      astId: 2,
+      contract: "test/contracts/src/TestToken.sol:TestToken",
+      label: "balanceOf",
+      offset: 0,
+      slot: "3",
+      type: "t_mapping(t_address,t_uint256)",
+    },
+  ],
+  types: {
+    t_address: {
+      encoding: "inplace",
+      label: "address",
+      numberOfBytes: "20",
+    },
+    "t_mapping(t_address,t_uint256)": {
+      encoding: "mapping",
+      key: "t_address",
+      label: "mapping(address => uint256)",
+      numberOfBytes: "32",
+      value: "t_uint256",
+    },
+    t_uint256: {
+      encoding: "inplace",
+      label: "uint256",
+      numberOfBytes: "32",
+    },
+  },
+} as const satisfies StorageLayout;
 
 export type ForgeArtifact = {
   abi: Abi;

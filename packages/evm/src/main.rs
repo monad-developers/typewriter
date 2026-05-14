@@ -1,9 +1,10 @@
 // Sidecar that wraps monad-revm and speaks line-delimited JSON over stdio.
 //
-// Six operations:
+// Seven operations:
 //   init           — one-shot setup: spec, chain id, block context, accounts.
 //   beginBundle    — open a journal checkpoint.
 //   execute        — run one tx inside the open bundle.
+//   readStorage    — read raw account storage slots from the sidecar DB.
 //   commitBundles  — drain all journals and keep writes in the DB.
 //   revertBundle   — roll the journal back to the bundle's open checkpoint.
 
@@ -25,7 +26,7 @@ use revm::{
     inspector::JournalExt,
     primitives::{Address, Bytes, TxKind, B256, U256},
     state::{AccountInfo, Bytecode},
-    ExecuteCommitEvm, ExecuteEvm,
+    DatabaseRef, ExecuteCommitEvm, ExecuteEvm,
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +40,7 @@ enum Request {
     BeginBundle { id: u64 },
     Execute { id: u64, params: ExecuteParams },
     Simulate { id: u64, params: ExecuteParams },
+    ReadStorage { id: u64, params: ReadStorageParams },
     CommitBundles { id: u64 },
     RevertBundle { id: u64 },
 }
@@ -73,6 +75,12 @@ struct ExecuteParams {
     to: String,
     data: String,
     value: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReadStorageParams {
+    address: String,
+    slots: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -270,6 +278,20 @@ impl EvmHarness {
         }
 
         result
+    }
+
+    fn read_storage(&self, params: &ReadStorageParams) -> Result<BTreeMap<String, String>, String> {
+        let address = parse_address(&params.address)?;
+        let db = self.evm.0.ctx.journaled_state.db();
+        let mut out = BTreeMap::new();
+        for slot_str in &params.slots {
+            let slot = parse_u256(slot_str)?;
+            let value = db
+                .storage_ref(address, slot)
+                .map_err(|e| format!("storage_ref: {e:?}"))?;
+            out.insert(format_u256(slot), format_u256(value));
+        }
+        Ok(out)
     }
 
     // Walk the journal's post-tx state and merge it into the top bundle:
@@ -477,6 +499,10 @@ fn parse_u256(s: &str) -> Result<U256, String> {
     U256::from_str_radix(s, 16).map_err(|e| format!("bad u256: {e}"))
 }
 
+fn format_u256(value: U256) -> String {
+    format!("0x{}", hex::encode(value.to_be_bytes::<32>()))
+}
+
 // ffca handles sequencing, gas, and balance accounting upstream — the sidecar
 // just executes bytecode. Disable revm's tx-level checks so we don't have to
 // stage them in to make every execute go through.
@@ -514,6 +540,10 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
             Err(e) => err(id, e),
         },
         Request::Simulate { id, params } => match harness.simulate(&params) {
+            Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
+            Err(e) => err(id, e),
+        },
+        Request::ReadStorage { id, params } => match harness.read_storage(&params) {
             Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
             Err(e) => err(id, e),
         },

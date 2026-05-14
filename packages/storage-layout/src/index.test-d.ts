@@ -305,10 +305,15 @@ test("StorageProxy follows sync and async getter shapes", () => {
     StorageProxy<typeof layout, typeof syncGetter>
   >();
   expectTypeOf(syncState.metadata).toEqualTypeOf<{
-    lastUpdate: bigint;
-    paused: boolean;
+    readonly lastUpdate: bigint;
+    readonly paused: boolean;
   }>();
-  expectTypeOf(syncState.balances).toEqualTypeOf<Record<Hex.Hex, bigint>>();
+  expectTypeOf(syncState.balances).toEqualTypeOf<{
+    readonly [K: Hex.Hex]: bigint;
+  }>();
+  expectTypeOf(syncState.allowances).toEqualTypeOf<{
+    readonly [K: Hex.Hex]: { readonly [K: Hex.Hex]: bigint };
+  }>();
   expectTypeOf(syncState.fixedNumbers).toEqualTypeOf<
     readonly [bigint, bigint, bigint]
   >();
@@ -317,14 +322,16 @@ test("StorageProxy follows sync and async getter shapes", () => {
     StorageProxy<typeof layout, typeof asyncGetter>
   >();
   expectTypeOf(asyncState.supply).toEqualTypeOf<Promise<bigint>>();
-  expectTypeOf(asyncState.metadata.lastUpdate).toEqualTypeOf<Promise<bigint>>();
-  expectTypeOf(asyncState.metadata.paused).toEqualTypeOf<Promise<boolean>>();
-  expectTypeOf(asyncState.balances).toEqualTypeOf<
-    Record<Hex.Hex, Promise<bigint>>
-  >();
-  expectTypeOf(asyncState.allowances).toEqualTypeOf<
-    Record<Hex.Hex, Record<Hex.Hex, Promise<bigint>>>
-  >();
+  expectTypeOf(asyncState.metadata).toEqualTypeOf<{
+    readonly lastUpdate: Promise<bigint>;
+    readonly paused: Promise<boolean>;
+  }>();
+  expectTypeOf(asyncState.balances).toEqualTypeOf<{
+    readonly [K: Hex.Hex]: Promise<bigint>;
+  }>();
+  expectTypeOf(asyncState.allowances).toEqualTypeOf<{
+    readonly [K: Hex.Hex]: { readonly [K: Hex.Hex]: Promise<bigint> };
+  }>();
   expectTypeOf(asyncState.fixedNumbers).toEqualTypeOf<
     readonly [Promise<bigint>, Promise<bigint>, Promise<bigint>]
   >();
@@ -332,21 +339,28 @@ test("StorageProxy follows sync and async getter shapes", () => {
   expectTypeOf(asyncState.numbers).toEqualTypeOf<readonly Promise<bigint>[]>();
 });
 
-test("DeepPromise preserves composite structure", () => {
+test("DeepPromise preserves readonly composite structure", () => {
   type AsyncVariables = DeepPromise<
     StorageLayoutToPrimitiveType<typeof layout>
   >;
 
-  expectTypeOf<AsyncVariables["metadata"]["lastUpdate"]>().toEqualTypeOf<
-    Promise<bigint>
-  >();
-  expectTypeOf<AsyncVariables["metadata"]["paused"]>().toEqualTypeOf<
-    Promise<boolean>
-  >();
+  expectTypeOf<AsyncVariables["metadata"]>().toEqualTypeOf<{
+    readonly lastUpdate: Promise<bigint>;
+    readonly paused: Promise<boolean>;
+  }>();
   expectTypeOf<AsyncVariables["fixedNumbers"]>().toEqualTypeOf<
     readonly [Promise<bigint>, Promise<bigint>, Promise<bigint>]
   >();
   expectTypeOf<AsyncVariables["fixedNumbers"]["length"]>().toEqualTypeOf<3>();
+});
+
+test("StorageLayoutToPrimitiveType remains writable plain data", () => {
+  type Variables = StorageLayoutToPrimitiveType<typeof layout>;
+
+  expectTypeOf<Variables["metadata"]>().toEqualTypeOf<{
+    lastUpdate: bigint;
+    paused: boolean;
+  }>();
 });
 
 test("StoragePathToPrimitiveType extracts one variable", () => {

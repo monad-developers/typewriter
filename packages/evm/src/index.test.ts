@@ -13,10 +13,12 @@ const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 
 import { expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
+import { createStorageProxy } from "storage-layout";
 import { TEST_PUBLIC_CLIENT } from "../test/setup";
 import {
   BALANCE_OF_SLOT,
   deployTestToken,
+  INITIAL_SUPPLY,
   loadTestToken,
   mappingSlot,
   normalizeAccessRecord,
@@ -27,6 +29,7 @@ import {
   TOTAL_SUPPLY_SLOT,
   TRANSFER_AMOUNT,
   tokenInit,
+  tokenStorageLayout,
   transferData,
   USER_ADDR,
 } from "../test/utils";
@@ -300,6 +303,56 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
       "success": true,
     }
   `);
+});
+
+test("readStorage decodes committed token state through storage proxy", async () => {
+  const artifact = await loadTestToken();
+  const { params } = tokenInit(artifact);
+  const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
+
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(params);
+    yield* evm.beginBundle();
+    const exec = yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: TOKEN_ADDR,
+      data,
+    });
+    yield* evm.commitBundles();
+
+    const token = createStorageProxy(tokenStorageLayout, (slots) =>
+      Effect.runPromise(evm.readStorage({ address: TOKEN_ADDR, slots })),
+    );
+    const totalSupply = yield* Effect.promise(() => token.totalSupply);
+    const schedulerBalance = yield* Effect.promise(
+      () => token.balanceOf[SCHEDULER_ADDR]!,
+    );
+    const userBalance = yield* Effect.promise(
+      () => token.balanceOf[USER_ADDR]!,
+    );
+    const recipientBalance = yield* Effect.promise(
+      () => token.balanceOf[RECIPIENT_ADDR]!,
+    );
+
+    return {
+      exec,
+      recipientBalance,
+      schedulerBalance,
+      totalSupply,
+      userBalance,
+    };
+  });
+
+  const result = await Effect.runPromise(Effect.scoped(program));
+
+  expect(result).toEqual({
+    exec: expect.objectContaining({ success: true }),
+    recipientBalance: 0n,
+    schedulerBalance: INITIAL_SUPPLY - TRANSFER_AMOUNT,
+    totalSupply: INITIAL_SUPPLY,
+    userBalance: TRANSFER_AMOUNT,
+  });
 });
 
 test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async () => {

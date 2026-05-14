@@ -44,11 +44,19 @@ export type ExecuteResult = {
   revert_data?: Hex.Hex;
 };
 
+export type ReadStorageParams = {
+  address: Address.Address;
+  slots: Hex.Hex[];
+};
+
+export type ReadStorageResult = { [slot: Hex.Hex]: Hex.Hex };
+
 export type Request =
   | { method: "init"; id: number; params: InitParams }
   | { method: "beginBundle"; id: number }
   | { method: "execute"; id: number; params: ExecuteParams }
   | { method: "simulate"; id: number; params: ExecuteParams }
+  | { method: "readStorage"; id: number; params: ReadStorageParams }
   | { method: "commitBundles"; id: number }
   | { method: "revertBundle"; id: number };
 
