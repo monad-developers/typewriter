@@ -29,6 +29,12 @@
 //    produce the writes. The encode side already exists in this package; the
 //    missing bits are the proxy trap and the stale-slot policy for shrinking
 //    bytes/string/dynamic arrays.
+// 3. **Mapping enumeration.** Solidity storage cannot discover mapping keys
+//    from slots alone, so enumeration requires a known-paths list supplied by
+//    the app/runtime (subscriptions, calldata/event-derived keys, persisted
+//    path registry, etc.). Future shape: pass that known-path universe into
+//    `createStorageProxy` so `Object.keys(state.balances)` and similar APIs can
+//    enumerate only keys the runtime already knows about.
 
 import { Hash, type Hex } from "ox";
 import {
