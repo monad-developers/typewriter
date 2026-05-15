@@ -19,7 +19,7 @@ import {
   CHAIN_ID,
   EXCHANGE_ADDRESS,
   RPC_URL,
-  SCHEDULER,
+  SCHEDULER_ADDRESS,
 } from "./src/constants";
 import {
   type Account,
@@ -261,12 +261,12 @@ async function estimate(bundle: BundleArg): Promise<bigint> {
     args: [[bundle], []],
   });
   const { accessList } = await publicClient.createAccessList({
-    account: SCHEDULER,
+    account: SCHEDULER_ADDRESS,
     to: EXCHANGE_ADDRESS,
     data,
   });
   return publicClient.estimateGas({
-    account: SCHEDULER,
+    account: SCHEDULER_ADDRESS,
     to: EXCHANGE_ADDRESS,
     data,
     accessList,
@@ -323,7 +323,7 @@ console.log(
   `measuring marginal gas costs against ${EXCHANGE_ADDRESS} on chain ${CHAIN_ID}`,
 );
 console.log(`rpc: ${RPC_URL}`);
-console.log(`scheduler (from): ${SCHEDULER}`);
+console.log(`scheduler (from): ${SCHEDULER_ADDRESS}`);
 console.log(`baseline bundle size N = ${BASELINE_N}`);
 console.log("");
 

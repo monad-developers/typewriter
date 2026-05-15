@@ -13,10 +13,10 @@ Within each batch, mutations are sequenced cancel → limit → market and marke
 | Variable | Required | Description |
 |---|---|---|
 | `DEPLOYER_PRIVATE_KEY` | Yes (for deploy) | Private key used to deploy the contract |
-| `RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
+| `BUN_PUBLIC_RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
 | `SCHEDULER_ADDRESS` | Yes (for deploy) | Address authorized to call `execute()` |
 
-Copy `.env.example.local` or `.env.example.testnet` to `.env`.
+Order-book uses one root `.env` file. From `apps/order-book`, copy `.env.example.local` or `.env.example.testnet` to `.env`, then run `bun run deploy`.
 
 ## Usage
 

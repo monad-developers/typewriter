@@ -23,7 +23,7 @@ Run all three checks at the repo root before saying a task is done — not just 
 
 - `bun run lint` — Biome formatter + linter (catches formatting drift, unused vars, style violations)
 - `bun run typecheck` — `tsc --noEmit` per workspace
-- `bun test` — relevant test files (whole repo when changes are broad)
+- `bun run test` — per-workspace test scripts
 
 `bun run typecheck` alone is not sufficient: Biome catches things TS doesn't (formatting, unused imports under different rules), and TS catches things Biome doesn't (`noUnusedLocals`, type narrowing). Pre-existing failures unrelated to your changes are fine to flag and skip past, but don't introduce new ones.
 
@@ -63,6 +63,11 @@ workspace script (`bun run --filter <workspace> test`). Do **not** run tests fro
 the repo root by passing a workspace path (for example, avoid
 `bun test packages/ffca`): Bun may skip the workspace's local `bunfig.toml`, so
 preloaded setup hooks can run with the wrong lifecycle.
+
+For the whole repo, run `bun run test` from the root, not raw `bun test`. The
+root script dispatches each workspace's own `test` script, preserving workspace
+timeouts and preload/setup behavior; raw root `bun test` discovers tests directly
+and can produce misleading setup failures.
 
 Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the expected value is non-trivial. Snapshots are easier to read, easier to update, and surface unintended diffs faster than `.toEqual({...})` against a hand-maintained literal.
 

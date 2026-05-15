@@ -8,19 +8,13 @@ Scripts for interacting with the order book exchange. Each script emulates a spe
 cd apps/order-book
 ```
 
-Configure the environment in `.env` (or set env vars directly):
+Order-book uses one root `.env` file. Start from the app-level example:
 
 ```bash
-# Local development (Anvil) — these are the defaults
-API_URL=http://localhost:3000
-CHAIN_ID=31337
-EXCHANGE_ADDRESS=0x5fbdb2315678afecb367f032d93f642f64180aa3
-
-# Monad testnet — point API_URL at your deployed backend
-# API_URL=https://your-backend.example.com
-# CHAIN_ID=10143
-# EXCHANGE_ADDRESS=0xFe5855718EaF6048cBfEF7f2F700CA4cA0F0aA7a
+cp .env.example.local .env
 ```
+
+Scripts require `API_URL` and `SCHEDULER_ADDRESS`. They reuse `BUN_PUBLIC_CHAIN_ID`, `BUN_PUBLIC_EXCHANGE_ADDRESS`, and `BUN_PUBLIC_RPC_URL` from `.env`; set `CHAIN_ID`, `EXCHANGE_ADDRESS`, or `RPC_URL` only for one-off overrides.
 
 ## Scripts
 
@@ -106,7 +100,7 @@ await limitOrder(account, {
 });
 ```
 
-Run it with `bun scripts/my-script.ts` from `apps/order-book/`.
+Run it with `bun scripts/my-script.ts` from `apps/order-book/` so Bun loads the app-level `.env`.
 
 ## SDK reference
 

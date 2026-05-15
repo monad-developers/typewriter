@@ -30,7 +30,6 @@ export let TEST_WALLET_CLIENT!: ReturnType<typeof createWalletClient>;
 
 const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
-  process.env.DATABASE_URL ??
   "postgres://postgres:postgres@localhost:5432/postgres";
 
 const adminConnection = new Bun.SQL({ url: TEST_DATABASE_URL, max: 1 });
