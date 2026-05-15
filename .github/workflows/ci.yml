@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - uses: foundry-rs/foundry-toolchain@v1
       - run: bun install --frozen-lockfile
@@ -25,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - uses: foundry-rs/foundry-toolchain@v1
       - run: bun install --frozen-lockfile
@@ -34,8 +36,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - uses: foundry-rs/foundry-toolchain@v1
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: bun run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: bun install --frozen-lockfile
+      - run: bun run test
