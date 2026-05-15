@@ -61,6 +61,7 @@
         "effect": "catalog:",
         "evm": "workspace:*",
         "ox": "catalog:",
+        "storage-layout": "workspace:*",
         "viem": "catalog:",
       },
       "devDependencies": {

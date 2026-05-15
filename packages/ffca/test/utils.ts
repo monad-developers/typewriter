@@ -18,6 +18,11 @@ import {
   type TypedData,
 } from "ox";
 import { Authentication } from "ox/webauthn";
+import type {
+  AsyncSlotGetter,
+  StorageLayout,
+  StorageProxy,
+} from "storage-layout";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
 import type {
@@ -55,6 +60,130 @@ export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
 // domainSeparator.
 export const COUNTER_DOMAIN = { name: "Counter", version: "1" } as const;
 
+export const EMPTY_STORAGE_LAYOUT = {
+  storage: [],
+  types: {},
+} as const satisfies StorageLayout;
+
+// Copied from forge's generated `storageLayout` and flattened to the app-owned
+// Counter.State shape used by the runtime tests.
+export const COUNTER_STORAGE_LAYOUT = {
+  storage: [
+    {
+      astId: 827,
+      contract: "src/Counter.sol:Counter",
+      label: "total",
+      offset: 0,
+      slot: "0",
+      type: "t_uint256",
+    },
+    {
+      astId: 829,
+      contract: "src/Counter.sol:Counter",
+      label: "nonce",
+      offset: 0,
+      slot: "1",
+      type: "t_uint256",
+    },
+  ],
+  types: {
+    "t_array(t_struct(QueuedMutation)845_storage)dyn_storage": {
+      encoding: "dynamic_array",
+      label: "struct QueuedMutation[]",
+      numberOfBytes: "32",
+      base: "t_struct(QueuedMutation)845_storage",
+    },
+    t_bytes_storage: { encoding: "bytes", label: "bytes", numberOfBytes: "32" },
+    "t_struct(QueuedMutation)845_storage": {
+      encoding: "inplace",
+      label: "struct QueuedMutation",
+      numberOfBytes: "160",
+      members: [
+        {
+          astId: 837,
+          contract: "src/Counter.sol:Counter",
+          label: "mutation",
+          offset: 0,
+          slot: "0",
+          type: "t_uint8",
+        },
+        {
+          astId: 839,
+          contract: "src/Counter.sol:Counter",
+          label: "mutationData",
+          offset: 0,
+          slot: "1",
+          type: "t_bytes_storage",
+        },
+        {
+          astId: 842,
+          contract: "src/Counter.sol:Counter",
+          label: "sig",
+          offset: 0,
+          slot: "2",
+          type: "t_struct(Signature)814_storage",
+        },
+        {
+          astId: 844,
+          contract: "src/Counter.sol:Counter",
+          label: "enqueuedBlock",
+          offset: 0,
+          slot: "4",
+          type: "t_uint256",
+        },
+      ],
+    },
+    "t_struct(Signature)814_storage": {
+      encoding: "inplace",
+      label: "struct Signature",
+      numberOfBytes: "64",
+      members: [
+        {
+          astId: 811,
+          contract: "src/Counter.sol:Counter",
+          label: "keyType",
+          offset: 0,
+          slot: "0",
+          type: "t_uint8",
+        },
+        {
+          astId: 813,
+          contract: "src/Counter.sol:Counter",
+          label: "rawSignature",
+          offset: 0,
+          slot: "1",
+          type: "t_bytes_storage",
+        },
+      ],
+    },
+    "t_struct(State)830_storage": {
+      encoding: "inplace",
+      label: "struct State",
+      numberOfBytes: "64",
+      members: [
+        {
+          astId: 827,
+          contract: "src/Counter.sol:Counter",
+          label: "total",
+          offset: 0,
+          slot: "0",
+          type: "t_uint256",
+        },
+        {
+          astId: 829,
+          contract: "src/Counter.sol:Counter",
+          label: "nonce",
+          offset: 0,
+          slot: "1",
+          type: "t_uint256",
+        },
+      ],
+    },
+    t_uint256: { encoding: "inplace", label: "uint256", numberOfBytes: "32" },
+    t_uint8: { encoding: "inplace", label: "uint8", numberOfBytes: "1" },
+  },
+} as const satisfies StorageLayout;
+
 // Harness.State on-chain. `accounts[id].keys` mirrors the contract's key
 // registry; `accounts[id].nonces` mirrors per-(account, nonceKey)
 // sequences. `balances` is keyed by the same bytes32 account id.
@@ -72,6 +201,217 @@ export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
 export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
   "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
 );
+
+// Copied from forge's generated `storageLayout` and flattened to the app-owned
+// Harness.State shape used by the runtime tests.
+export const HARNESS_STORAGE_LAYOUT = {
+  storage: [
+    {
+      astId: 1412,
+      contract: "src/Harness.sol:Harness",
+      label: "accounts",
+      offset: 0,
+      slot: "0",
+      type: "t_mapping(t_bytes32,t_struct(Account)1407_storage)",
+    },
+    {
+      astId: 1416,
+      contract: "src/Harness.sol:Harness",
+      label: "balances",
+      offset: 0,
+      slot: "1",
+      type: "t_mapping(t_bytes32,t_uint256)",
+    },
+  ],
+  types: {
+    "t_array(t_struct(Key)1398_storage)dyn_storage": {
+      encoding: "dynamic_array",
+      label: "struct Key[]",
+      numberOfBytes: "32",
+      base: "t_struct(Key)1398_storage",
+    },
+    "t_array(t_struct(QueuedMutation)1393_storage)dyn_storage": {
+      encoding: "dynamic_array",
+      label: "struct QueuedMutation[]",
+      numberOfBytes: "32",
+      base: "t_struct(QueuedMutation)1393_storage",
+    },
+    t_bytes32: { encoding: "inplace", label: "bytes32", numberOfBytes: "32" },
+    t_bytes_storage: { encoding: "bytes", label: "bytes", numberOfBytes: "32" },
+    "t_mapping(t_bytes32,t_struct(Account)1407_storage)": {
+      encoding: "mapping",
+      key: "t_bytes32",
+      label: "mapping(bytes32 => struct Account)",
+      numberOfBytes: "32",
+      value: "t_struct(Account)1407_storage",
+    },
+    "t_mapping(t_bytes32,t_uint256)": {
+      encoding: "mapping",
+      key: "t_bytes32",
+      label: "mapping(bytes32 => uint256)",
+      numberOfBytes: "32",
+      value: "t_uint256",
+    },
+    "t_mapping(t_uint192,t_uint64)": {
+      encoding: "mapping",
+      key: "t_uint192",
+      label: "mapping(uint192 => uint64)",
+      numberOfBytes: "32",
+      value: "t_uint64",
+    },
+    "t_struct(Account)1407_storage": {
+      encoding: "inplace",
+      label: "struct Account",
+      numberOfBytes: "64",
+      members: [
+        {
+          astId: 1402,
+          contract: "src/Harness.sol:Harness",
+          label: "keys",
+          offset: 0,
+          slot: "0",
+          type: "t_array(t_struct(Key)1398_storage)dyn_storage",
+        },
+        {
+          astId: 1406,
+          contract: "src/Harness.sol:Harness",
+          label: "nonces",
+          offset: 0,
+          slot: "1",
+          type: "t_mapping(t_uint192,t_uint64)",
+        },
+      ],
+    },
+    "t_struct(Key)1398_storage": {
+      encoding: "inplace",
+      label: "struct Key",
+      numberOfBytes: "64",
+      members: [
+        {
+          astId: 1395,
+          contract: "src/Harness.sol:Harness",
+          label: "keyType",
+          offset: 0,
+          slot: "0",
+          type: "t_uint8",
+        },
+        {
+          astId: 1397,
+          contract: "src/Harness.sol:Harness",
+          label: "publicKey",
+          offset: 0,
+          slot: "1",
+          type: "t_bytes_storage",
+        },
+      ],
+    },
+    "t_struct(QueuedMutation)1393_storage": {
+      encoding: "inplace",
+      label: "struct QueuedMutation",
+      numberOfBytes: "192",
+      members: [
+        {
+          astId: 1385,
+          contract: "src/Harness.sol:Harness",
+          label: "mutation",
+          offset: 0,
+          slot: "0",
+          type: "t_uint8",
+        },
+        {
+          astId: 1387,
+          contract: "src/Harness.sol:Harness",
+          label: "mutationData",
+          offset: 0,
+          slot: "1",
+          type: "t_bytes_storage",
+        },
+        {
+          astId: 1390,
+          contract: "src/Harness.sol:Harness",
+          label: "sig",
+          offset: 0,
+          slot: "2",
+          type: "t_struct(Signature)1372_storage",
+        },
+        {
+          astId: 1392,
+          contract: "src/Harness.sol:Harness",
+          label: "enqueuedBlock",
+          offset: 0,
+          slot: "5",
+          type: "t_uint256",
+        },
+      ],
+    },
+    "t_struct(Signature)1372_storage": {
+      encoding: "inplace",
+      label: "struct Signature",
+      numberOfBytes: "96",
+      members: [
+        {
+          astId: 1365,
+          contract: "src/Harness.sol:Harness",
+          label: "account",
+          offset: 0,
+          slot: "0",
+          type: "t_bytes32",
+        },
+        {
+          astId: 1367,
+          contract: "src/Harness.sol:Harness",
+          label: "keyId",
+          offset: 0,
+          slot: "1",
+          type: "t_uint64",
+        },
+        {
+          astId: 1369,
+          contract: "src/Harness.sol:Harness",
+          label: "keyType",
+          offset: 8,
+          slot: "1",
+          type: "t_uint8",
+        },
+        {
+          astId: 1371,
+          contract: "src/Harness.sol:Harness",
+          label: "rawSignature",
+          offset: 0,
+          slot: "2",
+          type: "t_bytes_storage",
+        },
+      ],
+    },
+    "t_struct(State)1417_storage": {
+      encoding: "inplace",
+      label: "struct State",
+      numberOfBytes: "64",
+      members: [
+        {
+          astId: 1412,
+          contract: "src/Harness.sol:Harness",
+          label: "accounts",
+          offset: 0,
+          slot: "0",
+          type: "t_mapping(t_bytes32,t_struct(Account)1407_storage)",
+        },
+        {
+          astId: 1416,
+          contract: "src/Harness.sol:Harness",
+          label: "balances",
+          offset: 0,
+          slot: "1",
+          type: "t_mapping(t_bytes32,t_uint256)",
+        },
+      ],
+    },
+    t_uint192: { encoding: "inplace", label: "uint192", numberOfBytes: "24" },
+    t_uint256: { encoding: "inplace", label: "uint256", numberOfBytes: "32" },
+    t_uint64: { encoding: "inplace", label: "uint64", numberOfBytes: "8" },
+    t_uint8: { encoding: "inplace", label: "uint8", numberOfBytes: "1" },
+  },
+} as const satisfies StorageLayout;
 
 // Persisted shape of HarnessState. Mirrors Harness.sol's State struct: the
 // `accounts` mapping fans out to (accounts, keys, nonces); `balances` is its
@@ -339,7 +679,7 @@ export function signCounter(params: {
 //   authorize  (1): adds a key to an existing account. Signed by an
 //                    existing key.
 //   credit     (2): adds amount to balance. Signed.
-//   debit      (3): resolve computes newBalance from local state; the
+//   debit      (3): resolve computes newBalance from revm-backed state; the
 //                    contract rejects the bundle if the resolution doesn't
 //                    match its own pre-state. Signed.
 //   assert     (4): read-only check; the contract reverts if balance !=
@@ -614,7 +954,7 @@ export const HARNESS_MUTATIONS: {
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
     resolution: parseAbiParameters("uint256 newBalance"),
-    resolve: ({
+    resolve: async ({
       state,
       args,
     }: {
@@ -623,10 +963,17 @@ export const HARNESS_MUTATIONS: {
       signature: unknown;
       bundle: readonly { name: string; args: unknown }[];
     }) => {
-      const harnessState = state as HarnessState;
+      const harnessStorage = state as StorageProxy<
+        typeof HARNESS_STORAGE_LAYOUT,
+        AsyncSlotGetter
+      >;
       const debit = args as DebitArgs;
+      const balance = harnessStorage.balances[debit.account];
+      if (balance === undefined) {
+        return { newBalance: -debit.amount };
+      }
       return {
-        newBalance: (harnessState.balances[debit.account] ?? 0n) - debit.amount,
+        newBalance: (await balance) - debit.amount,
       };
     },
     apply: ({

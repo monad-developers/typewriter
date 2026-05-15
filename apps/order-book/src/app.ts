@@ -1,5 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { type FFCAConfig, verifySignature as verifyKeySignature } from "ffca";
+import type { AsyncSlotGetter, StorageProxy } from "storage-layout";
 import {
   encodeAbiParameters,
   type Hex,
@@ -46,9 +47,14 @@ import {
   toLots,
   type Withdrawal,
 } from "./exchange";
-import { resolveMarketOrder } from "./resolution";
+import type { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 type OrderBookState = State<bigint>;
+type OrderBookStorage = StorageProxy<
+  typeof EXCHANGE_STORAGE_LAYOUT,
+  AsyncSlotGetter
+>;
+type KnownPriceLevels = Map<number, { bids: Set<number>; asks: Set<number> }>;
 const UINT64_MASK = 0xffffffffffffffffn;
 
 export const ORDER_BOOK_SIGNATURE_PARAMS = parseAbiParameters(
@@ -279,16 +285,56 @@ function applyWithdrawal(
   handleWithdrawal(state, args, signature.account);
 }
 
-function resolveMarket(
-  state: OrderBookState,
+async function resolveMarket(
+  storage: OrderBookStorage,
   args: MarketOrderArgs,
-): MarketOrderResolution<bigint> {
-  const instrument = state.instruments[args.instrumentId];
-  if (instrument === undefined) return { fills: [] };
-  return resolveMarketOrder(instrument, args, new Map());
+  knownPriceLevels: KnownPriceLevels,
+): Promise<MarketOrderResolution<bigint>> {
+  const priceLevels = knownPriceLevels.get(args.instrumentId);
+  const prices = [
+    ...((args.bidOrAsk === 0 ? priceLevels?.asks : priceLevels?.bids) ?? []),
+  ].sort((a, b) => (args.bidOrAsk === 0 ? a - b : b - a));
+  if (prices.length === 0) {
+    return { fills: [] };
+  }
+
+  const instrument =
+    storage.instruments[String(args.instrumentId) as `${number}`];
+  const opposingSide = args.bidOrAsk === 0 ? instrument.asks : instrument.bids;
+  const baseLotExp = await instrument.baseLotExp;
+  const fills: { quantity: bigint; price: bigint }[] = [];
+  let remaining = args.quantity >> BigInt(baseLotExp);
+
+  for (const price of prices) {
+    if (remaining <= 0n) break;
+    const tick = opposingSide[String(price) as `${number}`];
+    const available = await tick.remainingQuantity;
+    if (available <= 0n) continue;
+
+    const quantity = remaining < available ? remaining : available;
+    fills.push({ quantity, price: BigInt(price) });
+    remaining -= quantity;
+  }
+
+  return { fills };
+}
+
+function rememberLimitPrice(
+  knownPriceLevels: KnownPriceLevels,
+  args: LimitOrderArgs,
+): void {
+  const levels = knownPriceLevels.get(args.instrumentId) ?? {
+    bids: new Set<number>(),
+    asks: new Set<number>(),
+  };
+  knownPriceLevels.set(args.instrumentId, levels);
+  const side = args.bidOrAsk === 0 ? levels.bids : levels.asks;
+  side.add(Number(args.price));
 }
 
 export function baseMutations(): FFCAConfig["mutations"] {
+  const knownPriceLevels: KnownPriceLevels = new Map();
+
   return {
     Initialize: {
       tag: MutationType.Initialize,
@@ -424,13 +470,15 @@ export function baseMutations(): FFCAConfig["mutations"] {
         args: unknown;
         signature: unknown;
         digest: Hex;
-      }) =>
+      }) => {
         applyLimitOrder(
           state as OrderBookState,
           args as LimitOrderArgs,
           signature as OrderBookSignature,
           digest,
-        ),
+        );
+        rememberLimitPrice(knownPriceLevels, args as LimitOrderArgs);
+      },
     },
     MarketOrder: {
       tag: MutationType.MarketOrder,
@@ -447,7 +495,12 @@ export function baseMutations(): FFCAConfig["mutations"] {
         args: unknown;
         signature: unknown;
         bundle: readonly { name: string; args: unknown }[];
-      }) => resolveMarket(state as OrderBookState, args as MarketOrderArgs),
+      }) =>
+        resolveMarket(
+          state as OrderBookStorage,
+          args as MarketOrderArgs,
+          knownPriceLevels,
+        ),
       apply: ({
         state,
         args,

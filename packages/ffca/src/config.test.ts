@@ -4,6 +4,7 @@ import {
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
   type CounterState,
+  EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
   HARNESS_SCHEMA,
   HARNESS_SIGNATURE_PARAMS,
@@ -23,6 +24,7 @@ const baseConfig = {
   account: {} as any,
   chainId: 1,
   rpcUrl: "http://localhost:8545",
+  storageLayout: EMPTY_STORAGE_LAYOUT,
   domain: { name: "", version: "1" },
   signature: {
     params: parseAbiParameters("uint8 keyType, bytes rawSignature"),

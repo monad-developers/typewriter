@@ -35,6 +35,7 @@ import {
   loadMutationsByBlock,
 } from "./db-queries";
 import { ALL_PERMISSIONS, type State } from "./exchange";
+import { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
@@ -235,6 +236,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -290,6 +292,7 @@ test("ffca order book persists and submits market-order flow", async () => {
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -450,6 +453,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -562,6 +566,7 @@ test("db-queries fan out across per-mutation tables", async () => {
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,

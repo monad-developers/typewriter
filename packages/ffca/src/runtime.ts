@@ -17,12 +17,21 @@ import {
 import { createEVM, type EVM } from "evm";
 import { AbiParameters, type Hex, TypedData } from "ox";
 import {
+  type AsyncSlotGetter,
+  createStorageProxy,
+  encodeStorageState,
+  type StorageLayout,
+  type StorageProxy,
+} from "storage-layout";
+import {
+  ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
   encodeFunctionData,
   extractChain,
   http,
   keccak256,
+  RawContractError,
 } from "viem";
 import { sendRawTransactionSync } from "viem/actions";
 import * as chains from "viem/chains";
@@ -53,10 +62,9 @@ import { layerWatchLive, Watch } from "./watch";
 
 // TODO sequencing: name-list works (config.sequence). Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
-// TODO state cloning: today we structuredClone the bundle's state up front and
-//   apply against the clone, reverting to a fresh snapshot on apply throws.
-//   Same pattern the order-book runtime uses. revm subsumes this once it lands
-//   (free state revert), so the perf hit is temporary.
+// TODO decoded projection: revm is the acceptance gate; JS `apply` now projects
+//   accepted EVM transitions into decoded app state. Longer term, replace this
+//   app-authored projection with storage diff decoding.
 // TODO signature validation: decide whether execute() should verify signatures
 //   before queue admission or leave validation to app-owned resolve/apply logic.
 // TODO runtime failure policy: submit/watch failures still die the fiber; define
@@ -82,8 +90,11 @@ type DeploymentLock = {
 
 type UnfinalizedBlock = Exclude<BlockEvent, { status: "accepted" }>;
 
-export type FFCA = {
+export type FFCA<L extends StorageLayout = never> = {
   readonly state: unknown;
+  readonly storage: [L] extends [never]
+    ? unknown
+    : StorageProxy<L, AsyncSlotGetter>;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Promise<MutationEvent>;
   on(event: "mutation", cb: MutationListener): () => void;
@@ -163,13 +174,13 @@ function verifyAbiRecord(
   );
 }
 
-function resolveMutation(
+async function resolveMutation(
   config: FFCAMutationConfig,
   args: unknown,
   signature: unknown,
   state: unknown,
   bundle: BundleView,
-): unknown {
+): Promise<unknown> {
   if ("resolve" in config) {
     return config.resolve({ state, args, signature, bundle });
   }
@@ -189,6 +200,20 @@ function applyMutation(
   } else {
     config.apply({ state, args, signature, digest });
   }
+}
+
+function createRevmRevertError(
+  config: FFCAConfig,
+  data: Hex.Hex | undefined,
+): ContractFunctionRevertedError {
+  const message = "revm execute reverted";
+  return new ContractFunctionRevertedError({
+    abi: config.abi as never,
+    data,
+    functionName: "execute",
+    message,
+    cause: new RawContractError({ data, message }),
+  });
 }
 
 function hasAllPersistenceHooks(mutation: FFCAMutationConfig): boolean {
@@ -330,7 +355,9 @@ async function loadNextIds(
   return { mutationId: maxMutationId + 1, bundleId: maxBundleId + 1 };
 }
 
-export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
+export async function createFFCA<const C extends FFCAConfig>(
+  config: C,
+): Promise<FFCA<C["storageLayout"]>> {
   // Mutable so failure-isolation can swap the binding back to a snapshot
   // when a mutation's apply throws mid-mutation. Exposed via getter below.
   let state = config.state.initial;
@@ -387,6 +414,18 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
   // dereference this unconditionally. Torn down via the runtime's Effect
   // scope on `stop()`. See `PLAN_revm.md` for the integration plan.
   let evm!: EVM;
+  const storage = createStorageProxy(config.storageLayout, async (slots) => {
+    if (evm === undefined) {
+      throw new Error("ffca storage read before revm initialized");
+    }
+    return Effect.runPromise(
+      evm.readStorage({ address: config.address, slots }),
+    );
+  });
+  const initialRevmStorage = encodeStorageState(
+    config.storageLayout,
+    state as never,
+  );
 
   // Local nonce cache. Lazy-initialized on first use; incremented per submit.
   // TODO recover from gaps and chain divergence; per-key parallelism when
@@ -472,46 +511,38 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
     // `commitBundles` after the broadcast lands.
     yield* evm.beginBundle();
 
-    // Failure isolation. `resolve` is pure (reads state, returns the
-    // resolution). `apply` mutates in place. Snapshot before each apply so
-    // a partially-mutating throw can be rolled back to the pre-apply state.
-    // TODO perf: structuredClone(state) per mutation is O(state). revm
-    //   subsumes this with native revert; until then, the cost is paid.
+    // revm is the primary acceptance gate. `resolve` computes any extra
+    // calldata, revm executes the mutation against the local EVM state, and JS
+    // `apply` projects successful EVM state transitions into the decoded
+    // read-model state.
     for (const item of queued) {
       const { config: mutationConfig, args, signature, digest } = item.pending;
-      const snapshot = structuredClone(state);
       try {
-        const resolution = resolveMutation(
-          mutationConfig,
-          args,
-          signature,
-          state,
-          bundleView,
-        );
+        const resolution = yield* Effect.tryPromise({
+          try: () =>
+            resolveMutation(
+              mutationConfig,
+              args,
+              signature,
+              storage,
+              bundleView,
+            ),
+          catch: (error) => error as Error,
+        });
         verifyResolution(mutationConfig, resolution, item.pending.name);
-        applyMutation(
-          mutationConfig,
-          args,
-          state,
-          resolution,
-          signature,
-          digest,
-        );
         const acceptedMutation = {
           ...item.pending,
           status: "accepted" as const,
           resolution,
         };
 
-        // Shadow the TS apply against revm. Build single-mutation
+        // Build single-mutation
         // `execute(Bundle[], uint256[])` calldata — the chain would batch
         // many of these per submit, but revm gets one per accepted mutation
-        // for granular state evolution and (once mismatch logging lands)
-        // per-mutation divergence signals. Uses `executeAbi(sigParams)`
+        // for granular state evolution. Uses `executeAbi(sigParams)`
         // rather than `config.abi` so the encode doesn't depend on the
         // user's ABI containing an `execute` entry — the bundle shape is
-        // an ffca convention. revm's result is not inspected today;
-        // transport errors propagate up and crash the runtime.
+        // an ffca convention.
         const mutationCalldata = encodeFunctionData({
           abi: executeAbi(config.signature.params),
           functionName: "execute",
@@ -520,15 +551,26 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
             [],
           ],
         });
-        yield* evm.execute({
+        const result = yield* evm.execute({
           from: config.account.address,
           to: config.address,
           data: mutationCalldata,
         });
+        if (result.success === false) {
+          throw createRevmRevertError(config, result.revert_data);
+        }
+
+        applyMutation(
+          mutationConfig,
+          args,
+          state,
+          resolution,
+          signature,
+          digest,
+        );
 
         accepted.push(acceptedMutation);
       } catch (error) {
-        state = snapshot;
         rejections.push({ item, error });
       }
     }
@@ -898,16 +940,9 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
     // by `stop()`. Init runs sequentially before `Effect.all`, so the
     // bundle/submit closures see the assigned binding by the time they run.
     //
-    // Auto-hydration: pull `config.address`'s deployed bytecode from chain
-    // and hand it to the sidecar. Apps don't initialize revm — ffca figures
-    // out what's needed. Today that's bytecode only; non-immutable storage
-    // and dependency contracts (ERC-20s, registries, …) aren't pulled. For
-    // shadow-mode use that's fine when constructor-set state is all
-    // immutables (Counter, Harness, Exchange today) — those slots are
-    // already baked into bytecode and revm sees the same view as the chain.
-    // Contracts that set non-immutable storage in their constructor will
-    // diverge silently here until mismatch logging lands; see `PLAN_revm.md`
-    // open decision "hydration source".
+    // Pull `config.address`'s deployed bytecode from chain and seed revm with
+    // decoded app state encoded through `config.storageLayout`. Dependency
+    // contracts (ERC-20s, registries, …) aren't pulled yet.
     //
     // Missing code (config.address points at an empty account) is tolerated:
     // ffca logs a warning and inits revm with chain context only. The shadow
@@ -923,13 +958,21 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
     if (code === undefined || code === "0x") {
       yield* Effect.logWarning(
         `no contract code at config.address=${config.address}; ` +
-          "revm hydration skipped — runtime will continue but revm has no view of contract state",
+          "revm code load skipped — runtime will continue but revm has no contract bytecode",
       );
-      yield* evm.init({ chain_id: config.chainId });
+      yield* evm.init({
+        chain_id: config.chainId,
+        accounts: { [config.address]: { storage: initialRevmStorage } },
+      });
     } else {
       yield* evm.init({
         chain_id: config.chainId,
-        accounts: { [config.address]: { code } },
+        accounts: {
+          [config.address]: {
+            code,
+            storage: initialRevmStorage,
+          },
+        },
       });
     }
     yield* Effect.logInfo("ffca runtime started");
@@ -1020,6 +1063,7 @@ export async function createFFCA(config: FFCAConfig): Promise<FFCA> {
     get state() {
       return state;
     },
+    storage: storage as unknown as FFCA<C["storageLayout"]>["storage"],
     domain,
     execute,
     on,

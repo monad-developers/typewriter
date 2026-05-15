@@ -1,6 +1,7 @@
 import { AbiFunction, AbiParameters, type Address, Hash, Hex } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, Hex as ViemHex } from "viem";
+import { anvil } from "viem/chains";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
@@ -130,6 +131,8 @@ export async function deployTestToken(
     abi: artifact.abi,
     bytecode: artifact.bytecode.object,
     args: [SCHEDULER_ADDR, INITIAL_SUPPLY],
+    account: SCHEDULER_ACCOUNT,
+    chain: anvil,
   });
   const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
   if (

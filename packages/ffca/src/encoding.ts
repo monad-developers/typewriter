@@ -80,7 +80,7 @@ export function encodeBundleCalldata(
 // `sigParams`. The contract's execute selector is a function of the bundle
 // shape (which is fully determined by `sigParams`), so ffca can build this
 // without consulting `FFCAConfig.abi` — useful when calldata is needed for
-// internal purposes like shadowing the bundle into revm, without forcing
+// internal revm execution, without forcing
 // stub-config tests to declare an `execute` entry on their abi.
 export function executeAbi(sigParams: readonly AbiParameters.Parameter[]) {
   return [

@@ -36,9 +36,7 @@ export const BOB_ACCOUNT = privateKeyToAccount(BOB_PRIVATE_KEY);
 export const P256_PRIVATE_KEY: Hex =
   "0x1db0e88607f75d3f7fd7fd568b6929551c25e893aa1cbdce2536ad478d8f43b1";
 
-// Port chosen to avoid colliding with order-book tests so the two
-// suites can run in parallel.
-export const TEST_RPC_URL = "http://localhost:8545/1";
+export let TEST_RPC_URL!: string;
 const testEnv = process.env as {
   DATABASE_URL?: string;
 };
@@ -87,21 +85,10 @@ export async function createTestDatabaseConnection(
   return new Bun.SQL({ url: testDatabaseUrl(databaseName), max: 2 });
 }
 
-export const TEST_CLIENT = createTestClient({
-  chain: anvil,
-  mode: "anvil",
-  transport: http(TEST_RPC_URL),
-});
+export let TEST_CLIENT!: ReturnType<typeof createTestClient>;
 
-export const TEST_PUBLIC_CLIENT = createPublicClient({
-  chain: anvil,
-  transport: http(TEST_RPC_URL),
-});
-export const TEST_WALLET_CLIENT = createWalletClient({
-  chain: anvil,
-  transport: http(TEST_RPC_URL),
-  account: SCHEDULER_ACCOUNT,
-});
+export let TEST_PUBLIC_CLIENT!: ReturnType<typeof createPublicClient>;
+export let TEST_WALLET_CLIENT!: ReturnType<typeof createWalletClient>;
 
 // packages/ffca/bunfig.toml's `[test] preload` points at this file, so run
 // tests from this package or through `bun run --filter ffca test`.
@@ -110,6 +97,17 @@ export const TEST_WALLET_CLIENT = createWalletClient({
 let teardown!: () => Promise<void>;
 let snapshotId!: Hex;
 let testDatabaseName!: string;
+
+function getFreePort(): number {
+  const server = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: { data() {} },
+  });
+  const { port } = server;
+  server.stop(true);
+  return port;
+}
 
 beforeAll(async () => {
   // Verify forge is available before trying to use it; otherwise the build
@@ -130,7 +128,24 @@ beforeAll(async () => {
     throw new Error(`forge build failed:\n${e}`);
   }
 
-  const server = Server.create({ instance: Instance.anvil(), port: 8545 });
+  const port = getFreePort();
+  TEST_RPC_URL = `http://localhost:${port}/1`;
+  TEST_CLIENT = createTestClient({
+    chain: anvil,
+    mode: "anvil",
+    transport: http(TEST_RPC_URL),
+  });
+  TEST_PUBLIC_CLIENT = createPublicClient({
+    chain: anvil,
+    transport: http(TEST_RPC_URL),
+  });
+  TEST_WALLET_CLIENT = createWalletClient({
+    chain: anvil,
+    transport: http(TEST_RPC_URL),
+    account: SCHEDULER_ACCOUNT,
+  });
+
+  const server = Server.create({ instance: Instance.anvil(), port });
   teardown = await server.start();
   snapshotId = await TEST_CLIENT.snapshot();
 });

@@ -1,6 +1,7 @@
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { Abi, Address, Hex } from "ox";
+import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { ResolvedMutation } from "./types";
 
@@ -96,7 +97,7 @@ export type FFCAMutationConfig =
         args: unknown;
         signature: unknown;
         bundle: BundleView;
-      }) => unknown;
+      }) => unknown | Promise<unknown>;
       apply: (params: {
         state: unknown;
         args: unknown;
@@ -110,6 +111,7 @@ export type FFCAConfig = {
   address: Address.Address;
   domain: { name: string; version: string };
   abi: Abi.Abi;
+  storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];

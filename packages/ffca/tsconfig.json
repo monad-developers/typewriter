@@ -25,7 +25,8 @@
 
     "baseUrl": ".",
     "paths": {
-      "evm": ["../evm/src/index.ts"]
+      "evm": ["../evm/src/index.ts"],
+      "storage-layout": ["../storage-layout/src/index.ts"]
     }
   }
 }

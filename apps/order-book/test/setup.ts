@@ -22,22 +22,11 @@ export const SCHEDULER_ACCOUNT = privateKeyToAccount(SCHEDULER_PRIVATE_KEY);
 export const MAKER_ACCOUNT = privateKeyToAccount(MAKER_PRIVATE_KEY);
 export const TAKER_ACCOUNT = privateKeyToAccount(TAKER_PRIVATE_KEY);
 
-export const TEST_RPC_URL = "http://localhost:8545/1";
+export let TEST_RPC_URL!: string;
 
-export const TEST_CLIENT = createTestClient({
-  chain: anvil,
-  mode: "anvil",
-  transport: http(TEST_RPC_URL),
-});
-export const TEST_PUBLIC_CLIENT = createPublicClient({
-  chain: anvil,
-  transport: http(TEST_RPC_URL),
-});
-export const TEST_WALLET_CLIENT = createWalletClient({
-  chain: anvil,
-  transport: http(TEST_RPC_URL),
-  account: SCHEDULER_ACCOUNT,
-});
+export let TEST_CLIENT!: ReturnType<typeof createTestClient>;
+export let TEST_PUBLIC_CLIENT!: ReturnType<typeof createPublicClient>;
+export let TEST_WALLET_CLIENT!: ReturnType<typeof createWalletClient>;
 
 const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ??
@@ -50,6 +39,17 @@ export let TEST_DB_CONNECTION!: Bun.SQL;
 let teardown!: () => Promise<void>;
 let snapshotId!: Hex;
 let testDatabaseName!: string;
+
+function getFreePort(): number {
+  const server = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: { data() {} },
+  });
+  const { port } = server;
+  server.stop(true);
+  return port;
+}
 
 function quoteIdentifier(identifier: string): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(identifier)) {
@@ -84,6 +84,8 @@ export async function deployExchange(): Promise<Address> {
     abi: artifact.abi,
     bytecode: artifact.bytecode.object as Hex,
     args: [SCHEDULER_ACCOUNT.address],
+    account: SCHEDULER_ACCOUNT,
+    chain: anvil,
   });
   const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
   if (
@@ -103,7 +105,24 @@ beforeAll(async () => {
   }
   await $`forge build`.cwd(`${import.meta.dir}/../contracts`).quiet();
 
-  const server = Server.create({ instance: Instance.anvil(), port: 8545 });
+  const port = getFreePort();
+  TEST_RPC_URL = `http://localhost:${port}/1`;
+  TEST_CLIENT = createTestClient({
+    chain: anvil,
+    mode: "anvil",
+    transport: http(TEST_RPC_URL),
+  });
+  TEST_PUBLIC_CLIENT = createPublicClient({
+    chain: anvil,
+    transport: http(TEST_RPC_URL),
+  });
+  TEST_WALLET_CLIENT = createWalletClient({
+    chain: anvil,
+    transport: http(TEST_RPC_URL),
+    account: SCHEDULER_ACCOUNT,
+  });
+
+  const server = Server.create({ instance: Instance.anvil(), port });
   teardown = await server.start();
   snapshotId = await TEST_CLIENT.snapshot();
 });

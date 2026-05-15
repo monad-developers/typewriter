@@ -6,3 +6,4 @@ allow_paths = ["../node_modules", "../node_modules/forge-std/src", "../../../pac
 isolate = true
 optimizer = true
 optimizer_runs = 200
+extra_output = ["storageLayout"]

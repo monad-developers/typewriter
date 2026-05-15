@@ -230,7 +230,11 @@ export const EXCHANGE_ABI = [
   { type: "error", name: "InvalidInstrument", inputs: [] },
   { type: "error", name: "InvalidMutation", inputs: [] },
   { type: "error", name: "InvalidNonce", inputs: [] },
-  { type: "error", name: "InvalidSignature", inputs: [] },
+  {
+    type: "error",
+    name: "InvalidSignature",
+    inputs: [{ name: "keyType", type: "uint8", internalType: "enum KeyType" }],
+  },
   { type: "error", name: "InvalidTick", inputs: [] },
   { type: "error", name: "KeyExpired", inputs: [] },
   { type: "error", name: "KeyNotFound", inputs: [] },

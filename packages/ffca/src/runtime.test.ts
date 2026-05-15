@@ -23,14 +23,17 @@ import {
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
+  COUNTER_STORAGE_LAYOUT,
   type CounterState,
   deployCounter,
   deployHarness,
+  EMPTY_STORAGE_LAYOUT,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
   HARNESS_PERSISTED_MUTATIONS,
   HARNESS_SCHEMA,
   HARNESS_SIGNATURE_PARAMS,
+  HARNESS_STORAGE_LAYOUT,
   type HarnessState,
   harnessAccounts,
   harnessBalances,
@@ -222,6 +225,7 @@ test("ffca.domain is derived from config", async () => {
   const ffca = await createFFCA({
     address: "0x000000000000000000000000000000000000abcd",
     abi: [],
+    storageLayout: EMPTY_STORAGE_LAYOUT,
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
     account: {} as any,
     chainId: 1,
@@ -249,6 +253,7 @@ test("createFFCA rejects partially configured persistence", async () => {
     createFFCA({
       address: "0x000000000000000000000000000000000000abcd",
       abi: [],
+      storageLayout: EMPTY_STORAGE_LAYOUT,
       // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
       account: {} as any,
       chainId: 1,
@@ -267,6 +272,7 @@ test("createFFCA loads persisted state before returning", async () => {
   const ffca = await createFFCA({
     address: "0x000000000000000000000000000000000000ffca",
     abi: [],
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
     account: {} as any,
     chainId: 31337,
@@ -294,6 +300,7 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
   const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
+    storageLayout: EMPTY_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
@@ -367,6 +374,7 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
   const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
+    storageLayout: EMPTY_STORAGE_LAYOUT,
     // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
     account: {} as any,
     chainId: 1,
@@ -419,6 +427,7 @@ test("resolve and apply receive submitted signature and apply receives digest", 
   const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
     abi: [],
+    storageLayout: EMPTY_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
@@ -451,6 +460,7 @@ test("Harness apply rejects invalid signatures using callback digest", async () 
     address,
     domain: HARNESS_DOMAIN,
     abi: [],
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
@@ -498,6 +508,7 @@ test("e2e Counter: single mutation", async () => {
     address,
     domain: COUNTER_DOMAIN,
     abi,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -539,6 +550,35 @@ test("e2e Counter: single mutation", async () => {
   await ffca.stop();
 });
 
+test("createFFCA seeds revm storage from decoded state", async () => {
+  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+
+  const ffca = await createFFCA({
+    address,
+    domain: COUNTER_DOMAIN,
+    abi,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
+    state: { initial: { total: 9n, nonce: 2n } as CounterState },
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: COUNTER_MUTATIONS,
+  });
+
+  const [onchainTotal, onchainNonce] = (await TEST_PUBLIC_CLIENT.readContract({
+    abi,
+    address,
+    functionName: "state",
+  })) as [bigint, bigint];
+  expect(onchainTotal).toBe(0n);
+  expect(onchainNonce).toBe(0n);
+  expect(await ffca.storage.total).toBe(9n);
+  expect(await ffca.storage.nonce).toBe(2n);
+
+  await ffca.stop();
+});
+
 // Counter: multiple signed mutations in one bundle each contribute to onchain
 // state. Catches any bug where bundle encoding loses or aliases per-mutation
 // data, and exercises the contract's nonce check across a bundle.
@@ -549,6 +589,7 @@ test("e2e Counter: multiple mutations in one bundle", async () => {
     address,
     domain: COUNTER_DOMAIN,
     abi,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -604,7 +645,7 @@ test("e2e Counter: multiple mutations in one bundle", async () => {
   await ffca.stop();
 });
 
-// Harness: a debit's resolve runs against credited local state and the contract
+// Harness: a debit's resolve runs against credited revm-backed state and the contract
 // accepts the resolution. Exercises the resolve → encode → onchain verify path
 // end-to-end through real EIP-712 signing + secp256k1 recovery.
 test("e2e Harness: mutation with resolution", async () => {
@@ -614,6 +655,7 @@ test("e2e Harness: mutation with resolution", async () => {
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -698,6 +740,7 @@ test("e2e Harness: persistence callbacks write accepted and proposed state", asy
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -868,6 +911,7 @@ test("e2e Harness: authorize persistence writes per-mutation key rows", async ()
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1003,6 +1047,7 @@ test("e2e Harness: mutations reordered by sequence", async () => {
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1095,6 +1140,7 @@ test("e2e Harness: apply error rejects without crashing", async () => {
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1217,6 +1263,7 @@ test("e2e Harness: secp256k1 authorize flow", async () => {
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1350,6 +1397,7 @@ test("e2e Harness: P-256 key authorize and credit", async () => {
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1464,6 +1512,7 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
     address,
     domain: HARNESS_DOMAIN,
     abi,
+    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1574,6 +1623,7 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     address,
     domain: COUNTER_DOMAIN,
     abi,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1649,6 +1699,7 @@ test("e2e Counter: watch advances proposed bundles by confirmations", async () =
     address,
     domain: COUNTER_DOMAIN,
     abi,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,

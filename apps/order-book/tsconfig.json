@@ -20,7 +20,8 @@
     "paths": {
       "ffca": ["../../packages/ffca/src/index.ts"],
       "evm": ["../../packages/evm/src/index.ts"],
-      "order-book-sdk": ["./sdk/index.ts"]
+      "order-book-sdk": ["./sdk/index.ts"],
+      "storage-layout": ["../../packages/storage-layout/src/index.ts"]
     }
   }
 }

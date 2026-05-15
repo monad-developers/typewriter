@@ -26,6 +26,7 @@ import {
   type QueryDatabase,
 } from "./db-queries";
 import type { State } from "./exchange";
+import { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 if (process.env.DEPLOYER_PRIVATE_KEY === undefined) {
   throw new Error("DEPLOYER_PRIVATE_KEY env var is required");
@@ -45,6 +46,7 @@ const app = await createFFCA({
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
   abi: EXCHANGE_ABI,
+  storageLayout: EXCHANGE_STORAGE_LAYOUT,
   account,
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,

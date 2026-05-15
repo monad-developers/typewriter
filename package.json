@@ -17,6 +17,7 @@
   "scripts": {
     "lint": "biome check . && bun run --filter '*' lint",
     "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun run --filter '*' test",
     "build": "bun run --filter '*' build"
   },
   "devDependencies": {
