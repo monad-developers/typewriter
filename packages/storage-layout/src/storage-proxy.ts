@@ -29,17 +29,6 @@
 //    produce the writes. The encode side already exists in this package; the
 //    missing bits are the proxy trap and the stale-slot policy for shrinking
 //    bytes/string/dynamic arrays.
-// 3. **Mapping enumeration.** Solidity storage cannot discover mapping keys
-//    from slots alone, so enumeration requires a known-paths list supplied by
-//    the app/runtime (subscriptions, calldata/event-derived keys, persisted
-//    path registry, etc.). Future shape: pass that known-path universe into
-//    `createStorageProxy` so `Object.keys(state.balances)` and similar APIs can
-//    enumerate only keys the runtime already knows about.
-// 4. **Array length access.** Fixed-array `.length` can be exposed directly
-//    from the storage layout; dynamic-array `.length` needs to read the array
-//    root slot and decode the stored length. Future shape: reserve `length` for
-//    array proxies and return either a number for sync getters or
-//    `Promise<number>` for async getters.
 
 import { Hash, type Hex } from "ox";
 import {
@@ -55,6 +44,7 @@ import {
 import {
   formatStoragePath,
   HEX_STRING_PATTERN,
+  normalizePath,
   type StoragePath,
   type StoragePathSegment,
   type StoragePathSubscript,
@@ -104,6 +94,11 @@ export type StorageProxy<
   ? DeepPromise<StorageLayoutToPrimitiveType<L>>
   : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
 
+export type StorageProxyOptions = {
+  /** Concrete mapping paths used as hints for enumerable mapping keys. */
+  knownPaths?: readonly (string | StoragePath)[];
+};
+
 // -----------------------------------------------------------------------------
 // Public API
 
@@ -113,12 +108,13 @@ export type StorageProxy<
  * return sub-proxies. Throws on unknown variables, unknown struct fields,
  * subscript access on non-indexable paths, and unsupported value/key types.
  *
- * The proxy only supports direct declared-property access plus numeric array
- * indices. It cannot enumerate keys or expose array protocol metadata like
- * `.length`. The JS interop names `then`, `catch`, `finally`, `toJSON`, and
- * `asymmetricMatch` are reserved so await/JSON/test-framework probes treat
- * sub-proxies like plain objects; state variables with those exact labels are
- * not reachable through proxy property access.
+ * The proxy supports declared-property access, numeric array indices, array
+ * `.length`, and finite enumeration. Mapping enumeration only includes keys
+ * present in `options.knownPaths`. The JS interop names `then`,
+ * `catch`, `finally`, `toJSON`, and `asymmetricMatch` are reserved so
+ * await/JSON/test-framework probes treat sub-proxies like plain objects; state
+ * variables with those exact labels are not reachable through proxy property
+ * access.
  *
  * @example
  * ```ts
@@ -138,8 +134,9 @@ export type StorageProxy<
 export function createStorageProxy<
   L extends StorageLayout,
   G extends SlotGetter,
->(layout: L, get: G): StorageProxy<L, G> {
-  return buildProxy(layout, get, null) as StorageProxy<L, G>;
+>(layout: L, get: G, options: StorageProxyOptions = {}): StorageProxy<L, G> {
+  const knownPaths = (options.knownPaths ?? []).map(normalizePath);
+  return buildProxy(layout, get, knownPaths, null) as StorageProxy<L, G>;
 }
 
 // -----------------------------------------------------------------------------
@@ -163,6 +160,7 @@ const JS_INTEROP_PROPS = new Set([
 function buildProxy(
   layout: StorageLayout,
   get: SlotGetter,
+  knownPaths: readonly StoragePath[],
   path: StoragePath | null,
 ): object {
   return new Proxy(Object.create(null), {
@@ -177,18 +175,21 @@ function buildProxy(
         // Root access: prop is a top-level storage variable name.
         const item = findVariable(layout, prop);
         const next: StoragePath = { root: item.label, segments: [] };
-        return resolveOrSubProxy(layout, get, next);
+        return resolveOrSubProxy(layout, get, knownPaths, next);
       }
 
       // Sub-proxy access: build a new path segment by interpreting `prop`
       // against the storage type at the current path.
       const parentType = typeAtPath(layout, path);
+      if (prop === "length" && parentType.base !== undefined) {
+        return readArrayLength(layout, get, path, parentType);
+      }
       const segment = makeSegment(layout, parentType, prop, path);
       const next: StoragePath = {
         root: path.root,
         segments: [...path.segments, segment],
       };
-      return resolveOrSubProxy(layout, get, next);
+      return resolveOrSubProxy(layout, get, knownPaths, next);
     },
 
     set(_, prop) {
@@ -197,20 +198,22 @@ function buildProxy(
       );
     },
 
-    has() {
-      throw new Error(
-        "storage proxy does not support the 'in' operator (storage layout cannot enumerate mapping keys)",
-      );
+    has(_, prop) {
+      if (typeof prop !== "string" || JS_INTEROP_PROPS.has(prop)) return false;
+      return enumerableKeys(layout, knownPaths, path).includes(prop);
     },
 
     ownKeys() {
-      throw new Error(
-        "storage proxy does not support enumeration (storage layout cannot list mapping keys or dynamic-array bounds)",
-      );
+      return enumerableKeys(layout, knownPaths, path);
     },
 
-    getOwnPropertyDescriptor() {
-      // Keep the descriptor protocol consistent with the `ownKeys` trap.
+    getOwnPropertyDescriptor(_, prop) {
+      if (
+        typeof prop === "string" &&
+        enumerableKeys(layout, knownPaths, path).includes(prop)
+      ) {
+        return { configurable: true, enumerable: true };
+      }
       return undefined;
     },
   });
@@ -219,11 +222,61 @@ function buildProxy(
 function resolveOrSubProxy(
   layout: StorageLayout,
   get: SlotGetter,
+  knownPaths: readonly StoragePath[],
   path: StoragePath,
 ): unknown {
   const type = typeAtPath(layout, path);
   if (isLeafType(type)) return readLeaf(layout, get, path);
-  return buildProxy(layout, get, path);
+  return buildProxy(layout, get, knownPaths, path);
+}
+
+function enumerableKeys(
+  layout: StorageLayout,
+  knownPaths: readonly StoragePath[],
+  path: StoragePath | null,
+): string[] {
+  if (path === null) return layout.storage.map((item) => item.label);
+
+  const type = typeAtPath(layout, path);
+  if (type.members !== undefined)
+    return type.members.map((member) => member.label);
+  if (type.base !== undefined && type.encoding === "inplace") {
+    return Array.from({ length: fixedArrayLength(type) }, (_, index) =>
+      String(index),
+    );
+  }
+  if (type.base !== undefined) return [];
+  if (type.key !== undefined) return knownChildProperties(knownPaths, path);
+  return [];
+}
+
+function knownChildProperties(
+  knownPaths: readonly StoragePath[],
+  path: StoragePath,
+): string[] {
+  const keys: string[] = [];
+  for (const knownPath of knownPaths) {
+    if (!isPrefixPath(path, knownPath)) continue;
+    const next = knownPath.segments[path.segments.length];
+    if (next?.kind !== "subscript") continue;
+    const key = formatSubscript(next.value);
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
+function isPrefixPath(prefix: StoragePath, path: StoragePath): boolean {
+  if (prefix.root !== path.root) return false;
+  if (prefix.segments.length >= path.segments.length) return false;
+  for (let index = 0; index < prefix.segments.length; index++) {
+    if (
+      formatSegment(prefix.segments[index]!) !==
+      formatSegment(path.segments[index]!)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Walk a path through the layout's types and return the type at its terminus.
@@ -354,6 +407,37 @@ function makeSegment(
   );
 }
 
+function readArrayLength(
+  layout: StorageLayout,
+  get: SlotGetter,
+  path: StoragePath,
+  type: StorageType,
+): unknown {
+  if (type.encoding === "inplace") return fixedArrayLength(type);
+  const resolved = resolveStoragePath(layout, path);
+  if (resolved.length !== 1) {
+    throw new Error(
+      `dynamic array path did not resolve to one length slot: ${formatStoragePath(path)}`,
+    );
+  }
+  const slot = slotHex(resolved[0]!);
+  return chain(get([slot]), (storage) => {
+    const value = slotValue(storage, slot);
+    if (value === undefined) {
+      throw new Error(
+        `getter did not return dynamic array length slot for ${formatStoragePath(path)}: ${slot}`,
+      );
+    }
+    const length = BigInt(value);
+    if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(
+        `dynamic array length is too large at ${formatStoragePath(path)}: length=${length}`,
+      );
+    }
+    return Number(length);
+  });
+}
+
 function parseArrayIndex(prop: string, parentPath: StoragePath): bigint {
   if (!/^(0|[1-9][0-9]*)$/.test(prop)) {
     throw new Error(
@@ -434,7 +518,10 @@ function readValueLeaf(
   // canonical source of slot positions including packed offsets.
   const resolved = resolveStoragePath(layout, path);
   const slots = uniqueSlots(resolved);
-  return chain(get(slots), (storage) => decodeStorage(layout, path, storage));
+  return chain(get(slots), (storage) => {
+    assertReturnedSlots(storage, slots, formatStoragePath(path));
+    return decodeStorage(layout, path, storage);
+  });
 }
 
 function readBytesLeaf(
@@ -450,7 +537,7 @@ function readBytesLeaf(
   }
   const headerSlot = slotHex(resolved[0]!);
   return chain(get([headerSlot]), (header) => {
-    const headerValue = header[headerSlot];
+    const headerValue = slotValue(header, headerSlot);
     if (headerValue === undefined) {
       throw new Error(
         `getter did not return header slot for ${formatStoragePath(path)}: ${headerSlot}`,
@@ -474,10 +561,34 @@ function readBytesLeaf(
     for (let i = 0; i < numDataSlots; i++) {
       dataSlots.push(addSlot(dataBaseSlot, BigInt(i)));
     }
-    return chain(get(dataSlots), (data) =>
-      decodeStorage(layout, path, { ...header, ...data }),
-    );
+    return chain(get(dataSlots), (data) => {
+      assertReturnedSlots(data, dataSlots, formatStoragePath(path));
+      return decodeStorage(layout, path, { ...header, ...data });
+    });
   });
+}
+
+function assertReturnedSlots(
+  storage: SlotMap,
+  slots: readonly Hex.Hex[],
+  path: string,
+): void {
+  for (const slot of slots) {
+    if (slotValue(storage, slot) === undefined) {
+      throw new Error(`getter did not return slot for ${path}: ${slot}`);
+    }
+  }
+}
+
+function slotValue(
+  storage: SlotMap,
+  requestedSlot: Hex.Hex,
+): Hex.Hex | undefined {
+  const requested = BigInt(requestedSlot);
+  for (const [slot, value] of Object.entries(storage)) {
+    if (BigInt(slot) === requested) return value as Hex.Hex;
+  }
+  return undefined;
 }
 
 // Apply `f` synchronously if `value` is not a Promise; otherwise schedule
@@ -532,4 +643,30 @@ function toSlotHex(value: bigint): Hex.Hex {
 
 function keccakSlot(slot: Hex.Hex): bigint {
   return BigInt(Hash.keccak256(slot));
+}
+
+function fixedArrayLength(type: StorageType): number {
+  const match = /\[([0-9]+)\]$/.exec(type.label);
+  if (match === null) {
+    throw new Error(`fixed array type '${type.label}' is missing length`);
+  }
+  return Number(match[1]);
+}
+
+function formatSegment(segment: StoragePathSegment): string {
+  if (segment.kind === "field") return `.${segment.name}`;
+  return `[${formatSubscript(segment.value)}]`;
+}
+
+function formatSubscript(subscript: StoragePathSubscript): string {
+  switch (subscript.kind) {
+    case "number":
+      return subscript.value.toString();
+    case "hex":
+      return subscript.value;
+    case "string":
+      return subscript.value;
+    case "bool":
+      return String(subscript.value);
+  }
 }

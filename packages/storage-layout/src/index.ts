@@ -36,6 +36,7 @@ export type {
   SlotGetter,
   SlotMap,
   StorageProxy,
+  StorageProxyOptions,
   SyncSlotGetter,
 } from "./storage-proxy";
 export { createStorageProxy } from "./storage-proxy";
@@ -134,6 +135,39 @@ export function getStoragePath(
     }
   }
 
+  return matches;
+}
+
+/**
+ * Match a raw storage slot to known Solidity storage paths.
+ *
+ * This is primarily for keyed mapping paths: mapping keys cannot be recovered
+ * from raw slots, so callers provide concrete known paths discovered from
+ * subscriptions, calldata, events, or a persisted registry. Multiple packed
+ * fields can match the same slot.
+ */
+export function matchStorageSlot(
+  layout: StorageLayout,
+  knownPaths: readonly (string | StoragePath)[],
+  slot: Hex.Hex,
+): StoragePath[] {
+  const matches: StoragePath[] = [];
+  const seen = new Set<string>();
+  const normalizedSlot = normalizeSlot(slot).toLowerCase();
+  for (const knownPath of knownPaths) {
+    const path = normalizePath(knownPath);
+    const resolved = resolveStoragePath(layout, path);
+    for (const item of resolved) {
+      if (item.type.encoding === "dynamic_array") continue;
+      if (normalizeSlot(storageSlot(item)).toLowerCase() === normalizedSlot) {
+        const key = formatStoragePath(item.path);
+        if (!seen.has(key)) {
+          seen.add(key);
+          matches.push(item.path);
+        }
+      }
+    }
+  }
   return matches;
 }
 

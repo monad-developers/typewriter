@@ -470,9 +470,68 @@ test("array proxies only support numeric element access", () => {
   expect(() => state.fixedNumbers["9007199254740993"]).toThrow(
     "fixed array index out of bounds: fixedNumbers[9007199254740993]",
   );
-  expect(() => state.fixedNumbers.length).toThrow(
-    "array index on 'fixedNumbers' must be a non-negative decimal integer: 'length'",
+  expect(state.fixedNumbers.length).toBe(3);
+});
+
+test("sync: dynamic array length reads the root length slot", () => {
+  const lengthSlot = getStorageSlot(layout, "dynamicNumbers");
+  const { get, calls } = syncGetter({ [lengthSlot]: "0x2" });
+  const state = createStorageProxy(layout, get);
+
+  expect(state.dynamicNumbers.length).toBe(2);
+  expect(calls).toEqual([[lengthSlot]]);
+});
+
+test("async: dynamic array length returns a promise", async () => {
+  const lengthSlot = getStorageSlot(layout, "dynamicNumbers");
+  const { get } = asyncGetter({ [lengthSlot]: "0x2" });
+  const state = createStorageProxy(layout, get);
+
+  const length = state.dynamicNumbers.length as unknown as Promise<number>;
+  expect(length).toBeInstanceOf(Promise);
+  expect(await length).toBe(2);
+});
+
+test("enumerates root variables, structs, fixed arrays, and known mapping keys", () => {
+  const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
+  const allowanceSlot = getStorageSlot(
+    layout,
+    `allowances[${OWNER}][${SPENDER}]`,
   );
+  const { get } = syncGetter({
+    [balanceSlot]: "0x64",
+    [allowanceSlot]: "0x2a",
+    [getStorageSlot(layout, "fixedNumbers[0]")]: PACKED_FIXED_NUMBERS,
+  });
+  const state = createStorageProxy(layout, get, {
+    knownPaths: [`balances[${OWNER}]`, `allowances[${OWNER}][${SPENDER}]`],
+  });
+
+  expect(Object.keys(state)).toContain("balances");
+  expect(Object.keys(state.metadata)).toEqual([
+    "lastUpdate",
+    "active",
+    "admin",
+    "inner",
+  ]);
+  expect(Object.keys(state.fixedNumbers)).toEqual(["0", "1", "2"]);
+  expect(Object.keys(state.balances)).toEqual([OWNER]);
+  expect(Object.keys(state.allowances[OWNER]!)).toEqual([SPENDER]);
+  expect(Object.values(state.balances)).toEqual([100n]);
+});
+
+test("does not enumerate dynamic array indices from known paths", () => {
+  const slot0 = getStorageSlot(layout, "dynamicNumbers[0]");
+  const slot2 = getStorageSlot(layout, "dynamicNumbers[2]");
+  const { get } = syncGetter({ [slot0]: "0x1", [slot2]: "0x3" });
+  const state = createStorageProxy(layout, get, {
+    knownPaths: ["dynamicNumbers[0]", "dynamicNumbers[2]"],
+  });
+
+  expect(Object.keys(state.dynamicNumbers)).toEqual([]);
+  expect(Object.values(state.dynamicNumbers)).toEqual([]);
+  expect(state.dynamicNumbers[0]).toBe(1n);
+  expect(state.dynamicNumbers[2]).toBe(3n);
 });
 
 test("storage proxy is read-only: set throws", () => {
@@ -485,18 +544,19 @@ test("storage proxy is read-only: set throws", () => {
   }).toThrow("storage proxy is read-only");
 });
 
-test("storage proxy refuses 'in' operator", () => {
+test("storage proxy supports 'in' operator for enumerable keys", () => {
   const { get } = syncGetter({});
   const state = createStorageProxy(layout, get);
 
-  expect(() => "totalSupply" in state).toThrow(/'in' operator/);
+  expect("totalSupply" in state).toBe(true);
+  expect("missing" in state).toBe(false);
 });
 
-test("storage proxy refuses enumeration", () => {
+test("mapping enumeration is empty without known paths", () => {
   const { get } = syncGetter({});
   const state = createStorageProxy(layout, get);
 
-  expect(() => Object.keys(state)).toThrow(/enumeration/);
+  expect(Object.keys(state.balances)).toEqual([]);
 });
 
 test("get is called with the exact slots resolved by storage-layout", () => {
@@ -517,5 +577,5 @@ test("throws when the getter omits a requested slot", () => {
   const get = (_: Hex.Hex[]): SlotMap => ({});
   const state = createStorageProxy(layout, get);
 
-  expect(() => state.totalSupply).toThrow(/storage value not found for slot/);
+  expect(() => state.totalSupply).toThrow(/getter did not return slot/);
 });

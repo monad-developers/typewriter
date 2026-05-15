@@ -14,6 +14,7 @@ import {
   formatStoragePath,
   getStoragePath,
   getStorageSlot,
+  matchStorageSlot,
   type SlotWrite,
   type StorageLayout,
   type StorageLayoutToPrimitiveType,
@@ -259,6 +260,46 @@ test("getStoragePath rejects mappings because keys cannot be reversed", () => {
   expect(() => getStoragePath(layout, ["0x1"])).toThrow(
     "cannot infer storage path for mapping 'balances' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone",
   );
+});
+
+test("matchStorageSlot maps raw slots through known paths", () => {
+  const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
+
+  expect(
+    matchStorageSlot(
+      layout,
+      ["owner", "paused", `balances[${OWNER}]`],
+      "0x1",
+    ).map(formatStoragePath),
+  ).toMatchInlineSnapshot(`
+    [
+      "owner",
+      "paused",
+    ]
+  `);
+
+  expect(
+    matchStorageSlot(
+      layout,
+      ["owner", "paused", `balances[${OWNER}]`],
+      balanceSlot,
+    ).map(formatStoragePath),
+  ).toEqual([`balances[${OWNER}]`]);
+
+  expect(
+    matchStorageSlot(layout, ["owner", "paused", `balances[${OWNER}]`], "0xff"),
+  ).toEqual([]);
+});
+
+test("matchStorageSlot expands composite known paths", () => {
+  expect(
+    matchStorageSlot(layout, ["metadata"], "0x4").map(formatStoragePath),
+  ).toMatchInlineSnapshot(`
+    [
+      "metadata.lastUpdate",
+      "metadata.active",
+    ]
+  `);
 });
 
 test("decodeStorage decodes value types from raw slots", () => {
@@ -562,5 +603,95 @@ test("encodeStorageState validates decoded state shape", () => {
 test("encodeStorage requires existing slots for packed values", () => {
   expect(() => encodeStorage(layout, "paused", false)).toThrow(
     "existing storage value is required to encode packed path: paused",
+  );
+});
+
+test("unsupported data types fail loudly", () => {
+  const unsupportedLayout = {
+    storage: [
+      {
+        astId: 1,
+        contract: "src/Test.sol:Test",
+        label: "rate",
+        offset: 0,
+        slot: "0",
+        type: "t_fixed128x18",
+      },
+      {
+        astId: 2,
+        contract: "src/Test.sol:Test",
+        label: "callback",
+        offset: 0,
+        slot: "1",
+        type: "t_function_internal",
+      },
+      {
+        astId: 3,
+        contract: "src/Test.sol:Test",
+        label: "externalCallback",
+        offset: 0,
+        slot: "2",
+        type: "t_function_external",
+      },
+      {
+        astId: 4,
+        contract: "src/Test.sol:Test",
+        label: "token",
+        offset: 0,
+        slot: "3",
+        type: "t_contract(IERC20)1",
+      },
+      {
+        astId: 5,
+        contract: "src/Test.sol:Test",
+        label: "price",
+        offset: 0,
+        slot: "4",
+        type: "t_userDefinedValueType(Price)5",
+      },
+    ],
+    types: {
+      t_fixed128x18: {
+        encoding: "inplace",
+        label: "fixed128x18",
+        numberOfBytes: "16",
+      },
+      t_function_internal: {
+        encoding: "inplace",
+        label: "function () internal",
+        numberOfBytes: "8",
+      },
+      t_function_external: {
+        encoding: "inplace",
+        label: "function () external",
+        numberOfBytes: "24",
+      },
+      "t_contract(IERC20)1": {
+        encoding: "inplace",
+        label: "contract IERC20",
+        numberOfBytes: "20",
+      },
+      "t_userDefinedValueType(Price)5": {
+        encoding: "inplace",
+        label: "Price",
+        numberOfBytes: "32",
+      },
+    },
+  } as const satisfies StorageLayout;
+
+  expect(() => getStorageSlot(unsupportedLayout, "rate")).toThrow(
+    "unsupported storage path type 'fixed128x18' for rate",
+  );
+  expect(() => getStorageSlot(unsupportedLayout, "callback")).toThrow(
+    "unsupported storage path type 'function () internal' for callback",
+  );
+  expect(() => getStorageSlot(unsupportedLayout, "externalCallback")).toThrow(
+    "unsupported storage path type 'function () external' for externalCallback",
+  );
+  expect(() => getStorageSlot(unsupportedLayout, "token")).toThrow(
+    "unsupported storage path type 'contract IERC20' for token",
+  );
+  expect(() => getStorageSlot(unsupportedLayout, "price")).toThrow(
+    "unsupported storage path type 'Price' for price",
   );
 });

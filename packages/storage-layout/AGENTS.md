@@ -43,7 +43,7 @@ Solidity mappings use one-way hashed locations: `keccak256(abi.encode(key, baseS
 - App-declared subscriptions
 - Keys and indices discovered from mutation calldata or events
 - A persisted path registry
-- Bounded dynamic-array paths derived from known length slots
+- Bounded dynamic-array paths derived by reading length slots and then fetching indices
 
 Static finite paths can be generated from layout on demand. Mapping paths and nested dynamic paths require known keys or indices.
 
@@ -58,7 +58,7 @@ Do not try to make generic mapping enumeration work in the proxy. It is not a mi
 - `decodeStorage(layout, path, storage)` decodes a path from raw account storage.
 - `encodeStorage(layout, path, value, storage?)` encodes a path value into raw slot writes. Existing storage is required for packed values so neighboring bytes are preserved.
 - `encodeStorageState(layout, state)` encodes an app-shaped decoded object into raw account storage for revm initialization.
-- `createStorageProxy(layout, getSlots)` exposes concrete storage paths as an async JS object proxy. Leaf reads return promises; mappings require explicit keys; dynamic-array `.length` is still a TODO.
+- `createStorageProxy(layout, getSlots)` exposes concrete storage paths as an async JS object proxy. Leaf reads return promises; mappings require explicit keys or `knownPaths` hints for enumeration; dynamic-array `.length` reads the root length slot.
 
 Lower-level value encode/decode helpers are implementation details for now. Keep the public API storage-oriented so callers do not have to reason directly about masks, byte offsets, or two's-complement encoding.
 
