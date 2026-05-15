@@ -1,6 +1,6 @@
 # AGENTS.md — storage-layout
 
-`storage-layout` turns Solidity compiler `storageLayout` JSON into concrete storage-slot information. It is intended to support ffca's revm path, where revm owns canonical EVM state and higher layers need to decode raw slot writes into app-shaped updates.
+`storage-layout` turns Solidity compiler `storageLayout` JSON into concrete storage-slot information. It supports ffca's revm path, where revm owns canonical EVM state and higher layers need to seed raw slots, read decoded values through a proxy, and eventually decode raw slot writes into app-shaped updates.
 
 ## Core Model
 
@@ -12,7 +12,7 @@ The central abstraction is `StoragePath`: a structured representation of a Solid
 - `accounts[0xabcd].orders[3].price`
 - `instruments[1].bids[4200].remainingQuantity`
 
-The first implementation slice supports top-level value types only. Add capabilities incrementally in this order: struct fields, fixed arrays, dynamic arrays, mappings, nested combinations, then `bytes` / `string` payload decoding.
+The implementation now supports value types, packed slots, structs, fixed and dynamic arrays, mappings with known keys, nested combinations, and `bytes` / `string` payload decoding for concrete paths. It also exposes `createStorageProxy` for ergonomic reads and `encodeStorageState` for seeding decoded app state into raw slots.
 
 ## Solidity Type Inventory
 
@@ -47,6 +47,8 @@ Solidity mappings use one-way hashed locations: `keccak256(abi.encode(key, baseS
 
 Static finite paths can be generated from layout on demand. Mapping paths and nested dynamic paths require known keys or indices.
 
+Do not try to make generic mapping enumeration work in the proxy. It is not a missing implementation detail; it is unavailable from storage alone. Dynamic-array `.length` is different: the length lives at the array root slot and is a valid next ergonomic improvement.
+
 ## Target Functions
 
 - `parseStoragePath(path)` parses human-readable paths into `StoragePath`.
@@ -55,12 +57,14 @@ Static finite paths can be generated from layout on demand. Mapping paths and ne
 - `getStoragePath(layout, slots)` identifies which reversible non-mapping paths were touched by slot updates. It errors for mappings because mapping keys cannot be recovered from raw slots.
 - `decodeStorage(layout, path, storage)` decodes a path from raw account storage.
 - `encodeStorage(layout, path, value, storage?)` encodes a path value into raw slot writes. Existing storage is required for packed values so neighboring bytes are preserved.
+- `encodeStorageState(layout, state)` encodes an app-shaped decoded object into raw account storage for revm initialization.
+- `createStorageProxy(layout, getSlots)` exposes concrete storage paths as an async JS object proxy. Leaf reads return promises; mappings require explicit keys; dynamic-array `.length` is still a TODO.
 
 Lower-level value encode/decode helpers are implementation details for now. Keep the public API storage-oriented so callers do not have to reason directly about masks, byte offsets, or two's-complement encoding.
 
 ## Planned JS Object Layer
 
-The intended scope extends beyond slot/path lookup. Once `StoragePath` resolution is reliable, add helpers that project decoded paths into normal JS object shapes and produce slot writes from JS object updates. The path DSL is the lower-level representation; JS objects are the ergonomic app-facing representation.
+The intended scope extends beyond slot/path lookup. `createStorageProxy` and `encodeStorageState` are the first JS object layer: they project normal JS object paths onto concrete storage reads/writes for known keys. The path DSL remains the lower-level representation; JS objects are the ergonomic app-facing representation.
 
 Example direction:
 
