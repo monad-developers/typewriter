@@ -139,9 +139,26 @@ export type FFCAConfig = {
   // whatever else (account, keyId, …) the contract expects.
   signature: { params: readonly AbiParameter[] };
   mutations: { [name: string]: FFCAMutationConfig };
+  // Runtime sequencing and loop cadence. FIFO is the default: mutations are
+  // accepted one-at-a-time as soon as they enter the runtime, while submit still
+  // flushes accepted mutations on an interval. `bundle` mode preserves the
+  // delayed batch sort behavior used by existing apps/tests.
+  sequencing?:
+    | {
+        order?: "fifo";
+        submitIntervalMs?: number;
+        blockPollingIntervalMs?: number;
+      }
+    | {
+        order?: "bundle";
+        bundleIntervalMs?: number;
+        submitIntervalMs?: number;
+        blockPollingIntervalMs?: number;
+      };
   // Order in which queued mutations are sorted within a bundle, before
   // resolve+apply. Every mutation submitted to the runtime must have a name
-  // in this list. Stable within a name (insertion order preserved). Omit for
-  // FIFO. Future: replace with a state-aware callback.
+  // in this list when sequencing.order is "bundle". Stable within a name
+  // (insertion order preserved). Omit for FIFO. Future: replace with a
+  // state-aware callback.
   sequence?: readonly string[];
 };

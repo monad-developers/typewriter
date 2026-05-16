@@ -579,10 +579,9 @@ test("createFFCA seeds revm storage from decoded state", async () => {
   await ffca.stop();
 });
 
-// Counter: multiple signed mutations in one bundle each contribute to onchain
-// state. Catches any bug where bundle encoding loses or aliases per-mutation
-// data, and exercises the contract's nonce check across a bundle.
-test("e2e Counter: multiple mutations in one bundle", async () => {
+// Counter: FIFO accepts each mutation as soon as it arrives, then the submit
+// loop flushes the accepted mutations to chain together.
+test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
   const ffca = await createFFCA({
@@ -595,7 +594,13 @@ test("e2e Counter: multiple mutations in one bundle", async () => {
     rpcUrl: TEST_RPC_URL,
     state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
+    sequencing: { order: "fifo", submitIntervalMs: 1000 },
     mutations: COUNTER_MUTATIONS,
+  });
+
+  const acceptedBundles: Extract<BundleEvent, { status: "accepted" }>[] = [];
+  ffca.on("bundle", (event) => {
+    if (event.status === "accepted") acceptedBundles.push(event);
   });
 
   const sign = (args: { amount: bigint; nonce: bigint }) =>
@@ -623,6 +628,10 @@ test("e2e Counter: multiple mutations in one bundle", async () => {
       args: { amount: 11n, nonce: 2n },
       signature: sign({ amount: 11n, nonce: 2n }),
     }),
+  ]);
+
+  expect(acceptedBundles.map((bundle) => bundle.mutations.length)).toEqual([
+    1, 1, 1,
   ]);
 
   const readTotal = async () => {
