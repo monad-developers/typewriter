@@ -3,8 +3,8 @@
 // FFCA's persistence model is denormalized: there is no central `mutations`,
 // `bundles`, or `blocks` table. Every per-mutation table spreads
 // `mutationColumns()` (id, bundleId, bundlePosition, blockNumber, blockHash,
-// blockTimestamp, transactionHash, status, acceptedAt, proposedAt, votedAt,
-// finalizedAt, verifiedAt) plus app-owned signature columns and payload
+// blockTimestamp, transactionHash, status, acceptedAt, includedAt, safeAt,
+// finalizedAt) plus app-owned signature columns and payload
 // columns. To answer queries that span mutation types (list by block, lookup
 // by id, lookup by (account, nonce)), we fan out across all per-type tables
 // in parallel and merge the results app-side.
@@ -18,12 +18,7 @@ import * as schema from "./app-schema";
 
 export type QueryDatabase = BunSQLDatabase<typeof APP_SCHEMA>;
 
-export type ApiMutationStatus =
-  | "accepted"
-  | "proposed"
-  | "voted"
-  | "finalized"
-  | "verified";
+export type ApiMutationStatus = "accepted" | "included" | "safe" | "finalized";
 
 export type ApiMutation = {
   id: number;
@@ -37,15 +32,13 @@ export type ApiMutation = {
   nonce: string | null;
   deadline: string | null;
   type: string;
-  // Pending mutations are not persisted in this model; `pendingAt` is always
-  // null in REST responses. Kept on the wire so frontend hooks that read it
-  // don't crash.
-  pendingAt: string | null;
+  // Submitted mutations are not persisted in this model; `submittedAt` is
+  // always null in REST responses. Kept on the wire for SSE/REST shape parity.
+  submittedAt: string | null;
   acceptedAt: string | null;
-  proposedAt: string | null;
-  votedAt: string | null;
+  includedAt: string | null;
+  safeAt: string | null;
   finalizedAt: string | null;
-  verifiedAt: string | null;
   transactionHash: Hex | null;
   payload: unknown;
 };
@@ -69,10 +62,9 @@ const SHARED_COLUMNS = new Set<string>([
   "transactionHash",
   "status",
   "acceptedAt",
-  "proposedAt",
-  "votedAt",
+  "includedAt",
+  "safeAt",
   "finalizedAt",
-  "verifiedAt",
   "account",
   "keyId",
   "rawSignature",
@@ -88,10 +80,9 @@ type MutationRow = {
   transactionHash: string | null;
   status: ApiMutationStatus;
   acceptedAt: Date | null;
-  proposedAt: Date | null;
-  votedAt: Date | null;
+  includedAt: Date | null;
+  safeAt: Date | null;
   finalizedAt: Date | null;
-  verifiedAt: Date | null;
   account: string;
   keyId: bigint;
   rawSignature: string;
@@ -226,12 +217,11 @@ function buildApiMutation(
           : String(row.deadline)
         : null,
     type: descriptor.type,
-    pendingAt: null,
+    submittedAt: null,
     acceptedAt: toIso(row.acceptedAt),
-    proposedAt: toIso(row.proposedAt),
-    votedAt: toIso(row.votedAt),
+    includedAt: toIso(row.includedAt),
+    safeAt: toIso(row.safeAt),
     finalizedAt: toIso(row.finalizedAt),
-    verifiedAt: toIso(row.verifiedAt),
     transactionHash: (row.transactionHash ?? null) as Hex | null,
     payload,
   };

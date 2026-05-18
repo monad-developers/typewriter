@@ -54,9 +54,9 @@ import type {
   BlockEvent,
   BundleEvent,
   MutationEvent,
-  PendingMutation,
   ResolvedMutation,
   SubmittedMutation,
+  SubmittedMutationEvent,
 } from "./types";
 import { layerWatchLive, Watch } from "./watch";
 
@@ -75,16 +75,15 @@ import { layerWatchLive, Watch } from "./watch";
 const DEFAULT_BUNDLE_INTERVAL_MS = 50;
 const DEFAULT_SUBMIT_INTERVAL_MS = 400;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
-const VOTED_CONFIRMATIONS = 1n;
-const FINALIZED_CONFIRMATIONS = 2n;
-const VERIFIED_CONFIRMATIONS = 5n;
+const DEFAULT_SAFE_BLOCK_DEPTH = 1n;
+const DEFAULT_FINALIZED_BLOCK_DEPTH = 5n;
 
 type MutationListener = (event: MutationEvent) => void;
 type BundleListener = (event: BundleEvent) => void;
 type BlockListener = (event: BlockEvent) => void;
 
 type QueuedMutation = {
-  pending: PendingMutation;
+  submitted: SubmittedMutationEvent;
   deferred: Deferred.Deferred<MutationEvent, unknown>;
 };
 
@@ -235,6 +234,14 @@ function hasAnyPersistenceHook(mutation: FFCAMutationConfig): boolean {
     mutation.persistState !== undefined ||
     mutation.persistLifecycle !== undefined
   );
+}
+
+function blockDepth(value: number | undefined, fallback: bigint, name: string) {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a safe non-negative integer`);
+  }
+  return BigInt(value);
 }
 
 function collectPersistenceSchema(config: FFCAConfig): Record<string, PgTable> {
@@ -391,6 +398,23 @@ export async function createFFCA<const C extends FFCAConfig>(
       config.sequencing?.blockPollingIntervalMs ??
       DEFAULT_BLOCK_POLLING_INTERVAL_MS,
   };
+  const confirmations = {
+    safeBlockDepth: blockDepth(
+      config.confirmations?.safeBlockDepth,
+      DEFAULT_SAFE_BLOCK_DEPTH,
+      "config.confirmations.safeBlockDepth",
+    ),
+    finalizedBlockDepth: blockDepth(
+      config.confirmations?.finalizedBlockDepth,
+      DEFAULT_FINALIZED_BLOCK_DEPTH,
+      "config.confirmations.finalizedBlockDepth",
+    ),
+  };
+  if (confirmations.finalizedBlockDepth < confirmations.safeBlockDepth) {
+    throw new Error(
+      "config.confirmations.finalizedBlockDepth must be greater than or equal to config.confirmations.safeBlockDepth",
+    );
+  }
 
   if (sequencing.order === "bundle" && config.sequence === undefined) {
     throw new Error("config.sequence is required for bundle ordering");
@@ -515,8 +539,8 @@ export async function createFFCA<const C extends FFCAConfig>(
       // Snapshot the bundle's mutations for `resolve` to read. Built once;
       // doesn't reflect failures or mid-bundle state changes.
       const bundleView: BundleView = queued.map((q) => ({
-        name: q.pending.name,
-        args: q.pending.args,
+        name: q.submitted.name,
+        args: q.submitted.args,
       }));
 
       // Open a revm journal for this bundle. Per-mutation executes record into
@@ -535,7 +559,7 @@ export async function createFFCA<const C extends FFCAConfig>(
           args,
           signature,
           digest,
-        } = item.pending;
+        } = item.submitted;
         try {
           const resolution = yield* Effect.tryPromise({
             try: () =>
@@ -548,9 +572,9 @@ export async function createFFCA<const C extends FFCAConfig>(
               ),
             catch: (error) => error as Error,
           });
-          verifyResolution(mutationConfig, resolution, item.pending.name);
+          verifyResolution(mutationConfig, resolution, item.submitted.name);
           const acceptedMutation = {
-            ...item.pending,
+            ...item.submitted,
             status: "accepted" as const,
             resolution,
           };
@@ -596,7 +620,7 @@ export async function createFFCA<const C extends FFCAConfig>(
 
       for (const { item, error } of rejections) {
         const rejected: MutationEvent = {
-          ...item.pending,
+          ...item.submitted,
           status: "rejected",
           error,
         };
@@ -641,7 +665,7 @@ export async function createFFCA<const C extends FFCAConfig>(
 
       for (const a of accepted) {
         emitMutation(a);
-        const item = queued.find((q) => q.pending.id === a.id)!;
+        const item = queued.find((q) => q.submitted.id === a.id)!;
         yield* Deferred.succeed(item.deferred, a);
       }
 
@@ -656,7 +680,8 @@ export async function createFFCA<const C extends FFCAConfig>(
 
     const order = config.sequence!;
     queued.sort(
-      (a, b) => order.indexOf(a.pending.name) - order.indexOf(b.pending.name),
+      (a, b) =>
+        order.indexOf(a.submitted.name) - order.indexOf(b.submitted.name),
     );
 
     yield* acceptBundle(queued, bundlePosition++);
@@ -772,17 +797,17 @@ export async function createFFCA<const C extends FFCAConfig>(
 
     for (const bundle of bundles) {
       for (const mutation of bundle.mutations) {
-        (mutation as ResolvedMutation).status = "proposed";
+        (mutation as ResolvedMutation).status = "included";
       }
       const anchoredBundle = bundle as unknown as AnchoredBundle;
-      anchoredBundle.status = "proposed";
+      anchoredBundle.status = "included";
       anchoredBundle.number = block.number;
       anchoredBundle.hash = block.hash;
       anchoredBundle.transactionHash = transactionHash;
     }
     const anchored = bundles as unknown as AnchoredBundle[];
 
-    yield* Effect.logInfo("bundles proposed").pipe(
+    yield* Effect.logInfo("bundles included").pipe(
       Effect.annotateLogs({
         bundleIds: bundles.map((b) => b.id),
         bundleCount: bundles.length,
@@ -792,8 +817,8 @@ export async function createFFCA<const C extends FFCAConfig>(
       }),
     );
 
-    const proposedBlock: Exclude<BlockEvent, { status: "accepted" }> = {
-      status: "proposed",
+    const includedBlock: Exclude<BlockEvent, { status: "accepted" }> = {
+      status: "included",
       number: block.number,
       hash: block.hash,
       timestamp: block.timestamp,
@@ -807,10 +832,10 @@ export async function createFFCA<const C extends FFCAConfig>(
           for (const bundle of anchored) {
             for (const mutation of bundle.mutations) {
               await mutation.config.persistLifecycle!(tx, {
-                lifecycle: "proposed",
+                lifecycle: "included",
                 mutation: mutation as Extract<
                   ResolvedMutation,
-                  { status: "proposed" }
+                  { status: "included" }
                 >,
                 block: {
                   number: block.number,
@@ -831,8 +856,8 @@ export async function createFFCA<const C extends FFCAConfig>(
       emitBundle(b);
       for (const m of b.mutations) emitMutation(m);
     }
-    emitBlock(proposedBlock);
-    unfinalizedBlocks.push(proposedBlock);
+    emitBlock(includedBlock);
+    unfinalizedBlocks.push(includedBlock);
   });
 
   const watch = Effect.gen(function* () {
@@ -851,27 +876,20 @@ export async function createFFCA<const C extends FFCAConfig>(
           for (const blockEvent of unfinalizedBlocks.filter(
             (block) => block.number < message.block.number,
           )) {
-            const confirmations = message.block.number - blockEvent.number;
-            let nextStatus: "voted" | "finalized" | "verified" | undefined;
+            const blockDepth = message.block.number - blockEvent.number;
+            let nextStatus: "safe" | "finalized" | undefined;
 
             if (
-              confirmations >= VERIFIED_CONFIRMATIONS &&
-              blockEvent.status !== "verified"
-            ) {
-              nextStatus = "verified";
-            } else if (
-              confirmations >= FINALIZED_CONFIRMATIONS &&
-              blockEvent.status !== "finalized" &&
-              blockEvent.status !== "verified"
+              blockDepth >= confirmations.finalizedBlockDepth &&
+              blockEvent.status !== "finalized"
             ) {
               nextStatus = "finalized";
             } else if (
-              confirmations >= VOTED_CONFIRMATIONS &&
-              blockEvent.status !== "voted" &&
-              blockEvent.status !== "finalized" &&
-              blockEvent.status !== "verified"
+              blockDepth >= confirmations.safeBlockDepth &&
+              blockEvent.status !== "safe" &&
+              blockEvent.status !== "finalized"
             ) {
-              nextStatus = "voted";
+              nextStatus = "safe";
             }
 
             if (nextStatus === undefined) continue;
@@ -891,12 +909,12 @@ export async function createFFCA<const C extends FFCAConfig>(
                   for (const bundle of blockEvent.bundles) {
                     for (const mutation of bundle.mutations) {
                       switch (nextStatus) {
-                        case "voted":
+                        case "safe":
                           await mutation.config.persistLifecycle!(tx, {
-                            lifecycle: "voted",
+                            lifecycle: "safe",
                             mutation: mutation as Extract<
                               ResolvedMutation,
-                              { status: "voted" }
+                              { status: "safe" }
                             >,
                           });
                           break;
@@ -906,15 +924,6 @@ export async function createFFCA<const C extends FFCAConfig>(
                             mutation: mutation as Extract<
                               ResolvedMutation,
                               { status: "finalized" }
-                            >,
-                          });
-                          break;
-                        case "verified":
-                          await mutation.config.persistLifecycle!(tx, {
-                            lifecycle: "verified",
-                            mutation: mutation as Extract<
-                              ResolvedMutation,
-                              { status: "verified" }
                             >,
                           });
                           break;
@@ -936,7 +945,7 @@ export async function createFFCA<const C extends FFCAConfig>(
           }
 
           unfinalizedBlocks = unfinalizedBlocks.filter(
-            (block) => block.status !== "verified",
+            (block) => block.status !== "finalized",
           );
         }),
       ),
@@ -1064,16 +1073,19 @@ export async function createFFCA<const C extends FFCAConfig>(
           domain,
         );
 
-        const pending: PendingMutation = {
+        const submittedEvent: SubmittedMutationEvent = {
           ...submitted,
           id: mutationId++,
-          status: "pending",
+          status: "submitted",
           digest,
           config: mutation,
         };
-        emitMutation(pending);
+        emitMutation(submittedEvent);
         const deferred = yield* Deferred.make<MutationEvent, unknown>();
-        yield* Queue.offer(mutationQueue, { pending, deferred });
+        yield* Queue.offer(mutationQueue, {
+          submitted: submittedEvent,
+          deferred,
+        });
         return yield* Deferred.await(deferred);
       }).pipe(Effect.provide(Logger.json)),
     );

@@ -17,10 +17,10 @@ export type FFCADatabaseTransaction = Parameters<
 // `table` is the app-owned table for this mutation type. FFCA uses it for
 // migration and for persistence hook callbacks; apps define the table shape.
 //
-// `persistMutation` writes the accepted mutation row. Pending mutations stay
+// `persistMutation` writes the accepted mutation row. Submitted mutations stay
 // in memory and are not persisted. `persistState` writes app state rows changed
 // by this mutation from the current runtime state. `persistLifecycle` handles
-// post-acceptance transitions like proposed/finalized/verified.
+// post-acceptance transitions like included/safe/finalized.
 //
 // `resolve` must be pure: read-only over `state`, `signature`, and `bundle`, no
 // side effects. The runtime calls it once per mutation immediately before
@@ -52,8 +52,8 @@ type FFCAMutationPersistence = {
     tx: FFCADatabaseTransaction,
     params:
       | {
-          lifecycle: "proposed";
-          mutation: Extract<ResolvedMutation, { status: "proposed" }>;
+          lifecycle: "included";
+          mutation: Extract<ResolvedMutation, { status: "included" }>;
           block: {
             number: bigint;
             hash: Hex.Hex;
@@ -63,16 +63,12 @@ type FFCAMutationPersistence = {
           calldata: Hex.Hex;
         }
       | {
-          lifecycle: "voted";
-          mutation: Extract<ResolvedMutation, { status: "voted" }>;
+          lifecycle: "safe";
+          mutation: Extract<ResolvedMutation, { status: "safe" }>;
         }
       | {
           lifecycle: "finalized";
           mutation: Extract<ResolvedMutation, { status: "finalized" }>;
-        }
-      | {
-          lifecycle: "verified";
-          mutation: Extract<ResolvedMutation, { status: "verified" }>;
         },
   ) => Promise<void>;
 };
@@ -139,6 +135,10 @@ export type FFCAConfig = {
   // whatever else (account, keyId, …) the contract expects.
   signature: { params: readonly AbiParameter[] };
   mutations: { [name: string]: FFCAMutationConfig };
+  confirmations?: {
+    safeBlockDepth?: number;
+    finalizedBlockDepth?: number;
+  };
   // Runtime sequencing and loop cadence. FIFO is the default: mutations are
   // accepted one-at-a-time as soon as they enter the runtime, while submit still
   // flushes accepted mutations on an interval. `bundle` mode preserves the

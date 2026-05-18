@@ -742,7 +742,7 @@ test("e2e Harness: mutation with resolution", async () => {
   await ffca.stop();
 });
 
-test("e2e Harness: persistence callbacks write accepted and proposed state", async () => {
+test("e2e Harness: persistence callbacks write accepted and included state", async () => {
   const { address, abi } = await deployHarness();
 
   const ffca = await createFFCA({
@@ -874,7 +874,7 @@ test("e2e Harness: persistence callbacks write accepted and proposed state", asy
     }
   };
   const { initialize, credit, debit } =
-    await waitForPersistedStatus("proposed");
+    await waitForPersistedStatus("included");
 
   expect(account).toEqual({ id: aliceId });
   expect(key).toEqual({
@@ -887,21 +887,21 @@ test("e2e Harness: persistence callbacks write accepted and proposed state", asy
   expect(balance).toEqual({ account: aliceId, amount: "70" });
   expect(initialize).toMatchObject({
     id: 0,
-    status: "proposed",
+    status: "included",
     account: aliceId,
     rootKeyType: 2,
     rootPublicKey,
   });
   expect(credit).toMatchObject({
     id: 1,
-    status: "proposed",
+    status: "included",
     account: aliceId,
     amount: "100",
     nonce: "0",
   });
   expect(debit).toMatchObject({
     id: 2,
-    status: "proposed",
+    status: "included",
     account: aliceId,
     amount: "30",
     nonce: "1",
@@ -1623,8 +1623,9 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
 });
 
 // Fan-out: a single happy-path mutation produces the full lifecycle of events
-// to subscribers — pending/accepted/proposed for the mutation, accepted/proposed
-// for its bundle and block. Off-then-on confirms unsubscribe works.
+// to subscribers — submitted/accepted/included for the mutation,
+// accepted/included for its bundle and block. Off-then-on confirms unsubscribe
+// works.
 test("e2e Counter: subscribers receive lifecycle events", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
@@ -1666,21 +1667,21 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     signature: sign({ amount: 7n, nonce: 0n }),
   });
 
-  // Wait for the proposed events (submit cycle adds ~400ms after accept).
+  // Wait for the included events (submit cycle adds ~400ms after accept).
   const deadline = Date.now() + 5000;
   while (
-    !mutationStatuses.includes("proposed") ||
-    !blockStatuses.includes("proposed")
+    !mutationStatuses.includes("included") ||
+    !blockStatuses.includes("included")
   ) {
     if (Date.now() > deadline) {
-      throw new Error("proposed events never arrived");
+      throw new Error("included events never arrived");
     }
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  expect(mutationStatuses).toEqual(["pending", "accepted", "proposed"]);
-  expect(bundleStatuses).toEqual(["accepted", "proposed"]);
-  expect(blockStatuses).toEqual(["accepted", "proposed"]);
+  expect(mutationStatuses).toEqual(["submitted", "accepted", "included"]);
+  expect(bundleStatuses).toEqual(["accepted", "included"]);
+  expect(blockStatuses).toEqual(["accepted", "included"]);
 
   // The disposer returned by on() unsubscribes that listener.
   offMutation();
@@ -1691,17 +1692,17 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
   });
   while (bundleStatuses.length < 4) {
     if (Date.now() > deadline) {
-      throw new Error("second bundle's proposed event never arrived");
+      throw new Error("second bundle's included event never arrived");
     }
     await new Promise((r) => setTimeout(r, 50));
   }
   // Same three statuses as before — no new mutation events after unsubscribe.
-  expect(mutationStatuses).toEqual(["pending", "accepted", "proposed"]);
+  expect(mutationStatuses).toEqual(["submitted", "accepted", "included"]);
 
   await ffca.stop();
 });
 
-test("e2e Counter: watch advances proposed bundles by confirmations", async () => {
+test("e2e Counter: watch advances included bundles by configured block depths", async () => {
   const { address, abi } = await deployCounter(USER_ACCOUNT.address);
 
   const ffca = await createFFCA({
@@ -1715,6 +1716,7 @@ test("e2e Counter: watch advances proposed bundles by confirmations", async () =
     state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: COUNTER_MUTATIONS,
+    confirmations: { safeBlockDepth: 1, finalizedBlockDepth: 3 },
   });
 
   const mutationStatuses: MutationEvent["status"][] = [];
@@ -1748,50 +1750,31 @@ test("e2e Counter: watch advances proposed bundles by confirmations", async () =
   });
 
   await waitFor(
-    () => mutationStatuses.includes("proposed"),
-    "proposed event never arrived",
+    () => mutationStatuses.includes("included"),
+    "included event never arrived",
   );
 
   await TEST_CLIENT.mine({ blocks: 1 });
   await waitFor(
-    () => mutationStatuses.includes("voted"),
-    "voted event never arrived",
+    () => mutationStatuses.includes("safe"),
+    "safe event never arrived",
   );
 
-  await TEST_CLIENT.mine({ blocks: 1 });
+  await TEST_CLIENT.mine({ blocks: 2 });
   await waitFor(
     () => mutationStatuses.includes("finalized"),
     "finalized event never arrived",
   );
 
-  await TEST_CLIENT.mine({ blocks: 3 });
-  await waitFor(
-    () => mutationStatuses.includes("verified"),
-    "verified event never arrived",
-  );
-
   expect(mutationStatuses).toEqual([
-    "pending",
+    "submitted",
     "accepted",
-    "proposed",
-    "voted",
+    "included",
+    "safe",
     "finalized",
-    "verified",
   ]);
-  expect(bundleStatuses).toEqual([
-    "accepted",
-    "proposed",
-    "voted",
-    "finalized",
-    "verified",
-  ]);
-  expect(blockStatuses).toEqual([
-    "accepted",
-    "proposed",
-    "voted",
-    "finalized",
-    "verified",
-  ]);
+  expect(bundleStatuses).toEqual(["accepted", "included", "safe", "finalized"]);
+  expect(blockStatuses).toEqual(["accepted", "included", "safe", "finalized"]);
 
   await ffca.stop();
 });

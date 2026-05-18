@@ -12,12 +12,11 @@ const KEY_TYPE_LABELS = ["P256", "WebAuthnP256", "Secp256k1"] as const;
 
 function stageTimestamps(mutation: ApiMutation): StageTimestamps {
   const out: StageTimestamps = {};
-  out.pending = mutation.pendingAt;
+  if (mutation.submittedAt) out.submitted = mutation.submittedAt;
   if (mutation.acceptedAt) out.accepted = mutation.acceptedAt;
-  if (mutation.proposedAt) out.proposed = mutation.proposedAt;
-  if (mutation.votedAt) out.voted = mutation.votedAt;
+  if (mutation.includedAt) out.included = mutation.includedAt;
+  if (mutation.safeAt) out.safe = mutation.safeAt;
   if (mutation.finalizedAt) out.finalized = mutation.finalizedAt;
-  if (mutation.verifiedAt) out.verified = mutation.verifiedAt;
   return out;
 }
 

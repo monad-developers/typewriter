@@ -74,12 +74,11 @@ const readerDb: QueryDatabase = drizzle({
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 
 type MutationStatus =
-  | "pending"
+  | "submitted"
   | "accepted"
-  | "proposed"
-  | "voted"
-  | "finalized"
-  | "verified";
+  | "included"
+  | "safe"
+  | "finalized";
 
 type WireMutation = {
   id: number;
@@ -92,12 +91,11 @@ type WireMutation = {
   nonce: string | null;
   deadline: string;
   type: string;
-  pendingAt: string;
+  submittedAt: string;
   acceptedAt: string | null;
-  proposedAt: string | null;
-  votedAt: string | null;
+  includedAt: string | null;
+  safeAt: string | null;
   finalizedAt: string | null;
-  verifiedAt: string | null;
   transactionHash: Hex | null;
   payload: unknown;
 };
@@ -215,7 +213,9 @@ function mutationPayload(mutation: RuntimeMutation): unknown {
 function wireMutation(event: RuntimeMutation): WireMutation {
   const now = new Date().toISOString();
   const status: MutationStatus =
-    event.status === "rejected" ? "pending" : (event.status as MutationStatus);
+    event.status === "rejected"
+      ? "submitted"
+      : (event.status as MutationStatus);
   const nonce =
     event.args.nonce !== undefined ? stringValue(event.args.nonce) : null;
   const keyIndex = stringValue(event.signature.keyId);
@@ -233,21 +233,14 @@ function wireMutation(event: RuntimeMutation): WireMutation {
         ? stringValue(event.args.deadline)
         : "0",
     type: mutationType(event.name),
-    pendingAt: now,
-    acceptedAt: status === "pending" ? null : now,
-    proposedAt:
-      status === "proposed" ||
-      status === "voted" ||
-      status === "finalized" ||
-      status === "verified"
+    submittedAt: now,
+    acceptedAt: status === "submitted" ? null : now,
+    includedAt:
+      status === "included" || status === "safe" || status === "finalized"
         ? now
         : null,
-    votedAt:
-      status === "voted" || status === "finalized" || status === "verified"
-        ? now
-        : null,
-    finalizedAt: status === "finalized" || status === "verified" ? now : null,
-    verifiedAt: status === "verified" ? now : null,
+    safeAt: status === "safe" || status === "finalized" ? now : null,
+    finalizedAt: status === "finalized" ? now : null,
     transactionHash: null,
     payload: mutationPayload(event),
   };

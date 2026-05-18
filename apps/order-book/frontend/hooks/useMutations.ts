@@ -2,12 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import type { Address, Hex } from "viem";
 
 export type MutationStatus =
-  | "pending"
+  | "submitted"
   | "accepted"
-  | "proposed"
-  | "voted"
-  | "finalized"
-  | "verified";
+  | "included"
+  | "safe"
+  | "finalized";
 
 export type InitializePayload = {
   id: number;
@@ -85,12 +84,11 @@ type MutationBase = {
   keyIndex: string | null;
   nonce: string | null;
   deadline: string;
-  pendingAt: string;
+  submittedAt: string | null;
   acceptedAt: string | null;
-  proposedAt: string | null;
-  votedAt: string | null;
+  includedAt: string | null;
+  safeAt: string | null;
   finalizedAt: string | null;
-  verifiedAt: string | null;
   transactionHash: Hex | null;
 };
 

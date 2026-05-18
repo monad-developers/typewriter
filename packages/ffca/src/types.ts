@@ -11,15 +11,14 @@ export type SubmittedMutation = {
 };
 
 export type MutationStatus =
-  | "pending"
+  | "submitted"
   | "accepted"
   | "rejected"
-  | "proposed"
-  | "voted"
-  | "finalized"
-  | "verified";
+  | "included"
+  | "safe"
+  | "finalized";
 
-export type BundleStatus = Exclude<MutationStatus, "pending" | "rejected">;
+export type BundleStatus = Exclude<MutationStatus, "submitted" | "rejected">;
 export type BlockStatus = BundleStatus;
 
 // `config` is the resolved per-mutation entry from FFCAConfig.mutations,
@@ -27,10 +26,10 @@ export type BlockStatus = BundleStatus;
 // function references — drop it before serializing events to a wire or DB.
 
 // A mutation in the in-memory queue, before the bundle loop has touched it.
-// Pending mutations are not persisted.
-export type PendingMutation = SubmittedMutation & {
+// Submitted mutations are not persisted.
+export type SubmittedMutationEvent = SubmittedMutation & {
   id: number;
-  status: "pending";
+  status: "submitted";
   digest: Hex.Hex;
   config: FFCAMutationConfig;
 };
@@ -60,7 +59,7 @@ export type ResolvedMutation = BundleStatus extends infer S
   : never;
 
 export type MutationEvent =
-  | PendingMutation
+  | SubmittedMutationEvent
   | RejectedMutation
   | ResolvedMutation;
 

@@ -100,7 +100,7 @@ export function useLiveBlocks(): {
         setBundleSlots(Array(BUNDLE_SLOT_COUNT).fill(null));
         return;
       }
-      if (data.status === "proposed") {
+      if (data.status === "included") {
         if (data.number == null || data.hash == null || data.timestamp == null)
           return;
         const block: LiveBlock = {

@@ -78,6 +78,7 @@ test("createFFCA Counter (no schema)", () => {
     ...baseConfig,
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     state: { initial: { total: 0n, nonce: 0n } as CounterState },
+    confirmations: { safeBlockDepth: 2, finalizedBlockDepth: 8 },
     mutations: COUNTER_MUTATIONS,
   });
 });

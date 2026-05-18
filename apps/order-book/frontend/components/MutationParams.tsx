@@ -80,7 +80,7 @@ export function MutationParams({ mutation }: { mutation: ApiMutation }) {
 
 function renderRows(mutation: ApiMutation) {
   if (mutation.payload == null) {
-    return <Row label="payload" value="pending" />;
+    return <Row label="payload" value="submitted" />;
   }
   switch (mutation.type) {
     case "initialize":

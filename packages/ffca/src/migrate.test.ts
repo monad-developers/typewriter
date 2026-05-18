@@ -52,7 +52,7 @@ test("migrate creates the configured schema", async () => {
   expect(enums).toEqual([
     {
       enum_name: "mutation_status",
-      values: ["accepted", "proposed", "voted", "finalized", "verified"],
+      values: ["accepted", "included", "safe", "finalized"],
     },
   ]);
 
