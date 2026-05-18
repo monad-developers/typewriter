@@ -682,8 +682,9 @@ export async function createFFCA<const C extends FFCAConfig>(
       schedule: Schedule.spaced(Duration.millis(200)),
     });
 
-    const mutations = bundles.flatMap((b) => b.mutations);
-    const args = [encodeBundleArg(mutations, config.signature.params)];
+    const args = bundles.map((b) =>
+      encodeBundleArg(b.mutations, config.signature.params),
+    );
     const forceExecuteIndexes: bigint[] = [];
     const calldata = encodeFunctionData({
       abi: config.abi,
@@ -785,7 +786,7 @@ export async function createFFCA<const C extends FFCAConfig>(
       Effect.annotateLogs({
         bundleIds: bundles.map((b) => b.id),
         bundleCount: bundles.length,
-        mutationCount: mutations.length,
+        mutationCount: bundles.reduce((n, b) => n + b.mutations.length, 0),
         blockNumber: block.number.toString(),
         transactionHash,
       }),
@@ -973,6 +974,13 @@ export async function createFFCA<const C extends FFCAConfig>(
     Effect.orDie,
   );
 
+  let runtimeReady = false;
+  const {
+    promise: runtimeReadyPromise,
+    resolve: resolveRuntimeReady,
+    reject: rejectRuntimeReady,
+  } = Promise.withResolvers<void>();
+
   const runtimeEffect = Effect.gen(function* () {
     // Spawn the sidecar inside the runtime's scope so its lifetime is bound
     // to the runtime fiber. `Effect.scoped` below closes the scope (and
@@ -1015,6 +1023,10 @@ export async function createFFCA<const C extends FFCAConfig>(
         },
       });
     }
+    yield* Effect.sync(() => {
+      runtimeReady = true;
+      resolveRuntimeReady();
+    });
     yield* Effect.logInfo("ffca runtime started");
     yield* Effect.all([bundleProgram, submitProgram, watchProgram], {
       concurrency: "unbounded",
@@ -1023,8 +1035,12 @@ export async function createFFCA<const C extends FFCAConfig>(
 
   const fiber = Effect.runFork(runtimeEffect);
   Effect.runPromiseExit(Fiber.join(fiber)).then((exit) => {
-    if (exit._tag === "Failure" && !Cause.isInterruptedOnly(exit.cause)) {
-      console.error("FATAL: ffca runtime fiber died", Cause.pretty(exit.cause));
+    if (exit._tag === "Failure") {
+      const cause = Cause.pretty(exit.cause);
+      if (!runtimeReady) rejectRuntimeReady(new Error(cause));
+      if (!Cause.isInterruptedOnly(exit.cause)) {
+        console.error("FATAL: ffca runtime fiber died", cause);
+      }
     }
   });
 
@@ -1100,6 +1116,13 @@ export async function createFFCA<const C extends FFCAConfig>(
     const listener = cb as BlockListener;
     blockListeners.add(listener);
     return () => blockListeners.delete(listener);
+  }
+
+  try {
+    await runtimeReadyPromise;
+  } catch (error) {
+    await stop().catch(() => {});
+    throw error;
   }
 
   return {
