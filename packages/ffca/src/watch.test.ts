@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Chunk, Effect, Stream } from "effect";
+import { decodeEventLog, getEventSelector, parseAbiItem } from "viem";
 import { anvil } from "viem/chains";
 import {
   TEST_CLIENT,
@@ -7,7 +8,10 @@ import {
   TEST_RPC_URL,
   TEST_WALLET_CLIENT,
   USER_ACCOUNT,
+  USER_PRIVATE_KEY,
 } from "../test/setup";
+import { COUNTER_MUTATIONS, deployCounter, signCounter } from "../test/utils";
+import { encodeMutationCalldata } from "./encoding";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
 
 const POLL_INTERVAL_MS = 50;
@@ -19,6 +23,10 @@ const liveLayer = () =>
     pollIntervalMs: POLL_INTERVAL_MS,
     maxChainDepth: 16,
   });
+
+const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
+  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes rawSignature) sig, uint256 enqueuedBlock)",
+);
 
 const collect = (
   stream: Stream.Stream<WatchMessage>,
@@ -70,6 +78,7 @@ test("extends local chain when anvil mines a new block", async () => {
     throw new Error(`expected Extended, got ${messages[0]!._tag}`);
   }
   expect(messages[0]!.block.transactions).toContain(transactionHash);
+  expect(messages[0]!.block.logs).toMatchInlineSnapshot(`[]`);
 });
 
 test("fetches skipped blocks and emits each extension", async () => {
@@ -123,6 +132,85 @@ test("emits no message when no new blocks are mined", async () => {
 
   const result = await Effect.runPromise(program);
   expect(result._tag).toMatchInlineSnapshot(`"None"`);
+});
+
+test("attaches matching force inclusion enqueue logs", async () => {
+  const counter = await deployCounter(USER_ACCOUNT.address);
+  const amount = 5n;
+  const nonce = 0n;
+  const mutationData = encodeMutationCalldata(COUNTER_MUTATIONS.add, {
+    amount,
+    nonce,
+  });
+  const signature = signCounter({
+    privateKey: USER_PRIVATE_KEY,
+    amount,
+    nonce,
+    address: counter.address,
+    chainId: anvil.id,
+  });
+
+  const program = Effect.scoped(
+    Effect.gen(function* () {
+      const watch = yield* Watch;
+      yield* settleColdStart;
+      const transactionHash = yield* Effect.promise(() =>
+        TEST_WALLET_CLIENT.writeContract({
+          account: TEST_WALLET_CLIENT.account!,
+          chain: anvil,
+          address: counter.address,
+          abi: counter.abi,
+          functionName: "enqueue",
+          args: [COUNTER_MUTATIONS.add.tag, mutationData, signature],
+        }),
+      );
+      return { messages: yield* collect(watch.messages, 1), transactionHash };
+    }).pipe(
+      Effect.provide(
+        layerWatchLive({
+          chainId: anvil.id,
+          rpcUrl: TEST_RPC_URL,
+          pollIntervalMs: POLL_INTERVAL_MS,
+          maxChainDepth: 16,
+          logFilter: {
+            address: counter.address,
+            selector: getEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
+          },
+        }),
+      ),
+    ),
+  );
+
+  const { messages, transactionHash } = await Effect.runPromise(program);
+  const message = messages[0]!;
+  if (message._tag !== "Extended") {
+    throw new Error(`expected Extended, got ${message._tag}`);
+  }
+
+  expect(message.block.logs.length).toMatchInlineSnapshot(`1`);
+  const log = message.block.logs[0]!;
+  expect(log.transactionHash).toBe(transactionHash);
+  expect(log.topics.length).toMatchInlineSnapshot(`1`);
+
+  const decoded = decodeEventLog({
+    abi: [FORCE_INCLUSION_QUEUED_EVENT],
+    eventName: "ForceInclusionQueued",
+    data: log.data,
+    topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+  });
+  const args = decoded.args as {
+    index: bigint;
+    mutation: number;
+    mutationData: typeof mutationData;
+    sig: typeof signature;
+    enqueuedBlock: bigint;
+  };
+
+  expect(args.index).toMatchInlineSnapshot(`0n`);
+  expect(args.mutation).toMatchInlineSnapshot(`0`);
+  expect(args.mutationData).toBe(mutationData);
+  expect(args.sig).toEqual(signature);
+  expect(args.enqueuedBlock).toBe(message.block.number);
 });
 
 test("emits Reorged with the full replacement path", async () => {

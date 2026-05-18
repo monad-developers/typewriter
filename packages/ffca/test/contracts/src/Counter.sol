@@ -57,6 +57,8 @@ contract Counter {
     error TooEarly();
     error AlreadyExecuted();
 
+    event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, Signature sig, uint256 enqueuedBlock);
+
     constructor(address _signer) {
         signer = _signer;
         scheduler = msg.sender;
@@ -119,9 +121,11 @@ contract Counter {
 
     function enqueue(uint8 mutation, bytes calldata mutationData, Signature calldata sig) external returns (uint256) {
         uint256 index = queue.length;
+        uint256 enqueuedBlock = block.number;
         queue.push(
-            QueuedMutation({mutation: mutation, mutationData: mutationData, sig: sig, enqueuedBlock: block.number})
+            QueuedMutation({mutation: mutation, mutationData: mutationData, sig: sig, enqueuedBlock: enqueuedBlock})
         );
+        emit ForceInclusionQueued(index, mutation, mutationData, sig, enqueuedBlock);
         return index;
     }
 
