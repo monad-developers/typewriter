@@ -8,14 +8,13 @@ import {
   SALT,
 } from "../test/utils";
 import {
-  decodeStorage,
+  decodeStoragePath,
   encodeStorage,
-  encodeStorageState,
+  encodeStoragePath,
   formatStoragePath,
   getStoragePath,
   getStorageSlot,
-  matchStorageSlot,
-  type SlotWrite,
+  type SlotWrites,
   type StorageLayout,
   type StorageLayoutToPrimitiveType,
 } from "./index";
@@ -31,8 +30,10 @@ const PACKED_FIXED_NUMBERS =
   "0x0000000000000000000000000000000200000000000000000000000000000001";
 const SPENDER = "0x2222222222222222222222222222222222221234" as const;
 
-function writesToStorage(writes: SlotWrite[]) {
-  return Object.fromEntries(writes.map((write) => [write.slot, write.value]));
+function writesToStorage(writes: SlotWrites) {
+  return Object.fromEntries(
+    Object.entries(writes).map(([slot, write]) => [slot, write.value]),
+  );
 }
 
 test("getStorageSlot resolves top-level value types", () => {
@@ -225,7 +226,7 @@ test("getStoragePath returns no matches for untouched slots", () => {
 
 test("getStoragePath maps changed slots to storage paths", () => {
   expect(
-    getStoragePath(reversibleLayout, "0x1").map(formatStoragePath),
+    getStoragePath(layout, "0x1").map(formatStoragePath),
   ).toMatchInlineSnapshot(`
       [
         "owner",
@@ -257,20 +258,22 @@ test("getStoragePath returns fixed array paths", () => {
 });
 
 test("getStoragePath rejects mappings because keys cannot be reversed", () => {
-  expect(() => getStoragePath(layout, ["0x1"])).toThrow(
+  const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
+
+  expect(() => getStoragePath(layout, [balanceSlot])).toThrow(
     "cannot infer storage path for mapping 'balances' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone",
   );
 });
 
-test("matchStorageSlot maps raw slots through known paths", () => {
+test("getStoragePath maps raw slots through known paths", () => {
   const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
 
   expect(
-    matchStorageSlot(
-      layout,
-      ["owner", "paused", `balances[${OWNER}]`],
-      "0x1",
-    ).map(formatStoragePath),
+    getStoragePath(layout, "0x1", [
+      "owner",
+      "paused",
+      `balances[${OWNER}]`,
+    ]).map(formatStoragePath),
   ).toMatchInlineSnapshot(`
     [
       "owner",
@@ -279,21 +282,21 @@ test("matchStorageSlot maps raw slots through known paths", () => {
   `);
 
   expect(
-    matchStorageSlot(
-      layout,
-      ["owner", "paused", `balances[${OWNER}]`],
-      balanceSlot,
-    ).map(formatStoragePath),
+    getStoragePath(layout, balanceSlot, [
+      "owner",
+      "paused",
+      `balances[${OWNER}]`,
+    ]).map(formatStoragePath),
   ).toEqual([`balances[${OWNER}]`]);
 
   expect(
-    matchStorageSlot(layout, ["owner", "paused", `balances[${OWNER}]`], "0xff"),
+    getStoragePath(layout, "0xff", ["owner", "paused", `balances[${OWNER}]`]),
   ).toEqual([]);
 });
 
-test("matchStorageSlot expands composite known paths", () => {
+test("getStoragePath expands composite known paths", () => {
   expect(
-    matchStorageSlot(layout, ["metadata"], "0x4").map(formatStoragePath),
+    getStoragePath(layout, "0x4", ["metadata"]).map(formatStoragePath),
   ).toMatchInlineSnapshot(`
     [
       "metadata.lastUpdate",
@@ -302,7 +305,7 @@ test("matchStorageSlot expands composite known paths", () => {
   `);
 });
 
-test("decodeStorage decodes value types from raw slots", () => {
+test("decodeStoragePath decodes value types from raw slots", () => {
   const storage = {
     "0x0": "0x2a",
     "0x1": PACKED_OWNER_PAUSED,
@@ -311,222 +314,209 @@ test("decodeStorage decodes value types from raw slots", () => {
     "0x4": METADATA_PACKED,
   } as const;
 
-  expect(decodeStorage(layout, "totalSupply", storage)).toBe(42n);
-  expect(decodeStorage(layout, "owner", storage)).toBe(OWNER);
-  expect(decodeStorage(layout, "paused", storage)).toBe(true);
-  expect(decodeStorage(layout, "debt", storage)).toBe(-1);
-  expect(decodeStorage(layout, "salt", storage)).toBe(SALT);
-  expect(decodeStorage(layout, "metadata.lastUpdate", storage)).toBe(42n);
-  expect(decodeStorage(layout, "metadata.active", storage)).toBe(true);
-  expect(() => decodeStorage(layout, "metadata", storage)).toThrow(
+  expect(decodeStoragePath(layout, "totalSupply", storage)).toBe(42n);
+  expect(decodeStoragePath(layout, "owner", storage)).toBe(OWNER);
+  expect(decodeStoragePath(layout, "paused", storage)).toBe(true);
+  expect(decodeStoragePath(layout, "debt", storage)).toBe(-1);
+  expect(decodeStoragePath(layout, "salt", storage)).toBe(SALT);
+  expect(decodeStoragePath(layout, "metadata.lastUpdate", storage)).toBe(42n);
+  expect(decodeStoragePath(layout, "metadata.active", storage)).toBe(true);
+  expect(() => decodeStoragePath(layout, "metadata", storage)).toThrow(
     "storage path does not point to a leaf value: metadata",
   );
 });
 
-test("decodeStorage decodes fixed array elements", () => {
+test("decodeStoragePath decodes fixed array elements", () => {
   const storage = {
     "0x8": PACKED_FIXED_NUMBERS,
   } as const;
 
-  expect(decodeStorage(layout, "fixedNumbers[0]", storage)).toBe(1n);
-  expect(decodeStorage(layout, "fixedNumbers[1]", storage)).toBe(2n);
-  expect(() => decodeStorage(layout, "fixedNumbers", storage)).toThrow(
+  expect(decodeStoragePath(layout, "fixedNumbers[0]", storage)).toBe(1n);
+  expect(decodeStoragePath(layout, "fixedNumbers[1]", storage)).toBe(2n);
+  expect(() => decodeStoragePath(layout, "fixedNumbers", storage)).toThrow(
     "storage path does not point to a leaf value: fixedNumbers",
   );
 });
 
-test("decodeStorage decodes dynamic arrays", () => {
+test("decodeStoragePath decodes dynamic array elements", () => {
   const storage = {
     [getStorageSlot(layout, "dynamicNumbers")]: "0x2",
     [getStorageSlot(layout, "dynamicNumbers[0]")]: "0x1",
     [getStorageSlot(layout, "dynamicNumbers[1]")]: "0x2",
   } as const;
 
-  expect(decodeStorage(layout, "dynamicNumbers", storage)).toEqual([1n, 2n]);
-  expect(decodeStorage(layout, "dynamicNumbers[1]", storage)).toBe(2n);
+  expect(() => decodeStoragePath(layout, "dynamicNumbers", storage)).toThrow(
+    "storage path does not point to a leaf value: dynamicNumbers",
+  );
+  expect(decodeStoragePath(layout, "dynamicNumbers[1]", storage)).toBe(2n);
 });
 
-test("decodeStorage decodes bytes and strings", () => {
-  const shortStorage = writesToStorage([
-    ...encodeStorage(layout, "rawBytes", "0x1234"),
-    ...encodeStorage(layout, "message", "hello"),
-  ]);
+test("decodeStoragePath decodes bytes and strings", () => {
+  const shortStorage = writesToStorage({
+    ...encodeStoragePath(layout, "rawBytes", "0x1234"),
+    ...encodeStoragePath(layout, "message", "hello"),
+  });
   const longBytes = `0x${"11".repeat(33)}` as const;
   const longString = "x".repeat(33);
-  const longStorage = writesToStorage([
-    ...encodeStorage(layout, "rawBytes", longBytes),
-    ...encodeStorage(layout, "message", longString),
-  ]);
+  const longStorage = writesToStorage({
+    ...encodeStoragePath(layout, "rawBytes", longBytes),
+    ...encodeStoragePath(layout, "message", longString),
+  });
 
-  expect(decodeStorage(layout, "rawBytes", shortStorage)).toBe("0x1234");
-  expect(decodeStorage(layout, "message", shortStorage)).toBe("hello");
-  expect(decodeStorage(layout, "rawBytes", longStorage)).toBe(longBytes);
-  expect(decodeStorage(layout, "message", longStorage)).toBe(longString);
+  expect(decodeStoragePath(layout, "rawBytes", shortStorage)).toBe("0x1234");
+  expect(decodeStoragePath(layout, "message", shortStorage)).toBe("hello");
+  expect(decodeStoragePath(layout, "rawBytes", longStorage)).toBe(longBytes);
+  expect(decodeStoragePath(layout, "message", longStorage)).toBe(longString);
 });
 
-test("decodeStorage decodes keyed mappings", () => {
+test("decodeStoragePath decodes keyed mappings", () => {
   const storage = {
     [getStorageSlot(layout, `balances[${OWNER}]`)]: "0x2a",
     [getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`)]: "0x64",
   } as const;
 
-  expect(decodeStorage(layout, `balances[${OWNER}]`, storage)).toBe(42n);
+  expect(decodeStoragePath(layout, `balances[${OWNER}]`, storage)).toBe(42n);
   expect(
-    decodeStorage(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
+    decodeStoragePath(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
   ).toBe(100n);
-  expect(() => decodeStorage(layout, `allowances[${OWNER}]`, storage)).toThrow(
-    `mapping storage paths require a key: allowances[${OWNER}]`,
-  );
+  expect(() =>
+    decodeStoragePath(layout, `allowances[${OWNER}]`, storage),
+  ).toThrow(`mapping storage paths require a key: allowances[${OWNER}]`);
 });
 
-test("encodeStorage encodes full-slot value types", () => {
-  expect(encodeStorage(layout, "totalSupply", 42n)).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+test("encodeStoragePath encodes full-slot value types", () => {
+  expect(encodeStoragePath(layout, "totalSupply", 42n)).toMatchInlineSnapshot(`
+    {
+      "0x0000000000000000000000000000000000000000000000000000000000000000": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x000000000000000000000000000000000000000000000000000000000000002a",
       },
-    ]
+    }
   `);
-  expect(encodeStorage(layout, "salt", SALT)).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000003",
+  expect(encodeStoragePath(layout, "salt", SALT)).toMatchInlineSnapshot(`
+    {
+      "0x0000000000000000000000000000000000000000000000000000000000000003": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       },
-    ]
+    }
   `);
 });
 
-test("encodeStorage preserves neighboring bytes for packed values", () => {
-  const storage = {
-    "0x1": PACKED_OWNER_PAUSED,
-  } as const;
-
-  expect(
-    encodeStorage(layout, "paused", false, storage),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
-        "value": "0x0000000000000000000000001111111111111111111111111111111111111234",
+test("encodeStoragePath returns masks for packed values", () => {
+  expect(encodeStoragePath(layout, "paused", false)).toMatchInlineSnapshot(`
+    {
+      "0x0000000000000000000000000000000000000000000000000000000000000001": {
+        "mask": "0x0000000000000000000000ff0000000000000000000000000000000000000000",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000000",
       },
-    ]
+    }
   `);
 });
 
-test("encodeStorage encodes nested struct fields", () => {
-  const storage = {
-    "0x4": METADATA_PACKED,
-  } as const;
-
+test("encodeStoragePath encodes nested struct fields", () => {
   expect(
-    encodeStorage(layout, "metadata.active", false, storage),
+    encodeStoragePath(layout, "metadata.active", false),
   ).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000004",
-        "value": "0x000000000000000000000000000000000000000000000000000000000000002a",
+    {
+      "0x0000000000000000000000000000000000000000000000000000000000000004": {
+        "mask": "0x0000000000000000000000000000000000000000000000ff0000000000000000",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000000",
       },
-    ]
+    }
   `);
   expect(() =>
-    encodeStorage(
-      layout,
-      "metadata",
-      {
-        active: false,
-        admin: OWNER,
-        inner: { count: 100n },
-        lastUpdate: 43n,
-      },
-      storage,
-    ),
+    encodeStoragePath(layout, "metadata", {
+      active: false,
+      admin: OWNER,
+      inner: { count: 100n },
+      lastUpdate: 43n,
+    }),
   ).toThrow("storage path does not point to a leaf value: metadata");
 });
 
-test("encodeStorage encodes fixed array elements", () => {
-  const storage = {
-    "0x8": PACKED_FIXED_NUMBERS,
-  } as const;
-
+test("encodeStoragePath encodes fixed array elements", () => {
   expect(
-    encodeStorage(layout, "fixedNumbers[1]", 3n, storage),
+    encodeStoragePath(layout, "fixedNumbers[1]", 3n),
   ).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000008",
-        "value": "0x0000000000000000000000000000000300000000000000000000000000000001",
+    {
+      "0x0000000000000000000000000000000000000000000000000000000000000008": {
+        "mask": "0xffffffffffffffffffffffffffffffff00000000000000000000000000000000",
+        "value": "0x0000000000000000000000000000000300000000000000000000000000000000",
       },
-    ]
+    }
   `);
 });
 
-test("encodeStorage encodes dynamic array elements", () => {
-  expect(encodeStorage(layout, "dynamicNumbers[1]", 3n)).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0xc65a7bb8d6351c1cf70c95a316cc6a92839c986682d98bc35f958f4883f9d2a9",
+test("encodeStoragePath encodes dynamic array elements", () => {
+  expect(
+    encodeStoragePath(layout, "dynamicNumbers[1]", 3n),
+  ).toMatchInlineSnapshot(`
+    {
+      "0xc65a7bb8d6351c1cf70c95a316cc6a92839c986682d98bc35f958f4883f9d2a9": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000003",
       },
-    ]
+    }
   `);
-  expect(() => encodeStorage(layout, "dynamicNumbers", [1n, 2n])).toThrow(
-    "encoding dynamic array roots is not implemented yet: dynamicNumbers",
+  expect(() => encodeStoragePath(layout, "dynamicNumbers", [1n, 2n])).toThrow(
+    "storage path does not point to a leaf value: dynamicNumbers",
   );
 });
 
-test("encodeStorage encodes bytes and strings", () => {
-  expect(encodeStorage(layout, "rawBytes", "0x1234")).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x000000000000000000000000000000000000000000000000000000000000000b",
+test("encodeStoragePath encodes bytes and strings", () => {
+  expect(
+    encodeStoragePath(layout, "rawBytes", "0x1234"),
+  ).toMatchInlineSnapshot(`
+    {
+      "0x000000000000000000000000000000000000000000000000000000000000000b": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x1234000000000000000000000000000000000000000000000000000000000004",
       },
-    ]
+    }
   `);
-  expect(encodeStorage(layout, "message", "hello")).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x000000000000000000000000000000000000000000000000000000000000000c",
+  expect(encodeStoragePath(layout, "message", "hello")).toMatchInlineSnapshot(`
+    {
+      "0x000000000000000000000000000000000000000000000000000000000000000c": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x68656c6c6f00000000000000000000000000000000000000000000000000000a",
       },
-    ]
+    }
   `);
   expect(
-    encodeStorage(layout, "rawBytes", `0x${"11".repeat(33)}`),
+    encodeStoragePath(layout, "rawBytes", `0x${"11".repeat(33)}`),
   ).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x000000000000000000000000000000000000000000000000000000000000000b",
+    {
+      "0x000000000000000000000000000000000000000000000000000000000000000b": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000043",
       },
-      {
-        "slot": "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01db9",
+      "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01db9": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x1111111111111111111111111111111111111111111111111111111111111111",
       },
-      {
-        "slot": "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01dba",
+      "0x0175b7a638427703f0dbe7bb9bbf987a2551717b34e79f33b5b1008d1fa01dba": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x1100000000000000000000000000000000000000000000000000000000000000",
       },
-    ]
+    }
   `);
 });
 
-test("encodeStorage encodes keyed mappings", () => {
+test("encodeStoragePath encodes keyed mappings", () => {
   expect(
-    encodeStorage(layout, `balances[${OWNER}]`, 42n),
+    encodeStoragePath(layout, `balances[${OWNER}]`, 42n),
   ).toMatchInlineSnapshot(`
-    [
-      {
-        "slot": "0x6d30c68d4703e3ad11b778e8635b89709aaecadb8bd3f2e0e0cff25a4ee1fbbc",
+    {
+      "0x6d30c68d4703e3ad11b778e8635b89709aaecadb8bd3f2e0e0cff25a4ee1fbbc": {
+        "mask": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "value": "0x000000000000000000000000000000000000000000000000000000000000002a",
       },
-    ]
+    }
   `);
 });
 
-test("encodeStorageState encodes decoded contract-shaped state", () => {
+test("encodeStorage encodes decoded contract-shaped state", () => {
   const state = {
     totalSupply: 42n,
     owner: OWNER,
@@ -547,38 +537,39 @@ test("encodeStorageState encodes decoded contract-shaped state", () => {
     allowances: { [OWNER]: { [SPENDER]: 44n } },
   } satisfies StorageLayoutToPrimitiveType<typeof layout>;
 
-  const storage = encodeStorageState(layout, state);
+  const storage = encodeStorage(layout, state);
 
-  expect(decodeStorage(layout, "totalSupply", storage)).toBe(42n);
-  expect(decodeStorage(layout, "owner", storage)).toBe(OWNER);
-  expect(decodeStorage(layout, "paused", storage)).toBe(true);
-  expect(decodeStorage(layout, "debt", storage)).toBe(-1);
-  expect(decodeStorage(layout, "salt", storage)).toBe(SALT);
-  expect(decodeStorage(layout, "metadata.lastUpdate", storage)).toBe(42n);
-  expect(decodeStorage(layout, "metadata.active", storage)).toBe(true);
-  expect(decodeStorage(layout, "metadata.admin", storage)).toBe(OWNER);
-  expect(decodeStorage(layout, "metadata.inner.count", storage)).toBe(100n);
-  expect(decodeStorage(layout, `balances[${OWNER}]`, storage)).toBe(43n);
-  expect(decodeStorage(layout, "fixedNumbers[0]", storage)).toBe(1n);
-  expect(decodeStorage(layout, "fixedNumbers[1]", storage)).toBe(2n);
-  expect(decodeStorage(layout, "fixedNumbers[2]", storage)).toBe(3n);
-  expect(decodeStorage(layout, "dynamicNumbers", storage)).toEqual([4n, 5n]);
-  expect(decodeStorage(layout, "rawBytes", storage)).toBe("0x1234");
-  expect(decodeStorage(layout, "message", storage)).toBe("hello");
+  expect(decodeStoragePath(layout, "totalSupply", storage)).toBe(42n);
+  expect(decodeStoragePath(layout, "owner", storage)).toBe(OWNER);
+  expect(decodeStoragePath(layout, "paused", storage)).toBe(true);
+  expect(decodeStoragePath(layout, "debt", storage)).toBe(-1);
+  expect(decodeStoragePath(layout, "salt", storage)).toBe(SALT);
+  expect(decodeStoragePath(layout, "metadata.lastUpdate", storage)).toBe(42n);
+  expect(decodeStoragePath(layout, "metadata.active", storage)).toBe(true);
+  expect(decodeStoragePath(layout, "metadata.admin", storage)).toBe(OWNER);
+  expect(decodeStoragePath(layout, "metadata.inner.count", storage)).toBe(100n);
+  expect(decodeStoragePath(layout, `balances[${OWNER}]`, storage)).toBe(43n);
+  expect(decodeStoragePath(layout, "fixedNumbers[0]", storage)).toBe(1n);
+  expect(decodeStoragePath(layout, "fixedNumbers[1]", storage)).toBe(2n);
+  expect(decodeStoragePath(layout, "fixedNumbers[2]", storage)).toBe(3n);
+  expect(decodeStoragePath(layout, "dynamicNumbers[0]", storage)).toBe(4n);
+  expect(decodeStoragePath(layout, "dynamicNumbers[1]", storage)).toBe(5n);
+  expect(decodeStoragePath(layout, "rawBytes", storage)).toBe("0x1234");
+  expect(decodeStoragePath(layout, "message", storage)).toBe("hello");
   expect(
-    decodeStorage(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
+    decodeStoragePath(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
   ).toBe(44n);
 });
 
-test("encodeStorageState validates decoded state shape", () => {
+test("encodeStorage validates decoded state shape", () => {
   expect(() =>
-    encodeStorageState(layout, {
+    encodeStorage(layout, {
       totalSupply: 42n,
     } as unknown as StorageLayoutToPrimitiveType<typeof layout>),
   ).toThrow("missing decoded state value for path: owner");
 
   expect(() =>
-    encodeStorageState(layout, {
+    encodeStorage(layout, {
       totalSupply: 42n,
       owner: OWNER,
       paused: true,
@@ -598,12 +589,6 @@ test("encodeStorageState validates decoded state shape", () => {
       allowances: {},
     } as unknown as StorageLayoutToPrimitiveType<typeof layout>),
   ).toThrow("fixed array length mismatch at fixedNumbers: expected 3, got 2");
-});
-
-test("encodeStorage requires existing slots for packed values", () => {
-  expect(() => encodeStorage(layout, "paused", false)).toThrow(
-    "existing storage value is required to encode packed path: paused",
-  );
 });
 
 test("unsupported data types fail loudly", () => {
