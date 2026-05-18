@@ -7,17 +7,33 @@ import {
   Schedule,
   Stream,
 } from "effect";
-import type { Hex } from "ox";
-import { createPublicClient, extractChain, http } from "viem";
+import { type Block, Bloom, type Hex } from "ox";
+import { type Address, createPublicClient, extractChain, http } from "viem";
 import * as chains from "viem/chains";
 
 const DEFAULT_POLL_INTERVAL_MS = 200;
+const ZERO_LOGS_BLOOM = `0x${"0".repeat(512)}` as Hex.Hex;
+
+export type LocalLog = {
+  address: Hex.Hex;
+  topics: Hex.Hex[];
+  data: Hex.Hex;
+  transactionHash: Hex.Hex;
+  transactionIndex: number;
+  logIndex: number;
+};
 
 export type LocalBlock = {
   number: bigint;
   hash: Hex.Hex;
   parentHash: Hex.Hex;
-  transactions: Hex.Hex[];
+  transactions: readonly Hex.Hex[];
+  logs: LocalLog[];
+};
+
+export type WatchLogFilter = {
+  address: Hex.Hex;
+  selector: Hex.Hex;
 };
 
 export type WatchMessage =
@@ -36,6 +52,7 @@ export class WatchConfig extends Context.Tag("ffca/WatchConfig")<
     readonly rpcUrl: string | readonly string[];
     readonly maxChainDepth: number;
     readonly pollIntervalMs?: number;
+    readonly logFilter?: WatchLogFilter;
   }
 >() {}
 
@@ -45,23 +62,6 @@ export class Watch extends Context.Tag("ffca/Watch")<
     readonly messages: Stream.Stream<WatchMessage>;
   }
 >() {}
-
-const toLocalBlock = (block: {
-  number: bigint | null;
-  hash: Hex.Hex | null;
-  parentHash: Hex.Hex;
-  transactions: Hex.Hex[];
-}): LocalBlock => {
-  if (block.number === null || block.hash === null) {
-    throw new Error("block missing number or hash");
-  }
-  return {
-    number: block.number,
-    hash: block.hash,
-    parentHash: block.parentHash,
-    transactions: block.transactions,
-  };
-};
 
 const appendTip = (
   chain: readonly LocalBlock[],
@@ -109,22 +109,96 @@ export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
     // oldest first; tip is last. capped at maxChainDepth.
     let localChain: readonly LocalBlock[] = [];
 
+    const getLocalBlockWithLogs = (
+      block: Pick<
+        Block.Block,
+        | "number"
+        | "hash"
+        | "parentHash"
+        | "timestamp"
+        | "transactions"
+        | "logsBloom"
+      >,
+    ) =>
+      Effect.gen(function* () {
+        if (
+          block.number === null ||
+          block.hash === null ||
+          block.logsBloom === null
+        ) {
+          throw new Error("block missing number or hash");
+        }
+
+        const blockNumber = block.number;
+        let logs: LocalLog[] = [];
+        const filter = config.logFilter;
+        if (
+          filter !== undefined &&
+          block.logsBloom !== ZERO_LOGS_BLOOM &&
+          Bloom.contains(block.logsBloom, filter.address) &&
+          Bloom.contains(block.logsBloom, filter.selector)
+        ) {
+          logs = yield* Effect.tryPromise({
+            try: async () => {
+              const matchingLogs = await publicClient.getLogs({
+                address: filter.address as Address,
+                fromBlock: blockNumber,
+                toBlock: blockNumber,
+              });
+
+              return matchingLogs
+                .filter((log) => log.topics[0] === filter.selector)
+                .map((log) => {
+                  if (
+                    log.transactionHash === null ||
+                    log.transactionIndex === null ||
+                    log.logIndex === null
+                  ) {
+                    throw new Error("log missing transaction hash or index");
+                  }
+
+                  return {
+                    address: log.address,
+                    topics: [...log.topics],
+                    data: log.data,
+                    transactionHash: log.transactionHash,
+                    transactionIndex: log.transactionIndex,
+                    logIndex: log.logIndex,
+                  };
+                });
+            },
+            catch: (error) => error as Error,
+          });
+        }
+
+        const localBlock: LocalBlock = {
+          number: block.number,
+          hash: block.hash,
+          parentHash: block.parentHash,
+          transactions: block.transactions,
+          logs,
+        };
+        return localBlock;
+      });
+
     const getBlockByHash = (blockHash: Hex.Hex) =>
-      Effect.tryPromise({
-        try: () =>
-          publicClient
-            .getBlock({ blockHash, includeTransactions: false })
-            .then(toLocalBlock),
-        catch: (error) => error as Error,
+      Effect.gen(function* () {
+        const block = yield* Effect.tryPromise({
+          try: () =>
+            publicClient.getBlock({ blockHash, includeTransactions: false }),
+          catch: (error) => error as Error,
+        });
+        return yield* getLocalBlockWithLogs(block);
       });
 
     const getBlockByNumber = (blockNumber: bigint) =>
-      Effect.tryPromise({
-        try: () =>
-          publicClient
-            .getBlock({ blockNumber, includeTransactions: false })
-            .then(toLocalBlock),
-        catch: (error) => error as Error,
+      Effect.gen(function* () {
+        const block = yield* Effect.tryPromise({
+          try: () =>
+            publicClient.getBlock({ blockNumber, includeTransactions: false }),
+          catch: (error) => error as Error,
+        });
+        return yield* getLocalBlockWithLogs(block);
       });
 
     const reconcileReorg = (block: LocalBlock): Effect.Effect<void, Error> =>
@@ -211,12 +285,16 @@ export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
       });
 
     const poll = Effect.gen(function* () {
-      const latestBlock = yield* Effect.tryPromise({
-        try: () =>
-          publicClient
-            .getBlock({ blockTag: "latest", includeTransactions: false })
-            .then(toLocalBlock),
-        catch: (error) => error as Error,
+      const latestBlock = yield* Effect.gen(function* () {
+        const block = yield* Effect.tryPromise({
+          try: () =>
+            publicClient.getBlock({
+              blockTag: "latest",
+              includeTransactions: false,
+            }),
+          catch: (error) => error as Error,
+        });
+        return yield* getLocalBlockWithLogs(block);
       });
       yield* reconcileBlock(latestBlock);
     }).pipe(Effect.withLogSpan("watch"));
