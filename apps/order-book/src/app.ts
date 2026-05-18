@@ -748,7 +748,7 @@ async function persistLifecycle(
   // biome-ignore lint/suspicious/noExplicitAny: generic lifecycle hook updates any mutation table
   const mutationTable = table as any;
   switch (params.lifecycle) {
-    case "proposed":
+    case "included":
       await db
         .update(table)
         .set({
@@ -757,26 +757,20 @@ async function persistLifecycle(
           blockHash: params.block.hash,
           blockTimestamp: params.block.timestamp.toString(),
           transactionHash: params.block.transactionHash,
-          proposedAt: sql`NOW()`,
+          includedAt: sql`NOW()`,
         })
         .where(eq(mutationTable.id, params.mutation.id));
       break;
-    case "voted":
+    case "safe":
       await db
         .update(table)
-        .set({ status: params.lifecycle, votedAt: sql`NOW()` })
+        .set({ status: params.lifecycle, safeAt: sql`NOW()` })
         .where(eq(mutationTable.id, params.mutation.id));
       break;
     case "finalized":
       await db
         .update(table)
         .set({ status: params.lifecycle, finalizedAt: sql`NOW()` })
-        .where(eq(mutationTable.id, params.mutation.id));
-      break;
-    case "verified":
-      await db
-        .update(table)
-        .set({ status: params.lifecycle, verifiedAt: sql`NOW()` })
         .where(eq(mutationTable.id, params.mutation.id));
       break;
   }

@@ -766,7 +766,7 @@ async function persistHarnessLifecycle(
   table: any,
 ) {
   switch (params.lifecycle) {
-    case "proposed":
+    case "included":
       await harnessDb(tx)
         .update(table)
         .set({
@@ -775,26 +775,20 @@ async function persistHarnessLifecycle(
           blockHash: params.block.hash,
           blockTimestamp: params.block.timestamp.toString(),
           transactionHash: params.block.transactionHash,
-          proposedAt: sql`NOW()`,
+          includedAt: sql`NOW()`,
         })
         .where(eq(table.id, params.mutation.id));
       break;
-    case "voted":
+    case "safe":
       await harnessDb(tx)
         .update(table)
-        .set({ status: params.lifecycle, votedAt: sql`NOW()` })
+        .set({ status: params.lifecycle, safeAt: sql`NOW()` })
         .where(eq(table.id, params.mutation.id));
       break;
     case "finalized":
       await harnessDb(tx)
         .update(table)
         .set({ status: params.lifecycle, finalizedAt: sql`NOW()` })
-        .where(eq(table.id, params.mutation.id));
-      break;
-    case "verified":
-      await harnessDb(tx)
-        .update(table)
-        .set({ status: params.lifecycle, verifiedAt: sql`NOW()` })
         .where(eq(table.id, params.mutation.id));
       break;
   }

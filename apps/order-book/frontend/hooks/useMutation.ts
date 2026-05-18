@@ -12,7 +12,7 @@ export function useMutation(id: string | undefined) {
     },
     enabled: !!id,
     refetchInterval: (query) =>
-      query.state.data?.status === "verified" ? false : 1000,
+      query.state.data?.status === "finalized" ? false : 1000,
   });
 }
 
@@ -32,6 +32,6 @@ export function useMutationByNonce(
     },
     enabled: !!account && !!nonce,
     refetchInterval: (query) =>
-      query.state.data?.status === "verified" ? false : 1000,
+      query.state.data?.status === "finalized" ? false : 1000,
   });
 }

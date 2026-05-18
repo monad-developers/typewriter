@@ -10,18 +10,17 @@ const bytes32 = () => char({ length: 66 });
 
 export const mutationStatusEnum = pgEnum("mutation_status", [
   "accepted",
-  "proposed",
-  "voted",
+  "included",
+  "safe",
   "finalized",
-  "verified",
 ]);
 
 // Shared column builders for app-owned mutation tables. FFCA does not provide
 // built-in tables for apps to join against; apps spread these columns into the
 // tables they own, then add their own signature/account/payload columns.
 //
-// Persisted mutation rows start at "accepted". Pending mutations live only in
-// memory and are not part of the database model.
+// Persisted mutation rows start at "accepted". Submitted mutations live only
+// in memory and are not part of the database model.
 export const mutationColumns = () => ({
   // Runtime-assigned, globally unique across every table that spreads these
   // columns. `loadNextIds` resumes from the max id across all mutation tables
@@ -36,11 +35,10 @@ export const mutationColumns = () => ({
 
   // Lifecycle tracking. `acceptedAt` is set on insert by the column default;
   // `persistLifecycle` writes the matching `*At` column when the runtime
-  // advances a mutation through proposed → voted → finalized → verified.
+  // advances a mutation through included → safe → finalized.
   status: mutationStatusEnum().notNull(),
   acceptedAt: timestamp().notNull().defaultNow(),
-  proposedAt: timestamp(),
-  votedAt: timestamp(),
+  includedAt: timestamp(),
+  safeAt: timestamp(),
   finalizedAt: timestamp(),
-  verifiedAt: timestamp(),
 });

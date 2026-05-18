@@ -214,7 +214,7 @@ function executeOrderBookMutation(
   });
 }
 
-async function waitForProposed(
+async function waitForIncluded(
   db: ReturnType<typeof drizzle<typeof schema.APP_SCHEMA>>,
   table: unknown,
   label: string,
@@ -224,10 +224,10 @@ async function waitForProposed(
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const [row] = await db.select().from(mutationTable).limit(1);
-    if (row?.status === "proposed") return;
+    if (row?.status === "included") return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`${label} never reached proposed`);
+  throw new Error(`${label} never reached included`);
 }
 
 test("ffca order book rejects invalid signatures before applying", async () => {
@@ -325,7 +325,7 @@ test("ffca order book persists and submits market-order flow", async () => {
     privateKey: TAKER_PRIVATE_KEY,
     contract: address,
   });
-  await waitForProposed(db, schema.initializes, "initialize");
+  await waitForIncluded(db, schema.initializes, "initialize");
 
   await executeOrderBookMutation(
     app,
@@ -428,7 +428,7 @@ test("ffca order book persists and submits market-order flow", async () => {
     runtimeState.instruments[0]!.asks[Number(10n * Q32)]!.remainingQuantity,
   ).toBe(0n);
 
-  await waitForProposed(db, schema.marketOrders, "market order");
+  await waitForIncluded(db, schema.marketOrders, "market order");
 
   const [balance] = await db
     .select()
@@ -443,7 +443,7 @@ test("ffca order book persists and submits market-order flow", async () => {
 
   expect(balance).toMatchObject({ account: taker, asset: QUOTE, amount: "0" });
   expect(fill).toMatchObject({ quantity: 10n, price: 10n * Q32 });
-  expect(market?.status).toBe("proposed");
+  expect(market?.status).toBe("included");
 });
 
 test("ffca order book changes an unfilled order to a new price", async () => {
@@ -630,7 +630,7 @@ test("db-queries fan out across per-mutation tables", async () => {
     }),
   );
 
-  await waitForProposed(db, schema.deposits, "deposit");
+  await waitForIncluded(db, schema.deposits, "deposit");
 
   const [depositRow] = await db.select().from(schema.deposits).limit(1);
   expect(depositRow).toBeDefined();
@@ -649,7 +649,7 @@ test("db-queries fan out across per-mutation tables", async () => {
   expect(byId).toMatchObject({
     id: depositRow!.id,
     type: "deposit",
-    status: "proposed",
+    status: "included",
     account: maker,
     nonce: "1",
     blockNumber,

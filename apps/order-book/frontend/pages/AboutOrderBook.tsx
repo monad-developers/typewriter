@@ -305,7 +305,7 @@ struct Key {
             Message lifecycle
           </h3>
           <p className="leading-relaxed mb-4">
-            Every transaction moves through six states. The first two happen on
+            Every transaction moves through five states. The first two happen on
             the server in milliseconds; the rest unfold onchain as blocks and
             confirmations arrive.
           </p>
@@ -322,7 +322,7 @@ struct Key {
             </div>
             {[
               {
-                state: "pending",
+                state: "submitted",
                 trigger: "received by the server",
                 toNext: "<50 ms",
               },
@@ -332,23 +332,18 @@ struct Key {
                 toNext: "<400 ms",
               },
               {
-                state: "proposed",
+                state: "included",
                 trigger: "included in a block, executed onchain",
                 toNext: "~400 ms",
               },
               {
-                state: "voted",
-                trigger: "1 validator confirmation",
-                toNext: "~400 ms",
+                state: "safe",
+                trigger: "configured safe block depth",
+                toNext: "~1600 ms",
               },
               {
                 state: "finalized",
-                trigger: "2 validator confirmations",
-                toNext: "~1200 ms",
-              },
-              {
-                state: "verified",
-                trigger: "5+ validator confirmations",
+                trigger: "configured finalized block depth",
               },
             ].map((step, i, arr) => {
               const isTerminal = i === arr.length - 1;
