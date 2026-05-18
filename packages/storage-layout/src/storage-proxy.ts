@@ -24,15 +24,16 @@
 //    should consult the cache before calling `get` and populate it on read.
 // 2. **Writing.** The proxy is strictly read-only. The `set` trap throws.
 //    Future shape: accept a second optional callback like
-//    `set: (writes: { slot: Hex; value: Hex }[]) => void | Promise<void>`,
-//    and let `state.balances[addr] = 5n` route through `encodeStorage` to
+//    `set: (writes: SlotWrites) => void | Promise<void>`,
+//    and let `state.balances[addr] = 5n` route through `encodeStoragePath` to
 //    produce the writes. The encode side already exists in this package; the
 //    missing bits are the proxy trap and the stale-slot policy for shrinking
 //    bytes/string/dynamic arrays.
 
 import { Hash, type Hex } from "ox";
 import {
-  decodeStorage,
+  decodeStoragePath,
+  normalizeConcretePath,
   type StorageLayout,
   type StorageLayoutToPrimitiveType,
 } from "./index";
@@ -94,11 +95,6 @@ export type StorageProxy<
   ? DeepPromise<StorageLayoutToPrimitiveType<L>>
   : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
 
-export type StorageProxyOptions = {
-  /** Concrete mapping paths used as hints for enumerable mapping keys. */
-  knownPaths?: readonly (string | StoragePath)[];
-};
-
 // -----------------------------------------------------------------------------
 // Public API
 
@@ -110,7 +106,7 @@ export type StorageProxyOptions = {
  *
  * The proxy supports declared-property access, numeric array indices, array
  * `.length`, and finite enumeration. Mapping enumeration only includes keys
- * present in `options.knownPaths`. The JS interop names `then`,
+ * present in `knownPaths`. The JS interop names `then`,
  * `catch`, `finally`, `toJSON`, and `asymmetricMatch` are reserved so
  * await/JSON/test-framework probes treat sub-proxies like plain objects; state
  * variables with those exact labels are not reachable through proxy property
@@ -134,9 +130,16 @@ export type StorageProxyOptions = {
 export function createStorageProxy<
   L extends StorageLayout,
   G extends SlotGetter,
->(layout: L, get: G, options: StorageProxyOptions = {}): StorageProxy<L, G> {
-  const knownPaths = (options.knownPaths ?? []).map(normalizePath);
-  return buildProxy(layout, get, knownPaths, null) as StorageProxy<L, G>;
+>(
+  layout: L,
+  get: G,
+  knownPaths: readonly (string | StoragePath)[] = [],
+): StorageProxy<L, G> {
+  const normalizedKnownPaths = knownPaths.map(normalizePath);
+  return buildProxy(layout, get, normalizedKnownPaths, null) as StorageProxy<
+    L,
+    G
+  >;
 }
 
 // -----------------------------------------------------------------------------
@@ -520,7 +523,11 @@ function readValueLeaf(
   const slots = uniqueSlots(resolved);
   return chain(get(slots), (storage) => {
     assertReturnedSlots(storage, slots, formatStoragePath(path));
-    return decodeStorage(layout, path, storage);
+    return decodeStoragePath(
+      layout,
+      normalizeConcretePath(layout, path),
+      storage,
+    );
   });
 }
 
@@ -547,7 +554,11 @@ function readBytesLeaf(
     const lowByte = headerInt & BYTES_LOW_BYTE_MASK;
     if ((lowByte & BYTES_LOW_BIT_MASK) === 0n) {
       // Short form — header carries the data.
-      return decodeStorage(layout, path, header);
+      return decodeStoragePath(
+        layout,
+        normalizeConcretePath(layout, path),
+        header,
+      );
     }
     const length = (headerInt - 1n) / 2n;
     if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -563,7 +574,10 @@ function readBytesLeaf(
     }
     return chain(get(dataSlots), (data) => {
       assertReturnedSlots(data, dataSlots, formatStoragePath(path));
-      return decodeStorage(layout, path, { ...header, ...data });
+      return decodeStoragePath(layout, normalizeConcretePath(layout, path), {
+        ...header,
+        ...data,
+      });
     });
   });
 }

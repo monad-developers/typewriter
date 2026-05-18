@@ -19,7 +19,7 @@ import { AbiParameters, type Hex, TypedData } from "ox";
 import {
   type AsyncSlotGetter,
   createStorageProxy,
-  encodeStorageState,
+  encodeStorage,
   type StorageLayout,
   type StorageProxy,
 } from "storage-layout";
@@ -473,7 +473,7 @@ export async function createFFCA<const C extends FFCAConfig>(
       evm.readStorage({ address: config.address, slots }),
     );
   });
-  const initialRevmStorage = encodeStorageState(
+  const initialRevmStorage = encodeStorage(
     config.storageLayout,
     state as never,
   );

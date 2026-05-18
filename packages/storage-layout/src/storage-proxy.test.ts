@@ -8,8 +8,8 @@ import {
   PACKED_OWNER_PAUSED,
   SALT,
 } from "../test/utils";
-import type { StorageLayout } from "./index";
-import { createStorageProxy, encodeStorage, getStorageSlot } from "./index";
+import type { SlotWrites, StorageLayout } from "./index";
+import { createStorageProxy, encodeStoragePath, getStorageSlot } from "./index";
 
 const SPENDER = "0x2222222222222222222222222222222222221234" as const;
 const PACKED_FIXED_NUMBERS =
@@ -59,8 +59,10 @@ function asyncGetter(storage: SlotMap) {
   return { get, calls };
 }
 
-function writesToStorage(writes: { slot: Hex.Hex; value: Hex.Hex }[]): SlotMap {
-  return Object.fromEntries(writes.map((w) => [w.slot, w.value]));
+function writesToStorage(writes: SlotWrites): SlotMap {
+  return Object.fromEntries(
+    Object.entries(writes).map(([slot, write]) => [slot, write.value]),
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -185,7 +187,7 @@ test("sync: nested mapping unwraps one key at a time", () => {
 });
 
 test("sync: short bytes decodes from header alone (one round-trip)", () => {
-  const writes = encodeStorage(layout, "rawBytes", "0x1234");
+  const writes = encodeStoragePath(layout, "rawBytes", "0x1234");
   const { get, calls } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -195,7 +197,7 @@ test("sync: short bytes decodes from header alone (one round-trip)", () => {
 
 test("sync: long bytes reads header, then data slots", () => {
   const longBytes = `0x${"11".repeat(33)}` as Hex.Hex;
-  const writes = encodeStorage(layout, "rawBytes", longBytes);
+  const writes = encodeStoragePath(layout, "rawBytes", longBytes);
   const { get, calls } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -207,7 +209,7 @@ test("sync: long bytes reads header, then data slots", () => {
 });
 
 test("sync: short string decodes from header alone", () => {
-  const writes = encodeStorage(layout, "message", "hello");
+  const writes = encodeStoragePath(layout, "message", "hello");
   const { get } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -216,7 +218,7 @@ test("sync: short string decodes from header alone", () => {
 
 test("sync: long string reads header, then data slots", () => {
   const long = "x".repeat(33);
-  const writes = encodeStorage(layout, "message", long);
+  const writes = encodeStoragePath(layout, "message", long);
   const { get, calls } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -277,7 +279,7 @@ test("async: nested mapping awaited per leaf", async () => {
 
 test("async: long bytes performs two sequential rounds", async () => {
   const longBytes = `0x${"22".repeat(40)}` as Hex.Hex;
-  const writes = encodeStorage(layout, "rawBytes", longBytes);
+  const writes = encodeStoragePath(layout, "rawBytes", longBytes);
   const { get, calls } = asyncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -503,9 +505,10 @@ test("enumerates root variables, structs, fixed arrays, and known mapping keys",
     [allowanceSlot]: "0x2a",
     [getStorageSlot(layout, "fixedNumbers[0]")]: PACKED_FIXED_NUMBERS,
   });
-  const state = createStorageProxy(layout, get, {
-    knownPaths: [`balances[${OWNER}]`, `allowances[${OWNER}][${SPENDER}]`],
-  });
+  const state = createStorageProxy(layout, get, [
+    `balances[${OWNER}]`,
+    `allowances[${OWNER}][${SPENDER}]`,
+  ]);
 
   expect(Object.keys(state)).toContain("balances");
   expect(Object.keys(state.metadata)).toEqual([
@@ -524,9 +527,10 @@ test("does not enumerate dynamic array indices from known paths", () => {
   const slot0 = getStorageSlot(layout, "dynamicNumbers[0]");
   const slot2 = getStorageSlot(layout, "dynamicNumbers[2]");
   const { get } = syncGetter({ [slot0]: "0x1", [slot2]: "0x3" });
-  const state = createStorageProxy(layout, get, {
-    knownPaths: ["dynamicNumbers[0]", "dynamicNumbers[2]"],
-  });
+  const state = createStorageProxy(layout, get, [
+    "dynamicNumbers[0]",
+    "dynamicNumbers[2]",
+  ]);
 
   expect(Object.keys(state.dynamicNumbers)).toEqual([]);
   expect(Object.values(state.dynamicNumbers)).toEqual([]);
