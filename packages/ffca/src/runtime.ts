@@ -866,11 +866,37 @@ export async function createFFCA<const C extends FFCAConfig>(
       Stream.runForEach((message) =>
         Effect.gen(function* () {
           if (message._tag === "Reorged") {
-            return yield* Effect.fail(
-              new Error(
-                `chain reorg detected: commonAncestor=${message.commonAncestor?.hash ?? "none"}`,
-              ),
-            );
+            for (const block of unfinalizedBlocks) {
+              for (const bundle of block.bundles) {
+                const isReorged = message.reorgedBlocks.some((block) =>
+                  block.transactions.includes(bundle.transactionHash),
+                );
+                if (isReorged) {
+                  const reIncludedBlock = message.newBlocks.find((block) =>
+                    block.transactions.includes(bundle.transactionHash),
+                  );
+
+                  if (reIncludedBlock === undefined) {
+                    return yield* Effect.fail(
+                      new Error(
+                        `reorged bundle removed from canonical chain: bundleId=${bundle.id} transactionHash=${bundle.transactionHash}`,
+                      ),
+                    );
+                  } else {
+                    yield* Effect.logInfo(
+                      "reorged bundle was re-included",
+                    ).pipe(
+                      Effect.annotateLogs({
+                        bundleId: bundle.id,
+                        transactionHash: bundle.transactionHash,
+                      }),
+                    );
+                  }
+                }
+              }
+            }
+
+            return;
           }
 
           for (const blockEvent of unfinalizedBlocks.filter(
