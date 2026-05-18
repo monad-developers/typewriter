@@ -12,12 +12,12 @@ import { createPublicClient, extractChain, http } from "viem";
 import * as chains from "viem/chains";
 
 const DEFAULT_POLL_INTERVAL_MS = 200;
-const DEFAULT_MAX_CHAIN_DEPTH = 64;
 
 export type LocalBlock = {
   number: bigint;
   hash: Hex.Hex;
   parentHash: Hex.Hex;
+  transactions: Hex.Hex[];
 };
 
 export type WatchMessage =
@@ -34,8 +34,8 @@ export class WatchConfig extends Context.Tag("ffca/WatchConfig")<
   {
     readonly chainId: number;
     readonly rpcUrl: string | readonly string[];
+    readonly maxChainDepth: number;
     readonly pollIntervalMs?: number;
-    readonly maxChainDepth?: number;
   }
 >() {}
 
@@ -50,6 +50,7 @@ const toLocalBlock = (block: {
   number: bigint | null;
   hash: Hex.Hex | null;
   parentHash: Hex.Hex;
+  transactions: Hex.Hex[];
 }): LocalBlock => {
   if (block.number === null || block.hash === null) {
     throw new Error("block missing number or hash");
@@ -58,6 +59,7 @@ const toLocalBlock = (block: {
     number: block.number,
     hash: block.hash,
     parentHash: block.parentHash,
+    transactions: block.transactions,
   };
 };
 
@@ -70,12 +72,20 @@ const appendTip = (
   return [...trimmed, block];
 };
 
+const appendBlocks = (
+  chain: readonly LocalBlock[],
+  blocks: readonly LocalBlock[],
+  maxChainDepth: number,
+): readonly LocalBlock[] => {
+  let next = chain;
+  for (const block of blocks) next = appendTip(next, block, maxChainDepth);
+  return next;
+};
+
 export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
   Watch,
   Effect.gen(function* () {
     const config = yield* WatchConfig;
-    const pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-    const maxChainDepth = config.maxChainDepth ?? DEFAULT_MAX_CHAIN_DEPTH;
 
     const rpcUrl = Array.isArray(config.rpcUrl)
       ? config.rpcUrl[0]
@@ -99,12 +109,74 @@ export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
     // oldest first; tip is last. capped at maxChainDepth.
     let localChain: readonly LocalBlock[] = [];
 
+    const getBlockByHash = (blockHash: Hex.Hex) =>
+      Effect.tryPromise({
+        try: () =>
+          publicClient
+            .getBlock({ blockHash, includeTransactions: false })
+            .then(toLocalBlock),
+        catch: (error) => error as Error,
+      });
+
+    const getBlockByNumber = (blockNumber: bigint) =>
+      Effect.tryPromise({
+        try: () =>
+          publicClient
+            .getBlock({ blockNumber, includeTransactions: false })
+            .then(toLocalBlock),
+        catch: (error) => error as Error,
+      });
+
+    const reconcileReorg = (block: LocalBlock): Effect.Effect<void, Error> =>
+      Effect.gen(function* () {
+        const originalChain = localChain;
+        let reorgedBlocks = localChain.filter((b) => b.number >= block.number);
+        let remoteBlock = block;
+        const newBlocks = [block];
+
+        localChain = localChain.filter((b) => b.number < block.number);
+
+        while (true) {
+          const parentBlock = localChain[localChain.length - 1];
+          if (
+            parentBlock !== undefined &&
+            parentBlock.hash === remoteBlock.parentHash
+          ) {
+            break;
+          }
+
+          if (localChain.length === 0) {
+            localChain = originalChain;
+            throw new Error(
+              `unrecoverable reorg beyond local chain: number=${block.number} hash=${block.hash}`,
+            );
+          }
+
+          remoteBlock = yield* getBlockByHash(remoteBlock.parentHash);
+          newBlocks.unshift(remoteBlock);
+          reorgedBlocks = [
+            localChain[localChain.length - 1]!,
+            ...reorgedBlocks,
+          ];
+          localChain = localChain.slice(0, -1);
+        }
+
+        const commonAncestor = localChain[localChain.length - 1];
+        localChain = appendBlocks(localChain, newBlocks, config.maxChainDepth);
+        yield* Queue.offer(queue, {
+          _tag: "Reorged",
+          commonAncestor,
+          reorgedBlocks,
+          newBlocks,
+        });
+      });
+
     const reconcileBlock = (newBlock: LocalBlock): Effect.Effect<void, Error> =>
       Effect.gen(function* () {
         const current = localChain[localChain.length - 1];
 
         if (current === undefined) {
-          localChain = appendTip(localChain, newBlock, maxChainDepth);
+          localChain = appendTip(localChain, newBlock, config.maxChainDepth);
           return;
         }
 
@@ -112,90 +184,50 @@ export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
           return;
         }
 
-        if (newBlock.number > current.number + 1n) {
+        if (current.number >= newBlock.number) {
+          yield* reconcileReorg(newBlock);
+          return;
+        }
+
+        if (current.number + 1n < newBlock.number) {
           for (
             let number = current.number + 1n;
             number < newBlock.number;
             number++
           ) {
-            const missingBlock = yield* Effect.tryPromise({
-              try: () =>
-                publicClient
-                  .getBlock({ blockNumber: number })
-                  .then(toLocalBlock),
-              catch: (error) => error as Error,
-            });
-            yield* reconcileBlock(missingBlock);
+            yield* reconcileBlock(yield* getBlockByNumber(number));
           }
           yield* reconcileBlock(newBlock);
           return;
         }
 
-        if (
-          newBlock.number === current.number + 1n &&
-          newBlock.parentHash === current.hash
-        ) {
-          localChain = appendTip(localChain, newBlock, maxChainDepth);
-          yield* Queue.offer(queue, { _tag: "Extended", block: newBlock });
+        if (newBlock.parentHash !== current.hash) {
+          yield* reconcileReorg(newBlock);
           return;
         }
 
-        let cursor: Hex.Hex = newBlock.parentHash;
-        let cursorNumber = newBlock.number - 1n;
-        let commonAncestor: LocalBlock | undefined;
-        const oldest = localChain[0]?.number ?? 0n;
-
-        while (cursorNumber >= oldest) {
-          const local = localChain.find(
-            (block) => block.number === cursorNumber,
-          );
-          if (local !== undefined && local.hash === cursor) {
-            commonAncestor = local;
-            break;
-          }
-          if (cursorNumber === 0n) break;
-          const remote = yield* Effect.tryPromise({
-            try: () =>
-              publicClient.getBlock({ blockHash: cursor }).then(toLocalBlock),
-            catch: (error) => error as Error,
-          });
-          cursor = remote.parentHash;
-          cursorNumber -= 1n;
-        }
-
-        const ancestorIndex =
-          commonAncestor === undefined
-            ? -1
-            : localChain.findIndex(
-                (block) => block.number === commonAncestor.number,
-              );
-        const reorgedBlocks =
-          ancestorIndex === -1
-            ? [...localChain]
-            : localChain.slice(ancestorIndex + 1);
-        const truncated =
-          ancestorIndex === -1 ? [] : localChain.slice(0, ancestorIndex + 1);
-
-        localChain = appendTip(truncated, newBlock, maxChainDepth);
-        yield* Queue.offer(queue, {
-          _tag: "Reorged",
-          commonAncestor,
-          reorgedBlocks,
-          newBlocks: [newBlock],
-        });
+        localChain = appendTip(localChain, newBlock, config.maxChainDepth);
+        yield* Queue.offer(queue, { _tag: "Extended", block: newBlock });
       });
 
     const poll = Effect.gen(function* () {
       const latestBlock = yield* Effect.tryPromise({
         try: () =>
-          publicClient.getBlock({ blockTag: "latest" }).then(toLocalBlock),
+          publicClient
+            .getBlock({ blockTag: "latest", includeTransactions: false })
+            .then(toLocalBlock),
         catch: (error) => error as Error,
       });
       yield* reconcileBlock(latestBlock);
     }).pipe(Effect.withLogSpan("watch"));
 
     yield* Effect.forkScoped(
-      Effect.repeat(poll, Schedule.spaced(Duration.millis(pollIntervalMs))),
+      Effect.repeat(
+        poll,
+        Schedule.spaced(
+          Duration.millis(config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
+        ),
+      ),
     );
 
     return Watch.of({

@@ -75,8 +75,8 @@ import { layerWatchLive, Watch } from "./watch";
 const DEFAULT_BUNDLE_INTERVAL_MS = 50;
 const DEFAULT_SUBMIT_INTERVAL_MS = 400;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
-const DEFAULT_SAFE_BLOCK_DEPTH = 1n;
-const DEFAULT_FINALIZED_BLOCK_DEPTH = 5n;
+const DEFAULT_SAFE_BLOCK_DEPTH = 1;
+const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 
 type MutationListener = (event: MutationEvent) => void;
 type BundleListener = (event: BundleEvent) => void;
@@ -236,12 +236,12 @@ function hasAnyPersistenceHook(mutation: FFCAMutationConfig): boolean {
   );
 }
 
-function blockDepth(value: number | undefined, fallback: bigint, name: string) {
+function blockDepth(value: number | undefined, fallback: number, name: string) {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${name} must be a safe non-negative integer`);
   }
-  return BigInt(value);
+  return value;
 }
 
 function collectPersistenceSchema(config: FFCAConfig): Record<string, PgTable> {
@@ -880,12 +880,12 @@ export async function createFFCA<const C extends FFCAConfig>(
             let nextStatus: "safe" | "finalized" | undefined;
 
             if (
-              blockDepth >= confirmations.finalizedBlockDepth &&
+              blockDepth >= BigInt(confirmations.finalizedBlockDepth) &&
               blockEvent.status !== "finalized"
             ) {
               nextStatus = "finalized";
             } else if (
-              blockDepth >= confirmations.safeBlockDepth &&
+              blockDepth >= BigInt(confirmations.safeBlockDepth) &&
               blockEvent.status !== "safe" &&
               blockEvent.status !== "finalized"
             ) {
@@ -978,6 +978,7 @@ export async function createFFCA<const C extends FFCAConfig>(
         chainId: config.chainId,
         rpcUrl: config.rpcUrl,
         pollIntervalMs: sequencing.blockPollingIntervalMs,
+        maxChainDepth: confirmations.finalizedBlockDepth,
       }),
     ),
     Effect.orDie,

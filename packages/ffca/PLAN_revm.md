@@ -336,6 +336,13 @@ No view-function `call` path — see "no view-function reads" below.
 Apps declare which paths they care about; `ffca.state` projects them.
 Deleting `ffca.state` is a future option, not now.
 
+Open design note: `ffca.state` likely needs an explicit confidence view rather
+than one global latest value. Apps may want to expose state at different
+lifecycle thresholds, such as accepted/local, included/proposed, safe, or
+finalized. The revm-backed projection should leave room for configuring which
+view backs `ffca.state` and persistence reads, instead of assuming every reader
+wants the most optimistic local state.
+
 ### `.apply()` stays until persistence has a revm-backed replacement
 
 `.apply()` is now a projection, not an acceptance gate. Removing it before
