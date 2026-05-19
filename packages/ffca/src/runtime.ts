@@ -308,14 +308,7 @@ async function acquireDeploymentLock(
   const connection = await config.database.connection.reserve();
   const key = deploymentLockKey(config.chainId, config.address);
   try {
-    const [{ locked = false } = { locked: false }] = await connection<
-      { locked: boolean }[]
-    >`SELECT pg_try_advisory_lock(${key}) AS locked`;
-    if (locked === false) {
-      throw new Error(
-        `FFCA deployment is already locked: chainId=${config.chainId} address=${config.address}`,
-      );
-    }
+    await connection`SELECT pg_advisory_lock(${key})`;
     return { connection, key };
   } catch (error) {
     connection.release();
