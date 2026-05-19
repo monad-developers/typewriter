@@ -6,6 +6,7 @@ import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
+  createKnownPriceLevels,
   loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
@@ -41,6 +42,7 @@ const account = privateKeyToAccount(
 const database = {
   connection: new Bun.SQL({ url: process.env.DATABASE_URL, max: 25 }),
 };
+const knownPriceLevels = createKnownPriceLevels();
 
 const app = await createFFCA({
   address: EXCHANGE_ADDRESS,
@@ -54,11 +56,11 @@ const app = await createFFCA({
   state: {
     initial: { accounts: {}, instruments: {} },
     schema: APP_SCHEMA,
-    load: loadOrderBookState,
+    load: (tx) => loadOrderBookState(tx, knownPriceLevels),
   },
   signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
   sequence: ORDER_BOOK_SEQUENCE,
-  mutations: persistedMutations(),
+  mutations: persistedMutations(knownPriceLevels),
 });
 
 // FFCA's startup mutates the imported `schema.*` tables in place with the
@@ -369,6 +371,7 @@ async function submit(
     }
     return json(response);
   } catch (error) {
+    console.error(error);
     return json(
       { error: error instanceof Error ? error.message : String(error) },
       { status: 400 },
