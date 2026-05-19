@@ -4,7 +4,7 @@
 
 ## Core Model
 
-The central abstraction is `StoragePath`: a structured representation of a Solidity storage variable or sub-value. Human-readable examples:
+The central abstraction is `StoragePath`: a structured representation of a Solidity storage variable or sub-value. Leaf-only APIs use layout-inferred concrete path strings (`ExtractConcreteStoragePaths<Layout>`) or normalized `ConcreteStoragePath` values. Human-readable examples:
 
 - `totalSupply`
 - `metadata.lastUpdate`
@@ -53,9 +53,11 @@ Do not try to make generic mapping enumeration work in the proxy. It is not a mi
 
 - `parseStoragePath(path)` parses human-readable paths into `StoragePath`.
 - `formatStoragePath(path)` formats `StoragePath` back into human-readable form.
+- `ExtractStoragePaths<Layout>` extracts all valid path strings, including composite paths.
+- `ExtractConcreteStoragePaths<Layout>` extracts only path strings that end at one concrete leaf value.
 - `getStorageSlot(layout, path)` computes storage slot hex values for a `StoragePath`; composite paths can return multiple slots.
 - `normalizeConcretePath(layout, path)` validates that a path resolves to one concrete leaf value.
-- `getStoragePath(layout, slots, knownPaths?)` identifies which reversible layout paths and optional known concrete paths were touched by slot updates. Mapping keys cannot be recovered from raw slots, so keyed mapping matches require `knownPaths`.
+- `getStoragePath(layout, slot, knownPaths?)` identifies which reversible layout paths and optional known concrete paths were touched by one slot update. Mapping keys cannot be recovered from raw slots, so keyed mapping matches require `knownPaths`.
 - `decodeStoragePath(layout, path, storage)` decodes a concrete leaf path from raw account storage.
 - `encodeStoragePath(layout, path, value)` encodes a concrete leaf path value into masked slot writes: `{ [slot]: { value, mask } }`.
 - `encodeStorage(layout, state)` encodes an app-shaped decoded object into raw account storage for revm initialization.
