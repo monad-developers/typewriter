@@ -6,6 +6,7 @@ import {
   priceToQ32,
   TokenAmount,
 } from "order-book-sdk";
+import type { Address } from "ox/Address";
 import type { Hex } from "viem";
 import {
   createPublicClient,
@@ -15,12 +16,7 @@ import {
   parseSignature,
 } from "viem";
 import { MutationType } from "../src/exchange";
-import {
-  CHAIN_ID,
-  EXCHANGE_ADDRESS,
-  RPC_URL,
-  SCHEDULER_ADDRESS,
-} from "./src/constants";
+import { CHAIN_ID, EXCHANGE_ADDRESS, requiredEnv } from "./src/constants";
 import {
   type Account,
   createAccount,
@@ -28,6 +24,15 @@ import {
   limitOrder,
   sign,
 } from "./src/sdk";
+
+const RPC_URL = requiredEnv(
+  "RPC_URL or BUN_PUBLIC_RPC_URL",
+  process.env.RPC_URL ?? process.env.BUN_PUBLIC_RPC_URL,
+);
+const SCHEDULER_ADDRESS = requiredEnv(
+  "SCHEDULER_ADDRESS",
+  process.env.SCHEDULER_ADDRESS,
+) as Address;
 
 const BASELINE_N = 10;
 const SETTLE_MS = 1000;
