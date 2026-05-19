@@ -32,8 +32,8 @@
 
 import { Hash, type Hex } from "ox";
 import {
+  type AccountStorage,
   decodeStoragePath,
-  normalizeConcretePath,
   type StorageLayout,
   type StorageLayoutToPrimitiveType,
 } from "./index";
@@ -95,6 +95,12 @@ export type StorageProxy<
   ? DeepPromise<StorageLayoutToPrimitiveType<L>>
   : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
 
+const decodeStoragePathRuntime = decodeStoragePath as (
+  layout: StorageLayout,
+  path: string,
+  storage: AccountStorage,
+) => unknown;
+
 // -----------------------------------------------------------------------------
 // Public API
 
@@ -130,11 +136,7 @@ export type StorageProxy<
 export function createStorageProxy<
   L extends StorageLayout,
   G extends SlotGetter,
->(
-  layout: L,
-  get: G,
-  knownPaths: readonly (string | StoragePath)[] = [],
-): StorageProxy<L, G> {
+>(layout: L, get: G, knownPaths: readonly string[] = []): StorageProxy<L, G> {
   const normalizedKnownPaths = knownPaths.map(normalizePath);
   return buildProxy(layout, get, normalizedKnownPaths, null) as StorageProxy<
     L,
@@ -523,11 +525,7 @@ function readValueLeaf(
   const slots = uniqueSlots(resolved);
   return chain(get(slots), (storage) => {
     assertReturnedSlots(storage, slots, formatStoragePath(path));
-    return decodeStoragePath(
-      layout,
-      normalizeConcretePath(layout, path),
-      storage,
-    );
+    return decodeStoragePathRuntime(layout, formatStoragePath(path), storage);
   });
 }
 
@@ -554,11 +552,7 @@ function readBytesLeaf(
     const lowByte = headerInt & BYTES_LOW_BYTE_MASK;
     if ((lowByte & BYTES_LOW_BIT_MASK) === 0n) {
       // Short form — header carries the data.
-      return decodeStoragePath(
-        layout,
-        normalizeConcretePath(layout, path),
-        header,
-      );
+      return decodeStoragePathRuntime(layout, formatStoragePath(path), header);
     }
     const length = (headerInt - 1n) / 2n;
     if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -574,7 +568,7 @@ function readBytesLeaf(
     }
     return chain(get(dataSlots), (data) => {
       assertReturnedSlots(data, dataSlots, formatStoragePath(path));
-      return decodeStoragePath(layout, normalizeConcretePath(layout, path), {
+      return decodeStoragePathRuntime(layout, formatStoragePath(path), {
         ...header,
         ...data,
       });

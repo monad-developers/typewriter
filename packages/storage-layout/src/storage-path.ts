@@ -24,13 +24,6 @@ export type StoragePath = {
   segments: readonly StoragePathSegment[];
 };
 
-declare const concreteStoragePathBrand: unique symbol;
-
-/** A storage path that resolves to one concrete leaf value. */
-export type ConcreteStoragePath = StoragePath & {
-  readonly [concreteStoragePathBrand]: true;
-};
-
 /** One step after the root variable in a `StoragePath`. */
 export type StoragePathSegment =
   | { kind: "field"; name: string }

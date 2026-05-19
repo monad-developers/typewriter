@@ -1,6 +1,8 @@
 import { Hash, Hex } from "ox";
 import {
-  type IsSingleSlot,
+  type ExtractConcreteStoragePaths,
+  type ExtractMultiSlotStoragePaths,
+  type ExtractStoragePaths,
   type ResolvedStorageItem,
   resolveStoragePath,
   type StorageLayout,
@@ -10,16 +12,17 @@ import {
   storagePathEndsAtValue,
 } from "./storage-layout";
 import {
-  type ConcreteStoragePath,
   formatStoragePath,
   HEX_STRING_PATTERN,
   normalizePath,
+  type StoragePath as ParsedStoragePath,
   pathToString,
-  type StoragePath,
   type StoragePathSubscript,
 } from "./storage-path";
 
 export type {
+  ExtractConcreteStoragePaths,
+  ExtractMultiSlotStoragePaths,
   ExtractStoragePaths,
   ExtractVariableNames,
   IsSingleSlot,
@@ -28,7 +31,6 @@ export type {
   StoragePathToPrimitiveType,
   StorageType,
 } from "./storage-layout";
-export type { ConcreteStoragePath, StoragePath } from "./storage-path";
 export { formatStoragePath, parseStoragePath } from "./storage-path";
 export type {
   AsyncSlotGetter,
@@ -53,6 +55,23 @@ export type SlotWrites = {
   [slot: Hex.Hex]: SlotWrite;
 };
 
+export type StoragePath<Layout extends StorageLayout> =
+  ExtractStoragePaths<Layout>;
+
+export type ConcreteStoragePath<Layout extends StorageLayout> =
+  ExtractConcreteStoragePaths<Layout>;
+
+/** Apply a masked slot write to an existing 32-byte storage slot value. */
+export function applySlotWrite(
+  slotWrite: SlotWrite,
+  existingSlot: Hex.Hex,
+): Hex.Hex {
+  const mask = BigInt(slotWrite.mask);
+  const next =
+    (BigInt(existingSlot) & ~mask) | (BigInt(slotWrite.value) & mask);
+  return Hex.fromNumber(next, { size: 32 });
+}
+
 /**
  * Key-value map of storage slots to their hex values.
  */
@@ -67,24 +86,23 @@ export type AccountStorage = {
  * resolve to element slot(s).
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param pathInput - Human-readable or structured storage path.
+ * @param pathInput - Human-readable storage path.
  */
 export function getStorageSlot<
-  Layout extends StorageLayout,
-  Path extends string | StoragePath,
+  const Layout extends StorageLayout,
+  Path extends ExtractStoragePaths<Layout>,
 >(
   layout: Layout,
   pathInput: Path,
-): IsSingleSlot<Layout, Path> extends true ? Hex.Hex : Hex.Hex[] {
+): Path extends ExtractMultiSlotStoragePaths<Layout> ? Hex.Hex[] : Hex.Hex;
+export function getStorageSlot(
+  layout: StorageLayout,
+  pathInput: string,
+): Hex.Hex | Hex.Hex[] {
   const slots = uniqueSlots(
     resolveStoragePath(layout, normalizePath(pathInput)),
   );
-  return (slots.length === 1 ? slots[0]! : slots) as IsSingleSlot<
-    Layout,
-    Path
-  > extends true
-    ? Hex.Hex
-    : Hex.Hex[];
+  return (slots.length === 1 ? slots[0]! : slots) as Hex.Hex | Hex.Hex[];
 }
 
 /**
@@ -92,7 +110,7 @@ export function getStorageSlot<
  */
 export function isStoragePathEnd(
   layout: StorageLayout,
-  pathInput: string | StoragePath,
+  pathInput: string,
 ): boolean {
   return storagePathEndsAtValue(layout, normalizePath(pathInput));
 }
@@ -100,10 +118,22 @@ export function isStoragePathEnd(
 /**
  * Normalize and validate that a storage path resolves to one concrete leaf value.
  */
+export function normalizeConcretePath<const Layout extends StorageLayout>(
+  layout: Layout,
+  pathInput: ConcreteStoragePath<Layout>,
+): ConcreteStoragePath<Layout>;
 export function normalizeConcretePath(
   layout: StorageLayout,
-  pathInput: string | StoragePath | ConcreteStoragePath,
-): ConcreteStoragePath {
+  pathInput: string,
+): string {
+  normalizeConcreteParsedPath(layout, pathInput);
+  return pathInput;
+}
+
+function normalizeConcreteParsedPath(
+  layout: StorageLayout,
+  pathInput: string | ParsedStoragePath,
+): ParsedStoragePath {
   const path = normalizePath(pathInput);
   const resolved = resolveStoragePath(layout, path);
   if (!resolvedPathEndsAtValue(resolved, path)) {
@@ -111,46 +141,49 @@ export function normalizeConcretePath(
       `storage path does not point to a leaf value: ${pathToString(pathInput)}`,
     );
   }
-  return path as ConcreteStoragePath;
+  return path;
 }
 
 /**
  * Match raw storage slots back to known Solidity storage paths.
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param slot - Changed slot or slots.
+ * @param slot - Changed slot.
  * @param knownPaths - Optional concrete paths used to match irreversible slots such as keyed mappings.
  *
  * @dev Mappings are not reversible from a raw slot alone. When `knownPaths` is omitted, unmatched slots throw if the layout contains mappings instead of silently omitting possible mapping writes.
  */
+export function getStoragePath<Layout extends StorageLayout>(
+  layout: Layout,
+  slot: Hex.Hex,
+  knownPaths?: readonly StoragePath<Layout>[],
+): StoragePath<Layout>[];
 export function getStoragePath(
   layout: StorageLayout,
-  slot: Hex.Hex | Hex.Hex[],
-  knownPaths?: readonly (string | StoragePath)[],
-): StoragePath[] {
+  slot: Hex.Hex,
+  knownPaths?: readonly string[],
+): string[] {
   const { slots: layoutSlots, mappingPaths } = collectLayoutSlots(layout);
   const knownSlots = knownPaths?.flatMap((knownPath) =>
     resolveStoragePath(layout, normalizePath(knownPath)),
   );
-  const matches: StoragePath[] = [];
+  const matches: string[] = [];
   const seen = new Set<string>();
 
-  for (const changedSlot of Array.isArray(slot) ? slot : [slot]) {
-    const normalizedSlot = normalizeSlot(changedSlot);
-    const matchedLayout = addSlotMatches(
-      matches,
-      seen,
-      layoutSlots,
-      normalizedSlot,
-    );
-    const matchedKnown =
-      knownSlots !== undefined &&
-      addSlotMatches(matches, seen, knownSlots, normalizedSlot);
-    if (!matchedLayout && !matchedKnown && knownPaths === undefined) {
-      const [mappingPath] = mappingPaths;
-      if (mappingPath !== undefined) {
-        throw new Error(mappingPathError(mappingPath));
-      }
+  const normalizedSlot = normalizeSlot(slot);
+  const matchedLayout = addSlotMatches(
+    matches,
+    seen,
+    layoutSlots,
+    normalizedSlot,
+  );
+  const matchedKnown =
+    knownSlots !== undefined &&
+    addSlotMatches(matches, seen, knownSlots, normalizedSlot);
+  if (!matchedLayout && !matchedKnown && knownPaths === undefined) {
+    const [mappingPath] = mappingPaths;
+    if (mappingPath !== undefined) {
+      throw new Error(mappingPathError(mappingPath));
     }
   }
 
@@ -158,7 +191,7 @@ export function getStoragePath(
 }
 
 function addSlotMatches(
-  matches: StoragePath[],
+  matches: string[],
   seen: Set<string>,
   knownSlots: readonly ResolvedStorageItem[],
   normalizedSlot: Hex.Hex,
@@ -174,17 +207,17 @@ function addSlotMatches(
       continue;
     }
     seen.add(key);
-    matches.push(knownItem.path);
+    matches.push(formatStoragePath(knownItem.path));
   }
   return matched;
 }
 
 function collectLayoutSlots(layout: StorageLayout): {
   slots: ResolvedStorageItem[];
-  mappingPaths: StoragePath[];
+  mappingPaths: ParsedStoragePath[];
 } {
-  const paths: StoragePath[] = [];
-  const mappingPaths: StoragePath[] = [];
+  const paths: ParsedStoragePath[] = [];
+  const mappingPaths: ParsedStoragePath[] = [];
   for (const item of layout.storage) {
     collectReversiblePaths(
       layout,
@@ -204,9 +237,9 @@ function collectLayoutSlots(layout: StorageLayout): {
 function collectReversiblePaths(
   layout: StorageLayout,
   type: StorageType,
-  path: StoragePath,
-  paths: StoragePath[],
-  mappingPaths: StoragePath[],
+  path: ParsedStoragePath,
+  paths: ParsedStoragePath[],
+  mappingPaths: ParsedStoragePath[],
 ): void {
   if (type.encoding === "mapping") {
     mappingPaths.push(path);
@@ -256,23 +289,41 @@ function collectReversiblePaths(
  * Decode a concrete Solidity storage path value from raw slot values.
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param path - Human-readable or structured storage path.
+ * @param path - Human-readable storage path.
  * @param storage - Raw account storage keyed by slot.
  */
 export function decodeStoragePath<
-  Layout extends StorageLayout,
-  Path extends string | ConcreteStoragePath,
+  const Layout extends StorageLayout,
+  const Path extends string,
 >(
   layout: Layout,
-  path: Path,
+  path: Path extends ConcreteStoragePath<Layout> ? Path : never,
   storage: AccountStorage,
-): StoragePathToPrimitiveType<Layout, Path> {
-  const normalizedPath = normalizeConcretePath(layout, path);
+): StoragePathToPrimitiveType<Layout, Path>;
+export function decodeStoragePath(
+  layout: StorageLayout,
+  path: string,
+  storage: AccountStorage,
+): unknown {
+  return decodeParsedStoragePath(
+    layout,
+    normalizeConcreteParsedPath(layout, path),
+    storage,
+    path,
+  );
+}
+
+function decodeParsedStoragePath(
+  layout: StorageLayout,
+  normalizedPath: ParsedStoragePath,
+  storage: AccountStorage,
+  pathForError: string | ParsedStoragePath,
+): unknown {
   const resolved = resolveStoragePath(layout, normalizedPath);
   const [slot] = resolved;
   if (slot === undefined) {
     throw new Error(
-      `storage path did not resolve to a slot: ${pathToString(path)}`,
+      `storage path did not resolve to a slot: ${pathToString(pathForError)}`,
     );
   }
   const slotHex = storageSlot(slot);
@@ -281,42 +332,57 @@ export function decodeStoragePath<
     throw new Error(`storage value not found for slot: ${slotHex}`);
   }
   if (slot.type.encoding === "bytes") {
-    return decodeBytesValue(slot, value, storage) as StoragePathToPrimitiveType<
-      Layout,
-      Path
-    >;
+    return decodeBytesValue(slot, value, storage);
   }
-  return decodeValue(slot, value) as StoragePathToPrimitiveType<Layout, Path>;
+  return decodeValue(slot, value);
 }
 
 /**
  * Encode a concrete Solidity storage path value into masked raw slot writes.
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param path - Human-readable or structured storage path.
+ * @param path - Human-readable storage path.
  * @param value - JavaScript value to encode.
  */
 export function encodeStoragePath<
-  Layout extends StorageLayout,
-  Path extends string | ConcreteStoragePath,
+  const Layout extends StorageLayout,
+  const Path extends string,
 >(
   layout: Layout,
-  path: Path,
+  path: Path extends ConcreteStoragePath<Layout> ? Path : never,
   value: StoragePathToPrimitiveType<Layout, Path>,
+): SlotWrites;
+export function encodeStoragePath(
+  layout: StorageLayout,
+  path: string,
+  value: unknown,
 ): SlotWrites {
-  const normalizedPath = normalizeConcretePath(layout, path);
+  return encodeParsedStoragePath(
+    layout,
+    normalizeConcreteParsedPath(layout, path),
+    value,
+    path,
+  );
+}
+
+function encodeParsedStoragePath(
+  layout: StorageLayout,
+  normalizedPath: ParsedStoragePath,
+  value: unknown,
+  pathForError: string | ParsedStoragePath,
+): SlotWrites {
   const resolved = resolveStoragePath(layout, normalizedPath);
   const [slot] = resolved;
   if (slot === undefined) {
     throw new Error(
-      `storage path did not resolve to a slot: ${pathToString(path)}`,
+      `storage path did not resolve to a slot: ${pathToString(pathForError)}`,
     );
   }
   if (slot.type.encoding === "bytes") {
-    return encodeBytesValue(slot, value);
+    return encodeBytesValue(slot, value as unknown);
   }
   return {
-    [storageSlot(slot)]: encodeValue(slot, value),
+    [storageSlot(slot)]: encodeValue(slot, value as unknown),
   };
 }
 
@@ -351,7 +417,7 @@ export function encodeStorage<Layout extends StorageLayout>(
 function encodeStateValue(
   layout: StorageLayout,
   type: StorageType,
-  path: StoragePath,
+  path: ParsedStoragePath,
   value: unknown,
   storage: AccountStorage,
 ): void {
@@ -428,36 +494,24 @@ function encodeStateValue(
 
 function mergeStorageWrites(
   layout: StorageLayout,
-  path: StoragePath,
+  path: ParsedStoragePath,
   value: unknown,
   storage: AccountStorage,
 ): void {
-  const writes = encodeStoragePath(
-    layout,
-    normalizeConcretePath(layout, path),
-    value as never,
-  );
+  const normalizedPath = normalizeConcreteParsedPath(layout, path);
+  const writes = encodeParsedStoragePath(layout, normalizedPath, value, path);
   for (const [slot, write] of Object.entries(writes)) {
     storage[slot as Hex.Hex] = applySlotWrite(
-      getSlotValue(storage, slot as Hex.Hex),
       write,
+      getSlotValue(storage, slot as Hex.Hex) ??
+        Hex.fromNumber(0n, { size: 32 }),
     );
   }
 }
 
-function applySlotWrite(
-  existing: Hex.Hex | undefined,
-  write: SlotWrite,
-): Hex.Hex {
-  const base = existing === undefined ? 0n : BigInt(existing);
-  const mask = BigInt(write.mask);
-  const next = (base & ~mask) | (BigInt(write.value) & mask);
-  return Hex.fromNumber(next, { size: 32 });
-}
-
 function writeDynamicArrayLength(
   layout: StorageLayout,
-  path: StoragePath,
+  path: ParsedStoragePath,
   length: number,
   storage: AccountStorage,
 ): void {
@@ -472,7 +526,7 @@ function writeDynamicArrayLength(
   });
 }
 
-function appendField(path: StoragePath, name: string): StoragePath {
+function appendField(path: ParsedStoragePath, name: string): ParsedStoragePath {
   return {
     root: path.root,
     segments: [...path.segments, { kind: "field", name }],
@@ -480,9 +534,9 @@ function appendField(path: StoragePath, name: string): StoragePath {
 }
 
 function appendSubscript(
-  path: StoragePath,
+  path: ParsedStoragePath,
   value: StoragePathSubscript,
-): StoragePath {
+): ParsedStoragePath {
   return {
     root: path.root,
     segments: [...path.segments, { kind: "subscript", value }],
@@ -492,7 +546,7 @@ function appendSubscript(
 function subscriptForMappingKey(
   type: StorageType,
   key: string,
-  path: StoragePath,
+  path: ParsedStoragePath,
 ): StoragePathSubscript {
   const label = type.label;
   if (label === "address") {
@@ -534,7 +588,7 @@ function subscriptForMappingKey(
 
 function assertRecordValue(
   value: unknown,
-  path: StoragePath,
+  path: ParsedStoragePath,
 ): asserts value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(
@@ -545,7 +599,7 @@ function assertRecordValue(
 
 function assertArrayValue(
   value: unknown,
-  path: StoragePath,
+  path: ParsedStoragePath,
 ): asserts value is readonly unknown[] {
   if (!Array.isArray(value)) {
     throw new Error(
@@ -596,7 +650,7 @@ function uniqueSlots(slots: readonly ResolvedStorageItem[]): Hex.Hex[] {
 
 function resolvedPathEndsAtValue(
   resolved: readonly ResolvedStorageItem[],
-  path: StoragePath,
+  path: ParsedStoragePath,
 ): boolean {
   return (
     resolved.length === 1 &&
@@ -607,7 +661,7 @@ function resolvedPathEndsAtValue(
 
 function isDynamicArrayRoot(
   resolved: readonly ResolvedStorageItem[],
-  path: StoragePath,
+  path: ParsedStoragePath,
 ): boolean {
   return (
     resolved.length === 1 &&
@@ -616,7 +670,7 @@ function isDynamicArrayRoot(
   );
 }
 
-function mappingPathError(path: StoragePath): string {
+function mappingPathError(path: ParsedStoragePath): string {
   return `cannot infer storage path for mapping '${formatStoragePath(path)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`;
 }
 
@@ -797,7 +851,7 @@ function encodeShortBytes(bytes: Hex.Hex): Hex.Hex {
   );
 }
 
-function bytesLength(length: bigint, path: StoragePath): number {
+function bytesLength(length: bigint, path: ParsedStoragePath): number {
   if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error(
       `bytes value is too large to decode: ${formatStoragePath(path)}`,

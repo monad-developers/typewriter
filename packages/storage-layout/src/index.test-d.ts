@@ -2,6 +2,8 @@ import { expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type {
   DeepPromise,
+  ExtractConcreteStoragePaths,
+  ExtractMultiSlotStoragePaths,
   ExtractStoragePaths,
   ExtractVariableNames,
   IsSingleSlot,
@@ -11,7 +13,12 @@ import type {
   StoragePathToPrimitiveType,
   StorageProxy,
 } from "./index";
-import { createStorageProxy, getStorageSlot } from "./index";
+import {
+  createStorageProxy,
+  decodeStoragePath,
+  encodeStoragePath,
+  getStorageSlot,
+} from "./index";
 import type {
   FormatStoragePath,
   NormalizeStoragePath,
@@ -374,20 +381,9 @@ test("StoragePathToPrimitiveType extracts one variable", () => {
 
 test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   type Owner = StoragePathToPrimitiveType<typeof layout, "owner">;
-  type SupplyPath = StoragePathToPrimitiveType<
-    typeof layout,
-    { root: "supply"; segments: readonly [] }
-  >;
   type Nested = StoragePathToPrimitiveType<
     typeof layout,
     "metadata.lastUpdate"
-  >;
-  type NestedPath = StoragePathToPrimitiveType<
-    typeof layout,
-    {
-      root: "metadata";
-      segments: readonly [{ kind: "field"; name: "paused" }];
-    }
   >;
   type FixedArrayElement = StoragePathToPrimitiveType<
     typeof layout,
@@ -410,9 +406,7 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   type Message = StoragePathToPrimitiveType<typeof layout, "message">;
 
   expectTypeOf<Owner>().toEqualTypeOf<`0x${string}`>();
-  expectTypeOf<SupplyPath>().toEqualTypeOf<bigint>();
   expectTypeOf<Nested>().toEqualTypeOf<bigint>();
-  expectTypeOf<NestedPath>().toEqualTypeOf<boolean>();
   expectTypeOf<FixedArrayElement>().toEqualTypeOf<bigint>();
   expectTypeOf<DynamicArray>().toEqualTypeOf<readonly bigint[]>();
   expectTypeOf<DynamicArrayElement>().toEqualTypeOf<bigint>();
@@ -425,6 +419,8 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
 test("storage layout extraction helpers preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
   type Paths = ExtractStoragePaths<typeof layout>;
+  type ConcretePaths = ExtractConcreteStoragePaths<typeof layout>;
+  type MultiSlotPaths = ExtractMultiSlotStoragePaths<typeof layout>;
 
   expectTypeOf<Names>().toEqualTypeOf<
     | "supply"
@@ -456,9 +452,51 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "rawBytes"
     | "message"
   >();
+  expectTypeOf<ConcretePaths>().toEqualTypeOf<
+    | "supply"
+    | "flags"
+    | "owner"
+    | "metadata.lastUpdate"
+    | "metadata.paused"
+    | `numbers[${number}]`
+    | `balances[${Hex.Hex}]`
+    | `allowances[${Hex.Hex}][${Hex.Hex}]`
+    | "fixedNumbers[0]"
+    | "fixedNumbers[1]"
+    | "fixedNumbers[2]"
+    | "rawBytes"
+    | "message"
+  >();
+  expectTypeOf<MultiSlotPaths>().toEqualTypeOf<"fixedNumbers">();
 });
 
-test("getStorageSlot return type follows IsSingleSlot", () => {
+test("concrete path APIs reject composite paths at type-check time", () => {
+  const typeAssertions = () => {
+    getStorageSlot(layout, "metadata");
+    getStorageSlot(layout, "numbers");
+    decodeStoragePath(layout, "owner", {});
+    encodeStoragePath(layout, "metadata.paused", false);
+
+    // @ts-expect-error unknown roots are not storage paths
+    getStorageSlot(layout, "missing");
+    // @ts-expect-error mappings require keys
+    getStorageSlot(layout, "balances");
+    // @ts-expect-error fixed array index is out of bounds
+    getStorageSlot(layout, "fixedNumbers[3]");
+
+    // @ts-expect-error structs are not concrete leaf paths
+    decodeStoragePath(layout, "metadata", {});
+    // @ts-expect-error dynamic array roots are not concrete leaf paths
+    decodeStoragePath(layout, "numbers", {});
+    // @ts-expect-error fixed array roots are not concrete leaf paths
+    encodeStoragePath(layout, "fixedNumbers", [1n, 2n, 3n]);
+    // @ts-expect-error nested mappings require all keys to reach a leaf
+    decodeStoragePath(layout, `allowances[${"0x123" as Hex.Hex}]`, {});
+  };
+  expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
+});
+
+test("getStorageSlot accepts inferred storage paths", () => {
   const ownerSlot = getStorageSlot(layout, "owner");
   const metadataSlot = getStorageSlot(layout, "metadata");
   const dynamicNumbersSlot = getStorageSlot(layout, "numbers");
