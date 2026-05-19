@@ -16,6 +16,7 @@ import {
   TEST_DB_CONNECTION,
   TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
+  TEST_WALLET_CLIENT,
   USER_ACCOUNT,
   USER_PRIVATE_KEY,
 } from "../test/setup";
@@ -51,6 +52,7 @@ import {
   testMutationSchema,
 } from "../test/utils";
 import { hashMutationEip712 } from "./eip712";
+import { encodeMutationCalldata } from "./encoding";
 import { createFFCA, verifyMutation, verifyResolution } from "./runtime";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
@@ -546,6 +548,84 @@ test("e2e Counter: single mutation", async () => {
 
   expect(await readTotal()).toBe(7n);
   expect((ffca.state as CounterState).total).toBe(7n);
+
+  await ffca.stop();
+});
+
+test("e2e Counter: scheduler submits detected force inclusion", async () => {
+  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+
+  const ffca = await createFFCA({
+    address,
+    domain: COUNTER_DOMAIN,
+    abi,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    state: { initial: { total: 0n, nonce: 0n } as CounterState },
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    sequencing: {
+      order: "fifo",
+      submitIntervalMs: 100,
+      blockPollingIntervalMs: 50,
+    },
+    mutations: COUNTER_MUTATIONS,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const forceArgs = { amount: 13n, nonce: 0n };
+  await TEST_WALLET_CLIENT.writeContract({
+    account: TEST_WALLET_CLIENT.account!,
+    chain: anvil,
+    address,
+    abi,
+    functionName: "enqueue",
+    args: [
+      COUNTER_MUTATIONS.add.tag,
+      encodeMutationCalldata(COUNTER_MUTATIONS.add, forceArgs),
+      signCounter({
+        privateKey: USER_PRIVATE_KEY,
+        amount: forceArgs.amount,
+        nonce: forceArgs.nonce,
+        address,
+        chainId: anvil.id,
+      }),
+    ],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const scheduledArgs = { amount: 7n, nonce: 1n };
+  await ffca.execute({
+    name: "add",
+    args: scheduledArgs,
+    signature: signCounter({
+      privateKey: USER_PRIVATE_KEY,
+      amount: scheduledArgs.amount,
+      nonce: scheduledArgs.nonce,
+      address,
+      chainId: anvil.id,
+    }),
+  });
+
+  const readState = async () =>
+    (await TEST_PUBLIC_CLIENT.readContract({
+      abi,
+      address,
+      functionName: "state",
+    })) as [bigint, bigint];
+
+  const deadline = Date.now() + 5000;
+  while ((await readState())[0] !== 20n) {
+    if (Date.now() > deadline) {
+      throw new Error("force inclusion never landed onchain");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(await readState()).toEqual([20n, 2n]);
+  expect(ffca.state).toEqual({ total: 20n, nonce: 2n });
 
   await ffca.stop();
 });

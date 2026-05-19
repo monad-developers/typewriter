@@ -44,6 +44,28 @@ export function encodeMutationCalldata(
   return AbiParameters.encode(calldataStructParams(params), [args]);
 }
 
+export function decodeMutationCalldata(
+  mutation: FFCAMutationConfig,
+  calldata: Hex.Hex,
+): { args: unknown; resolution?: unknown } {
+  const params = mutation.params as readonly AbiParameters.Parameter[];
+  if ("resolution" in mutation) {
+    const resolutionParams =
+      mutation.resolution as readonly AbiParameters.Parameter[];
+    const [args, resolution] = AbiParameters.decode(
+      [
+        ...calldataStructParams(params),
+        ...calldataStructParams(resolutionParams),
+      ],
+      calldata,
+    );
+    return { args, resolution };
+  }
+
+  const [args] = AbiParameters.decode(calldataStructParams(params), calldata);
+  return { args };
+}
+
 // ffca expects the contract's `execute` to take `(Bundle[], uint256[])` where
 //   Bundle = { uint8[] mutations, bytes[] mutationData, Sig[] signatures }
 // `Sig` is shaped by `FFCAConfig.signature.params`, and the second argument is
@@ -105,6 +127,29 @@ export function executeAbi(sigParams: readonly AbiParameters.Parameter[]) {
         { name: "forceExecuteIndexes", type: "uint256[]" },
       ],
       outputs: [],
+    },
+  ] as const;
+}
+
+export function forceInclusionQueuedAbi(
+  sigParams: readonly AbiParameters.Parameter[],
+) {
+  return [
+    {
+      type: "event",
+      name: "ForceInclusionQueued",
+      inputs: [
+        { name: "index", type: "uint256", indexed: false },
+        { name: "mutation", type: "uint8", indexed: false },
+        { name: "mutationData", type: "bytes", indexed: false },
+        {
+          name: "sig",
+          type: "tuple",
+          indexed: false,
+          components: sigParams as AbiParameters.Parameter[],
+        },
+        { name: "enqueuedBlock", type: "uint256", indexed: false },
+      ],
     },
   ] as const;
 }
