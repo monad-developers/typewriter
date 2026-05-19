@@ -294,16 +294,14 @@ async function resolveMarket(
   const prices = [
     ...((args.bidOrAsk === 0 ? priceLevels?.asks : priceLevels?.bids) ?? []),
   ].sort((a, b) => (args.bidOrAsk === 0 ? a - b : b - a));
-  if (prices.length === 0) {
-    return { fills: [] };
-  }
 
   const instrument =
     storage.instruments[String(args.instrumentId) as `${number}`];
   const opposingSide = args.bidOrAsk === 0 ? instrument.asks : instrument.bids;
   const baseLotExp = await instrument.baseLotExp;
   const fills: { quantity: bigint; price: bigint }[] = [];
-  let remaining = args.quantity >> BigInt(baseLotExp);
+  const quantityLots = args.quantity >> BigInt(baseLotExp);
+  let remaining = quantityLots;
 
   for (const price of prices) {
     if (remaining <= 0n) break;
@@ -314,6 +312,12 @@ async function resolveMarket(
     const quantity = remaining < available ? remaining : available;
     fills.push({ quantity, price: BigInt(price) });
     remaining -= quantity;
+  }
+
+  if (remaining > 0n) {
+    throw new Error(
+      `InsufficientLiquidity: resolveMarket totalFilled=${quantityLots - remaining} quantityLots=${quantityLots} fillCount=${fills.length} instrumentId=${args.instrumentId}`,
+    );
   }
 
   return { fills };
@@ -332,9 +336,32 @@ function rememberLimitPrice(
   side.add(Number(args.price));
 }
 
-export function baseMutations(): FFCAConfig["mutations"] {
-  const knownPriceLevels: KnownPriceLevels = new Map();
+export function createKnownPriceLevels(): KnownPriceLevels {
+  return new Map();
+}
 
+function rememberLoadedTicks(
+  knownPriceLevels: KnownPriceLevels,
+  state: OrderBookState,
+): void {
+  knownPriceLevels.clear();
+  for (const [instrumentId, instrument] of Object.entries(state.instruments)) {
+    const levels = { bids: new Set<number>(), asks: new Set<number>() };
+    for (const [price, tick] of Object.entries(instrument.bids)) {
+      if (tick.remainingQuantity > 0n) levels.bids.add(Number(price));
+    }
+    for (const [price, tick] of Object.entries(instrument.asks)) {
+      if (tick.remainingQuantity > 0n) levels.asks.add(Number(price));
+    }
+    if (levels.bids.size > 0 || levels.asks.size > 0) {
+      knownPriceLevels.set(Number(instrumentId), levels);
+    }
+  }
+}
+
+export function baseMutations(
+  knownPriceLevels: KnownPriceLevels = createKnownPriceLevels(),
+): FFCAConfig["mutations"] {
   return {
     Initialize: {
       tag: MutationType.Initialize,
@@ -623,6 +650,7 @@ function txDb(tx: unknown) {
 
 export async function loadOrderBookState(
   tx: Parameters<NonNullable<FFCAConfig["state"]["load"]>>[0],
+  knownPriceLevels?: KnownPriceLevels,
 ): Promise<OrderBookState> {
   const state: OrderBookState = { accounts: {}, instruments: {} };
   const db = txDb(tx);
@@ -704,6 +732,10 @@ export async function loadOrderBookState(
       remainingQuantity: row.remainingQuantity,
       volume: row.volume,
     };
+  }
+
+  if (knownPriceLevels !== undefined) {
+    rememberLoadedTicks(knownPriceLevels, state);
   }
 
   return state;
@@ -923,8 +955,10 @@ async function nextOrderIndex(tx: unknown, account: Hex): Promise<bigint> {
   return row?.next ?? 0n;
 }
 
-export function persistedMutations(): FFCAConfig["mutations"] {
-  const mutations = baseMutations();
+export function persistedMutations(
+  knownPriceLevels: KnownPriceLevels = createKnownPriceLevels(),
+): FFCAConfig["mutations"] {
+  const mutations = baseMutations(knownPriceLevels);
 
   mutations.Initialize = {
     ...mutations.Initialize,

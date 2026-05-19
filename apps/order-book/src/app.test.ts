@@ -18,6 +18,7 @@ import {
 } from "../test/setup";
 import {
   baseMutations,
+  createKnownPriceLevels,
   loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
@@ -444,6 +445,161 @@ test("ffca order book persists and submits market-order flow", async () => {
   expect(balance).toMatchObject({ account: taker, asset: QUOTE, amount: "0" });
   expect(fill).toMatchObject({ quantity: 10n, price: 10n * Q32 });
   expect(market?.status).toBe("included");
+});
+
+test("ffca order book resolves market orders after persisted reload", async () => {
+  const address = await deployExchange();
+  const knownPriceLevels = createKnownPriceLevels();
+  let app = await createFFCA({
+    address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    database: { connection: TEST_DB_CONNECTION },
+    state: {
+      initial: { accounts: {}, instruments: {} } as State<bigint>,
+      schema: schema.APP_SCHEMA,
+      load: (tx) => loadOrderBookState(tx, knownPriceLevels),
+    },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: persistedMutations(knownPriceLevels),
+  });
+  const db = drizzle(TEST_DB_CONNECTION, {
+    schema: schema.APP_SCHEMA,
+    casing: "snake_case",
+  });
+
+  const maker = await setupAccount({
+    app,
+    state: app.state as State<bigint>,
+    account: MAKER_ACCOUNT.address,
+    privateKey: MAKER_PRIVATE_KEY,
+    contract: address,
+  });
+  const taker = await setupAccount({
+    app,
+    state: app.state as State<bigint>,
+    account: TAKER_ACCOUNT.address,
+    privateKey: TAKER_PRIVATE_KEY,
+    contract: address,
+  });
+
+  await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "AddInstrument",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        instrumentId: 0,
+        base: BASE,
+        quote: QUOTE,
+        baseLotExp: 0,
+        quoteLotExp: 0,
+        nonce: 0n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+  await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "Deposit",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: { asset: BASE, amount: 10n, nonce: 1n, deadline: FAR_DEADLINE },
+    }),
+  );
+  await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "Deposit",
+      address,
+      privateKey: TAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: taker,
+      args: { asset: QUOTE, amount: 100n, nonce: 0n, deadline: FAR_DEADLINE },
+    }),
+  );
+  await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "LimitOrder",
+      address,
+      privateKey: MAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: maker,
+      args: {
+        quantity: 10n,
+        instrumentId: 0,
+        price: 10n * Q32,
+        bidOrAsk: 1,
+        nonce: 2n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+  await waitForIncluded(db, schema.limitOrders, "limit order");
+  await app.stop();
+
+  const reloadedPriceLevels = createKnownPriceLevels();
+  app = await createFFCA({
+    address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    database: { connection: TEST_DB_CONNECTION },
+    state: {
+      initial: { accounts: {}, instruments: {} } as State<bigint>,
+      schema: schema.APP_SCHEMA,
+      load: (tx) => loadOrderBookState(tx, reloadedPriceLevels),
+    },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: persistedMutations(reloadedPriceLevels),
+  });
+
+  const result = await executeOrderBookMutation(
+    app,
+    app.state as State<bigint>,
+    await signedMutation({
+      name: "MarketOrder",
+      address,
+      privateKey: TAKER_PRIVATE_KEY,
+      signerKeyId: 1n,
+      account: taker,
+      args: {
+        quantity: 10n,
+        minReceivedQuantity: 10n,
+        instrumentId: 0,
+        bidOrAsk: 0,
+        nonce: 1n,
+        deadline: FAR_DEADLINE,
+      },
+    }),
+  );
+
+  expect(result.status).toBe("accepted");
+  expect((app.state as State<bigint>).accounts[taker]!.balances[BASE]).toBe(
+    10n,
+  );
+
+  await app.stop();
 });
 
 test("ffca order book changes an unfilled order to a new price", async () => {

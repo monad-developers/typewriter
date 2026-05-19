@@ -36,16 +36,28 @@ const BINARY_PATH = `${import.meta.dir}/../target/${Bun.env.NODE_ENV === "test" 
 
 export class EvmCrashed extends Data.TaggedError("EvmCrashed")<{
   readonly reason: string;
-}> {}
+}> {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export class EvmCallError extends Data.TaggedError("EvmCallError")<{
   readonly method: Request["method"];
   readonly error: string;
-}> {}
+}> {
+  override get message(): string {
+    return `${this.method} failed: ${this.error}`;
+  }
+}
 
 export class EvmProtocolError extends Data.TaggedError("EvmProtocolError")<{
   readonly reason: string;
-}> {}
+}> {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
 
@@ -140,9 +152,20 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
 
             const res = yield* Queue.take(responses);
             if (res.id !== id) {
+              const responseError = res.ok ? undefined : res.error;
+              const staleBinaryHint = responseError?.includes(
+                "unknown variant `readStorage`",
+              )
+                ? "; stale evm sidecar binary: run `bun run --filter evm build` and restart the backend"
+                : "";
               return yield* Effect.fail(
                 new EvmProtocolError({
-                  reason: `response id mismatch: expected ${id}, got ${res.id}`,
+                  reason:
+                    `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
+                    (responseError === undefined
+                      ? ""
+                      : `; response error: ${responseError}`) +
+                    staleBinaryHint,
                 }),
               );
             }
