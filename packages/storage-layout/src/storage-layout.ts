@@ -104,11 +104,6 @@ export type StoragePathToPrimitiveType<
   Path extends string,
 > = StoragePathTypeToPrimitiveType<Layout, StorageTypeForPath<Layout, Path>>;
 
-export type IsSingleSlot<
-  Layout extends StorageLayout,
-  Path extends string,
-> = IsStoragePathTypeSingleSlot<StorageTypeForPath<Layout, Path>>;
-
 export function resolveStoragePath(
   layout: StorageLayout,
   path: StoragePath,
@@ -1123,12 +1118,6 @@ type SubscriptStorageType<Layout extends StorageLayout, Type> = Type extends {
     ? StorageTypeForId<Layout, Base>
     : CustomTypeError<"Storage path subscript requires an array or mapping.">;
 
-type IsStoragePathTypeSingleSlot<Type> = Type extends StorageType
-  ? Type["encoding"] extends "mapping"
-    ? CustomTypeError<`Unsupported type '${Type["label"]}'.`>
-    : IsStorageTypeSingleSlot<Type>
-  : Type;
-
 type StorageTypeForStructField<
   Layout extends StorageLayout,
   Members extends readonly StorageItem[],
@@ -1210,9 +1199,6 @@ type SolidityLabelToPrimitiveType<Label extends string> = Label extends AbiType
   : Label extends `enum ${string}`
     ? number
     : CustomTypeError<`Unsupported type '${Label}'.`>;
-
-type IsStorageTypeSingleSlot<Type extends StorageType> =
-  Type["numberOfBytes"] extends SingleSlotByteCount ? true : false;
 
 type SingleSlotByteCount =
   | "1"

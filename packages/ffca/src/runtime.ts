@@ -18,11 +18,10 @@ import {
 import { createEVM, type EVM } from "evm";
 import { AbiParameters, type Hex, TypedData } from "ox";
 import {
-  type AsyncSlotGetter,
   createStorageProxy,
   encodeStorage,
   type StorageLayout,
-  type StorageProxy,
+  type StorageLayoutToPrimitiveType,
 } from "storage-layout";
 import {
   ContractFunctionRevertedError,
@@ -111,11 +110,17 @@ type DeploymentLock = {
 
 type UnfinalizedBlock = Exclude<BlockEvent, { status: "accepted" }>;
 
+type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
+  ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
+  : [T] extends [object]
+    ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
+    : Promise<T>;
+
 export type FFCA<L extends StorageLayout = never> = {
   readonly state: unknown;
   readonly storage: [L] extends [never]
     ? unknown
-    : StorageProxy<L, AsyncSlotGetter>;
+    : AsyncStorageProxy<StorageLayoutToPrimitiveType<L>>;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Promise<MutationEvent>;
   on(event: "mutation", cb: MutationListener): () => void;

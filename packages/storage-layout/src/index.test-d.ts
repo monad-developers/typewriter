@@ -1,17 +1,12 @@
 import { expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type {
-  DeepPromise,
-  ExtractConcreteStoragePaths,
-  ExtractMultiSlotStoragePaths,
-  ExtractStoragePaths,
+  ConcreteStoragePath,
   ExtractVariableNames,
-  IsSingleSlot,
-  SlotMap,
   StorageLayout,
   StorageLayoutToPrimitiveType,
+  StoragePath,
   StoragePathToPrimitiveType,
-  StorageProxy,
 } from "./index";
 import {
   createStorageProxy,
@@ -19,11 +14,9 @@ import {
   encodeStoragePath,
   getStorageSlot,
 } from "./index";
-import type {
-  FormatStoragePath,
-  NormalizeStoragePath,
-  ParseStoragePath,
-} from "./storage-path";
+import type { ParseStoragePath } from "./storage-path";
+
+type TestSlotMap = { [slot: Hex.Hex]: Hex.Hex };
 
 const layout = {
   storage: [
@@ -244,24 +237,8 @@ const multiSlotLayout = {
   },
 } as const satisfies StorageLayout;
 
-test("type-level storage path helpers match runtime path shape", () => {
+test("type-level storage path parsing matches runtime path shape", () => {
   type Parsed = ParseStoragePath<"accounts[0xabcd][1].orders[3][4].price">;
-  type Formatted = FormatStoragePath<{
-    root: "accounts";
-    segments: readonly [
-      { kind: "subscript"; value: { kind: "hex"; value: "0xabcd" } },
-      { kind: "field"; name: "orders" },
-      { kind: "subscript"; value: { kind: "number"; value: 3n } },
-    ];
-  }>;
-  type Normalized = NormalizeStoragePath<{
-    root: "accounts";
-    segments: readonly [
-      { kind: "subscript"; value: { kind: "hex"; value: "0xabcd" } },
-      { kind: "field"; name: "orders" },
-      { kind: "subscript"; value: { kind: "number"; value: 3n } },
-    ];
-  }>;
 
   expectTypeOf<Parsed>().toEqualTypeOf<{
     root: "accounts";
@@ -272,15 +249,6 @@ test("type-level storage path helpers match runtime path shape", () => {
       { kind: "subscript" },
       { kind: "subscript" },
       { kind: "field"; name: "price" },
-    ];
-  }>();
-  expectTypeOf<Formatted>().toEqualTypeOf<"accounts[0xabcd].orders[3]">();
-  expectTypeOf<Normalized>().toEqualTypeOf<{
-    root: "accounts";
-    segments: readonly [
-      { kind: "subscript" },
-      { kind: "field"; name: "orders" },
-      { kind: "subscript" },
     ];
   }>();
 });
@@ -303,14 +271,12 @@ test("StorageLayoutToPrimitiveType maps top-level Solidity types", () => {
 });
 
 test("StorageProxy follows sync and async getter shapes", () => {
-  const syncGetter = (_slots: Hex.Hex[]): SlotMap => ({});
-  const asyncGetter = async (_slots: Hex.Hex[]): Promise<SlotMap> => ({});
+  const syncGetter = (_slots: Hex.Hex[]): TestSlotMap => ({});
+  const asyncGetter = async (_slots: Hex.Hex[]): Promise<TestSlotMap> => ({});
   const syncState = createStorageProxy(layout, syncGetter);
   const asyncState = createStorageProxy(layout, asyncGetter);
 
-  expectTypeOf(syncState).toEqualTypeOf<
-    StorageProxy<typeof layout, typeof syncGetter>
-  >();
+  expectTypeOf(syncState.supply).toEqualTypeOf<bigint>();
   expectTypeOf(syncState.metadata).toEqualTypeOf<{
     readonly lastUpdate: bigint;
     readonly paused: boolean;
@@ -325,9 +291,6 @@ test("StorageProxy follows sync and async getter shapes", () => {
     readonly [bigint, bigint, bigint]
   >();
 
-  expectTypeOf(asyncState).toEqualTypeOf<
-    StorageProxy<typeof layout, typeof asyncGetter>
-  >();
   expectTypeOf(asyncState.supply).toEqualTypeOf<Promise<bigint>>();
   expectTypeOf(asyncState.metadata).toEqualTypeOf<{
     readonly lastUpdate: Promise<bigint>;
@@ -344,21 +307,6 @@ test("StorageProxy follows sync and async getter shapes", () => {
   >();
   expectTypeOf<(typeof asyncState.fixedNumbers)["length"]>().toEqualTypeOf<3>();
   expectTypeOf(asyncState.numbers).toEqualTypeOf<readonly Promise<bigint>[]>();
-});
-
-test("DeepPromise preserves readonly composite structure", () => {
-  type AsyncVariables = DeepPromise<
-    StorageLayoutToPrimitiveType<typeof layout>
-  >;
-
-  expectTypeOf<AsyncVariables["metadata"]>().toEqualTypeOf<{
-    readonly lastUpdate: Promise<bigint>;
-    readonly paused: Promise<boolean>;
-  }>();
-  expectTypeOf<AsyncVariables["fixedNumbers"]>().toEqualTypeOf<
-    readonly [Promise<bigint>, Promise<bigint>, Promise<bigint>]
-  >();
-  expectTypeOf<AsyncVariables["fixedNumbers"]["length"]>().toEqualTypeOf<3>();
 });
 
 test("StorageLayoutToPrimitiveType remains writable plain data", () => {
@@ -416,11 +364,10 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   expectTypeOf<Message>().toEqualTypeOf<string>();
 });
 
-test("storage layout extraction helpers preserve layout names", () => {
+test("public storage path types preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
-  type Paths = ExtractStoragePaths<typeof layout>;
-  type ConcretePaths = ExtractConcreteStoragePaths<typeof layout>;
-  type MultiSlotPaths = ExtractMultiSlotStoragePaths<typeof layout>;
+  type Paths = StoragePath<typeof layout>;
+  type ConcretePaths = ConcreteStoragePath<typeof layout>;
 
   expectTypeOf<Names>().toEqualTypeOf<
     | "supply"
@@ -467,7 +414,6 @@ test("storage layout extraction helpers preserve layout names", () => {
     | "rawBytes"
     | "message"
   >();
-  expectTypeOf<MultiSlotPaths>().toEqualTypeOf<"fixedNumbers">();
 });
 
 test("concrete path APIs reject composite paths at type-check time", () => {
@@ -503,20 +449,6 @@ test("getStorageSlot accepts inferred storage paths", () => {
   const fixedNumbersSlot = getStorageSlot(layout, "fixedNumbers");
   const multiSlotMetadata = getStorageSlot(multiSlotLayout, "metadata");
 
-  expectTypeOf<IsSingleSlot<typeof layout, "owner">>().toEqualTypeOf<true>();
-  expectTypeOf<
-    IsSingleSlot<typeof layout, "metadata.lastUpdate">
-  >().toEqualTypeOf<true>();
-  expectTypeOf<
-    IsSingleSlot<typeof layout, "fixedNumbers[0]">
-  >().toEqualTypeOf<true>();
-  expectTypeOf<IsSingleSlot<typeof layout, "numbers">>().toEqualTypeOf<true>();
-  expectTypeOf<
-    IsSingleSlot<typeof layout, "fixedNumbers">
-  >().toEqualTypeOf<false>();
-  expectTypeOf<
-    IsSingleSlot<typeof multiSlotLayout, "metadata">
-  >().toEqualTypeOf<false>();
   expectTypeOf(ownerSlot).toEqualTypeOf<`0x${string}`>();
   expectTypeOf(metadataSlot).toEqualTypeOf<`0x${string}`>();
   expectTypeOf(dynamicNumbersSlot).toEqualTypeOf<`0x${string}`>();

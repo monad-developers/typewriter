@@ -1,65 +1,55 @@
-import { Hash, Hex } from "ox";
+import { Hex } from "ox";
 import {
-  type ExtractConcreteStoragePaths,
   type ExtractMultiSlotStoragePaths,
   type ExtractStoragePaths,
   type ResolvedStorageItem,
   resolveStoragePath,
   type StorageLayout,
   type StorageLayoutToPrimitiveType,
-  type StoragePathToPrimitiveType,
   type StorageType,
-  storagePathEndsAtValue,
 } from "./storage-layout";
 import {
+  encodeStoragePath,
   formatStoragePath,
   HEX_STRING_PATTERN,
   normalizePath,
   type StoragePath as ParsedStoragePath,
-  pathToString,
   type StoragePathSubscript,
 } from "./storage-path";
+import type {
+  AccountStorage,
+  SlotWrite,
+  SlotWrites,
+  StoragePath,
+} from "./types";
+
+const encodeStoragePathRuntime = encodeStoragePath as (
+  layout: StorageLayout,
+  path: string,
+  value: unknown,
+) => SlotWrites;
 
 export type {
-  ExtractConcreteStoragePaths,
-  ExtractMultiSlotStoragePaths,
-  ExtractStoragePaths,
   ExtractVariableNames,
-  IsSingleSlot,
   StorageLayout,
   StorageLayoutToPrimitiveType,
   StoragePathToPrimitiveType,
   StorageType,
 } from "./storage-layout";
-export { formatStoragePath, parseStoragePath } from "./storage-path";
-export type {
-  AsyncSlotGetter,
-  DeepPromise,
-  SlotGetter,
-  SlotMap,
-  StorageProxy,
-  SyncSlotGetter,
-} from "./storage-proxy";
+export {
+  decodeStoragePath,
+  encodeStoragePath,
+  formatStoragePath,
+  parseStoragePath,
+} from "./storage-path";
 export { createStorageProxy } from "./storage-proxy";
-
-export type StorageVariableUpdate = ResolvedStorageItem & {
-  value?: Hex.Hex;
-};
-
-export type SlotWrite = {
-  value: Hex.Hex;
-  mask: Hex.Hex;
-};
-
-export type SlotWrites = {
-  [slot: Hex.Hex]: SlotWrite;
-};
-
-export type StoragePath<Layout extends StorageLayout> =
-  ExtractStoragePaths<Layout>;
-
-export type ConcreteStoragePath<Layout extends StorageLayout> =
-  ExtractConcreteStoragePaths<Layout>;
+export type {
+  AccountStorage,
+  ConcreteStoragePath,
+  SlotWrite,
+  SlotWrites,
+  StoragePath,
+} from "./types";
 
 /** Apply a masked slot write to an existing 32-byte storage slot value. */
 export function applySlotWrite(
@@ -71,13 +61,6 @@ export function applySlotWrite(
     (BigInt(existingSlot) & ~mask) | (BigInt(slotWrite.value) & mask);
   return Hex.fromNumber(next, { size: 32 });
 }
-
-/**
- * Key-value map of storage slots to their hex values.
- */
-export type AccountStorage = {
-  [slot: Hex.Hex]: Hex.Hex;
-};
 
 /**
  * Compute storage slots for a Solidity storage path.
@@ -105,40 +88,14 @@ export function getStorageSlot(
   return (slots.length === 1 ? slots[0]! : slots) as Hex.Hex | Hex.Hex[];
 }
 
-/**
- * Return whether a storage path points at a value that cannot be narrowed further.
- */
-export function isStoragePathEnd(
-  layout: StorageLayout,
-  pathInput: string,
-): boolean {
-  return storagePathEndsAtValue(layout, normalizePath(pathInput));
-}
-
-/**
- * Normalize and validate that a storage path resolves to one concrete leaf value.
- */
-export function normalizeConcretePath<const Layout extends StorageLayout>(
-  layout: Layout,
-  pathInput: ConcreteStoragePath<Layout>,
-): ConcreteStoragePath<Layout>;
-export function normalizeConcretePath(
-  layout: StorageLayout,
-  pathInput: string,
-): string {
-  normalizeConcreteParsedPath(layout, pathInput);
-  return pathInput;
-}
-
 function normalizeConcreteParsedPath(
   layout: StorageLayout,
-  pathInput: string | ParsedStoragePath,
+  path: ParsedStoragePath,
 ): ParsedStoragePath {
-  const path = normalizePath(pathInput);
   const resolved = resolveStoragePath(layout, path);
   if (!resolvedPathEndsAtValue(resolved, path)) {
     throw new Error(
-      `storage path does not point to a leaf value: ${pathToString(pathInput)}`,
+      `storage path does not point to a leaf value: ${formatStoragePath(path)}`,
     );
   }
   return path;
@@ -286,107 +243,6 @@ function collectReversiblePaths(
 }
 
 /**
- * Decode a concrete Solidity storage path value from raw slot values.
- *
- * @param layout - Solidity compiler `storageLayout` output.
- * @param path - Human-readable storage path.
- * @param storage - Raw account storage keyed by slot.
- */
-export function decodeStoragePath<
-  const Layout extends StorageLayout,
-  const Path extends string,
->(
-  layout: Layout,
-  path: Path extends ConcreteStoragePath<Layout> ? Path : never,
-  storage: AccountStorage,
-): StoragePathToPrimitiveType<Layout, Path>;
-export function decodeStoragePath(
-  layout: StorageLayout,
-  path: string,
-  storage: AccountStorage,
-): unknown {
-  return decodeParsedStoragePath(
-    layout,
-    normalizeConcreteParsedPath(layout, path),
-    storage,
-    path,
-  );
-}
-
-function decodeParsedStoragePath(
-  layout: StorageLayout,
-  normalizedPath: ParsedStoragePath,
-  storage: AccountStorage,
-  pathForError: string | ParsedStoragePath,
-): unknown {
-  const resolved = resolveStoragePath(layout, normalizedPath);
-  const [slot] = resolved;
-  if (slot === undefined) {
-    throw new Error(
-      `storage path did not resolve to a slot: ${pathToString(pathForError)}`,
-    );
-  }
-  const slotHex = storageSlot(slot);
-  const value = getSlotValue(storage, slotHex);
-  if (value === undefined) {
-    throw new Error(`storage value not found for slot: ${slotHex}`);
-  }
-  if (slot.type.encoding === "bytes") {
-    return decodeBytesValue(slot, value, storage);
-  }
-  return decodeValue(slot, value);
-}
-
-/**
- * Encode a concrete Solidity storage path value into masked raw slot writes.
- *
- * @param layout - Solidity compiler `storageLayout` output.
- * @param path - Human-readable storage path.
- * @param value - JavaScript value to encode.
- */
-export function encodeStoragePath<
-  const Layout extends StorageLayout,
-  const Path extends string,
->(
-  layout: Layout,
-  path: Path extends ConcreteStoragePath<Layout> ? Path : never,
-  value: StoragePathToPrimitiveType<Layout, Path>,
-): SlotWrites;
-export function encodeStoragePath(
-  layout: StorageLayout,
-  path: string,
-  value: unknown,
-): SlotWrites {
-  return encodeParsedStoragePath(
-    layout,
-    normalizeConcreteParsedPath(layout, path),
-    value,
-    path,
-  );
-}
-
-function encodeParsedStoragePath(
-  layout: StorageLayout,
-  normalizedPath: ParsedStoragePath,
-  value: unknown,
-  pathForError: string | ParsedStoragePath,
-): SlotWrites {
-  const resolved = resolveStoragePath(layout, normalizedPath);
-  const [slot] = resolved;
-  if (slot === undefined) {
-    throw new Error(
-      `storage path did not resolve to a slot: ${pathToString(pathForError)}`,
-    );
-  }
-  if (slot.type.encoding === "bytes") {
-    return encodeBytesValue(slot, value as unknown);
-  }
-  return {
-    [storageSlot(slot)]: encodeValue(slot, value as unknown),
-  };
-}
-
-/**
  * Encode a decoded, contract-shaped state object into raw storage slots.
  *
  * The state shape must mirror {@link StorageLayoutToPrimitiveType}: structs are
@@ -401,13 +257,11 @@ export function encodeStorage<Layout extends StorageLayout>(
   const storage: AccountStorage = {};
   const root = state as Record<string, unknown>;
   for (const item of layout.storage) {
-    const type = findStorageType(layout, item.type);
-    const value = root[item.label];
     encodeStateValue(
       layout,
-      type,
+      findStorageType(layout, item.type),
       { root: item.label, segments: [] },
-      value,
+      root[item.label],
       storage,
     );
   }
@@ -427,19 +281,33 @@ function encodeStateValue(
     );
   }
 
-  if (isLeafStorageType(type)) {
+  if (
+    type.encoding === "bytes" ||
+    (type.encoding === "inplace" &&
+      type.members === undefined &&
+      type.base === undefined &&
+      type.key === undefined)
+  ) {
     mergeStorageWrites(layout, path, value, storage);
     return;
   }
 
   if (type.members !== undefined) {
-    assertRecordValue(value, path);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `decoded state value must be an object: ${formatStoragePath(path)}`,
+      );
+    }
+    const record = value as Record<string, unknown>;
     for (const member of type.members) {
       encodeStateValue(
         layout,
         findStorageType(layout, member.type),
-        appendField(path, member.label),
-        value[member.label],
+        {
+          root: path.root,
+          segments: [...path.segments, { kind: "field", name: member.label }],
+        },
+        record[member.label],
         storage,
       );
     }
@@ -447,9 +315,28 @@ function encodeStateValue(
   }
 
   if (type.base !== undefined) {
-    assertArrayValue(value, path);
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `decoded state value must be an array: ${formatStoragePath(path)}`,
+      );
+    }
     if (type.encoding === "dynamic_array") {
-      writeDynamicArrayLength(layout, path, value.length, storage);
+      const resolved = resolveStoragePath(layout, path);
+      if (
+        resolved.length !== 1 ||
+        resolved[0]!.type.encoding !== "dynamic_array" ||
+        formatStoragePath(resolved[0]!.path) !== formatStoragePath(path)
+      ) {
+        throw new Error(
+          `storage path is not a dynamic array root: ${formatStoragePath(path)}`,
+        );
+      }
+      storage[storageSlot(resolved[0]!)] = Hex.fromNumber(
+        BigInt(value.length),
+        {
+          size: 32,
+        },
+      );
     } else {
       const length = fixedArrayLength(type);
       if (value.length !== length) {
@@ -463,7 +350,16 @@ function encodeStateValue(
       encodeStateValue(
         layout,
         baseType,
-        appendSubscript(path, { kind: "number", value: BigInt(index) }),
+        {
+          root: path.root,
+          segments: [
+            ...path.segments,
+            {
+              kind: "subscript",
+              value: { kind: "number", value: BigInt(index) },
+            },
+          ],
+        },
         value[index],
         storage,
       );
@@ -472,14 +368,56 @@ function encodeStateValue(
   }
 
   if (type.key !== undefined && type.value !== undefined) {
-    assertRecordValue(value, path);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `decoded state value must be an object: ${formatStoragePath(path)}`,
+      );
+    }
     const keyType = findStorageType(layout, type.key);
     const valueType = findStorageType(layout, type.value);
     for (const [key, entry] of Object.entries(value)) {
+      const label = keyType.label;
+      let subscript: StoragePathSubscript;
+      if (label === "address") {
+        if (!HEX_STRING_PATTERN.test(key)) {
+          throw new Error(
+            `mapping key on '${formatStoragePath(path)}' must be a hex string for key type '${label}': '${key}'`,
+          );
+        }
+        subscript = { kind: "hex", value: key as Hex.Hex };
+      } else if (label === "bool") {
+        if (key !== "true" && key !== "false") {
+          throw new Error(
+            `mapping key on '${formatStoragePath(path)}' must be 'true' or 'false' for key type '${label}': '${key}'`,
+          );
+        }
+        subscript = { kind: "bool", value: key === "true" };
+      } else if (/^u?int[0-9]*$/.test(label)) {
+        if (!/^-?(0|[1-9][0-9]*)$/.test(key)) {
+          throw new Error(
+            `mapping key on '${formatStoragePath(path)}' must be a decimal integer for key type '${label}': '${key}'`,
+          );
+        }
+        subscript = { kind: "number", value: BigInt(key) };
+      } else if (/^bytes([1-9]|[12][0-9]|3[0-2])$/.test(label)) {
+        if (!HEX_STRING_PATTERN.test(key)) {
+          throw new Error(
+            `mapping key on '${formatStoragePath(path)}' must be a hex string for key type '${label}': '${key}'`,
+          );
+        }
+        subscript = { kind: "hex", value: key as Hex.Hex };
+      } else {
+        throw new Error(
+          `unsupported mapping key type '${label}' on '${formatStoragePath(path)}'`,
+        );
+      }
       encodeStateValue(
         layout,
         valueType,
-        appendSubscript(path, subscriptForMappingKey(keyType, key, path)),
+        {
+          root: path.root,
+          segments: [...path.segments, { kind: "subscript", value: subscript }],
+        },
         entry,
         storage,
       );
@@ -499,111 +437,16 @@ function mergeStorageWrites(
   storage: AccountStorage,
 ): void {
   const normalizedPath = normalizeConcreteParsedPath(layout, path);
-  const writes = encodeParsedStoragePath(layout, normalizedPath, value, path);
+  const writes = encodeStoragePathRuntime(
+    layout,
+    formatStoragePath(normalizedPath),
+    value,
+  );
   for (const [slot, write] of Object.entries(writes)) {
     storage[slot as Hex.Hex] = applySlotWrite(
       write,
       getSlotValue(storage, slot as Hex.Hex) ??
         Hex.fromNumber(0n, { size: 32 }),
-    );
-  }
-}
-
-function writeDynamicArrayLength(
-  layout: StorageLayout,
-  path: ParsedStoragePath,
-  length: number,
-  storage: AccountStorage,
-): void {
-  const resolved = resolveStoragePath(layout, path);
-  if (!isDynamicArrayRoot(resolved, path)) {
-    throw new Error(
-      `storage path is not a dynamic array root: ${formatStoragePath(path)}`,
-    );
-  }
-  storage[storageSlot(resolved[0]!)] = Hex.fromNumber(BigInt(length), {
-    size: 32,
-  });
-}
-
-function appendField(path: ParsedStoragePath, name: string): ParsedStoragePath {
-  return {
-    root: path.root,
-    segments: [...path.segments, { kind: "field", name }],
-  };
-}
-
-function appendSubscript(
-  path: ParsedStoragePath,
-  value: StoragePathSubscript,
-): ParsedStoragePath {
-  return {
-    root: path.root,
-    segments: [...path.segments, { kind: "subscript", value }],
-  };
-}
-
-function subscriptForMappingKey(
-  type: StorageType,
-  key: string,
-  path: ParsedStoragePath,
-): StoragePathSubscript {
-  const label = type.label;
-  if (label === "address") {
-    if (!HEX_STRING_PATTERN.test(key)) {
-      throw new Error(
-        `mapping key on '${formatStoragePath(path)}' must be a hex string for key type '${label}': '${key}'`,
-      );
-    }
-    return { kind: "hex", value: key as Hex.Hex };
-  }
-  if (label === "bool") {
-    if (key === "true" || key === "false") {
-      return { kind: "bool", value: key === "true" };
-    }
-    throw new Error(
-      `mapping key on '${formatStoragePath(path)}' must be 'true' or 'false' for key type '${label}': '${key}'`,
-    );
-  }
-  if (/^u?int[0-9]*$/.test(label)) {
-    if (!/^-?(0|[1-9][0-9]*)$/.test(key)) {
-      throw new Error(
-        `mapping key on '${formatStoragePath(path)}' must be a decimal integer for key type '${label}': '${key}'`,
-      );
-    }
-    return { kind: "number", value: BigInt(key) };
-  }
-  if (/^bytes([1-9]|[12][0-9]|3[0-2])$/.test(label)) {
-    if (!HEX_STRING_PATTERN.test(key)) {
-      throw new Error(
-        `mapping key on '${formatStoragePath(path)}' must be a hex string for key type '${label}': '${key}'`,
-      );
-    }
-    return { kind: "hex", value: key as Hex.Hex };
-  }
-  throw new Error(
-    `unsupported mapping key type '${label}' on '${formatStoragePath(path)}'`,
-  );
-}
-
-function assertRecordValue(
-  value: unknown,
-  path: ParsedStoragePath,
-): asserts value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(
-      `decoded state value must be an object: ${formatStoragePath(path)}`,
-    );
-  }
-}
-
-function assertArrayValue(
-  value: unknown,
-  path: ParsedStoragePath,
-): asserts value is readonly unknown[] {
-  if (!Array.isArray(value)) {
-    throw new Error(
-      `decoded state value must be an array: ${formatStoragePath(path)}`,
     );
   }
 }
@@ -614,15 +457,6 @@ function findStorageType(layout: StorageLayout, typeId: string): StorageType {
     throw new Error(`storage type not found: ${typeId}`);
   }
   return type;
-}
-
-function isLeafStorageType(type: StorageType): boolean {
-  return isValueStorageType(type) || type.encoding === "bytes";
-}
-
-function isValueStorageType(type: StorageType): boolean {
-  if (type.encoding !== "inplace" || type.members !== undefined) return false;
-  return type.base === undefined && type.key === undefined;
 }
 
 function fixedArrayLength(type: StorageType): number {
@@ -659,17 +493,6 @@ function resolvedPathEndsAtValue(
   );
 }
 
-function isDynamicArrayRoot(
-  resolved: readonly ResolvedStorageItem[],
-  path: ParsedStoragePath,
-): boolean {
-  return (
-    resolved.length === 1 &&
-    resolved[0]!.type.encoding === "dynamic_array" &&
-    formatStoragePath(resolved[0]!.path) === formatStoragePath(path)
-  );
-}
-
 function mappingPathError(path: ParsedStoragePath): string {
   return `cannot infer storage path for mapping '${formatStoragePath(path)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`;
 }
@@ -686,14 +509,6 @@ function storageSlot(resolved: ResolvedStorageItem): Hex.Hex {
   return Hex.fromNumber(resolved.baseSlot + BigInt(resolved.item.slot), {
     size: 32,
   });
-}
-
-function dynamicDataBaseSlot(slot: Hex.Hex): bigint {
-  return BigInt(Hash.keccak256(normalizeSlot(slot)));
-}
-
-function storageItemByteLength(resolved: ResolvedStorageItem): number {
-  return Number(resolved.type.numberOfBytes);
 }
 
 function getSlotValue(
@@ -714,289 +529,4 @@ function getSlotValue(
     }
   }
   return undefined;
-}
-
-function decodeValue(
-  resolved: ResolvedStorageItem,
-  slotValue: Hex.Hex,
-): unknown {
-  const numberOfBytes = storageItemByteLength(resolved);
-  const value = extractField(
-    BigInt(slotValue),
-    resolved.item.offset,
-    numberOfBytes,
-  );
-  const info = parseValueType(resolved.type.label, numberOfBytes);
-  switch (info.kind) {
-    case "uint":
-      return integerResult(value, numberOfBytes);
-    case "int":
-      return integerResult(decodeSigned(value, info.bits), numberOfBytes);
-    case "address":
-      return Hex.fromNumber(value, { size: 20 });
-    case "bool":
-      return value !== 0n;
-    case "bytes":
-      return Hex.fromNumber(value, { size: numberOfBytes });
-    case "enum":
-      return Number(value);
-  }
-}
-
-function decodeBytesValue(
-  resolved: ResolvedStorageItem,
-  slotValue: Hex.Hex,
-  storage: AccountStorage,
-): Hex.Hex | string {
-  const bytes = decodeBytesPayload(resolved, slotValue, storage);
-  if (resolved.type.label === "string") {
-    return Hex.toString(bytes);
-  }
-  return bytes;
-}
-
-function decodeBytesPayload(
-  resolved: ResolvedStorageItem,
-  slotValue: Hex.Hex,
-  storage: AccountStorage,
-): Hex.Hex {
-  const normalized = normalizeSlotValue(slotValue);
-  const marker = Number(BigInt(Hex.slice(normalized, 31, 32)));
-  if (marker % 2 === 0) {
-    const length = marker / 2;
-    return Hex.slice(normalized, 0, length);
-  }
-
-  const length = bytesLength((BigInt(normalized) - 1n) / 2n, resolved.path);
-  const baseSlot = dynamicDataBaseSlot(storageSlot(resolved));
-  const chunks: Hex.Hex[] = [];
-  for (let index = 0; index < Math.ceil(length / 32); index++) {
-    const slot = Hex.fromNumber(baseSlot + BigInt(index), { size: 32 });
-    const value = getSlotValue(storage, slot);
-    if (value === undefined) {
-      throw new Error(`storage value not found for slot: ${slot}`);
-    }
-    chunks.push(value);
-  }
-  return Hex.slice(Hex.concat(...chunks), 0, length);
-}
-
-function encodeValue(resolved: ResolvedStorageItem, value: unknown): SlotWrite {
-  const numberOfBytes = storageItemByteLength(resolved);
-  const info = parseValueType(resolved.type.label, numberOfBytes);
-  const encoded = encodeField(info, numberOfBytes, value);
-  const shift = BigInt(resolved.item.offset * 8);
-  const mask = fieldMask(numberOfBytes) << shift;
-  return {
-    value: Hex.fromNumber(encoded << shift, { size: 32 }),
-    mask: Hex.fromNumber(mask, { size: 32 }),
-  };
-}
-
-function encodeBytesValue(
-  resolved: ResolvedStorageItem,
-  value: unknown,
-): SlotWrites {
-  const bytes = bytesPayload(resolved, value);
-  if (Hex.size(bytes) <= 31) {
-    return {
-      [storageSlot(resolved)]: {
-        value: encodeShortBytes(bytes),
-        mask: fullSlotMask(),
-      },
-    };
-  }
-
-  const slot = storageSlot(resolved);
-  const baseSlot = dynamicDataBaseSlot(slot);
-  const writes: SlotWrites = {
-    [slot]: {
-      value: Hex.fromNumber(BigInt(Hex.size(bytes)) * 2n + 1n, { size: 32 }),
-      mask: fullSlotMask(),
-    },
-  };
-  for (let offset = 0; offset < Hex.size(bytes); offset += 32) {
-    writes[Hex.fromNumber(baseSlot + BigInt(offset / 32), { size: 32 })] = {
-      value: Hex.padRight(Hex.slice(bytes, offset, offset + 32), 32),
-      mask: fullSlotMask(),
-    };
-  }
-  return writes;
-}
-
-function fullSlotMask(): Hex.Hex {
-  return Hex.fromNumber((1n << 256n) - 1n, { size: 32 });
-}
-
-function bytesPayload(resolved: ResolvedStorageItem, value: unknown): Hex.Hex {
-  if (resolved.type.label === "string") {
-    if (typeof value !== "string") {
-      throw new Error("string value must be a string");
-    }
-    return Hex.fromString(value);
-  }
-  if (typeof value !== "string" || !HEX_STRING_PATTERN.test(value)) {
-    throw new Error("bytes value must be a hex string");
-  }
-  if ((value.length - 2) % 2 !== 0) {
-    throw new Error("bytes value must have an even number of hex digits");
-  }
-  return value as Hex.Hex;
-}
-
-function encodeShortBytes(bytes: Hex.Hex): Hex.Hex {
-  return Hex.concat(
-    Hex.padRight(bytes, 31),
-    Hex.fromNumber(Hex.size(bytes) * 2, { size: 1 }),
-  );
-}
-
-function bytesLength(length: bigint, path: ParsedStoragePath): number {
-  if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error(
-      `bytes value is too large to decode: ${formatStoragePath(path)}`,
-    );
-  }
-  return Number(length);
-}
-
-function extractField(
-  slotValue: bigint,
-  offset: number,
-  numberOfBytes: number,
-): bigint {
-  return (slotValue >> BigInt(offset * 8)) & fieldMask(numberOfBytes);
-}
-
-function fieldMask(numberOfBytes: number): bigint {
-  return (1n << BigInt(numberOfBytes * 8)) - 1n;
-}
-
-function integerResult(value: bigint, numberOfBytes: number): bigint | number {
-  // Match abitype's default primitive mapping: <= 48-bit ints are numbers.
-  if (numberOfBytes <= 6) {
-    return Number(value);
-  }
-  return value;
-}
-
-function decodeSigned(value: bigint, bits: number): bigint {
-  const signBit = 1n << BigInt(bits - 1);
-  if ((value & signBit) === 0n) {
-    return value;
-  }
-  return value - (1n << BigInt(bits));
-}
-
-type ParsedValueType =
-  | { kind: "uint"; bits: number }
-  | { kind: "int"; bits: number }
-  | { kind: "address"; bits: 160 }
-  | { kind: "bool"; bits: 8 }
-  | { kind: "bytes"; bytes: number }
-  | { kind: "enum"; bytes: number };
-
-function parseValueType(type: string, numberOfBytes: number): ParsedValueType {
-  if (type === "uint") {
-    return { kind: "uint", bits: 256 };
-  }
-  if (type === "int") {
-    return { kind: "int", bits: 256 };
-  }
-  if (type.startsWith("uint")) {
-    return { kind: "uint", bits: parseIntegerBits(type, "uint") };
-  }
-  if (type.startsWith("int")) {
-    return { kind: "int", bits: parseIntegerBits(type, "int") };
-  }
-  if (type === "address") {
-    return { kind: "address", bits: 160 };
-  }
-  if (type === "bool") {
-    return { kind: "bool", bits: 8 };
-  }
-  if (/^bytes([1-9]|[12][0-9]|3[0-2])$/.test(type)) {
-    return { kind: "bytes", bytes: Number(type.slice("bytes".length)) };
-  }
-  if (type.startsWith("enum ")) {
-    return { kind: "enum", bytes: numberOfBytes };
-  }
-  throw new Error(`unsupported value type: ${type}`);
-}
-
-function parseIntegerBits(type: string, prefix: "uint" | "int"): number {
-  const suffix = type.slice(prefix.length);
-  const bits = suffix === "" ? 256 : Number(suffix);
-  if (!Number.isInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0) {
-    throw new Error(`invalid Solidity integer type: ${type}`);
-  }
-  return bits;
-}
-
-function encodeField(
-  type: ParsedValueType,
-  numberOfBytes: number,
-  value: unknown,
-): bigint {
-  switch (type.kind) {
-    case "uint":
-      return encodeUnsigned(toBigInt(value, "uint"), type.bits);
-    case "int":
-      return encodeSigned(toBigInt(value, "int"), type.bits);
-    case "address":
-      if (typeof value !== "string" || !HEX_STRING_PATTERN.test(value)) {
-        throw new Error("address value must be a hex string");
-      }
-      return encodeUnsigned(BigInt(value), type.bits);
-    case "bool":
-      if (typeof value !== "boolean") {
-        throw new Error("bool value must be a boolean");
-      }
-      return value ? 1n : 0n;
-    case "bytes":
-      return encodeFixedBytes(value, type.bytes);
-    case "enum":
-      return encodeUnsigned(toBigInt(value, "enum"), numberOfBytes * 8);
-  }
-}
-
-function toBigInt(value: unknown, label: string): bigint {
-  if (typeof value === "bigint") {
-    return value;
-  }
-  if (typeof value === "number" && Number.isInteger(value)) {
-    return BigInt(value);
-  }
-  throw new Error(`${label} value must be an integer`);
-}
-
-function encodeUnsigned(value: bigint, bits: number): bigint {
-  const max = 1n << BigInt(bits);
-  if (value < 0n || value >= max) {
-    throw new Error(`unsigned integer does not fit in ${bits} bits`);
-  }
-  return value;
-}
-
-function encodeSigned(value: bigint, bits: number): bigint {
-  const min = -(1n << BigInt(bits - 1));
-  const max = (1n << BigInt(bits - 1)) - 1n;
-  if (value < min || value > max) {
-    throw new Error(`signed integer does not fit in ${bits} bits`);
-  }
-  if (value >= 0n) {
-    return value;
-  }
-  return (1n << BigInt(bits)) + value;
-}
-
-function encodeFixedBytes(value: unknown, numberOfBytes: number): bigint {
-  if (typeof value !== "string" || !HEX_STRING_PATTERN.test(value)) {
-    throw new Error("fixed bytes value must be a hex string");
-  }
-  const actualBytes = (value.length - 2) / 2;
-  if (!Number.isInteger(actualBytes) || actualBytes !== numberOfBytes) {
-    throw new Error(`fixed bytes value must be exactly ${numberOfBytes} bytes`);
-  }
-  return BigInt(value);
 }

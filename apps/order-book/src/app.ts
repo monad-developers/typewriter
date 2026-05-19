@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { type FFCAConfig, verifySignature as verifyKeySignature } from "ffca";
-import type { AsyncSlotGetter, StorageProxy } from "storage-layout";
+import type { StorageLayoutToPrimitiveType } from "storage-layout";
 import {
   encodeAbiParameters,
   type Hex,
@@ -50,9 +50,13 @@ import {
 import type { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 type OrderBookState = State<bigint>;
-type OrderBookStorage = StorageProxy<
-  typeof EXCHANGE_STORAGE_LAYOUT,
-  AsyncSlotGetter
+type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
+  ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
+  : [T] extends [object]
+    ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
+    : Promise<T>;
+type OrderBookStorage = AsyncStorageProxy<
+  StorageLayoutToPrimitiveType<typeof EXCHANGE_STORAGE_LAYOUT>
 >;
 type KnownPriceLevels = Map<number, { bids: Set<number>; asks: Set<number> }>;
 const UINT64_MASK = 0xffffffffffffffffn;

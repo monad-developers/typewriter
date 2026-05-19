@@ -31,15 +31,12 @@
 //    bytes/string/dynamic arrays.
 
 import { Hash, type Hex } from "ox";
-import {
-  type AccountStorage,
-  decodeStoragePath,
-  type StorageLayout,
-  type StorageLayoutToPrimitiveType,
-} from "./index";
+import { decodeStoragePath } from "./index";
 import {
   resolveStoragePath,
   type StorageItem,
+  type StorageLayout,
+  type StorageLayoutToPrimitiveType,
   type StorageType,
 } from "./storage-layout";
 import {
@@ -50,19 +47,20 @@ import {
   type StoragePathSegment,
   type StoragePathSubscript,
 } from "./storage-path";
+import type { AccountStorage } from "./types";
 
 // -----------------------------------------------------------------------------
 // Public types
 
 /** Map of storage slot hex strings to their raw 32-byte values. */
-export type SlotMap = { [slot: Hex.Hex]: Hex.Hex };
+type SlotMap = { [slot: Hex.Hex]: Hex.Hex };
 
 /** Synchronous slot reader. */
-export type SyncSlotGetter = (slots: Hex.Hex[]) => SlotMap;
+type SyncSlotGetter = (slots: Hex.Hex[]) => SlotMap;
 /** Asynchronous slot reader. */
-export type AsyncSlotGetter = (slots: Hex.Hex[]) => Promise<SlotMap>;
+type AsyncSlotGetter = (slots: Hex.Hex[]) => Promise<SlotMap>;
 /** Sync or async slot reader. */
-export type SlotGetter = SyncSlotGetter | AsyncSlotGetter;
+type SlotGetter = SyncSlotGetter | AsyncSlotGetter;
 
 type DeepReadonly<T> = [T] extends [readonly unknown[]]
   ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
@@ -76,7 +74,7 @@ type DeepReadonly<T> = [T] extends [readonly unknown[]]
  * primitive positions become promises. Used to model an async-backed proxy's
  * return type.
  */
-export type DeepPromise<T> = [T] extends [readonly unknown[]]
+type DeepPromise<T> = [T] extends [readonly unknown[]]
   ? { readonly [K in keyof T]: DeepPromise<T[K]> }
   : [T] extends [object]
     ? { readonly [K in keyof T]: DeepPromise<T[K]> }
@@ -88,7 +86,7 @@ export type DeepPromise<T> = [T] extends [readonly unknown[]]
  * getter is asynchronous, leaf positions are wrapped in `Promise<>`. The whole
  * projection is recursively readonly because proxy writes are rejected.
  */
-export type StorageProxy<
+type StorageProxy<
   L extends StorageLayout,
   G extends SlotGetter,
 > = G extends AsyncSlotGetter

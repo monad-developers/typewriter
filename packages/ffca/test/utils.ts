@@ -19,9 +19,8 @@ import {
 } from "ox";
 import { Authentication } from "ox/webauthn";
 import type {
-  AsyncSlotGetter,
   StorageLayout,
-  StorageProxy,
+  StorageLayoutToPrimitiveType,
 } from "storage-layout";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
@@ -44,6 +43,12 @@ import {
 // Counter.State on-chain. Tests that use COUNTER_MUTATIONS should pass
 // `{ initial: { total: 0n, nonce: 0n } as CounterState }` as
 // FFCAConfig.state.
+type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
+  ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
+  : [T] extends [object]
+    ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
+    : Promise<T>;
+
 export type CounterState = {
   total: bigint;
   nonce: bigint;
@@ -957,9 +962,8 @@ export const HARNESS_MUTATIONS: {
       signature: unknown;
       bundle: readonly { name: string; args: unknown }[];
     }) => {
-      const harnessStorage = state as StorageProxy<
-        typeof HARNESS_STORAGE_LAYOUT,
-        AsyncSlotGetter
+      const harnessStorage = state as AsyncStorageProxy<
+        StorageLayoutToPrimitiveType<typeof HARNESS_STORAGE_LAYOUT>
       >;
       const debit = args as DebitArgs;
       const balance = harnessStorage.balances[debit.account];
