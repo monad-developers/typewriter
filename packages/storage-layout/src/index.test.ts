@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Hex } from "ox";
 import {
   complexLayout,
   layout,
@@ -8,10 +9,10 @@ import {
   SALT,
 } from "../test/utils";
 import {
+  applySlotWrite,
   decodeStoragePath,
   encodeStorage,
   encodeStoragePath,
-  formatStoragePath,
   getStoragePath,
   getStorageSlot,
   type SlotWrites,
@@ -35,6 +36,25 @@ function writesToStorage(writes: SlotWrites) {
     Object.entries(writes).map(([slot, write]) => [slot, write.value]),
   );
 }
+
+function expectSingleSlot(slot: Hex.Hex | Hex.Hex[]): Hex.Hex {
+  if (Array.isArray(slot)) {
+    throw new Error("expected a single slot");
+  }
+  return slot;
+}
+
+const encodeUnknownStoragePath = encodeStoragePath as unknown as (
+  layout: StorageLayout,
+  path: string,
+  value: unknown,
+) => SlotWrites;
+
+const decodeUnknownStoragePath = decodeStoragePath as unknown as (
+  layout: StorageLayout,
+  path: string,
+  storage: { [slot: Hex.Hex]: Hex.Hex },
+) => unknown;
 
 test("getStorageSlot resolves top-level value types", () => {
   expect(getStorageSlot(layout, "owner")).toBe(
@@ -106,12 +126,12 @@ test("getStorageSlot resolves keyed mappings", () => {
   ).toMatchInlineSnapshot(
     `"0x66bb189fb8ad2dc06d80417b1df23596990027a61c5f41caf2342b38c5163744"`,
   );
-  expect(() => getStorageSlot(layout, "balances")).toThrow(
+  expect(() => getStorageSlot(layout as StorageLayout, "balances")).toThrow(
     "mapping storage paths require a key: balances",
   );
-  expect(() => getStorageSlot(layout, `allowances[${OWNER}]`)).toThrow(
-    `mapping storage paths require a key: allowances[${OWNER}]`,
-  );
+  expect(() =>
+    getStorageSlot(layout as StorageLayout, `allowances[${OWNER}]`),
+  ).toThrow(`mapping storage paths require a key: allowances[${OWNER}]`);
 });
 
 test("getStorageSlot resolves fixed arrays of structs", () => {
@@ -210,24 +230,20 @@ test("getStorageSlot rejects unsupported paths", () => {
   expect(() => getStorageSlot(layout, "balances[0x1234]")).toThrow(
     "mapping key for 'balances' must be 20 bytes",
   );
-  expect(() => getStorageSlot(layout, "balances")).toThrow(
+  expect(() => getStorageSlot(layout as StorageLayout, "balances")).toThrow(
     "mapping storage paths require a key: balances",
   );
-  expect(() => getStorageSlot(layout, "fixedNumbers[3]")).toThrow(
-    "fixed array index out of bounds: fixedNumbers[3]",
-  );
+  expect(() =>
+    getStorageSlot(layout as StorageLayout, "fixedNumbers[3]"),
+  ).toThrow("fixed array index out of bounds: fixedNumbers[3]");
 });
 
 test("getStoragePath returns no matches for untouched slots", () => {
-  expect(
-    getStoragePath(reversibleLayout, ["0x123"]).map(formatStoragePath),
-  ).toMatchInlineSnapshot(`[]`);
+  expect(getStoragePath(reversibleLayout, "0x123")).toMatchInlineSnapshot(`[]`);
 });
 
 test("getStoragePath maps changed slots to storage paths", () => {
-  expect(
-    getStoragePath(layout, "0x1").map(formatStoragePath),
-  ).toMatchInlineSnapshot(`
+  expect(getStoragePath(layout, "0x1")).toMatchInlineSnapshot(`
       [
         "owner",
         "paused",
@@ -236,9 +252,7 @@ test("getStoragePath maps changed slots to storage paths", () => {
 });
 
 test("getStoragePath returns struct leaf paths", () => {
-  expect(
-    getStoragePath(reversibleLayout, ["0x4"]).map(formatStoragePath),
-  ).toMatchInlineSnapshot(`
+  expect(getStoragePath(reversibleLayout, "0x4")).toMatchInlineSnapshot(`
       [
         "metadata.lastUpdate",
         "metadata.active",
@@ -247,9 +261,7 @@ test("getStoragePath returns struct leaf paths", () => {
 });
 
 test("getStoragePath returns fixed array paths", () => {
-  expect(
-    getStoragePath(reversibleLayout, "0x8").map(formatStoragePath),
-  ).toMatchInlineSnapshot(`
+  expect(getStoragePath(reversibleLayout, "0x8")).toMatchInlineSnapshot(`
     [
       "fixedNumbers[0]",
       "fixedNumbers[1]",
@@ -260,7 +272,7 @@ test("getStoragePath returns fixed array paths", () => {
 test("getStoragePath rejects mappings because keys cannot be reversed", () => {
   const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
 
-  expect(() => getStoragePath(layout, [balanceSlot])).toThrow(
+  expect(() => getStoragePath(layout, balanceSlot)).toThrow(
     "cannot infer storage path for mapping 'balances' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone",
   );
 });
@@ -269,11 +281,7 @@ test("getStoragePath maps raw slots through known paths", () => {
   const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
 
   expect(
-    getStoragePath(layout, "0x1", [
-      "owner",
-      "paused",
-      `balances[${OWNER}]`,
-    ]).map(formatStoragePath),
+    getStoragePath(layout, "0x1", ["owner", "paused", `balances[${OWNER}]`]),
   ).toMatchInlineSnapshot(`
     [
       "owner",
@@ -286,7 +294,7 @@ test("getStoragePath maps raw slots through known paths", () => {
       "owner",
       "paused",
       `balances[${OWNER}]`,
-    ]).map(formatStoragePath),
+    ]),
   ).toEqual([`balances[${OWNER}]`]);
 
   expect(
@@ -295,9 +303,7 @@ test("getStoragePath maps raw slots through known paths", () => {
 });
 
 test("getStoragePath expands composite known paths", () => {
-  expect(
-    getStoragePath(layout, "0x4", ["metadata"]).map(formatStoragePath),
-  ).toMatchInlineSnapshot(`
+  expect(getStoragePath(layout, "0x4", ["metadata"])).toMatchInlineSnapshot(`
     [
       "metadata.lastUpdate",
       "metadata.active",
@@ -321,7 +327,7 @@ test("decodeStoragePath decodes value types from raw slots", () => {
   expect(decodeStoragePath(layout, "salt", storage)).toBe(SALT);
   expect(decodeStoragePath(layout, "metadata.lastUpdate", storage)).toBe(42n);
   expect(decodeStoragePath(layout, "metadata.active", storage)).toBe(true);
-  expect(() => decodeStoragePath(layout, "metadata", storage)).toThrow(
+  expect(() => decodeUnknownStoragePath(layout, "metadata", storage)).toThrow(
     "storage path does not point to a leaf value: metadata",
   );
 });
@@ -333,21 +339,21 @@ test("decodeStoragePath decodes fixed array elements", () => {
 
   expect(decodeStoragePath(layout, "fixedNumbers[0]", storage)).toBe(1n);
   expect(decodeStoragePath(layout, "fixedNumbers[1]", storage)).toBe(2n);
-  expect(() => decodeStoragePath(layout, "fixedNumbers", storage)).toThrow(
-    "storage path does not point to a leaf value: fixedNumbers",
-  );
+  expect(() =>
+    decodeUnknownStoragePath(layout, "fixedNumbers", storage),
+  ).toThrow("storage path does not point to a leaf value: fixedNumbers");
 });
 
 test("decodeStoragePath decodes dynamic array elements", () => {
   const storage = {
-    [getStorageSlot(layout, "dynamicNumbers")]: "0x2",
+    [expectSingleSlot(getStorageSlot(layout, "dynamicNumbers"))]: "0x2",
     [getStorageSlot(layout, "dynamicNumbers[0]")]: "0x1",
     [getStorageSlot(layout, "dynamicNumbers[1]")]: "0x2",
   } as const;
 
-  expect(() => decodeStoragePath(layout, "dynamicNumbers", storage)).toThrow(
-    "storage path does not point to a leaf value: dynamicNumbers",
-  );
+  expect(() =>
+    decodeUnknownStoragePath(layout, "dynamicNumbers", storage),
+  ).toThrow("storage path does not point to a leaf value: dynamicNumbers");
   expect(decodeStoragePath(layout, "dynamicNumbers[1]", storage)).toBe(2n);
 });
 
@@ -380,7 +386,7 @@ test("decodeStoragePath decodes keyed mappings", () => {
     decodeStoragePath(layout, `allowances[${OWNER}][${SPENDER}]`, storage),
   ).toBe(100n);
   expect(() =>
-    decodeStoragePath(layout, `allowances[${OWNER}]`, storage),
+    decodeUnknownStoragePath(layout, `allowances[${OWNER}]`, storage),
   ).toThrow(`mapping storage paths require a key: allowances[${OWNER}]`);
 });
 
@@ -404,7 +410,8 @@ test("encodeStoragePath encodes full-slot value types", () => {
 });
 
 test("encodeStoragePath returns masks for packed values", () => {
-  expect(encodeStoragePath(layout, "paused", false)).toMatchInlineSnapshot(`
+  const writes = encodeStoragePath(layout, "paused", false);
+  expect(writes).toMatchInlineSnapshot(`
     {
       "0x0000000000000000000000000000000000000000000000000000000000000001": {
         "mask": "0x0000000000000000000000ff0000000000000000000000000000000000000000",
@@ -412,6 +419,14 @@ test("encodeStoragePath returns masks for packed values", () => {
       },
     }
   `);
+  expect(
+    applySlotWrite(
+      writes[
+        "0x0000000000000000000000000000000000000000000000000000000000000001"
+      ]!,
+      PACKED_OWNER_PAUSED,
+    ),
+  ).toBe("0x0000000000000000000000001111111111111111111111111111111111111234");
 });
 
 test("encodeStoragePath encodes nested struct fields", () => {
@@ -426,7 +441,7 @@ test("encodeStoragePath encodes nested struct fields", () => {
     }
   `);
   expect(() =>
-    encodeStoragePath(layout, "metadata", {
+    encodeUnknownStoragePath(layout, "metadata", {
       active: false,
       admin: OWNER,
       inner: { count: 100n },
@@ -459,9 +474,9 @@ test("encodeStoragePath encodes dynamic array elements", () => {
       },
     }
   `);
-  expect(() => encodeStoragePath(layout, "dynamicNumbers", [1n, 2n])).toThrow(
-    "storage path does not point to a leaf value: dynamicNumbers",
-  );
+  expect(() =>
+    encodeUnknownStoragePath(layout, "dynamicNumbers", [1n, 2n]),
+  ).toThrow("storage path does not point to a leaf value: dynamicNumbers");
 });
 
 test("encodeStoragePath encodes bytes and strings", () => {

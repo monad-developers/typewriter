@@ -2,9 +2,9 @@ import type { AbiParameterToPrimitiveType, AbiType } from "abitype";
 import { Hash, Hex } from "ox";
 import {
   formatStoragePath,
-  type NormalizeStoragePath,
   type ParsedStoragePath,
   type ParsedStoragePathSegment,
+  type ParseStoragePath,
   type StoragePath,
   type StoragePathSegment,
 } from "./storage-path";
@@ -77,7 +77,19 @@ export type ExtractVariableNames<Layout extends StorageLayout> =
   Layout["storage"][number]["label"];
 
 export type ExtractStoragePaths<Layout extends StorageLayout> =
-  StorageItemPaths<Layout, Layout["storage"][number]>;
+  string extends ExtractVariableNames<Layout>
+    ? string
+    : StorageItemPaths<Layout, Layout["storage"][number]>;
+
+export type ExtractConcreteStoragePaths<Layout extends StorageLayout> =
+  string extends ExtractVariableNames<Layout>
+    ? string
+    : ConcreteStorageItemPaths<Layout, Layout["storage"][number]>;
+
+export type ExtractMultiSlotStoragePaths<Layout extends StorageLayout> =
+  string extends ExtractVariableNames<Layout>
+    ? string
+    : MultiSlotStorageItemPaths<Layout, Layout["storage"][number]>;
 
 export type StorageLayoutToPrimitiveType<Layout extends StorageLayout> =
   Pretty<{
@@ -89,12 +101,12 @@ export type StorageLayoutToPrimitiveType<Layout extends StorageLayout> =
 
 export type StoragePathToPrimitiveType<
   Layout extends StorageLayout,
-  Path extends string | StoragePath,
+  Path extends string,
 > = StoragePathTypeToPrimitiveType<Layout, StorageTypeForPath<Layout, Path>>;
 
 export type IsSingleSlot<
   Layout extends StorageLayout,
-  Path extends string | StoragePath,
+  Path extends string,
 > = IsStoragePathTypeSingleSlot<StorageTypeForPath<Layout, Path>>;
 
 export function resolveStoragePath(
@@ -771,6 +783,28 @@ type StorageItemPaths<
     >
   : never;
 
+type ConcreteStorageItemPaths<
+  Layout extends StorageLayout,
+  Item extends StorageItem,
+> = Item extends StorageItem
+  ? ConcreteStorageTypePaths<
+      Layout,
+      StorageTypeForItem<Layout, Item>,
+      Extract<Item["label"], string>
+    >
+  : never;
+
+type MultiSlotStorageItemPaths<
+  Layout extends StorageLayout,
+  Item extends StorageItem,
+> = Item extends StorageItem
+  ? MultiSlotStorageTypePaths<
+      Layout,
+      StorageTypeForItem<Layout, Item>,
+      Extract<Item["label"], string>
+    >
+  : never;
+
 type StorageTypePaths<
   Layout extends StorageLayout,
   Type,
@@ -783,6 +817,97 @@ type StorageTypePaths<
   ? MappingStoragePaths<Layout, Key, Value, Prefix>
   : Prefix | StorageTypeChildPaths<Layout, Type, Prefix>;
 
+type ConcreteStorageTypePaths<
+  Layout extends StorageLayout,
+  Type,
+  Prefix extends string,
+> = Type extends {
+  encoding: "mapping";
+  key: infer Key extends string;
+  value: infer Value extends string;
+}
+  ? MappingConcreteStoragePaths<Layout, Key, Value, Prefix>
+  : Type extends { members: readonly StorageItem[] }
+    ? StructMemberConcretePaths<Layout, Type["members"], Prefix>
+    : Type extends {
+          base: infer Base extends string;
+          encoding: "dynamic_array";
+        }
+      ? ConcreteStorageTypePaths<
+          Layout,
+          StorageTypeForId<Layout, Base>,
+          `${Prefix}[${number}]`
+        >
+      : Type extends {
+            base: infer Base extends string;
+            label: infer Label extends string;
+          }
+        ? FixedArrayLength<Label> extends infer Length extends number
+          ? FixedArrayIndex<Length> extends infer Index extends number
+            ? ConcreteStorageTypePaths<
+                Layout,
+                StorageTypeForId<Layout, Base>,
+                `${Prefix}[${Index}]`
+              >
+            : never
+          : never
+        : Type extends StorageType
+          ? Type["encoding"] extends "bytes" | "inplace"
+            ? Prefix
+            : never
+          : never;
+
+type MultiSlotStorageTypePaths<
+  Layout extends StorageLayout,
+  Type,
+  Prefix extends string,
+> = Type extends {
+  encoding: "mapping";
+  key: infer Key extends string;
+  value: infer Value extends string;
+}
+  ? MappingMultiSlotStoragePaths<Layout, Key, Value, Prefix>
+  : Type extends StorageType
+    ?
+        | MultiSlotStorageTypeSelfPath<Type, Prefix>
+        | MultiSlotStorageTypeChildPaths<Layout, Type, Prefix>
+    : never;
+
+type MultiSlotStorageTypeSelfPath<
+  Type extends StorageType,
+  Prefix extends string,
+> = Type["numberOfBytes"] extends SingleSlotByteCount ? never : Prefix;
+
+type MultiSlotStorageTypeChildPaths<
+  Layout extends StorageLayout,
+  Type,
+  Prefix extends string,
+> = Type extends { members: readonly StorageItem[] }
+  ? StructMemberMultiSlotPaths<Layout, Type["members"], Prefix>
+  : Type extends {
+        base: infer Base extends string;
+        encoding: "dynamic_array";
+      }
+    ? MultiSlotStorageTypePaths<
+        Layout,
+        StorageTypeForId<Layout, Base>,
+        `${Prefix}[${number}]`
+      >
+    : Type extends {
+          base: infer Base extends string;
+          label: infer Label extends string;
+        }
+      ? FixedArrayLength<Label> extends infer Length extends number
+        ? FixedArrayIndex<Length> extends infer Index extends number
+          ? MultiSlotStorageTypePaths<
+              Layout,
+              StorageTypeForId<Layout, Base>,
+              `${Prefix}[${Index}]`
+            >
+          : never
+        : never
+      : never;
+
 type MappingStoragePaths<
   Layout extends StorageLayout,
   Key extends string,
@@ -791,6 +916,34 @@ type MappingStoragePaths<
 > =
   MappingKeyPath<Layout, Key> extends infer KeyPath extends string
     ? StorageTypePaths<
+        Layout,
+        StorageTypeForId<Layout, Value>,
+        `${Prefix}[${KeyPath}]`
+      >
+    : never;
+
+type MappingConcreteStoragePaths<
+  Layout extends StorageLayout,
+  Key extends string,
+  Value extends string,
+  Prefix extends string,
+> =
+  MappingKeyPath<Layout, Key> extends infer KeyPath extends string
+    ? ConcreteStorageTypePaths<
+        Layout,
+        StorageTypeForId<Layout, Value>,
+        `${Prefix}[${KeyPath}]`
+      >
+    : never;
+
+type MappingMultiSlotStoragePaths<
+  Layout extends StorageLayout,
+  Key extends string,
+  Value extends string,
+  Prefix extends string,
+> =
+  MappingKeyPath<Layout, Key> extends infer KeyPath extends string
+    ? MultiSlotStorageTypePaths<
         Layout,
         StorageTypeForId<Layout, Value>,
         `${Prefix}[${KeyPath}]`
@@ -825,8 +978,11 @@ type StorageTypeChildPaths<
         StorageTypeForId<Layout, Base>,
         `${Prefix}[${number}]`
       >
-    : Type extends { base: infer Base extends string }
-      ? Type extends { label: `${string}[${infer Length extends number}]` }
+    : Type extends {
+          base: infer Base extends string;
+          label: infer Label extends string;
+        }
+      ? FixedArrayLength<Label> extends infer Length extends number
         ? FixedArrayIndex<Length> extends infer Index extends number
           ? StorageTypePaths<
               Layout,
@@ -851,6 +1007,34 @@ type StructMemberPaths<
     : never
   : never;
 
+type StructMemberConcretePaths<
+  Layout extends StorageLayout,
+  Members extends readonly StorageItem[],
+  Prefix extends string,
+> = Members[number] extends infer Member extends StorageItem
+  ? Member extends StorageItem
+    ? ConcreteStorageTypePaths<
+        Layout,
+        StorageTypeForItem<Layout, Member>,
+        `${Prefix}.${Extract<Member["label"], string>}`
+      >
+    : never
+  : never;
+
+type StructMemberMultiSlotPaths<
+  Layout extends StorageLayout,
+  Members extends readonly StorageItem[],
+  Prefix extends string,
+> = Members[number] extends infer Member extends StorageItem
+  ? Member extends StorageItem
+    ? MultiSlotStorageTypePaths<
+        Layout,
+        StorageTypeForItem<Layout, Member>,
+        `${Prefix}.${Extract<Member["label"], string>}`
+      >
+    : never
+  : never;
+
 type FixedArrayIndex<
   Length extends number,
   Acc extends readonly unknown[] = [],
@@ -860,6 +1044,20 @@ type FixedArrayIndex<
     ? never
     : Acc["length"] | FixedArrayIndex<Length, readonly [...Acc, unknown]>;
 
+type FixedArrayLength<Label extends string> =
+  Label extends `${string}[${infer Rest}`
+    ? FixedArrayLengthSuffix<Rest>
+    : never;
+
+type FixedArrayLengthSuffix<Rest extends string> =
+  Rest extends `${infer Current}]${infer Tail}`
+    ? Tail extends ""
+      ? Current extends `${infer Length extends number}`
+        ? Length
+        : never
+      : FixedArrayLength<Tail>
+    : never;
+
 type StoragePathTypeToPrimitiveType<
   Layout extends StorageLayout,
   Type,
@@ -867,14 +1065,14 @@ type StoragePathTypeToPrimitiveType<
 
 type StorageTypeForPath<
   Layout extends StorageLayout,
-  Path extends string | StoragePath,
+  Path extends string,
 > = Path extends string
   ? string extends Path
     ?
         | StorageType
         | CustomTypeError<"StoragePath root was not found in storage layout.">
-    : StorageTypeForParsedPath<Layout, NormalizeStoragePath<Path>>
-  : StorageTypeForParsedPath<Layout, NormalizeStoragePath<Path>>;
+    : StorageTypeForParsedPath<Layout, ParseStoragePath<Path>>
+  : never;
 
 type StorageTypeForParsedPath<
   Layout extends StorageLayout,
