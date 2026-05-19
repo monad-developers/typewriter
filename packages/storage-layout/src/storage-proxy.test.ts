@@ -65,6 +65,13 @@ function writesToStorage(writes: SlotWrites): SlotMap {
   );
 }
 
+function expectSingleSlot(slot: Hex.Hex | Hex.Hex[]): Hex.Hex {
+  if (Array.isArray(slot)) {
+    throw new Error("expected a single slot");
+  }
+  return slot;
+}
+
 // -----------------------------------------------------------------------------
 // Sync mode
 
@@ -476,7 +483,7 @@ test("array proxies only support numeric element access", () => {
 });
 
 test("sync: dynamic array length reads the root length slot", () => {
-  const lengthSlot = getStorageSlot(layout, "dynamicNumbers");
+  const lengthSlot = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers"));
   const { get, calls } = syncGetter({ [lengthSlot]: "0x2" });
   const state = createStorageProxy(layout, get);
 
@@ -485,7 +492,7 @@ test("sync: dynamic array length reads the root length slot", () => {
 });
 
 test("async: dynamic array length returns a promise", async () => {
-  const lengthSlot = getStorageSlot(layout, "dynamicNumbers");
+  const lengthSlot = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers"));
   const { get } = asyncGetter({ [lengthSlot]: "0x2" });
   const state = createStorageProxy(layout, get);
 

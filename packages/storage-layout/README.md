@@ -20,6 +20,7 @@ Use human-readable storage paths for most calls:
 
 ```ts
 import {
+  applySlotWrite,
   createStorageProxy,
   decodeStoragePath,
   encodeStorage,
@@ -33,6 +34,8 @@ const balanceSlot = getStorageSlot(
   "balances[0x1111111111111111111111111111111111111234]",
 );
 ```
+
+For strict `as const` layouts, leaf-only APIs infer valid path strings from the layout. Composite paths like `metadata`, `fixedNumbers`, and `dynamicNumbers` are valid for `getStorageSlot`, but not for `decodeStoragePath` or `encodeStoragePath` because those APIs require paths that end at one concrete value.
 
 Decode a value from raw slot storage:
 
@@ -51,7 +54,7 @@ const writes = encodeStoragePath(layout, "paused", false);
 Each write is keyed by slot and includes `{ value, mask }`. For packed values, the mask covers only the bytes occupied by that value, so callers can merge without clobbering neighboring packed fields:
 
 ```ts
-next = (existing & ~mask) | (value & mask);
+const nextSlot = applySlotWrite(writes[slot], existingSlot);
 ```
 
 Encode a full decoded state object into raw account storage for EVM seeding:
@@ -150,10 +153,13 @@ Unsupported types fail loudly rather than decoding approximately:
 
 - `parseStoragePath(path)` parses a human-readable path into a structured `StoragePath`.
 - `formatStoragePath(path)` formats a structured `StoragePath` back into a human-readable string.
+- `ExtractStoragePaths<Layout>` extracts every valid path string from a strict layout, including composite paths.
+- `ExtractConcreteStoragePaths<Layout>` extracts only path strings that end at one concrete leaf value.
 - `getStorageSlot(layout, path)` computes the storage slot or slots for a concrete path. Single-slot paths return one hex slot; multi-slot paths return an array of slots.
 - `normalizeConcretePath(layout, path)` parses/normalizes a path and validates that it resolves to one concrete leaf value.
 - `getStoragePath(layout, slot, knownPaths?)` matches raw slots back to reversible layout paths and optional known concrete paths, primarily for keyed mappings. Packed fields can produce multiple matches. If no known paths are provided, unmatched slots throw when mappings exist because mapping keys cannot be recovered from raw slots.
 - `decodeStoragePath(layout, path, storage)` decodes a concrete leaf path from raw account storage. `storage` is an object keyed by storage slot hex strings.
 - `encodeStoragePath(layout, path, value)` encodes one concrete leaf path value into masked slot writes: `{ [slot]: { value, mask } }`.
+- `applySlotWrite(slotWrite, existingSlot)` applies one masked slot write to an existing 32-byte slot value and returns the merged slot value.
 - `encodeStorage(layout, state)` encodes a decoded, contract-shaped state object into raw account storage for seeding a local EVM from a JS state snapshot.
 - `createStorageProxy(layout, getSlots, knownPaths?)` creates a read-only JS-object projection over storage. Leaf reads call `getSlots(slots)`; composite reads return sub-proxies. With an async getter, leaf values are promises. `knownPaths` provides concrete mapping paths as hints for enumerable mapping keys.
