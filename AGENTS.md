@@ -17,6 +17,13 @@ bun run typecheck   # tsc --noEmit per workspace
 bun run build       # per-workspace builds
 ```
 
+The root `typecheck` script is intentionally sequential instead of
+`bun run --filter '*' typecheck`: Bun can run filtered workspace scripts in
+parallel, which makes dependent workspaces typecheck `storage-layout` at the
+same time and can create enough TypeScript memory pressure to crash small remote
+instances. Keep it one workspace at a time unless the type setup changes to use
+project references or declaration boundaries.
+
 ## Before declaring work complete
 
 Run all three checks at the repo root before saying a task is done — not just one:
