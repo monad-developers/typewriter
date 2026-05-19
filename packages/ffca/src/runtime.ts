@@ -28,11 +28,13 @@ import {
   ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
+  decodeEventLog,
   encodeFunctionData,
   extractChain,
   http,
   keccak256,
   RawContractError,
+  toEventSelector,
 } from "viem";
 import { sendRawTransactionSync } from "viem/actions";
 import * as chains from "viem/chains";
@@ -43,7 +45,12 @@ import type {
   FFCAMutationConfig,
 } from "./config";
 import { buildEip712Types, hashMutationEip712 } from "./eip712";
-import { encodeBundleArg, executeAbi } from "./encoding";
+import {
+  decodeMutationCalldata,
+  encodeBundleArg,
+  executeAbi,
+  forceInclusionQueuedAbi,
+} from "./encoding";
 import {
   deploymentLockKey,
   deploymentSchemaName,
@@ -59,7 +66,7 @@ import type {
   SubmittedMutation,
   SubmittedMutationEvent,
 } from "./types";
-import { layerWatchLive, Watch } from "./watch";
+import { type LocalLog, layerWatchLive, Watch } from "./watch";
 
 // TODO sequencing: name-list works (config.sequence). Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
@@ -86,6 +93,15 @@ type BlockListener = (event: BlockEvent) => void;
 type QueuedMutation = {
   submitted: SubmittedMutationEvent;
   deferred: Deferred.Deferred<MutationEvent, unknown>;
+};
+
+type PendingForceInclusion = {
+  index: bigint;
+  mutation: Extract<ResolvedMutation, { status: "accepted" }>;
+};
+
+type AcceptedBundleWithForce = Extract<BundleEvent, { status: "accepted" }> & {
+  forceExecuteIndexes?: bigint[];
 };
 
 type DeploymentLock = {
@@ -421,6 +437,17 @@ export async function createFFCA<const C extends FFCAConfig>(
     throw new Error("config.sequence is required for bundle ordering");
   }
 
+  const mutationsByTag = new Map<
+    number,
+    { name: string; config: FFCAMutationConfig }
+  >();
+  for (const [name, mutation] of Object.entries(config.mutations)) {
+    if (mutationsByTag.has(mutation.tag)) {
+      throw new Error(`duplicate mutation tag: ${mutation.tag}`);
+    }
+    mutationsByTag.set(mutation.tag, { name, config: mutation });
+  }
+
   const rpcUrls = Array.isArray(config.rpcUrl)
     ? config.rpcUrl
     : [config.rpcUrl];
@@ -437,6 +464,9 @@ export async function createFFCA<const C extends FFCAConfig>(
     chain,
     transport,
   });
+  const executionAbi = executeAbi(config.signature.params);
+  const forceInclusionAbi = forceInclusionQueuedAbi(config.signature.params);
+  const forceInclusionSelector = toEventSelector(forceInclusionAbi[0]);
 
   const persistenceSchema = createPersistenceSchema(config);
   let db: FFCADatabase | undefined;
@@ -495,6 +525,8 @@ export async function createFFCA<const C extends FFCAConfig>(
 
   const mutationQueue = Effect.runSync(Queue.unbounded<QueuedMutation>());
   const submitQueue = Effect.runSync(Queue.unbounded<BundleEvent>());
+  const pendingForceInclusions: PendingForceInclusion[] = [];
+  const seenForceInclusionIndexes = new Set<string>();
   // The sidecar's commitBundles drains every open journal, so acceptance must
   // not open more journals while a submit pass is broadcasting and committing.
   const withJournalLock = Effect.runSync(Effect.makeSemaphore(1)).withPermits(
@@ -531,6 +563,51 @@ export async function createFFCA<const C extends FFCAConfig>(
 
   let bundlePosition = 0;
 
+  const decodeForceInclusionLog = (log: LocalLog): PendingForceInclusion => {
+    const decoded = decodeEventLog({
+      abi: forceInclusionAbi,
+      eventName: "ForceInclusionQueued",
+      data: log.data,
+      topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+    });
+    const args = decoded.args as {
+      index: bigint;
+      mutation: number;
+      mutationData: Hex.Hex;
+      sig: unknown;
+    };
+    const mutation = mutationsByTag.get(args.mutation);
+    if (mutation === undefined) {
+      throw new Error(`unknown force-inclusion mutation tag: ${args.mutation}`);
+    }
+    const { args: mutationArgs, resolution } = decodeMutationCalldata(
+      mutation.config,
+      args.mutationData,
+    );
+    const submitted = {
+      name: mutation.name,
+      args: mutationArgs,
+      signature: args.sig,
+    };
+    const digest = verifyMutation(
+      mutation.config,
+      config.signature.params,
+      submitted,
+      domain,
+    );
+    verifyResolution(mutation.config, resolution, mutation.name);
+
+    const accepted = {
+      ...submitted,
+      id: mutationId++,
+      status: "accepted" as const,
+      digest,
+      config: mutation.config,
+      resolution,
+    };
+    return { index: args.index, mutation: accepted };
+  };
+
   // Accept a set of queued mutations as one offchain bundle, then hand it to
   // submit. FIFO calls this with one mutation immediately; bundle mode calls
   // it with a sorted interval batch.
@@ -555,6 +632,51 @@ export async function createFFCA<const C extends FFCAConfig>(
         // Successful bundles are left open and committed by submit's
         // `commitBundles` after the broadcast lands.
         yield* evm.beginBundle();
+
+        const forceInclusions =
+          position === 0 ? pendingForceInclusions.slice() : [];
+        const forceExecuteIndexes = forceInclusions.map(({ index }) => index);
+        const forceMutations = forceInclusions.map(({ mutation }) => mutation);
+        if (forceMutations.length > 0) {
+          const forceCalldata = yield* Effect.try({
+            try: () =>
+              encodeFunctionData({
+                abi: executionAbi,
+                functionName: "execute",
+                args: [
+                  [encodeBundleArg(forceMutations, config.signature.params)],
+                  [],
+                ],
+              }),
+            catch: (error) => error as Error,
+          });
+          const result = yield* evm.execute({
+            from: config.account.address,
+            to: config.address,
+            data: forceCalldata,
+          });
+          if (result.success === false) {
+            yield* evm.revertBundle();
+            return yield* Effect.fail(
+              createRevmRevertError(config, result.revert_data),
+            );
+          }
+
+          for (const mutation of forceMutations) {
+            yield* Effect.try({
+              try: () =>
+                applyMutation(
+                  mutation.config,
+                  mutation.args,
+                  state,
+                  mutation.resolution,
+                  mutation.signature,
+                  mutation.digest,
+                ),
+              catch: (error) => error as Error,
+            });
+          }
+        }
 
         // revm is the primary acceptance gate. `resolve` computes any extra
         // calldata, revm executes the mutation against the local EVM state, and JS
@@ -676,6 +798,11 @@ export async function createFFCA<const C extends FFCAConfig>(
           position,
           mutations: accepted,
         };
+        if (forceExecuteIndexes.length > 0) {
+          (bundleEvent as AcceptedBundleWithForce).forceExecuteIndexes =
+            forceExecuteIndexes;
+          pendingForceInclusions.splice(0, forceInclusions.length);
+        }
 
         yield* Effect.tryPromise({
           try: async () => {
@@ -737,10 +864,7 @@ export async function createFFCA<const C extends FFCAConfig>(
 
       // submitQueue only holds AcceptedBundle today; narrow for the rest of
       // the body.
-      const bundles = accepted as Extract<
-        BundleEvent,
-        { status: "accepted" }
-      >[];
+      const bundles = accepted as AcceptedBundleWithForce[];
 
       const rpcRetry = Effect.retry({
         times: 8,
@@ -750,8 +874,9 @@ export async function createFFCA<const C extends FFCAConfig>(
       const args = bundles.map((b) =>
         encodeBundleArg(b.mutations, config.signature.params),
       );
-      const forceExecuteIndexes: bigint[] = [];
-      const executionAbi = executeAbi(config.signature.params);
+      const forceExecuteIndexes = bundles.flatMap(
+        (b) => b.forceExecuteIndexes ?? [],
+      );
       const calldata = encodeFunctionData({
         abi: executionAbi,
         functionName: "execute",
@@ -848,6 +973,9 @@ export async function createFFCA<const C extends FFCAConfig>(
         Effect.annotateLogs({
           bundleIds: bundles.map((b) => b.id),
           bundleCount: bundles.length,
+          forceExecuteIndexes: forceExecuteIndexes.map((index) =>
+            index.toString(),
+          ),
           mutationCount: bundles.reduce((n, b) => n + b.mutations.length, 0),
           blockNumber: block.number.toString(),
           transactionHash,
@@ -935,6 +1063,32 @@ export async function createFFCA<const C extends FFCAConfig>(
             }
 
             return;
+          }
+
+          const detectedForceInclusions: PendingForceInclusion[] = [];
+          for (const log of message.block.logs) {
+            const forceInclusion = yield* Effect.try({
+              try: () => decodeForceInclusionLog(log),
+              catch: (error) => error as Error,
+            });
+            const key = forceInclusion.index.toString();
+            if (seenForceInclusionIndexes.has(key)) continue;
+            seenForceInclusionIndexes.add(key);
+            detectedForceInclusions.push(forceInclusion);
+          }
+          if (detectedForceInclusions.length > 0) {
+            yield* withJournalLock(
+              Effect.sync(() => {
+                pendingForceInclusions.push(...detectedForceInclusions);
+              }),
+            );
+            yield* Effect.logInfo("force inclusions detected").pipe(
+              Effect.annotateLogs({
+                forceExecuteIndexes: detectedForceInclusions.map(({ index }) =>
+                  index.toString(),
+                ),
+              }),
+            );
           }
 
           for (const blockEvent of unfinalizedBlocks.filter(
@@ -1043,6 +1197,10 @@ export async function createFFCA<const C extends FFCAConfig>(
         rpcUrl: config.rpcUrl,
         pollIntervalMs: sequencing.blockPollingIntervalMs,
         maxChainDepth: confirmations.finalizedBlockDepth,
+        logFilter: {
+          address: config.address,
+          selector: forceInclusionSelector,
+        },
       }),
     ),
     Effect.orDie,
