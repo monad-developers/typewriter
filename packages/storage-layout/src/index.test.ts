@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Hex } from "ox";
+import { Hash, Hex } from "ox";
 import {
   complexLayout,
   layout,
@@ -10,8 +10,10 @@ import {
 } from "../test/utils";
 import {
   applySlotWrite,
+  decodeStorageDiff,
   decodeStoragePath,
   encodeStorage,
+  encodeStorageDiff,
   encodeStoragePath,
   getStoragePath,
   getStorageSlot,
@@ -35,6 +37,13 @@ function writesToStorage(writes: SlotWrites) {
   return Object.fromEntries(
     Object.entries(writes).map(([slot, write]) => [slot, write.value]),
   );
+}
+
+function writesToStorageDiff(diff: ReturnType<typeof encodeStorageDiff>) {
+  return {
+    pre: writesToStorage(diff.pre),
+    post: writesToStorage(diff.post),
+  };
 }
 
 function expectSingleSlot(slot: Hex.Hex | Hex.Hex[]): Hex.Hex {
@@ -529,6 +538,139 @@ test("encodeStoragePath encodes keyed mappings", () => {
       },
     }
   `);
+});
+
+test("encodeStorageDiff encodes sparse path diffs into sparse slot write diffs", () => {
+  const ownerSlot = expectSingleSlot(getStorageSlot(layout, "owner"));
+  const zeroSlot = `0x${"00".repeat(32)}` as Hex.Hex;
+  const nextOwner = SPENDER;
+
+  const diff = encodeStorageDiff(layout, {
+    pre: { owner: OWNER, paused: true, totalSupply: 1n },
+    post: { owner: nextOwner, paused: false, totalSupply: 2n },
+  });
+
+  expect(applySlotWrite(diff.pre[ownerSlot]!, zeroSlot)).toBe(
+    PACKED_OWNER_PAUSED,
+  );
+  expect(applySlotWrite(diff.post[ownerSlot]!, zeroSlot)).toBe(
+    `0x${"00".repeat(12)}${nextOwner.slice(2)}`,
+  );
+  expect(
+    decodeStoragePath(layout, "totalSupply", writesToStorage(diff.pre)),
+  ).toBe(1n);
+  expect(
+    decodeStoragePath(layout, "totalSupply", writesToStorage(diff.post)),
+  ).toBe(2n);
+});
+
+test("decodeStorageDiff decodes sparse raw slot diffs into sparse path diffs", () => {
+  const ownerSlot = expectSingleSlot(getStorageSlot(layout, "owner"));
+  const supplySlot = expectSingleSlot(getStorageSlot(layout, "totalSupply"));
+
+  expect(
+    decodeStorageDiff(layout, {
+      pre: {
+        [ownerSlot]: PACKED_OWNER_PAUSED,
+        [supplySlot]: Hex.fromNumber(1n, { size: 32 }),
+      },
+      post: {
+        [ownerSlot]: `0x${"00".repeat(11)}01${SPENDER.slice(2)}`,
+        [supplySlot]: Hex.fromNumber(2n, { size: 32 }),
+      },
+    }),
+  ).toEqual({
+    pre: { owner: OWNER, totalSupply: 1n },
+    post: { owner: SPENDER, totalSupply: 2n },
+  });
+});
+
+test("decodeStorageDiff treats one-sided raw slot entries as zero", () => {
+  const supplySlot = expectSingleSlot(getStorageSlot(layout, "totalSupply"));
+
+  expect(
+    decodeStorageDiff(layout, {
+      pre: { [supplySlot]: Hex.fromNumber(1n, { size: 32 }) },
+      post: {},
+    }),
+  ).toEqual({
+    pre: { totalSupply: 1n },
+    post: { totalSupply: 0n },
+  });
+  expect(
+    decodeStorageDiff(layout, {
+      pre: {},
+      post: { [supplySlot]: Hex.fromNumber(2n, { size: 32 }) },
+    }),
+  ).toEqual({
+    pre: { totalSupply: 0n },
+    post: { totalSupply: 2n },
+  });
+});
+
+test("decodeStorageDiff decodes long bytes diffs", () => {
+  const before = `0x${"11".repeat(33)}` as const;
+  const after = `0x${"22".repeat(33)}` as const;
+  const diff = writesToStorageDiff(
+    encodeStorageDiff(layout, {
+      pre: { rawBytes: before },
+      post: { rawBytes: after },
+    }),
+  );
+
+  expect(decodeStorageDiff(layout, diff)).toEqual({
+    pre: { rawBytes: before },
+    post: { rawBytes: after },
+  });
+});
+
+test("decodeStorageDiff rejects long bytes payload-only diffs", () => {
+  const before = `0x${"11".repeat(33)}` as const;
+  const after = `0x${"22".repeat(33)}` as const;
+  const diff = writesToStorageDiff(
+    encodeStorageDiff(layout, {
+      pre: { rawBytes: before },
+      post: { rawBytes: after },
+    }),
+  );
+  const rootSlot = expectSingleSlot(getStorageSlot(layout, "rawBytes"));
+  const payloadSlot = Hex.fromNumber(BigInt(Hash.keccak256(rootSlot)), {
+    size: 32,
+  });
+
+  delete diff.pre[rootSlot];
+  delete diff.post[rootSlot];
+
+  expect(() => decodeStorageDiff(layout, diff)).toThrow(
+    `storage slot diff cannot be decoded to a concrete storage path: ${payloadSlot}`,
+  );
+});
+
+test("decodeStorageDiff rejects slots whose paths cannot be inferred", () => {
+  const diff = writesToStorageDiff(
+    encodeStorageDiff(layout, {
+      pre: { [`balances[${OWNER}]`]: 1n },
+      post: { [`balances[${OWNER}]`]: 2n },
+    }),
+  );
+
+  expect(() => decodeStorageDiff(layout, diff)).toThrow(
+    "storage slot diff cannot be decoded to a concrete storage path",
+  );
+});
+
+test("decodeStorageDiff decodes known keyed mapping paths", () => {
+  const diff = writesToStorageDiff(
+    encodeStorageDiff(layout, {
+      pre: { [`balances[${OWNER}]`]: 1n },
+      post: { [`balances[${OWNER}]`]: 2n },
+    }),
+  );
+
+  expect(decodeStorageDiff(layout, diff, [`balances[${OWNER}]`])).toEqual({
+    pre: { [`balances[${OWNER}]`]: 1n },
+    post: { [`balances[${OWNER}]`]: 2n },
+  });
 });
 
 test("encodeStorage encodes decoded contract-shaped state", () => {

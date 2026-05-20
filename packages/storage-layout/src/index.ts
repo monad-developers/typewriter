@@ -30,6 +30,12 @@ const encodeStoragePathRuntime = encodeStoragePath as (
 ) => SlotWrites;
 
 export type {
+  StoragePathDiff,
+  StorageSlotDiff,
+  StorageSlotWriteDiff,
+} from "./storage-diff";
+export { decodeStorageDiff, encodeStorageDiff } from "./storage-diff";
+export type {
   ExtractVariableNames,
   StorageLayout,
   StorageLayoutToPrimitiveType,

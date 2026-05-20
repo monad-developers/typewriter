@@ -6,11 +6,16 @@ import type {
   StorageLayout,
   StorageLayoutToPrimitiveType,
   StoragePath,
+  StoragePathDiff,
   StoragePathToPrimitiveType,
+  StorageSlotDiff,
+  StorageSlotWriteDiff,
 } from "./index";
 import {
   createStorageProxy,
+  decodeStorageDiff,
   decodeStoragePath,
+  encodeStorageDiff,
   encodeStoragePath,
   getStorageSlot,
 } from "./index";
@@ -364,6 +369,29 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   expectTypeOf<Message>().toEqualTypeOf<string>();
 });
 
+test("StoragePathDiff infers sparse concrete path keys and values", () => {
+  type Diff = StoragePathDiff<typeof layout>;
+
+  expectTypeOf<Diff["pre"]["owner"]>().toEqualTypeOf<
+    `0x${string}` | undefined
+  >();
+  expectTypeOf<Diff["post"]["metadata.lastUpdate"]>().toEqualTypeOf<
+    bigint | undefined
+  >();
+  expectTypeOf<Diff["pre"][`balances[${Hex.Hex}]`]>().toEqualTypeOf<
+    bigint | undefined
+  >();
+});
+
+test("StorageSlotDiff uses raw slot values and StorageSlotWriteDiff uses masks", () => {
+  expectTypeOf<StorageSlotDiff["pre"]>().toEqualTypeOf<{
+    [slot: Hex.Hex]: Hex.Hex;
+  }>();
+  expectTypeOf<StorageSlotWriteDiff["pre"]>().toEqualTypeOf<{
+    [slot: Hex.Hex]: { value: Hex.Hex; mask: Hex.Hex };
+  }>();
+});
+
 test("public storage path types preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
   type Paths = StoragePath<typeof layout>;
@@ -422,6 +450,11 @@ test("concrete path APIs reject composite paths at type-check time", () => {
     getStorageSlot(layout, "numbers");
     decodeStoragePath(layout, "owner", {});
     encodeStoragePath(layout, "metadata.paused", false);
+    encodeStorageDiff(layout, { pre: { owner: "0x123" }, post: {} });
+    decodeStorageDiff(layout, { pre: {}, post: {} } satisfies StorageSlotDiff);
+    decodeStorageDiff(layout, { pre: {}, post: {} }, [
+      `balances[${"0x123" as Hex.Hex}]`,
+    ]);
 
     // @ts-expect-error unknown roots are not storage paths
     getStorageSlot(layout, "missing");
@@ -438,6 +471,12 @@ test("concrete path APIs reject composite paths at type-check time", () => {
     encodeStoragePath(layout, "fixedNumbers", [1n, 2n, 3n]);
     // @ts-expect-error nested mappings require all keys to reach a leaf
     decodeStoragePath(layout, `allowances[${"0x123" as Hex.Hex}]`, {});
+    // @ts-expect-error storage diffs use concrete leaf paths
+    encodeStorageDiff(layout, { pre: { metadata: {} }, post: {} });
+    // @ts-expect-error storage diff values are inferred from their paths
+    encodeStorageDiff(layout, { pre: { "metadata.paused": 1n }, post: {} });
+    // @ts-expect-error known paths must be concrete leaf paths
+    decodeStorageDiff(layout, { pre: {}, post: {} }, ["metadata"]);
   };
   expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
 });

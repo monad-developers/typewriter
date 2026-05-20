@@ -14,6 +14,7 @@ import {
   createStorageProxy,
   decodeStoragePath,
   encodeStorage,
+  encodeStorageDiff,
   encodeStoragePath,
   getStoragePath,
   getStorageSlot,
@@ -48,6 +49,19 @@ Encode a decoded state object into raw account storage for EVM seeding:
 ```ts
 const storage = encodeStorage(layout, state);
 ```
+
+Encode a sparse diff from decoded paths into masked slot writes:
+
+```ts
+const diff = encodeStorageDiff(layout, {
+  pre: { owner: oldOwner, paused: false },
+  post: { owner: newOwner, paused: true },
+});
+```
+
+`StoragePathDiff` and `StorageSlotDiff` mirror geth prestate tracer diff mode: each is a sparse object with `pre` and `post` fields. Missing paths in a `StoragePathDiff` mean unchanged values. `StorageSlotDiff` uses raw slot values for compatibility with revm/geth output; a slot omitted from both sides is unchanged, and a slot present on only one side is decoded against zero/absence. `encodeStorageDiff` returns `StorageSlotWriteDiff` because encoding a path diff may only know one packed field in a slot, so its output keeps masks.
+
+`decodeStorageDiff` can decode only values whose required raw slots are present in the diff. For long `bytes` and `string` values, a real sparse revm/geth diff that contains only changed payload slots and omits the unchanged root length slot is not enough to recover the complete decoded value, so decoding fails loudly.
 
 Create a lazy read-only storage proxy:
 
@@ -112,6 +126,8 @@ const paths = getStoragePath(layout, changedSlot, knownPaths);
 
 `getStoragePath` expands reversible composites like structs and fixed arrays into leaf paths. Mapping paths require concrete keyed paths in `knownPaths`.
 
+`decodeStorageDiff(layout, diff, knownPaths?)` accepts the same kind of concrete known path hints. This lets raw slot diffs decode keyed mappings whose slots cannot be reversed from layout alone.
+
 ## Supported Types
 
 Supported from Solidity `storageLayout`:
@@ -162,6 +178,8 @@ Functions:
 - `getStoragePath(layout, slot, knownPaths?)` matches raw slots back to reversible layout paths and optional known concrete paths. Packed fields can produce multiple matches. Mapping keys require `knownPaths`.
 - `decodeStoragePath(layout, path, storage)` decodes one concrete leaf path from raw account storage.
 - `encodeStoragePath(layout, path, value)` encodes one concrete leaf path value into masked slot writes.
+- `decodeStorageDiff(layout, storageSlotDiff, knownPaths?)` decodes sparse raw slot diffs into sparse concrete path diffs. Mapping keys require `knownPaths`.
+- `encodeStorageDiff(layout, storagePathDiff)` encodes sparse concrete path diffs into sparse masked slot-write diffs.
 - `encodeStorage(layout, state)` encodes a decoded, contract-shaped state object into raw account storage.
 - `createStorageProxy(layout, getSlots, knownPaths?)` creates a read-only JS-object projection over storage.
 - `applySlotWrite(slotWrite, existingSlot)` applies one masked slot write to an existing 32-byte slot value.
@@ -178,3 +196,6 @@ Types:
 - `AccountStorage`
 - `SlotWrite`
 - `SlotWrites`
+- `StorageSlotDiff`
+- `StorageSlotWriteDiff`
+- `StoragePathDiff`
