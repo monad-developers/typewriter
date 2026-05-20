@@ -10,7 +10,12 @@ import {
   USER_ACCOUNT,
   USER_PRIVATE_KEY,
 } from "../test/setup";
-import { COUNTER_MUTATIONS, deployCounter, signCounter } from "../test/utils";
+import {
+  COUNTER_ABI,
+  COUNTER_MUTATIONS,
+  deployCounter,
+  signCounter,
+} from "../test/utils";
 import { encodeMutationCalldata } from "./encoding";
 import { layerRpcLive } from "./rpc";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
@@ -130,7 +135,7 @@ test("emits no message when no new blocks are mined", async () => {
 });
 
 test("attaches matching force inclusion enqueue logs", async () => {
-  const counter = await deployCounter(USER_ACCOUNT.address);
+  const counterAddress = await deployCounter(USER_ACCOUNT.address);
   const amount = 5n;
   const nonce = 0n;
   const mutationData = encodeMutationCalldata(COUNTER_MUTATIONS.add, {
@@ -141,7 +146,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
     privateKey: USER_PRIVATE_KEY,
     amount,
     nonce,
-    address: counter.address,
+    address: counterAddress,
     chainId: anvil.id,
   });
 
@@ -153,8 +158,8 @@ test("attaches matching force inclusion enqueue logs", async () => {
         TEST_WALLET_CLIENT.writeContract({
           account: TEST_WALLET_CLIENT.account!,
           chain: anvil,
-          address: counter.address,
-          abi: counter.abi,
+          address: counterAddress,
+          abi: COUNTER_ABI,
           functionName: "enqueue",
           args: [COUNTER_MUTATIONS.add.tag, mutationData, signature],
         }),
@@ -166,7 +171,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           pollIntervalMs: POLL_INTERVAL_MS,
           maxChainDepth: 16,
           logFilter: {
-            address: counter.address,
+            address: counterAddress,
             selector: getEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
           },
         }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL }))),

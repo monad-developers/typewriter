@@ -380,21 +380,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint16 permissions, bytes rootPublicKey, bytes publicKey",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyInitialize(
-          state as OrderBookState,
-          args as InitializeArgs,
-          signature as OrderBookSignature,
-        ),
     },
     Authorize: {
       tag: MutationType.Authorize,
@@ -402,23 +387,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "bytes32 account, uint40 expiry, uint8 keyType, uint16 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyAuthorize(
-          state as OrderBookState,
-          args as AuthorizeArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     Revoke: {
       tag: MutationType.Revoke,
@@ -426,23 +394,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyRevoke(
-          state as OrderBookState,
-          args as RevokeArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     CloseOrder: {
       tag: MutationType.CloseOrder,
@@ -450,23 +401,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "uint64 orderId, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyCloseOrder(
-          state as OrderBookState,
-          args as CloseOrderArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     ChangeOrder: {
       tag: MutationType.ChangeOrder,
@@ -474,23 +408,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "uint64 orderId, uint64 price, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyChangeOrder(
-          state as OrderBookState,
-          args as ChangeOrderArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     LimitOrder: {
       tag: MutationType.LimitOrder,
@@ -498,25 +415,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) => {
-        applyLimitOrder(
-          state as OrderBookState,
-          args as LimitOrderArgs,
-          signature as OrderBookSignature,
-          digest,
-        );
-        rememberLimitPrice(knownPriceLevels, args as LimitOrderArgs);
-      },
     },
     MarketOrder: {
       tag: MutationType.MarketOrder,
@@ -539,26 +437,6 @@ export function baseMutations(
           args as MarketOrderArgs,
           knownPriceLevels,
         ),
-      apply: ({
-        state,
-        args,
-        resolution,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-        resolution: unknown;
-      }) =>
-        applyMarketOrder(
-          state as OrderBookState,
-          args as MarketOrderArgs,
-          resolution as MarketOrderResolution<bigint>,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     AddInstrument: {
       tag: MutationType.AddInstrument,
@@ -566,23 +444,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyAddInstrument(
-          state as OrderBookState,
-          args as AddInstrumentArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     Deposit: {
       tag: MutationType.Deposit,
@@ -590,23 +451,6 @@ export function baseMutations(
       params: parseAbiParameters(
         "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyDeposit(
-          state as OrderBookState,
-          args as DepositArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
     Withdrawal: {
       tag: MutationType.Withdrawal,
@@ -614,25 +458,104 @@ export function baseMutations(
       params: parseAbiParameters(
         "address asset, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      apply: ({
-        state,
-        args,
-        signature,
-        digest,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex;
-      }) =>
-        applyWithdrawal(
-          state as OrderBookState,
-          args as WithdrawalArgs,
-          signature as OrderBookSignature,
-          digest,
-        ),
     },
   };
+}
+
+export function projectAcceptedMutation(
+  state: OrderBookState,
+  mutation: {
+    name: OrderBookMutationName;
+    args: SubmittedOrderBookMutation["args"];
+    signature: OrderBookSignature;
+    digest: Hex;
+    resolution?: unknown;
+  },
+  knownPriceLevels: KnownPriceLevels = createKnownPriceLevels(),
+): void {
+  switch (mutation.name) {
+    case "Initialize":
+      applyInitialize(
+        state,
+        mutation.args as InitializeArgs,
+        mutation.signature,
+      );
+      break;
+    case "Authorize":
+      applyAuthorize(
+        state,
+        mutation.args as AuthorizeArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "Revoke":
+      applyRevoke(
+        state,
+        mutation.args as RevokeArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "CloseOrder":
+      applyCloseOrder(
+        state,
+        mutation.args as CloseOrderArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "ChangeOrder":
+      applyChangeOrder(
+        state,
+        mutation.args as ChangeOrderArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "LimitOrder":
+      applyLimitOrder(
+        state,
+        mutation.args as LimitOrderArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      rememberLimitPrice(knownPriceLevels, mutation.args as LimitOrderArgs);
+      break;
+    case "MarketOrder":
+      applyMarketOrder(
+        state,
+        mutation.args as MarketOrderArgs,
+        mutation.resolution as MarketOrderResolution<bigint>,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "AddInstrument":
+      applyAddInstrument(
+        state,
+        mutation.args as AddInstrumentArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "Deposit":
+      applyDeposit(
+        state,
+        mutation.args as DepositArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+    case "Withdrawal":
+      applyWithdrawal(
+        state,
+        mutation.args as WithdrawalArgs,
+        mutation.signature,
+        mutation.digest,
+      );
+      break;
+  }
 }
 
 export function normalizeSignatureForContract(
@@ -654,14 +577,16 @@ export function normalizeSignatureForContract(
   };
 }
 
-type PersistenceTx = Parameters<NonNullable<FFCAConfig["state"]["load"]>>[0];
+type PersistenceTx = Parameters<
+  NonNullable<NonNullable<FFCAConfig["state"]>["load"]>
+>[0];
 
 function txDb(tx: PersistenceTx) {
   return tx;
 }
 
 export function loadOrderBookState(
-  tx: Parameters<NonNullable<FFCAConfig["state"]["load"]>>[0],
+  tx: PersistenceTx,
   knownPriceLevels?: KnownPriceLevels,
 ): Effect.Effect<OrderBookState, unknown> {
   return Effect.gen(function* () {

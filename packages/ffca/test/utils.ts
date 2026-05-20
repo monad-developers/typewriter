@@ -11,6 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import {
+  type Abi,
   AbiParameters,
   Hash,
   Hex as OxHex,
@@ -31,7 +32,6 @@ import type {
 } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
 import { mutationColumns } from "../src/schema";
-import { verifySignature } from "../src/signature";
 import type { BundleStatus } from "../src/types";
 import {
   SCHEDULER_ACCOUNT,
@@ -44,9 +44,8 @@ const pgTable = snakeCase.table;
 // TS mirrors of each contract's State struct. The contracts use `mapping`s
 // (which can't appear in JS); we represent them as `Record<address, ...>`.
 
-// Counter.State on-chain. Tests that use COUNTER_MUTATIONS should pass
-// `{ initial: { total: 0n, nonce: 0n } as CounterState }` as
-// FFCAConfig.state.
+// Counter.State on-chain. Decoded shape exposed through the storage proxy
+// returned by `ffca.state` when COUNTER_STORAGE_LAYOUT is wired in.
 type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
   ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
   : [T] extends [object]
@@ -192,6 +191,161 @@ export const COUNTER_STORAGE_LAYOUT = {
     t_uint8: { encoding: "inplace", label: "uint8", numberOfBytes: "1" },
   },
 } as const satisfies StorageLayout;
+
+export const COUNTER_ABI = [
+  {
+    type: "constructor",
+    inputs: [{ name: "_signer", type: "address", internalType: "address" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "domainSeparator",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "enqueue",
+    inputs: [
+      { name: "mutation", type: "uint8", internalType: "uint8" },
+      { name: "mutationData", type: "bytes", internalType: "bytes" },
+      {
+        name: "sig",
+        type: "tuple",
+        internalType: "struct Signature",
+        components: [
+          { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "rawSignature", type: "bytes", internalType: "bytes" },
+        ],
+      },
+    ],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "execute",
+    inputs: [
+      {
+        name: "bundles",
+        type: "tuple[]",
+        internalType: "struct Bundle[]",
+        components: [
+          { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
+          {
+            name: "mutationData",
+            type: "bytes[]",
+            internalType: "bytes[]",
+          },
+          {
+            name: "signatures",
+            type: "tuple[]",
+            internalType: "struct Signature[]",
+            components: [
+              { name: "keyType", type: "uint8", internalType: "uint8" },
+              {
+                name: "rawSignature",
+                type: "bytes",
+                internalType: "bytes",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "forceExecuteIndexes",
+        type: "uint256[]",
+        internalType: "uint256[]",
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "forceExecute",
+    inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "scheduler",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "signer",
+    inputs: [],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "state",
+    inputs: [],
+    outputs: [
+      { name: "total", type: "uint256", internalType: "uint256" },
+      { name: "nonce", type: "uint256", internalType: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "ForceInclusionQueued",
+    inputs: [
+      {
+        name: "index",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+      {
+        name: "mutation",
+        type: "uint8",
+        indexed: false,
+        internalType: "uint8",
+      },
+      {
+        name: "mutationData",
+        type: "bytes",
+        indexed: false,
+        internalType: "bytes",
+      },
+      {
+        name: "sig",
+        type: "tuple",
+        indexed: false,
+        internalType: "struct Signature",
+        components: [
+          { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "rawSignature", type: "bytes", internalType: "bytes" },
+        ],
+      },
+      {
+        name: "enqueuedBlock",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+    ],
+    anonymous: false,
+  },
+  { type: "error", name: "AlreadyExecuted", inputs: [] },
+  { type: "error", name: "InvalidNonce", inputs: [] },
+  {
+    type: "error",
+    name: "InvalidSignature",
+    inputs: [{ name: "keyType", type: "uint8", internalType: "enum KeyType" }],
+  },
+  { type: "error", name: "TooEarly", inputs: [] },
+  { type: "error", name: "Unauthorized", inputs: [] },
+  { type: "error", name: "UnknownTag", inputs: [] },
+] as const satisfies Abi.Abi;
 
 // Harness.State on-chain. `accounts[id].keys` mirrors the contract's key
 // registry; `accounts[id].nonces` mirrors per-(account, nonceKey)
@@ -422,6 +576,170 @@ export const HARNESS_STORAGE_LAYOUT = {
   },
 } as const satisfies StorageLayout;
 
+export const HARNESS_ABI = [
+  { type: "constructor", inputs: [], stateMutability: "nonpayable" },
+  {
+    type: "function",
+    name: "balances",
+    inputs: [{ name: "account", type: "bytes32", internalType: "bytes32" }],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "domainSeparator",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "enqueue",
+    inputs: [
+      { name: "mutation", type: "uint8", internalType: "uint8" },
+      { name: "mutationData", type: "bytes", internalType: "bytes" },
+      {
+        name: "sig",
+        type: "tuple",
+        internalType: "struct Signature",
+        components: [
+          { name: "account", type: "bytes32", internalType: "bytes32" },
+          { name: "keyId", type: "uint64", internalType: "uint64" },
+          { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "rawSignature", type: "bytes", internalType: "bytes" },
+        ],
+      },
+    ],
+    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "execute",
+    inputs: [
+      {
+        name: "bundles",
+        type: "tuple[]",
+        internalType: "struct Bundle[]",
+        components: [
+          { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
+          {
+            name: "mutationData",
+            type: "bytes[]",
+            internalType: "bytes[]",
+          },
+          {
+            name: "signatures",
+            type: "tuple[]",
+            internalType: "struct Signature[]",
+            components: [
+              { name: "account", type: "bytes32", internalType: "bytes32" },
+              { name: "keyId", type: "uint64", internalType: "uint64" },
+              { name: "keyType", type: "uint8", internalType: "uint8" },
+              {
+                name: "rawSignature",
+                type: "bytes",
+                internalType: "bytes",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        name: "forceExecuteIndexes",
+        type: "uint256[]",
+        internalType: "uint256[]",
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "forceExecute",
+    inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "keyOf",
+    inputs: [
+      { name: "account", type: "bytes32", internalType: "bytes32" },
+      { name: "keyId", type: "uint64", internalType: "uint64" },
+    ],
+    outputs: [
+      { name: "", type: "uint8", internalType: "uint8" },
+      { name: "", type: "bytes", internalType: "bytes" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "nonceOf",
+    inputs: [
+      { name: "account", type: "bytes32", internalType: "bytes32" },
+      { name: "nonceKey", type: "uint192", internalType: "uint192" },
+    ],
+    outputs: [{ name: "", type: "uint64", internalType: "uint64" }],
+    stateMutability: "view",
+  },
+  {
+    type: "event",
+    name: "ForceInclusionQueued",
+    inputs: [
+      {
+        name: "index",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+      {
+        name: "mutation",
+        type: "uint8",
+        indexed: false,
+        internalType: "uint8",
+      },
+      {
+        name: "mutationData",
+        type: "bytes",
+        indexed: false,
+        internalType: "bytes",
+      },
+      {
+        name: "sig",
+        type: "tuple",
+        indexed: false,
+        internalType: "struct Signature",
+        components: [
+          { name: "account", type: "bytes32", internalType: "bytes32" },
+          { name: "keyId", type: "uint64", internalType: "uint64" },
+          { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "rawSignature", type: "bytes", internalType: "bytes" },
+        ],
+      },
+      {
+        name: "enqueuedBlock",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+    ],
+    anonymous: false,
+  },
+  { type: "error", name: "AlreadyExecuted", inputs: [] },
+  { type: "error", name: "AlreadyInitialized", inputs: [] },
+  { type: "error", name: "InvalidAccount", inputs: [] },
+  { type: "error", name: "InvalidNonce", inputs: [] },
+  {
+    type: "error",
+    name: "InvalidSignature",
+    inputs: [{ name: "keyType", type: "uint8", internalType: "enum KeyType" }],
+  },
+  { type: "error", name: "TooEarly", inputs: [] },
+  { type: "error", name: "UnknownTag", inputs: [] },
+] as const satisfies Abi.Abi;
+
 // Persisted shape of HarnessState. Mirrors Harness.sol's State struct: the
 // `accounts` mapping fans out to (accounts, keys, nonces); `balances` is its
 // own table keyed by the same bytes32 account id.
@@ -540,60 +858,16 @@ export const HARNESS_SCHEMA = {
   balances: harnessBalances,
 };
 
-function getHarnessAccount(state: HarnessState, id: Hex): HarnessAccount {
-  if (state.accounts[id] === undefined) {
-    state.accounts[id] = { keys: [], nonces: {} };
-  }
-  return state.accounts[id];
-}
-
-function checkAndBumpNonce(
-  acc: HarnessAccount,
-  nonce: bigint,
-  account: Hex,
-): void {
-  const nonceKey = (nonce >> 64n).toString();
-  const seq = nonce & 0xffffffffffffffffn;
-  const stored = acc.nonces[nonceKey] ?? 0n;
-  if (seq !== stored) {
-    throw new Error(
-      `harness: nonce mismatch account=${account} key=${nonceKey} expected=${stored} got=${seq}`,
-    );
-  }
-  acc.nonces[nonceKey] = stored + 1n;
-}
-
-function verifyHarnessSignature(
-  state: HarnessState,
-  signature: HarnessSignature,
-  digest: Hex,
-  nonce: bigint,
-): void {
-  const acc = state.accounts[signature.account];
-  const key = acc?.keys[Number(signature.keyId)];
-  if (acc === undefined || key === undefined) {
-    throw new Error(
-      `harness: key missing account=${signature.account} keyId=${signature.keyId}`,
-    );
-  }
-  if (key.keyType !== signature.keyType) {
-    throw new Error(
-      `harness: key type mismatch account=${signature.account} keyId=${signature.keyId} expected=${key.keyType} got=${signature.keyType}`,
-    );
-  }
-
-  verifySignature(key.keyType, digest, key.publicKey, signature.rawSignature);
-  checkAndBumpNonce(acc, nonce, signature.account);
-}
-
 // Deploy a forge-built contract by name. Reads the artifact from the
 // contracts workspace, broadcasts via the test wallet, waits for the
-// receipt, returns address + abi.
+// receipt, returns the deployed address. ABIs live alongside the storage
+// layouts in this file (`COUNTER_ABI`, `HARNESS_ABI`) so tests can reference
+// them as typed constants instead of pulling untyped `any` out of the
+// artifact JSON.
 async function deployContract(
   name: string,
   args?: readonly unknown[],
-  // biome-ignore lint/suspicious/noExplicitAny: forge artifact JSON shape
-): Promise<{ address: Address; abi: any }> {
+): Promise<Address> {
   const artifact = await Bun.file(
     `${import.meta.dir}/contracts/out/${name}.sol/${name}.json`,
   ).json();
@@ -612,46 +886,25 @@ async function deployContract(
   ) {
     throw new Error(`${name} deploy missing address`);
   }
-  return { address: receipt.contractAddress, abi: artifact.abi };
+  return receipt.contractAddress;
 }
 
 // Deploy Counter wired to a single secp256k1 signer. The contract hardcodes
 // its EIP-712 domain (name="Counter", version="1"); only the signer is a
 // constructor arg.
-export async function deployCounter(signerAddress: Address) {
+export async function deployCounter(signerAddress: Address): Promise<Address> {
   return deployContract("Counter", [signerAddress]);
 }
 
-export const deployHarness = () => deployContract("Harness");
+export const deployHarness = (): Promise<Address> => deployContract("Harness");
 
-// Mutation definitions for the Counter test fixture. Each `add` contributes
-// `amount` to a running total; ffca's local apply mirrors the contract.
-// Local apply also bumps the nonce so the next mutation in the same bundle
-// signs over the right value.
+// Mutation definitions for the Counter test fixture. The contract/revm owns
+// acceptance and state transitions; this config only describes encoding.
 export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
   add: {
     tag: 0,
     table: counterAddMutations,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
-    apply: ({
-      state,
-      args,
-    }: {
-      state: unknown;
-      args: unknown;
-      signature: unknown;
-      digest: Hex;
-    }) => {
-      const counter = state as CounterState;
-      const { amount, nonce } = args as { amount: bigint; nonce: bigint };
-      if (nonce !== counter.nonce) {
-        throw new Error(
-          `add: nonce mismatch (expected=${counter.nonce}, got=${nonce})`,
-        );
-      }
-      counter.total += amount;
-      counter.nonce += 1n;
-    },
   },
 };
 
@@ -872,27 +1125,6 @@ export const HARNESS_MUTATIONS: {
     tag: 0,
     table: harnessInitializeMutations,
     params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
-    apply: ({
-      state,
-      args,
-    }: {
-      state: unknown;
-      args: unknown;
-      signature: unknown;
-      digest: Hex;
-    }) => {
-      const harnessState = state as HarnessState;
-      const init = args as InitializeArgs;
-      const id = Hash.keccak256(init.rootPublicKey) as Hex;
-      const acc = getHarnessAccount(harnessState, id);
-      if (acc.keys.length !== 0) {
-        throw new Error(`initialize: account ${id} already initialized`);
-      }
-      acc.keys.push({
-        keyType: init.rootKeyType,
-        publicKey: init.rootPublicKey,
-      });
-    },
   },
   authorize: {
     tag: 1,
@@ -900,24 +1132,6 @@ export const HARNESS_MUTATIONS: {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
     ),
-    apply: ({
-      state,
-      args,
-      signature,
-      digest,
-    }: {
-      state: unknown;
-      args: unknown;
-      signature: unknown;
-      digest: Hex;
-    }) => {
-      const auth = args as AuthorizeArgs;
-      const harnessState = state as HarnessState;
-      const sig = signature as HarnessSignature;
-      verifyHarnessSignature(harnessState, sig, digest as Hex, auth.nonce);
-      const acc = getHarnessAccount(harnessState, sig.account);
-      acc.keys.push({ keyType: auth.keyType, publicKey: auth.publicKey });
-    },
   },
   credit: {
     tag: 2,
@@ -925,24 +1139,6 @@ export const HARNESS_MUTATIONS: {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
-    apply: ({
-      state,
-      args,
-      signature,
-      digest,
-    }: {
-      state: unknown;
-      args: unknown;
-      signature: unknown;
-      digest: Hex;
-    }) => {
-      const harnessState = state as HarnessState;
-      const credit = args as CreditArgs;
-      const sig = signature as HarnessSignature;
-      verifyHarnessSignature(harnessState, sig, digest as Hex, credit.nonce);
-      harnessState.balances[sig.account] =
-        (harnessState.balances[sig.account] ?? 0n) + credit.amount;
-    },
   },
   debit: {
     tag: 3,
@@ -964,36 +1160,13 @@ export const HARNESS_MUTATIONS: {
         StorageLayoutToPrimitiveType<typeof HARNESS_STORAGE_LAYOUT>
       >;
       const debit = args as DebitArgs;
-      const balance = harnessStorage.balances[debit.account];
+      const balance = await harnessStorage.balances[debit.account];
       if (balance === undefined) {
         return { newBalance: -debit.amount };
       }
       return {
-        newBalance: (await balance) - debit.amount,
+        newBalance: balance - debit.amount,
       };
-    },
-    apply: ({
-      state,
-      args,
-      resolution,
-      signature,
-      digest,
-    }: {
-      state: unknown;
-      args: unknown;
-      signature: unknown;
-      digest: Hex;
-      resolution: unknown;
-    }) => {
-      const harnessState = state as HarnessState;
-      const debit = args as DebitArgs;
-      const sig = signature as HarnessSignature;
-      const { newBalance } = resolution as { newBalance: bigint };
-      verifyHarnessSignature(harnessState, sig, digest as Hex, debit.nonce);
-      if (newBalance < 0n) {
-        throw new Error(`debit: insufficient balance for ${sig.account}`);
-      }
-      harnessState.balances[sig.account] = newBalance;
     },
   },
   assert: {
@@ -1002,28 +1175,6 @@ export const HARNESS_MUTATIONS: {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
     ),
-    apply: ({
-      state,
-      args,
-      signature,
-      digest,
-    }: {
-      state: unknown;
-      args: unknown;
-      signature: unknown;
-      digest: Hex;
-    }) => {
-      const harnessState = state as HarnessState;
-      const asserted = args as AssertArgs;
-      const sig = signature as HarnessSignature;
-      verifyHarnessSignature(harnessState, sig, digest as Hex, asserted.nonce);
-      const balance = harnessState.balances[sig.account] ?? 0n;
-      if (balance !== asserted.expected) {
-        throw new Error(
-          `assert: account=${sig.account} balance=${balance} expected=${asserted.expected}`,
-        );
-      }
-    },
   },
 };
 

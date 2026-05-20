@@ -24,10 +24,10 @@ type PersistenceHookResult = Effect.Effect<void, unknown>;
 // post-acceptance transitions like included/safe/finalized.
 //
 // `resolve` must be pure: read-only over `state`, `signature`, and `bundle`, no
-// side effects. The runtime calls it once per mutation immediately before
-// `apply`, and treats its return value as canonical (it's encoded into calldata
-// and passed to `apply`). A `resolve` that mutates state breaks failure
-// isolation and replay determinism.
+// side effects. The runtime calls it once per mutation immediately before revm
+// execution, and treats its return value as canonical (it's encoded into
+// calldata). A `resolve` that mutates state breaks failure isolation and replay
+// determinism.
 //
 // `bundle` is a read-only view of every mutation in this bundle (in
 // post-sequence order, including this one). Use it for batch-aware decisions
@@ -78,12 +78,6 @@ export type FFCAMutationConfig =
   | (FFCAMutationPersistence & {
       tag: number;
       params: readonly AbiParameter[];
-      apply: (params: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex.Hex;
-      }) => void;
     })
   | (FFCAMutationPersistence & {
       tag: number;
@@ -95,13 +89,6 @@ export type FFCAMutationConfig =
         signature: unknown;
         bundle: BundleView;
       }) => unknown | Promise<unknown>;
-      apply: (params: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-        digest: Hex.Hex;
-        resolution: unknown;
-      }) => void;
     });
 
 export type FFCAConfig = {
@@ -113,7 +100,6 @@ export type FFCAConfig = {
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
-  // `initial` is the in-memory representation used without persistence;
   // `schema` is the user's Drizzle schema module for the persisted
   // representation; `load` hydrates runtime state from those tables on startup.
   // Apps define their table shapes and foreign keys; FFCA qualifies/migrates
@@ -122,12 +108,7 @@ export type FFCAConfig = {
   // `schema` is optional. Without user-owned persistence hooks, ffca runs
   // in-memory only. Fine for tests and short-lived demos; not enough for any
   // deployment that has to survive a process restart.
-  //
-  // `initial` is hand-authored today. Once revm lands and the runtime can
-  // read storage from the deployed contract, this becomes derivable — the
-  // contract's post-deploy state is the canonical initial value.
-  state: {
-    initial: unknown;
+  state?: {
     schema?: Record<string, unknown>;
     load?: (tx: FFCADatabaseTransaction) => Effect.Effect<unknown, unknown>;
   };

@@ -18,7 +18,6 @@ test("hashMutationEip712 matches viem hashTypedData for a flat mutation", () => 
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
-    apply: () => {},
   };
   const args = {
     from: "0x0000000000000000000000000000000000000001" as `0x${string}`,
@@ -48,7 +47,6 @@ test("hashMutationEip712 handles a tuple param via synthesized struct name", () 
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("(uint256 price, uint256 size) fill"),
-    apply: () => {},
   };
   const args = { fill: { price: 100n, size: 6n } };
 
@@ -76,7 +74,6 @@ test("hashMutationEip712 handles tuple[] arrays", () => {
     params: parseAbiParameters(
       "address taker, (uint256 price, uint256 size)[] fills",
     ),
-    apply: () => {},
   };
   const args = {
     taker: "0x0000000000000000000000000000000000000003" as `0x${string}`,
@@ -113,7 +110,6 @@ test("hashMutationEip712 handles nested tuples", () => {
     params: parseAbiParameters(
       "(address account, (uint256 price, uint256 size) fill) order",
     ),
-    apply: () => {},
   };
   const args = {
     order: {
@@ -158,7 +154,6 @@ test("hashMutationEip712 uses internalType struct name when present", () => {
         ],
       },
     ],
-    apply: () => {},
   };
   const args = { fill: { price: 100n, size: 6n } };
 
@@ -184,7 +179,6 @@ test("hashMutationEip712 rejects unnamed params", () => {
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("uint256"),
-    apply: () => {},
   };
 
   expect(() => hashMutationEip712(mutation, "X", [1n], domain)).toThrow(

@@ -16,6 +16,7 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import { createEVM } from "evm";
 import { AbiParameters, type Hex, TypedData } from "ox";
 import {
+  type AccountStorage,
   createStorageProxy,
   encodeStorage,
   type StorageLayout,
@@ -63,9 +64,9 @@ import { type LocalLog, Watch } from "./watch";
 
 // TODO sequencing: name-list works (config.sequence). Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
-// TODO decoded projection: revm is the acceptance gate; JS `apply` now projects
-//   accepted EVM transitions into decoded app state. Longer term, replace this
-//   app-authored projection with storage diff decoding.
+// TODO decoded projection: apps currently own read-model projection through
+//   events/persistence hooks. Longer term, replace hand-authored projection
+//   with storage diff decoding.
 // TODO signature validation: decide whether execute() should verify signatures
 //   before queue admission or leave validation to app-owned resolve/apply logic.
 // TODO runtime failure policy: submit/watch failures still die the fiber; define
@@ -106,8 +107,7 @@ type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
     : Promise<T>;
 
 export type FFCA<L extends StorageLayout = never> = {
-  readonly state: unknown;
-  readonly storage: [L] extends [never]
+  readonly state: [L] extends [never]
     ? unknown
     : AsyncStorageProxy<StorageLayoutToPrimitiveType<L>>;
   readonly domain: TypedData.Domain;
@@ -119,8 +119,7 @@ export type FFCA<L extends StorageLayout = never> = {
 };
 
 export type RuntimeFFCA<L extends StorageLayout = never> = {
-  readonly state: unknown;
-  readonly storage: [L] extends [never]
+  readonly state: [L] extends [never]
     ? unknown
     : AsyncStorageProxy<StorageLayoutToPrimitiveType<L>>;
   readonly domain: TypedData.Domain;
@@ -214,21 +213,6 @@ async function resolveMutation(
   return undefined;
 }
 
-function applyMutation(
-  config: FFCAMutationConfig,
-  args: unknown,
-  state: unknown,
-  resolution: unknown,
-  signature: unknown,
-  digest: Hex.Hex,
-): void {
-  if ("resolve" in config) {
-    config.apply({ state, args, resolution, signature, digest });
-  } else {
-    config.apply({ state, args, signature, digest });
-  }
-}
-
 function createRevmRevertError(
   config: FFCAConfig,
   data: Hex.Hex | undefined,
@@ -302,9 +286,6 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     const rpc = yield* Rpc;
     const db = yield* Database;
     const scope = yield* Scope.Scope;
-    // Mutable so failure-isolation can swap the binding back to a snapshot
-    // when a mutation's apply throws mid-mutation. Exposed via getter below.
-    let state = config.state.initial;
 
     const domain: TypedData.Domain = {
       name: config.domain.name,
@@ -388,28 +369,26 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
 
     let mutationId = 0;
     let bundleId = 0;
+    let initialSlots: AccountStorage = {};
 
     if (schema !== undefined) {
-      const load = config.state.load;
+      const load = config.state?.load;
       if (load === undefined) {
         return yield* new PersistenceError({
           message: "FFCA persistence state.load is required",
         });
       }
 
-      state = yield* db.transaction((tx) => load(tx));
+      const initialState = yield* db.transaction(load);
+      initialSlots = encodeStorage(config.storageLayout, initialState as never);
+
       const ids = yield* loadNextIds(config);
       mutationId = ids.mutationId;
       bundleId = ids.bundleId;
     }
 
-    const initialRevmStorage = encodeStorage(
-      config.storageLayout,
-      state as never,
-    );
-
     // revm is a startup resource, not part of the background loop. Initialize
-    // it before returning so `ffca.storage` and `execute()` never race startup.
+    // it before returning so `ffca.state` and `execute()` never race startup.
     const evm = yield* createEVM();
     const code = yield* rpc.request({
       method: "eth_getCode",
@@ -422,7 +401,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       );
       yield* evm.init({
         chain_id: config.chainId,
-        accounts: { [config.address]: { storage: initialRevmStorage } },
+        accounts: { [config.address]: { storage: initialSlots } },
       });
     } else {
       yield* evm.init({
@@ -430,13 +409,13 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         accounts: {
           [config.address]: {
             code,
-            storage: initialRevmStorage,
+            storage: initialSlots,
           },
         },
       });
     }
 
-    const storage = createStorageProxy(config.storageLayout, async (slots) => {
+    const state = createStorageProxy(config.storageLayout, async (slots) => {
       return Effect.runPromise(
         evm.readStorage({ address: config.address, slots }),
       );
@@ -495,53 +474,6 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     };
 
     let bundlePosition = 0;
-
-    // const decodeForceInclusionLog = (log: LocalLog): PendingForceInclusion => {
-    //   const decoded = decodeEventLog({
-    //     abi: forceInclusionAbi,
-    //     eventName: "ForceInclusionQueued",
-    //     data: log.data,
-    //     topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
-    //   });
-    //   const args = decoded.args as {
-    //     index: bigint;
-    //     mutation: number;
-    //     mutationData: Hex.Hex;
-    //     sig: unknown;
-    //   };
-    //   const mutation = mutationsByTag.get(args.mutation);
-    //   if (mutation === undefined) {
-    //     throw new Error(
-    //       `unknown force-inclusion mutation tag: ${args.mutation}`,
-    //     );
-    //   }
-    //   const { args: mutationArgs, resolution } = decodeMutationCalldata(
-    //     mutation.config,
-    //     args.mutationData,
-    //   );
-    //   const submitted = {
-    //     name: mutation.name,
-    //     args: mutationArgs,
-    //     signature: args.sig,
-    //   };
-    //   const digest = verifyMutation(
-    //     mutation.config,
-    //     config.signature.params,
-    //     submitted,
-    //     domain,
-    //   );
-    //   verifyResolution(mutation.config, resolution, mutation.name);
-
-    //   const accepted = {
-    //     ...submitted,
-    //     id: mutationId++,
-    //     status: "accepted" as const,
-    //     digest,
-    //     config: mutation.config,
-    //     resolution,
-    //   };
-    //   return { index: args.index, mutation: accepted };
-    // };
 
     const decodeForceInclusionLog = (log: LocalLog): PendingForceInclusion => {
       const decoded = decodeEventLog({
@@ -647,34 +579,12 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                 createRevmRevertError(config, result.revert_data),
               );
             }
-
-            for (const mutation of forceMutations) {
-              yield* Effect.try({
-                try: () =>
-                  applyMutation(
-                    mutation.config,
-                    mutation.args,
-                    state,
-                    mutation.resolution,
-                    mutation.signature,
-                    mutation.digest,
-                  ),
-                catch: (error) => error as Error,
-              });
-            }
           }
 
           // revm is the primary acceptance gate. `resolve` computes any extra
-          // calldata, revm executes the mutation against the local EVM state, and JS
-          // `apply` projects successful EVM state transitions into the decoded
-          // read-model state.
+          // calldata, then revm executes the mutation against local EVM state.
           for (const item of queued) {
-            const {
-              config: mutationConfig,
-              args,
-              signature,
-              digest,
-            } = item.submitted;
+            const { config: mutationConfig, args, signature } = item.submitted;
             const attempted = yield* Effect.result(
               Effect.gen(function* () {
                 const resolution = yield* Effect.tryPromise({
@@ -683,7 +593,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                       mutationConfig,
                       args,
                       signature,
-                      storage,
+                      state,
                       bundleView,
                     ),
                   catch: (error) => error as Error,
@@ -737,20 +647,6 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                     createRevmRevertError(config, result.revert_data),
                   );
                 }
-
-                yield* Effect.try({
-                  try: () =>
-                    applyMutation(
-                      mutationConfig,
-                      args,
-                      state,
-                      resolution,
-                      signature,
-                      digest,
-                    ),
-                  catch: (error) => error as Error,
-                });
-
                 return acceptedMutation;
               }),
             );
@@ -1189,10 +1085,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     }
 
     return {
-      get state() {
-        return state;
-      },
-      storage: storage as unknown as RuntimeFFCA<C["storageLayout"]>["storage"],
+      state: state as RuntimeFFCA<C["storageLayout"]>["state"],
       domain,
       execute,
       on,

@@ -27,7 +27,7 @@ function hasAnyPersistenceHook(mutation: FFCAConfig["mutations"][string]) {
 }
 
 export function getFFCASchema(config: FFCAConfig): Record<string, PgTable> {
-  const schema = { ...(config.state.schema ?? {}) } as Record<string, PgTable>;
+  const schema = { ...(config.state?.schema ?? {}) } as Record<string, PgTable>;
   for (const mutation of Object.values(config.mutations)) {
     const table = mutation.table as PgTable;
     if (Object.values(schema).includes(table)) continue;
@@ -38,8 +38,8 @@ export function getFFCASchema(config: FFCAConfig): Record<string, PgTable> {
 
 export function isPersistenceEnabled(config: FFCAConfig): boolean {
   const mutations = Object.values(config.mutations);
-  const hasStateSchema = config.state.schema !== undefined;
-  const hasStateLoad = config.state.load !== undefined;
+  const hasStateSchema = config.state?.schema !== undefined;
+  const hasStateLoad = config.state?.load !== undefined;
   const hasAnyHooks = mutations.some(hasAnyPersistenceHook);
   const hasAllHooks = mutations.every(hasAllPersistenceHooks);
   const persistenceEnabled = hasStateSchema && hasStateLoad && hasAllHooks;

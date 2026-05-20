@@ -3,12 +3,10 @@ import { parseAbiParameters } from "abitype";
 import {
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
-  type CounterState,
   EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
   HARNESS_SCHEMA,
   HARNESS_SIGNATURE_PARAMS,
-  type HarnessState,
   testMutationSchema,
 } from "../test/utils";
 import type { FFCAConfig } from "./config";
@@ -35,7 +33,6 @@ const baseConfig = {
 test("createFFCA state", () => {
   createFFCA({
     ...baseConfig,
-    state: { initial: { counter: 0 } },
     mutations: {},
   });
 });
@@ -43,13 +40,11 @@ test("createFFCA state", () => {
 test("createFFCA mutation", () => {
   createFFCA({
     ...baseConfig,
-    state: { initial: {} as Record<string, { balance: bigint }> },
     mutations: {
       transfer: {
         tag: 0,
         table: testMutationSchema,
         params: parseAbiParameters("address from, address to, uint256 amount"),
-        apply: () => {},
       },
     },
   });
@@ -58,7 +53,6 @@ test("createFFCA mutation", () => {
 test("createFFCA mutation with resolution", () => {
   createFFCA({
     ...baseConfig,
-    state: { initial: { bids: [] as { price: bigint; size: bigint }[] } },
     mutations: {
       marketOrder: {
         tag: 1,
@@ -66,7 +60,6 @@ test("createFFCA mutation with resolution", () => {
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
         resolve: () => {},
-        apply: () => {},
       },
     },
   });
@@ -78,7 +71,6 @@ test("createFFCA Counter (no schema)", () => {
   createFFCA({
     ...baseConfig,
     signature: { params: COUNTER_SIGNATURE_PARAMS },
-    state: { initial: { total: 0n, nonce: 0n } as CounterState },
     confirmations: { safeBlockDepth: 2, finalizedBlockDepth: 8 },
     mutations: COUNTER_MUTATIONS,
   });
@@ -92,7 +84,6 @@ test("createFFCA Harness (with schema)", () => {
     ...baseConfig,
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
       schema: HARNESS_SCHEMA,
     },
     mutations: HARNESS_MUTATIONS,

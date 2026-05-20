@@ -35,7 +35,7 @@ Two packages now sit alongside `ffca`, and the runtime uses both.
 - **`packages/ffca` runtime** — `FFCAConfig.storageLayout` is required.
   `createFFCA` pulls deployed bytecode from chain, encodes decoded
   `state.initial`/`state.load` into raw slots with `encodeStorageState`,
-  seeds revm with that storage, exposes `ffca.storage`, and passes the
+  seeds revm with that storage, exposes storage through `ffca.state`, and passes the
   storage proxy to `resolve({ state, ... })`. For each queued mutation,
   runtime resolves any offchain data, executes a single-mutation bundle in
   revm, rejects on revm revert, then calls `.apply()` only after revm
@@ -80,7 +80,7 @@ Status: landed, with a different shape than the original shadow-mode sketch.
   with deployed bytecode from `eth_getCode`.
 - Initial revm storage is encoded from decoded app state via the required
   `config.storageLayout`. The runtime does not hydrate storage from chain yet.
-- `ffca.storage` is a typed storage proxy backed by sidecar `readStorage`.
+- `ffca.state` is an async storage proxy backed by sidecar `readStorage`.
 - `resolve({ state, ... })` receives that storage proxy, not the mutable JS
   decoded state object.
 
@@ -176,8 +176,8 @@ and doesn't read state.
 ### Step 6 — Delete the TS state machine
 
 Once persistence is sourced from revm, the JS state object has no
-remaining consumers other than `ffca.state`. `ffca.state` becomes a
-thin facade over `storage-layout` / `ffca.storage` — apps declare paths they
+remaining consumers other than app-owned read models. `ffca.state` is a
+thin facade over `storage-layout` — apps declare paths they
 want exposed, the runtime reads through `readStorage` + `decodeStorage`.
 
 - Delete or repurpose `config.state.initial`, `config.state.load`,
@@ -308,10 +308,9 @@ What changes inside `runtime.ts` beyond the per-step diffs above:
    seeds revm. In the longer-term canonical model, `config.state.initial` goes
    away and startup hydrates from chain storage or deployment replay. External
    token dependencies (currently invisible to ffca) need app declarations.
-3. **`ffca.state` facade.** Today `ffca.state` is the decoded JS read model
-   maintained by `.apply()`, and `ffca.storage` is the direct slot-backed
-   surface. From Step 5 on, either `ffca.state` becomes a storage-backed facade
-   over declared paths or callers use `ffca.storage` directly.
+3. **`ffca.state` facade.** Today `ffca.state` is the direct slot-backed
+   storage surface. The decoded JS read model is still maintained internally by
+   `.apply()` for persistence and app-owned projections until Step 5 replaces it.
 
 ## Decisions
 

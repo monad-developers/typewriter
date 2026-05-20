@@ -16,7 +16,6 @@ test("encodeMutationCalldata without resolution", () => {
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
-    apply: () => {},
   };
   const args = {
     from: "0x0000000000000000000000000000000000000001",
@@ -36,7 +35,6 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("bytes32 account, bytes publicKey"),
-    apply: () => {},
   };
   const args = {
     account:
@@ -58,7 +56,6 @@ test("encodeMutationCalldata with resolution", () => {
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
-    apply: () => {},
   };
   const args = { size: 10n };
   const resolution = {
@@ -86,7 +83,6 @@ test("encodeBundleCalldata signatures are typed against signature params", () =>
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("address to, uint256 amount"),
-    apply: () => {},
   };
   const sigParams = parseAbiParameters(
     "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
@@ -151,7 +147,6 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     tag: 0,
     table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
-    apply: () => {},
   };
   const market = {
     tag: 1,
@@ -159,7 +154,6 @@ test("encodeBundleCalldata round-trips through ABI decode", () => {
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
-    apply: () => {},
   };
 
   const transferResolved: ResolvedMutation = {

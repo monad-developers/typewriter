@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import { Effect } from "effect";
 import { createFFCA, type FFCA } from "ffca";
 import { EIP712_TYPES, EXCHANGE_ABI } from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
@@ -26,6 +27,7 @@ import {
   ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookMutationName,
   persistedMutations,
+  projectAcceptedMutation,
   type SubmittedOrderBookMutation,
 } from "./app";
 import * as schema from "./app-schema";
@@ -209,11 +211,23 @@ function executeOrderBookMutation(
   app: FFCA,
   state: State<bigint>,
   submitted: SubmittedOrderBookMutation,
+  knownPriceLevels?: Parameters<typeof projectAcceptedMutation>[2],
 ) {
-  return app.execute({
-    ...submitted,
-    signature: normalizeSignatureForContract(state, submitted.signature),
-  });
+  return app
+    .execute({
+      ...submitted,
+      signature: normalizeSignatureForContract(state, submitted.signature),
+    })
+    .then((mutation) => {
+      if (mutation.status === "accepted") {
+        projectAcceptedMutation(
+          state,
+          mutation as Parameters<typeof projectAcceptedMutation>[1],
+          knownPriceLevels,
+        );
+      }
+      return mutation;
+    });
 }
 
 async function waitForIncluded(
@@ -234,6 +248,7 @@ async function waitForIncluded(
 
 test("ffca order book rejects invalid signatures before applying", async () => {
   const address = await deployExchange();
+  const state: State<bigint> = { accounts: {}, instruments: {} };
   const app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
@@ -243,7 +258,6 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
-    state: { initial: { accounts: {}, instruments: {} } as State<bigint> },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: baseMutations(),
@@ -251,7 +265,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
 
   const maker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
@@ -271,7 +285,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
   });
 
   await expect(
-    executeOrderBookMutation(app, app.state as State<bigint>, {
+    executeOrderBookMutation(app, state, {
       ...signed,
       args: {
         asset: BASE,
@@ -282,7 +296,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     }),
   ).rejects.toThrow(/InvalidSignature/);
 
-  const runtimeState = app.state as State<bigint>;
+  const runtimeState = state;
   expect(runtimeState.accounts[maker]!.balances[BASE]).toBeUndefined();
   expect(runtimeState.accounts[maker]!.nonces["0"]).toBeUndefined();
   await app.stop();
@@ -290,7 +304,8 @@ test("ffca order book rejects invalid signatures before applying", async () => {
 
 test("ffca order book persists and submits market-order flow", async () => {
   const address = await deployExchange();
-  const state: State<bigint> = { accounts: {}, instruments: {} };
+  const knownPriceLevels = createKnownPriceLevels();
+  let state: State<bigint> = { accounts: {}, instruments: {} };
   const app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
@@ -301,13 +316,16 @@ test("ffca order book persists and submits market-order flow", async () => {
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
-      initial: state,
       schema: schema.APP_SCHEMA,
-      load: loadOrderBookState,
+      load: (tx) =>
+        Effect.map(loadOrderBookState(tx), (loaded) => {
+          state = loaded;
+          return loaded;
+        }),
     },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
-    mutations: persistedMutations(),
+    mutations: persistedMutations(knownPriceLevels),
   });
   const db = drizzle({
     client: TEST_DB_CONNECTION,
@@ -315,14 +333,14 @@ test("ffca order book persists and submits market-order flow", async () => {
 
   const maker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   const taker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: TAKER_ACCOUNT.address,
     privateKey: TAKER_PRIVATE_KEY,
     contract: address,
@@ -331,7 +349,7 @@ test("ffca order book persists and submits market-order flow", async () => {
 
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "AddInstrument",
       address,
@@ -348,10 +366,11 @@ test("ffca order book persists and submits market-order flow", async () => {
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
@@ -365,10 +384,11 @@ test("ffca order book persists and submits market-order flow", async () => {
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
@@ -382,10 +402,11 @@ test("ffca order book persists and submits market-order flow", async () => {
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "LimitOrder",
       address,
@@ -401,10 +422,11 @@ test("ffca order book persists and submits market-order flow", async () => {
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
   const result = await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "MarketOrder",
       address,
@@ -420,10 +442,11 @@ test("ffca order book persists and submits market-order flow", async () => {
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
 
   expect(result.status).toBe("accepted");
-  const runtimeState = app.state as State<bigint>;
+  const runtimeState = state;
   expect(runtimeState.accounts[taker]!.balances[BASE]).toBe(10n);
   expect(runtimeState.accounts[maker]!.orders[0]!.quantity).toBe(10n);
   expect(
@@ -451,6 +474,7 @@ test("ffca order book persists and submits market-order flow", async () => {
 test("ffca order book resolves market orders after persisted reload", async () => {
   const address = await deployExchange();
   const knownPriceLevels = createKnownPriceLevels();
+  let state: State<bigint> = { accounts: {}, instruments: {} };
   let app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
@@ -461,9 +485,12 @@ test("ffca order book resolves market orders after persisted reload", async () =
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
-      initial: { accounts: {}, instruments: {} } as State<bigint>,
       schema: schema.APP_SCHEMA,
-      load: (tx) => loadOrderBookState(tx, knownPriceLevels),
+      load: (tx) =>
+        Effect.map(loadOrderBookState(tx, knownPriceLevels), (loaded) => {
+          state = loaded;
+          return loaded;
+        }),
     },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
@@ -475,14 +502,14 @@ test("ffca order book resolves market orders after persisted reload", async () =
 
   const maker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   const taker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: TAKER_ACCOUNT.address,
     privateKey: TAKER_PRIVATE_KEY,
     contract: address,
@@ -490,7 +517,7 @@ test("ffca order book resolves market orders after persisted reload", async () =
 
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "AddInstrument",
       address,
@@ -507,10 +534,11 @@ test("ffca order book resolves market orders after persisted reload", async () =
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
@@ -519,10 +547,11 @@ test("ffca order book resolves market orders after persisted reload", async () =
       account: maker,
       args: { asset: BASE, amount: 10n, nonce: 1n, deadline: FAR_DEADLINE },
     }),
+    knownPriceLevels,
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
@@ -531,10 +560,11 @@ test("ffca order book resolves market orders after persisted reload", async () =
       account: taker,
       args: { asset: QUOTE, amount: 100n, nonce: 0n, deadline: FAR_DEADLINE },
     }),
+    knownPriceLevels,
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "LimitOrder",
       address,
@@ -550,11 +580,13 @@ test("ffca order book resolves market orders after persisted reload", async () =
         deadline: FAR_DEADLINE,
       },
     }),
+    knownPriceLevels,
   );
   await waitForIncluded(db, schema.limitOrders, "limit order");
   await app.stop();
 
   const reloadedPriceLevels = createKnownPriceLevels();
+  state = { accounts: {}, instruments: {} };
   app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
@@ -565,9 +597,12 @@ test("ffca order book resolves market orders after persisted reload", async () =
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
-      initial: { accounts: {}, instruments: {} } as State<bigint>,
       schema: schema.APP_SCHEMA,
-      load: (tx) => loadOrderBookState(tx, reloadedPriceLevels),
+      load: (tx) =>
+        Effect.map(loadOrderBookState(tx, reloadedPriceLevels), (loaded) => {
+          state = loaded;
+          return loaded;
+        }),
     },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
@@ -576,7 +611,7 @@ test("ffca order book resolves market orders after persisted reload", async () =
 
   const result = await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "MarketOrder",
       address,
@@ -592,12 +627,11 @@ test("ffca order book resolves market orders after persisted reload", async () =
         deadline: FAR_DEADLINE,
       },
     }),
+    reloadedPriceLevels,
   );
 
   expect(result.status).toBe("accepted");
-  expect((app.state as State<bigint>).accounts[taker]!.balances[BASE]).toBe(
-    10n,
-  );
+  expect(state.accounts[taker]!.balances[BASE]).toBe(10n);
 
   await app.stop();
 });
@@ -614,7 +648,6 @@ test("ffca order book changes an unfilled order to a new price", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
-    state: { initial: state },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: baseMutations(),
@@ -622,14 +655,14 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
   const maker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "AddInstrument",
       address,
@@ -649,7 +682,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
@@ -666,7 +699,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "LimitOrder",
       address,
@@ -686,7 +719,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
   const result = await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "ChangeOrder",
       address,
@@ -718,7 +751,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
 test("db-queries fan out across per-mutation tables", async () => {
   const address = await deployExchange();
-  const state: State<bigint> = { accounts: {}, instruments: {} };
+  let state: State<bigint> = { accounts: {}, instruments: {} };
   const app = await createFFCA({
     address,
     domain: { name: "Exchange", version: "1" },
@@ -729,9 +762,12 @@ test("db-queries fan out across per-mutation tables", async () => {
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
-      initial: state,
       schema: schema.APP_SCHEMA,
-      load: loadOrderBookState,
+      load: (tx) =>
+        Effect.map(loadOrderBookState(tx), (loaded) => {
+          state = loaded;
+          return loaded;
+        }),
     },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
@@ -743,14 +779,14 @@ test("db-queries fan out across per-mutation tables", async () => {
 
   const maker = await setupAccount({
     app,
-    state: app.state as State<bigint>,
+    state,
     account: MAKER_ACCOUNT.address,
     privateKey: MAKER_PRIVATE_KEY,
     contract: address,
   });
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "AddInstrument",
       address,
@@ -770,7 +806,7 @@ test("db-queries fan out across per-mutation tables", async () => {
   );
   await executeOrderBookMutation(
     app,
-    app.state as State<bigint>,
+    state,
     await signedMutation({
       name: "Deposit",
       address,
