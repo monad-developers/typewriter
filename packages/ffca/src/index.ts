@@ -50,7 +50,6 @@ export async function createFFCA<const C extends FFCAConfig>(
       get state() {
         return ffca.state;
       },
-      storage: ffca.storage,
       domain: ffca.domain,
       execute: (submitted) => Effect.runPromise(ffca.execute(submitted)),
       on,

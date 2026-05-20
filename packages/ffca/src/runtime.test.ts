@@ -23,14 +23,15 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
+  COUNTER_ABI,
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
-  type CounterState,
   deployCounter,
   deployHarness,
   EMPTY_STORAGE_LAYOUT,
+  HARNESS_ABI,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
   HARNESS_PERSISTED_MUTATIONS,
@@ -87,7 +88,6 @@ const SHAPE_MUTATION = {
   tag: 0,
   table: testMutationSchema,
   params: parseAbiParameters("address account, uint256 amount"),
-  apply: () => {},
 };
 
 test("verifyMutation accepts a well-formed mutation", () => {
@@ -223,7 +223,6 @@ test("verifyResolution validates resolved shape", () => {
     params: parseAbiParameters("uint256 amount"),
     resolution: parseAbiParameters("uint256 newBalance"),
     resolve: () => ({ newBalance: 0n }),
-    apply: () => {},
   };
 
   expect(() =>
@@ -247,7 +246,6 @@ test("ffca.domain is derived from config", async () => {
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
     domain: { name: "my-app", version: "2" },
-    state: { initial: {} },
     signature: TEST_SIGNATURE,
     mutations: {},
   });
@@ -275,7 +273,7 @@ test("createFFCA rejects partially configured persistence", async () => {
       chainId: 1,
       rpcUrl: TEST_RPC_URL,
       domain: { name: "my-app", version: "2" },
-      state: { initial: {}, schema: HARNESS_SCHEMA },
+      state: { schema: HARNESS_SCHEMA },
       signature: TEST_SIGNATURE,
       mutations: { shape: SHAPE_MUTATION },
     }),
@@ -283,8 +281,12 @@ test("createFFCA rejects partially configured persistence", async () => {
 });
 
 test("createFFCA loads persisted state before returning", async () => {
-  const initialState = { accounts: {}, balances: {}, loaded: false };
-  const loadedState = { accounts: {}, balances: {}, loaded: true };
+  const account =
+    "0x0000000000000000000000000000000000000000000000000000000000000001" as Hex;
+  const loadedState: HarnessState = {
+    accounts: { [account]: { keys: [], nonces: {} } },
+    balances: { [account]: 42n },
+  };
   const ffca = await createFFCA({
     address: "0x000000000000000000000000000000000000ffca",
     abi: [],
@@ -296,7 +298,6 @@ test("createFFCA loads persisted state before returning", async () => {
     domain: HARNESS_DOMAIN,
     database: { connection: TEST_DB_CONNECTION },
     state: {
-      initial: initialState,
       schema: HARNESS_SCHEMA,
       load: () => Effect.succeed(loadedState),
     },
@@ -304,8 +305,7 @@ test("createFFCA loads persisted state before returning", async () => {
     mutations: { initialize: HARNESS_PERSISTED_MUTATIONS.initialize },
   });
 
-  expect(initialState.loaded).toBe(false);
-  expect(ffca.state).toBe(loadedState);
+  expect(await ffca.state.balances[account]).toBe(42n);
 
   await ffca.stop();
 });
@@ -321,7 +321,6 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
-    state: { initial: {} },
     signature: TEST_SIGNATURE,
     sequence: ["cancel", "limit", "market"],
     mutations: {
@@ -329,27 +328,21 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
         tag: 0,
         table: testMutationSchema,
         params: noop,
-        apply: () => {
-          applied.push("cancel");
-        },
       },
       limit: {
         tag: 1,
         table: testMutationSchema,
         params: noop,
-        apply: () => {
-          applied.push("limit");
-        },
       },
       market: {
         tag: 2,
         table: testMutationSchema,
         params: noop,
-        apply: () => {
-          applied.push("market");
-        },
       },
     },
+  });
+  ffca.on("mutation", (event) => {
+    if (event.status === "accepted") applied.push(event.name);
   });
 
   // Submit out of order; queue together so they land in the same bundle.
@@ -396,7 +389,6 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
-    state: { initial: {} },
     signature: TEST_SIGNATURE,
     mutations: { shape: SHAPE_MUTATION },
     sequence: ["other"],
@@ -416,9 +408,8 @@ test("execute rejects mutations whose name isn't in sequence", async () => {
   await ffca.stop();
 });
 
-test("resolve and apply receive submitted signature and apply receives digest", async () => {
+test("resolve receives submitted signature and execute returns digest", async () => {
   const signatures: unknown[] = [];
-  const digests: unknown[] = [];
   const signature = { keyType: 7, rawSignature: "0x1234" };
   const mutation = {
     tag: 0,
@@ -429,16 +420,6 @@ test("resolve and apply receive submitted signature and apply receives digest", 
       signatures.push(submittedSignature);
       return { keyType: signature.keyType };
     },
-    apply: ({
-      signature: submittedSignature,
-      digest,
-    }: {
-      signature: unknown;
-      digest: unknown;
-    }) => {
-      signatures.push(submittedSignature);
-      digests.push(digest);
-    },
   };
   const ffca = await createFFCA({
     address: "0x0000000000000000000000000000000000000000",
@@ -448,39 +429,38 @@ test("resolve and apply receive submitted signature and apply receives digest", 
     chainId: 1,
     rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
-    state: { initial: {} },
     signature: TEST_SIGNATURE,
     mutations: {
       shape: mutation,
     },
   });
 
-  await ffca.execute({
+  const result = await ffca.execute({
     name: "shape",
     args: { amount: 5n },
     signature,
   });
 
-  expect(signatures).toEqual([signature, signature]);
-  expect(digests).toEqual([
+  expect(signatures).toEqual([signature]);
+  expect(result.digest).toBe(
     hashMutationEip712(mutation, "shape", { amount: 5n }, ffca.domain),
-  ]);
+  );
 
   await ffca.stop();
 });
 
-test("Harness apply rejects invalid signatures using callback digest", async () => {
-  const address = "0x0000000000000000000000000000000000000000";
-  const state: HarnessState = { accounts: {}, balances: {} };
+test("Harness revm rejects invalid signatures", async () => {
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
   const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
-    abi: [],
+    abi,
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: state },
+    state: {},
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     mutations: HARNESS_MUTATIONS,
   });
@@ -509,16 +489,17 @@ test("Harness apply rejects invalid signatures using callback digest", async () 
         }),
       },
     }),
-  ).rejects.toThrow(/InvalidSignature: keyType=2/);
+  ).rejects.toThrow(/InvalidSignature\(uint8 keyType\)[\s\S]*\(2\)/);
 
-  expect(state.balances[account]).toBeUndefined();
+  expect(await ffca.state.balances[account]).toBe(0n);
   await ffca.stop();
 });
 
 // Counter: a single mutation, signed by the user, lands on chain.
 // End-to-end through real EIP-712 signing and on-chain secp256k1 recovery.
 test("e2e Counter: single mutation", async () => {
-  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const abi = COUNTER_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -528,7 +509,6 @@ test("e2e Counter: single mutation", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: COUNTER_MUTATIONS,
   });
@@ -561,13 +541,14 @@ test("e2e Counter: single mutation", async () => {
   }
 
   expect(await readTotal()).toBe(7n);
-  expect((ffca.state as CounterState).total).toBe(7n);
+  expect(await ffca.state.total).toBe(7n);
 
   await ffca.stop();
 });
 
 test("e2e Counter: scheduler submits detected force inclusion", async () => {
-  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const abi = COUNTER_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -577,7 +558,6 @@ test("e2e Counter: scheduler submits detected force inclusion", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     sequencing: {
       order: "fifo",
@@ -639,36 +619,8 @@ test("e2e Counter: scheduler submits detected force inclusion", async () => {
   }
 
   expect(await readState()).toEqual([20n, 2n]);
-  expect(ffca.state).toEqual({ total: 20n, nonce: 2n });
-
-  await ffca.stop();
-});
-
-test("createFFCA seeds revm storage from decoded state", async () => {
-  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
-
-  const ffca = await createFFCA({
-    address,
-    domain: COUNTER_DOMAIN,
-    abi,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    storageLayout: COUNTER_STORAGE_LAYOUT,
-    state: { initial: { total: 9n, nonce: 2n } as CounterState },
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    mutations: COUNTER_MUTATIONS,
-  });
-
-  const [onchainTotal, onchainNonce] = (await TEST_PUBLIC_CLIENT.readContract({
-    abi,
-    address,
-    functionName: "state",
-  })) as [bigint, bigint];
-  expect(onchainTotal).toBe(0n);
-  expect(onchainNonce).toBe(0n);
-  expect(await ffca.storage.total).toBe(9n);
-  expect(await ffca.storage.nonce).toBe(2n);
+  expect(await ffca.state.total).toBe(20n);
+  expect(await ffca.state.nonce).toBe(2n);
 
   await ffca.stop();
 });
@@ -676,7 +628,8 @@ test("createFFCA seeds revm storage from decoded state", async () => {
 // Counter: FIFO accepts each mutation as soon as it arrives, then the submit
 // loop flushes the accepted mutations to chain together.
 test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
-  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const abi = COUNTER_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -686,7 +639,6 @@ test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     sequencing: { order: "fifo", submitIntervalMs: 1000 },
     mutations: COUNTER_MUTATIONS,
@@ -743,7 +695,7 @@ test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
   }
 
   expect(await readTotal()).toBe(23n);
-  expect((ffca.state as CounterState).total).toBe(23n);
+  expect(await ffca.state.total).toBe(23n);
 
   await ffca.stop();
 });
@@ -752,7 +704,8 @@ test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
 // accepts the resolution. Exercises the resolve → encode → onchain verify path
 // end-to-end through real EIP-712 signing + secp256k1 recovery.
 test("e2e Harness: mutation with resolution", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -762,10 +715,8 @@ test("e2e Harness: mutation with resolution", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
-    },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
+    sequence: ["initialize", "credit", "debit"],
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       credit: HARNESS_MUTATIONS.credit,
@@ -831,13 +782,14 @@ test("e2e Harness: mutation with resolution", async () => {
   }
 
   expect(await readBalance()).toBe(70n);
-  expect((ffca.state as HarnessState).balances[aliceId]).toBe(70n);
+  expect(await ffca.state.balances[aliceId]).toBe(70n);
 
   await ffca.stop();
 });
 
 test("e2e Harness: persistence callbacks write accepted and included state", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -849,7 +801,6 @@ test("e2e Harness: persistence callbacks write accepted and included state", asy
     rpcUrl: TEST_RPC_URL,
     database: { connection: TEST_DB_CONNECTION },
     state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
       schema: HARNESS_SCHEMA,
       load: loadHarnessState,
     },
@@ -1007,7 +958,8 @@ test("e2e Harness: persistence callbacks write accepted and included state", asy
 });
 
 test("e2e Harness: authorize persistence writes per-mutation key rows", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1019,7 +971,6 @@ test("e2e Harness: authorize persistence writes per-mutation key rows", async ()
     rpcUrl: TEST_RPC_URL,
     database: { connection: TEST_DB_CONNECTION },
     state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
       schema: HARNESS_SCHEMA,
       load: loadHarnessState,
     },
@@ -1142,7 +1093,8 @@ test("e2e Harness: authorize persistence writes per-mutation key rows", async ()
 // debit's resolve runs against post-credit state. If sort were broken, debit's
 // resolve would underflow and the bundle would never encode.
 test("e2e Harness: mutations reordered by sequence", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1152,9 +1104,6 @@ test("e2e Harness: mutations reordered by sequence", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
-    },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     sequence: ["initialize", "credit", "debit"],
     mutations: {
@@ -1226,16 +1175,17 @@ test("e2e Harness: mutations reordered by sequence", async () => {
   }
 
   expect(await readBalance()).toBe(70n);
-  expect((ffca.state as HarnessState).balances[aliceId]).toBe(70n);
+  expect(await ffca.state.balances[aliceId]).toBe(70n);
 
   await ffca.stop();
 });
 
-// Harness: an apply that throws (debit against zero balance) rejects that
-// mutation's execute() promise without crashing the runtime; sibling mutations
-// in the same bundle still land, and a follow-up mutation works.
-test("e2e Harness: apply error rejects without crashing", async () => {
-  const { address, abi } = await deployHarness();
+// Harness: a bad debit resolution rejects that mutation's execute() promise
+// without crashing the runtime; sibling mutations in the same bundle still
+// land, and a follow-up mutation works.
+test("e2e Harness: resolution error rejects without crashing", async () => {
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1245,9 +1195,6 @@ test("e2e Harness: apply error rejects without crashing", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
-    },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     sequence: ["initialize", "credit", "debit"],
     mutations: {
@@ -1358,7 +1305,8 @@ test("e2e Harness: apply error rejects without crashing", async () => {
 // chain. Proves the multi-key registry path end-to-end: the contract picks
 // the right key by keyId and dispatches verification correctly.
 test("e2e Harness: secp256k1 authorize flow", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1368,9 +1316,6 @@ test("e2e Harness: secp256k1 authorize flow", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
-    },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     sequence: ["initialize", "authorize", "credit"],
     mutations: {
@@ -1492,7 +1437,8 @@ test("e2e Harness: secp256k1 authorize flow", async () => {
 // lands on chain. Proves the on-chain RIP-7212 P-256 verifier (precompile
 // at address 0x100) integrates end-to-end through ffca's wire format.
 test("e2e Harness: P-256 key authorize and credit", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1502,9 +1448,6 @@ test("e2e Harness: P-256 key authorize and credit", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
-    },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     sequence: ["initialize", "authorize", "credit"],
     mutations: {
@@ -1607,7 +1550,8 @@ test("e2e Harness: P-256 key authorize and credit", async () => {
 // authenticatorData + clientDataJSON + base64url-encoded challenge,
 // verified on-chain via the RIP-7212 precompile.
 test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
-  const { address, abi } = await deployHarness();
+  const address = await deployHarness();
+  const abi = HARNESS_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1617,9 +1561,6 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {
-      initial: { accounts: {}, balances: {} } as HarnessState,
-    },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     sequence: ["initialize", "authorize", "credit"],
     mutations: {
@@ -1719,7 +1660,8 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
 // accepted/included for its bundle and block. Off-then-on confirms unsubscribe
 // works.
 test("e2e Counter: subscribers receive lifecycle events", async () => {
-  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const abi = COUNTER_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1729,7 +1671,6 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: COUNTER_MUTATIONS,
   });
@@ -1795,7 +1736,8 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
 });
 
 test("e2e Counter: watch advances included bundles by configured block depths", async () => {
-  const { address, abi } = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const abi = COUNTER_ABI;
 
   const ffca = await createFFCA({
     address,
@@ -1805,7 +1747,6 @@ test("e2e Counter: watch advances included bundles by configured block depths", 
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: { initial: { total: 0n, nonce: 0n } as CounterState },
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: COUNTER_MUTATIONS,
     confirmations: { safeBlockDepth: 1, finalizedBlockDepth: 3 },

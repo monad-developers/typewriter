@@ -3,7 +3,7 @@ import type { FFCAMutationConfig } from "./config";
 import type { ResolvedMutation } from "./types";
 
 // Records keyed by param name are ffca's canonical shape for both args and
-// signatures (the form clients post and the form `apply`/`resolve` consume).
+// signatures (the form clients post and the form `resolve` consumes).
 // ABI-encode wants a positional tuple in declaration order; project to it.
 function abiTupleFromRecord(
   params: readonly AbiParameters.Parameter[],

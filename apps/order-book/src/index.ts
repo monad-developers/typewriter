@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import { Effect } from "effect";
 import { createFFCA } from "ffca";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type { Address, Hex } from "viem";
@@ -14,6 +15,7 @@ import {
   type OrderBookMutationName,
   type OrderBookSignature,
   persistedMutations,
+  projectAcceptedMutation,
   type SubmittedOrderBookMutation,
 } from "./app";
 import { APP_SCHEMA } from "./app-schema";
@@ -45,6 +47,7 @@ const readerConnection = new Bun.SQL({
   max: 25,
 });
 const knownPriceLevels = createKnownPriceLevels();
+let state: State<bigint> = { accounts: {}, instruments: {} };
 
 const app = await createFFCA({
   address: EXCHANGE_ADDRESS,
@@ -56,13 +59,26 @@ const app = await createFFCA({
   rpcUrl: RPC_URLS,
   database,
   state: {
-    initial: { accounts: {}, instruments: {} },
     schema: APP_SCHEMA,
-    load: (tx) => loadOrderBookState(tx, knownPriceLevels),
+    load: (tx) =>
+      Effect.map(loadOrderBookState(tx, knownPriceLevels), (loaded) => {
+        state = loaded;
+        return loaded;
+      }),
   },
   signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
   sequence: ORDER_BOOK_SEQUENCE,
   mutations: persistedMutations(knownPriceLevels),
+});
+
+app.on("mutation", (mutation) => {
+  if (mutation.status === "accepted") {
+    projectAcceptedMutation(
+      state,
+      mutation as Parameters<typeof projectAcceptedMutation>[1],
+      knownPriceLevels,
+    );
+  }
 });
 
 // FFCA's startup mutates the imported `schema.*` tables in place with the
@@ -114,7 +130,7 @@ type RuntimeMutation = {
 const textEncoder = new TextEncoder();
 
 function currentState(): State<bigint> {
-  return app.state as State<bigint>;
+  return state;
 }
 
 function mutationType(name: string): string {
