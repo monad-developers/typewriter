@@ -1,10 +1,25 @@
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sql";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import { Effect } from "effect";
 import type { Address } from "ox";
-import { TEST_DB_CONNECTION } from "../test/setup";
+import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import { HARNESS_SCHEMA } from "../test/utils";
+import { layerDatabaseLive } from "./db";
 import { migrate, updateSchema } from "./migrate";
+
+const runMigrate = (
+  schema: Record<string, unknown>,
+  chainId: number,
+  address: Address.Address,
+) =>
+  Effect.runPromise(
+    migrate(schema, chainId, address).pipe(
+      Effect.provide(
+        layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 }),
+      ),
+    ),
+  );
 
 test("migrate creates the configured schema", async () => {
   const chainId = 31337;
@@ -12,11 +27,10 @@ test("migrate creates the configured schema", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31337_0x000000000000000000000000000000000000ffca";
 
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: HARNESS_SCHEMA,
-    casing: "snake_case",
+  const db = drizzle({
+    client: TEST_DB_CONNECTION,
   });
-  const schemaName = await migrate(db, chainId, address);
+  const schemaName = await runMigrate(HARNESS_SCHEMA, chainId, address);
   updateSchema(HARNESS_SCHEMA, schemaName);
 
   const tables = await TEST_DB_CONNECTION<{ table_name: string }[]>`
@@ -81,12 +95,8 @@ test("migrate is idempotent when schema already exists", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31338_0x000000000000000000000000000000000000ffca";
 
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: HARNESS_SCHEMA,
-    casing: "snake_case",
-  });
-  const firstSchemaName = await migrate(db, chainId, address);
-  const secondSchemaName = await migrate(db, chainId, address);
+  const firstSchemaName = await runMigrate(HARNESS_SCHEMA, chainId, address);
+  const secondSchemaName = await runMigrate(HARNESS_SCHEMA, chainId, address);
 
   const tables = await TEST_DB_CONNECTION<{ table_name: string }[]>`
       SELECT table_name
@@ -116,11 +126,7 @@ test("migrate rejects accepted mutations in an existing schema", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const schemaName = "ffca_31339_0x000000000000000000000000000000000000ffca";
 
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: HARNESS_SCHEMA,
-    casing: "snake_case",
-  });
-  await migrate(db, chainId, address);
+  await runMigrate(HARNESS_SCHEMA, chainId, address);
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.harness_credits
@@ -129,7 +135,7 @@ test("migrate rejects accepted mutations in an existing schema", async () => {
       (0, 'accepted', ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, 0, 0, '0x', 1, 0)
   `;
 
-  await expect(migrate(db, chainId, address)).rejects.toThrow(
+  await expect(runMigrate(HARNESS_SCHEMA, chainId, address)).rejects.toThrow(
     /contains accepted mutations/,
   );
 });

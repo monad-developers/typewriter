@@ -1,0 +1,95 @@
+import { Data, Effect, Layer, Scope } from "effect";
+import { toEventSelector } from "viem";
+import type { FFCAConfig } from "./config";
+import { DatabaseConfig, layerDatabase } from "./db";
+import { scopedDeploymentLock } from "./deployment-lock";
+import { forceInclusionQueuedAbi } from "./encoding";
+import {
+  deploymentLockKey,
+  deploymentSchemaName,
+  migrate,
+  updateSchema,
+} from "./migrate";
+import { getFFCASchema, isPersistenceEnabled } from "./persistence";
+import { layerRpc, RpcConfig } from "./rpc";
+import { createRuntimeEffect, type RuntimeFFCA } from "./runtime";
+import { layerWatchLive } from "./watch";
+
+const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
+const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
+
+export class FFCAConfigError extends Data.TaggedError("FFCAConfigError")<{
+  readonly message: string;
+}> {}
+
+function primaryRpcUrl(
+  rpcUrl: string | readonly string[],
+): Effect.Effect<string, FFCAConfigError> {
+  if (typeof rpcUrl === "string") return Effect.succeed(rpcUrl);
+  const [first] = rpcUrl;
+  if (first === undefined) {
+    return Effect.fail(
+      new FFCAConfigError({ message: "At least one RPC URL is required" }),
+    );
+  }
+  return Effect.succeed(first);
+}
+
+export function createFFCAEffect<const C extends FFCAConfig>(
+  config: C,
+): Effect.Effect<RuntimeFFCA<C["storageLayout"]>, unknown, Scope.Scope> {
+  return Effect.gen(function* () {
+    const rpcUrl = yield* primaryRpcUrl(config.rpcUrl);
+    const rpcLayer = layerRpc.pipe(
+      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl })),
+    );
+
+    const dbLayer = layerDatabase.pipe(
+      Layer.provide(Layer.succeed(DatabaseConfig)(config.database)),
+    );
+    const forceInclusionSelector = toEventSelector(
+      forceInclusionQueuedAbi(config.signature.params)[0],
+    );
+    const watchLayer = layerWatchLive({
+      pollIntervalMs:
+        config.sequencing?.blockPollingIntervalMs ??
+        DEFAULT_BLOCK_POLLING_INTERVAL_MS,
+      maxChainDepth:
+        config.confirmations?.finalizedBlockDepth ??
+        DEFAULT_FINALIZED_BLOCK_DEPTH,
+      logFilter: {
+        address: config.address,
+        selector: forceInclusionSelector,
+      },
+    }).pipe(Layer.provide(rpcLayer));
+    const services = rpcLayer.pipe(
+      Layer.merge(dbLayer),
+      Layer.merge(watchLayer),
+    );
+    const scope = yield* Scope.Scope;
+    const servicesContext = yield* Layer.buildWithScope(services, scope);
+
+    return yield* Effect.gen(function* () {
+      yield* scopedDeploymentLock(
+        deploymentLockKey(config.chainId, config.address),
+      );
+      const schema = yield* Effect.try({
+        try: () => {
+          if (!isPersistenceEnabled(config)) return undefined;
+          const schema = getFFCASchema(config);
+          updateSchema(
+            schema,
+            deploymentSchemaName(config.chainId, config.address),
+          );
+          return schema;
+        },
+        catch: (cause) => cause,
+      });
+      if (schema !== undefined) {
+        yield* migrate(schema, config.chainId, config.address);
+      }
+
+      return yield* createRuntimeEffect(config, schema);
+    }).pipe(Effect.provide(servicesContext));
+  });
+}

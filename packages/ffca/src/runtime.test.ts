@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sql";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import { Effect } from "effect";
 import type { TypedData } from "ox";
 import type { Hex } from "viem";
 import { anvil } from "viem/chains";
@@ -14,6 +15,7 @@ import {
   SCHEDULER_ACCOUNT,
   TEST_CLIENT,
   TEST_DB_CONNECTION,
+  TEST_DB_URL,
   TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
   TEST_WALLET_CLIENT,
@@ -51,9 +53,11 @@ import {
   signHarness,
   testMutationSchema,
 } from "../test/utils";
+import type { FFCAConfig } from "./config";
 import { hashMutationEip712 } from "./eip712";
 import { encodeMutationCalldata } from "./encoding";
-import { createFFCA, verifyMutation, verifyResolution } from "./runtime";
+import { createFFCA as createFFCARaw } from "./index";
+import { type FFCA, verifyMutation, verifyResolution } from "./runtime";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
 const domain: TypedData.Domain = {
@@ -66,6 +70,16 @@ const domain: TypedData.Domain = {
 const TEST_SIGNATURE = {
   params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
 };
+
+async function createFFCA<
+  const C extends Omit<FFCAConfig, "database"> & { database?: unknown },
+>(config: C): Promise<FFCA<C["storageLayout"]>> {
+  const { database: _database, ...rest } = config;
+  return createFFCARaw({
+    ...rest,
+    database: { url: TEST_DB_URL, maxConnections: 2 },
+  } as FFCAConfig) as Promise<FFCA<C["storageLayout"]>>;
+}
 
 // Small inline mutation for the shape-checking tests, kept independent of
 // Harness/Counter so their evolving param lists don't drift these.
@@ -284,7 +298,7 @@ test("createFFCA loads persisted state before returning", async () => {
     state: {
       initial: initialState,
       schema: HARNESS_SCHEMA,
-      load: async () => loadedState,
+      load: () => Effect.succeed(loadedState),
     },
     signature: { params: HARNESS_SIGNATURE_PARAMS },
     mutations: { initialize: HARNESS_PERSISTED_MUTATIONS.initialize },
@@ -846,9 +860,8 @@ test("e2e Harness: persistence callbacks write accepted and included state", asy
       debit: HARNESS_PERSISTED_MUTATIONS.debit,
     },
   });
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: HARNESS_SCHEMA,
-    casing: "snake_case",
+  const db = drizzle({
+    client: TEST_DB_CONNECTION,
   });
 
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
@@ -1017,9 +1030,8 @@ test("e2e Harness: authorize persistence writes per-mutation key rows", async ()
       authorize: HARNESS_PERSISTED_MUTATIONS.authorize,
     },
   });
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: HARNESS_SCHEMA,
-    casing: "snake_case",
+  const db = drizzle({
+    client: TEST_DB_CONNECTION,
   });
 
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);

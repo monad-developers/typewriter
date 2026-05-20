@@ -7,11 +7,10 @@ import {
   Schedule,
   Stream,
 } from "effect";
-import { type Block, Bloom, type Hex } from "ox";
-import { type Address, createPublicClient, extractChain, http } from "viem";
-import * as chains from "viem/chains";
+import { Bloom, Hex } from "ox";
+import type { RpcBlock } from "viem";
+import { Rpc } from "./rpc";
 
-const DEFAULT_POLL_INTERVAL_MS = 200;
 const ZERO_LOGS_BLOOM = `0x${"0".repeat(512)}` as Hex.Hex;
 
 export type LocalLog = {
@@ -45,23 +44,21 @@ export type WatchMessage =
       newBlocks: LocalBlock[];
     };
 
-export class WatchConfig extends Context.Tag("ffca/WatchConfig")<
+export class WatchConfig extends Context.Service<
   WatchConfig,
   {
-    readonly chainId: number;
-    readonly rpcUrl: string | readonly string[];
     readonly maxChainDepth: number;
-    readonly pollIntervalMs?: number;
+    readonly pollIntervalMs: number;
     readonly logFilter?: WatchLogFilter;
   }
->() {}
+>()("ffca/WatchConfig") {}
 
-export class Watch extends Context.Tag("ffca/Watch")<
+export class Watch extends Context.Service<
   Watch,
   {
     readonly messages: Stream.Stream<WatchMessage>;
   }
->() {}
+>()("ffca/Watch") {}
 
 const appendTip = (
   chain: readonly LocalBlock[],
@@ -82,79 +79,66 @@ const appendBlocks = (
   return next;
 };
 
-export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
-  Watch,
-  Effect.gen(function* () {
-    const config = yield* WatchConfig;
+const quantity = (value: bigint): Hex.Hex => `0x${value.toString(16)}`;
 
-    const rpcUrl = Array.isArray(config.rpcUrl)
-      ? config.rpcUrl[0]
-      : config.rpcUrl;
-    // viem's `extractChain` is typed with a literal union; cast through at
-    // the framework boundary.
-    const chain = extractChain({
-      chains: Object.values(chains),
-      id: config.chainId as 1,
-    });
-    const publicClient = createPublicClient({
-      chain,
-      transport: http(rpcUrl, { retryCount: 0 }),
-    });
+export const layerWatch: Layer.Layer<Watch, never, WatchConfig | Rpc> =
+  Layer.effect(
+    Watch,
+    Effect.gen(function* () {
+      const config = yield* WatchConfig;
+      const rpc = yield* Rpc;
 
-    const queue = yield* Effect.acquireRelease(
-      Queue.unbounded<WatchMessage>(),
-      (q) => Queue.shutdown(q),
-    );
+      const queue = yield* Effect.acquireRelease(
+        Queue.unbounded<WatchMessage>(),
+        (q) => Queue.shutdown(q),
+      );
 
-    // oldest first; tip is last. capped at maxChainDepth.
-    let localChain: readonly LocalBlock[] = [];
+      // oldest first; tip is last. capped at maxChainDepth.
+      let localChain: readonly LocalBlock[] = [];
 
-    const getLocalBlockWithLogs = (
-      block: Pick<
-        Block.Block,
-        | "number"
-        | "hash"
-        | "parentHash"
-        | "timestamp"
-        | "transactions"
-        | "logsBloom"
-      >,
-    ) =>
-      Effect.gen(function* () {
-        if (
-          block.number === null ||
-          block.hash === null ||
-          block.logsBloom === null
-        ) {
-          throw new Error("block missing number or hash");
-        }
+      const getLocalBlockWithLogs = (block: RpcBlock) =>
+        Effect.gen(function* () {
+          if (
+            block.number === null ||
+            block.hash === null ||
+            block.logsBloom === null
+          ) {
+            return yield* Effect.fail(
+              new Error("block missing number or hash"),
+            );
+          }
 
-        const blockNumber = block.number;
-        let logs: LocalLog[] = [];
-        const filter = config.logFilter;
-        if (
-          filter !== undefined &&
-          block.logsBloom !== ZERO_LOGS_BLOOM &&
-          Bloom.contains(block.logsBloom, filter.address) &&
-          Bloom.contains(block.logsBloom, filter.selector)
-        ) {
-          logs = yield* Effect.tryPromise({
-            try: async () => {
-              const matchingLogs = await publicClient.getLogs({
-                address: filter.address as Address,
-                fromBlock: blockNumber,
-                toBlock: blockNumber,
-              });
+          let logs: LocalLog[] = [];
+          const filter = config.logFilter;
+          if (
+            filter !== undefined &&
+            block.logsBloom !== ZERO_LOGS_BLOOM &&
+            Bloom.contains(block.logsBloom, filter.address) &&
+            Bloom.contains(block.logsBloom, filter.selector)
+          ) {
+            const matchingLogs = yield* rpc.request({
+              method: "eth_getLogs",
+              params: [
+                {
+                  blockHash: block.hash,
+                  address: filter.address,
+                  topics: [filter.selector],
+                },
+              ],
+            });
 
-              return matchingLogs
-                .filter((log) => log.topics[0] === filter.selector)
-                .map((log) => {
+            logs = yield* Effect.forEach(
+              matchingLogs.filter((log) => log.topics[0] === filter.selector),
+              (log) =>
+                Effect.gen(function* () {
                   if (
                     log.transactionHash === null ||
                     log.transactionIndex === null ||
                     log.logIndex === null
                   ) {
-                    throw new Error("log missing transaction hash or index");
+                    return yield* Effect.fail(
+                      new Error("log missing transaction hash or index"),
+                    );
                   }
 
                   return {
@@ -162,159 +146,172 @@ export const layerWatch: Layer.Layer<Watch, never, WatchConfig> = Layer.scoped(
                     topics: [...log.topics],
                     data: log.data,
                     transactionHash: log.transactionHash,
-                    transactionIndex: log.transactionIndex,
-                    logIndex: log.logIndex,
+                    transactionIndex: Hex.toNumber(log.transactionIndex),
+                    logIndex: Hex.toNumber(log.logIndex),
                   };
-                });
-            },
-            catch: (error) => error as Error,
-          });
-        }
-
-        const localBlock: LocalBlock = {
-          number: block.number,
-          hash: block.hash,
-          parentHash: block.parentHash,
-          transactions: block.transactions,
-          logs,
-        };
-        return localBlock;
-      });
-
-    const getBlockByHash = (blockHash: Hex.Hex) =>
-      Effect.gen(function* () {
-        const block = yield* Effect.tryPromise({
-          try: () =>
-            publicClient.getBlock({ blockHash, includeTransactions: false }),
-          catch: (error) => error as Error,
-        });
-        return yield* getLocalBlockWithLogs(block);
-      });
-
-    const getBlockByNumber = (blockNumber: bigint) =>
-      Effect.gen(function* () {
-        const block = yield* Effect.tryPromise({
-          try: () =>
-            publicClient.getBlock({ blockNumber, includeTransactions: false }),
-          catch: (error) => error as Error,
-        });
-        return yield* getLocalBlockWithLogs(block);
-      });
-
-    const reconcileReorg = (block: LocalBlock): Effect.Effect<void, Error> =>
-      Effect.gen(function* () {
-        const originalChain = localChain;
-        let reorgedBlocks = localChain.filter((b) => b.number >= block.number);
-        let remoteBlock = block;
-        const newBlocks = [block];
-
-        localChain = localChain.filter((b) => b.number < block.number);
-
-        while (true) {
-          const parentBlock = localChain[localChain.length - 1];
-          if (
-            parentBlock !== undefined &&
-            parentBlock.hash === remoteBlock.parentHash
-          ) {
-            break;
-          }
-
-          if (localChain.length === 0) {
-            localChain = originalChain;
-            throw new Error(
-              `unrecoverable reorg beyond local chain: number=${block.number} hash=${block.hash}`,
+                }),
             );
           }
 
-          remoteBlock = yield* getBlockByHash(remoteBlock.parentHash);
-          newBlocks.unshift(remoteBlock);
-          reorgedBlocks = [
-            localChain[localChain.length - 1]!,
-            ...reorgedBlocks,
-          ];
-          localChain = localChain.slice(0, -1);
-        }
-
-        const commonAncestor = localChain[localChain.length - 1];
-        localChain = appendBlocks(localChain, newBlocks, config.maxChainDepth);
-        yield* Queue.offer(queue, {
-          _tag: "Reorged",
-          commonAncestor,
-          reorgedBlocks,
-          newBlocks,
+          const localBlock: LocalBlock = {
+            number: Hex.toBigInt(block.number),
+            hash: block.hash,
+            parentHash: block.parentHash,
+            transactions: block.transactions.map((transaction) =>
+              typeof transaction === "string" ? transaction : transaction.hash,
+            ),
+            logs,
+          };
+          return localBlock;
         });
-      });
 
-    const reconcileBlock = (newBlock: LocalBlock): Effect.Effect<void, Error> =>
-      Effect.gen(function* () {
-        const current = localChain[localChain.length - 1];
-
-        if (current === undefined) {
-          localChain = appendTip(localChain, newBlock, config.maxChainDepth);
-          return;
-        }
-
-        if (newBlock.hash === current.hash) {
-          return;
-        }
-
-        if (current.number >= newBlock.number) {
-          yield* reconcileReorg(newBlock);
-          return;
-        }
-
-        if (current.number + 1n < newBlock.number) {
-          for (
-            let number = current.number + 1n;
-            number < newBlock.number;
-            number++
-          ) {
-            yield* reconcileBlock(yield* getBlockByNumber(number));
+      const getBlockByHash = (blockHash: Hex.Hex) =>
+        Effect.gen(function* () {
+          const block = yield* rpc.request({
+            method: "eth_getBlockByHash",
+            params: [blockHash, false],
+          });
+          if (block === null) {
+            return yield* Effect.fail(
+              new Error(`block not found: hash=${blockHash}`),
+            );
           }
-          yield* reconcileBlock(newBlock);
-          return;
-        }
-
-        if (newBlock.parentHash !== current.hash) {
-          yield* reconcileReorg(newBlock);
-          return;
-        }
-
-        localChain = appendTip(localChain, newBlock, config.maxChainDepth);
-        yield* Queue.offer(queue, { _tag: "Extended", block: newBlock });
-      });
-
-    const poll = Effect.gen(function* () {
-      const latestBlock = yield* Effect.gen(function* () {
-        const block = yield* Effect.tryPromise({
-          try: () =>
-            publicClient.getBlock({
-              blockTag: "latest",
-              includeTransactions: false,
-            }),
-          catch: (error) => error as Error,
+          return yield* getLocalBlockWithLogs(block);
         });
-        return yield* getLocalBlockWithLogs(block);
-      });
-      yield* reconcileBlock(latestBlock);
-    }).pipe(Effect.withLogSpan("watch"));
 
-    yield* Effect.forkScoped(
-      Effect.repeat(
-        poll,
-        Schedule.spaced(
-          Duration.millis(config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
+      const getBlockByNumber = (blockNumber: bigint) =>
+        Effect.gen(function* () {
+          const block = yield* rpc.request({
+            method: "eth_getBlockByNumber",
+            params: [quantity(blockNumber), false],
+          });
+          if (block === null) {
+            return yield* Effect.fail(
+              new Error(`block not found: number=${blockNumber}`),
+            );
+          }
+          return yield* getLocalBlockWithLogs(block);
+        });
+
+      const reconcileReorg = (block: LocalBlock): Effect.Effect<void, Error> =>
+        Effect.gen(function* () {
+          const originalChain = localChain;
+          let reorgedBlocks = localChain.filter(
+            (b) => b.number >= block.number,
+          );
+          let remoteBlock = block;
+          const newBlocks = [block];
+
+          localChain = localChain.filter((b) => b.number < block.number);
+
+          while (true) {
+            const parentBlock = localChain[localChain.length - 1];
+            if (
+              parentBlock !== undefined &&
+              parentBlock.hash === remoteBlock.parentHash
+            ) {
+              break;
+            }
+
+            if (localChain.length === 0) {
+              localChain = originalChain;
+              return yield* Effect.fail(
+                new Error(
+                  `unrecoverable reorg beyond local chain: number=${block.number} hash=${block.hash}`,
+                ),
+              );
+            }
+
+            remoteBlock = yield* getBlockByHash(remoteBlock.parentHash);
+            newBlocks.unshift(remoteBlock);
+            reorgedBlocks = [
+              localChain[localChain.length - 1]!,
+              ...reorgedBlocks,
+            ];
+            localChain = localChain.slice(0, -1);
+          }
+
+          const commonAncestor = localChain[localChain.length - 1];
+          localChain = appendBlocks(
+            localChain,
+            newBlocks,
+            config.maxChainDepth,
+          );
+          yield* Queue.offer(queue, {
+            _tag: "Reorged",
+            commonAncestor,
+            reorgedBlocks,
+            newBlocks,
+          });
+        });
+
+      const reconcileBlock = (
+        newBlock: LocalBlock,
+      ): Effect.Effect<void, Error> =>
+        Effect.gen(function* () {
+          const current = localChain[localChain.length - 1];
+
+          if (current === undefined) {
+            localChain = appendTip(localChain, newBlock, config.maxChainDepth);
+            return;
+          }
+
+          if (newBlock.hash === current.hash) {
+            return;
+          }
+
+          if (current.number >= newBlock.number) {
+            yield* reconcileReorg(newBlock);
+            return;
+          }
+
+          if (current.number + 1n < newBlock.number) {
+            for (
+              let number = current.number + 1n;
+              number < newBlock.number;
+              number++
+            ) {
+              yield* reconcileBlock(yield* getBlockByNumber(number));
+            }
+            yield* reconcileBlock(newBlock);
+            return;
+          }
+
+          if (newBlock.parentHash !== current.hash) {
+            yield* reconcileReorg(newBlock);
+            return;
+          }
+
+          localChain = appendTip(localChain, newBlock, config.maxChainDepth);
+          yield* Queue.offer(queue, { _tag: "Extended", block: newBlock });
+        });
+
+      const poll = Effect.gen(function* () {
+        const latestBlock = yield* Effect.gen(function* () {
+          const block = yield* rpc.request({
+            method: "eth_getBlockByNumber",
+            params: ["latest", false],
+          });
+          if (block === null) {
+            return yield* Effect.fail(new Error("latest block not found"));
+          }
+          return yield* getLocalBlockWithLogs(block);
+        });
+        yield* reconcileBlock(latestBlock);
+      }).pipe(Effect.withLogSpan("watch"));
+
+      yield* Effect.forkScoped(
+        Effect.repeat(
+          poll,
+          Schedule.spaced(Duration.millis(config.pollIntervalMs)),
         ),
-      ),
-    );
+      );
 
-    return Watch.of({
-      messages: Stream.fromQueue(queue),
-    });
-  }),
-);
+      return Watch.of({ messages: Stream.fromQueue(queue) });
+    }),
+  );
 
 export const layerWatchLive = (
-  config: Context.Tag.Service<WatchConfig>,
-): Layer.Layer<Watch> =>
-  layerWatch.pipe(Layer.provide(Layer.succeed(WatchConfig, config)));
+  config: Context.Service.Shape<typeof WatchConfig>,
+): Layer.Layer<Watch, never, Rpc> =>
+  layerWatch.pipe(Layer.provide(Layer.succeed(WatchConfig)(config)));

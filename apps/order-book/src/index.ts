@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import { drizzle } from "drizzle-orm/bun-sql";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type { Address, Hex } from "viem";
@@ -39,9 +39,11 @@ if (process.env.DATABASE_URL === undefined) {
 const account = privateKeyToAccount(
   process.env.DEPLOYER_PRIVATE_KEY as `0x${string}`,
 );
-const database = {
-  connection: new Bun.SQL({ url: process.env.DATABASE_URL, max: 25 }),
-};
+const database = { url: process.env.DATABASE_URL, maxConnections: 25 };
+const readerConnection = new Bun.SQL({
+  url: process.env.DATABASE_URL,
+  max: 25,
+});
 const knownPriceLevels = createKnownPriceLevels();
 
 const app = await createFFCA({
@@ -68,9 +70,7 @@ const app = await createFFCA({
 // the time we build this read-side Drizzle handle the table references point
 // at the right namespace.
 const readerDb: QueryDatabase = drizzle({
-  client: database.connection,
-  schema: APP_SCHEMA,
-  casing: "snake_case",
+  client: readerConnection,
 });
 
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;

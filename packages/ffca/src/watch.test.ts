@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Chunk, Effect, Stream } from "effect";
+import { Effect, Layer, Stream } from "effect";
 import { decodeEventLog, getEventSelector, parseAbiItem } from "viem";
 import { anvil } from "viem/chains";
 import {
@@ -12,17 +12,16 @@ import {
 } from "../test/setup";
 import { COUNTER_MUTATIONS, deployCounter, signCounter } from "../test/utils";
 import { encodeMutationCalldata } from "./encoding";
+import { layerRpcLive } from "./rpc";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
 
 const POLL_INTERVAL_MS = 50;
 
 const liveLayer = () =>
   layerWatchLive({
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
     pollIntervalMs: POLL_INTERVAL_MS,
     maxChainDepth: 16,
-  });
+  }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL })));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
   "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes rawSignature) sig, uint256 enqueuedBlock)",
@@ -36,11 +35,7 @@ const collect = (
   stream.pipe(
     Stream.take(n),
     Stream.runCollect,
-    Effect.map(Chunk.toReadonlyArray),
-    Effect.timeoutFail({
-      duration: `${timeoutMs} millis`,
-      onTimeout: () => new Error(`collect timed out waiting for ${n} messages`),
-    }),
+    Effect.timeout(`${timeoutMs} millis`),
     Effect.orDie,
   );
 
@@ -168,15 +163,13 @@ test("attaches matching force inclusion enqueue logs", async () => {
     }).pipe(
       Effect.provide(
         layerWatchLive({
-          chainId: anvil.id,
-          rpcUrl: TEST_RPC_URL,
           pollIntervalMs: POLL_INTERVAL_MS,
           maxChainDepth: 16,
           logFilter: {
             address: counter.address,
             selector: getEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
           },
-        }),
+        }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL }))),
       ),
     ),
   );

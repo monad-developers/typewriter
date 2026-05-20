@@ -1,14 +1,15 @@
-import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
-import type { PgTable } from "drizzle-orm/pg-core";
+import type { Effect } from "effect";
 import type { Abi, Address, Hex } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
+import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { ResolvedMutation } from "./types";
 
-export type FFCADatabase = BunSQLDatabase<Record<string, PgTable>>;
+export type FFCADatabase = DatabaseClient;
 export type FFCADatabaseTransaction = Parameters<
-  Parameters<FFCADatabase["transaction"]>[0]
+  Parameters<DatabaseClient["transaction"]>[0]
 >[0];
+type PersistenceHookResult = Effect.Effect<void, unknown>;
 
 // `tag` is the contract enum index for this mutation; encoded as the uint8
 // in the bundle's `mutations[]` field. Hand-authored for now — see the
@@ -34,20 +35,20 @@ export type FFCADatabaseTransaction = Parameters<
 export type BundleView = readonly { name: string; args: unknown }[];
 
 type FFCAMutationPersistence = {
-  table: PgTable;
+  table: unknown;
   persistMutation?: (
     tx: FFCADatabaseTransaction,
     params: {
       mutation: Extract<ResolvedMutation, { status: "accepted" }>;
       bundle: { id: number; mutationIndex: number };
     },
-  ) => Promise<void>;
+  ) => PersistenceHookResult;
   persistState?: (
     tx: FFCADatabaseTransaction,
     params: {
       mutation: Extract<ResolvedMutation, { status: "accepted" }>;
     },
-  ) => Promise<void>;
+  ) => PersistenceHookResult;
   persistLifecycle?: (
     tx: FFCADatabaseTransaction,
     params:
@@ -70,7 +71,7 @@ type FFCAMutationPersistence = {
           lifecycle: "finalized";
           mutation: Extract<ResolvedMutation, { status: "finalized" }>;
         },
-  ) => Promise<void>;
+  ) => PersistenceHookResult;
 };
 
 export type FFCAMutationConfig =
@@ -111,7 +112,7 @@ export type FFCAConfig = {
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];
-  database?: { connection: Bun.SQL };
+  database: DatabaseOptions;
   // `initial` is the in-memory representation used without persistence;
   // `schema` is the user's Drizzle schema module for the persisted
   // representation; `load` hydrates runtime state from those tables on startup.
@@ -127,8 +128,8 @@ export type FFCAConfig = {
   // contract's post-deploy state is the canonical initial value.
   state: {
     initial: unknown;
-    schema?: Record<string, PgTable>;
-    load?: (tx: FFCADatabaseTransaction) => Promise<unknown>;
+    schema?: Record<string, unknown>;
+    load?: (tx: FFCADatabaseTransaction) => Effect.Effect<unknown, unknown>;
   };
   // ABI shape of one entry in the contract's `bundle.signatures[]` array.
   // Must include `keyType: uint8` and `rawSignature: bytes`; apps add

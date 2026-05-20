@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sql";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA, type FFCA } from "ffca";
 import { EIP712_TYPES, EXCHANGE_ABI } from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
@@ -14,6 +14,7 @@ import {
   TAKER_ACCOUNT,
   TAKER_PRIVATE_KEY,
   TEST_DB_CONNECTION,
+  TEST_DB_URL,
   TEST_RPC_URL,
 } from "../test/setup";
 import {
@@ -216,7 +217,7 @@ function executeOrderBookMutation(
 }
 
 async function waitForIncluded(
-  db: ReturnType<typeof drizzle<typeof schema.APP_SCHEMA>>,
+  db: ReturnType<typeof drizzle>,
   table: unknown,
   label: string,
 ) {
@@ -241,6 +242,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
+    database: { url: TEST_DB_URL, maxConnections: 4 },
     state: { initial: { accounts: {}, instruments: {} } as State<bigint> },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
@@ -297,7 +299,7 @@ test("ffca order book persists and submits market-order flow", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    database: { connection: TEST_DB_CONNECTION },
+    database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
       initial: state,
       schema: schema.APP_SCHEMA,
@@ -307,9 +309,8 @@ test("ffca order book persists and submits market-order flow", async () => {
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(),
   });
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: schema.APP_SCHEMA,
-    casing: "snake_case",
+  const db = drizzle({
+    client: TEST_DB_CONNECTION,
   });
 
   const maker = await setupAccount({
@@ -458,7 +459,7 @@ test("ffca order book resolves market orders after persisted reload", async () =
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    database: { connection: TEST_DB_CONNECTION },
+    database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
       initial: { accounts: {}, instruments: {} } as State<bigint>,
       schema: schema.APP_SCHEMA,
@@ -468,9 +469,8 @@ test("ffca order book resolves market orders after persisted reload", async () =
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(knownPriceLevels),
   });
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: schema.APP_SCHEMA,
-    casing: "snake_case",
+  const db = drizzle({
+    client: TEST_DB_CONNECTION,
   });
 
   const maker = await setupAccount({
@@ -563,7 +563,7 @@ test("ffca order book resolves market orders after persisted reload", async () =
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    database: { connection: TEST_DB_CONNECTION },
+    database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
       initial: { accounts: {}, instruments: {} } as State<bigint>,
       schema: schema.APP_SCHEMA,
@@ -613,6 +613,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
+    database: { url: TEST_DB_URL, maxConnections: 4 },
     state: { initial: state },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
@@ -726,7 +727,7 @@ test("db-queries fan out across per-mutation tables", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    database: { connection: TEST_DB_CONNECTION },
+    database: { url: TEST_DB_URL, maxConnections: 4 },
     state: {
       initial: state,
       schema: schema.APP_SCHEMA,
@@ -736,9 +737,8 @@ test("db-queries fan out across per-mutation tables", async () => {
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(),
   });
-  const db = drizzle(TEST_DB_CONNECTION, {
-    schema: schema.APP_SCHEMA,
-    casing: "snake_case",
+  const db = drizzle({
+    client: TEST_DB_CONNECTION,
   });
 
   const maker = await setupAccount({

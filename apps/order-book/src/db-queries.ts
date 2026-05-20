@@ -10,13 +10,12 @@
 // in parallel and merge the results app-side.
 
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { Hex } from "viem";
-import type { APP_SCHEMA } from "./app-schema";
 import * as schema from "./app-schema";
 
-export type QueryDatabase = BunSQLDatabase<typeof APP_SCHEMA>;
+export type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
 
 export type ApiMutationStatus = "accepted" | "included" | "safe" | "finalized";
 

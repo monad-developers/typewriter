@@ -34,6 +34,7 @@ const TEST_DATABASE_URL =
 
 const adminConnection = new Bun.SQL({ url: TEST_DATABASE_URL, max: 1 });
 export let TEST_DB_CONNECTION!: Bun.SQL;
+export let TEST_DB_URL!: string;
 
 let teardown!: () => Promise<void>;
 let snapshotId!: Hex;
@@ -132,8 +133,9 @@ beforeEach(async () => {
   await adminConnection.unsafe(
     `CREATE DATABASE ${quoteIdentifier(testDatabaseName)}`,
   );
+  TEST_DB_URL = databaseUrl(testDatabaseName);
   TEST_DB_CONNECTION = new Bun.SQL({
-    url: databaseUrl(testDatabaseName),
+    url: TEST_DB_URL,
     max: 4,
   });
   await TEST_CLIENT.revert({ id: snapshotId });

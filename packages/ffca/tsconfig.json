@@ -23,6 +23,8 @@
     "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": true,
 
+    "plugins": [{ "name": "@effect/language-service" }],
+
     "baseUrl": ".",
     "paths": {
       "evm": ["../evm/src/index.ts"],

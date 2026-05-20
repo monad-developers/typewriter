@@ -45,6 +45,7 @@ const TEST_ADMIN_DB_CONNECTION = new Bun.SQL({
   max: 1,
 });
 export let TEST_DB_CONNECTION!: Bun.SQL;
+export let TEST_DB_URL!: string;
 
 function quoteTestIdentifier(identifier: string): string {
   if (!/^[a-z_][a-z0-9_]*$/.test(identifier)) {
@@ -153,6 +154,7 @@ beforeAll(async () => {
 // Revert chain state between every test, regardless of file.
 beforeEach(async () => {
   testDatabaseName = `ffca_test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  TEST_DB_URL = testDatabaseUrl(testDatabaseName);
   TEST_DB_CONNECTION = await createTestDatabaseConnection(testDatabaseName);
   await TEST_CLIENT.revert({ id: snapshotId });
   snapshotId = await TEST_CLIENT.snapshot();

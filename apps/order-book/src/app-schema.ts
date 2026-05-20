@@ -3,13 +3,15 @@ import {
   char,
   integer,
   numeric,
-  pgTable,
   primaryKey,
   serial,
   smallint,
+  snakeCase,
   text,
 } from "drizzle-orm/pg-core";
 import { mutationColumns } from "ffca";
+
+const pgTable = snakeCase.table;
 
 const uint8 = () => smallint();
 const uint16 = () => integer();

@@ -7,7 +7,7 @@
 // fails any in-flight take with InterruptedException and propagates out.
 
 import { type Subprocess, spawn } from "bun";
-import { Data, Effect, Fiber, Queue, Ref, type Scope } from "effect";
+import { Data, Effect, Queue, Ref, type Scope, Semaphore } from "effect";
 import type {
   ExecuteParams,
   ExecuteResult,
@@ -35,29 +35,20 @@ const BINARY_PATH = `${import.meta.dir}/../target/${Bun.env.NODE_ENV === "test" 
 // Errors
 
 export class EvmCrashed extends Data.TaggedError("EvmCrashed")<{
-  readonly reason: string;
-}> {
-  override get message(): string {
-    return this.reason;
-  }
-}
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export class EvmCallError extends Data.TaggedError("EvmCallError")<{
   readonly method: Request["method"];
-  readonly error: string;
-}> {
-  override get message(): string {
-    return `${this.method} failed: ${this.error}`;
-  }
-}
+  readonly message: string;
+  readonly cause: string;
+}> {}
 
 export class EvmProtocolError extends Data.TaggedError("EvmProtocolError")<{
-  readonly reason: string;
-}> {
-  override get message(): string {
-    return this.reason;
-  }
-}
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
 
@@ -92,14 +83,14 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
         stderr: "inherit",
       });
 
-      const responses = yield* Queue.unbounded<Response>();
-      const sem = yield* Effect.makeSemaphore(1);
+      const responses = yield* Queue.unbounded<Response, EvmError>();
+      const sem = yield* Semaphore.make(1);
       const locked = sem.withPermits(1);
       const idCounterRef = yield* Ref.make(1);
 
       // Reader fiber — buffers stdout, splits on \n, offers each parsed
-      // response. On EOF or read error, shuts the queue down so the next
-      // Queue.take fails with InterruptedException.
+      // response. On EOF, read error, or parse error, fails the response queue
+      // so any in-flight call observes a typed EvmError.
       const readerEffect = Effect.gen(function* () {
         const reader = proc.stdout.getReader();
         const decoder = new TextDecoder();
@@ -108,12 +99,12 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
           const chunk = yield* Effect.tryPromise({
             try: () => reader.read(),
             catch: (e) =>
-              new EvmCrashed({ reason: `stdout read failed: ${String(e)}` }),
+              new EvmCrashed({ message: "stdout read failed", cause: e }),
           });
           if (chunk.done) {
-            return yield* Effect.fail(
-              new EvmCrashed({ reason: "subprocess stdout closed" }),
-            );
+            return yield* new EvmCrashed({
+              message: "subprocess stdout closed",
+            });
           }
           buffer += decoder.decode(chunk.value, { stream: true });
           for (;;) {
@@ -122,14 +113,25 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             const line = buffer.slice(0, idx);
             buffer = buffer.slice(idx + 1);
             if (!line.trim()) continue;
-            const parsed = JSON.parse(line) as Response;
+            const parsed = yield* Effect.try({
+              try: () => JSON.parse(line) as Response,
+              catch: (e) =>
+                new EvmProtocolError({
+                  message: `invalid response JSON: ${line}`,
+                  cause: e,
+                }),
+            });
             yield* Queue.offer(responses, parsed);
           }
         }
       });
 
-      const readerFiber = yield* Effect.forkDaemon(
-        readerEffect.pipe(Effect.ensuring(Queue.shutdown(responses))),
+      yield* readerEffect.pipe(
+        Effect.catch((error) =>
+          Queue.fail(responses, error).pipe(Effect.asVoid),
+        ),
+        Effect.ensuring(Queue.shutdown(responses)),
+        Effect.forkScoped,
       );
 
       const call = <T>(
@@ -147,32 +149,28 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
                 proc.stdin.flush();
               },
               catch: (e) =>
-                new EvmCrashed({ reason: `stdin write failed: ${String(e)}` }),
+                new EvmCrashed({ message: "stdin write failed", cause: e }),
             });
 
             const res = yield* Queue.take(responses);
             if (res.id !== id) {
               const responseError = res.ok ? undefined : res.error;
-              const staleBinaryHint = responseError?.includes(
-                "unknown variant `readStorage`",
-              )
-                ? "; stale evm sidecar binary: run `bun run --filter evm build` and restart the backend"
-                : "";
-              return yield* Effect.fail(
-                new EvmProtocolError({
-                  reason:
-                    `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
-                    (responseError === undefined
-                      ? ""
-                      : `; response error: ${responseError}`) +
-                    staleBinaryHint,
-                }),
-              );
+              // Mismatches often mean the TypeScript client and sidecar binary
+              // are out of sync.
+              return yield* new EvmProtocolError({
+                message:
+                  `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
+                  (responseError === undefined
+                    ? ""
+                    : `; response error: ${responseError}`),
+              });
             }
             if (!res.ok) {
-              return yield* Effect.fail(
-                new EvmCallError({ method, error: res.error }),
-              );
+              return yield* new EvmCallError({
+                method,
+                message: `${method} failed: ${res.error}`,
+                cause: res.error,
+              });
             }
             return res.result as T;
           }),
@@ -218,15 +216,14 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
           })).pipe(Effect.asVoid),
       };
 
-      return { evm, proc, readerFiber };
+      return { evm, proc };
     }),
-    ({ proc, readerFiber }) =>
+    ({ proc }) =>
       Effect.gen(function* () {
         try {
           proc.stdin.end();
         } catch {}
         proc.kill();
         yield* Effect.promise(() => proc.exited);
-        yield* Fiber.interrupt(readerFiber);
-      }),
+      }).pipe(Effect.ignore),
   ).pipe(Effect.map(({ evm }) => evm));

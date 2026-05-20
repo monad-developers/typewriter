@@ -24,6 +24,7 @@ const baseConfig = {
   account: {} as any,
   chainId: 1,
   rpcUrl: "http://localhost:8545",
+  database: { url: "postgres://postgres@localhost:5432/postgres" },
   storageLayout: EMPTY_STORAGE_LAYOUT,
   domain: { name: "", version: "1" },
   signature: {

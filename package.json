@@ -8,7 +8,8 @@
     "apps/*"
   ],
   "catalog": {
-    "effect": "3.21.0",
+    "@effect/language-service": "0.85.1",
+    "effect": "4.0.0-beta.58",
     "ox": "0.14.10",
     "prool": "0.2.4",
     "typescript": "^5",
