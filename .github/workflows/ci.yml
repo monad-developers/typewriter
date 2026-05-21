@@ -18,7 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
-      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install monad foundry
+        run: |
+          mkdir -p ~/.foundry/bin
+          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
+            | tar -xz -C ~/.foundry/bin
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
       - run: bun run lint
 
@@ -28,7 +33,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
-      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install monad foundry
+        run: |
+          mkdir -p ~/.foundry/bin
+          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
+            | tar -xz -C ~/.foundry/bin
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
       - run: bun run build
 
@@ -38,7 +48,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
-      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install monad foundry
+        run: |
+          mkdir -p ~/.foundry/bin
+          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
+            | tar -xz -C ~/.foundry/bin
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: bun run typecheck
@@ -63,6 +78,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
-      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install monad foundry
+        run: |
+          mkdir -p ~/.foundry/bin
+          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
+            | tar -xz -C ~/.foundry/bin
+          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
       - run: bun run test

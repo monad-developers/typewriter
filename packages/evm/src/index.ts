@@ -9,13 +9,16 @@
 import { type Subprocess, spawn } from "bun";
 import { Data, Effect, Queue, Ref, type Scope, Semaphore } from "effect";
 import type {
+  BlockParams,
   ExecuteParams,
   ExecuteResult,
   InitParams,
+  PruneJournalsParams,
   ReadStorageParams,
   ReadStorageResult,
   Request,
   Response,
+  RevertJournalsParams,
 } from "./types";
 
 export type {
@@ -24,8 +27,10 @@ export type {
   ExecuteParams,
   ExecuteResult,
   InitParams,
+  PruneJournalsParams,
   ReadStorageParams,
   ReadStorageResult,
+  RevertJournalsParams,
   Spec,
 } from "./types";
 
@@ -57,7 +62,10 @@ export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
 
 export type EVM = {
   readonly init: (params: InitParams) => Effect.Effect<void, EvmError>;
-  readonly beginBundle: () => Effect.Effect<void, EvmError>;
+  readonly setBlockContext: (
+    params: BlockParams,
+  ) => Effect.Effect<void, EvmError>;
+  readonly beginJournal: () => Effect.Effect<void, EvmError>;
   readonly execute: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
@@ -67,8 +75,14 @@ export type EVM = {
   readonly readStorage: (
     params: ReadStorageParams,
   ) => Effect.Effect<ReadStorageResult, EvmError>;
-  readonly commitBundles: () => Effect.Effect<void, EvmError>;
-  readonly revertBundle: () => Effect.Effect<void, EvmError>;
+  readonly commitJournal: () => Effect.Effect<void, EvmError>;
+  readonly revertJournal: () => Effect.Effect<void, EvmError>;
+  readonly revertJournals: (
+    params: RevertJournalsParams,
+  ) => Effect.Effect<void, EvmError>;
+  readonly pruneJournals: (
+    params: PruneJournalsParams,
+  ) => Effect.Effect<void, EvmError>;
 };
 
 // Spawns the sidecar and returns the client. Uses acquireRelease so the
@@ -181,9 +195,15 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
           call<unknown>("init", (id) => ({ method: "init", id, params })).pipe(
             Effect.asVoid,
           ),
-        beginBundle: () =>
-          call<unknown>("beginBundle", (id) => ({
-            method: "beginBundle",
+        setBlockContext: (params) =>
+          call<unknown>("setBlockContext", (id) => ({
+            method: "setBlockContext",
+            id,
+            params,
+          })).pipe(Effect.asVoid),
+        beginJournal: () =>
+          call<unknown>("beginJournal", (id) => ({
+            method: "beginJournal",
             id,
           })).pipe(Effect.asVoid),
         execute: (params) =>
@@ -204,15 +224,27 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             id,
             params,
           })),
-        commitBundles: () =>
-          call<unknown>("commitBundles", (id) => ({
-            method: "commitBundles",
+        commitJournal: () =>
+          call<unknown>("commitJournal", (id) => ({
+            method: "commitJournal",
             id,
           })).pipe(Effect.asVoid),
-        revertBundle: () =>
-          call<unknown>("revertBundle", (id) => ({
-            method: "revertBundle",
+        revertJournal: () =>
+          call<unknown>("revertJournal", (id) => ({
+            method: "revertJournal",
             id,
+          })).pipe(Effect.asVoid),
+        revertJournals: (params) =>
+          call<unknown>("revertJournals", (id) => ({
+            method: "revertJournals",
+            id,
+            params,
+          })).pipe(Effect.asVoid),
+        pruneJournals: (params) =>
+          call<unknown>("pruneJournals", (id) => ({
+            method: "pruneJournals",
+            id,
+            params,
           })).pipe(Effect.asVoid),
       };
 

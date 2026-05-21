@@ -1,6 +1,71 @@
-import { AbiParameters, type Hex } from "ox";
+import { type Abi, AbiParameters, type Hex } from "ox";
+import { decodeEventLog, encodeFunctionData } from "viem";
 import type { FFCAMutationConfig } from "./config";
 import type { ResolvedMutation } from "./types";
+
+export type FFCAAbi = [
+  {
+    type: "function";
+    name: "execute";
+    inputs: [
+      {
+        name: "bundles";
+        type: "tuple[]";
+        components: [
+          { name: "mutations"; type: "uint8[]" },
+          { name: "mutationData"; type: "bytes[]" },
+          {
+            name: "signatures";
+            type: "tuple[]";
+            components: readonly AbiParameters.Parameter[];
+          },
+        ];
+      },
+      { name: "forceExecuteIndexes"; type: "uint256[]" },
+    ];
+    outputs: [];
+    stateMutability: "nonpayable";
+  },
+  {
+    type: "function";
+    name: "enqueue";
+    inputs: [
+      { name: "mutation"; type: "uint8" },
+      { name: "mutationData"; type: "bytes" },
+      {
+        name: "sig";
+        type: "tuple";
+        components: readonly AbiParameters.Parameter[];
+      },
+    ];
+    outputs: [];
+    stateMutability: "nonpayable";
+  },
+  {
+    type: "function";
+    name: "forceExecute";
+    inputs: [{ name: "index"; type: "uint256" }];
+    outputs: [];
+    stateMutability: "nonpayable";
+  },
+  {
+    type: "event";
+    name: "ForceInclusionQueued";
+    inputs: [
+      { name: "index"; type: "uint256"; indexed: false },
+      { name: "mutation"; type: "uint8"; indexed: false },
+      { name: "mutationData"; type: "bytes"; indexed: false },
+      {
+        name: "sig";
+        type: "tuple";
+        components: readonly AbiParameters.Parameter[];
+        indexed: false;
+      },
+      { name: "enqueuedBlock"; type: "uint256"; indexed: false },
+    ];
+    anonymous: false;
+  },
+];
 
 // Records keyed by param name are ffca's canonical shape for both args and
 // signatures (the form clients post and the form `resolve` consumes).
@@ -23,35 +88,29 @@ function calldataStructParams(
   return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
 }
 
-export function encodeMutationCalldata(
-  mutation: FFCAMutationConfig,
-  args: unknown,
-  resolution?: unknown,
-): Hex.Hex {
-  const params = mutation.params as readonly AbiParameters.Parameter[];
-  if ("resolution" in mutation) {
-    const resolutionParams =
-      mutation.resolution as readonly AbiParameters.Parameter[];
+export function encodeMutationCalldata(mutation: ResolvedMutation): Hex.Hex {
+  const params = mutation.config.params;
+  if ("resolution" in mutation.config) {
+    const resolutionParams = mutation.config.resolution;
     return AbiParameters.encode(
       [
         ...calldataStructParams(params),
         ...calldataStructParams(resolutionParams),
       ],
-      [args, resolution],
+      [mutation.args, mutation.resolution],
     );
   }
 
-  return AbiParameters.encode(calldataStructParams(params), [args]);
+  return AbiParameters.encode(calldataStructParams(params), [mutation.args]);
 }
 
 export function decodeMutationCalldata(
-  mutation: FFCAMutationConfig,
+  mutationConfig: FFCAMutationConfig,
   calldata: Hex.Hex,
 ): { args: unknown; resolution?: unknown } {
-  const params = mutation.params as readonly AbiParameters.Parameter[];
-  if ("resolution" in mutation) {
-    const resolutionParams =
-      mutation.resolution as readonly AbiParameters.Parameter[];
+  const params = mutationConfig.params;
+  if ("resolution" in mutationConfig) {
+    const resolutionParams = mutationConfig.resolution;
     const [args, resolution] = AbiParameters.decode(
       [
         ...calldataStructParams(params),
@@ -66,112 +125,151 @@ export function decodeMutationCalldata(
   return { args };
 }
 
-// ffca expects the contract's `execute` to take `(Bundle[], uint256[])` where
-//   Bundle = { uint8[] mutations, bytes[] mutationData, Sig[] signatures }
-// `Sig` is shaped by `FFCAConfig.signature.params`, and the second argument is
-// a list of force-inclusion queue indexes the scheduler wants to execute.
-function bundleParams(
-  sigParams: readonly AbiParameters.Parameter[],
+// Extract the signature tuple components from the user's ABI.
+// FFCA prescribes that `execute` takes `(Bundle[], uint256[])` where
+//   Bundle = { uint8[] mutations, bytes[] mutationData, Signature[] signatures }
+// This walks the ABI to find `execute` → `bundles` → `signatures`.
+export function getSignatureAbiParameters(
+  abi: Abi.Abi,
 ): readonly AbiParameters.Parameter[] {
-  return AbiParameters.from([
-    {
-      type: "tuple",
-      components: [
-        { name: "mutations", type: "uint8[]" },
-        { name: "mutationData", type: "bytes[]" },
-        {
-          name: "signatures",
-          type: "tuple[]",
-          components: sigParams as AbiParameters.Parameter[],
-        },
-      ],
-    },
-  ]);
+  const execute = abi.find(
+    (item) => item.type === "function" && item.name === "execute",
+  ) as Extract<Abi.Abi[number], { type: "function" }> | undefined;
+  if (execute === undefined) {
+    throw new Error("ABI missing execute function");
+  }
+
+  const bundles = execute.inputs.find(
+    (input) =>
+      input.name === "bundles" &&
+      input.type === "tuple[]" &&
+      "components" in input &&
+      Array.isArray(input.components),
+  ) as
+    | (AbiParameters.Parameter & {
+        type: "tuple[]";
+        components: readonly AbiParameters.Parameter[];
+      })
+    | undefined;
+  if (bundles === undefined) {
+    throw new Error("execute function missing bundles: tuple[] parameter");
+  }
+
+  const signatures = bundles.components.find(
+    (c) =>
+      c.name === "signatures" &&
+      c.type === "tuple[]" &&
+      "components" in c &&
+      Array.isArray(c.components),
+  ) as
+    | (AbiParameters.Parameter & {
+        type: "tuple[]";
+        components: readonly AbiParameters.Parameter[];
+      })
+    | undefined;
+  if (signatures === undefined) {
+    throw new Error("Bundle missing signatures: tuple[] component");
+  }
+
+  return signatures.components;
 }
 
-export function encodeBundleCalldata(
-  mutations: ResolvedMutation[],
+export function encodeSignatureCalldata(
   sigParams: readonly AbiParameters.Parameter[],
+  signature: unknown,
 ): Hex.Hex {
-  return AbiParameters.encode(bundleParams(sigParams), [
-    encodeBundleArg(mutations, sigParams),
-  ]);
+  return AbiParameters.encode(
+    sigParams,
+    abiTupleFromRecord(sigParams, signature),
+  );
 }
 
-// `execute(Bundle[], uint256[])` as a viem-compatible abi item, derived from
-// `sigParams`. The contract's execute selector is a function of the bundle
-// shape (which is fully determined by `sigParams`), so ffca can build this
-// without consulting `FFCAConfig.abi` — useful when calldata is needed for
-// internal revm execution, without forcing
-// stub-config tests to declare an `execute` entry on their abi.
-export function executeAbi(sigParams: readonly AbiParameters.Parameter[]) {
-  return [
-    {
-      type: "function",
-      name: "execute",
-      stateMutability: "nonpayable",
-      inputs: [
-        {
-          name: "bundles",
-          type: "tuple[]",
-          components: [
-            { name: "mutations", type: "uint8[]" },
-            { name: "mutationData", type: "bytes[]" },
-            {
-              name: "signatures",
-              type: "tuple[]",
-              components: sigParams as AbiParameters.Parameter[],
-            },
-          ],
-        },
-        { name: "forceExecuteIndexes", type: "uint256[]" },
-      ],
-      outputs: [],
-    },
-  ] as const;
-}
-
-export function forceInclusionQueuedAbi(
+export function decodeSignatureCalldata(
   sigParams: readonly AbiParameters.Parameter[],
-) {
-  return [
-    {
-      type: "event",
-      name: "ForceInclusionQueued",
-      inputs: [
-        { name: "index", type: "uint256", indexed: false },
-        { name: "mutation", type: "uint8", indexed: false },
-        { name: "mutationData", type: "bytes", indexed: false },
-        {
-          name: "sig",
-          type: "tuple",
-          indexed: false,
-          components: sigParams as AbiParameters.Parameter[],
-        },
-        { name: "enqueuedBlock", type: "uint256", indexed: false },
-      ],
-    },
-  ] as const;
+  calldata: Hex.Hex,
+): unknown {
+  return AbiParameters.decode(sigParams, calldata);
 }
 
-// Same Bundle shape as above, but as a structured value rather than bytes.
-// Use when the caller will pass it through viem's `encodeFunctionData` (which
-// needs unencoded values to slot into an ABI shape) — e.g. to wrap multiple
-// bundles into a single `execute(Bundle[], uint256[])` call. Each signature is
-// a positional tuple matching `sigParams` declaration order.
+// Encode `execute(Bundle[], uint256[])` calldata from structured bundle values
+// and an optional list of force-inclusion queue indexes.
+export function encodeExecuteCalldata(
+  abi: Abi.Abi,
+  bundles: readonly {
+    mutations: number[];
+    mutationData: Hex.Hex[];
+    signatures: readonly unknown[][];
+  }[],
+  forceExecuteIndexes: readonly bigint[],
+): Hex.Hex {
+  return encodeFunctionData({
+    abi,
+    functionName: "execute",
+    args: [bundles, forceExecuteIndexes],
+  });
+}
+
+export function encodeEnqueueCalldata(
+  abi: Abi.Abi,
+  mutation: ResolvedMutation,
+): Hex.Hex {
+  const sigParams = getSignatureAbiParameters(abi);
+  return encodeFunctionData({
+    abi,
+    functionName: "enqueue",
+    args: [
+      mutation.config.tag,
+      encodeMutationCalldata(mutation),
+      abiTupleFromRecord(sigParams, mutation.signature),
+    ],
+  });
+}
+
+// Decode a `ForceInclusionQueued` event log into its named arguments.
+export function decodeForceInclusionLog(
+  abi: Abi.Abi,
+  mutationConfig: FFCAMutationConfig,
+  log: { data: Hex.Hex; topics: readonly Hex.Hex[] },
+): {
+  index: bigint;
+  args: unknown;
+  signature: unknown;
+  resolution?: unknown;
+} {
+  const decoded = decodeEventLog({
+    abi: abi as FFCAAbi,
+    eventName: "ForceInclusionQueued",
+    data: log.data,
+    topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+  });
+  const args = decoded.args as {
+    index: bigint;
+    mutationData: Hex.Hex;
+    sig: unknown;
+  };
+
+  return {
+    index: args.index,
+    signature: args.sig,
+    ...decodeMutationCalldata(mutationConfig, args.mutationData),
+  };
+}
+
+// Build a structured Bundle value from resolved mutations.
+// Each signature is projected from a keyed record to a positional tuple
+// matching the ABI declaration order.
 export function encodeBundleArg(
+  abi: Abi.Abi,
   mutations: ResolvedMutation[],
-  sigParams: readonly AbiParameters.Parameter[],
 ): {
   mutations: number[];
   mutationData: Hex.Hex[];
   signatures: readonly unknown[][];
 } {
+  const sigParams = getSignatureAbiParameters(abi);
   return {
     mutations: mutations.map((m) => m.config.tag),
-    mutationData: mutations.map((m) =>
-      encodeMutationCalldata(m.config, m.args, m.resolution),
-    ),
+    mutationData: mutations.map((m) => encodeMutationCalldata(m)),
     signatures: mutations.map(
       (m) => abiTupleFromRecord(sigParams, m.signature) as unknown[],
     ),

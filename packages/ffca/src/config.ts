@@ -1,9 +1,9 @@
 import type { Effect } from "effect";
-import type { Abi, Address, Hex } from "ox";
+import type { Abi, Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
-import type { ResolvedMutation } from "./types";
+import type { MutationEvent, ResolvedMutation, RuntimeBundle } from "./types";
 
 export type FFCADatabase = DatabaseClient;
 export type FFCADatabaseTransaction = Parameters<
@@ -28,25 +28,20 @@ type PersistenceHookResult = Effect.Effect<void, unknown>;
 // execution, and treats its return value as canonical (it's encoded into
 // calldata). A `resolve` that mutates state breaks failure isolation and replay
 // determinism.
-//
-// `bundle` is a read-only view of every mutation in this bundle (in
-// post-sequence order, including this one). Use it for batch-aware decisions
-// — e.g. seeing what other mutations are landing alongside this one.
-export type BundleView = readonly { name: string; args: unknown }[];
 
 type FFCAMutationPersistence = {
   table: unknown;
   persistMutation?: (
     tx: FFCADatabaseTransaction,
     params: {
-      mutation: Extract<ResolvedMutation, { status: "accepted" }>;
-      bundle: { id: number; mutationIndex: number };
+      mutation: ResolvedMutation;
+      bundle: RuntimeBundle;
     },
   ) => PersistenceHookResult;
   persistState?: (
     tx: FFCADatabaseTransaction,
     params: {
-      mutation: Extract<ResolvedMutation, { status: "accepted" }>;
+      mutation: ResolvedMutation;
     },
   ) => PersistenceHookResult;
   persistLifecycle?: (
@@ -54,22 +49,15 @@ type FFCAMutationPersistence = {
     params:
       | {
           lifecycle: "included";
-          mutation: Extract<ResolvedMutation, { status: "included" }>;
-          block: {
-            number: bigint;
-            hash: Hex.Hex;
-            timestamp: bigint;
-            transactionHash: Hex.Hex;
-          };
-          calldata: Hex.Hex;
+          mutation: MutationEvent & { status: "included" };
         }
       | {
           lifecycle: "safe";
-          mutation: Extract<ResolvedMutation, { status: "safe" }>;
+          mutation: MutationEvent & { status: "safe" };
         }
       | {
           lifecycle: "finalized";
-          mutation: Extract<ResolvedMutation, { status: "finalized" }>;
+          mutation: MutationEvent & { status: "finalized" };
         },
   ) => PersistenceHookResult;
 };
@@ -87,7 +75,6 @@ export type FFCAMutationConfig =
         state: unknown;
         args: unknown;
         signature: unknown;
-        bundle: BundleView;
       }) => unknown | Promise<unknown>;
     });
 
@@ -112,10 +99,6 @@ export type FFCAConfig = {
     schema?: Record<string, unknown>;
     load?: (tx: FFCADatabaseTransaction) => Effect.Effect<unknown, unknown>;
   };
-  // ABI shape of one entry in the contract's `bundle.signatures[]` array.
-  // Must include `keyType: uint8` and `rawSignature: bytes`; apps add
-  // whatever else (account, keyId, …) the contract expects.
-  signature: { params: readonly AbiParameter[] };
   mutations: { [name: string]: FFCAMutationConfig };
   confirmations?: {
     safeBlockDepth?: number;

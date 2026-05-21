@@ -14,20 +14,19 @@ import {
 } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { createEVM } from "evm";
-import { AbiParameters, type Hex, TypedData } from "ox";
+import type { Hex, TypedData } from "ox";
 import {
   type AccountStorage,
   createStorageProxy,
   encodeStorage,
   type StorageLayout,
-  type StorageLayoutToPrimitiveType,
+  type StorageProxy,
 } from "storage-layout";
 import {
   ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
   decodeEventLog,
-  encodeFunctionData,
   extractChain,
   http,
   keccak256,
@@ -35,32 +34,31 @@ import {
 } from "viem";
 import { sendRawTransactionSync } from "viem/actions";
 import * as chains from "viem/chains";
-import type { BundleView, FFCAConfig, FFCAMutationConfig } from "./config";
+import type { FFCAConfig, FFCAMutationConfig } from "./config";
 import { Database } from "./db";
-import { buildEip712Types, hashMutationEip712 } from "./eip712";
 import {
   decodeMutationCalldata,
   encodeBundleArg,
-  executeAbi,
-  forceInclusionQueuedAbi,
+  encodeEnqueueCalldata,
+  encodeExecuteCalldata,
+  type FFCAAbi,
 } from "./encoding";
 import {
   PersistenceError,
-  persistAcceptedBundle,
-  persistBlockLifecycle,
-  persistIncludedBundles,
+  persistMutation,
+  persistUpdatedMutationLifecycle,
 } from "./persistence";
 import { Rpc } from "./rpc";
 import type {
-  AnchoredBundle,
   BlockEvent,
   BundleEvent,
   MutationEvent,
-  ResolvedMutation,
+  RuntimeBlock,
+  RuntimeBundle,
+  RuntimeMutation,
   SubmittedMutation,
-  SubmittedMutationEvent,
 } from "./types";
-import { type LocalLog, Watch } from "./watch";
+import { Watch } from "./watch";
 
 // TODO sequencing: name-list works (config.sequence). Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
@@ -84,32 +82,15 @@ type MutationListener = (event: MutationEvent) => void;
 type BundleListener = (event: BundleEvent) => void;
 type BlockListener = (event: BlockEvent) => void;
 
-type QueuedMutation = {
-  submitted: SubmittedMutationEvent;
-  deferred: Deferred.Deferred<MutationEvent, unknown>;
+type SubmittedMutationWithDeferred = {
+  mutation: Extract<RuntimeMutation, { status: "submitted" }>;
+  deferred: Deferred.Deferred<RuntimeMutation, unknown>;
 };
 
-type PendingForceInclusion = {
-  index: bigint;
-  mutation: Extract<ResolvedMutation, { status: "accepted" }>;
-};
+type EnqueuedMutation = Extract<RuntimeMutation, { status: "enqueued" }>;
 
-type AcceptedBundleWithForce = Extract<BundleEvent, { status: "accepted" }> & {
-  forceExecuteIndexes?: bigint[];
-};
-
-type UnfinalizedBlock = Exclude<BlockEvent, { status: "accepted" }>;
-
-type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
-  ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
-  : [T] extends [object]
-    ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
-    : Promise<T>;
-
-export type FFCA<L extends StorageLayout = never> = {
-  readonly state: [L] extends [never]
-    ? unknown
-    : AsyncStorageProxy<StorageLayoutToPrimitiveType<L>>;
+export type FFCA<layout extends StorageLayout> = {
+  readonly state: StorageProxy<layout, true>;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Promise<MutationEvent>;
   on(event: "mutation", cb: MutationListener): () => void;
@@ -118,10 +99,8 @@ export type FFCA<L extends StorageLayout = never> = {
   stop(): Promise<void>;
 };
 
-export type RuntimeFFCA<L extends StorageLayout = never> = {
-  readonly state: [L] extends [never]
-    ? unknown
-    : AsyncStorageProxy<StorageLayoutToPrimitiveType<L>>;
+export type RuntimeFFCA<layout extends StorageLayout> = {
+  readonly state: StorageProxy<layout, true>;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Effect.Effect<MutationEvent, unknown>;
   on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
@@ -129,86 +108,44 @@ export type RuntimeFFCA<L extends StorageLayout = never> = {
   on(event: "block", cb: BlockListener): Effect.Effect<() => void>;
 };
 
-// State-independent half of mutation verification.
-//
-// TODO when the account model is real, add a state-dependent companion that
-//   does: signature recovery + key-type dispatch (P256 / WebAuthn / secp256k1),
-//   key lookup, key-expiry check, nonce sequence check, and deadline check.
-//   The deadline check is skipped here because where `deadline` lives in
-//   args/envelope isn't decided yet.
-//   See apps/order-book/src/signature.ts:135-260.
-export function verifyMutation(
-  mutation: FFCAMutationConfig,
-  signatureParams: readonly AbiParameters.Parameter[],
-  submitted: SubmittedMutation,
-  domain: TypedData.Domain,
-): Hex.Hex {
-  const { name, args } = submitted;
-  if (args === null || typeof args !== "object") {
-    throw new Error(`args must be an object (mutation=${name})`);
-  }
-  const argsRecord = args as Record<string, unknown>;
-  for (const param of mutation.params) {
-    if (param.name && !(param.name in argsRecord)) {
-      throw new Error(`missing field: ${param.name} (mutation=${name})`);
-    }
-  }
-
-  TypedData.assert({
-    domain,
-    types: buildEip712Types(mutation, name),
-    primaryType: name,
-    message: argsRecord,
-  });
-
-  verifyAbiRecord("signature", signatureParams, submitted.signature, name);
-  return hashMutationEip712(mutation, name, argsRecord, domain);
+function mutationToEvent(mutation: RuntimeMutation): MutationEvent {
+  const { config: _config, ...event } = mutation;
+  return { ...event };
 }
 
-export function verifyResolution(
-  mutation: FFCAMutationConfig,
-  resolution: unknown,
-  name: string,
-): void {
-  if ("resolution" in mutation) {
-    verifyAbiRecord("resolution", mutation.resolution, resolution, name);
-  }
+function bundleToEvent(bundle: RuntimeBundle): BundleEvent {
+  return {
+    ...bundle,
+    mutations: bundle.mutations.map(
+      mutationToEvent,
+    ) as BundleEvent["mutations"],
+  };
 }
 
-function verifyAbiRecord(
-  label: string,
-  params: readonly AbiParameters.Parameter[],
-  value: unknown,
-  mutationName: string,
-): void {
-  if (value === null || typeof value !== "object") {
-    throw new Error(`${label} must be an object (mutation=${mutationName})`);
-  }
-
-  const record = value as Record<string, unknown>;
-  for (const param of params) {
-    if (param.name && !(param.name in record)) {
-      throw new Error(
-        `missing ${label} field: ${param.name} (mutation=${mutationName})`,
-      );
-    }
-  }
-
-  AbiParameters.encode(
-    params,
-    params.map((param) => record[param.name ?? ""]),
-  );
+function blockToEvent(block: RuntimeBlock): BlockEvent {
+  const {
+    enqueues: _enqueues,
+    forceExecutes: _forceExecutes,
+    bundles,
+    ...rest
+  } = block;
+  return {
+    ...rest,
+    bundles: bundles.map(bundleToEvent) as BlockEvent["bundles"],
+  };
 }
 
 async function resolveMutation(
-  config: FFCAMutationConfig,
-  args: unknown,
-  signature: unknown,
+  mutation: Extract<RuntimeMutation, { status: "submitted" }>,
   state: unknown,
-  bundle: BundleView,
 ): Promise<unknown> {
-  if ("resolve" in config) {
-    return config.resolve({ state, args, signature, bundle });
+  if ("resolve" in mutation.config) {
+    // TODO(kyle) run `resolution` through zod to check shape
+    return mutation.config.resolve({
+      state,
+      args: mutation.args,
+      signature: mutation.signature,
+    });
   }
   return undefined;
 }
@@ -216,10 +153,10 @@ async function resolveMutation(
 function createRevmRevertError(
   config: FFCAConfig,
   data: Hex.Hex | undefined,
+  message = "revm execute reverted",
 ): ContractFunctionRevertedError {
-  const message = "revm execute reverted";
   return new ContractFunctionRevertedError({
-    abi: config.abi as never,
+    abi: config.abi,
     data,
     functionName: "execute",
     message,
@@ -364,9 +301,6 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       chain,
       transport,
     });
-    const executionAbi = executeAbi(config.signature.params);
-    const forceInclusionAbi = forceInclusionQueuedAbi(config.signature.params);
-
     let mutationId = 0;
     let bundleId = 0;
     let initialSlots: AccountStorage = {};
@@ -415,11 +349,14 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       });
     }
 
-    const state = createStorageProxy(config.storageLayout, async (slots) => {
-      return Effect.runPromise(
-        evm.readStorage({ address: config.address, slots }),
-      );
-    });
+    const state = createStorageProxy(
+      config.storageLayout as C["storageLayout"],
+      async (slots) => {
+        return Effect.runPromise(
+          evm.readStorage({ address: config.address, slots }),
+        );
+      },
+    );
 
     // Local nonce cache. Lazy-initialized on first use; incremented per submit.
     // TODO recover from gaps and chain divergence; per-key parallelism when
@@ -435,16 +372,21 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       return txNonce++;
     };
 
-    const mutationQueue = yield* Queue.unbounded<QueuedMutation>();
+    const mutationQueue =
+      yield* Queue.unbounded<SubmittedMutationWithDeferred>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(mutationQueue));
-    const submitQueue = yield* Queue.unbounded<BundleEvent>();
+
+    const submitQueue = yield* Queue.unbounded<RuntimeBundle>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(submitQueue));
-    const pendingForceInclusions: PendingForceInclusion[] = [];
-    const seenForceInclusionIndexes = new Set<string>();
-    // The sidecar's commitBundles drains every open journal, so acceptance must
-    // not open more journals while a submit pass is broadcasting and committing.
+
+    let enqueuedMutations: EnqueuedMutation[] = [];
+    let unfinalizedBlocks: RuntimeBlock[] = [];
+
+    // The sidecar's commitJournal marks one journal as committed, so acceptance
+    // must not open more journals while a submit pass is broadcasting and
+    // committing. submit commits each bundle's journal individually after
+    // broadcast succeeds.
     const withJournalLock = Semaphore.withPermits(Semaphore.makeUnsafe(1), 1);
-    let unfinalizedBlocks: UnfinalizedBlock[] = [];
 
     // Event fan-out. Listeners are in-process; HTTP / SSE shaping is the app's
     // job. A throwing listener is swallowed so it can't take the runtime down.
@@ -475,166 +417,107 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
 
     let bundlePosition = 0;
 
-    const decodeForceInclusionLog = (log: LocalLog): PendingForceInclusion => {
-      const decoded = decodeEventLog({
-        abi: forceInclusionAbi,
-        eventName: "ForceInclusionQueued",
-        data: log.data,
-        topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
-      });
-      const args = decoded.args as {
-        index: bigint;
-        mutation: number;
-        mutationData: Hex.Hex;
-        sig: unknown;
-      };
-      const mutation = mutationsByTag.get(args.mutation);
-      if (mutation === undefined) {
-        throw new Error(
-          `unknown force-inclusion mutation tag: ${args.mutation}`,
-        );
-      }
-      const { args: mutationArgs, resolution } = decodeMutationCalldata(
-        mutation.config,
-        args.mutationData,
-      );
-      const submitted = {
-        name: mutation.name,
-        args: mutationArgs,
-        signature: args.sig,
-      };
-      const digest = verifyMutation(
-        mutation.config,
-        config.signature.params,
-        submitted,
-        domain,
-      );
-      verifyResolution(mutation.config, resolution, mutation.name);
-
-      const accepted = {
-        ...submitted,
-        id: mutationId++,
-        status: "accepted" as const,
-        digest,
-        config: mutation.config,
-        resolution,
-      };
-      return { index: args.index, mutation: accepted };
-    };
-
     // Accept a set of queued mutations as one offchain bundle, then hand it to
     // submit. FIFO calls this with one mutation immediately; bundle mode calls
     // it with a sorted interval batch.
-    const acceptBundle = (queued: QueuedMutation[], position: number) =>
+    const acceptBundle = (
+      submittedMutations: SubmittedMutationWithDeferred[],
+      position: number,
+    ) =>
       withJournalLock(
         Effect.gen(function* () {
-          if (queued.length === 0) return;
+          console.log("ENTER");
+          if (
+            submittedMutations.length === 0 &&
+            enqueuedMutations.length === 0
+          ) {
+            return;
+          }
 
-          const accepted: Extract<MutationEvent, { status: "accepted" }>[] = [];
-          const rejections: {
-            item: (typeof queued)[number];
+          const acceptedMutations: {
+            mutation: Extract<
+              RuntimeMutation,
+              { status: "accepted" | "included" | "safe" | "finalized" }
+            >;
+            deferred: (typeof submittedMutations)[number]["deferred"];
+          }[] = [];
+          const rejectedMutations: {
+            mutation: Extract<RuntimeMutation, { status: "rejected" }>;
+            deferred: (typeof submittedMutations)[number]["deferred"];
             error: unknown;
           }[] = [];
 
-          // Snapshot the bundle's mutations for `resolve` to read. Built once;
-          // doesn't reflect failures or mid-bundle state changes.
-          const bundleView: BundleView = queued.map((q) => ({
-            name: q.submitted.name,
-            args: q.submitted.args,
-          }));
+          // Process force inclusions only if bundle is first in the block.
+          // It's an invariant that a previous journal was committed with an
+          // "enqueue()" transactions.
+
+          const shouldForceExecute =
+            position === 0 && enqueuedMutations.length > 0;
+
+          console.log(enqueuedMutations.length);
+
+          if (shouldForceExecute) {
+            console.log("HIHIHIHI");
+            const executeForceInclusionCalldata = yield* Effect.try({
+              try: () =>
+                encodeExecuteCalldata(
+                  config.abi,
+                  [],
+                  enqueuedMutations.map(({ index }) => index),
+                ),
+              catch: (error) => error as Error,
+            });
+
+            // TODO(kyle) remove failing force inclusions
+            yield* evm.beginJournal();
+            const result = yield* evm.execute({
+              from: config.account.address,
+              to: config.address,
+              data: executeForceInclusionCalldata,
+            });
+            if (result.success === false) {
+              yield* evm.revertJournal();
+            }
+
+            enqueuedMutations = [];
+          }
 
           // Open a revm journal for this bundle. Per-mutation executes record into
           // it on TS success; if the whole bundle is rejected we pop it below.
           // Successful bundles are left open and committed by submit's
-          // `commitBundles` after the broadcast lands.
-          yield* evm.beginBundle();
-
-          const forceInclusions =
-            position === 0 ? pendingForceInclusions.slice() : [];
-          const forceExecuteIndexes = forceInclusions.map(({ index }) => index);
-          const forceMutations = forceInclusions.map(
-            ({ mutation }) => mutation,
-          );
-          if (forceMutations.length > 0) {
-            const forceCalldata = yield* Effect.try({
-              try: () =>
-                encodeFunctionData({
-                  abi: executionAbi,
-                  functionName: "execute",
-                  args: [
-                    [encodeBundleArg(forceMutations, config.signature.params)],
-                    [],
-                  ],
-                }),
-              catch: (error) => error as Error,
-            });
-            const result = yield* evm.execute({
-              from: config.account.address,
-              to: config.address,
-              data: forceCalldata,
-            });
-            if (result.success === false) {
-              yield* evm.revertBundle();
-              return yield* Effect.fail(
-                createRevmRevertError(config, result.revert_data),
-              );
-            }
-          }
+          // `commitJournal` after the broadcast lands.
+          yield* evm.beginJournal();
 
           // revm is the primary acceptance gate. `resolve` computes any extra
           // calldata, then revm executes the mutation against local EVM state.
-          for (const item of queued) {
-            const { config: mutationConfig, args, signature } = item.submitted;
-            const attempted = yield* Effect.result(
+          for (const { mutation, deferred } of submittedMutations) {
+            const mutationResult = yield* Effect.result(
               Effect.gen(function* () {
                 const resolution = yield* Effect.tryPromise({
-                  try: () =>
-                    resolveMutation(
-                      mutationConfig,
-                      args,
-                      signature,
-                      state,
-                      bundleView,
-                    ),
+                  try: () => resolveMutation(mutation, state),
                   catch: (error) => error as Error,
                 });
-                yield* Effect.try({
-                  try: () =>
-                    verifyResolution(
-                      mutationConfig,
-                      resolution,
-                      item.submitted.name,
-                    ),
-                  catch: (error) => error as Error,
-                });
-                const acceptedMutation = {
-                  ...item.submitted,
-                  status: "accepted" as const,
-                  resolution,
-                };
 
-                // Build single-mutation
-                // `execute(Bundle[], uint256[])` calldata — the chain would batch
-                // many of these per submit, but revm gets one per accepted mutation
-                // for granular state evolution. Uses `executeAbi(sigParams)`
-                // rather than `config.abi` so the encode doesn't depend on the
-                // user's ABI containing an `execute` entry — the bundle shape is
-                // an ffca convention.
+                const acceptedMutation = {
+                  ...mutation,
+                  status: "accepted" as const,
+                  isForceInclusion: false,
+                  resolution,
+                } as const satisfies Extract<
+                  RuntimeMutation,
+                  { status: "accepted" | "included" | "safe" | "finalized" }
+                >;
+
+                // Build single-mutation `execute(Bundle[], uint256[])` calldata.
+                // The chain batches many of these per submit, but revm gets one
+                // per accepted mutation for granular state evolution.
                 const mutationCalldata = yield* Effect.try({
                   try: () =>
-                    encodeFunctionData({
-                      abi: executeAbi(config.signature.params),
-                      functionName: "execute",
-                      args: [
-                        [
-                          encodeBundleArg(
-                            [acceptedMutation],
-                            config.signature.params,
-                          ),
-                        ],
-                        [],
-                      ],
-                    }),
+                    encodeExecuteCalldata(
+                      config.abi,
+                      [encodeBundleArg(config.abi, [acceptedMutation])],
+                      [],
+                    ),
                   catch: (error) => error as Error,
                 });
                 const result = yield* evm.execute({
@@ -650,68 +533,61 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                 return acceptedMutation;
               }),
             );
-            if (Result.isSuccess(attempted)) {
-              accepted.push(attempted.success);
+
+            if (Result.isSuccess(mutationResult)) {
+              acceptedMutations.push({
+                mutation: mutationResult.success,
+                deferred,
+              });
             } else {
-              rejections.push({ item, error: attempted.failure });
+              const rejectedMutation = {
+                ...mutation,
+                status: "rejected",
+                isForceInclusion: false,
+                error: mutationResult.failure,
+              } as const satisfies Extract<
+                RuntimeMutation,
+                { status: "rejected" }
+              >;
+
+              rejectedMutations.push({
+                mutation: rejectedMutation,
+                deferred,
+                error: mutationResult.failure,
+              });
             }
           }
 
-          for (const { item, error } of rejections) {
-            const rejected: MutationEvent = {
-              ...item.submitted,
-              status: "rejected",
-              error,
-            };
-            emitMutation(rejected);
-            yield* Deferred.fail(item.deferred, error);
+          for (const { mutation, deferred, error } of rejectedMutations) {
+            emitMutation(mutationToEvent(mutation));
+            yield* Deferred.fail(deferred, error);
           }
 
-          if (accepted.length === 0) {
+          if (acceptedMutations.length === 0) {
             // Nothing landed; drop the journal we opened above so submit's
-            // `commitBundles` doesn't see leftover empty bundles.
-            yield* evm.revertBundle();
+            // `commitJournal` doesn't see a leftover empty journal.
+            yield* evm.revertJournal();
             return;
           }
 
-          const bundleEvent: BundleEvent = {
-            id: bundleId++,
+          const bundle = {
             status: "accepted",
+            id: bundleId++,
             position,
-            mutations: accepted,
-          };
-          if (forceExecuteIndexes.length > 0) {
-            (bundleEvent as AcceptedBundleWithForce).forceExecuteIndexes =
-              forceExecuteIndexes;
-            pendingForceInclusions.splice(0, forceInclusions.length);
+            mutations: acceptedMutations.map(({ mutation }) => mutation),
+          } as const satisfies RuntimeBundle;
+
+          for (const { mutation, deferred } of acceptedMutations) {
+            yield* persistMutation(mutation, bundle);
+
+            emitMutation(mutationToEvent(mutation));
+            yield* Deferred.succeed(deferred, mutation);
           }
 
-          yield* persistAcceptedBundle(bundleEvent);
-
-          for (const a of accepted) {
-            emitMutation(a);
-            const item = queued.find((q) => q.submitted.id === a.id)!;
-            yield* Deferred.succeed(item.deferred, a);
-          }
-
-          emitBundle(bundleEvent);
-          emitBlock({ status: "accepted", bundles: [bundleEvent] });
-          yield* Queue.offer(submitQueue, bundleEvent);
+          emitBundle(bundleToEvent(bundle));
+          yield* Queue.offer(submitQueue, bundle);
         }),
       );
-
-    const sequencedBundle = Effect.gen(function* () {
-      const queued = yield* Queue.clear(mutationQueue);
-      if (queued.length === 0) return;
-
-      const order = config.sequence!;
-      queued.sort(
-        (a, b) =>
-          order.indexOf(a.submitted.name) - order.indexOf(b.submitted.name),
-      );
-
-      yield* acceptBundle(queued, bundlePosition++);
-    });
 
     // submit: drain bundle queue, build calldata, broadcast to chain.
     // Single-RPC for now; multiplexing is a future step.
@@ -722,12 +598,8 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     const submit = withJournalLock(
       Effect.gen(function* () {
         bundlePosition = 0;
-        const accepted = yield* Queue.clear(submitQueue);
-        if (accepted.length === 0) return;
-
-        // submitQueue only holds AcceptedBundle today; narrow for the rest of
-        // the body.
-        const bundles = accepted as AcceptedBundleWithForce[];
+        const bundles = yield* Queue.clear(submitQueue);
+        if (bundles.length === 0) return;
 
         const rpcRetry = Effect.retry({
           times: 8,
@@ -735,22 +607,35 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         });
 
         const args = bundles.map((b) =>
-          encodeBundleArg(b.mutations, config.signature.params),
+          encodeBundleArg(config.abi, b.mutations),
         );
-        const forceExecuteIndexes = bundles.flatMap(
-          (b) => b.forceExecuteIndexes ?? [],
+        const forceExecuteIndexes: bigint[] = [];
+        const calldata = encodeExecuteCalldata(
+          config.abi,
+          args,
+          forceExecuteIndexes,
         );
-        const calldata = encodeFunctionData({
-          abi: executionAbi,
-          functionName: "execute",
-          args: [args, forceExecuteIndexes],
-        });
+
+        // const simulateResult = yield* evm.simulate({
+        //   from: config.account.address,
+        //   to: config.address,
+        //   data: calldata,
+        // });
+        // if (simulateResult.success === false) {
+        //   return yield* Effect.fail(
+        //     createRevmRevertError(
+        //       config,
+        //       simulateResult.revert_data,
+        //       "revm simulate reverted",
+        //     ),
+        //   );
+        // }
 
         yield* Effect.tryPromise({
           try: () =>
             publicClient.simulateContract({
               account: config.account.address,
-              abi: executionAbi,
+              abi: config.abi,
               address: config.address,
               functionName: "execute",
               args: [args, forceExecuteIndexes],
@@ -812,8 +697,11 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         }).pipe(rpcRetry);
 
         // The journal lock guarantees the only open journals belong to the
-        // accepted bundles drained above.
-        yield* evm.commitBundles();
+        // accepted bundles drained above. Commit each bundle's journal
+        // individually so the sidecar tracks committed vs uncommitted layers.
+        for (const _ of bundles) {
+          yield* evm.commitJournal();
+        }
 
         const block = yield* Effect.tryPromise({
           try: () => publicClient.getBlock({ blockHash: receipt.blockHash }),
@@ -821,16 +709,22 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         }).pipe(rpcRetry);
 
         for (const bundle of bundles) {
+          bundle.status = "included";
           for (const mutation of bundle.mutations) {
-            (mutation as ResolvedMutation).status = "included";
+            mutation.status = "included";
           }
-          const anchoredBundle = bundle as unknown as AnchoredBundle;
-          anchoredBundle.status = "included";
-          anchoredBundle.number = block.number;
-          anchoredBundle.hash = block.hash;
-          anchoredBundle.transactionHash = transactionHash;
         }
-        const anchored = bundles as unknown as AnchoredBundle[];
+
+        const runtimeBlock: RuntimeBlock = {
+          status: "included",
+          number: block.number,
+          hash: block.hash,
+          timestamp: block.timestamp,
+          transactionHash,
+          bundles,
+          enqueues: [],
+          forceExecutes: [],
+        };
 
         yield* Effect.logInfo("bundles included").pipe(
           Effect.annotateLogs({
@@ -845,31 +739,20 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           }),
         );
 
-        const includedBlock: Exclude<BlockEvent, { status: "accepted" }> = {
-          status: "included",
-          number: block.number,
-          hash: block.hash,
-          timestamp: block.timestamp,
-          bundles: anchored,
-        };
-
-        yield* persistIncludedBundles({
-          bundles: anchored,
-          block: {
-            number: block.number,
-            hash: block.hash,
-            timestamp: block.timestamp,
-          },
-          transactionHash,
-          calldata,
-        });
-
-        for (const b of anchored) {
-          emitBundle(b);
-          for (const m of b.mutations) emitMutation(m);
+        for (const bundle of bundles) {
+          for (const mutation of bundle.mutations) {
+            yield* persistUpdatedMutationLifecycle(mutation);
+          }
         }
-        emitBlock(includedBlock);
-        unfinalizedBlocks.push(includedBlock);
+
+        emitBlock(blockToEvent(runtimeBlock));
+        for (const bundle of bundles) {
+          emitBundle(bundleToEvent(bundle));
+          for (const mutation of bundle.mutations)
+            emitMutation(mutationToEvent(mutation));
+        }
+
+        unfinalizedBlocks.push(runtimeBlock);
       }),
     );
 
@@ -881,18 +764,18 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
             if (message._tag === "Reorged") {
               for (const block of unfinalizedBlocks) {
                 for (const bundle of block.bundles) {
-                  const isReorged = message.reorgedBlocks.some((block) =>
-                    block.transactions.includes(bundle.transactionHash),
+                  const isReorged = message.reorgedBlocks.some((r) =>
+                    r.transactions.includes(block.transactionHash),
                   );
                   if (isReorged) {
-                    const reIncludedBlock = message.newBlocks.find((block) =>
-                      block.transactions.includes(bundle.transactionHash),
+                    const reIncludedBlock = message.newBlocks.find((r) =>
+                      r.transactions.includes(block.transactionHash),
                     );
 
                     if (reIncludedBlock === undefined) {
                       return yield* Effect.fail(
                         new Error(
-                          `reorged bundle removed from canonical chain: bundleId=${bundle.id} transactionHash=${bundle.transactionHash}`,
+                          `reorged bundle removed from canonical chain: bundleId=${bundle.id} transactionHash=${block.transactionHash}`,
                         ),
                       );
                     } else {
@@ -901,7 +784,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                       ).pipe(
                         Effect.annotateLogs({
                           bundleId: bundle.id,
-                          transactionHash: bundle.transactionHash,
+                          transactionHash: block.transactionHash,
                         }),
                       );
                     }
@@ -912,31 +795,62 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
               return;
             }
 
-            const detectedForceInclusions: PendingForceInclusion[] = [];
-            for (const log of message.block.logs) {
-              const forceInclusion = yield* Effect.try({
-                try: () => decodeForceInclusionLog(log),
-                catch: (error) => error as Error,
-              });
-              const key = forceInclusion.index.toString();
-              if (seenForceInclusionIndexes.has(key)) continue;
-              seenForceInclusionIndexes.add(key);
-              detectedForceInclusions.push(forceInclusion);
-            }
-            if (detectedForceInclusions.length > 0) {
-              yield* withJournalLock(
-                Effect.sync(() => {
-                  pendingForceInclusions.push(...detectedForceInclusions);
-                }),
-              );
-              yield* Effect.logInfo("force inclusions detected").pipe(
-                Effect.annotateLogs({
-                  forceExecuteIndexes: detectedForceInclusions.map(
-                    ({ index }) => index.toString(),
-                  ),
-                }),
-              );
-            }
+            yield* withJournalLock(
+              Effect.gen(function* () {
+                for (const log of message.block.logs) {
+                  const decodedLog = decodeEventLog({
+                    abi: config.abi as FFCAAbi,
+                    eventName: "ForceInclusionQueued",
+                    // @ts-expect-error
+                    topics: log.topics,
+                    data: log.data,
+                    strict: true,
+                  });
+
+                  // TODO(kyle) validate mutation against zod
+
+                  const mutationNameAndConfig = mutationsByTag.get(
+                    decodedLog.args.mutation,
+                  )!;
+
+                  const enqueuedMutation: Extract<
+                    RuntimeMutation,
+                    { status: "enqueued" }
+                  > = {
+                    status: "enqueued",
+                    id: 0,
+                    index: decodedLog.args.index,
+                    name: mutationNameAndConfig.name,
+                    config: mutationNameAndConfig.config,
+                    signature: decodedLog.args.sig,
+                    ...decodeMutationCalldata(
+                      mutationNameAndConfig.config,
+                      decodedLog.args.mutationData,
+                    ),
+                  };
+
+                  const enqueueCalldata = encodeEnqueueCalldata(
+                    config.abi,
+                    enqueuedMutation,
+                  );
+
+                  yield* evm.beginJournal();
+                  const result = yield* evm.execute({
+                    from: "0x0000000000000000000000000000000000000000",
+                    to: config.address,
+                    data: enqueueCalldata,
+                  });
+
+                  if (result.success === false) {
+                    yield* evm.revertJournal();
+                  } else {
+                    yield* evm.commitJournal();
+                  }
+
+                  enqueuedMutations.push(enqueuedMutation);
+                }
+              }),
+            );
 
             for (const blockEvent of unfinalizedBlocks.filter(
               (block) => block.number < message.block.number,
@@ -967,7 +881,11 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                 }
               }
 
-              yield* persistBlockLifecycle(blockEvent);
+              for (const bundle of blockEvent.bundles) {
+                for (const mutation of bundle.mutations) {
+                  yield* persistUpdatedMutationLifecycle(mutation);
+                }
+              }
 
               emitBlock(blockEvent);
               for (const bundle of blockEvent.bundles) {
@@ -988,13 +906,26 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
 
     const fifoBundleProgram = Effect.forever(
       Effect.gen(function* () {
+        // TODO(kyle) mutation should immeditately process the force inclusion
         const item = yield* Queue.take(mutationQueue);
+
         yield* acceptBundle([item], bundlePosition++);
       }),
     );
 
     const sequencedBundleProgram = Effect.repeat(
-      sequencedBundle,
+      Effect.gen(function* () {
+        const queued = yield* Queue.clear(mutationQueue);
+        if (queued.length === 0) return;
+
+        const order = config.sequence!;
+        queued.sort(
+          (a, b) =>
+            order.indexOf(a.mutation.name) - order.indexOf(b.mutation.name),
+        );
+
+        yield* acceptBundle(queued, bundlePosition++);
+      }),
       Schedule.fixed(Duration.millis(sequencing.bundleIntervalMs)),
     );
 
@@ -1020,37 +951,25 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     yield* Effect.forkScoped(watch);
 
     function execute(
-      submitted: SubmittedMutation,
+      mutation: SubmittedMutation,
     ): Effect.Effect<MutationEvent, unknown> {
       return Effect.gen(function* () {
-        const mutation = config.mutations[submitted.name];
-        if (mutation === undefined) {
-          throw new Error(`unknown mutation: ${submitted.name}`);
-        }
-        if (
-          sequencing.order === "bundle" &&
-          !config.sequence!.includes(submitted.name)
-        ) {
-          throw new Error(`mutation not in sequence: ${submitted.name}`);
-        }
-        const digest = verifyMutation(
-          mutation,
-          config.signature.params,
-          submitted,
-          domain,
-        );
+        // TODO(kyle) run `mutation` through zod to check shape
 
-        const submittedEvent: SubmittedMutationEvent = {
-          ...submitted,
+        const mutationConfig = config.mutations[mutation.name]!;
+
+        const runtimeMutation = {
+          ...mutation,
           id: mutationId++,
           status: "submitted",
-          digest,
-          config: mutation,
-        };
-        emitMutation(submittedEvent);
-        const deferred = yield* Deferred.make<MutationEvent, unknown>();
+          config: mutationConfig,
+        } as const satisfies Extract<RuntimeMutation, { status: "submitted" }>;
+
+        emitMutation(mutationToEvent(runtimeMutation));
+
+        const deferred = yield* Deferred.make<RuntimeMutation, unknown>();
         yield* Queue.offer(mutationQueue, {
-          submitted: submittedEvent,
+          mutation: runtimeMutation,
           deferred,
         });
         return yield* Deferred.await(deferred);
@@ -1084,11 +1003,6 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       });
     }
 
-    return {
-      state: state as RuntimeFFCA<C["storageLayout"]>["state"],
-      domain,
-      execute,
-      on,
-    };
+    return { state, domain, execute, on };
   });
 }

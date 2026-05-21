@@ -1,12 +1,17 @@
 // Sidecar that wraps monad-revm and speaks line-delimited JSON over stdio.
 //
-// Seven operations:
+// Operations:
 //   init           — one-shot setup: spec, chain id, block context, accounts.
-//   beginBundle    — open a journal checkpoint.
-//   execute        — run one tx inside the open bundle.
+//   setBlockContext— update block number, timestamp, basefee, coinbase.
+//   beginJournal   — push an empty uncommitted journal.
+//   execute        — run one tx inside the open (uncommitted) journal.
+//   simulate       — run one tx against committed state, ignoring uncommitted
+//                    journals; does not create or modify any journal.
 //   readStorage    — read raw account storage slots from the sidecar DB.
-//   commitBundles  — drain all journals and keep writes in the DB.
-//   revertBundle   — roll the journal back to the bundle's open checkpoint.
+//   commitJournal  — mark the top journal as committed.
+//   revertJournal  — pop the top journal and restore its pre-images.
+//   revertJournals — pop and revert the top N journals.
+//   pruneJournals  — drop the bottom N committed journals to free memory.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -36,13 +41,43 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase")]
 enum Request {
-    Init { id: u64, params: InitParams },
-    BeginBundle { id: u64 },
-    Execute { id: u64, params: ExecuteParams },
-    Simulate { id: u64, params: ExecuteParams },
-    ReadStorage { id: u64, params: ReadStorageParams },
-    CommitBundles { id: u64 },
-    RevertBundle { id: u64 },
+    Init {
+        id: u64,
+        params: InitParams,
+    },
+    SetBlockContext {
+        id: u64,
+        params: BlockParams,
+    },
+    BeginJournal {
+        id: u64,
+    },
+    Execute {
+        id: u64,
+        params: ExecuteParams,
+    },
+    Simulate {
+        id: u64,
+        params: ExecuteParams,
+    },
+    ReadStorage {
+        id: u64,
+        params: ReadStorageParams,
+    },
+    CommitJournal {
+        id: u64,
+    },
+    RevertJournal {
+        id: u64,
+    },
+    RevertJournals {
+        id: u64,
+        params: RevertJournalsParams,
+    },
+    PruneJournals {
+        id: u64,
+        params: PruneJournalsParams,
+    },
 }
 
 #[derive(Deserialize)]
@@ -83,6 +118,16 @@ struct ReadStorageParams {
     slots: Vec<String>,
 }
 
+#[derive(Deserialize)]
+struct RevertJournalsParams {
+    count: u64,
+}
+
+#[derive(Deserialize)]
+struct PruneJournalsParams {
+    count: u64,
+}
+
 #[derive(Serialize)]
 struct Response {
     id: u64,
@@ -117,20 +162,21 @@ type Evm = monad_revm::api::builder::DefaultMonadEvm<
     monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
 >;
 
-// Per-bundle pre/post-image record. revm 34's `transact_one` clears its
+// Per-journal pre/post-image record. revm 34's `transact_one` clears its
 // internal journal log on success, so cross-tx isolation has to live in
-// userland: we capture pre-images on first touch within a bundle, post-
-// images each time. revertBundle writes pre-images back; simulate
-// un-applies the whole stack, runs the simulation, re-applies post-images.
+// userland: we capture pre-images on first touch within a journal, post-
+// images each time. revertJournal writes pre-images back; simulate
+// un-applies uncommitted journals, runs the simulation, re-applies them.
 #[derive(Default)]
-struct BundleJournal {
+struct Journal {
+    committed: bool,
     accounts: std::collections::HashMap<Address, (AccountInfo, AccountInfo)>,
     storage: std::collections::HashMap<(Address, U256), (U256, U256)>,
 }
 
 struct EvmHarness {
     evm: Evm,
-    bundles: Vec<BundleJournal>,
+    journals: Vec<Journal>,
     initialized: bool,
 }
 
@@ -141,7 +187,7 @@ impl EvmHarness {
         let evm = ctx.build_monad();
         Self {
             evm,
-            bundles: Vec::new(),
+            journals: Vec::new(),
             initialized: false,
         }
     }
@@ -161,19 +207,7 @@ impl EvmHarness {
             self.evm.0.ctx.cfg.0.chain_id = id;
         }
         if let Some(block) = &params.block {
-            let b = &mut self.evm.0.ctx.block;
-            if let Some(n) = &block.number {
-                b.number = parse_u256(n)?;
-            }
-            if let Some(t) = &block.timestamp {
-                b.timestamp = parse_u256(t)?;
-            }
-            if let Some(f) = &block.basefee {
-                b.basefee = parse_u256(f)?.to::<u64>();
-            }
-            if let Some(c) = &block.coinbase {
-                b.beneficiary = parse_address(c)?;
-            }
+            self.apply_block_params(block)?;
         }
         if let Some(accounts) = &params.accounts {
             let db = self.evm.0.ctx.journaled_state.db_mut();
@@ -205,33 +239,99 @@ impl EvmHarness {
         Ok(())
     }
 
-    fn begin_bundle(&mut self) -> Result<(), String> {
-        self.bundles.push(BundleJournal::default());
-        Ok(())
+    fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
+        self.ensure_initialized()?;
+        self.apply_block_params(params)
     }
 
-    fn commit_bundles(&mut self) -> Result<(), String> {
-        if self.bundles.is_empty() {
-            return Err("no bundle is open".into());
+    fn apply_block_params(&mut self, block: &BlockParams) -> Result<(), String> {
+        let b = &mut self.evm.0.ctx.block;
+        if let Some(n) = &block.number {
+            b.number = parse_u256(n)?;
         }
-        // Writes are already in the DB (each successful execute committed
-        // there). Committing bundles just drops rewind metadata.
-        self.bundles.clear();
+        if let Some(t) = &block.timestamp {
+            b.timestamp = parse_u256(t)?;
+        }
+        if let Some(f) = &block.basefee {
+            b.basefee = parse_u256(f)?.to::<u64>();
+        }
+        if let Some(c) = &block.coinbase {
+            b.beneficiary = parse_address(c)?;
+        }
         Ok(())
     }
 
-    fn revert_bundle(&mut self) -> Result<(), String> {
-        let bundle = self
-            .bundles
+    fn begin_journal(&mut self) -> Result<(), String> {
+        self.ensure_initialized()?;
+        self.journals.push(Journal::default());
+        Ok(())
+    }
+
+    fn commit_journal(&mut self) -> Result<(), String> {
+        self.ensure_initialized()?;
+        let journal = self.journals.last_mut().ok_or("no journal is open")?;
+        if journal.committed {
+            return Err("top journal is already committed".into());
+        }
+        journal.committed = true;
+        Ok(())
+    }
+
+    fn revert_journal(&mut self) -> Result<(), String> {
+        self.ensure_initialized()?;
+        let journal = self
+            .journals
             .pop()
-            .ok_or_else(|| "no bundle is open".to_string())?;
-        rewind(self.evm.0.ctx.journaled_state.db_mut(), &bundle);
+            .ok_or_else(|| "no journal is open".to_string())?;
+        rewind(self.evm.0.ctx.journaled_state.db_mut(), &journal);
+        Ok(())
+    }
+
+    fn revert_journals(&mut self, params: &RevertJournalsParams) -> Result<(), String> {
+        self.ensure_initialized()?;
+        let count = params.count as usize;
+        if count == 0 {
+            return Ok(());
+        }
+        if count > self.journals.len() {
+            return Err(format!(
+                "cannot revert {count} journals; only {} open",
+                self.journals.len()
+            ));
+        }
+        let db = self.evm.0.ctx.journaled_state.db_mut();
+        for _ in 0..count {
+            let journal = self.journals.pop().expect("count validated above");
+            rewind(db, &journal);
+        }
+        Ok(())
+    }
+
+    fn prune_journals(&mut self, params: &PruneJournalsParams) -> Result<(), String> {
+        self.ensure_initialized()?;
+        let count = params.count as usize;
+        if count == 0 {
+            return Ok(());
+        }
+        let committed_count = self.journals.iter().filter(|j| j.committed).count();
+        if count > committed_count {
+            return Err(format!(
+                "cannot prune {count} journals; only {committed_count} committed"
+            ));
+        }
+        // Remove the oldest `count` committed journals from the bottom.
+        self.journals = self.journals.split_off(count);
         Ok(())
     }
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
-        if self.bundles.is_empty() {
-            return Err("execute requires an open bundle".into());
+        self.ensure_initialized()?;
+        let journal = self
+            .journals
+            .last()
+            .ok_or("execute requires an open journal")?;
+        if journal.committed {
+            return Err("top journal is committed; begin a new journal before executing".into());
         }
         let result = match self.run_two_pass(params) {
             Ok(result) => result,
@@ -241,7 +341,7 @@ impl EvmHarness {
             }
         };
         if result.success {
-            self.record_into_top_bundle();
+            self.record_into_top_journal();
             // Commit the journaled state into the DB so future reads and
             // writes see the post-tx state.
             self.flush_journal_to_db();
@@ -254,12 +354,21 @@ impl EvmHarness {
     }
 
     fn simulate(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
-        // Un-apply every bundle (LIFO) so the DB is at pre-bundle-stack state,
-        // run the two-pass, then re-apply (FIFO).
+        self.ensure_initialized()?;
+        // Count uncommitted journals from the top of the stack downward.
+        let mut uncommitted_count = 0;
+        for journal in self.journals.iter().rev() {
+            if journal.committed {
+                break;
+            }
+            uncommitted_count += 1;
+        }
+
         {
             let db = self.evm.0.ctx.journaled_state.db_mut();
-            for bundle in self.bundles.iter().rev() {
-                rewind(db, bundle);
+            for i in 0..uncommitted_count {
+                let idx = self.journals.len() - 1 - i;
+                rewind(db, &self.journals[idx]);
             }
         }
 
@@ -269,11 +378,12 @@ impl EvmHarness {
         let _ = self.evm.finalize();
 
         // Re-apply post-images in original order regardless of simulate's
-        // success — the bundle stack's logical state must be restored exactly.
+        // success — the uncommitted journals' logical state must be restored.
         {
             let db = self.evm.0.ctx.journaled_state.db_mut();
-            for bundle in self.bundles.iter() {
-                replay(db, bundle);
+            for i in (0..uncommitted_count).rev() {
+                let idx = self.journals.len() - 1 - i;
+                replay(db, &self.journals[idx]);
             }
         }
 
@@ -294,20 +404,20 @@ impl EvmHarness {
         Ok(out)
     }
 
-    // Walk the journal's post-tx state and merge it into the top bundle:
+    // Walk the journal's post-tx state and merge it into the top journal:
     //   - record (pre, post) on first sighting of an account/slot
     //   - update only `post` on subsequent sightings (`pre` is already
-    //     the bundle's earliest-known pre-image).
-    fn record_into_top_bundle(&mut self) {
-        let bundle = self
-            .bundles
+    //     the journal's earliest-known pre-image).
+    fn record_into_top_journal(&mut self) {
+        let journal = self
+            .journals
             .last_mut()
-            .expect("execute requires an open bundle");
+            .expect("execute requires an open journal");
         let state = self.evm.0.ctx.journaled_state.evm_state();
         for (addr, account) in state.iter() {
             let post_info = account.info.clone();
             let pre_info = (*account.original_info).clone();
-            bundle
+            journal
                 .accounts
                 .entry(*addr)
                 .and_modify(|(_, post)| *post = post_info.clone())
@@ -316,7 +426,7 @@ impl EvmHarness {
             for (slot, slot_state) in account.storage.iter() {
                 let pre = slot_state.original_value();
                 let post = slot_state.present_value();
-                bundle
+                journal
                     .storage
                     .entry((*addr, *slot))
                     .and_modify(|(_, p)| *p = post)
@@ -328,6 +438,14 @@ impl EvmHarness {
     fn flush_journal_to_db(&mut self) {
         let state = self.evm.finalize();
         self.evm.commit(state);
+    }
+
+    fn ensure_initialized(&self) -> Result<(), String> {
+        if self.initialized {
+            Ok(())
+        } else {
+            Err("not initialized".into())
+        }
     }
 
     // Two-pass execution. Pass 1 discovers the access list; pass 2 runs with
@@ -371,9 +489,26 @@ impl EvmHarness {
         let _ = self.evm.finalize();
 
         // Pass 2 — measure with pre-warmed access list.
+        //
+        // Filter out accounts that have no storage keys before building the
+        // pass-2 transaction.  collect_access_list includes every account that
+        // was touched during execution (caller, coinbase, …), but those
+        // accounts are always pre-warmed by the protocol at transaction start
+        // and don't need to appear in the EIP-2930 access list.  Including
+        // them would add a spurious 2400-gas address-declaration cost for
+        // each, inflating gas_used relative to what eth_estimateGas returns
+        // when given the same storage-only access list.
+        let storage_access_list = AccessList(
+            touched
+                .0
+                .iter()
+                .filter(|item| !item.storage_keys.is_empty())
+                .cloned()
+                .collect(),
+        );
         let result = self
             .evm
-            .transact_one(build_tx(touched.clone()))
+            .transact_one(build_tx(storage_access_list))
             .map_err(|e| format!("transact (pass 2): {e:?}"))?;
 
         let (success, gas_used, output, revert_data) = match &result {
@@ -412,20 +547,20 @@ impl EvmHarness {
     }
 }
 
-fn rewind(db: &mut InMemoryDB, bundle: &BundleJournal) {
-    for (addr, (pre, _post)) in bundle.accounts.iter() {
+fn rewind(db: &mut InMemoryDB, journal: &Journal) {
+    for (addr, (pre, _post)) in journal.accounts.iter() {
         db.insert_account_info(*addr, pre.clone());
     }
-    for ((addr, slot), (pre, _post)) in bundle.storage.iter() {
+    for ((addr, slot), (pre, _post)) in journal.storage.iter() {
         let _ = db.insert_account_storage(*addr, *slot, *pre);
     }
 }
 
-fn replay(db: &mut InMemoryDB, bundle: &BundleJournal) {
-    for (addr, (_pre, post)) in bundle.accounts.iter() {
+fn replay(db: &mut InMemoryDB, journal: &Journal) {
+    for (addr, (_pre, post)) in journal.accounts.iter() {
         db.insert_account_info(*addr, post.clone());
     }
-    for ((addr, slot), (_pre, post)) in bundle.storage.iter() {
+    for ((addr, slot), (_pre, post)) in journal.storage.iter() {
         let _ = db.insert_account_storage(*addr, *slot, *post);
     }
 }
@@ -531,7 +666,11 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
             Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
-        Request::BeginBundle { id } => match harness.begin_bundle() {
+        Request::SetBlockContext { id, params } => match harness.set_block_context(&params) {
+            Ok(()) => ok(id, serde_json::json!({})),
+            Err(e) => err(id, e),
+        },
+        Request::BeginJournal { id } => match harness.begin_journal() {
             Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
@@ -547,11 +686,19 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
             Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
             Err(e) => err(id, e),
         },
-        Request::CommitBundles { id } => match harness.commit_bundles() {
+        Request::CommitJournal { id } => match harness.commit_journal() {
             Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
-        Request::RevertBundle { id } => match harness.revert_bundle() {
+        Request::RevertJournal { id } => match harness.revert_journal() {
+            Ok(()) => ok(id, serde_json::json!({})),
+            Err(e) => err(id, e),
+        },
+        Request::RevertJournals { id, params } => match harness.revert_journals(&params) {
+            Ok(()) => ok(id, serde_json::json!({})),
+            Err(e) => err(id, e),
+        },
+        Request::PruneJournals { id, params } => match harness.prune_journals(&params) {
             Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
