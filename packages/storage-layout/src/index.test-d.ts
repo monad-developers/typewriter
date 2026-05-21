@@ -275,6 +275,12 @@ test("StorageLayoutToPrimitiveType maps top-level Solidity types", () => {
   }>();
 });
 
+test("StorageLayoutToPrimitiveType falls back for broad StorageLayout", () => {
+  type Variables = StorageLayoutToPrimitiveType<StorageLayout>;
+
+  expectTypeOf<Variables>().toEqualTypeOf<Record<string, unknown>>();
+});
+
 test("StorageProxy follows sync and async getter shapes", () => {
   const syncGetter = (_slots: Hex.Hex[]): TestSlotMap => ({});
   const asyncGetter = async (_slots: Hex.Hex[]): Promise<TestSlotMap> => ({});

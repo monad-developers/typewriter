@@ -86,10 +86,10 @@ type DeepPromise<T> = [T] extends [readonly unknown[]]
  * getter is asynchronous, leaf positions are wrapped in `Promise<>`. The whole
  * projection is recursively readonly because proxy writes are rejected.
  */
-type StorageProxy<
+export type StorageProxy<
   L extends StorageLayout,
-  G extends SlotGetter,
-> = G extends AsyncSlotGetter
+  isAsync extends boolean,
+> = isAsync extends true
   ? DeepPromise<StorageLayoutToPrimitiveType<L>>
   : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
 
@@ -134,11 +134,15 @@ const decodeStoragePathRuntime = decodeStoragePath as (
 export function createStorageProxy<
   L extends StorageLayout,
   G extends SlotGetter,
->(layout: L, get: G, knownPaths: readonly string[] = []): StorageProxy<L, G> {
+>(
+  layout: L,
+  get: G,
+  knownPaths: readonly string[] = [],
+): StorageProxy<L, G extends AsyncSlotGetter ? true : false> {
   const normalizedKnownPaths = knownPaths.map(normalizePath);
   return buildProxy(layout, get, normalizedKnownPaths, null) as StorageProxy<
     L,
-    G
+    G extends AsyncSlotGetter ? true : false
   >;
 }
 
