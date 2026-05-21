@@ -92,12 +92,14 @@ export type ExtractMultiSlotStoragePaths<Layout extends StorageLayout> =
     : MultiSlotStorageItemPaths<Layout, Layout["storage"][number]>;
 
 export type StorageLayoutToPrimitiveType<Layout extends StorageLayout> =
-  Pretty<{
-    [Name in ExtractVariableNames<Layout>]: StoragePathToPrimitiveType<
-      Layout,
-      Name
-    >;
-  }>;
+  string extends ExtractVariableNames<Layout>
+    ? Record<string, unknown>
+    : Pretty<{
+        [Name in ExtractVariableNames<Layout>]: StoragePathToPrimitiveType<
+          Layout,
+          Name
+        >;
+      }>;
 
 export type StoragePathToPrimitiveType<
   Layout extends StorageLayout,

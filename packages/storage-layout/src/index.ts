@@ -48,6 +48,7 @@ export {
   formatStoragePath,
   parseStoragePath,
 } from "./storage-path";
+export type { StorageProxy } from "./storage-proxy";
 export { createStorageProxy } from "./storage-proxy";
 export type {
   AccountStorage,
