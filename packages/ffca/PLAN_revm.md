@@ -4,11 +4,13 @@ Working notes for replacing ffca's TS-side state machine with revm. The
 contract becomes the mutation acceptance spec: mutation calldata is executed by
 revm against deployed bytecode, and revm storage is the runtime source of truth.
 
-The current runtime is past shadow mode. `resolve` reads from a revm-backed
-storage proxy, revm decides mutation acceptance, and `.apply()` is only the
-decoded read-model projection that keeps today's persistence/API state in sync.
-Deleting `.apply()` is intentionally not the next step; persistence and read
-models need a revm-backed replacement first.
+The swap is complete. The in-memory JS decoded state object, `.apply()`, and
+`config.state.initial` have been deleted. `ffca.state` is an async storage proxy
+backed by sidecar `readStorage`; `resolve` reads directly from revm; revm is the
+sole acceptance gate; and accepted mutations are persisted without any TS-side
+state projection. The remaining work is operational improvements and
+replacing RPC simulation with revm-derived data, not recovering from a
+half-finished migration.
 
 ## What's already landed
 
@@ -34,19 +36,19 @@ Two packages now sit alongside `ffca`, and the runtime uses both.
   generally possible and remains intentionally unsupported.
 - **`packages/ffca` runtime** — `FFCAConfig.storageLayout` is required.
   `createFFCA` pulls deployed bytecode from chain, encodes decoded
-  `state.initial`/`state.load` into raw slots with `encodeStorageState`,
-  seeds revm with that storage, exposes storage through `ffca.state`, and passes the
-  storage proxy to `resolve({ state, ... })`. For each queued mutation,
-  runtime resolves any offchain data, executes a single-mutation bundle in
-  revm, rejects on revm revert, then calls `.apply()` only after revm
-  success to update the decoded read model used by persistence and APIs.
+  `state.load` into raw slots with `encodeStorage`, seeds revm with that
+  storage, exposes storage through `ffca.state` as an async storage proxy,
+  and passes the proxy to `resolve({ state, ... })`. For each queued
+  mutation, runtime resolves any offchain data, executes a single-mutation
+  bundle in revm, rejects on revm revert, and accepts the mutation
+  directly. There is no `.apply()` and no JS decoded state object.
 
 ## Direction
 
-`ffca` adopts revm incrementally. revm now owns mutation acceptance and direct
-storage reads. The remaining work is not more shadow validation; it is deciding
-how persistence/read models are derived from revm state so `.apply()` can be
-removed without losing app-queryable state.
+revm is now the canonical execution engine and state authority. The remaining
+work is replacing the remaining RPC simulation surface with revm, improving the
+persistence seam for apps, and hardening boot/restart semantics — not bridging
+from a TS state machine.
 
 ## Beliefs that shape the design
 
@@ -56,10 +58,9 @@ removed without losing app-queryable state.
 - **The contract is the spec.** Once revm is canonical, there is no
   second implementation of mutation logic. Solidity is the only place
   application logic lives.
-- **Persistence becomes derived.** Today apps own `persistMutation` /
-  `persistState` and read from the JS state object. Post-swap, apps
-  read from revm via decoded slot writes — `storage-layout` projects
-  raw `(slot, value)` writes back to typed paths the app consumes.
+- **Persistence becomes derived.** Apps own `persistMutation` /
+  `persistState` and read from the async `ffca.state` storage proxy (or
+  their own revm-derived indexes) rather than a JS state object.
   Persistence is a projection of revm's state, not a parallel ledger.
   No view-function read path: revm doesn't expose `call`; everything
   reads through slot decoding.
@@ -69,44 +70,35 @@ removed without losing app-queryable state.
 
 ## Adoption sequence
 
-Each step lands as its own change. The TS state machine stays working
-through step 5 — every step preserves end-to-end behavior.
-
 ### Step 1 — Wire revm into `createFFCA`
 
-Status: landed, with a different shape than the original shadow-mode sketch.
+Status: landed.
 
 - `createFFCA` spawns one sidecar at startup (`createEVM`) and inits it
   with deployed bytecode from `eth_getCode`.
-- Initial revm storage is encoded from decoded app state via the required
-  `config.storageLayout`. The runtime does not hydrate storage from chain yet.
+- Initial revm storage is encoded from decoded app state via `config.state.load`
+  and the required `config.storageLayout`. The runtime does not hydrate storage
+  from chain yet.
 - `ffca.state` is an async storage proxy backed by sidecar `readStorage`.
-- `resolve({ state, ... })` receives that storage proxy, not the mutable JS
+- `resolve({ state, ... })` receives that storage proxy, not a mutable JS
   decoded state object.
-
-No mismatch log exists today because revm was promoted directly to the hot path.
 
 ### Step 2 — Promote revm to canonical for failure isolation
 
-Status: mostly landed for mutation acceptance. The old per-mutation
-`structuredClone(state)` rollback path is gone. State still flows through TS
-`.apply()` only after revm success; if `.apply()` throws, the mutation is
-rejected and revm's failed `execute` did not commit its diff.
+Status: landed.
 
 - `structuredClone(state)` per mutation has been removed.
 - The bundle Effect's outer `beginBundle` brackets all mutations in the bundle.
   If every queued mutation is rejected, runtime calls `revertBundle` to drop the
   open journal; success later calls `commitBundles` after broadcast.
 
-The remaining checkpoint work is about bundle-level lifecycle cleanup and future
-reorg/recovery semantics, not TS failure isolation.
-
 ### Step 3 — Promote revm to canonical for access list + gas
 
+Status: not yet landed.
+
 Drops `publicClient.createAccessList`, `publicClient.estimateGas`, and
-`publicClient.simulateContract` from the submit fiber
-(`runtime.ts:572-603`). revm's `simulate` against the final bundle
-calldata produces both.
+`publicClient.simulateContract` from the submit fiber. revm's `simulate`
+against the final bundle calldata produces both.
 
 - Sidecar `simulate` already returns `access_list` and `gas_used`; the
   evm test suite confirms parity with `eth_createAccessList` for an
@@ -122,11 +114,7 @@ canonical state instead of bolted-on simulation.
 
 ### Step 4 — Route mutation execution through revm
 
-Status: landed for acceptance. `resolve` callbacks are still invoked because
-some mutations compute resolution calldata offchain, but the source of truth for
-whether a mutation succeeded is revm's `execute` result. The accepted/rejected
-decision in the bundle Effect is "did revm's execute succeed?" instead of "did
-TS apply throw?"
+Status: fully landed.
 
 - Mutation calldata is ABI-encoded against ffca's conventional
   `execute(Bundle[], uint256[])` shape and sent to revm as a single-mutation
@@ -134,9 +122,8 @@ TS apply throw?"
 - `MutationEvent.resolution` is still populated from TS `resolve`; revm output
   decoding for Solidity-authored resolutions is future work.
 - Revm revert data is decoded through viem ABI errors where possible.
-- TS `.apply()` is still called on success, to keep decoded app state in sync
-  for `ffca.state`, persistence hooks, and app APIs. Removing it is gated by
-  Step 5.
+- TS `.apply()` has been deleted. `ffca.state` reads directly from revm; there
+  is no JS decoded projection.
 - Bundle calldata format (`encodeBundleArg`) stays as-is — revm sees it
   as opaque bytes against the contract's `execute` function. A TS
   encoding bug surfaces as a revm revert.
@@ -145,24 +132,27 @@ Determinism still matters: revm and chain must agree on block context, spec,
 immutables, and any Monad-specific semantics before revm-derived gas/access-list
 data can replace RPC simulation.
 
-### Step 5 — Source persistence callbacks from revm
+### Step 5 — App persistence consumes revm-backed state
 
-This is the next important design/implementation step. It replaces the JS-state
-read path inside `persistMutation` / `persistState` and defines what app query
-models are derived from after `.apply()` is removed.
+Status: current reality, app-owned.
+
+`.apply()` is gone, so apps that used to read from the JS state object in
+`persistState` (or similar hooks) must now derive their read models from revm.
+The runtime does not provide a default decoded projection; it calls the app's
+`persistMutation` / `persistState` hooks with `args` and lifecycle metadata, and
+the app decides what to write.
 
 Two cases:
 
 1. **Hooks that already read from `args` only** (the common case for
    `persistMutation`): unaffected. `args` still flows through
    unchanged.
-2. **Hooks that read from `state` to compute persisted rows**
-   (typically `persistState`): switch to one of the revm-backed seams below.
-   The preferred long-term seam is decoded slot writes: `execute`'s response
-   gains a `slot_writes` field listing `{ slot, prev_value, new_value }` per
-   touched slot, and `storage-layout` projects writes back to typed paths with
-   help from a known-path registry. A smaller interim seam is app-owned indexes
-   plus explicit storage-proxy reads for the paths each persistence hook needs.
+2. **Hooks that previously read from a JS `state` object to compute persisted
+   rows** (typically `persistState`): must now read from `ffca.state` (the async
+   storage proxy) or maintain app-owned indexes populated from calldata/events.
+   A future framework seam may expose decoded `slot_writes` from revm's
+   `execute` response so apps can project touched paths without extra storage
+   reads, but that is an optimization, not a prerequisite.
 
 Generic mapping enumeration is not a goal and cannot be solved from storage
 alone. Apps that need "all known X" must provide an index, derive keys from
@@ -175,26 +165,13 @@ and doesn't read state.
 
 ### Step 6 — Delete the TS state machine
 
-Once persistence is sourced from revm, the JS state object has no
-remaining consumers other than app-owned read models. `ffca.state` is a
-thin facade over `storage-layout` — apps declare paths they
-want exposed, the runtime reads through `readStorage` + `decodeStorage`.
+Status: landed.
 
-- Delete or repurpose `config.state.initial`, `config.state.load`,
-  `config.state.schema` once restart/hydration no longer depends on decoded DB
-  state as the seed.
-- Delete `FFCAMutationConfig.apply` only after Step 5. Keep `.resolve` for TS
-  offchain matching unless/until resolution moves into Solidity or another
-  explicit execution language.
-- Delete `structuredClone`, `resolveMutation`, `applyMutation`,
-  `verifyResolution` from `runtime.ts`.
-- `FFCAConfig.state` either survives as `state.hydrate(rpc)` returning
-  bytecode + storage for sidecar init, or disappears entirely if the
-  runtime can derive that from `config.address` alone.
-
-After step 6, `runtime.ts` has no JS mutation projection and no decoded state as
-an authority. Bundle ordering, queueing, fan-out, submit, and watch stay in TS.
-revm owns state and execution; persistence/read models are derived from revm.
+The JS state object, `.apply()`, `config.state.initial`, `structuredClone`,
+`applyMutation`, and the runtime projection call have all been removed.
+`runtime.ts` has no JS mutation projection and no decoded state as an authority.
+Bundle ordering, queueing, fan-out, submit, and watch stay in TS. revm owns
+state and execution; persistence/read models are derived from revm.
 
 ## RPC budget after the swap
 
@@ -208,8 +185,7 @@ The submit fiber's RPC surface collapses:
   revm. revm trusts itself — the scheduler is the only writer; chain
   confirmation that disagrees is a bug, not a recoverable state.
 - **Current boot path:** `eth_getCode` for `config.address`, plus raw storage
-  generated from decoded `config.state.initial` / `state.load` through
-  `config.storageLayout`.
+  generated from decoded `state.load` through `config.storageLayout`.
 - **Future boot path:** `eth_getCode` / `eth_getStorageAt` for `config.address`
   and declared dependencies, or local deployment replay. Replaces decoded DB
   state as the source for revm initialization.
@@ -218,9 +194,6 @@ The submit fiber's RPC surface collapses:
 
 ## What we still need to build
 
-The minimum that has to exist for persistence to move off `.apply()` and for
-revm-derived gas/access-list data to replace RPC simulation.
-
 ### Sidecar (`packages/evm`)
 
 What's there: `init`, `beginBundle`, `execute`, `simulate`,
@@ -228,7 +201,7 @@ What's there: `init`, `beginBundle`, `execute`, `simulate`,
 Gaps:
 
 1. **`setBlockContext({ number, timestamp, basefee?, … })`.** Today
-   block context is set once via `init`. Step 4 needs to advance it
+   block context is set once via `init`. Step 3 needs to advance it
    per bundle (or per `execute`) so revm's `block.number` /
    `block.timestamp` match what the scheduler will broadcast against.
    Open decision in the package roadmap ("revm block context") gates
@@ -236,8 +209,8 @@ Gaps:
 2. **Slot writes (and logs) in `execute` output.** Today `execute`
    returns `{ success, gas_used, output, access_list, revert_data? }`.
    Add `slot_writes: [{ address, slot, prev_value, new_value }]` —
-   this is what step 5 consumes through `storage-layout` to produce
-   the typed values `persistState` writes. Add `logs: [{ address,
+   this lets apps project writes back to typed paths through
+   `storage-layout` without extra storage reads. Add `logs: [{ address,
    topics, data }]` alongside for event-driven persistence patterns
    and downstream state-sync.
 3. **External account hydration after `init`.** Today every account
@@ -259,20 +232,17 @@ What's there: `getStorageSlot`, `decodeStorage`, `encodeStorage`,
 slots, structs, fixed/dynamic arrays, mappings with most key types, short and
 long bytes/string. `getStoragePath` reverse lookup exists for non-mapping paths.
 
-Gaps that block step 5. See `packages/storage-layout/REVIEW_NOTES.md`
-for the full inventory; the ones that gate revm canonical persistence:
+Gaps that improve the revm-backed persistence story. See
+`packages/storage-layout/REVIEW_NOTES.md` for the full inventory:
 
 1. **`matchStorageWrites(layout, writes, knownPaths)`.** Per
    `REVIEW_NOTES.md` finding 5 / simplification idea 2: the current
    `getStoragePath(layout, slots)` throws if any mapping exists in
    the layout, even when the changed slot is unrelated. Mappings
    need a known-path registry — without one, slot writes against
-   mapping entries can't be projected back to typed paths. **This is
-   now a hard prerequisite for step 5**, not a contingent one:
-   without `call`, slot decoding is the only read path, and slot
-   decoding doesn't work for mappings without the registry. The
-   framework-side shape of the registry is the open decision below
-   ("How do mutations declare touched paths?").
+   mapping entries can't be projected back to typed paths. This
+   would let apps consume `slot_writes` from `execute` without
+   maintaining their own mapping-key indexes.
 2. **Storage proxy dynamic-array `.length`.** The runtime can already read
    concrete array element paths, but generic array consumers need `.length`.
    Unlike mappings, this is feasible because the length lives at the array root
@@ -280,11 +250,10 @@ for the full inventory; the ones that gate revm canonical persistence:
 3. **Dynamic-array encoding with a stale-slot policy.** Per finding
    2 and the in-code TODO at `src/index.ts:198-205`: shrinking arrays
    leave old element slots behind. Decoding works; encoding is
-   intentionally unimplemented. Not needed for step 5 — encoding is
-   only relevant if TS writes back into revm, which isn't on the
-   plan.
+   intentionally unimplemented. Not needed for the current read-heavy
+   path — encoding is only relevant if TS writes back into revm.
 4. **`bytes` / `string` shrink policy.** Finding 2: long-to-short
-   updates can leave old data slots. Same shape as 2; same defer.
+   updates can leave old data slots. Same shape as 3; same defer.
 5. **Mapping key support for `bytes` / `string` keys.** Finding 4.
    Most ffca contracts don't use these as mapping keys; add when
    needed.
@@ -293,7 +262,7 @@ for the full inventory; the ones that gate revm canonical persistence:
    composite support that runtime rejects. Either narrow the types
    to leaf paths only, or implement recursive composite projection.
    Decided in `REVIEW_NOTES.md` as "leaf paths first-class for now,"
-   which is fine for step 5.
+   which is fine.
 
 The order-book port is the forcing function for #1.
 
@@ -301,16 +270,15 @@ The order-book port is the forcing function for #1.
 
 What changes inside `runtime.ts` beyond the per-step diffs above:
 
-1. **Persistence seam.** Decide whether v1 persistence consumes decoded
-   `slot_writes`, explicit storage-proxy reads with app-owned indexes, or a
-   small combination of both. This gates `.apply()` removal.
-2. **State hydration source.** Today decoded `state.initial` / `state.load`
-   seeds revm. In the longer-term canonical model, `config.state.initial` goes
-   away and startup hydrates from chain storage or deployment replay. External
-   token dependencies (currently invisible to ffca) need app declarations.
-3. **`ffca.state` facade.** Today `ffca.state` is the direct slot-backed
-   storage surface. The decoded JS read model is still maintained internally by
-   `.apply()` for persistence and app-owned projections until Step 5 replaces it.
+1. **State hydration source.** Today decoded `state.load` seeds revm.
+   In the longer-term canonical model, `config.state.load` goes away
+   and startup hydrates from chain storage or deployment replay.
+   External token dependencies (currently invisible to ffca) need app
+   declarations.
+2. **`ffca.state` facade.** Today `ffca.state` is the direct slot-backed
+   storage surface. It may later gain an explicit confidence view
+   (accepted/local, included/proposed, safe, finalized) so apps can
+   choose which lifecycle threshold to read from.
 
 ## Decisions
 
@@ -342,23 +310,16 @@ finalized. The revm-backed projection should leave room for configuring which
 view backs `ffca.state` and persistence reads, instead of assuming every reader
 wants the most optimistic local state.
 
-### `.apply()` stays until persistence has a revm-backed replacement
-
-`.apply()` is now a projection, not an acceptance gate. Removing it before
-persistence/read-model design is settled would remove the only mechanism that
-keeps decoded tables and app APIs current. The next step is to make persistence
-consume revm-backed state, then delete `.apply()` as a mechanical follow-up.
-
 ### No view-function reads
 
 The sidecar does not (and will not) expose `call`. State reads happen
 through slot decoding only. Trade-off: requires the
 `matchStorageWrites` + path-registry work in `storage-layout` before
-step 5 can land. Upside: one read path instead of two, mappings stay
-honest about needing a registry, and slot subscriptions / state-sync
-fall out naturally later. Apps that today reach for view-function
-results in `persistState` will need to switch to decoded slot writes
-or to deriving the same value from `args`.
+slot-write-driven persistence can cover mappings. Upside: one read path
+instead of two, mappings stay honest about needing a registry, and slot
+subscriptions / state-sync fall out naturally later. Apps that reach for
+view-function results in `persistState` will need to switch to decoded
+slot writes or to deriving the same value from `args`.
 
 ### `encodeBundleArg` stays
 
@@ -394,13 +355,12 @@ broadcasting; revm executes before broadcast. Options:
 
 Affects whether revm-derived access lists / gas estimates are exact or
 just close. Park until we know which model the deployment target uses.
-Gates step 4's determinism prerequisite.
+Gates Step 3's determinism prerequisite.
 
 ### Where does initial storage come from?
 
 Current answer: bytecode is pulled from chain with `eth_getCode`; storage is
-encoded from decoded app state (`state.initial` or persisted `state.load`) using
-`config.storageLayout`.
+encoded from decoded app state (`state.load`) using `config.storageLayout`.
 
 Long-term options:
 
@@ -418,9 +378,7 @@ treating the database as rebuildable cache rather than revm's boot source.
 
 ### How do mutations declare touched paths?
 
-**Hard prerequisite for step 5** (was contingent in earlier drafts —
-no longer, since slot decoding is now the only read path). Mappings
-can't be reverse-decoded from raw slots, so the runtime needs a
+Mappings can't be reverse-decoded from raw slots, so the runtime needs a
 universe of candidate paths against which to match a slot write.
 
 Options:
@@ -445,30 +403,21 @@ the forcing function.
 Open decision in the package roadmap. Now that Step 4 landed, revm and
 chain should agree on state by construction. Detecting when they
 don't — comparing account roots, periodic slot probes, log-based
-reconciliation — is undefined. Park until step 4 has run long enough
+reconciliation — is undefined. Park until the runtime has run long enough
 in production to reveal what failure shapes look like.
 
 ## Sequenced next steps
 
-1. **Persistence/read-model design.** Decide the v1 seam: decoded
-   `slot_writes`, explicit storage-proxy reads with app-owned indexes, or both.
-   This is more valuable than deleting `.apply()` immediately.
-2. **Sidecar `slot_writes` (+ `logs`) in `execute` output.** Needed for the
-   decoded-write persistence path. Pulls touched slots out of the journal
-   alongside the existing access-list discovery.
-3. **`storage-layout` `matchStorageWrites` + path registry shape.** Settle how
-   mutations/apps declare known mapping paths; ship the helper. Hard
-   prerequisite for decoding mapping slot writes.
-4. **Storage proxy dynamic-array `.length`.** Needed for generic array reads;
-   mapping enumeration remains intentionally unsupported.
-5. **Step 5 — persistence callbacks consume revm-backed state.** `persistState`
-   switches from JS state to decoded `slot_writes` and/or explicit storage reads.
-6. **Delete `.apply()`.** Once persistence and app APIs no longer depend on the
-   decoded JS projection, remove `FFCAMutationConfig.apply` and the runtime
-   projection call.
-7. **Sidecar `setBlockContext`.** Needed before replacing RPC gas/access-list
-   simulation with revm-derived values.
-8. **Step 3 — access-list + gas through revm.** Removes RPC simulation calls
+1. **Sidecar `setBlockContext`.** Needed before replacing RPC gas/access-list
+   simulation with revm-derived values. Gates Step 3.
+2. **Step 3 — access-list + gas through revm.** Removes RPC simulation calls
    from submit after block-context semantics are settled.
-9. **Initial storage source.** Replace decoded-state seeding with chain storage
+3. **Sidecar `slot_writes` (+ `logs`) in `execute` output.** Lets apps
+   project touched slots to typed paths without extra storage reads.
+4. **`storage-layout` `matchStorageWrites` + path registry shape.** Settle how
+   mutations/apps declare known mapping paths; ship the helper. Needed for
+   efficient mapping-slot-write decoding.
+5. **Storage proxy dynamic-array `.length`.** Needed for generic array reads;
+   mapping enumeration remains intentionally unsupported.
+6. **Initial storage source.** Replace decoded-state seeding with chain storage
    hydration or deployment replay when persistence/restart semantics are ready.

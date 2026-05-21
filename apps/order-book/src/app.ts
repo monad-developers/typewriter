@@ -5,7 +5,7 @@ import {
   type FFCAConfig,
   verifySignature as verifyKeySignature,
 } from "ffca";
-import type { StorageLayoutToPrimitiveType } from "storage-layout";
+import type { StorageProxy } from "storage-layout";
 import {
   encodeAbiParameters,
   type Hex,
@@ -57,20 +57,9 @@ import {
 import type { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 type OrderBookState = State<bigint>;
-type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
-  ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
-  : [T] extends [object]
-    ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
-    : Promise<T>;
-type OrderBookStorage = AsyncStorageProxy<
-  StorageLayoutToPrimitiveType<typeof EXCHANGE_STORAGE_LAYOUT>
->;
+type OrderBookStorage = StorageProxy<typeof EXCHANGE_STORAGE_LAYOUT, true>;
 type KnownPriceLevels = Map<number, { bids: Set<number>; asks: Set<number> }>;
 const UINT64_MASK = 0xffffffffffffffffn;
-
-export const ORDER_BOOK_SIGNATURE_PARAMS = parseAbiParameters(
-  "bytes32 account, uint64 keyId, bytes rawSignature",
-);
 
 export type OrderBookSignature = {
   account: Hex;

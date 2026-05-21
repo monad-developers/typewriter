@@ -26,6 +26,7 @@ export type LocalBlock = {
   number: bigint;
   hash: Hex.Hex;
   parentHash: Hex.Hex;
+  timestamp: bigint;
   transactions: readonly Hex.Hex[];
   logs: LocalLog[];
 };
@@ -157,6 +158,7 @@ export const layerWatch: Layer.Layer<Watch, never, WatchConfig | Rpc> =
             number: Hex.toBigInt(block.number),
             hash: block.hash,
             parentHash: block.parentHash,
+            timestamp: Hex.toBigInt(block.timestamp),
             transactions: block.transactions.map((transaction) =>
               typeof transaction === "string" ? transaction : transaction.hash,
             ),

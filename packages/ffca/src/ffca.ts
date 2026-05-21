@@ -1,9 +1,9 @@
 import { Data, Effect, Layer, Scope } from "effect";
-import { toEventSelector } from "viem";
+import { getAbiItem, toEventSelector } from "viem";
 import type { FFCAConfig } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
-import { forceInclusionQueuedAbi } from "./encoding";
+import type { FFCAAbi } from "./encoding";
 import {
   deploymentLockKey,
   deploymentSchemaName,
@@ -39,6 +39,9 @@ export function createFFCAEffect<const C extends FFCAConfig>(
   config: C,
 ): Effect.Effect<RuntimeFFCA<C["storageLayout"]>, unknown, Scope.Scope> {
   return Effect.gen(function* () {
+    // TODO(kyle) check mutation names against sequencing order if applicable
+    // TODO(kyle) check abi for execute, enqueue, and forceExecute
+
     const rpcUrl = yield* primaryRpcUrl(config.rpcUrl);
     const rpcLayer = layerRpc.pipe(
       Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl })),
@@ -47,9 +50,16 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     const dbLayer = layerDatabase.pipe(
       Layer.provide(Layer.succeed(DatabaseConfig)(config.database)),
     );
-    const forceInclusionSelector = toEventSelector(
-      forceInclusionQueuedAbi(config.signature.params)[0],
-    );
+
+    const forceInclusionEvent = getAbiItem({
+      abi: config.abi as FFCAAbi,
+      name: "ForceInclusionQueued",
+    });
+
+    const logFilter = {
+      address: config.address,
+      selector: toEventSelector(forceInclusionEvent),
+    };
     const watchLayer = layerWatchLive({
       pollIntervalMs:
         config.sequencing?.blockPollingIntervalMs ??
@@ -57,10 +67,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
       maxChainDepth:
         config.confirmations?.finalizedBlockDepth ??
         DEFAULT_FINALIZED_BLOCK_DEPTH,
-      logFilter: {
-        address: config.address,
-        selector: forceInclusionSelector,
-      },
+      logFilter,
     }).pipe(Layer.provide(rpcLayer));
     const services = rpcLayer.pipe(
       Layer.merge(dbLayer),
@@ -75,7 +82,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
       );
       const schema = yield* Effect.try({
         try: () => {
-          if (!isPersistenceEnabled(config)) return undefined;
+          if (isPersistenceEnabled(config) === false) return undefined;
           const schema = getFFCASchema(config);
           updateSchema(
             schema,

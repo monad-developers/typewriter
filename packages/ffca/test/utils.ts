@@ -23,6 +23,7 @@ import { Authentication } from "ox/webauthn";
 import type {
   StorageLayout,
   StorageLayoutToPrimitiveType,
+  StorageProxy,
 } from "storage-layout";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
@@ -40,17 +41,6 @@ import {
 } from "./setup";
 
 const pgTable = snakeCase.table;
-
-// TS mirrors of each contract's State struct. The contracts use `mapping`s
-// (which can't appear in JS); we represent them as `Record<address, ...>`.
-
-// Counter.State on-chain. Decoded shape exposed through the storage proxy
-// returned by `ffca.state` when COUNTER_STORAGE_LAYOUT is wired in.
-type AsyncStorageProxy<T> = [T] extends [readonly unknown[]]
-  ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
-  : [T] extends [object]
-    ? { readonly [K in keyof T]: AsyncStorageProxy<T[K]> }
-    : Promise<T>;
 
 export type CounterState = {
   total: bigint;
@@ -72,6 +62,84 @@ export const EMPTY_STORAGE_LAYOUT = {
   storage: [],
   types: {},
 } as const satisfies StorageLayout;
+
+// Minimal ABI for tests that createFFCA without a real contract. Contains the
+// execute function and ForceInclusionQueued event so signatureParamsFromAbi
+// and the watch layer have the shapes they expect.
+export const STUB_FFCA_ABI = [
+  {
+    type: "function",
+    name: "execute",
+    inputs: [
+      {
+        name: "bundles",
+        type: "tuple[]",
+        internalType: "struct Bundle[]",
+        components: [
+          { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
+          { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
+          {
+            name: "signatures",
+            type: "tuple[]",
+            internalType: "struct Signature[]",
+            components: [
+              { name: "keyType", type: "uint8", internalType: "uint8" },
+              { name: "rawSignature", type: "bytes", internalType: "bytes" },
+            ],
+          },
+        ],
+      },
+      {
+        name: "forceExecuteIndexes",
+        type: "uint256[]",
+        internalType: "uint256[]",
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "event",
+    name: "ForceInclusionQueued",
+    inputs: [
+      {
+        name: "index",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+      {
+        name: "mutation",
+        type: "uint8",
+        indexed: false,
+        internalType: "uint8",
+      },
+      {
+        name: "mutationData",
+        type: "bytes",
+        indexed: false,
+        internalType: "bytes",
+      },
+      {
+        name: "sig",
+        type: "tuple",
+        indexed: false,
+        internalType: "struct Signature",
+        components: [
+          { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "rawSignature", type: "bytes", internalType: "bytes" },
+        ],
+      },
+      {
+        name: "enqueuedBlock",
+        type: "uint256",
+        indexed: false,
+        internalType: "uint256",
+      },
+    ],
+    anonymous: false,
+  },
+] as const satisfies Abi.Abi;
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
 // Counter.State shape used by the runtime tests.
@@ -1029,10 +1097,6 @@ function persistHarnessLifecycle(
           .update(table)
           .set({
             status: params.lifecycle,
-            blockNumber: params.block.number.toString(),
-            blockHash: params.block.hash,
-            blockTimestamp: params.block.timestamp.toString(),
-            transactionHash: params.block.transactionHash,
             includedAt: sql`NOW()`,
           })
           .where(eq(table.id, params.mutation.id));
@@ -1154,10 +1218,10 @@ export const HARNESS_MUTATIONS: {
       state: unknown;
       args: unknown;
       signature: unknown;
-      bundle: readonly { name: string; args: unknown }[];
     }) => {
-      const harnessStorage = state as AsyncStorageProxy<
-        StorageLayoutToPrimitiveType<typeof HARNESS_STORAGE_LAYOUT>
+      const harnessStorage = state as StorageProxy<
+        typeof HARNESS_STORAGE_LAYOUT,
+        true
       >;
       const debit = args as DebitArgs;
       const balance = await harnessStorage.balances[debit.account];

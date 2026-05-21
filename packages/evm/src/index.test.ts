@@ -1,5 +1,5 @@
 // Each test spawns its own sidecar (one createEVM per test) and exercises
-// the bundle protocol against a hand-written counter contract.
+// the journal protocol against a hand-written counter contract.
 //
 // Counter runtime bytecode — increments storage slot 0 by 1 on any call:
 //   PUSH1 0x00 DUP1 SLOAD PUSH1 0x01 ADD SWAP1 SSTORE STOP
@@ -41,12 +41,12 @@ const initWithCounter = {
   },
 } as const;
 
-test("init + beginBundle + commitBundles round-trips with no executes", async () => {
+test("init + beginJournal + commitJournal round-trips with no executes", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init({});
-    yield* evm.beginBundle();
-    const commit = yield* evm.commitBundles();
+    yield* evm.beginJournal();
+    const commit = yield* evm.commitJournal();
     return commit;
   });
 
@@ -54,17 +54,17 @@ test("init + beginBundle + commitBundles round-trips with no executes", async ()
   expect(Exit.isSuccess(exit)).toBe(true);
 });
 
-test("execute against counter succeeds and commitBundles squashes journals", async () => {
+test("execute against counter succeeds and commitJournal keeps state", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return exec;
   });
 
@@ -73,11 +73,11 @@ test("execute against counter succeeds and commitBundles squashes journals", asy
   expect(exec.revert_data).toBeUndefined();
 });
 
-test("two executes in one bundle both succeed", async () => {
+test("two executes in one journal both succeed", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const first = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
@@ -88,7 +88,7 @@ test("two executes in one bundle both succeed", async () => {
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return { first, second };
   });
 
@@ -97,24 +97,24 @@ test("two executes in one bundle both succeed", async () => {
   expect(second.success).toBe(true);
 });
 
-test("revertBundle drops writes; next bundle starts from pre-revert state", async () => {
+test("revertJournal drops writes; next journal starts from pre-revert state", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    // Bundle 1: increment, revert.
-    yield* evm.beginBundle();
+    // Journal 1: increment, revert.
+    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.revertBundle();
+    yield* evm.revertJournal();
 
-    // Bundle 2: increment, commit. Slot should go 0 -> 1, not 1 -> 2.
-    yield* evm.beginBundle();
+    // Journal 2: increment, commit. Slot should go 0 -> 1, not 1 -> 2.
+    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return exec;
   });
 
@@ -122,22 +122,22 @@ test("revertBundle drops writes; next bundle starts from pre-revert state", asyn
   expect(exec.success).toBe(true);
 });
 
-test("sequential committed bundles keep local state", async () => {
+test("sequential committed journals keep local state", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
 
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return exec;
   });
 
@@ -145,7 +145,7 @@ test("sequential committed bundles keep local state", async () => {
   expect(exec.success).toBe(true);
 });
 
-test("execute outside an open bundle fails", async () => {
+test("execute outside an open journal fails", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -160,6 +160,37 @@ test("execute outside an open bundle fails", async () => {
   expect(Exit.isFailure(exit)).toBe(true);
 });
 
+test("execute against a committed top journal fails", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    yield* evm.commitJournal();
+    return yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+  });
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(program));
+  expect(Exit.isFailure(exit)).toBe(true);
+});
+
+test("commitJournal on already-committed journal fails", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+    yield* evm.beginJournal();
+    yield* evm.commitJournal();
+    return yield* evm.commitJournal();
+  });
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(program));
+  expect(Exit.isFailure(exit)).toBe(true);
+});
+
 test("failed execute discards journal writes", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
@@ -168,13 +199,13 @@ test("failed execute discards journal writes", async () => {
         [REVERTING_ADDR]: { code: WRITE_THEN_REVERT_CODE },
       },
     });
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: REVERTING_ADDR,
       data: "0x",
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return exec;
   });
 
@@ -187,7 +218,7 @@ test("execute returns access_list with the counter address + slot 0", async () =
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     return yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
   });
 
@@ -202,22 +233,22 @@ test("execute returns access_list with the counter address + slot 0", async () =
   ]);
 });
 
-test("simulate doesn't mutate state — counter stays at 0 after simulate", async () => {
+test("simulate does not mutate state — counter stays at 0 after simulate", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    // simulate has no bundle requirement and no persistence.
+    // simulate has no journal requirement and no persistence.
     const sim = yield* evm.simulate({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
 
-    // Real bundle: increment once, expect 0 -> 1, NOT 1 -> 2.
-    yield* evm.beginBundle();
+    // Real journal: increment once, expect 0 -> 1, NOT 1 -> 2.
+    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return sim;
   });
 
@@ -225,21 +256,21 @@ test("simulate doesn't mutate state — counter stays at 0 after simulate", asyn
   expect(sim.success).toBe(true);
 });
 
-test("simulate against a stack of uncommitted bundles preserves post-stack state", async () => {
-  // Two open bundles each increment. After both, slot is at 2. simulate
-  // must un-apply the stack, run, re-apply — leaving the bundle stack's
+test("simulate against a stack of uncommitted journals preserves post-stack state", async () => {
+  // Two open journals each increment. After both, slot is at 2. simulate
+  // must un-apply the stack, run, re-apply — leaving the journal stack's
   // logical state intact for the eventual commit.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    // bundle A still open
+    // journal A still open
 
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    // bundle B still open; slot in DB is at 2
+    // journal B still open; slot in DB is at 2
 
     const sim = yield* evm.simulate({
       from: CALLER,
@@ -247,12 +278,194 @@ test("simulate against a stack of uncommitted bundles preserves post-stack state
       data: "0x",
     });
 
-    yield* evm.commitBundles();
+    // Commit the top journal only. The journal model commits one at a time;
+    // ffca never leaves more than one uncommitted journal open in practice.
+    yield* evm.commitJournal();
     return sim;
   });
 
   const sim = await Effect.runPromise(Effect.scoped(program));
   expect(sim.success).toBe(true);
+});
+
+test("simulate against committed + uncommitted journals only rewinds uncommitted", async () => {
+  // Committed journal: slot 0 -> 1.
+  // Uncommitted journal: slot 1 -> 2.
+  // simulate must see the committed state (1), not the uncommitted state (2).
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    yield* evm.commitJournal();
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+
+    const sim = yield* evm.simulate({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+
+    yield* evm.commitJournal();
+    return sim;
+  });
+
+  const sim = await Effect.runPromise(Effect.scoped(program));
+  expect(sim.success).toBe(true);
+});
+
+test("revertJournal works on a committed journal", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    yield* evm.commitJournal();
+
+    // Reverting the committed journal should restore slot to 0.
+    yield* evm.revertJournal();
+
+    // Start a new journal and increment; should go 0 -> 1.
+    yield* evm.beginJournal();
+    const exec = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitJournal();
+    return exec;
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
+});
+
+test("revertJournals reverts multiple journals", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    yield* evm.commitJournal();
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+
+    // Revert the two uncommitted journals.
+    yield* evm.revertJournals({ count: 2 });
+
+    // Slot should be back to 1 (from the committed journal).
+    yield* evm.beginJournal();
+    const exec = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitJournal();
+    return exec;
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
+});
+
+test("revertJournals with count greater than open journals fails", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+    yield* evm.beginJournal();
+    return yield* evm.revertJournals({ count: 5 });
+  });
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(program));
+  expect(Exit.isFailure(exit)).toBe(true);
+});
+
+test("pruneJournals drops oldest committed journals", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    yield* evm.commitJournal();
+
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    yield* evm.commitJournal();
+
+    yield* evm.pruneJournals({ count: 1 });
+
+    // Reverting the remaining committed journal should restore slot to 1
+    // (from the second committed journal, since the first was pruned).
+    yield* evm.revertJournal();
+
+    yield* evm.beginJournal();
+    const exec = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitJournal();
+    return exec;
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
+});
+
+test("pruneJournals on uncommitted journals fails", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+    yield* evm.beginJournal();
+    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    return yield* evm.pruneJournals({ count: 1 });
+  });
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(program));
+  expect(Exit.isFailure(exit)).toBe(true);
+});
+
+test("setBlockContext updates block parameters", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init({
+      block: {
+        number: "0x1",
+        timestamp: "0x64",
+        basefee: "0xa",
+        coinbase: "0x0000000000000000000000000000000000000001",
+      },
+    });
+    yield* evm.setBlockContext({
+      number: "0x2",
+      timestamp: "0xc8",
+      basefee: "0x14",
+      coinbase: "0x0000000000000000000000000000000000000002",
+    });
+    // No stateful assertion possible with the counter contract,
+    // but the call should not error.
+    yield* evm.beginJournal();
+    const exec = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.commitJournal();
+    return exec;
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
 });
 
 test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
@@ -264,13 +477,13 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(params);
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
       data,
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return exec;
   });
 
@@ -313,13 +526,13 @@ test("readStorage decodes committed token state through storage proxy", async ()
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(params);
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
       data,
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
 
     const token = createStorageProxy(tokenStorageLayout, (slots) =>
       Effect.runPromise(evm.readStorage({ address: TOKEN_ADDR, slots })),
@@ -355,7 +568,7 @@ test("readStorage decodes committed token state through storage proxy", async ()
   });
 });
 
-test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async () => {
+test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async () => {
   const artifact = await loadTestToken();
   const { params, schedulerBalanceSlot } = tokenInit(artifact);
   const userBalanceSlot = mappingSlot(USER_ADDR, BALANCE_OF_SLOT);
@@ -364,7 +577,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async 
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(params);
-    yield* evm.beginBundle();
+    yield* evm.beginJournal();
     const optimistic = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
@@ -375,7 +588,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 bundles", async 
       to: TOKEN_ADDR,
       data: transferData(RECIPIENT_ADDR, SIMULATE_AMOUNT),
     });
-    yield* evm.commitBundles();
+    yield* evm.commitJournal();
     return { optimistic, simulated };
   });
 
@@ -450,6 +663,45 @@ test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfe
   });
   const sidecar = await Effect.runPromise(Effect.scoped(program));
   expect(normalizeAccessRecord(sidecar.access_list)).toEqual(rpcAccessList);
+});
+
+test("sidecar gas_used matches eth_estimateGas for Solmate ERC20 transfer", async () => {
+  // The sidecar uses two-pass execution: pass 1 discovers the access list,
+  // pass 2 runs with those slots pre-warmed (an EIP-2930 tx). gas_used from
+  // pass 2 therefore reflects the cost of sending the tx with the access list
+  // attached — exactly what the ffca runtime does when it calls
+  // createAccessList then estimateGas({ accessList }).
+  const artifact = await loadTestToken();
+  const tokenAddr = await deployTestToken(artifact);
+  const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
+
+  // Discover the access list and estimate gas via RPC, mirroring the runtime.
+  const { accessList: rpcAccessList } =
+    await TEST_PUBLIC_CLIENT.createAccessList({
+      account: SCHEDULER_ADDR,
+      to: tokenAddr,
+      data,
+    });
+  const rpcGasEstimate = await TEST_PUBLIC_CLIENT.estimateGas({
+    account: SCHEDULER_ADDR,
+    to: tokenAddr,
+    data,
+    accessList: rpcAccessList,
+  });
+
+  const { params } = tokenInit(artifact, tokenAddr);
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(params);
+    return yield* evm.simulate({
+      from: SCHEDULER_ADDR,
+      to: tokenAddr,
+      data,
+    });
+  });
+  const sidecar = await Effect.runPromise(Effect.scoped(program));
+
+  expect(BigInt(sidecar.gas_used)).toEqual(rpcGasEstimate);
 });
 
 test("init twice fails", async () => {

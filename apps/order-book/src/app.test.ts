@@ -24,7 +24,6 @@ import {
   loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
-  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookMutationName,
   persistedMutations,
   projectAcceptedMutation,
@@ -258,7 +257,6 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: baseMutations(),
   });
@@ -323,7 +321,6 @@ test("ffca order book persists and submits market-order flow", async () => {
           return loaded;
         }),
     },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(knownPriceLevels),
   });
@@ -492,7 +489,6 @@ test("ffca order book resolves market orders after persisted reload", async () =
           return loaded;
         }),
     },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(knownPriceLevels),
   });
@@ -604,7 +600,6 @@ test("ffca order book resolves market orders after persisted reload", async () =
           return loaded;
         }),
     },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(reloadedPriceLevels),
   });
@@ -648,7 +643,6 @@ test("ffca order book changes an unfilled order to a new price", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: baseMutations(),
   });
@@ -769,7 +763,6 @@ test("db-queries fan out across per-mutation tables", async () => {
           return loaded;
         }),
     },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     sequence: ORDER_BOOK_SEQUENCE,
     mutations: persistedMutations(),
   });

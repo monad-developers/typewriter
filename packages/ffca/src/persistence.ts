@@ -3,7 +3,7 @@ import { getTableName } from "drizzle-orm/table";
 import { Data, Effect } from "effect";
 import type { FFCAConfig, FFCADatabaseTransaction } from "./config";
 import { Database } from "./db";
-import type { AnchoredBundle, BundleEvent, ResolvedMutation } from "./types";
+import type { ResolvedMutation, RuntimeBundle, RuntimeMutation } from "./types";
 
 export class PersistenceError extends Data.TaggedError("PersistenceError")<{
   readonly message: string;
@@ -56,95 +56,47 @@ export function isPersistenceEnabled(config: FFCAConfig): boolean {
   return true;
 }
 
-export function persistAcceptedBundle(
-  bundle: Extract<BundleEvent, { status: "accepted" }>,
+export function persistMutation(
+  mutation: ResolvedMutation,
+  bundle: RuntimeBundle,
 ): Effect.Effect<void, unknown, Database> {
   return Effect.gen(function* () {
     const db = yield* Database;
     yield* db.transaction((tx: FFCADatabaseTransaction) =>
       Effect.gen(function* () {
-        for (const [mutationIndex, mutation] of bundle.mutations.entries()) {
-          if (mutation.config.persistMutation !== undefined) {
-            yield* mutation.config.persistMutation(tx, {
-              mutation,
-              bundle: { id: bundle.id, mutationIndex },
-            });
-          }
-          if (mutation.config.persistState !== undefined) {
-            yield* mutation.config.persistState(tx, { mutation });
-          }
+        if (mutation.config.persistMutation !== undefined) {
+          yield* mutation.config.persistMutation(tx, {
+            mutation,
+            bundle,
+          });
+        }
+
+        if (mutation.config.persistState !== undefined) {
+          yield* mutation.config.persistState(tx, { mutation });
         }
       }),
     );
   });
 }
 
-export function persistIncludedBundles(params: {
-  readonly bundles: readonly AnchoredBundle[];
-  readonly block: { number: bigint; hash: `0x${string}`; timestamp: bigint };
-  readonly transactionHash: `0x${string}`;
-  readonly calldata: `0x${string}`;
-}): Effect.Effect<void, unknown, Database> {
-  return Effect.gen(function* () {
-    const db = yield* Database;
-    yield* db.transaction((tx: FFCADatabaseTransaction) =>
-      Effect.gen(function* () {
-        for (const bundle of params.bundles) {
-          for (const mutation of bundle.mutations) {
-            if (mutation.config.persistLifecycle !== undefined) {
-              yield* mutation.config.persistLifecycle(tx, {
-                lifecycle: "included",
-                mutation: mutation as Extract<
-                  ResolvedMutation,
-                  { status: "included" }
-                >,
-                block: {
-                  ...params.block,
-                  transactionHash: params.transactionHash,
-                },
-                calldata: params.calldata,
-              });
-            }
-          }
-        }
-      }),
-    );
-  });
-}
-
-export function persistBlockLifecycle(
-  block: Exclude<import("./types").BlockEvent, { status: "accepted" }>,
+export function persistUpdatedMutationLifecycle(
+  mutation: Extract<
+    RuntimeMutation,
+    { status: "accepted" | "included" | "safe" | "finalized" }
+  >,
 ): Effect.Effect<void, unknown, Database> {
   return Effect.gen(function* () {
-    if (block.status !== "safe" && block.status !== "finalized") return;
     const db = yield* Database;
     yield* db.transaction((tx: FFCADatabaseTransaction) =>
       Effect.gen(function* () {
-        for (const bundle of block.bundles) {
-          for (const mutation of bundle.mutations) {
-            if (block.status === "safe") {
-              if (mutation.config.persistLifecycle !== undefined) {
-                yield* mutation.config.persistLifecycle(tx, {
-                  lifecycle: "safe",
-                  mutation: mutation as Extract<
-                    ResolvedMutation,
-                    { status: "safe" }
-                  >,
-                });
-              }
-            } else {
-              if (mutation.config.persistLifecycle !== undefined) {
-                yield* mutation.config.persistLifecycle(tx, {
-                  lifecycle: "finalized",
-                  mutation: mutation as Extract<
-                    ResolvedMutation,
-                    { status: "finalized" }
-                  >,
-                });
-              }
-            }
-          }
-        }
+        if (mutation.config.persistLifecycle === undefined) return;
+
+        yield* mutation.config.persistLifecycle(tx, {
+          // @ts-expect-error
+          lifecycle: mutation.status,
+          // @ts-expect-error
+          mutation,
+        });
       }),
     );
   });

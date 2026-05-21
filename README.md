@@ -28,7 +28,7 @@ The app serves the frontend, hosts the FFCA runtime that batches and submits to 
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.3+
-- [Foundry **nightly**](https://book.getfoundry.sh/getting-started/installation) — `foundryup --install nightly`. The Exchange contract uses the P256 precompile at `address(0x100)` (RIP-7212), which stable Foundry does not include. Required for both `forge test` and `anvil`.
+- [Monad Foundry](https://github.com/category-labs/foundry) — the `category-labs` fork of Foundry, not upstream `foundry-rs`. Install by downloading the latest release for your platform and placing the binaries on your PATH. The fork is required because the test suite verifies gas estimation parity between the revm sidecar and `eth_estimateGas`, which only holds under Monad gas rules. Anvil must be started with `--monad` to enable those rules — the test setup does this automatically, but any manual `anvil` invocation needs the flag too.
 - Postgres (for the backend)
 
 ## Quick start
@@ -37,10 +37,10 @@ The app serves the frontend, hosts the FFCA runtime that batches and submits to 
 bun install
 ```
 
-Run Anvil:
+Run Anvil (the `--monad` flag is required for Monad gas rules):
 
 ```bash
-anvil --block-time 0.4
+anvil --monad --block-time 0.4
 ```
 
 In another terminal, deploy the Exchange to local Anvil:

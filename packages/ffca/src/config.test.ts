@@ -2,11 +2,9 @@ import { test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import {
   COUNTER_MUTATIONS,
-  COUNTER_SIGNATURE_PARAMS,
   EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
   HARNESS_SCHEMA,
-  HARNESS_SIGNATURE_PARAMS,
   testMutationSchema,
 } from "../test/utils";
 import type { FFCAConfig } from "./config";
@@ -25,9 +23,6 @@ const baseConfig = {
   database: { url: "postgres://postgres@localhost:5432/postgres" },
   storageLayout: EMPTY_STORAGE_LAYOUT,
   domain: { name: "", version: "1" },
-  signature: {
-    params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
-  },
 } as const;
 
 test("createFFCA state", () => {
@@ -70,7 +65,6 @@ test("createFFCA mutation with resolution", () => {
 test("createFFCA Counter (no schema)", () => {
   createFFCA({
     ...baseConfig,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     confirmations: { safeBlockDepth: 2, finalizedBlockDepth: 8 },
     mutations: COUNTER_MUTATIONS,
   });
@@ -82,7 +76,6 @@ test("createFFCA Counter (no schema)", () => {
 test("createFFCA Harness (with schema)", () => {
   createFFCA({
     ...baseConfig,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
     state: {
       schema: HARNESS_SCHEMA,
     },

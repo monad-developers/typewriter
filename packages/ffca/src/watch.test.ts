@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Effect, Layer, Stream } from "effect";
-import { decodeEventLog, getEventSelector, parseAbiItem } from "viem";
+import { decodeEventLog, parseAbiItem, toEventSelector } from "viem";
 import { anvil } from "viem/chains";
 import {
   TEST_CLIENT,
@@ -138,16 +138,21 @@ test("attaches matching force inclusion enqueue logs", async () => {
   const counterAddress = await deployCounter(USER_ACCOUNT.address);
   const amount = 5n;
   const nonce = 0n;
-  const mutationData = encodeMutationCalldata(COUNTER_MUTATIONS.add, {
-    amount,
-    nonce,
-  });
   const signature = signCounter({
     privateKey: USER_PRIVATE_KEY,
     amount,
     nonce,
     address: counterAddress,
     chainId: anvil.id,
+  });
+  const mutationData = encodeMutationCalldata({
+    id: 0,
+    status: "accepted",
+    name: "add",
+    args: { amount, nonce },
+    signature,
+    isForceInclusion: true,
+    config: COUNTER_MUTATIONS.add,
   });
 
   const program = Effect.scoped(
@@ -172,7 +177,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           maxChainDepth: 16,
           logFilter: {
             address: counterAddress,
-            selector: getEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
+            selector: toEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
           },
         }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL }))),
       ),

@@ -11,7 +11,6 @@ import {
   loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
-  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookMutationName,
   type OrderBookSignature,
   persistedMutations,
@@ -66,7 +65,6 @@ const app = await createFFCA({
         return loaded;
       }),
   },
-  signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
   sequence: ORDER_BOOK_SEQUENCE,
   mutations: persistedMutations(knownPriceLevels),
 });
