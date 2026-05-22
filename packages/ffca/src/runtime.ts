@@ -770,6 +770,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
               updateMutationLifecycle(tx, schema, {
                 ...mutation,
                 status: "included",
+                block: runtimeBlock,
               }),
             );
           }

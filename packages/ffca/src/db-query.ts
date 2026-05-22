@@ -1,12 +1,17 @@
 import type { AbiParameter } from "abitype";
 import { asc, desc, eq, getColumns, sql } from "drizzle-orm";
-import type { PgTable } from "drizzle-orm/pg-core";
+import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { ExecuteResult } from "evm";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";
-import type { ResolvedMutation, RuntimeBundle, RuntimeMutation } from "./types";
+import type {
+  ResolvedMutation,
+  RuntimeBlock,
+  RuntimeBundle,
+  RuntimeMutation,
+} from "./types";
 
 type LifecycleMutation = Omit<
   Extract<
@@ -16,6 +21,10 @@ type LifecycleMutation = Omit<
   "status"
 > & {
   status: "included" | "safe" | "finalized";
+  block?: Pick<
+    RuntimeBlock,
+    "number" | "hash" | "timestamp" | "transactionHash"
+  >;
 };
 
 export function insertMutation(
@@ -54,12 +63,18 @@ export function updateMutationLifecycle(
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
     const columns = getColumns(table);
-    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
-    const idColumn = columns.id!;
+    const idColumn = (columns as Record<"id", PgColumn>).id;
 
     const set: Record<string, unknown> =
       mutation.status === "included"
-        ? { status: mutation.status, includedAt: sql`NOW()` }
+        ? {
+            status: mutation.status,
+            blockNumber: mutation.block?.number.toString(),
+            blockHash: mutation.block?.hash,
+            blockTimestamp: mutation.block?.timestamp.toString(),
+            transactionHash: mutation.block?.transactionHash,
+            includedAt: sql`NOW()`,
+          }
         : mutation.status === "safe"
           ? { status: mutation.status, safeAt: sql`NOW()` }
           : { status: mutation.status, finalizedAt: sql`NOW()` };
@@ -109,8 +124,7 @@ export function selectKnownPaths(
   return Effect.gen(function* () {
     const table = getTable(schema, "known_paths");
     const columns = getColumns(table);
-    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
-    const pathColumn = columns.path!;
+    const pathColumn = (columns as Record<"path", PgColumn>).path;
 
     const rows = yield* tx
       .select({ path: pathColumn })
@@ -127,12 +141,10 @@ export function selectAccountStorage(
   return Effect.gen(function* () {
     const table = getTable(schema, "slot_writes");
     const columns = getColumns(table);
-    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
-    const idColumn = columns.id!;
-    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
-    const slotColumn = columns.slot!;
-    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
-    const valueColumn = columns.value!;
+    const dynamicColumns = columns as Record<"id" | "slot" | "value", PgColumn>;
+    const idColumn = dynamicColumns.id;
+    const slotColumn = dynamicColumns.slot;
+    const valueColumn = dynamicColumns.value;
 
     const rows = yield* tx
       .selectDistinctOn([slotColumn], {

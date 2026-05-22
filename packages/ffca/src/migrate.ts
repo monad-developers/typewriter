@@ -104,8 +104,9 @@ function deleteUnsettledMutations(
     const { slot_writes: slotWritesTable } = schema;
     const slotWritesColumns =
       slotWritesTable === undefined ? undefined : getColumns(slotWritesTable);
-    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
-    const mutationIdColumn = slotWritesColumns?.mutationId;
+    const mutationIdColumn = (
+      slotWritesColumns as Record<"mutationId", PgColumn> | undefined
+    )?.mutationId;
 
     const mutationTables = Object.values(schema).filter((table) => {
       if (!isTable(table)) return false;

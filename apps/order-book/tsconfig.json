@@ -18,6 +18,7 @@
     "noPropertyAccessFromIndexSignature": false,
     "baseUrl": ".",
     "paths": {
+      "abipg": ["../../packages/abipg/src/index.ts"],
       "ffca": ["../../packages/ffca/src/index.ts"],
       "evm": ["../../packages/evm/src/index.ts"],
       "order-book-sdk": ["./sdk/index.ts"],

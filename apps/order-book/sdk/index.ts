@@ -222,6 +222,27 @@ export const EXCHANGE_ABI = [
     outputs: [],
     stateMutability: "nonpayable",
   },
+  {
+    type: "event",
+    name: "ForceInclusionQueued",
+    inputs: [
+      { name: "index", type: "uint256", indexed: false },
+      { name: "mutation", type: "uint8", indexed: false },
+      { name: "mutationData", type: "bytes", indexed: false },
+      {
+        name: "sig",
+        type: "tuple",
+        indexed: false,
+        components: [
+          { name: "account", type: "bytes32" },
+          { name: "keyId", type: "uint64" },
+          { name: "rawSignature", type: "bytes" },
+        ],
+      },
+      { name: "enqueuedBlock", type: "uint256", indexed: false },
+    ],
+    anonymous: false,
+  },
   { type: "error", name: "AlreadyInitialized", inputs: [] },
   { type: "error", name: "AlreadyExecuted", inputs: [] },
   { type: "error", name: "AmountNotLotMultiple", inputs: [] },

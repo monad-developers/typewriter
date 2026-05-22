@@ -1,33 +1,28 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { Effect } from "effect";
 import { createFFCA } from "ffca";
 import { EXCHANGE_ABI } from "order-book-sdk";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
+  baseMutations,
   createKnownPriceLevels,
-  loadOrderBookState,
   normalizeSignatureForContract,
   ORDER_BOOK_SEQUENCE,
   type OrderBookMutationName,
   type OrderBookSignature,
-  persistedMutations,
-  projectAcceptedMutation,
   type SubmittedOrderBookMutation,
 } from "./app";
-import { APP_SCHEMA } from "./app-schema";
+import { applyDeploymentSchema } from "./app-schema";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
 import {
   loadBlock,
   loadMutationByAccountNonce,
   loadMutationById,
-  loadMutationsByAccount,
   loadMutationsByBlock,
   type QueryDatabase,
 } from "./db-queries";
-import type { State } from "./exchange";
 import { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 if (process.env.DEPLOYER_PRIVATE_KEY === undefined) {
@@ -46,7 +41,6 @@ const readerConnection = new Bun.SQL({
   max: 25,
 });
 const knownPriceLevels = createKnownPriceLevels();
-let state: State<bigint> = { accounts: {}, instruments: {} };
 
 const app = await createFFCA({
   address: EXCHANGE_ADDRESS,
@@ -57,37 +51,14 @@ const app = await createFFCA({
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
   database,
-  state: {
-    schema: APP_SCHEMA,
-    load: (tx) =>
-      Effect.map(loadOrderBookState(tx, knownPriceLevels), (loaded) => {
-        state = loaded;
-        return loaded;
-      }),
-  },
   sequence: ORDER_BOOK_SEQUENCE,
-  mutations: persistedMutations(knownPriceLevels),
+  mutations: baseMutations(knownPriceLevels),
 });
+applyDeploymentSchema(CHAIN.id, EXCHANGE_ADDRESS);
 
-app.on("mutation", (mutation) => {
-  if (mutation.status === "accepted") {
-    projectAcceptedMutation(
-      state,
-      mutation as Parameters<typeof projectAcceptedMutation>[1],
-      knownPriceLevels,
-    );
-  }
-});
-
-// FFCA's startup mutates the imported `schema.*` tables in place with the
-// per-deployment Postgres schema qualifier (see ffca's `updateSchema`), so by
-// the time we build this read-side Drizzle handle the table references point
-// at the right namespace.
 const readerDb: QueryDatabase = drizzle({
   client: readerConnection,
 });
-
-const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 
 type MutationStatus =
   | "submitted"
@@ -126,10 +97,6 @@ type RuntimeMutation = {
 };
 
 const textEncoder = new TextEncoder();
-
-function currentState(): State<bigint> {
-  return state;
-}
 
 function mutationType(name: string): string {
   return `${name[0]?.toLowerCase() ?? ""}${name.slice(1)}`;
@@ -365,7 +332,7 @@ async function submit(
     const result = await app.execute({
       name,
       args: buildArgs(body),
-      signature: normalizeSignatureForContract(currentState(), signature),
+      signature: normalizeSignatureForContract(signature),
     });
     const response: Record<string, unknown> = {
       id: result.id,
@@ -391,92 +358,6 @@ async function submit(
       { status: 400 },
     );
   }
-}
-
-function accountByParam(
-  idParam: string,
-): { account: Hex; serial: number | null } | null {
-  const accounts = Object.keys(currentState().accounts) as Hex[];
-  if (/^\d+$/.test(idParam)) {
-    const index = Number(idParam) - 1;
-    const account = accounts[index];
-    return account === undefined ? null : { account, serial: index + 1 };
-  }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(idParam)) return null;
-  const serial = accounts.indexOf(idParam as Hex);
-  return { account: idParam as Hex, serial: serial === -1 ? null : serial + 1 };
-}
-
-function accountOrders(account: Hex, instrumentId?: number) {
-  const orders = currentState().accounts[account]?.orders ?? [];
-  return orders
-    .map((order, orderId) => ({
-      orderId,
-      quantity: order.quantity.toString(),
-      instrumentId: order.instrumentId,
-      price: order.price.toString(),
-      tickVolume: order.tickVolume,
-      side: order.side,
-    }))
-    .filter(
-      (order) =>
-        instrumentId === undefined || order.instrumentId === instrumentId,
-    );
-}
-
-function priceSummary(instrumentId: number) {
-  const instrument = currentState().instruments[instrumentId];
-  if (instrument === undefined) return null;
-  const bidPrices = Object.entries(instrument.bids)
-    .filter(([, tick]) => tick.remainingQuantity > 0n)
-    .map(([price]) => Number(price));
-  const askPrices = Object.entries(instrument.asks)
-    .filter(([, tick]) => tick.remainingQuantity > 0n)
-    .map(([price]) => Number(price));
-  const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
-  const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
-  const price =
-    bestBid !== null && bestAsk !== null
-      ? Math.round((bestBid + bestAsk) / 2)
-      : (bestBid ?? bestAsk);
-  return {
-    instrumentId,
-    price,
-    bestBid,
-    bestAsk,
-    spread: bestBid !== null && bestAsk !== null ? bestAsk - bestBid : null,
-  };
-}
-
-function estimateMarket(params: {
-  instrumentId: number;
-  side: "buy" | "sell";
-  quantityLots: bigint;
-}) {
-  const instrument = currentState().instruments[params.instrumentId];
-  if (instrument === undefined) return null;
-  const ticks = params.side === "buy" ? instrument.asks : instrument.bids;
-  const prices = Object.keys(ticks)
-    .map(Number)
-    .filter((price) => ticks[price]!.remainingQuantity > 0n)
-    .sort((a, b) => (params.side === "buy" ? a - b : b - a));
-  let remainingLots = params.quantityLots;
-  let quoteLots = 0n;
-  const fills: { quantity: string; price: number }[] = [];
-  for (const price of prices) {
-    if (remainingLots === 0n) break;
-    const available = ticks[price]!.remainingQuantity;
-    const fillLots = remainingLots < available ? remainingLots : available;
-    quoteLots += (fillLots * BigInt(price)) >> 32n;
-    remainingLots -= fillLots;
-    fills.push({ quantity: fillLots.toString(), price });
-  }
-  if (remainingLots > 0n) return { error: "insufficient liquidity" };
-  return {
-    fills,
-    filledQuantity: params.quantityLots.toString(),
-    quoteQuantity: quoteLots.toString(),
-  };
 }
 
 serve({
@@ -658,255 +539,50 @@ serve({
       },
     },
     "/api/account/:id/orders": {
-      GET: (req) => {
-        const account = accountByParam(req.params.id)?.account;
-        if (
-          account === undefined ||
-          currentState().accounts[account] === undefined
-        ) {
-          return json({ error: "account not found" }, { status: 404 });
-        }
-        const instrumentIdParam = new URL(req.url).searchParams.get(
-          "instrumentId",
-        );
-        const instrumentId =
-          instrumentIdParam !== null && /^\d+$/.test(instrumentIdParam)
-            ? Number(instrumentIdParam)
-            : undefined;
-        return json({ orders: accountOrders(account, instrumentId) });
-      },
+      GET: () =>
+        notImplemented(
+          "TODO: serve account orders from ffca storage/read model.",
+        ),
     },
     "/api/account/:id/exists": {
-      GET: (req) => {
-        const account = accountByParam(req.params.id)?.account;
-        const accountState =
-          account === undefined ? undefined : currentState().accounts[account];
-        return json({
-          exists: accountState !== undefined,
-          hasKeys: accountState !== undefined && accountState.keys.length > 0,
-        });
-      },
+      GET: () =>
+        notImplemented(
+          "TODO: serve account existence from ffca storage/read model.",
+        ),
     },
     "/api/account/:id": {
-      GET: async (req) => {
-        const resolved = accountByParam(req.params.id);
-        if (resolved === null) {
-          return json({ error: "Invalid account address" }, { status: 400 });
-        }
-        const accountState = currentState().accounts[resolved.account];
-        if (accountState === undefined) {
-          return json({ error: "account not found" }, { status: 404 });
-        }
-        const balances: Record<string, string> = {};
-        for (const [asset, amount] of Object.entries(accountState.balances)) {
-          balances[asset] = amount.toString();
-        }
-        const nonces: Record<string, string> = {};
-        for (const [nonceKey, sequence] of Object.entries(
-          accountState.nonces,
-        )) {
-          nonces[nonceKey] = sequence.toString();
-        }
-        const mutations = await loadMutationsByAccount(
-          readerDb,
-          resolved.account,
-          ACCOUNT_MUTATION_HISTORY_LIMIT,
-        );
-        return json({
-          address: resolved.account,
-          serial: resolved.serial,
-          keys: accountState.keys,
-          nonces,
-          orders: accountOrders(resolved.account),
-          balances,
-          mutations,
-        });
-      },
+      GET: () =>
+        notImplemented(
+          "TODO: serve account state from ffca storage/read model.",
+        ),
     },
     "/api/balances": {
-      GET: (req) => {
-        const account = new URL(req.url).searchParams.get(
-          "account",
-        ) as Hex | null;
-        if (account === null) {
-          return json(
-            { error: "account query parameter required" },
-            { status: 400 },
-          );
-        }
-        const accountState = currentState().accounts[account];
-        if (accountState === undefined) {
-          return json({ error: "account not found" }, { status: 404 });
-        }
-        const balances: Record<string, string> = {};
-        for (const [asset, balance] of Object.entries(accountState.balances)) {
-          balances[asset] = balance.toString();
-        }
-        return json({ account, balances });
-      },
+      GET: () =>
+        notImplemented("TODO: serve balances from ffca storage/read model."),
     },
     "/api/price": {
-      GET: (req) => {
-        const instrumentId = new URL(req.url).searchParams.get("instrumentId");
-        if (instrumentId === null) {
-          return json(
-            { error: "instrumentId query parameter required" },
-            { status: 400 },
-          );
-        }
-        const summary = priceSummary(Number(instrumentId));
-        if (summary === null) {
-          return json({ error: "instrument not found" }, { status: 404 });
-        }
-        return json(summary);
-      },
+      GET: () =>
+        notImplemented("TODO: serve price from ffca storage/read model."),
     },
     "/api/depth": {
-      GET: (req) => {
-        const instrumentIdParam = new URL(req.url).searchParams.get(
-          "instrumentId",
-        );
-        if (instrumentIdParam === null) {
-          return json(
-            { error: "instrumentId query parameter required" },
-            { status: 400 },
-          );
-        }
-        const instrumentId = Number(instrumentIdParam);
-        const instrument = currentState().instruments[instrumentId];
-        const summary = priceSummary(instrumentId);
-        if (instrument === undefined || summary === null) {
-          return json({ error: "instrument not found" }, { status: 404 });
-        }
-        const mid = summary.price;
-        const bids: Record<number, string> = {};
-        const asks: Record<number, string> = {};
-        for (const bp of [1, 5, 25] as const) {
-          let bidTotal = 0n;
-          let askTotal = 0n;
-          if (mid !== null) {
-            for (const [price, tick] of Object.entries(instrument.bids)) {
-              if (Number(price) >= mid * (1 - bp / 10_000)) {
-                bidTotal += tick.remainingQuantity;
-              }
-            }
-            for (const [price, tick] of Object.entries(instrument.asks)) {
-              if (Number(price) <= mid * (1 + bp / 10_000)) {
-                askTotal += tick.remainingQuantity;
-              }
-            }
-          }
-          bids[bp] = bidTotal.toString();
-          asks[bp] = askTotal.toString();
-        }
-        return json({ instrumentId, bids, asks });
-      },
+      GET: () =>
+        notImplemented("TODO: serve depth from ffca storage/read model."),
     },
     "/api/ticks": {
-      POST: async (req) => {
-        const body = (await req.json()) as {
-          instrumentId?: number;
-          queries?: { side: "buy" | "sell"; priceQ32: string }[];
-        };
-        if (
-          typeof body.instrumentId !== "number" ||
-          !Array.isArray(body.queries)
-        ) {
-          return json(
-            { error: "instrumentId and queries required" },
-            { status: 400 },
-          );
-        }
-        const instrument = currentState().instruments[body.instrumentId];
-        if (instrument === undefined) {
-          return json({ error: "instrument not found" }, { status: 404 });
-        }
-        return json({
-          ticks: body.queries.map((query) => {
-            const side =
-              query.side === "buy" ? instrument.bids : instrument.asks;
-            const tick = side[Number(query.priceQ32)];
-            return tick === undefined
-              ? null
-              : {
-                  quantity: tick.quantity.toString(),
-                  remainingQuantity: tick.remainingQuantity.toString(),
-                  volume: tick.volume,
-                };
-          }),
-        });
-      },
+      POST: () =>
+        notImplemented("TODO: serve ticks from ffca storage/read model."),
     },
     "/api/estimate-market-order": {
-      GET: (req) => {
-        const url = new URL(req.url);
-        const instrumentId = url.searchParams.get("instrumentId");
-        const side = url.searchParams.get("side");
-        const quantity = url.searchParams.get("quantity");
-        if (
-          instrumentId === null ||
-          quantity === null ||
-          (side !== "buy" && side !== "sell")
-        ) {
-          return json(
-            { error: "instrumentId, side, and quantity required" },
-            { status: 400 },
-          );
-        }
-        const estimate = estimateMarket({
-          instrumentId: Number(instrumentId),
-          side,
-          quantityLots: BigInt(quantity),
-        });
-        if (estimate === null) {
-          return json({ error: "instrument not found" }, { status: 404 });
-        }
-        if ("error" in estimate) return json(estimate, { status: 400 });
-        return json(estimate);
-      },
+      GET: () =>
+        notImplemented(
+          "TODO: serve market estimates from ffca storage/read model.",
+        ),
     },
     "/api/estimate-fill-to-price": {
-      GET: (req) => {
-        const url = new URL(req.url);
-        const instrumentId = url.searchParams.get("instrumentId");
-        const side = url.searchParams.get("side");
-        const priceQ32 = url.searchParams.get("priceQ32");
-        if (
-          instrumentId === null ||
-          priceQ32 === null ||
-          (side !== "buy" && side !== "sell")
-        ) {
-          return json(
-            { error: "instrumentId, side, and priceQ32 required" },
-            { status: 400 },
-          );
-        }
-        const instrument = currentState().instruments[Number(instrumentId)];
-        if (instrument === undefined) {
-          return json({ error: "instrument not found" }, { status: 404 });
-        }
-        const anchor = Number(priceQ32);
-        const ticks = side === "buy" ? instrument.asks : instrument.bids;
-        const prices = Object.keys(ticks)
-          .map(Number)
-          .filter((price) => ticks[price]!.remainingQuantity > 0n)
-          .sort((a, b) => (side === "buy" ? a - b : b - a));
-        let totalQuantity = 0n;
-        let quoteQuantity = 0n;
-        const fills: { quantity: string; price: number }[] = [];
-        for (const price of prices) {
-          if (side === "buy" ? price > anchor : price < anchor) break;
-          const quantityAtPrice = ticks[price]!.remainingQuantity;
-          totalQuantity += quantityAtPrice;
-          quoteQuantity += (quantityAtPrice * BigInt(price)) >> 32n;
-          fills.push({ quantity: quantityAtPrice.toString(), price });
-        }
-        return json({
-          fills,
-          totalQuantity: totalQuantity.toString(),
-          quoteQuantity: quoteQuantity.toString(),
-        });
-      },
+      GET: () =>
+        notImplemented(
+          "TODO: serve fill estimates from ffca storage/read model.",
+        ),
     },
     "/health": {
       GET: () => Response.json({ ok: true }),

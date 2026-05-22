@@ -1,15 +1,9 @@
 // Read-side query helpers for the order-book HTTP API.
 //
-// FFCA's persistence model is denormalized: there is no central `mutations`,
-// `bundles`, or `blocks` table. Every per-mutation table spreads
-// `mutationColumns()` (id, bundleId, bundlePosition, blockNumber, blockHash,
-// blockTimestamp, transactionHash, status, acceptedAt, includedAt, safeAt,
-// finalizedAt) plus app-owned signature columns and payload
-// columns. To answer queries that span mutation types (list by block, lookup
-// by id, lookup by (account, nonce)), we fan out across all per-type tables
-// in parallel and merge the results app-side.
+// FFCA persists one generated table per mutation type. To answer API queries
+// that span mutation types, fan out across those tables and merge app-side.
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { Hex } from "viem";
@@ -64,9 +58,9 @@ const SHARED_COLUMNS = new Set<string>([
   "includedAt",
   "safeAt",
   "finalizedAt",
-  "account",
-  "keyId",
-  "rawSignature",
+  "signatureAccount",
+  "signatureKeyId",
+  "signatureRawSignature",
 ]);
 
 type MutationRow = {
@@ -82,9 +76,9 @@ type MutationRow = {
   includedAt: Date | null;
   safeAt: Date | null;
   finalizedAt: Date | null;
-  account: string;
-  keyId: bigint;
-  rawSignature: string;
+  signatureAccount: string;
+  signatureKeyId: string;
+  signatureRawSignature: string;
   // Payload-specific columns vary by table; widened to any here. Each
   // descriptor's `projectPayload` handles the per-type field projection.
   // biome-ignore lint/suspicious/noExplicitAny: per-type payload columns differ
@@ -98,7 +92,7 @@ type TableDescriptor = {
   hasNonce: boolean;
   // Returns the per-type payload object. Strips shared mutation columns and
   // stringifies bigints to keep the JSON response stable across mutation
-  // types. `marketOrder` overrides this to also fetch fills.
+  // types.
   // biome-ignore lint/suspicious/noExplicitAny: per-type row shapes differ
   projectPayload: (row: MutationRow) => any;
 };
@@ -158,7 +152,6 @@ const TABLES: TableDescriptor[] = [
     type: "marketOrder",
     table: schema.marketOrders,
     hasNonce: true,
-    // Fills are stitched in after the per-type fanout; see fetchMarketFills.
     projectPayload: stripShared,
   },
   {
@@ -192,7 +185,6 @@ function buildApiMutation(
   descriptor: TableDescriptor,
   row: MutationRow,
   payload: unknown,
-  accountSerial: number | null,
 ): ApiMutation {
   return {
     id: row.id,
@@ -200,9 +192,10 @@ function buildApiMutation(
     bundlePosition: row.bundlePosition,
     blockNumber: row.blockNumber,
     status: row.status,
-    account: row.account as Hex,
-    accountSerial,
-    keyIndex: row.keyId !== null ? row.keyId.toString() : null,
+    account: row.signatureAccount as Hex,
+    accountSerial: null,
+    keyIndex:
+      row.signatureKeyId !== null ? row.signatureKeyId.toString() : null,
     nonce:
       descriptor.hasNonce && row.nonce !== undefined && row.nonce !== null
         ? typeof row.nonce === "bigint"
@@ -226,71 +219,19 @@ function buildApiMutation(
   };
 }
 
-async function loadAccountSerials(
-  db: QueryDatabase,
-  accounts: string[],
-): Promise<Map<string, number>> {
-  const unique = [...new Set(accounts)];
-  if (unique.length === 0) return new Map();
-  const rows = await db
-    .select({ id: schema.accounts.id, serial: schema.accounts.serial })
-    .from(schema.accounts)
-    .where(inArray(schema.accounts.id, unique));
-  const out = new Map<string, number>();
-  for (const r of rows) out.set(r.id, r.serial);
-  return out;
-}
-
-async function fetchMarketFills(
-  db: QueryDatabase,
-  marketOrderIds: number[],
-): Promise<Map<number, { quantity: string; price: string }[]>> {
-  const result = new Map<number, { quantity: string; price: string }[]>();
-  if (marketOrderIds.length === 0) return result;
-  const rows = await db
-    .select()
-    .from(schema.fills)
-    .where(inArray(schema.fills.marketOrderId, marketOrderIds))
-    .orderBy(asc(schema.fills.marketOrderId), asc(schema.fills.fillIndex));
-  for (const r of rows) {
-    const list = result.get(r.marketOrderId) ?? [];
-    list.push({
-      quantity: r.quantity.toString(),
-      price: r.price.toString(),
-    });
-    result.set(r.marketOrderId, list);
-  }
-  return result;
-}
-
 async function assembleMutations(
-  db: QueryDatabase,
+  _db: QueryDatabase,
   typed: Typed<MutationRow>[],
 ): Promise<ApiMutation[]> {
   if (typed.length === 0) return [];
-
-  const accountSerials = await loadAccountSerials(
-    db,
-    typed.map((t) => t.row.account),
-  );
-
-  const marketIds = typed
-    .filter((t) => t.descriptor.type === "marketOrder")
-    .map((t) => t.row.id);
-  const fillsByMarket = await fetchMarketFills(db, marketIds);
 
   return typed.map((t) => {
     const basePayload = t.descriptor.projectPayload(t.row);
     const payload =
       t.descriptor.type === "marketOrder"
-        ? { ...basePayload, fills: fillsByMarket.get(t.row.id) ?? [] }
+        ? { ...basePayload, fills: t.row.resolutionFills ?? [] }
         : basePayload;
-    return buildApiMutation(
-      t.descriptor,
-      t.row,
-      payload,
-      accountSerials.get(t.row.account) ?? null,
-    );
+    return buildApiMutation(t.descriptor, t.row, payload);
   });
 }
 
@@ -395,7 +336,7 @@ export async function loadMutationByAccountNonce(
         .from(descriptor.table as PgTable)
         .where(
           and(
-            eq(descriptor.table.account, account),
+            eq(descriptor.table.signatureAccount, account),
             eq(descriptor.table.nonce, nonce),
           ),
         )
@@ -419,7 +360,7 @@ export async function loadMutationsByAccount(
       const rows = (await db
         .select()
         .from(descriptor.table as PgTable)
-        .where(eq(descriptor.table.account, account))
+        .where(eq(descriptor.table.signatureAccount, account))
         .orderBy(desc(descriptor.table.id))
         .limit(limit)) as MutationRow[];
       return rows.map((row) => ({ descriptor, row }));
