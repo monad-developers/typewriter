@@ -51,6 +51,6 @@ Frontend uses `Bun.serve` + HTML imports, no Vite. Entry is `frontend/index.html
 
 ## Gotchas
 
-- A new mutation type touches `contracts/src/Exchange.sol`, EIP-712 types in `sdk/index.ts`, `src/app-schema.ts`, mutation config/persistence in `src/app.ts`, HTTP/read model wiring in `src/index.ts`, and frontend builders/renderers.
+- A new mutation type touches `contracts/src/Exchange.sol`, EIP-712 types in `sdk/index.ts`, mutation config in `src/app.ts` (`order_book_mutations`), HTTP/read model wiring in `src/index.ts`, and frontend builders/renderers. FFCA generates the per-mutation persistence schema from `order_book_mutations`; the app accesses it through `app.schema`.
 - Keep contract changes in `contracts/src` source-compatible with active tests in `contracts/test` where possible.
 - Do not reintroduce app-specific code into `packages/ffca`.

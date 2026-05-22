@@ -6,8 +6,13 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
+import type { FFCAConfig, FFCASchema } from "ffca";
 import type { Hex } from "viem";
-import * as schema from "./app-schema";
+import type { ORDER_BOOK_MUTATIONS } from "./app";
+
+export type OrderBookSchema = FFCASchema<
+  FFCAConfig & { mutations: typeof ORDER_BOOK_MUTATIONS }
+>;
 
 export type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
 
@@ -20,7 +25,6 @@ export type ApiMutation = {
   blockNumber: string | null;
   status: ApiMutationStatus;
   account: Hex;
-  accountSerial: number | null;
   keyIndex: string | null;
   nonce: string | null;
   deadline: string | null;
@@ -42,9 +46,9 @@ export type BlockInfo = {
   timestamp: string;
 };
 
-// Columns shared across every per-mutation table via `mutationColumns()` +
-// `signatureColumns`. Stripped from each row before being returned as the
-// `payload` field so consumers see only per-type fields.
+// Columns shared across every per-mutation table via FFCA's mutationColumns()
+// and signature column helpers. Stripped from each row before being returned
+// as the `payload` field so consumers see only per-type fields.
 const SHARED_COLUMNS = new Set<string>([
   "id",
   "bundleId",
@@ -58,27 +62,30 @@ const SHARED_COLUMNS = new Set<string>([
   "includedAt",
   "safeAt",
   "finalizedAt",
-  "signatureAccount",
-  "signatureKeyId",
-  "signatureRawSignature",
+  "signature_account",
+  "signature_keyId",
+  "signature_rawSignature",
 ]);
 
 type MutationRow = {
   id: number;
   bundleId: number | null;
   bundlePosition: number | null;
-  blockNumber: string | null;
+  // FFCA's `mutationColumns` declares `blockNumber` / `blockTimestamp` as
+  // `numeric(78,0)` in bigint mode, so the read-side gets a JS `bigint` (or
+  // `null` when not yet included). `signature_keyId` is `uint64`, also bigint.
+  blockNumber: bigint | null;
   blockHash: string | null;
-  blockTimestamp: string | null;
+  blockTimestamp: bigint | null;
   transactionHash: string | null;
   status: ApiMutationStatus;
   acceptedAt: Date | null;
   includedAt: Date | null;
   safeAt: Date | null;
   finalizedAt: Date | null;
-  signatureAccount: string;
-  signatureKeyId: string;
-  signatureRawSignature: string;
+  signature_account: string;
+  signature_keyId: bigint;
+  signature_rawSignature: string;
   // Payload-specific columns vary by table; widened to any here. Each
   // descriptor's `projectPayload` handles the per-type field projection.
   // biome-ignore lint/suspicious/noExplicitAny: per-type payload columns differ
@@ -86,20 +93,46 @@ type MutationRow = {
 };
 
 type TableDescriptor = {
+  // camelCase type name surfaced on the wire (matches SSE `mutationType()`).
   type: string;
-  // biome-ignore lint/suspicious/noExplicitAny: descriptors must hold any per-type pgTable
-  table: any;
+  // FFCA's lowercased schema key: e.g. `initialize_mutations`.
+  schemaKey: keyof OrderBookSchema;
   hasNonce: boolean;
-  // Returns the per-type payload object. Strips shared mutation columns and
-  // stringifies bigints to keep the JSON response stable across mutation
-  // types.
-  // biome-ignore lint/suspicious/noExplicitAny: per-type row shapes differ
-  projectPayload: (row: MutationRow) => any;
 };
 
-// biome-ignore lint/suspicious/noExplicitAny: same reason as above
+// Maps wire `type` (camelCase) → FFCA-generated schema key (lowercased plural).
+const TABLES: TableDescriptor[] = [
+  { type: "initialize", schemaKey: "initialize_mutations", hasNonce: false },
+  { type: "authorize", schemaKey: "authorize_mutations", hasNonce: true },
+  { type: "revoke", schemaKey: "revoke_mutations", hasNonce: true },
+  { type: "closeOrder", schemaKey: "closeorder_mutations", hasNonce: true },
+  { type: "changeOrder", schemaKey: "changeorder_mutations", hasNonce: true },
+  { type: "limitOrder", schemaKey: "limitorder_mutations", hasNonce: true },
+  { type: "marketOrder", schemaKey: "marketorder_mutations", hasNonce: true },
+  {
+    type: "addInstrument",
+    schemaKey: "addinstrument_mutations",
+    hasNonce: true,
+  },
+  { type: "deposit", schemaKey: "deposit_mutations", hasNonce: true },
+  { type: "withdrawal", schemaKey: "withdrawal_mutations", hasNonce: true },
+];
+
+type ResolvedDescriptor = TableDescriptor & {
+  // biome-ignore lint/suspicious/noExplicitAny: per-type pgTable shapes differ
+  table: any;
+};
+
+function resolveTables(schema: OrderBookSchema): ResolvedDescriptor[] {
+  return TABLES.map((descriptor) => ({
+    ...descriptor,
+    table: schema[descriptor.schemaKey],
+  }));
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: per-type payload columns differ
 function stripShared(row: MutationRow): Record<string, any> {
-  // biome-ignore lint/suspicious/noExplicitAny: see TableDescriptor
+  // biome-ignore lint/suspicious/noExplicitAny: see MutationRow
   const payload: Record<string, any> = {};
   for (const [key, value] of Object.entries(row)) {
     if (SHARED_COLUMNS.has(key)) continue;
@@ -108,73 +141,7 @@ function stripShared(row: MutationRow): Record<string, any> {
   return payload;
 }
 
-// Descriptors are keyed by the same camelCase strings used by SSE
-// (`mutationType()` in src/index.ts). Adding a new mutation type means
-// registering it here too, alongside the per-type table.
-const TABLES: TableDescriptor[] = [
-  {
-    type: "initialize",
-    table: schema.initializes,
-    hasNonce: false,
-    projectPayload: stripShared,
-  },
-  {
-    type: "authorize",
-    table: schema.authorizes,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "revoke",
-    table: schema.revokes,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "closeOrder",
-    table: schema.closeOrders,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "changeOrder",
-    table: schema.changeOrders,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "limitOrder",
-    table: schema.limitOrders,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "marketOrder",
-    table: schema.marketOrders,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "addInstrument",
-    table: schema.addInstruments,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "deposit",
-    table: schema.deposits,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-  {
-    type: "withdrawal",
-    table: schema.withdrawals,
-    hasNonce: true,
-    projectPayload: stripShared,
-  },
-];
-
-type Typed<T> = { descriptor: TableDescriptor; row: T };
+type Typed<T> = { descriptor: ResolvedDescriptor; row: T };
 
 function toIso(value: Date | string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
@@ -182,20 +149,19 @@ function toIso(value: Date | string | null | undefined): string | null {
 }
 
 function buildApiMutation(
-  descriptor: TableDescriptor,
+  descriptor: ResolvedDescriptor,
   row: MutationRow,
   payload: unknown,
 ): ApiMutation {
+  const keyId = row.signature_keyId;
   return {
     id: row.id,
     bundleId: row.bundleId,
     bundlePosition: row.bundlePosition,
-    blockNumber: row.blockNumber,
+    blockNumber: row.blockNumber === null ? null : row.blockNumber.toString(),
     status: row.status,
-    account: row.signatureAccount as Hex,
-    accountSerial: null,
-    keyIndex:
-      row.signatureKeyId !== null ? row.signatureKeyId.toString() : null,
+    account: row.signature_account as Hex,
+    keyIndex: keyId === null || keyId === undefined ? null : keyId.toString(),
     nonce:
       descriptor.hasNonce && row.nonce !== undefined && row.nonce !== null
         ? typeof row.nonce === "bigint"
@@ -219,17 +185,14 @@ function buildApiMutation(
   };
 }
 
-async function assembleMutations(
-  _db: QueryDatabase,
-  typed: Typed<MutationRow>[],
-): Promise<ApiMutation[]> {
+function assembleMutations(typed: Typed<MutationRow>[]): ApiMutation[] {
   if (typed.length === 0) return [];
 
   return typed.map((t) => {
-    const basePayload = t.descriptor.projectPayload(t.row);
+    const basePayload = stripShared(t.row);
     const payload =
       t.descriptor.type === "marketOrder"
-        ? { ...basePayload, fills: t.row.resolutionFills ?? [] }
+        ? { ...basePayload, fills: t.row.resolution_fills ?? [] }
         : basePayload;
     return buildApiMutation(t.descriptor, t.row, payload);
   });
@@ -252,10 +215,13 @@ function sortByBundleOrder(a: ApiMutation, b: ApiMutation): number {
 // such blocks today.
 export async function loadBlock(
   db: QueryDatabase,
+  schema: OrderBookSchema,
   blockNumber: string,
 ): Promise<BlockInfo | null> {
+  const tables = resolveTables(schema);
+  const filter = BigInt(blockNumber);
   const results = await Promise.all(
-    TABLES.map((descriptor) =>
+    tables.map((descriptor) =>
       db
         .select({
           blockNumber: descriptor.table.blockNumber,
@@ -263,12 +229,14 @@ export async function loadBlock(
           blockTimestamp: descriptor.table.blockTimestamp,
         })
         .from(descriptor.table as PgTable)
-        .where(eq(descriptor.table.blockNumber, blockNumber))
+        .where(eq(descriptor.table.blockNumber, filter))
         .limit(1),
     ),
   );
   for (const rows of results) {
-    const row = rows[0];
+    const row = rows[0] as
+      | { blockNumber: bigint; blockHash: string; blockTimestamp: bigint }
+      | undefined;
     if (
       row !== undefined &&
       row.blockNumber !== null &&
@@ -276,9 +244,9 @@ export async function loadBlock(
       row.blockTimestamp !== null
     ) {
       return {
-        number: row.blockNumber,
+        number: row.blockNumber.toString(),
         hash: row.blockHash,
-        timestamp: row.blockTimestamp,
+        timestamp: row.blockTimestamp.toString(),
       };
     }
   }
@@ -287,28 +255,31 @@ export async function loadBlock(
 
 export async function loadMutationsByBlock(
   db: QueryDatabase,
+  schema: OrderBookSchema,
   blockNumber: string,
 ): Promise<ApiMutation[]> {
+  const tables = resolveTables(schema);
+  const filter = BigInt(blockNumber);
   const perTable = await Promise.all(
-    TABLES.map(async (descriptor) => {
+    tables.map(async (descriptor) => {
       const rows = (await db
         .select()
         .from(descriptor.table as PgTable)
-        .where(eq(descriptor.table.blockNumber, blockNumber))) as MutationRow[];
+        .where(eq(descriptor.table.blockNumber, filter))) as MutationRow[];
       return rows.map((row) => ({ descriptor, row }));
     }),
   );
-  const typed = perTable.flat();
-  const mutations = await assembleMutations(db, typed);
-  return mutations.sort(sortByBundleOrder);
+  return assembleMutations(perTable.flat()).sort(sortByBundleOrder);
 }
 
 export async function loadMutationById(
   db: QueryDatabase,
+  schema: OrderBookSchema,
   id: number,
 ): Promise<ApiMutation | null> {
+  const tables = resolveTables(schema);
   const perTable = await Promise.all(
-    TABLES.map(async (descriptor) => {
+    tables.map(async (descriptor) => {
       const rows = (await db
         .select()
         .from(descriptor.table as PgTable)
@@ -319,16 +290,22 @@ export async function loadMutationById(
   );
   const typed = perTable.flat();
   if (typed.length === 0) return null;
-  const [first] = await assembleMutations(db, typed.slice(0, 1));
+  const [first] = assembleMutations(typed.slice(0, 1));
   return first ?? null;
 }
 
 export async function loadMutationByAccountNonce(
   db: QueryDatabase,
+  schema: OrderBookSchema,
   account: Hex,
   nonce: string,
 ): Promise<ApiMutation | null> {
-  const candidates = TABLES.filter((descriptor) => descriptor.hasNonce);
+  const candidates = resolveTables(schema).filter(
+    (descriptor) => descriptor.hasNonce,
+  );
+  // `nonce` is a `uint256` column in bigint mode; the filter literal needs to
+  // be a `bigint` so drizzle serializes it the same way the column was stored.
+  const filter = BigInt(nonce);
   const perTable = await Promise.all(
     candidates.map(async (descriptor) => {
       const rows = (await db
@@ -336,8 +313,8 @@ export async function loadMutationByAccountNonce(
         .from(descriptor.table as PgTable)
         .where(
           and(
-            eq(descriptor.table.signatureAccount, account),
-            eq(descriptor.table.nonce, nonce),
+            eq(descriptor.table.signature_account, account),
+            eq(descriptor.table.nonce, filter),
           ),
         )
         .limit(1)) as MutationRow[];
@@ -346,21 +323,23 @@ export async function loadMutationByAccountNonce(
   );
   const typed = perTable.flat();
   if (typed.length === 0) return null;
-  const [first] = await assembleMutations(db, typed.slice(0, 1));
+  const [first] = assembleMutations(typed.slice(0, 1));
   return first ?? null;
 }
 
 export async function loadMutationsByAccount(
   db: QueryDatabase,
+  schema: OrderBookSchema,
   account: Hex,
   limit: number,
 ): Promise<ApiMutation[]> {
+  const tables = resolveTables(schema);
   const perTable = await Promise.all(
-    TABLES.map(async (descriptor) => {
+    tables.map(async (descriptor) => {
       const rows = (await db
         .select()
         .from(descriptor.table as PgTable)
-        .where(eq(descriptor.table.signatureAccount, account))
+        .where(eq(descriptor.table.signature_account, account))
         .orderBy(desc(descriptor.table.id))
         .limit(limit)) as MutationRow[];
       return rows.map((row) => ({ descriptor, row }));
@@ -369,6 +348,27 @@ export async function loadMutationsByAccount(
   const typed = perTable.flat();
   // Apply the global limit after the per-table top-N has been gathered.
   typed.sort((a, b) => b.row.id - a.row.id);
-  const top = typed.slice(0, limit);
-  return assembleMutations(db, top);
+  return assembleMutations(typed.slice(0, limit));
+}
+
+// Count mutations whose `acceptedAt` is within the last `windowMs` ms,
+// across all per-type tables. Used for the TPS gauge.
+export async function loadRecentMutationCount(
+  db: QueryDatabase,
+  schema: OrderBookSchema,
+  windowMs: number,
+): Promise<number> {
+  const tables = resolveTables(schema);
+  const cutoff = new Date(Date.now() - windowMs);
+  const counts = await Promise.all(
+    tables.map(async (descriptor) => {
+      const rows = await db
+        .select({ acceptedAt: descriptor.table.acceptedAt })
+        .from(descriptor.table as PgTable);
+      return rows.filter(
+        (row) => row.acceptedAt !== null && row.acceptedAt >= cutoff,
+      ).length;
+    }),
+  );
+  return counts.reduce((total, count) => total + count, 0);
 }

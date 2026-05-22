@@ -343,3 +343,5 @@ export function baseToQuote(
   const raw = quoteLots << BigInt(instrument.quoteLotExp);
   return TokenAmount.fromRaw(raw, instrument.quote);
 }
+
+export { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";

@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { createFFCA, type FFCA } from "ffca";
-import { EIP712_TYPES, EXCHANGE_ABI } from "order-book-sdk";
+import { createFFCA } from "ffca";
+import {
+  EIP712_TYPES,
+  EXCHANGE_ABI,
+  EXCHANGE_STORAGE_LAYOUT,
+} from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
@@ -15,14 +19,12 @@ import {
   TEST_RPC_URL,
 } from "../test/setup";
 import {
-  baseMutations,
   normalizeSignatureForContract,
+  ORDER_BOOK_MUTATIONS,
   ORDER_BOOK_SEQUENCE,
   type OrderBookMutationName,
   type SubmittedOrderBookMutation,
 } from "./app";
-import * as schema from "./app-schema";
-import { applyDeploymentSchema } from "./app-schema";
 import {
   loadBlock,
   loadMutationByAccountNonce,
@@ -31,13 +33,27 @@ import {
   loadMutationsByBlock,
 } from "./db-queries";
 import { ALL_PERMISSIONS } from "./exchange";
-import { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
 const Q32 = 1n << 32n;
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86_400);
-type OrderBookFFCA = FFCA<typeof EXCHANGE_STORAGE_LAYOUT>;
+type OrderBookFFCA = Awaited<ReturnType<typeof createOrderBookFFCA>>;
+
+async function createOrderBookFFCA(address: Hex) {
+  return createFFCA({
+    address,
+    domain: { name: "Exchange", version: "1" },
+    abi: EXCHANGE_ABI,
+    storageLayout: EXCHANGE_STORAGE_LAYOUT,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    database: { url: TEST_DB_URL, maxConnections: 4 },
+    sequence: ORDER_BOOK_SEQUENCE,
+    mutations: ORDER_BOOK_MUTATIONS,
+  });
+}
 
 function secp256k1PublicKey(address: Address): Hex {
   return encodeAbiParameters([{ type: "address" }], [address]);
@@ -226,18 +242,7 @@ async function waitForIncluded(
 
 test("ffca order book rejects invalid signatures before applying", async () => {
   const address = await deployExchange();
-  const app = await createFFCA({
-    address,
-    domain: { name: "Exchange", version: "1" },
-    abi: EXCHANGE_ABI,
-    storageLayout: EXCHANGE_STORAGE_LAYOUT,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    database: { url: TEST_DB_URL, maxConnections: 4 },
-    sequence: ORDER_BOOK_SEQUENCE,
-    mutations: baseMutations(),
-  });
+  const app = await createOrderBookFFCA(address);
 
   const maker = await setupAccount({
     app,
@@ -276,18 +281,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
 
 test("ffca order book changes an unfilled order to a new price", async () => {
   const address = await deployExchange();
-  const app = await createFFCA({
-    address,
-    domain: { name: "Exchange", version: "1" },
-    abi: EXCHANGE_ABI,
-    storageLayout: EXCHANGE_STORAGE_LAYOUT,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    database: { url: TEST_DB_URL, maxConnections: 4 },
-    sequence: ORDER_BOOK_SEQUENCE,
-    mutations: baseMutations(),
-  });
+  const app = await createOrderBookFFCA(address);
 
   const maker = await setupAccount({
     app,
@@ -373,19 +367,8 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
 test("db-queries fan out across per-mutation tables", async () => {
   const address = await deployExchange();
-  const app = await createFFCA({
-    address,
-    domain: { name: "Exchange", version: "1" },
-    abi: EXCHANGE_ABI,
-    storageLayout: EXCHANGE_STORAGE_LAYOUT,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    database: { url: TEST_DB_URL, maxConnections: 4 },
-    sequence: ORDER_BOOK_SEQUENCE,
-    mutations: baseMutations(),
-  });
-  applyDeploymentSchema(anvil.id, address);
+  const app = await createOrderBookFFCA(address);
+  const schema = app.schema;
   const db = drizzle({
     client: TEST_DB_CONNECTION,
   });
@@ -432,24 +415,35 @@ test("db-queries fan out across per-mutation tables", async () => {
     }),
   );
 
-  await waitForIncluded(db, schema.deposits, "deposit");
+  await waitForIncluded(db, schema.deposit_mutations, "deposit");
 
-  const [depositRow] = await db.select().from(schema.deposits).limit(1);
-  expect(depositRow).toBeDefined();
-  const blockNumber = depositRow!.blockNumber!;
+  const [depositRowRaw] = await db
+    .select()
+    .from(schema.deposit_mutations)
+    .limit(1);
+  expect(depositRowRaw).toBeDefined();
+  // FFCA returns numeric(78,0) columns as bigint (block number, block
+  // timestamp, etc.); the API layer stringifies them at the wire boundary.
+  const depositRow = depositRowRaw as unknown as {
+    id: number;
+    blockNumber: bigint;
+    blockHash: string;
+    blockTimestamp: bigint;
+  };
+  const blockNumber = depositRow.blockNumber.toString();
 
   // loadBlock: any per-type table referencing this block returns its metadata.
-  const block = await loadBlock(db, blockNumber);
+  const block = await loadBlock(db, schema, blockNumber);
   expect(block).toMatchObject({
     number: blockNumber,
-    hash: depositRow!.blockHash!,
-    timestamp: depositRow!.blockTimestamp!,
+    hash: depositRow.blockHash,
+    timestamp: depositRow.blockTimestamp.toString(),
   });
 
   // loadMutationById: globally unique id resolves through the right table.
-  const byId = await loadMutationById(db, depositRow!.id);
+  const byId = await loadMutationById(db, schema, depositRow.id);
   expect(byId).toMatchObject({
-    id: depositRow!.id,
+    id: depositRow.id,
     type: "deposit",
     status: "included",
     account: maker,
@@ -459,19 +453,24 @@ test("db-queries fan out across per-mutation tables", async () => {
   expect((byId?.payload as { asset: string; amount: string }).amount).toBe("7");
 
   // loadMutationByAccountNonce: looks across nonce-bearing tables.
-  const byAccountNonce = await loadMutationByAccountNonce(db, maker, "1");
-  expect(byAccountNonce?.id).toBe(depositRow!.id);
+  const byAccountNonce = await loadMutationByAccountNonce(
+    db,
+    schema,
+    maker,
+    "1",
+  );
+  expect(byAccountNonce?.id).toBe(depositRow.id);
 
   // loadMutationsByBlock: returns every persisted mutation that landed in
   // the block, ordered by (bundleId, bundlePosition).
-  const inBlock = await loadMutationsByBlock(db, blockNumber);
+  const inBlock = await loadMutationsByBlock(db, schema, blockNumber);
   expect(inBlock.length).toBeGreaterThanOrEqual(1);
   const typesInBlock = new Set(inBlock.map((m) => m.type));
   expect(typesInBlock.has("deposit")).toBe(true);
 
   // loadMutationsByAccount: most recent N mutations for this account across
   // all per-type tables, ordered by id desc.
-  const recent = await loadMutationsByAccount(db, maker, 10);
+  const recent = await loadMutationsByAccount(db, schema, maker, 10);
   expect(recent.map((m) => m.type)).toEqual([
     "deposit",
     "addInstrument",
@@ -480,9 +479,9 @@ test("db-queries fan out across per-mutation tables", async () => {
   expect(recent.every((m) => m.account === maker)).toBe(true);
 
   // 404 paths.
-  expect(await loadBlock(db, "999999")).toBeNull();
-  expect(await loadMutationById(db, 999_999)).toBeNull();
-  expect(await loadMutationByAccountNonce(db, maker, "999")).toBeNull();
+  expect(await loadBlock(db, schema, "999999")).toBeNull();
+  expect(await loadMutationById(db, schema, 999_999)).toBeNull();
+  expect(await loadMutationByAccountNonce(db, schema, maker, "999")).toBeNull();
 
   await app.stop();
 });

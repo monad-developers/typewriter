@@ -1,4 +1,5 @@
 import type { FFCAConfig } from "ffca";
+import type { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
 import type { StorageProxy } from "storage-layout";
 import {
   encodeAbiParameters,
@@ -20,10 +21,8 @@ import {
   type Revoke,
   type Withdrawal,
 } from "./exchange";
-import type { EXCHANGE_STORAGE_LAYOUT } from "./storage-layout";
 
 type OrderBookStorage = StorageProxy<typeof EXCHANGE_STORAGE_LAYOUT, true>;
-type KnownPriceLevels = Map<number, { bids: Set<number>; asks: Set<number> }>;
 
 export type OrderBookSignature = {
   account: Hex;
@@ -86,38 +85,16 @@ export const ORDER_BOOK_SEQUENCE = [
   "Withdrawal",
 ] as const;
 
-export function createKnownPriceLevels(): KnownPriceLevels {
-  return new Map();
-}
-
-function rememberLimitPrice(
-  knownPriceLevels: KnownPriceLevels,
-  args: LimitOrderArgs,
-): void {
-  const levels = knownPriceLevels.get(args.instrumentId) ?? {
-    bids: new Set<number>(),
-    asks: new Set<number>(),
-  };
-  knownPriceLevels.set(args.instrumentId, levels);
-  const side = args.bidOrAsk === 0 ? levels.bids : levels.asks;
-  side.add(Number(args.price));
-}
-
 async function resolveMarket(
   storage: OrderBookStorage,
   args: MarketOrderArgs,
-  knownPriceLevels: KnownPriceLevels,
 ): Promise<MarketOrderResolution<bigint>> {
   const instrument =
     storage.instruments[String(args.instrumentId) as `${number}`];
   const opposingSide = args.bidOrAsk === 0 ? instrument.asks : instrument.bids;
-  const priceLevels = knownPriceLevels.get(args.instrumentId);
-  const knownPrices = [
-    ...((args.bidOrAsk === 0 ? priceLevels?.asks : priceLevels?.bids) ?? []),
-  ];
-  const prices = (
-    knownPrices.length > 0 ? knownPrices : Object.keys(opposingSide).map(Number)
-  ).sort((a, b) => (args.bidOrAsk === 0 ? a - b : b - a));
+  const prices = Object.keys(opposingSide)
+    .map(Number)
+    .sort((a, b) => (args.bidOrAsk === 0 ? a - b : b - a));
   const baseLotExp = await instrument.baseLotExp;
   const fills: { quantity: bigint; price: bigint }[] = [];
   const quantityLots = args.quantity >> BigInt(baseLotExp);
@@ -143,185 +120,174 @@ async function resolveMarket(
   return { fills };
 }
 
-export function baseMutations(
-  knownPriceLevels: KnownPriceLevels = createKnownPriceLevels(),
-): FFCAConfig["mutations"] {
-  return {
-    Initialize: {
-      tag: MutationType.Initialize,
-      params: parseAbiParameters(
-        "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint16 permissions, bytes rootPublicKey, bytes publicKey",
-      ),
-      registerMappingKeys: ({ signature }) => {
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].keys[0].expiry`,
-          `accounts[${account}].keys[0].keyType`,
-          `accounts[${account}].keys[0].permissions`,
-          `accounts[${account}].keys[0].publicKey`,
-          `accounts[${account}].keys[1].expiry`,
-          `accounts[${account}].keys[1].keyType`,
-          `accounts[${account}].keys[1].permissions`,
-          `accounts[${account}].keys[1].publicKey`,
-        ];
-      },
+export const ORDER_BOOK_MUTATIONS = {
+  Initialize: {
+    tag: MutationType.Initialize,
+    params: parseAbiParameters(
+      "bytes32 account, uint40 expiry, uint8 rootKeyType, uint8 keyType, uint16 permissions, bytes rootPublicKey, bytes publicKey",
+    ),
+    registerMappingKeys: ({ signature }) => {
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].keys[0].expiry`,
+        `accounts[${account}].keys[0].keyType`,
+        `accounts[${account}].keys[0].permissions`,
+        `accounts[${account}].keys[0].publicKey`,
+        `accounts[${account}].keys[1].expiry`,
+        `accounts[${account}].keys[1].keyType`,
+        `accounts[${account}].keys[1].permissions`,
+        `accounts[${account}].keys[1].publicKey`,
+      ];
     },
-    Authorize: {
-      tag: MutationType.Authorize,
-      params: parseAbiParameters(
-        "bytes32 account, uint40 expiry, uint8 keyType, uint16 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { nonce } = args as AuthorizeArgs;
-        const { account } = signature as OrderBookSignature;
-        return [`accounts[${account}].nonces[${nonce >> 64n}]`];
-      },
+  },
+  Authorize: {
+    tag: MutationType.Authorize,
+    params: parseAbiParameters(
+      "bytes32 account, uint40 expiry, uint8 keyType, uint16 permissions, bytes publicKey, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { nonce } = args as AuthorizeArgs;
+      const { account } = signature as OrderBookSignature;
+      return [`accounts[${account}].nonces[${nonce >> 64n}]`];
     },
-    Revoke: {
-      tag: MutationType.Revoke,
-      params: parseAbiParameters(
-        "bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { keyId, nonce } = args as RevokeArgs;
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          `accounts[${account}].keys[${keyId}].expiry`,
-          `accounts[${account}].keys[${keyId}].keyType`,
-          `accounts[${account}].keys[${keyId}].permissions`,
-          `accounts[${account}].keys[${keyId}].publicKey`,
-        ];
-      },
+  },
+  Revoke: {
+    tag: MutationType.Revoke,
+    params: parseAbiParameters(
+      "bytes32 account, uint64 keyId, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { keyId, nonce } = args as RevokeArgs;
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `accounts[${account}].keys[${keyId}].expiry`,
+        `accounts[${account}].keys[${keyId}].keyType`,
+        `accounts[${account}].keys[${keyId}].permissions`,
+        `accounts[${account}].keys[${keyId}].publicKey`,
+      ];
     },
-    CloseOrder: {
-      tag: MutationType.CloseOrder,
-      params: parseAbiParameters(
-        "uint64 orderId, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { nonce, orderId } = args as CloseOrderArgs;
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          `accounts[${account}].orders[${orderId}].quantity`,
-        ];
-      },
+  },
+  CloseOrder: {
+    tag: MutationType.CloseOrder,
+    params: parseAbiParameters(
+      "uint64 orderId, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { nonce, orderId } = args as CloseOrderArgs;
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `accounts[${account}].orders[${orderId}].quantity`,
+      ];
     },
-    ChangeOrder: {
-      tag: MutationType.ChangeOrder,
-      params: parseAbiParameters(
-        "uint64 orderId, uint64 price, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { nonce, orderId } = args as ChangeOrderArgs;
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          `accounts[${account}].orders[${orderId}].quantity`,
-        ];
-      },
+  },
+  ChangeOrder: {
+    tag: MutationType.ChangeOrder,
+    params: parseAbiParameters(
+      "uint64 orderId, uint64 price, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { nonce, orderId } = args as ChangeOrderArgs;
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `accounts[${account}].orders[${orderId}].quantity`,
+      ];
     },
-    LimitOrder: {
-      tag: MutationType.LimitOrder,
-      params: parseAbiParameters(
-        "uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const limitOrder = args as LimitOrderArgs;
-        rememberLimitPrice(knownPriceLevels, limitOrder);
-        const { bidOrAsk, instrumentId, nonce, price } = limitOrder;
-        const { account } = signature as OrderBookSignature;
-        const side = bidOrAsk === 0 ? "bids" : "asks";
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
+  },
+  LimitOrder: {
+    tag: MutationType.LimitOrder,
+    params: parseAbiParameters(
+      "uint256 quantity, uint64 instrumentId, uint64 price, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { bidOrAsk, instrumentId, nonce, price } = args as LimitOrderArgs;
+      const { account } = signature as OrderBookSignature;
+      const side = bidOrAsk === 0 ? "bids" : "asks";
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `instruments[${instrumentId}].${side}[${price}].quantity`,
+        `instruments[${instrumentId}].${side}[${price}].remainingQuantity`,
+        `instruments[${instrumentId}].${side}[${price}].volume`,
+      ];
+    },
+  },
+  MarketOrder: {
+    tag: MutationType.MarketOrder,
+    params: parseAbiParameters(
+      "uint256 quantity, uint256 minReceivedQuantity, uint64 instrumentId, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
+    ),
+    resolution: parseAbiParameters("(uint64 quantity, uint64 price)[] fills"),
+    resolve: ({
+      state,
+      args,
+    }: {
+      state: unknown;
+      args: unknown;
+      signature: unknown;
+    }) => resolveMarket(state as OrderBookStorage, args as MarketOrderArgs),
+    registerMappingKeys: ({ args, resolution, signature }) => {
+      const { bidOrAsk, instrumentId, nonce } = args as MarketOrderArgs;
+      const { fills } = resolution as MarketOrderResolution<bigint>;
+      const { account } = signature as OrderBookSignature;
+      const side = bidOrAsk === 0 ? "asks" : "bids";
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        ...fills.flatMap(({ price }) => [
           `instruments[${instrumentId}].${side}[${price}].quantity`,
           `instruments[${instrumentId}].${side}[${price}].remainingQuantity`,
           `instruments[${instrumentId}].${side}[${price}].volume`,
-        ];
-      },
+        ]),
+      ];
     },
-    MarketOrder: {
-      tag: MutationType.MarketOrder,
-      params: parseAbiParameters(
-        "uint256 quantity, uint256 minReceivedQuantity, uint64 instrumentId, uint8 bidOrAsk, uint256 nonce, uint256 deadline",
-      ),
-      resolution: parseAbiParameters("(uint64 quantity, uint64 price)[] fills"),
-      resolve: ({
-        state,
-        args,
-      }: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-      }) =>
-        resolveMarket(
-          state as OrderBookStorage,
-          args as MarketOrderArgs,
-          knownPriceLevels,
-        ),
-      registerMappingKeys: ({ args, resolution, signature }) => {
-        const { bidOrAsk, instrumentId, nonce } = args as MarketOrderArgs;
-        const { fills } = resolution as MarketOrderResolution<bigint>;
-        const { account } = signature as OrderBookSignature;
-        const side = bidOrAsk === 0 ? "asks" : "bids";
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          ...fills.flatMap(({ price }) => [
-            `instruments[${instrumentId}].${side}[${price}].quantity`,
-            `instruments[${instrumentId}].${side}[${price}].remainingQuantity`,
-            `instruments[${instrumentId}].${side}[${price}].volume`,
-          ]),
-        ];
-      },
+  },
+  AddInstrument: {
+    tag: MutationType.AddInstrument,
+    params: parseAbiParameters(
+      "uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { instrumentId, nonce } = args as AddInstrumentArgs;
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `instruments[${instrumentId}].base`,
+        `instruments[${instrumentId}].quote`,
+        `instruments[${instrumentId}].baseLotExp`,
+        `instruments[${instrumentId}].quoteLotExp`,
+      ];
     },
-    AddInstrument: {
-      tag: MutationType.AddInstrument,
-      params: parseAbiParameters(
-        "uint64 instrumentId, address base, address quote, uint8 baseLotExp, uint8 quoteLotExp, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { instrumentId, nonce } = args as AddInstrumentArgs;
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          `instruments[${instrumentId}].base`,
-          `instruments[${instrumentId}].quote`,
-          `instruments[${instrumentId}].baseLotExp`,
-          `instruments[${instrumentId}].quoteLotExp`,
-        ];
-      },
+  },
+  Deposit: {
+    tag: MutationType.Deposit,
+    params: parseAbiParameters(
+      "address asset, uint256 amount, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { asset, nonce } = args as DepositArgs;
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `accounts[${account}].balances[${asset}]`,
+      ];
     },
-    Deposit: {
-      tag: MutationType.Deposit,
-      params: parseAbiParameters(
-        "address asset, uint256 amount, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { asset, nonce } = args as DepositArgs;
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          `accounts[${account}].balances[${asset}]`,
-        ];
-      },
+  },
+  Withdrawal: {
+    tag: MutationType.Withdrawal,
+    params: parseAbiParameters(
+      "address asset, uint256 amount, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ args, signature }) => {
+      const { asset, nonce } = args as WithdrawalArgs;
+      const { account } = signature as OrderBookSignature;
+      return [
+        `accounts[${account}].nonces[${nonce >> 64n}]`,
+        `accounts[${account}].balances[${asset}]`,
+      ];
     },
-    Withdrawal: {
-      tag: MutationType.Withdrawal,
-      params: parseAbiParameters(
-        "address asset, uint256 amount, uint256 nonce, uint256 deadline",
-      ),
-      registerMappingKeys: ({ args, signature }) => {
-        const { asset, nonce } = args as WithdrawalArgs;
-        const { account } = signature as OrderBookSignature;
-        return [
-          `accounts[${account}].nonces[${nonce >> 64n}]`,
-          `accounts[${account}].balances[${asset}]`,
-        ];
-      },
-    },
-  };
-}
+  },
+} as const satisfies FFCAConfig["mutations"];
 
 export function normalizeSignatureForContract(
   signature: OrderBookSignature,
