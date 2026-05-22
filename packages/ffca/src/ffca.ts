@@ -32,7 +32,7 @@ function primaryRpcUrl(
 
 export function createFFCAEffect<const C extends FFCAConfig>(
   config: C,
-): Effect.Effect<RuntimeFFCA<C["storageLayout"]>, unknown, Scope.Scope> {
+): Effect.Effect<RuntimeFFCA<C>, unknown, Scope.Scope> {
   return Effect.gen(function* () {
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) check abi for execute, enqueue, and forceExecute

@@ -8,7 +8,12 @@ export type {
   FFCAMutationConfig,
 } from "./config";
 export type { FFCA } from "./runtime";
-export { createMutationSchema } from "./schema";
+export {
+  createMutationSchema,
+  type FFCAMutationSchema,
+  type FFCASchema,
+  type FFCAStateSchema,
+} from "./schema";
 export type { KeyType } from "./signature";
 export { verifySignature } from "./signature";
 export type {
@@ -23,7 +28,7 @@ export type {
 
 export async function createFFCA<const C extends FFCAConfig>(
   config: C,
-): Promise<FFCA<C["storageLayout"]>> {
+): Promise<FFCA<C>> {
   const scope = Effect.runSync(Scope.make());
   let closed = false;
 
@@ -42,14 +47,14 @@ export async function createFFCA<const C extends FFCAConfig>(
       event: "mutation" | "bundle" | "block",
       cb: unknown,
     ) => Effect.Effect<() => void>;
-    const on = ((event, cb) => Effect.runSync(runtimeOn(event, cb))) as FFCA<
-      C["storageLayout"]
-    >["on"];
+    const on = ((event, cb) =>
+      Effect.runSync(runtimeOn(event, cb))) as FFCA<C>["on"];
 
     return {
       get state() {
         return ffca.state;
       },
+      schema: ffca.schema,
       domain: ffca.domain,
       execute: (submitted) => Effect.runPromise(ffca.execute(submitted)),
       on,

@@ -1,13 +1,11 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
-import { HARNESS_SCHEMA, STUB_FFCA_ABI } from "../test/utils";
+import { HARNESS_ABI, HARNESS_MUTATIONS, STUB_FFCA_ABI } from "../test/utils";
 import { layerDatabaseLive } from "./db";
-import { migrate, updateSchema } from "./migrate";
+import { migrate } from "./migrate";
 import { createMutationSchema } from "./schema";
 
 const runMigrate = (
@@ -23,17 +21,26 @@ const runMigrate = (
     ),
   );
 
+const harnessSchema = () =>
+  createMutationSchema({ abi: HARNESS_ABI, mutations: HARNESS_MUTATIONS });
+
+const HARNESS_TABLES = [
+  "assert_mutations",
+  "authorize_mutations",
+  "credit_mutations",
+  "debit_mutations",
+  "initialize_mutations",
+  "known_paths",
+  "slot_writes",
+];
+
 test("migrate creates the configured schema", async () => {
   const chainId = 31337;
   const address =
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31337_0x000000000000000000000000000000000000ffca";
 
-  const db = drizzle({
-    client: TEST_DB_CONNECTION,
-  });
-  const schemaName = await runMigrate(HARNESS_SCHEMA, chainId, address);
-  updateSchema(HARNESS_SCHEMA, schemaName);
+  const schemaName = await runMigrate(harnessSchema(), chainId, address);
 
   const tables = await TEST_DB_CONNECTION<{ table_name: string }[]>`
       SELECT table_name
@@ -54,39 +61,11 @@ test("migrate creates the configured schema", async () => {
     `;
 
   expect(schemaName).toBe(testSchema);
-  expect(tables.map((row) => row.table_name)).toEqual([
-    "accounts",
-    "balances",
-    "harness_asserts",
-    "harness_authorizes",
-    "harness_credits",
-    "harness_debits",
-    "harness_initializes",
-    "keys",
-    "nonces",
-  ]);
+  expect(tables.map((row) => row.table_name)).toEqual(HARNESS_TABLES);
   expect(enums).toEqual([
     {
       enum_name: "mutation_status",
       values: ["accepted", "included", "safe", "finalized"],
-    },
-  ]);
-
-  await db.insert(HARNESS_SCHEMA.accounts).values({
-    id: "0x0000000000000000000000000000000000000000000000000000000000000001",
-  });
-  const accounts = await db
-    .select()
-    .from(HARNESS_SCHEMA.accounts)
-    .where(
-      eq(
-        HARNESS_SCHEMA.accounts.id,
-        "0x0000000000000000000000000000000000000000000000000000000000000001",
-      ),
-    );
-  expect(accounts).toEqual([
-    {
-      id: "0x0000000000000000000000000000000000000000000000000000000000000001",
     },
   ]);
 });
@@ -97,8 +76,8 @@ test("migrate is idempotent when schema already exists", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31338_0x000000000000000000000000000000000000ffca";
 
-  const firstSchemaName = await runMigrate(HARNESS_SCHEMA, chainId, address);
-  const secondSchemaName = await runMigrate(HARNESS_SCHEMA, chainId, address);
+  const firstSchemaName = await runMigrate(harnessSchema(), chainId, address);
+  const secondSchemaName = await runMigrate(harnessSchema(), chainId, address);
 
   const tables = await TEST_DB_CONNECTION<{ table_name: string }[]>`
       SELECT table_name
@@ -109,17 +88,7 @@ test("migrate is idempotent when schema already exists", async () => {
 
   expect(firstSchemaName).toBe(testSchema);
   expect(secondSchemaName).toBe(testSchema);
-  expect(tables.map((row) => row.table_name)).toEqual([
-    "accounts",
-    "balances",
-    "harness_asserts",
-    "harness_authorizes",
-    "harness_credits",
-    "harness_debits",
-    "harness_initializes",
-    "keys",
-    "nonces",
-  ]);
+  expect(tables.map((row) => row.table_name)).toEqual(HARNESS_TABLES);
 });
 
 test("migrate deletes unsettled mutations in an existing schema", async () => {
@@ -128,22 +97,24 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const schemaName = "ffca_31339_0x000000000000000000000000000000000000ffca";
 
-  await runMigrate(HARNESS_SCHEMA, chainId, address);
+  await runMigrate(harnessSchema(), chainId, address);
 
+  const account =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
   await TEST_DB_CONNECTION`
-    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.harness_credits
-      (id, status, account, key_id, key_type, raw_signature, amount, nonce)
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.credit_mutations
+      (id, ${TEST_DB_CONNECTION("bundleId")}, ${TEST_DB_CONNECTION("bundlePosition")}, status, account, ${TEST_DB_CONNECTION("keyId")}, amount, nonce, ${TEST_DB_CONNECTION("signature_account")}, ${TEST_DB_CONNECTION("signature_keyId")}, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
     VALUES
-      (0, 'accepted', ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, 0, 0, '0x', 1, 0)
+      (0, 0, 0, 'accepted', ${account}, 0, 1, 0, ${account}, 0, 0, '0x')
   `;
 
-  await expect(runMigrate(HARNESS_SCHEMA, chainId, address)).resolves.toBe(
+  await expect(runMigrate(harnessSchema(), chainId, address)).resolves.toBe(
     schemaName,
   );
 
   const rows = await TEST_DB_CONNECTION<{ id: number }[]>`
     SELECT id
-    FROM ${TEST_DB_CONNECTION(schemaName)}.harness_credits
+    FROM ${TEST_DB_CONNECTION(schemaName)}.credit_mutations
   `;
   expect(rows).toEqual([]);
 });

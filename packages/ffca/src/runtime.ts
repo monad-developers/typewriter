@@ -16,11 +16,7 @@ import {
 } from "effect";
 import { createEVM, type ExecuteResult } from "evm";
 import type { Hex, TypedData } from "ox";
-import {
-  createStorageProxy,
-  type StorageLayout,
-  type StorageProxy,
-} from "storage-layout";
+import { createStorageProxy, type StorageProxy } from "storage-layout";
 import {
   ContractFunctionRevertedError,
   createPublicClient,
@@ -51,6 +47,7 @@ import {
   type FFCAAbi,
 } from "./encoding";
 import { Rpc } from "./rpc";
+import type { FFCASchema } from "./schema";
 import type {
   BlockEvent,
   BundleEvent,
@@ -91,8 +88,9 @@ type SubmittedMutationWithDeferred = {
 
 type EnqueuedMutation = Extract<RuntimeMutation, { status: "enqueued" }>;
 
-export type FFCA<layout extends StorageLayout> = {
-  readonly state: StorageProxy<layout, true>;
+export type FFCA<C extends FFCAConfig> = {
+  readonly state: StorageProxy<C["storageLayout"], true>;
+  readonly schema: FFCASchema<C>;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Promise<MutationEvent>;
   on(event: "mutation", cb: MutationListener): () => void;
@@ -101,8 +99,9 @@ export type FFCA<layout extends StorageLayout> = {
   stop(): Promise<void>;
 };
 
-export type RuntimeFFCA<layout extends StorageLayout> = {
-  readonly state: StorageProxy<layout, true>;
+export type RuntimeFFCA<C extends FFCAConfig> = {
+  readonly state: StorageProxy<C["storageLayout"], true>;
+  readonly schema: FFCASchema<C>;
   readonly domain: TypedData.Domain;
   execute(submitted: SubmittedMutation): Effect.Effect<MutationEvent, unknown>;
   on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
@@ -222,7 +221,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
   config: C,
   schema: Record<string, PgTable>,
 ): Effect.Effect<
-  RuntimeFFCA<C["storageLayout"]>,
+  RuntimeFFCA<C>,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 > {
@@ -1091,6 +1090,12 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       });
     }
 
-    return { state, domain, execute, on };
+    return {
+      state,
+      schema: schema as FFCASchema<C>,
+      domain,
+      execute,
+      on,
+    };
   });
 }

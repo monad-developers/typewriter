@@ -63,19 +63,22 @@ const stateTables = () => ({
   }),
 });
 
-type StateSchema = {
+export type FFCAStateSchema = {
   readonly [Name in keyof ReturnType<typeof stateTables>]: ReturnType<
     typeof stateTables
   >[Name];
 };
 
-type MutationSchema<Config extends FFCAConfig = FFCAConfig> = {
+export type FFCAMutationSchema<Config extends FFCAConfig = FFCAConfig> = {
   readonly [Name in keyof Config["mutations"] as `${Lowercase<Name & string>}_mutations`]: PgTable;
 };
 
+export type FFCASchema<Config extends FFCAConfig = FFCAConfig> =
+  FFCAStateSchema & FFCAMutationSchema<Config>;
+
 export function createMutationSchema<const Config extends FFCAConfig>(
   config: Pick<Config, "abi" | "mutations">,
-): StateSchema & MutationSchema<Config> {
+): FFCASchema<Config> {
   const signatureColumns = prefixColumnNames(
     abiParametersToColumns(getSignatureAbiParameters(config.abi)),
     "signature_",
@@ -103,7 +106,7 @@ export function createMutationSchema<const Config extends FFCAConfig>(
     );
   }
 
-  return schema as StateSchema & MutationSchema<Config>;
+  return schema as FFCASchema<Config>;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {

@@ -1,17 +1,4 @@
 import { parseAbiParameters } from "abitype";
-import { asc } from "drizzle-orm";
-import {
-  bigint,
-  char,
-  integer,
-  numeric,
-  primaryKey,
-  smallint,
-  snakeCase,
-  text,
-  timestamp,
-} from "drizzle-orm/pg-core";
-import { Effect } from "effect";
 import {
   type Abi,
   AbiParameters,
@@ -25,30 +12,13 @@ import { Authentication } from "ox/webauthn";
 import type { StorageLayout, StorageProxy } from "storage-layout";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
-import type {
-  FFCADatabaseTransaction,
-  FFCAMutationConfig,
-} from "../src/config";
+import type { FFCAMutationConfig } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
-import { mutationStatusEnum } from "../src/schema";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
   TEST_WALLET_CLIENT,
 } from "./setup";
-
-const pgTable = snakeCase.table;
-
-export type CounterState = {
-  total: bigint;
-  nonce: bigint;
-};
-
-// Counter's signature wire shape. ffca encodes it into bundle.signatures[i]
-// matching the contract's `Signature` struct.
-export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
-  "uint8 keyType, bytes rawSignature",
-);
 
 // Counter's EIP-712 domain. Matches the constructor args used in
 // deployCounter() so client-side digests align with the on-chain
@@ -412,23 +382,7 @@ export const COUNTER_ABI = [
   { type: "error", name: "UnknownTag", inputs: [] },
 ] as const satisfies Abi.Abi;
 
-// Harness.State on-chain. `accounts[id].keys` mirrors the contract's key
-// registry; `accounts[id].nonces` mirrors per-(account, nonceKey)
-// sequences. `balances` is keyed by the same bytes32 account id.
-export type HarnessKey = { keyType: number; publicKey: Hex };
-export type HarnessAccount = {
-  keys: HarnessKey[];
-  nonces: Record<string, bigint>;
-};
-export type HarnessState = {
-  accounts: Record<Hex, HarnessAccount>;
-  balances: Record<Hex, bigint>;
-};
-
 export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
-export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
-  "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
-);
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
 // Harness.State shape used by the runtime tests.
@@ -805,139 +759,6 @@ export const HARNESS_ABI = [
   { type: "error", name: "UnknownTag", inputs: [] },
 ] as const satisfies Abi.Abi;
 
-// Persisted shape of HarnessState. Mirrors Harness.sol's State struct: the
-// `accounts` mapping fans out to (accounts, keys, nonces); `balances` is its
-// own table keyed by the same bytes32 account id.
-//
-// Column-type aliases mirror ffca's shared column helpers where possible.
-// uint192 is the high bits of a parallel nonce (Harness.sol stores
-// `mapping(uint192 => uint64)`) — needs >64 bits, so numeric rather than
-// bigint.
-const uint8 = () => smallint();
-const uint64 = () => bigint({ mode: "bigint" });
-const uint192 = () => numeric({ precision: 58, scale: 0 });
-const uint256 = () => numeric({ precision: 78, scale: 0 });
-const bytes32 = () => char({ length: 66 });
-
-const mutationColumns = () => ({
-  id: integer().notNull().primaryKey(),
-  bundleId: integer(),
-  bundlePosition: integer(),
-  blockNumber: uint256(),
-  blockHash: bytes32(),
-  blockTimestamp: uint256(),
-  transactionHash: bytes32(),
-  status: mutationStatusEnum().notNull(),
-  acceptedAt: timestamp().notNull().defaultNow(),
-  includedAt: timestamp(),
-  safeAt: timestamp(),
-  finalizedAt: timestamp(),
-});
-
-export const harnessSignatureColumns = {
-  account: bytes32().notNull(),
-  keyId: uint64().notNull(),
-  keyType: uint8().notNull(),
-  rawSignature: text().notNull(),
-};
-
-export const counterAddMutations = pgTable("counter_add_mutations", {
-  ...mutationColumns(),
-  keyType: uint8().notNull(),
-  rawSignature: text().notNull(),
-  amount: uint256().notNull(),
-  nonce: uint256().notNull(),
-});
-
-export const testMutationSchema = pgTable("test_mutations", {
-  ...mutationColumns(),
-});
-
-export const harnessInitializeMutations = pgTable("harness_initializes", {
-  ...mutationColumns(),
-  ...harnessSignatureColumns,
-  rootKeyType: uint8().notNull(),
-  rootPublicKey: text().notNull(),
-});
-
-export const harnessAuthorizeMutations = pgTable("harness_authorizes", {
-  ...mutationColumns(),
-  ...harnessSignatureColumns,
-  newKeyType: uint8().notNull(),
-  publicKey: text().notNull(),
-  nonce: uint256().notNull(),
-});
-
-export const harnessCreditMutations = pgTable("harness_credits", {
-  ...mutationColumns(),
-  ...harnessSignatureColumns,
-  amount: uint256().notNull(),
-  nonce: uint256().notNull(),
-});
-
-export const harnessDebitMutations = pgTable("harness_debits", {
-  ...mutationColumns(),
-  ...harnessSignatureColumns,
-  amount: uint256().notNull(),
-  nonce: uint256().notNull(),
-  newBalance: uint256().notNull(),
-});
-
-export const harnessAssertMutations = pgTable("harness_asserts", {
-  ...mutationColumns(),
-  ...harnessSignatureColumns,
-  expected: uint256().notNull(),
-  nonce: uint256().notNull(),
-});
-
-export const harnessAccounts = pgTable("accounts", {
-  id: bytes32().primaryKey(),
-});
-
-export const harnessKeys = pgTable(
-  "keys",
-  {
-    account: bytes32()
-      .notNull()
-      .references(() => harnessAccounts.id),
-    keyIndex: uint64().notNull(),
-    keyType: uint8().notNull(),
-    publicKey: text().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.account, t.keyIndex] })],
-);
-
-export const harnessNonces = pgTable(
-  "nonces",
-  {
-    account: bytes32()
-      .notNull()
-      .references(() => harnessAccounts.id),
-    nonceKey: uint192().notNull(),
-    sequence: uint64().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.account, t.nonceKey] })],
-);
-
-export const harnessBalances = pgTable("balances", {
-  account: bytes32()
-    .primaryKey()
-    .references(() => harnessAccounts.id),
-  amount: uint256().notNull(),
-});
-
-export const HARNESS_SCHEMA = {
-  initializeMutations: harnessInitializeMutations,
-  authorizeMutations: harnessAuthorizeMutations,
-  creditMutations: harnessCreditMutations,
-  debitMutations: harnessDebitMutations,
-  assertMutations: harnessAssertMutations,
-  accounts: harnessAccounts,
-  keys: harnessKeys,
-  nonces: harnessNonces,
-  balances: harnessBalances,
-};
-
 // Deploy a forge-built contract by name. Reads the artifact from the
 // contracts workspace, broadcasts via the test wallet, waits for the
 // receipt, returns the deployed address. ABIs live alongside the storage
@@ -1089,46 +910,6 @@ export const HARNESS_MUTATIONS: {
     ),
   },
 };
-
-export function loadHarnessState(
-  tx: FFCADatabaseTransaction,
-): Effect.Effect<HarnessState, unknown> {
-  return Effect.gen(function* () {
-    const state: HarnessState = { accounts: {}, balances: {} };
-
-    const accounts = yield* tx.select().from(harnessAccounts);
-    for (const row of accounts) {
-      state.accounts[row.id as Hex] = { keys: [], nonces: {} };
-    }
-
-    const keys = yield* tx
-      .select()
-      .from(harnessKeys)
-      .orderBy(asc(harnessKeys.keyIndex));
-    for (const row of keys) {
-      const account = state.accounts[row.account as Hex];
-      if (account === undefined) continue;
-      account.keys[Number(row.keyIndex)] = {
-        keyType: row.keyType,
-        publicKey: row.publicKey as Hex,
-      };
-    }
-
-    const nonces = yield* tx.select().from(harnessNonces);
-    for (const row of nonces) {
-      const account = state.accounts[row.account as Hex];
-      if (account === undefined) continue;
-      account.nonces[row.nonceKey] = row.sequence;
-    }
-
-    const balances = yield* tx.select().from(harnessBalances);
-    for (const row of balances) {
-      state.balances[row.account as Hex] = BigInt(row.amount);
-    }
-
-    return state;
-  });
-}
 
 // Derive the bytes32 account id from a public key (matches Harness.sol's
 // `keccak256(rootPublicKey)` bootstrap rule).

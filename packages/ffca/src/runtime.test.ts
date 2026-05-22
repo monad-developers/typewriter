@@ -49,12 +49,12 @@ import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
 async function createFFCA<
   const C extends Omit<FFCAConfig, "database"> & { database?: unknown },
->(config: C): Promise<FFCA<C["storageLayout"]>> {
+>(config: C): Promise<FFCA<C & FFCAConfig>> {
   const { database: _database, ...rest } = config;
   return createFFCARaw({
     ...rest,
     database: { url: TEST_DB_URL, maxConnections: 2 },
-  } as FFCAConfig) as Promise<FFCA<C["storageLayout"]>>;
+  } as FFCAConfig) as Promise<FFCA<C & FFCAConfig>>;
 }
 
 function quoteIdentifier(identifier: string): string {
