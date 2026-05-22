@@ -4,15 +4,10 @@ import type { FFCAConfig } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
 import type { FFCAAbi } from "./encoding";
-import {
-  deploymentLockKey,
-  deploymentSchemaName,
-  migrate,
-  updateSchema,
-} from "./migrate";
-import { getFFCASchema, isPersistenceEnabled } from "./persistence";
+import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
 import { createRuntimeEffect, type RuntimeFFCA } from "./runtime";
+import { createMutationSchema } from "./schema";
 import { layerWatchLive } from "./watch";
 
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
@@ -81,20 +76,10 @@ export function createFFCAEffect<const C extends FFCAConfig>(
         deploymentLockKey(config.chainId, config.address),
       );
       const schema = yield* Effect.try({
-        try: () => {
-          if (isPersistenceEnabled(config) === false) return undefined;
-          const schema = getFFCASchema(config);
-          updateSchema(
-            schema,
-            deploymentSchemaName(config.chainId, config.address),
-          );
-          return schema;
-        },
+        try: () => createMutationSchema(config),
         catch: (cause) => cause,
       });
-      if (schema !== undefined) {
-        yield* migrate(schema, config.chainId, config.address);
-      }
+      yield* migrate(schema, config.chainId, config.address);
 
       return yield* createRuntimeEffect(config, schema);
     }).pipe(Effect.provide(servicesContext));

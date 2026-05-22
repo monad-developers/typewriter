@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import type { TypedData } from "ox";
 import { hashTypedData } from "viem";
-import { testMutationSchema } from "../test/utils";
 import type { FFCAMutationConfig } from "./config";
 import { hashMutationEip712 } from "./eip712";
 
@@ -16,7 +15,6 @@ const domain: TypedData.Domain = {
 test("hashMutationEip712 matches viem hashTypedData for a flat mutation", () => {
   const mutation: FFCAMutationConfig = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const args = {
@@ -45,7 +43,6 @@ test("hashMutationEip712 matches viem hashTypedData for a flat mutation", () => 
 test("hashMutationEip712 handles a tuple param via synthesized struct name", () => {
   const mutation: FFCAMutationConfig = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("(uint256 price, uint256 size) fill"),
   };
   const args = { fill: { price: 100n, size: 6n } };
@@ -70,7 +67,6 @@ test("hashMutationEip712 handles a tuple param via synthesized struct name", () 
 test("hashMutationEip712 handles tuple[] arrays", () => {
   const mutation: FFCAMutationConfig = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters(
       "address taker, (uint256 price, uint256 size)[] fills",
     ),
@@ -106,7 +102,6 @@ test("hashMutationEip712 handles tuple[] arrays", () => {
 test("hashMutationEip712 handles nested tuples", () => {
   const mutation: FFCAMutationConfig = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters(
       "(address account, (uint256 price, uint256 size) fill) order",
     ),
@@ -142,7 +137,6 @@ test("hashMutationEip712 handles nested tuples", () => {
 test("hashMutationEip712 uses internalType struct name when present", () => {
   const mutation: FFCAMutationConfig = {
     tag: 0,
-    table: testMutationSchema,
     params: [
       {
         name: "fill",
@@ -177,7 +171,6 @@ test("hashMutationEip712 uses internalType struct name when present", () => {
 test("hashMutationEip712 rejects unnamed params", () => {
   const mutation: FFCAMutationConfig = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("uint256"),
   };
 

@@ -1,6 +1,6 @@
 import { abiParametersToColumns } from "abipg";
-import type { AbiParameter } from "abitype";
 import {
+  type AnyPgColumnBuilder,
   char,
   integer,
   numeric,
@@ -12,14 +12,11 @@ import type { PgTable } from "drizzle-orm/pg-core/table";
 import type { FFCAConfig } from "./config";
 import { getSignatureAbiParameters } from "./encoding";
 
-// const uint8 = () => smallint();
-// const uint16 = () => integer();
-// const uint32 = () => bigint({ mode: "number" });
-// const uint40 = () => bigint({ mode: "number" });
-// const uint64 = () => bigint({ mode: "bigint" });
 const uint256 = () => numeric({ precision: 78, scale: 0 });
 const bytes32 = () => char({ length: 66 });
 
+// TODO: make migration discover enum objects from generated schema instead of
+// importing this singleton directly.
 export const mutationStatusEnum = pgEnum("mutation_status", [
   "accepted",
   "included",
@@ -27,27 +24,16 @@ export const mutationStatusEnum = pgEnum("mutation_status", [
   "finalized",
 ]);
 
-// Shared column builders for app-owned mutation tables. FFCA does not provide
-// built-in tables for apps to join against; apps spread these columns into the
-// tables they own, then add their own signature/account/payload columns.
-//
-// Persisted mutation rows start at "accepted". Submitted mutations live only
-// in memory and are not part of the database model.
-export const mutationColumns = () => ({
-  // Runtime-assigned, globally unique across every table that spreads these
-  // columns. `loadNextIds` resumes from the max id across all mutation tables
-  // on restart, so apps must not assign their own values.
+// Persisted mutation rows start at "accepted". Submitted mutations live only in
+// memory until the runtime accepts them.
+const mutationColumns = () => ({
   id: integer().notNull().primaryKey(),
-  bundleId: integer(),
-  bundlePosition: integer(),
+  bundleId: integer().notNull(),
+  bundlePosition: integer().notNull(),
   blockNumber: uint256(),
   blockHash: bytes32(),
   blockTimestamp: uint256(),
   transactionHash: bytes32(),
-
-  // Lifecycle tracking. `acceptedAt` is set on insert by the column default;
-  // `persistLifecycle` writes the matching `*At` column when the runtime
-  // advances a mutation through included → safe → finalized.
   status: mutationStatusEnum().notNull(),
   acceptedAt: timestamp().notNull().defaultNow(),
   includedAt: timestamp(),
@@ -55,33 +41,38 @@ export const mutationColumns = () => ({
   finalizedAt: timestamp(),
 });
 
-export type GeneratedMutationSchema<Config extends FFCAConfig = FFCAConfig> = {
+type GeneratedMutationSchema<Config extends FFCAConfig = FFCAConfig> = {
   readonly [Name in keyof Config["mutations"] as `${Lowercase<Name & string>}_mutations`]: PgTable;
 };
 
 export function createMutationSchema<const Config extends FFCAConfig>(
   config: Pick<Config, "abi" | "mutations">,
 ): GeneratedMutationSchema<Config> {
-  const signatureParams = prefixAbiParameters(
-    getSignatureAbiParameters(config.abi),
+  const signatureColumns = prefixColumnNames(
+    abiParametersToColumns(getSignatureAbiParameters(config.abi)),
     "signature_",
   );
   const schema: Record<string, PgTable> = {};
 
   for (const [name, mutation] of Object.entries(config.mutations)) {
     const tableName = mutationTableName(name);
-    const params = [
-      ...mutation.params,
-      ...signatureParams,
-      ...("resolution" in mutation
-        ? prefixAbiParameters(mutation.resolution, "resolution_")
-        : []),
-    ] satisfies readonly AbiParameter[];
+    const resolutionColumns =
+      "resolution" in mutation
+        ? prefixColumnNames(
+            abiParametersToColumns(mutation.resolution),
+            "resolution_",
+          )
+        : {};
 
-    schema[tableName] = pgTable(tableName, {
-      ...mutationColumns(),
-      ...abiParametersToColumns(params),
-    });
+    schema[tableName] = pgTable(
+      tableName,
+      mergeColumns(
+        mutationColumns(),
+        abiParametersToColumns(mutation.params),
+        signatureColumns,
+        resolutionColumns,
+      ),
+    );
   }
 
   return schema as GeneratedMutationSchema<Config>;
@@ -91,12 +82,28 @@ function mutationTableName(name: string): `${Lowercase<string>}_mutations` {
   return `${name.toLowerCase()}_mutations` as `${Lowercase<string>}_mutations`;
 }
 
-function prefixAbiParameters(
-  params: readonly AbiParameter[],
+function prefixColumnNames<Columns extends Record<string, AnyPgColumnBuilder>>(
+  columns: Columns,
   prefix: string,
-): readonly AbiParameter[] {
-  return params.map((param, index) => ({
-    ...param,
-    name: `${prefix}${param.name === undefined || param.name === "" ? `arg${index}` : param.name}`,
-  }));
+): Record<string, AnyPgColumnBuilder> {
+  const prefixed: Record<string, AnyPgColumnBuilder> = {};
+  for (const [name, column] of Object.entries(columns)) {
+    prefixed[`${prefix}${name}`] = column;
+  }
+  return prefixed;
+}
+
+function mergeColumns(
+  ...groups: readonly Record<string, AnyPgColumnBuilder>[]
+): Record<string, AnyPgColumnBuilder> {
+  const columns: Record<string, AnyPgColumnBuilder> = {};
+  for (const group of groups) {
+    for (const [name, column] of Object.entries(group)) {
+      if (columns[name] !== undefined) {
+        throw new Error(`duplicate generated mutation column name: ${name}`);
+      }
+      columns[name] = column;
+    }
+  }
+  return columns;
 }

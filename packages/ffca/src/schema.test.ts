@@ -1,27 +1,17 @@
 import { expect, test } from "bun:test";
-import { PGlite } from "@electric-sql/pglite";
 import { parseAbiParameters } from "abitype";
 import {
   generateDrizzleJson,
   generateMigration,
 } from "drizzle-kit/api-postgres";
-import { integer, pgTable } from "drizzle-orm/pg-core";
-import { drizzle } from "drizzle-orm/pglite";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import { TEST_DB_CONNECTION } from "../test/setup";
 import { STUB_FFCA_ABI } from "../test/utils";
 import type { FFCAConfig } from "./config";
 import { updateSchema } from "./migrate";
-import {
-  createMutationSchema,
-  type GeneratedMutationSchema,
-  mutationStatusEnum,
-} from "./schema";
-
-const unusedTable = pgTable("unused_mutation_config_table", {
-  id: integer().primaryKey(),
-});
+import { createMutationSchema, mutationStatusEnum } from "./schema";
 
 async function applyGeneratedMigration(
-  client: PGlite,
   schema: Record<string, unknown>,
 ): Promise<string[]> {
   updateSchema(schema as never, "public");
@@ -29,7 +19,7 @@ async function applyGeneratedMigration(
   const target = await generateDrizzleJson({ mutationStatusEnum, ...schema });
   const statements = await generateMigration(empty, target);
   for (const statement of statements) {
-    await client.exec(statement);
+    await TEST_DB_CONNECTION.unsafe(statement);
   }
   return statements;
 }
@@ -51,19 +41,17 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
     mutations: {
       Transfer: {
         tag: 0,
-        table: unusedTable,
         params: parseAbiParameters("address to, uint256 amount"),
       },
       Debit: {
         tag: 1,
-        table: unusedTable,
         params: parseAbiParameters("bytes32 account, uint256 amount"),
         resolution: parseAbiParameters("uint256 newBalance"),
         resolve: () => ({ newBalance: 0n }),
       },
     },
   } satisfies Pick<FFCAConfig, "abi" | "mutations">);
-  const statements = await applyGeneratedMigration(new PGlite(), schema);
+  const statements = await applyGeneratedMigration(schema);
   const sql = statements.join("\n");
 
   expect(Object.keys(schema)).toEqual([
@@ -87,14 +75,12 @@ test("generated mutation table supports insert and lifecycle update queries", as
     mutations: {
       Transfer: {
         tag: 0,
-        table: unusedTable,
         params: parseAbiParameters("address to, uint256 amount"),
       },
     },
   } satisfies Pick<FFCAConfig, "abi" | "mutations">);
-  const client = new PGlite();
-  await applyGeneratedMigration(client, schema);
-  const db = drizzle({ client });
+  await applyGeneratedMigration(schema);
+  const db = drizzle({ client: TEST_DB_CONNECTION });
   const transferMutations = requiredTable(schema, "transfer_mutations");
   const includedAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -139,18 +125,23 @@ test("generated mutation table supports insert and lifecycle update queries", as
   });
 });
 
-test("GeneratedMutationSchema exposes table names from config keys", () => {
-  type Schema = GeneratedMutationSchema<
-    FFCAConfig & {
-      mutations: {
-        Transfer: FFCAConfig["mutations"][string];
-        CancelOrder: FFCAConfig["mutations"][string];
-      };
-    }
-  >;
+test("createMutationSchema exposes table names from config keys", () => {
+  const schema = createMutationSchema({
+    abi: STUB_FFCA_ABI,
+    mutations: {
+      Transfer: {
+        tag: 0,
+        params: parseAbiParameters("address to, uint256 amount"),
+      },
+      CancelOrder: {
+        tag: 1,
+        params: parseAbiParameters("bytes32 account"),
+      },
+    },
+  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
 
   const keys = ["transfer_mutations", "cancelorder_mutations"] satisfies Array<
-    keyof Schema
+    keyof typeof schema
   >;
   expect(keys).toEqual(["transfer_mutations", "cancelorder_mutations"]);
 });

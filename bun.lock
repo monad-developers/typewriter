@@ -85,7 +85,6 @@
       },
       "devDependencies": {
         "@effect/language-service": "catalog:",
-        "@electric-sql/pglite": "0.2.17",
         "@types/pg": "8.15.5",
         "prool": "catalog:",
       },
