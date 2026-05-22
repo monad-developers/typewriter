@@ -177,7 +177,12 @@ test("encodeSignatureCalldata encodes a signature record to ABI bytes", () => {
 });
 
 test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
-  const bundle = {
+  const expectedBundle = {
+    mutations: [0],
+    mutationData: ["0x1234" as `0x${string}`],
+    signatures: [{ keyType: 0, rawSignature: "0xaa" as `0x${string}` }],
+  };
+  const actualBundle = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
     signatures: [[0, "0xaa"]],
@@ -185,9 +190,9 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
     functionName: "execute",
-    args: [[bundle], []] as never,
+    args: [[expectedBundle], []],
   });
-  const actual = encodeExecuteCalldata(COUNTER_ABI, [bundle], []);
+  const actual = encodeExecuteCalldata(COUNTER_ABI, [actualBundle], []);
   expect(actual).toBe(expected);
 });
 
@@ -203,7 +208,7 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
     functionName: "enqueue",
-    args: [0, mutationData, sig] as never,
+    args: [0, mutationData, sig],
   });
   const actual = encodeEnqueueCalldata(COUNTER_ABI, mutation);
   expect(actual).toBe(expected);
@@ -240,7 +245,7 @@ test.skip("decodeForceInclusionLog decodes event args", () => {
     100n,
   ]);
 
-  const topic = toEventSelector(eventAbi as never);
+  const topic = toEventSelector(eventAbi);
   const log = {
     data,
     topics: [topic] as `0x${string}`[],

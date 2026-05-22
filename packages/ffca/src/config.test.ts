@@ -56,6 +56,22 @@ test("createFFCA mutation with resolution", () => {
   });
 });
 
+test("createFFCA mutation with registered mapping keys", () => {
+  createFFCA({
+    ...baseConfig,
+    mutations: {
+      credit: {
+        tag: 2,
+        params: parseAbiParameters("bytes32 account, uint256 amount"),
+        registerMappingKeys: ({ args }) => {
+          const { account } = args as { account: string };
+          return [`balances[${account}]`];
+        },
+      },
+    },
+  });
+});
+
 // Counter keeps the config minimal: no user-owned persisted schema is needed
 // for this type-level check.
 test("createFFCA Counter (no schema)", () => {

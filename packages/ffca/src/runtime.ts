@@ -14,11 +14,9 @@ import {
   Semaphore,
   Stream,
 } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
-import { createEVM } from "evm";
+import { createEVM, type ExecuteResult } from "evm";
 import type { Hex, TypedData } from "ox";
 import {
-  type AccountStorage,
   createStorageProxy,
   type StorageLayout,
   type StorageProxy,
@@ -38,17 +36,20 @@ import * as chains from "viem/chains";
 import type { FFCAConfig, FFCAMutationConfig } from "./config";
 import { Database } from "./db";
 import {
+  insertKnownPaths,
+  insertMutation,
+  insertSlotWrites,
+  selectAccountStorage,
+  selectKnownPaths,
+  updateMutationLifecycle,
+} from "./db-query";
+import {
   decodeMutationCalldata,
   encodeBundleArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
   type FFCAAbi,
 } from "./encoding";
-import {
-  PersistenceError,
-  persistGeneratedMutation,
-  persistUpdatedGeneratedMutationLifecycle,
-} from "./persistence";
 import { Rpc } from "./rpc";
 import type {
   BlockEvent,
@@ -151,6 +152,20 @@ async function resolveMutation(
   return undefined;
 }
 
+async function registerKnownPaths(
+  mutation: Extract<
+    RuntimeMutation,
+    { status: "accepted" | "included" | "safe" | "finalized" }
+  >,
+): Promise<readonly string[]> {
+  if (mutation.config.registerMappingKeys === undefined) return [];
+  return mutation.config.registerMappingKeys({
+    args: mutation.args,
+    signature: mutation.signature,
+    resolution: mutation.resolution,
+  });
+}
+
 function createRevmRevertError(
   config: FFCAConfig,
   data: Hex.Hex | undefined,
@@ -173,18 +188,17 @@ function blockDepth(value: number | undefined, fallback: number, name: string) {
   return value;
 }
 
+// TODO(kyle) move to db-query.ts
 function loadNextIds(
   schema: Record<string, PgTable>,
-): Effect.Effect<
-  { mutationId: number; bundleId: number },
-  PersistenceError | SqlError,
-  Database
-> {
+): Effect.Effect<{ mutationId: number; bundleId: number }, unknown, Database> {
   return Effect.gen(function* () {
     const db = yield* Database;
     let maxMutationId = -1;
     let maxBundleId = -1;
-    for (const table of Object.values(schema)) {
+    for (const [tableName, table] of Object.entries(schema)) {
+      if (!tableName.endsWith("_mutations")) continue;
+
       // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
       const mutationTable = table as any;
       const [row] = yield* db
@@ -201,15 +215,7 @@ function loadNextIds(
       }
     }
     return { mutationId: maxMutationId + 1, bundleId: maxBundleId + 1 };
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new PersistenceError({
-          message: "Failed to load FFCA persistence ids",
-          cause,
-        }),
-    ),
-  );
+  });
 }
 
 export function createRuntimeEffect<const C extends FFCAConfig>(
@@ -304,7 +310,12 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     });
     let mutationId = 0;
     let bundleId = 0;
-    const initialSlots: AccountStorage = {};
+    const initialSlots = yield* db.transaction((tx) =>
+      selectAccountStorage(tx, schema),
+    );
+    const knownPaths = yield* db.transaction((tx) =>
+      selectKnownPaths(tx, schema),
+    );
 
     const ids = yield* loadNextIds(schema);
     mutationId = ids.mutationId;
@@ -345,6 +356,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           evm.readStorage({ address: config.address, slots }),
         );
       },
+      knownPaths,
     );
 
     // Local nonce cache. Lazy-initialized on first use; incremented per submit.
@@ -440,6 +452,8 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
               RuntimeMutation,
               { status: "accepted" | "included" | "safe" | "finalized" }
             >;
+            slotWrites: ExecuteResult["slot_writes"];
+            knownPaths: readonly string[];
             deferred: (typeof submittedMutations)[number]["deferred"];
           }[] = [];
           const rejectedMutations: {
@@ -506,6 +520,11 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                   { status: "accepted" | "included" | "safe" | "finalized" }
                 >;
 
+                const knownPaths = yield* Effect.tryPromise({
+                  try: () => registerKnownPaths(acceptedMutation),
+                  catch: (error) => error as Error,
+                });
+
                 // Build single-mutation `execute(Bundle[], uint256[])` calldata.
                 // The chain batches many of these per submit, but revm gets one
                 // per accepted mutation for granular state evolution.
@@ -528,13 +547,23 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
                     createRevmRevertError(config, result.revert_data),
                   );
                 }
-                return acceptedMutation;
+                return {
+                  mutation: acceptedMutation,
+                  slotWrites: result.slot_writes.filter(
+                    (write) =>
+                      write.address.toLowerCase() ===
+                      config.address.toLowerCase(),
+                  ),
+                  knownPaths,
+                };
               }),
             );
 
             if (Result.isSuccess(mutationResult)) {
               acceptedMutations.push({
-                mutation: mutationResult.success,
+                mutation: mutationResult.success.mutation,
+                slotWrites: mutationResult.success.slotWrites,
+                knownPaths: mutationResult.success.knownPaths,
                 deferred,
               });
             } else {
@@ -575,9 +604,18 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
             mutations: acceptedMutations.map(({ mutation }) => mutation),
           } as const satisfies RuntimeBundle;
 
-          for (const { mutation, deferred } of acceptedMutations) {
+          for (const {
+            mutation,
+            slotWrites,
+            knownPaths,
+            deferred,
+          } of acceptedMutations) {
             yield* db.transaction((tx) =>
-              persistGeneratedMutation(tx, schema, mutation, bundle),
+              Effect.gen(function* () {
+                yield* insertMutation(tx, schema, mutation, bundle);
+                yield* insertSlotWrites(tx, schema, mutation, slotWrites);
+                yield* insertKnownPaths(tx, schema, knownPaths);
+              }),
             );
 
             emitMutation(mutationToEvent(mutation));
@@ -729,7 +767,10 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         for (const bundle of bundles) {
           for (const mutation of bundle.mutations) {
             yield* db.transaction((tx) =>
-              persistUpdatedGeneratedMutationLifecycle(tx, schema, mutation),
+              updateMutationLifecycle(tx, schema, {
+                ...mutation,
+                status: "included",
+              }),
             );
           }
         }
@@ -873,11 +914,10 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
               for (const bundle of blockEvent.bundles) {
                 for (const mutation of bundle.mutations) {
                   yield* db.transaction((tx) =>
-                    persistUpdatedGeneratedMutationLifecycle(
-                      tx,
-                      schema,
-                      mutation,
-                    ),
+                    updateMutationLifecycle(tx, schema, {
+                      ...mutation,
+                      status: nextStatus,
+                    }),
                   );
                 }
               }

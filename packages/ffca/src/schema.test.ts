@@ -5,6 +5,7 @@ import {
   generateMigration,
 } from "drizzle-kit/api-postgres";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import type { PgTable } from "drizzle-orm/pg-core";
 import { TEST_DB_CONNECTION } from "../test/setup";
 import { STUB_FFCA_ABI } from "../test/utils";
 import type { FFCAConfig } from "./config";
@@ -14,7 +15,7 @@ import { createMutationSchema, mutationStatusEnum } from "./schema";
 async function applyGeneratedMigration(
   schema: Record<string, unknown>,
 ): Promise<string[]> {
-  updateSchema(schema as never, "public");
+  updateSchema(schema as Record<string, PgTable>, "public");
   const empty = await generateDrizzleJson({});
   const target = await generateDrizzleJson({ mutationStatusEnum, ...schema });
   const statements = await generateMigration(empty, target);
@@ -30,7 +31,7 @@ function requiredTable<
 >(schema: Schema, name: Name): Schema[Name] {
   const table = schema[name];
   if (table === undefined) {
-    throw new Error(`generated table missing: ${String(name)}`);
+    throw new Error(`table missing: ${String(name)}`);
   }
   return table;
 }
@@ -55,9 +56,19 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
   const sql = statements.join("\n");
 
   expect(Object.keys(schema)).toEqual([
+    "slot_writes",
+    "known_paths",
     "transfer_mutations",
     "debit_mutations",
   ]);
+  expect(sql).toContain('CREATE TABLE "slot_writes"');
+  expect(sql).toContain('"id" serial PRIMARY KEY');
+  expect(sql).toContain('"mutationId" integer NOT NULL');
+  expect(sql).toContain('"slot" char(66) NOT NULL');
+  expect(sql).toContain('"value" char(66) NOT NULL');
+  expect(sql).toContain('CREATE INDEX "slot_writes_latest_idx"');
+  expect(sql).toContain('CREATE TABLE "known_paths"');
+  expect(sql).toContain('"path" text PRIMARY KEY');
   expect(sql).toContain('CREATE TYPE "mutation_status"');
   expect(sql).toContain('CREATE TABLE "transfer_mutations"');
   expect(sql).toContain('"status" "mutation_status" NOT NULL');
@@ -69,7 +80,7 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
   expect(sql).toContain('"resolution_newBalance" numeric(78,0) NOT NULL');
 });
 
-test("generated mutation table supports insert and lifecycle update queries", async () => {
+test("mutation table supports insert and lifecycle update queries", async () => {
   const schema = createMutationSchema({
     abi: STUB_FFCA_ABI,
     mutations: {

@@ -2,18 +2,22 @@ import { abiParametersToColumns } from "abipg";
 import {
   type AnyPgColumnBuilder,
   char,
+  index,
   integer,
   numeric,
   pgEnum,
   pgTable,
+  serial,
+  text,
   timestamp,
 } from "drizzle-orm/pg-core";
 import type { PgTable } from "drizzle-orm/pg-core/table";
+import type { Hex } from "ox";
 import type { FFCAConfig } from "./config";
 import { getSignatureAbiParameters } from "./encoding";
 
 const uint256 = () => numeric({ precision: 78, scale: 0 });
-const bytes32 = () => char({ length: 66 });
+const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
 
 // TODO: make migration discover enum objects from generated schema instead of
 // importing this singleton directly.
@@ -41,18 +45,42 @@ const mutationColumns = () => ({
   finalizedAt: timestamp(),
 });
 
-type GeneratedMutationSchema<Config extends FFCAConfig = FFCAConfig> = {
+const stateTables = () => ({
+  slot_writes: pgTable(
+    "slot_writes",
+    {
+      id: serial().primaryKey(),
+      mutationId: integer().notNull(),
+      slot: bytes32().notNull(),
+      value: bytes32().notNull(),
+    },
+    (table) => [
+      index("slot_writes_latest_idx").on(table.slot, table.id.desc()),
+    ],
+  ),
+  known_paths: pgTable("known_paths", {
+    path: text().notNull().primaryKey(),
+  }),
+});
+
+type StateSchema = {
+  readonly [Name in keyof ReturnType<typeof stateTables>]: ReturnType<
+    typeof stateTables
+  >[Name];
+};
+
+type MutationSchema<Config extends FFCAConfig = FFCAConfig> = {
   readonly [Name in keyof Config["mutations"] as `${Lowercase<Name & string>}_mutations`]: PgTable;
 };
 
 export function createMutationSchema<const Config extends FFCAConfig>(
   config: Pick<Config, "abi" | "mutations">,
-): GeneratedMutationSchema<Config> {
+): StateSchema & MutationSchema<Config> {
   const signatureColumns = prefixColumnNames(
     abiParametersToColumns(getSignatureAbiParameters(config.abi)),
     "signature_",
   );
-  const schema: Record<string, PgTable> = {};
+  const schema: Record<string, PgTable> = stateTables();
 
   for (const [name, mutation] of Object.entries(config.mutations)) {
     const tableName = mutationTableName(name);
@@ -75,7 +103,7 @@ export function createMutationSchema<const Config extends FFCAConfig>(
     );
   }
 
-  return schema as GeneratedMutationSchema<Config>;
+  return schema as StateSchema & MutationSchema<Config>;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {
@@ -100,7 +128,7 @@ function mergeColumns(
   for (const group of groups) {
     for (const [name, column] of Object.entries(group)) {
       if (columns[name] !== undefined) {
-        throw new Error(`duplicate generated mutation column name: ${name}`);
+        throw new Error(`duplicate mutation column name: ${name}`);
       }
       columns[name] = column;
     }

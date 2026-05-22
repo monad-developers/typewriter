@@ -1,24 +1,31 @@
 import type { AbiParameter } from "abitype";
-import type { AnyColumn } from "drizzle-orm";
-import { eq, getTableColumns, sql } from "drizzle-orm";
+import { asc, desc, eq, getColumns, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
-import { Data, Effect } from "effect";
+import { Effect } from "effect";
+import type { ExecuteResult } from "evm";
+import type { Hex } from "ox";
+import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";
 import type { ResolvedMutation, RuntimeBundle, RuntimeMutation } from "./types";
 
-export class PersistenceError extends Data.TaggedError("PersistenceError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+type LifecycleMutation = Omit<
+  Extract<
+    RuntimeMutation,
+    { status: "accepted" | "included" | "safe" | "finalized" }
+  >,
+  "status"
+> & {
+  status: "included" | "safe" | "finalized";
+};
 
-export function persistGeneratedMutation(
+export function insertMutation(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
   mutation: ResolvedMutation,
   bundle: RuntimeBundle,
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
-    const table = generatedMutationTable(schema, mutation.name);
+    const table = getMutationTable(schema, mutation.name);
     const row = {
       id: mutation.id,
       bundleId: bundle.id,
@@ -29,69 +36,129 @@ export function persistGeneratedMutation(
       ...("resolution" in mutation.config
         ? abiParameterValues(
             mutation.config.resolution,
-            requiredValue(mutation.resolution, "resolution"),
+            requiredValue(mutation.resolution),
             "resolution_",
           )
         : {}),
     };
 
-    yield* tx.insert(table).values(row as never);
+    yield* tx.insert(table).values(row);
   });
 }
 
-export function persistUpdatedGeneratedMutationLifecycle(
+export function updateMutationLifecycle(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
-  mutation: Extract<
-    RuntimeMutation,
-    { status: "accepted" | "included" | "safe" | "finalized" }
-  >,
+  mutation: LifecycleMutation,
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
-    if (mutation.status === "accepted") {
-      return yield* new PersistenceError({
-        message: `generated mutation lifecycle update requires post-accepted status: ${mutation.name}`,
-      });
-    }
+    const table = getMutationTable(schema, mutation.name);
+    const columns = getColumns(table);
+    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
+    const idColumn = columns.id!;
 
-    const table = generatedMutationTable(schema, mutation.name);
-    const columns = getTableColumns(table) as unknown as Record<
-      string,
-      AnyColumn
-    > & { id?: AnyColumn };
-    const idColumn = columns.id;
-    if (idColumn === undefined) {
-      return yield* new PersistenceError({
-        message: `generated mutation table is missing id column: ${mutation.name}`,
-      });
-    }
-
-    const set =
+    const set: Record<string, unknown> =
       mutation.status === "included"
         ? { status: mutation.status, includedAt: sql`NOW()` }
         : mutation.status === "safe"
           ? { status: mutation.status, safeAt: sql`NOW()` }
           : { status: mutation.status, finalizedAt: sql`NOW()` };
 
-    yield* tx
-      .update(table)
-      .set(set as never)
-      .where(eq(idColumn, mutation.id));
+    yield* tx.update(table).set(set).where(eq(idColumn, mutation.id));
   });
 }
 
-function generatedMutationTable(
+export function insertSlotWrites(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+  mutation: Pick<RuntimeMutation, "id">,
+  slotWrites: ExecuteResult["slot_writes"],
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    if (slotWrites.length === 0) return;
+
+    yield* tx.insert(getTable(schema, "slot_writes")).values(
+      slotWrites.map((write) => ({
+        mutationId: mutation.id,
+        slot: write.slot,
+        value: write.new_value,
+      })),
+    );
+  });
+}
+
+export function insertKnownPaths(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+  paths: readonly string[],
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    if (paths.length === 0) return;
+
+    yield* tx
+      .insert(getTable(schema, "known_paths"))
+      .values(paths.map((path) => ({ path })))
+      .onConflictDoNothing();
+  });
+}
+
+export function selectKnownPaths(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+): Effect.Effect<string[], unknown> {
+  return Effect.gen(function* () {
+    const table = getTable(schema, "known_paths");
+    const columns = getColumns(table);
+    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
+    const pathColumn = columns.path!;
+
+    const rows = yield* tx
+      .select({ path: pathColumn })
+      .from(table)
+      .orderBy(asc(pathColumn));
+    return rows.map((row) => String(row.path));
+  });
+}
+
+export function selectAccountStorage(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+): Effect.Effect<AccountStorage, unknown> {
+  return Effect.gen(function* () {
+    const table = getTable(schema, "slot_writes");
+    const columns = getColumns(table);
+    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
+    const idColumn = columns.id!;
+    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
+    const slotColumn = columns.slot!;
+    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
+    const valueColumn = columns.value!;
+
+    const rows = yield* tx
+      .selectDistinctOn([slotColumn], {
+        slot: slotColumn,
+        value: valueColumn,
+      })
+      .from(table)
+      .orderBy(asc(slotColumn), desc(idColumn));
+
+    const storage: AccountStorage = {};
+    for (const row of rows) {
+      storage[row.slot as Hex.Hex] = row.value as Hex.Hex;
+    }
+    return storage;
+  });
+}
+
+function getMutationTable(
   schema: Record<string, PgTable>,
   mutationName: string,
 ): PgTable {
-  const tableName = `${mutationName.toLowerCase()}_mutations`;
-  const table = schema[tableName];
-  if (table === undefined) {
-    throw new PersistenceError({
-      message: `generated mutation table not found: ${tableName}`,
-    });
-  }
-  return table;
+  return getTable(schema, `${mutationName.toLowerCase()}_mutations`);
+}
+
+function getTable(schema: Record<string, PgTable>, tableName: string): PgTable {
+  return schema[tableName]!;
 }
 
 function abiParameterValues(
@@ -109,7 +176,7 @@ function abiParameterValues(
         : param.name;
     const value = Array.isArray(values)
       ? values[index]
-      : recordValue(values, name, `${prefix}${name}`);
+      : recordValue(values, name);
     row[`${prefix}${name}`] = serializeAbiValue(param.type, value);
   }
   return row;
@@ -119,34 +186,21 @@ function prefixedObjectValues(
   prefix: string,
   value: unknown,
 ): Record<string, unknown> {
-  if (!isRecord(value)) {
-    throw new PersistenceError({
-      message: `generated mutation persistence expected object value for ${prefix.slice(0, -1)}`,
-    });
-  }
   const row: Record<string, unknown> = {};
-  for (const [name, entry] of Object.entries(value)) {
+  for (const [name, entry] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
     row[`${prefix}${name}`] = serializeJsonValue(entry);
   }
   return row;
 }
 
-function recordValue(value: unknown, key: string, column: string): unknown {
-  if (!isRecord(value) || value[key] === undefined) {
-    throw new PersistenceError({
-      message: `generated mutation value missing for column: ${column}`,
-    });
-  }
-  return value[key];
+function recordValue(value: unknown, key: string): unknown {
+  return (value as Record<string, unknown>)[key];
 }
 
-function requiredValue<T>(value: T | undefined, name: string): T {
-  if (value === undefined) {
-    throw new PersistenceError({
-      message: `generated mutation persistence missing ${name}`,
-    });
-  }
-  return value;
+function requiredValue<T>(value: T | undefined): T {
+  return value as T;
 }
 
 function serializeAbiValue(type: string, value: unknown): unknown {

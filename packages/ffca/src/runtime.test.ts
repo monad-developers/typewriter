@@ -10,6 +10,7 @@ import {
   P256_PRIVATE_KEY,
   SCHEDULER_ACCOUNT,
   TEST_CLIENT,
+  TEST_DB_CONNECTION,
   TEST_DB_URL,
   TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
@@ -39,6 +40,7 @@ import {
 import type { FFCAConfig } from "./config";
 import { encodeMutationCalldata } from "./encoding";
 import { createFFCA as createFFCARaw } from "./index";
+import { deploymentSchemaName } from "./migrate";
 import type { FFCA } from "./runtime";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
@@ -50,6 +52,13 @@ async function createFFCA<
     ...rest,
     database: { url: TEST_DB_URL, maxConnections: 2 },
   } as FFCAConfig) as Promise<FFCA<C["storageLayout"]>>;
+}
+
+function quoteIdentifier(identifier: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(identifier)) {
+    throw new Error(`Invalid SQL identifier: ${identifier}`);
+  }
+  return `"${identifier}"`;
 }
 
 test("ffca.domain is derived from config", async () => {
@@ -230,6 +239,10 @@ test("Harness revm rejects invalid signatures", async () => {
 test("e2e Counter: single mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const abi = COUNTER_ABI;
+  const addMutation = {
+    ...COUNTER_MUTATIONS.add,
+    registerMappingKeys: () => ["total", "nonce"],
+  };
 
   const ffca = await createFFCA({
     address,
@@ -239,7 +252,7 @@ test("e2e Counter: single mutation", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    mutations: COUNTER_MUTATIONS,
+    mutations: { add: addMutation },
   });
 
   const args = { amount: 7n, nonce: 0n };
@@ -254,6 +267,28 @@ test("e2e Counter: single mutation", async () => {
       chainId: anvil.id,
     }),
   });
+
+  const schemaName = deploymentSchemaName(anvil.id, address);
+  const slotRows = await TEST_DB_CONNECTION.unsafe<{ slot: Hex; value: Hex }[]>(
+    `SELECT slot, value FROM ${quoteIdentifier(schemaName)}.slot_writes ORDER BY slot`,
+  );
+  const pathRows = await TEST_DB_CONNECTION.unsafe<{ path: string }[]>(
+    `SELECT path FROM ${quoteIdentifier(schemaName)}.known_paths ORDER BY path`,
+  );
+
+  expect(slotRows).toEqual([
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      value:
+        "0x0000000000000000000000000000000000000000000000000000000000000007",
+    },
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000001",
+      value:
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+    },
+  ]);
+  expect(pathRows).toEqual([{ path: "nonce" }, { path: "total" }]);
 
   const readTotal = async () => {
     const [total] = (await TEST_PUBLIC_CLIENT.readContract({

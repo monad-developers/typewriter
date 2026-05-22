@@ -15,9 +15,12 @@ import {
   type PgSmallIntBuilder,
   type PgTextBuilder,
   boolean as pgBoolean,
+  type Set$Type,
   smallint,
   text,
 } from "drizzle-orm/pg-core";
+
+type Hex = `0x${string}`;
 
 type AbiPgType =
   | "boolean"
@@ -54,6 +57,9 @@ type JsonbBuilderFor<T> = PgJsonbBuilder & {
   readonly _: PgJsonbBuilder["_"] & { readonly $type: T };
 };
 
+type HexCharBuilder = Set$Type<PgCharBuilder, Hex>;
+type HexTextBuilder = Set$Type<PgTextBuilder, Hex>;
+
 export type AbiParameterToColumn<Param extends AbiParameter> =
   Param["type"] extends `${string}[${string}]` | `tuple${string}`
     ? NotNullBuilder<JsonbBuilderFor<AbiParameterToPgJsonType<Param>>>
@@ -75,16 +81,18 @@ export type AbiParameterToColumn<Param extends AbiParameter> =
             ? NotNullBuilder<PgBigInt64Builder>
             : Param["type"] extends `uint${string}` | `int${string}`
               ? NotNullBuilder<PgNumericBuilder>
-              : Param["type"] extends "string" | "bytes"
-                ? NotNullBuilder<PgTextBuilder>
-                : Param["type"] extends
-                      | "address"
-                      | `bytes${string}`
-                      | "function"
-                  ? NotNullBuilder<PgCharBuilder>
-                  : NotNullBuilder<
-                      JsonbBuilderFor<AbiParameterToPgJsonType<Param>>
-                    >;
+              : Param["type"] extends "bytes"
+                ? NotNullBuilder<HexTextBuilder>
+                : Param["type"] extends "string"
+                  ? NotNullBuilder<PgTextBuilder>
+                  : Param["type"] extends
+                        | "address"
+                        | `bytes${string}`
+                        | "function"
+                    ? NotNullBuilder<HexCharBuilder>
+                    : NotNullBuilder<
+                        JsonbBuilderFor<AbiParameterToPgJsonType<Param>>
+                      >;
 
 export type AbiParametersToColumns<Params extends readonly AbiParameter[]> = {
   [Index in keyof Params as Index extends `${number}`
@@ -105,6 +113,7 @@ type ParamColumnName<Param, Index extends string> = Param extends {
 type AbiPgColumnInfo = {
   readonly pg: AbiPgType;
   readonly complex: boolean;
+  readonly hex?: boolean;
 };
 
 export function abiParametersToColumns<
@@ -142,16 +151,21 @@ function abiTypeToPgType(abiType: string): AbiPgColumnInfo {
   }
 
   if (abiType === "bool") return { pg: "boolean", complex: false };
-  if (abiType === "address") return { pg: "char(42)", complex: false };
-  if (abiType === "bytes") return { pg: "text", complex: false };
+  if (abiType === "address") {
+    return { pg: "char(42)", complex: false, hex: true };
+  }
+  if (abiType === "bytes") return { pg: "text", complex: false, hex: true };
   if (abiType === "string") return { pg: "text", complex: false };
-  if (abiType === "function") return { pg: "char(50)", complex: false };
+  if (abiType === "function") {
+    return { pg: "char(50)", complex: false, hex: true };
+  }
 
   const bytesMatch = /^bytes([1-9]|[12][0-9]|3[0-2])$/.exec(abiType);
   if (bytesMatch !== null) {
     return {
       pg: `char(${2 + Number(bytesMatch[1]) * 2})`,
       complex: false,
+      hex: true,
     };
   }
 
@@ -190,7 +204,7 @@ function columnForInfo<Param extends AbiParameter>(
     case "numeric(78,0)":
       return numeric({ precision: 78, scale: 0 });
     case "text":
-      return text();
+      return info.hex ? text().$type<Hex>() : text();
     case "jsonb":
       return jsonb().$type<AbiParameterToPgJsonType<Param>>();
     default: {
@@ -198,7 +212,7 @@ function columnForInfo<Param extends AbiParameter>(
         throw new Error("dynamic mapping placeholder cannot build a column");
       }
       const length = charLength(info.pg);
-      return char({ length });
+      return info.hex ? char({ length }).$type<Hex>() : char({ length });
     }
   }
 }
