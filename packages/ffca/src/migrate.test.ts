@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
+import { parseAbiParameters } from "abitype";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
-import { HARNESS_SCHEMA } from "../test/utils";
+import { HARNESS_SCHEMA, STUB_FFCA_ABI } from "../test/utils";
 import { layerDatabaseLive } from "./db";
 import { migrate, updateSchema } from "./migrate";
+import { createMutationSchema } from "./schema";
 
 const runMigrate = (
   schema: Record<string, unknown>,
@@ -120,7 +122,7 @@ test("migrate is idempotent when schema already exists", async () => {
   ]);
 });
 
-test("migrate rejects accepted mutations in an existing schema", async () => {
+test("migrate deletes unsettled mutations in an existing schema", async () => {
   const chainId = 31339;
   const address =
     "0x000000000000000000000000000000000000ffca" as Address.Address;
@@ -135,7 +137,62 @@ test("migrate rejects accepted mutations in an existing schema", async () => {
       (0, 'accepted', ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, 0, 0, '0x', 1, 0)
   `;
 
-  await expect(runMigrate(HARNESS_SCHEMA, chainId, address)).rejects.toThrow(
-    /contains accepted mutations/,
+  await expect(runMigrate(HARNESS_SCHEMA, chainId, address)).resolves.toBe(
+    schemaName,
   );
+
+  const rows = await TEST_DB_CONNECTION<{ id: number }[]>`
+    SELECT id
+    FROM ${TEST_DB_CONNECTION(schemaName)}.harness_credits
+  `;
+  expect(rows).toEqual([]);
+});
+
+test("migrate deletes slot writes for unsettled mutations", async () => {
+  const chainId = 31340;
+  const address =
+    "0x000000000000000000000000000000000000ffca" as Address.Address;
+  const schemaName = "ffca_31340_0x000000000000000000000000000000000000ffca";
+  const schema = createMutationSchema({
+    abi: STUB_FFCA_ABI,
+    mutations: {
+      add: {
+        tag: 0,
+        params: parseAbiParameters("uint256 amount"),
+      },
+    },
+  });
+
+  await runMigrate(schema, chainId, address);
+
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+      (id, ${TEST_DB_CONNECTION("bundleId")}, ${TEST_DB_CONNECTION("bundlePosition")}, status, amount, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+    VALUES
+      (0, 0, 0, 'accepted', 1, 0, '0x'),
+      (1, 0, 1, 'included', 2, 0, '0x')
+  `;
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+      (${TEST_DB_CONNECTION("mutationId")}, slot, value)
+    VALUES
+      (0, ${"0x0000000000000000000000000000000000000000000000000000000000000000"}, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}),
+      (1, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, ${"0x0000000000000000000000000000000000000000000000000000000000000002"})
+  `;
+
+  await runMigrate(schema, chainId, address);
+
+  const mutations = await TEST_DB_CONNECTION<{ id: number }[]>`
+    SELECT id
+    FROM ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+    ORDER BY id
+  `;
+  const slotWrites = await TEST_DB_CONNECTION<{ mutationId: number }[]>`
+    SELECT ${TEST_DB_CONNECTION("mutationId")}
+    FROM ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+    ORDER BY ${TEST_DB_CONNECTION("mutationId")}
+  `;
+
+  expect(mutations).toEqual([{ id: 1 }]);
+  expect(slotWrites).toEqual([{ mutationId: 1 }]);
 });

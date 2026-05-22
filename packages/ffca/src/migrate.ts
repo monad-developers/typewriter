@@ -2,7 +2,8 @@ import {
   generateDrizzleJson,
   generateMigration,
 } from "drizzle-kit/api-postgres";
-import type { PgEnum } from "drizzle-orm/pg-core";
+import { getColumns, inArray, notInArray } from "drizzle-orm";
+import type { PgColumn, PgEnum } from "drizzle-orm/pg-core";
 import { isPgEnum } from "drizzle-orm/pg-core";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import { isTable } from "drizzle-orm/table";
@@ -95,36 +96,45 @@ function doesSchemaExist(
   });
 }
 
-function findAcceptedMutationTable(
+function deleteUnsettledMutations(
   db: DatabaseClient,
-  schemaName: string,
-): Effect.Effect<string | undefined, MigrationError | SqlError> {
+  schema: Record<string, PgTable>,
+): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
-    const sql = db.$client;
-    const tables = yield* sql<{ table_name: string }>`
-    SELECT table_name
-    FROM information_schema.columns
-    WHERE table_schema = ${schemaName}
-      AND column_name = 'status'
-      AND udt_schema = ${schemaName}
-      AND udt_name = 'mutation_status'
-    ORDER BY table_name
-  `;
+    const { slot_writes: slotWritesTable } = schema;
+    const slotWritesColumns =
+      slotWritesTable === undefined ? undefined : getColumns(slotWritesTable);
+    // @ts-expect-error Drizzle cannot infer columns from runtime-created tables.
+    const mutationIdColumn = slotWritesColumns?.mutationId;
 
-    for (const { table_name: tableName } of tables) {
-      const [{ exists = false } = { exists: false }] = yield* sql<{
-        exists: boolean;
-      }>`
-          SELECT EXISTS (
-            SELECT 1
-            FROM ${sql(schemaName)}.${sql(tableName)}
-            WHERE status = 'accepted'
-          ) AS exists
-        `;
-      if (exists) return tableName;
+    const mutationTables = Object.values(schema).filter((table) => {
+      if (!isTable(table)) return false;
+      const columns = getColumns(table);
+      return "id" in columns && "status" in columns;
+    });
+
+    for (const table of mutationTables) {
+      const columns = getColumns(table) as unknown as Record<string, PgColumn>;
+      const { id: idColumn, status: statusColumn } = columns;
+      const unsettled = notInArray(statusColumn!, [
+        "included",
+        "safe",
+        "finalized",
+      ]);
+
+      if (slotWritesTable !== undefined && mutationIdColumn !== undefined) {
+        yield* db
+          .delete(slotWritesTable)
+          .where(
+            inArray(
+              mutationIdColumn,
+              db.select({ id: idColumn! }).from(table).where(unsettled),
+            ),
+          );
+      }
+
+      yield* db.delete(table).where(unsettled);
     }
-
-    return undefined;
   });
 }
 
@@ -132,7 +142,7 @@ export function migrate(
   schema: Record<string, unknown>,
   chainId: number,
   address: Address.Address,
-): Effect.Effect<string, MigrationError | SqlError, Database> {
+): Effect.Effect<string, unknown, Database> {
   return Effect.gen(function* () {
     const db = yield* Database;
     const sql = db.$client;
@@ -193,15 +203,7 @@ export function migrate(
         // TODO: Track the generated schema as deployment metadata and compare it
         // here before deciding whether an existing schema is safe to reuse.
 
-        const acceptedMutationTable = yield* findAcceptedMutationTable(
-          db,
-          schemaName,
-        );
-        if (acceptedMutationTable !== undefined) {
-          return yield* new MigrationError({
-            message: `FFCA deployment schema contains accepted mutations and cannot be recovered yet: ${schemaName}.${acceptedMutationTable}`,
-          });
-        }
+        yield* deleteUnsettledMutations(db, schema as Record<string, PgTable>);
       }),
     );
 

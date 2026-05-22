@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
+import { Effect } from "effect";
 import type { Hex } from "viem";
 import { anvil } from "viem/chains";
 import {
@@ -38,10 +39,12 @@ import {
   signHarness,
 } from "../test/utils";
 import type { FFCAConfig } from "./config";
+import { layerDatabaseLive } from "./db";
 import { encodeMutationCalldata } from "./encoding";
 import { createFFCA as createFFCARaw } from "./index";
-import { deploymentSchemaName } from "./migrate";
+import { deploymentSchemaName, migrate } from "./migrate";
 import type { FFCA } from "./runtime";
+import { createMutationSchema } from "./schema";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
 async function createFFCA<
@@ -86,7 +89,51 @@ test("ffca.domain is derived from config", async () => {
   await ffca.stop();
 });
 
-test.skip("createFFCA loads persisted state before returning", () => {});
+test("createFFCA loads persisted slot state before returning", async () => {
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const schema = createMutationSchema({
+    abi: COUNTER_ABI,
+    mutations: COUNTER_MUTATIONS,
+  });
+  const schemaName = deploymentSchemaName(anvil.id, address);
+
+  await Effect.runPromise(
+    migrate(schema, anvil.id, address).pipe(
+      Effect.provide(
+        layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 }),
+      ),
+    ),
+  );
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+      (id, ${TEST_DB_CONNECTION("bundleId")}, ${TEST_DB_CONNECTION("bundlePosition")}, status, amount, nonce, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+    VALUES
+      (0, 0, 0, 'included', 7, 0, 0, '0x')
+  `;
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+      (${TEST_DB_CONNECTION("mutationId")}, slot, value)
+    VALUES
+      (0, ${"0x0000000000000000000000000000000000000000000000000000000000000000"}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"}),
+      (0, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, ${"0x0000000000000000000000000000000000000000000000000000000000000001"})
+  `;
+
+  const ffca = await createFFCA({
+    address,
+    domain: COUNTER_DOMAIN,
+    abi: COUNTER_ABI,
+    storageLayout: COUNTER_STORAGE_LAYOUT,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    mutations: COUNTER_MUTATIONS,
+  });
+
+  expect(await ffca.state.total).toBe(7n);
+  expect(await ffca.state.nonce).toBe(1n);
+
+  await ffca.stop();
+});
 
 test("bundle applies mutations in config.sequence order within a bundle", async () => {
   const applied: string[] = [];
@@ -556,10 +603,6 @@ test("e2e Harness: mutation with resolution", async () => {
 
   await ffca.stop();
 });
-
-test.skip("e2e Harness: persistence callbacks write accepted state", () => {});
-
-test.skip("e2e Harness: authorize persistence writes per-mutation key rows", () => {});
 
 // Harness: when mutations arrive out of order, `sequence` sorts them so the
 // debit's resolve runs against post-credit state. If sort were broken, debit's
