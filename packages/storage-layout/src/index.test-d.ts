@@ -1,27 +1,18 @@
 import { expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type {
-  ConcreteStoragePath,
+  ConcreteStorageVariable,
   ExtractVariableNames,
   StorageLayout,
   StorageLayoutToPrimitiveType,
-  StoragePath,
-  StoragePathDiff,
-  StoragePathToPrimitiveType,
   StorageSlotDiff,
   StorageSlotWriteDiff,
+  StorageVariable,
+  StorageVariableDiff,
+  StorageVariableToPrimitiveType,
 } from "./index";
-import {
-  createStorageProxy,
-  decodeStorageDiff,
-  decodeStoragePath,
-  encodeStorageDiff,
-  encodeStoragePath,
-  getStorageSlot,
-} from "./index";
+import { decodeStorageVariable, encodeStorageVariable } from "./index";
 import type { ParseStoragePath } from "./storage-path";
-
-type TestSlotMap = { [slot: Hex.Hex]: Hex.Hex };
 
 const layout = {
   storage: [
@@ -199,49 +190,6 @@ const layout = {
   },
 } as const satisfies StorageLayout;
 
-const multiSlotLayout = {
-  storage: [
-    {
-      astId: 1,
-      contract: "src/Test.sol:Test",
-      label: "metadata",
-      offset: 0,
-      slot: "0",
-      type: "t_struct(Metadata)10_storage",
-    },
-  ],
-  types: {
-    "t_struct(Metadata)10_storage": {
-      encoding: "inplace",
-      label: "struct Test.Metadata",
-      members: [
-        {
-          astId: 2,
-          contract: "src/Test.sol:Test",
-          label: "first",
-          offset: 0,
-          slot: "0",
-          type: "t_uint256",
-        },
-        {
-          astId: 3,
-          contract: "src/Test.sol:Test",
-          label: "second",
-          offset: 0,
-          slot: "1",
-          type: "t_uint256",
-        },
-      ],
-      numberOfBytes: "64",
-    },
-    t_uint256: {
-      encoding: "inplace",
-      label: "uint256",
-      numberOfBytes: "32",
-    },
-  },
-} as const satisfies StorageLayout;
-
 test("type-level storage path parsing matches runtime path shape", () => {
   type Parsed = ParseStoragePath<"accounts[0xabcd][1].orders[3][4].price">;
 
@@ -281,45 +229,6 @@ test("StorageLayoutToPrimitiveType falls back for broad StorageLayout", () => {
   expectTypeOf<Variables>().toEqualTypeOf<Record<string, unknown>>();
 });
 
-test("StorageProxy follows sync and async getter shapes", () => {
-  const syncGetter = (_slots: Hex.Hex[]): TestSlotMap => ({});
-  const asyncGetter = async (_slots: Hex.Hex[]): Promise<TestSlotMap> => ({});
-  const syncState = createStorageProxy(layout, syncGetter);
-  const asyncState = createStorageProxy(layout, asyncGetter);
-
-  expectTypeOf(syncState.supply).toEqualTypeOf<bigint>();
-  expectTypeOf(syncState.metadata).toEqualTypeOf<{
-    readonly lastUpdate: bigint;
-    readonly paused: boolean;
-  }>();
-  expectTypeOf(syncState.balances).toEqualTypeOf<{
-    readonly [K: Hex.Hex]: bigint;
-  }>();
-  expectTypeOf(syncState.allowances).toEqualTypeOf<{
-    readonly [K: Hex.Hex]: { readonly [K: Hex.Hex]: bigint };
-  }>();
-  expectTypeOf(syncState.fixedNumbers).toEqualTypeOf<
-    readonly [bigint, bigint, bigint]
-  >();
-
-  expectTypeOf(asyncState.supply).toEqualTypeOf<Promise<bigint>>();
-  expectTypeOf(asyncState.metadata).toEqualTypeOf<{
-    readonly lastUpdate: Promise<bigint>;
-    readonly paused: Promise<boolean>;
-  }>();
-  expectTypeOf(asyncState.balances).toEqualTypeOf<{
-    readonly [K: Hex.Hex]: Promise<bigint>;
-  }>();
-  expectTypeOf(asyncState.allowances).toEqualTypeOf<{
-    readonly [K: Hex.Hex]: { readonly [K: Hex.Hex]: Promise<bigint> };
-  }>();
-  expectTypeOf(asyncState.fixedNumbers).toEqualTypeOf<
-    readonly [Promise<bigint>, Promise<bigint>, Promise<bigint>]
-  >();
-  expectTypeOf<(typeof asyncState.fixedNumbers)["length"]>().toEqualTypeOf<3>();
-  expectTypeOf(asyncState.numbers).toEqualTypeOf<readonly Promise<bigint>[]>();
-});
-
 test("StorageLayoutToPrimitiveType remains writable plain data", () => {
   type Variables = StorageLayoutToPrimitiveType<typeof layout>;
 
@@ -329,8 +238,8 @@ test("StorageLayoutToPrimitiveType remains writable plain data", () => {
   }>();
 });
 
-test("StoragePathToPrimitiveType extracts one variable", () => {
-  type Metadata = StoragePathToPrimitiveType<typeof layout, "metadata">;
+test("StorageVariableToPrimitiveType extracts one variable", () => {
+  type Metadata = StorageVariableToPrimitiveType<typeof layout, "metadata">;
 
   expectTypeOf<Metadata>().toEqualTypeOf<{
     lastUpdate: bigint;
@@ -338,31 +247,31 @@ test("StoragePathToPrimitiveType extracts one variable", () => {
   }>();
 });
 
-test("StoragePathToPrimitiveType handles top-level path selectors", () => {
-  type Owner = StoragePathToPrimitiveType<typeof layout, "owner">;
-  type Nested = StoragePathToPrimitiveType<
+test("StorageVariableToPrimitiveType handles top-level variable selectors", () => {
+  type Owner = StorageVariableToPrimitiveType<typeof layout, "owner">;
+  type Nested = StorageVariableToPrimitiveType<
     typeof layout,
     "metadata.lastUpdate"
   >;
-  type FixedArrayElement = StoragePathToPrimitiveType<
+  type FixedArrayElement = StorageVariableToPrimitiveType<
     typeof layout,
     "fixedNumbers[0]"
   >;
-  type DynamicArray = StoragePathToPrimitiveType<typeof layout, "numbers">;
-  type DynamicArrayElement = StoragePathToPrimitiveType<
+  type DynamicArray = StorageVariableToPrimitiveType<typeof layout, "numbers">;
+  type DynamicArrayElement = StorageVariableToPrimitiveType<
     typeof layout,
     "numbers[0]"
   >;
-  type MappingValue = StoragePathToPrimitiveType<
+  type MappingValue = StorageVariableToPrimitiveType<
     typeof layout,
     `balances[${Hex.Hex}]`
   >;
-  type NestedMappingValue = StoragePathToPrimitiveType<
+  type NestedMappingValue = StorageVariableToPrimitiveType<
     typeof layout,
     `allowances[${Hex.Hex}][${Hex.Hex}]`
   >;
-  type RawBytes = StoragePathToPrimitiveType<typeof layout, "rawBytes">;
-  type Message = StoragePathToPrimitiveType<typeof layout, "message">;
+  type RawBytes = StorageVariableToPrimitiveType<typeof layout, "rawBytes">;
+  type Message = StorageVariableToPrimitiveType<typeof layout, "message">;
 
   expectTypeOf<Owner>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<Nested>().toEqualTypeOf<bigint>();
@@ -375,8 +284,8 @@ test("StoragePathToPrimitiveType handles top-level path selectors", () => {
   expectTypeOf<Message>().toEqualTypeOf<string>();
 });
 
-test("StoragePathDiff infers sparse concrete path keys and values", () => {
-  type Diff = StoragePathDiff<typeof layout>;
+test("StorageVariableDiff infers sparse concrete variable keys and values", () => {
+  type Diff = StorageVariableDiff<typeof layout>;
 
   expectTypeOf<Diff["pre"]["owner"]>().toEqualTypeOf<
     `0x${string}` | undefined
@@ -398,10 +307,10 @@ test("StorageSlotDiff uses raw slot values and StorageSlotWriteDiff uses masks",
   }>();
 });
 
-test("public storage path types preserve layout names", () => {
+test("public storage variable types preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
-  type Paths = StoragePath<typeof layout>;
-  type ConcretePaths = ConcreteStoragePath<typeof layout>;
+  type Variables = StorageVariable<typeof layout>;
+  type ConcreteVariables = ConcreteStorageVariable<typeof layout>;
 
   expectTypeOf<Names>().toEqualTypeOf<
     | "supply"
@@ -415,7 +324,7 @@ test("public storage path types preserve layout names", () => {
     | "rawBytes"
     | "message"
   >();
-  expectTypeOf<Paths>().toEqualTypeOf<
+  expectTypeOf<Variables>().toEqualTypeOf<
     | "supply"
     | "flags"
     | "owner"
@@ -433,7 +342,7 @@ test("public storage path types preserve layout names", () => {
     | "rawBytes"
     | "message"
   >();
-  expectTypeOf<ConcretePaths>().toEqualTypeOf<
+  expectTypeOf<ConcreteVariables>().toEqualTypeOf<
     | "supply"
     | "flags"
     | "owner"
@@ -452,51 +361,17 @@ test("public storage path types preserve layout names", () => {
 
 test("concrete path APIs reject composite paths at type-check time", () => {
   const typeAssertions = () => {
-    getStorageSlot(layout, "metadata");
-    getStorageSlot(layout, "numbers");
-    decodeStoragePath(layout, "owner", {});
-    encodeStoragePath(layout, "metadata.paused", false);
-    encodeStorageDiff(layout, { pre: { owner: "0x123" }, post: {} });
-    decodeStorageDiff(layout, { pre: {}, post: {} } satisfies StorageSlotDiff);
-    decodeStorageDiff(layout, { pre: {}, post: {} }, [
-      `balances[${"0x123" as Hex.Hex}]`,
-    ]);
-
-    // @ts-expect-error unknown roots are not storage paths
-    getStorageSlot(layout, "missing");
-    // @ts-expect-error mappings require keys
-    getStorageSlot(layout, "balances");
-    // @ts-expect-error fixed array index is out of bounds
-    getStorageSlot(layout, "fixedNumbers[3]");
+    decodeStorageVariable(layout, "owner", {});
+    encodeStorageVariable(layout, "metadata.paused", false);
 
     // @ts-expect-error structs are not concrete leaf paths
-    decodeStoragePath(layout, "metadata", {});
+    decodeStorageVariable(layout, "metadata", {});
     // @ts-expect-error dynamic array roots are not concrete leaf paths
-    decodeStoragePath(layout, "numbers", {});
+    decodeStorageVariable(layout, "numbers", {});
     // @ts-expect-error fixed array roots are not concrete leaf paths
-    encodeStoragePath(layout, "fixedNumbers", [1n, 2n, 3n]);
+    encodeStorageVariable(layout, "fixedNumbers", [1n, 2n, 3n]);
     // @ts-expect-error nested mappings require all keys to reach a leaf
-    decodeStoragePath(layout, `allowances[${"0x123" as Hex.Hex}]`, {});
-    // @ts-expect-error storage diffs use concrete leaf paths
-    encodeStorageDiff(layout, { pre: { metadata: {} }, post: {} });
-    // @ts-expect-error storage diff values are inferred from their paths
-    encodeStorageDiff(layout, { pre: { "metadata.paused": 1n }, post: {} });
-    // @ts-expect-error known paths must be concrete leaf paths
-    decodeStorageDiff(layout, { pre: {}, post: {} }, ["metadata"]);
+    decodeStorageVariable(layout, `allowances[${"0x123" as Hex.Hex}]`, {});
   };
   expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
-});
-
-test("getStorageSlot accepts inferred storage paths", () => {
-  const ownerSlot = getStorageSlot(layout, "owner");
-  const metadataSlot = getStorageSlot(layout, "metadata");
-  const dynamicNumbersSlot = getStorageSlot(layout, "numbers");
-  const fixedNumbersSlot = getStorageSlot(layout, "fixedNumbers");
-  const multiSlotMetadata = getStorageSlot(multiSlotLayout, "metadata");
-
-  expectTypeOf(ownerSlot).toEqualTypeOf<`0x${string}`>();
-  expectTypeOf(metadataSlot).toEqualTypeOf<`0x${string}`>();
-  expectTypeOf(dynamicNumbersSlot).toEqualTypeOf<`0x${string}`>();
-  expectTypeOf(fixedNumbersSlot).toEqualTypeOf<`0x${string}`[]>();
-  expectTypeOf(multiSlotMetadata).toEqualTypeOf<`0x${string}`[]>();
 });

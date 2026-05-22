@@ -76,17 +76,17 @@ type CustomTypeError<Message extends string> = [`Error: ${Message}`];
 export type ExtractVariableNames<Layout extends StorageLayout> =
   Layout["storage"][number]["label"];
 
-export type ExtractStoragePaths<Layout extends StorageLayout> =
+export type ExtractStorageVariables<Layout extends StorageLayout> =
   string extends ExtractVariableNames<Layout>
     ? string
     : StorageItemPaths<Layout, Layout["storage"][number]>;
 
-export type ExtractConcreteStoragePaths<Layout extends StorageLayout> =
+export type ExtractConcreteStorageVariables<Layout extends StorageLayout> =
   string extends ExtractVariableNames<Layout>
     ? string
     : ConcreteStorageItemPaths<Layout, Layout["storage"][number]>;
 
-export type ExtractMultiSlotStoragePaths<Layout extends StorageLayout> =
+export type ExtractMultiSlotStorageVariables<Layout extends StorageLayout> =
   string extends ExtractVariableNames<Layout>
     ? string
     : MultiSlotStorageItemPaths<Layout, Layout["storage"][number]>;
@@ -95,16 +95,19 @@ export type StorageLayoutToPrimitiveType<Layout extends StorageLayout> =
   string extends ExtractVariableNames<Layout>
     ? Record<string, unknown>
     : Pretty<{
-        [Name in ExtractVariableNames<Layout>]: StoragePathToPrimitiveType<
+        [Name in ExtractVariableNames<Layout>]: StorageVariableToPrimitiveType<
           Layout,
           Name
         >;
       }>;
 
-export type StoragePathToPrimitiveType<
+export type StorageVariableToPrimitiveType<
   Layout extends StorageLayout,
   Path extends string,
-> = StoragePathTypeToPrimitiveType<Layout, StorageTypeForPath<Layout, Path>>;
+> =
+  string extends ExtractVariableNames<Layout>
+    ? unknown
+    : StoragePathTypeToPrimitiveType<Layout, StorageTypeForPath<Layout, Path>>;
 
 export function resolveStoragePath(
   layout: StorageLayout,
@@ -700,7 +703,7 @@ function dynamicArrayIndex(
   return segment.value.value;
 }
 
-function fixedArrayLength(type: StorageType): number {
+export function fixedArrayLength(type: StorageType): number {
   const match = /\[([0-9]+)\]$/.exec(type.label);
   if (match === null) {
     throw new Error(`fixed array type '${type.label}' is missing length`);
@@ -716,7 +719,10 @@ function findStorageItem(layout: StorageLayout, label: string): StorageItem {
   return item;
 }
 
-function findStorageType(layout: StorageLayout, typeId: string): StorageType {
+export function findStorageType(
+  layout: StorageLayout,
+  typeId: string,
+): StorageType {
   const type = layout.types[typeId];
   if (type === undefined) {
     throw new Error(`storage type not found: ${typeId}`);

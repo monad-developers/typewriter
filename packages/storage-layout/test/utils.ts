@@ -1,14 +1,32 @@
 import type { Hex } from "ox";
-import type { StorageLayout } from "../src/index";
+import type { SlotWrites, StorageLayout } from "../src/index";
 
 export const OWNER = "0x1111111111111111111111111111111111111234" as const;
+export const SPENDER = "0x2222222222222222222222222222222222221234" as const;
 export const PACKED_OWNER_PAUSED =
   `0x${"00".repeat(11)}01${OWNER.slice(2)}` as Hex.Hex;
 export const PACKED_OWNER_UNPAUSED =
   `0x${"00".repeat(12)}${OWNER.slice(2)}` as Hex.Hex;
+export const PACKED_FIXED_NUMBERS =
+  "0x0000000000000000000000000000000200000000000000000000000000000001" as Hex.Hex;
 export const SALT = `0x${"ff".repeat(32)}` as Hex.Hex;
 export const METADATA_PACKED =
   `0x${"00".repeat(23)}01${"00".repeat(7)}2a` as Hex.Hex;
+
+export type SlotMap = { [slot: Hex.Hex]: Hex.Hex };
+
+export function expectSingleSlot(slots: readonly Hex.Hex[]): Hex.Hex {
+  if (slots.length !== 1) {
+    throw new Error("expected a single slot");
+  }
+  return slots[0]!;
+}
+
+export function writesToStorage(writes: SlotWrites): SlotMap {
+  return Object.fromEntries(
+    Object.entries(writes).map(([slot, write]) => [slot, write.value]),
+  );
+}
 
 export const layout = {
   storage: [

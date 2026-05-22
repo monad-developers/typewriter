@@ -1,7 +1,7 @@
 import type { Hex } from "ox";
 import type {
-  ExtractConcreteStoragePaths,
-  ExtractStoragePaths,
+  ExtractConcreteStorageVariables,
+  ExtractStorageVariables,
   StorageLayout,
 } from "./storage-layout";
 
@@ -14,11 +14,13 @@ export type SlotWrites = {
   [slot: Hex.Hex]: SlotWrite;
 };
 
-export type StoragePath<Layout extends StorageLayout> =
-  ExtractStoragePaths<Layout>;
+export type StorageVariable<Layout extends StorageLayout> =
+  ExtractStorageVariables<Layout>;
 
-export type ConcreteStoragePath<Layout extends StorageLayout> =
-  ExtractConcreteStoragePaths<Layout>;
+export type ConcreteStorageVariable<Layout extends StorageLayout> =
+  ExtractConcreteStorageVariables<Layout> extends infer variable extends string
+    ? variable
+    : never;
 
 /**
  * Key-value map of storage slots to their hex values.

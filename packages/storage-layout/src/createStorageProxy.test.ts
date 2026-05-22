@@ -2,23 +2,26 @@ import { expect, test } from "bun:test";
 import type { Hex } from "ox";
 import {
   complexLayout,
+  expectSingleSlot,
   layout,
   METADATA_PACKED,
   OWNER,
+  PACKED_FIXED_NUMBERS,
   PACKED_OWNER_PAUSED,
   SALT,
+  type SlotMap,
+  SPENDER,
+  writesToStorage,
 } from "../test/utils";
-import type { SlotWrites, StorageLayout } from "./index";
-import { createStorageProxy, encodeStoragePath, getStorageSlot } from "./index";
-
-const SPENDER = "0x2222222222222222222222222222222222221234" as const;
-const PACKED_FIXED_NUMBERS =
-  "0x0000000000000000000000000000000200000000000000000000000000000001" as Hex.Hex;
+import type { StorageLayout } from "./index";
+import {
+  createStorageProxy,
+  encodeStorageVariable,
+  getStorageSlot,
+} from "./index";
 
 // -----------------------------------------------------------------------------
 // Test helpers
-
-type SlotMap = { [slot: Hex.Hex]: Hex.Hex };
 
 /** Build a sync getter that pulls slots from a fixed in-memory map, records
  * every call for assertions, and throws on unknown slots so tests don't
@@ -57,19 +60,6 @@ function asyncGetter(storage: SlotMap) {
     return out;
   };
   return { get, calls };
-}
-
-function writesToStorage(writes: SlotWrites): SlotMap {
-  return Object.fromEntries(
-    Object.entries(writes).map(([slot, write]) => [slot, write.value]),
-  );
-}
-
-function expectSingleSlot(slot: Hex.Hex | Hex.Hex[]): Hex.Hex {
-  if (Array.isArray(slot)) {
-    throw new Error("expected a single slot");
-  }
-  return slot;
 }
 
 // -----------------------------------------------------------------------------
@@ -167,7 +157,9 @@ test("sync: fixed array element reads one slot, decodes the packed half", () => 
 });
 
 test("sync: dynamic array element reads from its keccak-derived slot", () => {
-  const elementSlot = getStorageSlot(layout, "dynamicNumbers[0]");
+  const elementSlot = expectSingleSlot(
+    getStorageSlot(layout, "dynamicNumbers[0]"),
+  );
   const { get } = syncGetter({ [elementSlot]: "0x539" });
   const state = createStorageProxy(layout, get);
 
@@ -175,7 +167,9 @@ test("sync: dynamic array element reads from its keccak-derived slot", () => {
 });
 
 test("sync: mapping with address key", () => {
-  const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
+  const balanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `balances[${OWNER}]`),
+  );
   const { get } = syncGetter({ [balanceSlot]: "0x64" });
   const state = createStorageProxy(layout, get);
 
@@ -183,9 +177,8 @@ test("sync: mapping with address key", () => {
 });
 
 test("sync: nested mapping unwraps one key at a time", () => {
-  const allowanceSlot = getStorageSlot(
-    layout,
-    `allowances[${OWNER}][${SPENDER}]`,
+  const allowanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`),
   );
   const { get } = syncGetter({ [allowanceSlot]: "0x2a" });
   const state = createStorageProxy(layout, get);
@@ -194,7 +187,7 @@ test("sync: nested mapping unwraps one key at a time", () => {
 });
 
 test("sync: short bytes decodes from header alone (one round-trip)", () => {
-  const writes = encodeStoragePath(layout, "rawBytes", "0x1234");
+  const writes = encodeStorageVariable(layout, "rawBytes", "0x1234");
   const { get, calls } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -204,7 +197,7 @@ test("sync: short bytes decodes from header alone (one round-trip)", () => {
 
 test("sync: long bytes reads header, then data slots", () => {
   const longBytes = `0x${"11".repeat(33)}` as Hex.Hex;
-  const writes = encodeStoragePath(layout, "rawBytes", longBytes);
+  const writes = encodeStorageVariable(layout, "rawBytes", longBytes);
   const { get, calls } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -216,7 +209,7 @@ test("sync: long bytes reads header, then data slots", () => {
 });
 
 test("sync: short string decodes from header alone", () => {
-  const writes = encodeStoragePath(layout, "message", "hello");
+  const writes = encodeStorageVariable(layout, "message", "hello");
   const { get } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -225,7 +218,7 @@ test("sync: short string decodes from header alone", () => {
 
 test("sync: long string reads header, then data slots", () => {
   const long = "x".repeat(33);
-  const writes = encodeStoragePath(layout, "message", long);
+  const writes = encodeStorageVariable(layout, "message", long);
   const { get, calls } = syncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -234,7 +227,9 @@ test("sync: long string reads header, then data slots", () => {
 });
 
 test("sync: composite path containing nested arrays + structs", () => {
-  const slot = getStorageSlot(complexLayout, "orders[1].amount");
+  const slot = expectSingleSlot(
+    getStorageSlot(complexLayout, "orders[1].amount"),
+  );
   const { get } = syncGetter({ [slot]: "0x9" });
   const state = createStorageProxy(complexLayout, get);
 
@@ -242,7 +237,7 @@ test("sync: composite path containing nested arrays + structs", () => {
 });
 
 test("sync: arrays of arrays index by both subscripts", () => {
-  const slot = getStorageSlot(complexLayout, "matrix[1][0]");
+  const slot = expectSingleSlot(getStorageSlot(complexLayout, "matrix[1][0]"));
   // matrix[1][0] is a uint128 packed in the low half of slot 0x15.
   const { get } = syncGetter({
     [slot]:
@@ -269,9 +264,8 @@ test("async: returns promises at leaves", async () => {
 });
 
 test("async: nested mapping awaited per leaf", async () => {
-  const allowanceSlot = getStorageSlot(
-    layout,
-    `allowances[${OWNER}][${SPENDER}]`,
+  const allowanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`),
   );
   const { get, calls } = asyncGetter({ [allowanceSlot]: "0x14" });
   const state = createStorageProxy(layout, get);
@@ -286,7 +280,7 @@ test("async: nested mapping awaited per leaf", async () => {
 
 test("async: long bytes performs two sequential rounds", async () => {
   const longBytes = `0x${"22".repeat(40)}` as Hex.Hex;
-  const writes = encodeStoragePath(layout, "rawBytes", longBytes);
+  const writes = encodeStorageVariable(layout, "rawBytes", longBytes);
   const { get, calls } = asyncGetter(writesToStorage(writes));
   const state = createStorageProxy(layout, get);
 
@@ -502,15 +496,17 @@ test("async: dynamic array length returns a promise", async () => {
 });
 
 test("enumerates root variables, structs, fixed arrays, and known mapping keys", () => {
-  const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
-  const allowanceSlot = getStorageSlot(
-    layout,
-    `allowances[${OWNER}][${SPENDER}]`,
+  const balanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `balances[${OWNER}]`),
+  );
+  const allowanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`),
   );
   const { get } = syncGetter({
     [balanceSlot]: "0x64",
     [allowanceSlot]: "0x2a",
-    [getStorageSlot(layout, "fixedNumbers[0]")]: PACKED_FIXED_NUMBERS,
+    [expectSingleSlot(getStorageSlot(layout, "fixedNumbers[0]"))]:
+      PACKED_FIXED_NUMBERS,
   });
   const state = createStorageProxy(layout, get, [
     `balances[${OWNER}]`,
@@ -531,8 +527,8 @@ test("enumerates root variables, structs, fixed arrays, and known mapping keys",
 });
 
 test("does not enumerate dynamic array indices from known paths", () => {
-  const slot0 = getStorageSlot(layout, "dynamicNumbers[0]");
-  const slot2 = getStorageSlot(layout, "dynamicNumbers[2]");
+  const slot0 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[0]"));
+  const slot2 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[2]"));
   const { get } = syncGetter({ [slot0]: "0x1", [slot2]: "0x3" });
   const state = createStorageProxy(layout, get, [
     "dynamicNumbers[0]",
@@ -571,8 +567,10 @@ test("mapping enumeration is empty without known paths", () => {
 });
 
 test("get is called with the exact slots resolved by storage-layout", () => {
-  const slot4 = getStorageSlot(layout, "metadata.lastUpdate");
-  const balanceSlot = getStorageSlot(layout, `balances[${OWNER}]`);
+  const slot4 = expectSingleSlot(getStorageSlot(layout, "metadata.lastUpdate"));
+  const balanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `balances[${OWNER}]`),
+  );
   const { get, calls } = syncGetter({
     [slot4]: METADATA_PACKED,
     [balanceSlot]: "0x7",

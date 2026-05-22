@@ -25,14 +25,15 @@
 // 2. **Writing.** The proxy is strictly read-only. The `set` trap throws.
 //    Future shape: accept a second optional callback like
 //    `set: (writes: SlotWrites) => void | Promise<void>`,
-//    and let `state.balances[addr] = 5n` route through `encodeStoragePath` to
+//    and let `state.balances[addr] = 5n` route through `encodeStorageVariable` to
 //    produce the writes. The encode side already exists in this package; the
 //    missing bits are the proxy trap and the stale-slot policy for shrinking
 //    bytes/string/dynamic arrays.
 
 import { Hash, type Hex } from "ox";
-import { decodeStoragePath } from "./index";
+import { decodeStorageVariable } from "./decodeStorageVariable";
 import {
+  fixedArrayLength,
   resolveStoragePath,
   type StorageItem,
   type StorageLayout,
@@ -93,7 +94,7 @@ export type StorageProxy<
   ? DeepPromise<StorageLayoutToPrimitiveType<L>>
   : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
 
-const decodeStoragePathRuntime = decodeStoragePath as (
+const decodeStorageVariableRuntime = decodeStorageVariable as (
   layout: StorageLayout,
   path: string,
   storage: AccountStorage,
@@ -137,9 +138,9 @@ export function createStorageProxy<
 >(
   layout: L,
   get: G,
-  knownPaths: readonly string[] = [],
+  knownVariables: readonly string[] = [],
 ): StorageProxy<L, G extends AsyncSlotGetter ? true : false> {
-  const normalizedKnownPaths = knownPaths.map(normalizePath);
+  const normalizedKnownPaths = knownVariables.map(normalizePath);
   return buildProxy(layout, get, normalizedKnownPaths, null) as StorageProxy<
     L,
     G extends AsyncSlotGetter ? true : false
@@ -527,7 +528,11 @@ function readValueLeaf(
   const slots = uniqueSlots(resolved);
   return chain(get(slots), (storage) => {
     assertReturnedSlots(storage, slots, formatStoragePath(path));
-    return decodeStoragePathRuntime(layout, formatStoragePath(path), storage);
+    return decodeStorageVariableRuntime(
+      layout,
+      formatStoragePath(path),
+      storage,
+    );
   });
 }
 
@@ -554,7 +559,11 @@ function readBytesLeaf(
     const lowByte = headerInt & BYTES_LOW_BYTE_MASK;
     if ((lowByte & BYTES_LOW_BIT_MASK) === 0n) {
       // Short form — header carries the data.
-      return decodeStoragePathRuntime(layout, formatStoragePath(path), header);
+      return decodeStorageVariableRuntime(
+        layout,
+        formatStoragePath(path),
+        header,
+      );
     }
     const length = (headerInt - 1n) / 2n;
     if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -570,7 +579,7 @@ function readBytesLeaf(
     }
     return chain(get(dataSlots), (data) => {
       assertReturnedSlots(data, dataSlots, formatStoragePath(path));
-      return decodeStoragePathRuntime(layout, formatStoragePath(path), {
+      return decodeStorageVariableRuntime(layout, formatStoragePath(path), {
         ...header,
         ...data,
       });
@@ -653,14 +662,6 @@ function toSlotHex(value: bigint): Hex.Hex {
 
 function keccakSlot(slot: Hex.Hex): bigint {
   return BigInt(Hash.keccak256(slot));
-}
-
-function fixedArrayLength(type: StorageType): number {
-  const match = /\[([0-9]+)\]$/.exec(type.label);
-  if (match === null) {
-    throw new Error(`fixed array type '${type.label}' is missing length`);
-  }
-  return Number(match[1]);
 }
 
 function formatSegment(segment: StoragePathSegment): string {
