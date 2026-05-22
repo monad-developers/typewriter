@@ -58,12 +58,13 @@ from a TS state machine.
 - **The contract is the spec.** Once revm is canonical, there is no
   second implementation of mutation logic. Solidity is the only place
   application logic lives.
-- **Persistence becomes derived.** Apps own `persistMutation` /
-  `persistState` and read from the async `ffca.state` storage proxy (or
-  their own revm-derived indexes) rather than a JS state object.
-  Persistence is a projection of revm's state, not a parallel ledger.
-  No view-function read path: revm doesn't expose `call`; everything
-  reads through slot decoding.
+- **Persistence becomes ffca-owned.** Apps should not reimplement mutation
+  persistence, lifecycle persistence, or state projection. ffca persists decoded
+  mutation rows from ABI params, raw revm storage slot diffs, and the known path
+  registry needed for mapping/dynamic-path reads. The only app-authored
+  persistence seam left in v1 is declaring/discovering known storage paths.
+  No view-function read path: revm doesn't expose `call`; everything reads
+  through slot decoding.
 - **Failure isolation as reorg.** Per-mutation revert and bundle revert
   are the same primitive — a journal checkpoint that may or may not be
   committed. Same primitive serves chain reorg recovery later.
@@ -132,36 +133,42 @@ Determinism still matters: revm and chain must agree on block context, spec,
 immutables, and any Monad-specific semantics before revm-derived gas/access-list
 data can replace RPC simulation.
 
-### Step 5 — App persistence consumes revm-backed state
+### Step 5 — Move persistence into ffca
 
-Status: current reality, app-owned.
+Status: current target.
 
-`.apply()` is gone, so apps that used to read from the JS state object in
-`persistState` (or similar hooks) must now derive their read models from revm.
-The runtime does not provide a default decoded projection; it calls the app's
-`persistMutation` / `persistState` hooks with `args` and lifecycle metadata, and
-the app decides what to write.
+The app-owned persistence hooks are now the wrong abstraction. They kept the
+app responsible for writing mutation rows, lifecycle transitions, and decoded
+state tables after revm accepted a mutation. The new v1 target is narrower and
+more mechanical:
 
-Two cases:
+1. **Flat decoded mutation tables.** ffca generates one flat table per mutation
+   type from the mutation's ABI params using a new `abipg` package. Normal
+   mutation reads need no joins. Lifecycle columns stay on the same
+   per-mutation table so included / safe / finalized updates can be written
+   generically by table lookup.
+2. **Raw storage slot diff log.** ffca persists successful revm writes as raw
+   `{ mutation_id, write_index, address, slot, prev_value, new_value }` rows.
+   There is no separate current-slot snapshot table in v1; startup reconstructs
+   account storage by reading the latest diff row per `(address, slot)` from the
+   slot-indexed log.
+3. **Known paths.** ffca persists the concrete storage paths discovered from
+   calldata, signatures, resolutions, events, or explicit app declarations.
+   These paths make mapping and nested dynamic reads possible after restart.
 
-1. **Hooks that already read from `args` only** (the common case for
-   `persistMutation`): unaffected. `args` still flows through
-   unchanged.
-2. **Hooks that previously read from a JS `state` object to compute persisted
-   rows** (typically `persistState`): must now read from `ffca.state` (the async
-   storage proxy) or maintain app-owned indexes populated from calldata/events.
-   A future framework seam may expose decoded `slot_writes` from revm's
-   `execute` response so apps can project touched paths without extra storage
-   reads, but that is an optimization, not a prerequisite.
+This deliberately defers storage-layout-to-Postgres state tables. Decoded state
+tables can be added later as a derived projection from the raw slot diff log and
+known path registry; they are not required for canonical revm restart.
+
+The only remaining app persistence-like seam should be known-path discovery,
+for example `knownPaths({ mutation, args, signature, resolution }) => string[]`.
+It declares candidate storage paths; it does not write database rows or apply
+state transitions.
 
 Generic mapping enumeration is not a goal and cannot be solved from storage
-alone. Apps that need "all known X" must provide an index, derive keys from
-calldata/events, or consume decoded writes with a known-path registry. Dynamic
-array `.length` is a practical storage-proxy prerequisite because the length is
-stored in the array root slot and is needed for generic array reads.
-
-`persistLifecycle` is unaffected — it operates on bundle/block metadata
-and doesn't read state.
+alone. Apps that need "all known X" must expose keys through known paths derived
+from calldata/events/resolution or explicit declarations. Dynamic-array
+`.length` remains useful because the length lives in the array root slot.
 
 ### Step 6 — Delete the TS state machine
 
@@ -186,6 +193,10 @@ The submit fiber's RPC surface collapses:
   confirmation that disagrees is a bug, not a recoverable state.
 - **Current boot path:** `eth_getCode` for `config.address`, plus raw storage
   generated from decoded `state.load` through `config.storageLayout`.
+- **Next boot path:** `eth_getCode` for `config.address`, plus raw storage
+  reconstructed from the persisted slot-diff log by taking the latest
+  `new_value` per `(address, slot)`. The diff table is indexed by slot so
+  startup does not require a separate current-slot snapshot table.
 - **Future boot path:** `eth_getCode` / `eth_getStorageAt` for `config.address`
   and declared dependencies, or local deployment replay. Replaces decoded DB
   state as the source for revm initialization.
@@ -206,13 +217,12 @@ Gaps:
    `block.timestamp` match what the scheduler will broadcast against.
    Open decision in the package roadmap ("revm block context") gates
    the exact semantics. Sidecar surface is small either way.
-2. **Slot writes (and logs) in `execute` output.** Today `execute`
-   returns `{ success, gas_used, output, access_list, revert_data? }`.
-   Add `slot_writes: [{ address, slot, prev_value, new_value }]` —
-   this lets apps project writes back to typed paths through
-   `storage-layout` without extra storage reads. Add `logs: [{ address,
-   topics, data }]` alongside for event-driven persistence patterns
-   and downstream state-sync.
+2. **Slot writes in `execute` output.** Landed. `execute` now returns
+   `slot_writes: [{ address, slot, prev_value, new_value }]` so ffca can persist
+   the canonical raw storage diff for every accepted mutation. `simulate`
+   continues to share the same wire type but returns no persisted slot writes.
+   Logs are still future work: add `logs: [{ address, topics, data }]` later for
+   event-driven known-path discovery and downstream state-sync.
 3. **External account hydration after `init`.** Today every account
    has to be passed in `init.accounts`. For dependencies discovered
    lazily (an ERC-20 referenced via a constructor arg the scheduler
@@ -220,29 +230,26 @@ Gaps:
    code, storage })` post-`init`. Defer until a real case forces it;
    eager hydration covers v1.
 
-Deliberately not on this list: `call` (view-function read). Reading
-state happens through slot decoding, not through view functions —
-`ffca.state` and persistence both read `slot_writes` from `execute`
-and `readStorage` for ambient reads.
+Deliberately not on this list: `call` (view-function read). Reading state
+happens through slot decoding, not through view functions. `ffca.state` reads
+from revm `readStorage`; persistence stores `slot_writes` and known paths.
 
 ### Storage-layout (`packages/storage-layout`)
 
 What's there: `getStorageSlot`, `decodeStorage`, `encodeStorage`,
-`encodeStorageState`, and `createStorageProxy` for value types including packed
-slots, structs, fixed/dynamic arrays, mappings with most key types, short and
-long bytes/string. `getStoragePath` reverse lookup exists for non-mapping paths.
+`encodeStorageState`, `decodeStorageDiff`, and `createStorageProxy` for value
+types including packed slots, structs, fixed/dynamic arrays, mappings with most
+key types, short and long bytes/string. `decodeStorageDiff(layout, diff,
+knownPaths)` is the key primitive for turning raw revm slot diffs into decoded
+path diffs when the runtime has a candidate path universe.
 
 Gaps that improve the revm-backed persistence story. See
 `packages/storage-layout/REVIEW_NOTES.md` for the full inventory:
 
-1. **`matchStorageWrites(layout, writes, knownPaths)`.** Per
-   `REVIEW_NOTES.md` finding 5 / simplification idea 2: the current
-   `getStoragePath(layout, slots)` throws if any mapping exists in
-   the layout, even when the changed slot is unrelated. Mappings
-   need a known-path registry — without one, slot writes against
-   mapping entries can't be projected back to typed paths. This
-   would let apps consume `slot_writes` from `execute` without
-   maintaining their own mapping-key indexes.
+1. **Known-path registry integration.** `decodeStorageDiff` can decode mapping
+   and nested dynamic writes only when given concrete candidate paths. ffca needs
+   to persist that registry and feed it into `ffca.state` / any future decoded
+   projection. v1 persistence does not require storage-layout-to-PG tables.
 2. **Storage proxy dynamic-array `.length`.** The runtime can already read
    concrete array element paths, but generic array consumers need `.length`.
    Unlike mappings, this is feasible because the length lives at the array root
@@ -266,19 +273,71 @@ Gaps that improve the revm-backed persistence story. See
 
 The order-book port is the forcing function for #1.
 
+### abipg (`packages/abipg`)
+
+Status: initial package landed.
+
+New package for ABI params -> Postgres schema mechanics. It borrows the useful
+pieces from `monad-developers/pg-abi-decode` — the ABI primitive type inventory,
+PGlite test style, and careful edge-case tests — but does not revive its main
+architecture as-is.
+
+The old repo's core idea was generated SQL ABI decoder functions over raw ABI
+bytes. That remains useful later for debug views, backfills, or cross-checking
+TypeScript decoding, but it is not the v1 ffca hot path. ffca wants to decode
+mutation calldata once in TypeScript and persist typed flat mutation rows.
+
+`abipg` v1 should instead expose runtime helpers that accept ABI params and
+return Drizzle column builders with strict TypeScript types. The intended call
+site is ffca table generation, not handwritten app schemas:
+
+- Input: readonly ABI params, ideally preserved as const/literal types from
+  `parseAbiParameters` or generated contract artifacts.
+- Output: a Drizzle column object that can be spread into `pgTable(...)` for a
+  generated flat mutation table.
+- Scalar ABI params map to typed scalar columns.
+- Complex ABI params that would force joins (arrays, nested tuples, ambiguous
+  unnamed values) should initially map to `jsonb`, keeping mutation tables flat.
+- Names should be deterministic and collision-checked. Unnamed params need a
+  stable fallback such as `arg0`, `arg1`; tuple fields need prefixed names only
+  when flattening stays unambiguous.
+
+Important correction from the old repo: unsigned Solidity integer ranges do not
+fit signed Postgres types at the same bit width. `uint16` cannot be `smallint`,
+`uint32` cannot be `integer`, and `uint64` cannot safely be `bigint` for the
+full ABI range. The `abipg` mapping should prefer correctness over compactness:
+use wider signed types where safe, otherwise `numeric(78,0)`, unless an app or
+future annotation explicitly narrows the domain.
+
+Tests should use PGlite again because it is fast and exercises real Drizzle / SQL
+behavior without requiring a service. The test suite should cover both generated
+column metadata and actual insert/select round trips for representative ABI
+params, especially integer boundaries, addresses, bytes, strings, arrays, and
+tuple fallback behavior.
+
+Current API exports only `abiParameterToColumn`, `abiParametersToColumns`, and
+the matching generic return types `AbiParameterToColumn` /
+`AbiParametersToColumns`. ABI type mapping documentation lives in
+`packages/abipg/README.md`; the implementation keeps mapping helpers internal.
+
 ### ffca runtime
 
 What changes inside `runtime.ts` beyond the per-step diffs above:
 
 1. **State hydration source.** Today decoded `state.load` seeds revm.
-   In the longer-term canonical model, `config.state.load` goes away
-   and startup hydrates from chain storage or deployment replay.
-   External token dependencies (currently invisible to ffca) need app
-   declarations.
+   The next step is to remove `config.state.load` for persisted runtimes and
+   hydrate revm from the persisted slot-diff log by selecting the latest
+   `new_value` per `(address, slot)`. Longer term, startup hydrates from chain
+   storage or deployment replay. External token dependencies (currently
+   invisible to ffca) need app declarations.
 2. **`ffca.state` facade.** Today `ffca.state` is the direct slot-backed
    storage surface. It may later gain an explicit confidence view
    (accepted/local, included/proposed, safe, finalized) so apps can
    choose which lifecycle threshold to read from.
+3. **Generated persistence.** Replace `state.schema`, `state.load`,
+   `persistMutation`, `persistState`, and `persistLifecycle` with ffca-owned
+   generated schema and writes: flat decoded mutation tables, raw slot diffs,
+   and persisted known paths.
 
 ## Decisions
 
@@ -310,16 +369,41 @@ finalized. The revm-backed projection should leave room for configuring which
 view backs `ffca.state` and persistence reads, instead of assuming every reader
 wants the most optimistic local state.
 
+### Persistence v1: decoded mutations, raw slot diffs, known paths
+
+The first ffca-owned persistence layer does not generate decoded state tables
+from storage layout. It persists three things:
+
+1. **Decoded mutations.** One flat table per mutation type, generated from ABI
+   params (and resolution params where present). These tables include lifecycle
+   columns directly so normal reads do not need joins.
+2. **Raw slot diffs.** One append-only diff table records successful revm writes:
+   `{ mutation_id, write_index, address, slot, prev_value, new_value }`. There
+   is no separate `storage_slots` snapshot table in v1. Startup reconstructs the
+   account storage passed to `packages/evm` by reading the latest write per
+   `(address, slot)` from the slot-indexed diff log.
+3. **Known paths.** A persisted registry of concrete storage paths discovered
+   from calldata, signatures, resolutions, events, or explicit mutation config.
+   This registry is loaded at startup and supplied to `ffca.state` / storage
+   diff decoding.
+
+This keeps persistence mechanical and avoids duplicating contract state logic in
+TypeScript. Storage-layout-to-Postgres decoded state tables remain a later
+derived projection, not a prerequisite for removing persistence hooks.
+
+ABI-param-to-column generation belongs in `packages/abipg`, not directly in
+ffca. ffca consumes `abipg` to build the flat mutation tables; `abipg` owns the
+Solidity ABI type mapping, Drizzle column typing, column naming, and PGlite
+round-trip tests.
+
 ### No view-function reads
 
 The sidecar does not (and will not) expose `call`. State reads happen
-through slot decoding only. Trade-off: requires the
-`matchStorageWrites` + path-registry work in `storage-layout` before
-slot-write-driven persistence can cover mappings. Upside: one read path
-instead of two, mappings stay honest about needing a registry, and slot
-subscriptions / state-sync fall out naturally later. Apps that reach for
-view-function results in `persistState` will need to switch to decoded
-slot writes or to deriving the same value from `args`.
+through slot decoding only. Trade-off: mappings stay honest about needing a
+known-path registry. Upside: one read path instead of two, and slot
+subscriptions / state-sync fall out naturally later. Apps that previously used
+view-function-shaped or JS-state-shaped persistence should instead declare known
+paths and read through `ffca.state`.
 
 ### `encodeBundleArg` stays
 
@@ -329,15 +413,17 @@ executes it against the contract's `execute` function. A TS encoding
 bug surfaces as a revm revert under canonical mode — that's enough
 validation; no need to derive the calldata from revm.
 
-### Process lifetime: restart from scratch
+### Process lifetime: restart from persisted slot diffs
 
-The sidecar holds canonical state in RAM with no persistence. On
-restart today, runtime boots a fresh sidecar, loads bytecode from chain, seeds
-storage from decoded persisted state via `storageLayout`, and starts from there.
-The long-term goal is to hydrate revm from chain storage or deployment replay so
-the database is a rebuildable read model instead of the source for revm boot.
-Accepted-but-unsubmitted mutations are still an open runtime failure/restart
-policy problem.
+The sidecar holds canonical state in RAM. On restart today, runtime boots a
+fresh sidecar, loads bytecode from chain, seeds storage from decoded persisted
+state via `storageLayout`, and starts from there. The next persistence target
+replaces decoded-state seeding with the slot-diff log: ffca loads the latest
+`new_value` per `(address, slot)` and passes that raw storage into
+`packages/evm`. The long-term goal is still to hydrate revm from chain storage
+or deployment replay so the database is a rebuildable cache rather than revm's
+boot source. Accepted-but-unsubmitted mutations are still an open runtime
+failure/restart policy problem.
 
 ## Open decisions
 
@@ -362,6 +448,12 @@ Gates Step 3's determinism prerequisite.
 Current answer: bytecode is pulled from chain with `eth_getCode`; storage is
 encoded from decoded app state (`state.load`) using `config.storageLayout`.
 
+Next answer: bytecode is still pulled from chain, but storage is reconstructed
+from the persisted raw slot-diff log. ffca queries the latest `new_value` per
+`(address, slot)` from the slot-indexed diff table and passes those raw slots to
+`packages/evm` at init. Known paths are loaded separately into ffca's path
+registry; they are not part of `packages/evm`.
+
 Long-term options:
 
 - **Pull from chain at boot.** `eth_getCode` + `eth_getStorageAt`
@@ -372,31 +464,40 @@ Long-term options:
   constructor (fixes the immutable-scheduler issue PR #13 hit without
   special-casing it).
 
-Replay needs constructor args + deployer state at deployment time.
-Current decoded-state seeding shipped sooner. Revisit chain hydration before
-treating the database as rebuildable cache rather than revm's boot source.
+Replay needs constructor args + deployer state at deployment time. The slot-diff
+log is the v1 restart source; chain hydration can later make the database a
+rebuildable cache rather than revm's boot source.
 
 ### How do mutations declare touched paths?
 
 Mappings can't be reverse-decoded from raw slots, so the runtime needs a
 universe of candidate paths against which to match a slot write.
 
-Options:
+V1 answer: mutation config may declare a known-path discovery function, for
+example `knownPaths({ mutation, args, signature, resolution }) => string[]`.
+The returned paths are persisted in the path registry. This is the only
+app-authored persistence seam left; it does not write mutation rows, lifecycle
+columns, slot diffs, or decoded state.
 
-- Mutation config declares paths up front (`paths: ["balances[args.from]",
-  "balances[args.to]", "totalSupply"]`). Apps own the list; mismatches
-  with actual slot writes surface when decoded writes fail to match the
-  declared path universe.
-- Runtime derives paths from mutation calldata (parameter values feed
-  template paths the framework knows about — closer to "the contract
-  is the spec" but requires layout-aware codegen).
-- Path registry persisted in the database, populated by observation
-  (revm slot writes ∩ candidate paths from the layout, with mapping
-  keys discovered from calldata/events).
+The runtime may later derive more paths automatically from calldata, event logs,
+signature conventions, or layout-aware codegen. Explicit declaration is the
+smallest viable shape unless the order-book port forces a richer design.
 
-The first option is the smallest viable shape — pick it for v1
-unless something else forces a richer design. The order-book port is
-the forcing function.
+### Notes for review
+
+- I interpreted `abiParameterToColum` as a typo and implemented the exported
+  function as `abiParameterToColumn`. If the typo was intentional for an API
+  compatibility reason, rename before downstream use.
+- Generated mutation table naming is still intentionally undecided. Obvious
+  options are `<mutation>_mutations`, `<mutation>s`, or preserving app-provided
+  names. Pick this before ffca starts generating tables automatically.
+- Signature persistence is still intentionally undecided. The old app-owned
+  tables include signature/account columns; generated tables need a policy for
+  whether signature tuple fields are always flattened into every mutation table,
+  stored as one `jsonb` column, or split into a separate generated shape.
+- Resolution columns are still intentionally undecided for name conflicts. A safe
+  default is to prefix resolution fields with `resolution_`, but I did not encode
+  that before you review the desired table shape.
 
 ### Divergence detection
 
@@ -412,12 +513,21 @@ in production to reveal what failure shapes look like.
    simulation with revm-derived values. Gates Step 3.
 2. **Step 3 — access-list + gas through revm.** Removes RPC simulation calls
    from submit after block-context semantics are settled.
-3. **Sidecar `slot_writes` (+ `logs`) in `execute` output.** Lets apps
-   project touched slots to typed paths without extra storage reads.
-4. **`storage-layout` `matchStorageWrites` + path registry shape.** Settle how
-   mutations/apps declare known mapping paths; ship the helper. Needed for
-   efficient mapping-slot-write decoding.
-5. **Storage proxy dynamic-array `.length`.** Needed for generic array reads;
+3. **Sidecar `logs` in `execute` output.** Slot writes are landed; logs remain
+   useful for event-driven known-path discovery and downstream state-sync.
+4. **Generated flat decoded mutation tables.** Generate one no-join table per
+   mutation ABI via `abipg`, including lifecycle columns and raw calldata /
+   resolution where useful. This replaces `persistMutation` and
+   `persistLifecycle`.
+5. **Raw slot-diff persistence + restart.** Persist
+   `{ mutation_id, write_index, address, slot, prev_value, new_value }`, index
+   by slot, and hydrate revm at startup from the latest write per `(address,
+   slot)`. Do not add a separate current-slot snapshot table in v1.
+6. **Known-path registry.** Add the remaining app seam for known-path discovery,
+   persist those paths, and load them at startup for `ffca.state` / storage diff
+   decoding.
+7. **Remove app persistence hooks.** Delete `state.schema`, `state.load`,
+   `persistMutation`, `persistState`, and `persistLifecycle` after generated
+   mutation persistence and raw slot-diff restart are working.
+8. **Storage proxy dynamic-array `.length`.** Needed for generic array reads;
    mapping enumeration remains intentionally unsupported.
-6. **Initial storage source.** Replace decoded-state seeding with chain storage
-   hydration or deployment replay when persistence/restart semantics are ready.
