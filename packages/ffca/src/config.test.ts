@@ -4,8 +4,6 @@ import {
   COUNTER_MUTATIONS,
   EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
-  HARNESS_SCHEMA,
-  testMutationSchema,
 } from "../test/utils";
 import type { FFCAConfig } from "./config";
 
@@ -38,7 +36,6 @@ test("createFFCA mutation", () => {
     mutations: {
       transfer: {
         tag: 0,
-        table: testMutationSchema,
         params: parseAbiParameters("address from, address to, uint256 amount"),
       },
     },
@@ -51,7 +48,6 @@ test("createFFCA mutation with resolution", () => {
     mutations: {
       marketOrder: {
         tag: 1,
-        table: testMutationSchema,
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
         resolve: () => {},
@@ -70,15 +66,9 @@ test("createFFCA Counter (no schema)", () => {
   });
 });
 
-// Harness has fan-out state (accounts, keys, nonces, balances). The schema
-// module declared in test/utils.ts is app-owned; ffca only type-checks that it
-// can be attached to config.
-test("createFFCA Harness (with schema)", () => {
+test("createFFCA Harness", () => {
   createFFCA({
     ...baseConfig,
-    state: {
-      schema: HARNESS_SCHEMA,
-    },
     mutations: HARNESS_MUTATIONS,
   });
 });

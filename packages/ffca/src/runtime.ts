@@ -1,9 +1,11 @@
 import { sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import {
+  Cause,
   Deferred,
   Duration,
   Effect,
+  Exit,
   Logger,
   Queue,
   Result,
@@ -18,7 +20,6 @@ import type { Hex, TypedData } from "ox";
 import {
   type AccountStorage,
   createStorageProxy,
-  encodeStorage,
   type StorageLayout,
   type StorageProxy,
 } from "storage-layout";
@@ -45,8 +46,8 @@ import {
 } from "./encoding";
 import {
   PersistenceError,
-  persistMutation,
-  persistUpdatedMutationLifecycle,
+  persistGeneratedMutation,
+  persistUpdatedGeneratedMutationLifecycle,
 } from "./persistence";
 import { Rpc } from "./rpc";
 import type {
@@ -173,7 +174,7 @@ function blockDepth(value: number | undefined, fallback: number, name: string) {
 }
 
 function loadNextIds(
-  config: FFCAConfig,
+  schema: Record<string, PgTable>,
 ): Effect.Effect<
   { mutationId: number; bundleId: number },
   PersistenceError | SqlError,
@@ -183,15 +184,15 @@ function loadNextIds(
     const db = yield* Database;
     let maxMutationId = -1;
     let maxBundleId = -1;
-    for (const mutation of Object.values(config.mutations)) {
+    for (const table of Object.values(schema)) {
       // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
-      const table = mutation.table as any;
+      const mutationTable = table as any;
       const [row] = yield* db
         .select({
-          maxMutationId: sql<number>`coalesce(max(${table.id}), -1)`,
-          maxBundleId: sql<number>`coalesce(max(${table.bundleId}), -1)`,
+          maxMutationId: sql<number>`coalesce(max(${mutationTable.id}), -1)`,
+          maxBundleId: sql<number>`coalesce(max(${mutationTable.bundleId}), -1)`,
         })
-        .from(mutation.table as PgTable);
+        .from(table);
       if (row !== undefined && row.maxMutationId > maxMutationId) {
         maxMutationId = row.maxMutationId;
       }
@@ -213,7 +214,7 @@ function loadNextIds(
 
 export function createRuntimeEffect<const C extends FFCAConfig>(
   config: C,
-  schema: Record<string, PgTable> | undefined,
+  schema: Record<string, PgTable>,
 ): Effect.Effect<
   RuntimeFFCA<C["storageLayout"]>,
   unknown,
@@ -303,23 +304,11 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     });
     let mutationId = 0;
     let bundleId = 0;
-    let initialSlots: AccountStorage = {};
+    const initialSlots: AccountStorage = {};
 
-    if (schema !== undefined) {
-      const load = config.state?.load;
-      if (load === undefined) {
-        return yield* new PersistenceError({
-          message: "FFCA persistence state.load is required",
-        });
-      }
-
-      const initialState = yield* db.transaction(load);
-      initialSlots = encodeStorage(config.storageLayout, initialState as never);
-
-      const ids = yield* loadNextIds(config);
-      mutationId = ids.mutationId;
-      bundleId = ids.bundleId;
-    }
+    const ids = yield* loadNextIds(schema);
+    mutationId = ids.mutationId;
+    bundleId = ids.bundleId;
 
     // revm is a startup resource, not part of the background loop. Initialize
     // it before returning so `ffca.state` and `execute()` never race startup.
@@ -379,6 +368,19 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     const submitQueue = yield* Queue.unbounded<RuntimeBundle>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(submitQueue));
 
+    const pendingSubmissions = new Set<
+      Deferred.Deferred<RuntimeMutation, unknown>
+    >();
+    yield* Scope.addFinalizer(
+      scope,
+      Effect.forEach(
+        pendingSubmissions,
+        (deferred) =>
+          Deferred.fail(deferred, new Error("FFCA runtime stopped")),
+        { discard: true },
+      ).pipe(Effect.ignore),
+    );
+
     let enqueuedMutations: EnqueuedMutation[] = [];
     let unfinalizedBlocks: RuntimeBlock[] = [];
 
@@ -426,7 +428,6 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     ) =>
       withJournalLock(
         Effect.gen(function* () {
-          console.log("ENTER");
           if (
             submittedMutations.length === 0 &&
             enqueuedMutations.length === 0
@@ -454,10 +455,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           const shouldForceExecute =
             position === 0 && enqueuedMutations.length > 0;
 
-          console.log(enqueuedMutations.length);
-
           if (shouldForceExecute) {
-            console.log("HIHIHIHI");
             const executeForceInclusionCalldata = yield* Effect.try({
               try: () =>
                 encodeExecuteCalldata(
@@ -578,7 +576,9 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           } as const satisfies RuntimeBundle;
 
           for (const { mutation, deferred } of acceptedMutations) {
-            yield* persistMutation(mutation, bundle);
+            yield* db.transaction((tx) =>
+              persistGeneratedMutation(tx, schema, mutation, bundle),
+            );
 
             emitMutation(mutationToEvent(mutation));
             yield* Deferred.succeed(deferred, mutation);
@@ -616,32 +616,20 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           forceExecuteIndexes,
         );
 
-        // const simulateResult = yield* evm.simulate({
-        //   from: config.account.address,
-        //   to: config.address,
-        //   data: calldata,
-        // });
-        // if (simulateResult.success === false) {
-        //   return yield* Effect.fail(
-        //     createRevmRevertError(
-        //       config,
-        //       simulateResult.revert_data,
-        //       "revm simulate reverted",
-        //     ),
-        //   );
-        // }
-
-        yield* Effect.tryPromise({
-          try: () =>
-            publicClient.simulateContract({
-              account: config.account.address,
-              abi: config.abi,
-              address: config.address,
-              functionName: "execute",
-              args: [args, forceExecuteIndexes],
-            }),
-          catch: (error) => error as Error,
-        }).pipe(rpcRetry);
+        const simulateResult = yield* evm.simulate({
+          from: config.account.address,
+          to: config.address,
+          data: calldata,
+        });
+        if (simulateResult.success === false) {
+          return yield* Effect.fail(
+            createRevmRevertError(
+              config,
+              simulateResult.revert_data,
+              "revm simulate reverted",
+            ),
+          );
+        }
 
         const { accessList } = yield* Effect.tryPromise({
           try: () =>
@@ -653,7 +641,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           catch: (error) => error as Error,
         }).pipe(rpcRetry);
 
-        const gasUsed = yield* Effect.tryPromise({
+        yield* Effect.tryPromise({
           try: () =>
             publicClient.estimateGas({
               account: config.account.address,
@@ -674,8 +662,8 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
             walletClient.prepareTransactionRequest({
               to: config.address,
               data: calldata,
-              accessList,
-              gas: gasUsed + gasUsed / 100n,
+              accessList: simulateResult.access_list,
+              gas: BigInt(simulateResult.gas_limit),
               nonce,
             }),
           catch: (error) => error as Error,
@@ -692,16 +680,15 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           try: () =>
             sendRawTransactionSync(walletClient, {
               serializedTransaction: signed,
+              throwOnReceiptRevert: true,
             }),
           catch: (error) => error as Error,
-        }).pipe(rpcRetry);
+        });
 
-        // The journal lock guarantees the only open journals belong to the
-        // accepted bundles drained above. Commit each bundle's journal
-        // individually so the sidecar tracks committed vs uncommitted layers.
-        for (const _ of bundles) {
-          yield* evm.commitJournal();
-        }
+        // Sidecar commit marks the top journal committed without popping it.
+        // Once the newest drained bundle is committed, older journals below it
+        // are no longer part of the uncommitted suffix considered by simulate.
+        yield* evm.commitJournal();
 
         const block = yield* Effect.tryPromise({
           try: () => publicClient.getBlock({ blockHash: receipt.blockHash }),
@@ -741,7 +728,9 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
 
         for (const bundle of bundles) {
           for (const mutation of bundle.mutations) {
-            yield* persistUpdatedMutationLifecycle(mutation);
+            yield* db.transaction((tx) =>
+              persistUpdatedGeneratedMutationLifecycle(tx, schema, mutation),
+            );
           }
         }
 
@@ -883,7 +872,13 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
 
               for (const bundle of blockEvent.bundles) {
                 for (const mutation of bundle.mutations) {
-                  yield* persistUpdatedMutationLifecycle(mutation);
+                  yield* db.transaction((tx) =>
+                    persistUpdatedGeneratedMutationLifecycle(
+                      tx,
+                      schema,
+                      mutation,
+                    ),
+                  );
                 }
               }
 
@@ -932,6 +927,49 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     const bundleProgram =
       sequencing.order === "fifo" ? fifoBundleProgram : sequencedBundleProgram;
 
+    const closeOnFatalExit = (
+      name: string,
+      exit: Exit.Exit<unknown, unknown>,
+    ) =>
+      Effect.gen(function* () {
+        if (Exit.isSuccess(exit)) return;
+        if (
+          Exit.hasInterrupts(exit) &&
+          !Exit.hasFails(exit) &&
+          !Exit.hasDies(exit)
+        ) {
+          return;
+        }
+
+        const cause = exit.cause;
+        yield* Effect.logError(`ffca ${name} fiber failed`).pipe(
+          Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+        );
+        for (const deferred of pendingSubmissions) {
+          yield* Deferred.failCause(deferred, cause);
+        }
+
+        yield* Effect.sync(() => {
+          setTimeout(() => {
+            void Effect.runPromise(
+              Scope.close(scope, Exit.failCause(cause)).pipe(Effect.ignore),
+            ).finally(() => {
+              setTimeout(() => {
+                throw Cause.squash(cause);
+              }, 0);
+            });
+          }, 0);
+        });
+      });
+
+    const forkRuntimeFiber = <A, R>(
+      name: string,
+      effect: Effect.Effect<A, unknown, R>,
+    ) =>
+      Effect.forkScoped(
+        effect.pipe(Effect.onExit((exit) => closeOnFatalExit(name, exit))),
+      );
+
     const submitProgram = Effect.sleep(
       Duration.millis(sequencing.submitIntervalMs),
     ).pipe(
@@ -946,9 +984,9 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     yield* Effect.logInfo("ffca runtime started").pipe(
       Effect.provide(Logger.layer([Logger.formatJson])),
     );
-    yield* Effect.forkScoped(bundleProgram);
-    yield* Effect.forkScoped(submitProgram);
-    yield* Effect.forkScoped(watch);
+    yield* forkRuntimeFiber("bundle", bundleProgram);
+    yield* forkRuntimeFiber("submit", submitProgram);
+    yield* forkRuntimeFiber("watch", watch);
 
     function execute(
       mutation: SubmittedMutation,
@@ -968,11 +1006,20 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         emitMutation(mutationToEvent(runtimeMutation));
 
         const deferred = yield* Deferred.make<RuntimeMutation, unknown>();
-        yield* Queue.offer(mutationQueue, {
-          mutation: runtimeMutation,
-          deferred,
-        });
-        return yield* Deferred.await(deferred);
+        pendingSubmissions.add(deferred);
+        return yield* Effect.gen(function* () {
+          yield* Queue.offer(mutationQueue, {
+            mutation: runtimeMutation,
+            deferred,
+          });
+          return yield* Deferred.await(deferred);
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              pendingSubmissions.delete(deferred);
+            }),
+          ),
+        );
       }).pipe(Effect.provide(Logger.layer([Logger.formatJson])));
     }
 

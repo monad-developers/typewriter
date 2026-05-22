@@ -1,13 +1,15 @@
 import { parseAbiParameters } from "abitype";
-import { asc, eq, sql } from "drizzle-orm";
+import { asc } from "drizzle-orm";
 import {
   bigint,
   char,
+  integer,
   numeric,
   primaryKey,
   smallint,
   snakeCase,
   text,
+  timestamp,
 } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import {
@@ -20,11 +22,7 @@ import {
   type TypedData,
 } from "ox";
 import { Authentication } from "ox/webauthn";
-import type {
-  StorageLayout,
-  StorageLayoutToPrimitiveType,
-  StorageProxy,
-} from "storage-layout";
+import type { StorageLayout, StorageProxy } from "storage-layout";
 import type { Address, Hex } from "viem";
 import { anvil } from "viem/chains";
 import type {
@@ -32,8 +30,7 @@ import type {
   FFCAMutationConfig,
 } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
-import { mutationColumns } from "../src/schema";
-import type { BundleStatus } from "../src/types";
+import { mutationStatusEnum } from "../src/schema";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
@@ -822,6 +819,21 @@ const uint192 = () => numeric({ precision: 58, scale: 0 });
 const uint256 = () => numeric({ precision: 78, scale: 0 });
 const bytes32 = () => char({ length: 66 });
 
+const mutationColumns = () => ({
+  id: integer().notNull().primaryKey(),
+  bundleId: integer(),
+  bundlePosition: integer(),
+  blockNumber: uint256(),
+  blockHash: bytes32(),
+  blockTimestamp: uint256(),
+  transactionHash: bytes32(),
+  status: mutationStatusEnum().notNull(),
+  acceptedAt: timestamp().notNull().defaultNow(),
+  includedAt: timestamp(),
+  safeAt: timestamp(),
+  finalizedAt: timestamp(),
+});
+
 export const harnessSignatureColumns = {
   account: bytes32().notNull(),
   keyId: uint64().notNull(),
@@ -971,7 +983,6 @@ export const deployHarness = (): Promise<Address> => deployContract("Harness");
 export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
   add: {
     tag: 0,
-    table: counterAddMutations,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
   },
 };
@@ -1014,170 +1025,12 @@ export function signCounter(params: {
 //                    match its own pre-state. Signed.
 //   assert     (4): read-only check; the contract reverts if balance !=
 //                    expected. Signed.
-type InitializeArgs = { rootKeyType: number; rootPublicKey: Hex };
-type AuthorizeArgs = {
-  account: Hex;
-  keyId: bigint;
-  keyType: number;
-  publicKey: Hex;
-  nonce: bigint;
-};
-type CreditArgs = {
+type DebitArgs = {
   account: Hex;
   keyId: bigint;
   amount: bigint;
   nonce: bigint;
 };
-type DebitArgs = CreditArgs;
-type AssertArgs = {
-  account: Hex;
-  keyId: bigint;
-  expected: bigint;
-  nonce: bigint;
-};
-
-type HarnessSignature = {
-  account: Hex;
-  keyId: bigint;
-  keyType: number;
-  rawSignature: Hex;
-};
-
-type HarnessPersistedMutation<TArgs, TResolution = unknown> = {
-  id: number;
-  status: BundleStatus;
-  args: TArgs;
-  signature: HarnessSignature;
-  resolution?: TResolution;
-};
-
-type HarnessPersistBundle = {
-  id?: number;
-  mutationIndex?: number;
-};
-
-type HarnessPersistBlock = {
-  number?: bigint;
-  hash?: Hex;
-  timestamp?: bigint;
-  transactionHash?: Hex;
-};
-
-function harnessBaseMutationRow<TArgs>(
-  mutation: HarnessPersistedMutation<TArgs>,
-  bundle?: HarnessPersistBundle,
-  block?: HarnessPersistBlock,
-) {
-  return {
-    id: mutation.id,
-    bundleId: bundle?.id,
-    bundlePosition: bundle?.mutationIndex,
-    blockNumber: block?.number?.toString(),
-    blockHash: block?.hash,
-    blockTimestamp: block?.timestamp?.toString(),
-    transactionHash: block?.transactionHash,
-    status: mutation.status,
-    account: mutation.signature.account,
-    keyId: mutation.signature.keyId,
-    keyType: mutation.signature.keyType,
-    rawSignature: mutation.signature.rawSignature,
-  };
-}
-
-function persistHarnessLifecycle(
-  tx: FFCADatabaseTransaction,
-  params: Parameters<NonNullable<FFCAMutationConfig["persistLifecycle"]>>[1],
-  // biome-ignore lint/suspicious/noExplicitAny: works with any mutation table in this fixture
-  table: any,
-) {
-  return Effect.gen(function* () {
-    switch (params.lifecycle) {
-      case "included":
-        yield* tx
-          .update(table)
-          .set({
-            status: params.lifecycle,
-            includedAt: sql`NOW()`,
-          })
-          .where(eq(table.id, params.mutation.id));
-        break;
-      case "safe":
-        yield* tx
-          .update(table)
-          .set({ status: params.lifecycle, safeAt: sql`NOW()` })
-          .where(eq(table.id, params.mutation.id));
-        break;
-      case "finalized":
-        yield* tx
-          .update(table)
-          .set({ status: params.lifecycle, finalizedAt: sql`NOW()` })
-          .where(eq(table.id, params.mutation.id));
-        break;
-    }
-  });
-}
-
-function persistHarnessAccount(tx: FFCADatabaseTransaction, account: Hex) {
-  return tx
-    .insert(harnessAccounts)
-    .values({ id: account })
-    .onConflictDoNothing();
-}
-
-function persistHarnessKey(
-  tx: FFCADatabaseTransaction,
-  account: Hex,
-  keyIndex: bigint,
-  keyType: number,
-  publicKey: Hex,
-) {
-  return tx
-    .insert(harnessKeys)
-    .values({
-      account,
-      keyIndex,
-      keyType,
-      publicKey,
-    })
-    .onConflictDoUpdate({
-      target: [harnessKeys.account, harnessKeys.keyIndex],
-      set: {
-        keyType,
-        publicKey,
-      },
-    });
-}
-
-function persistHarnessNonce(
-  tx: FFCADatabaseTransaction,
-  account: Hex,
-  nonce: bigint,
-) {
-  const nonceKey = (nonce >> 64n).toString();
-  const sequence = (nonce & 0xffffffffffffffffn) + 1n;
-  return tx
-    .insert(harnessNonces)
-    .values({ account, nonceKey, sequence })
-    .onConflictDoUpdate({
-      target: [harnessNonces.account, harnessNonces.nonceKey],
-      set: { sequence },
-    });
-}
-
-function persistHarnessBalance(
-  tx: FFCADatabaseTransaction,
-  account: Hex,
-  amount: bigint,
-) {
-  return tx
-    .insert(harnessBalances)
-    .values({ account, amount: amount.toString() })
-    .onConflictDoUpdate({
-      target: harnessBalances.account,
-      set: { amount: amount.toString() },
-    });
-}
-
 export const HARNESS_MUTATIONS: {
   initialize: FFCAMutationConfig;
   authorize: FFCAMutationConfig;
@@ -1187,26 +1040,22 @@ export const HARNESS_MUTATIONS: {
 } = {
   initialize: {
     tag: 0,
-    table: harnessInitializeMutations,
     params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
   },
   authorize: {
     tag: 1,
-    table: harnessAuthorizeMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
     ),
   },
   credit: {
     tag: 2,
-    table: harnessCreditMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
   },
   debit: {
     tag: 3,
-    table: harnessDebitMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
@@ -1235,174 +1084,9 @@ export const HARNESS_MUTATIONS: {
   },
   assert: {
     tag: 4,
-    table: harnessAssertMutations,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
     ),
-  },
-};
-
-// Same Harness behavior as HARNESS_MUTATIONS, with user-owned persistence
-// callbacks attached. This fixture is intentionally not wired into runtime
-// tests yet; it sketches the database contract the app would own.
-export const HARNESS_PERSISTED_MUTATIONS: {
-  initialize: FFCAMutationConfig;
-  authorize: FFCAMutationConfig;
-  credit: FFCAMutationConfig;
-  debit: FFCAMutationConfig;
-  assert: FFCAMutationConfig;
-} = {
-  initialize: {
-    ...HARNESS_MUTATIONS.initialize,
-    persistMutation: (tx, { mutation, bundle }) =>
-      Effect.gen(function* () {
-        const initialized =
-          mutation as HarnessPersistedMutation<InitializeArgs>;
-        yield* tx.insert(harnessInitializeMutations).values({
-          ...harnessBaseMutationRow(initialized, bundle),
-          rootKeyType: initialized.args.rootKeyType,
-          rootPublicKey: initialized.args.rootPublicKey,
-        });
-      }),
-    persistLifecycle: (tx, params) =>
-      persistHarnessLifecycle(tx, params, harnessInitializeMutations),
-    persistState: (tx, { mutation }) =>
-      Effect.gen(function* () {
-        const initialized =
-          mutation as HarnessPersistedMutation<InitializeArgs>;
-        const account = initialized.signature.account;
-        yield* persistHarnessAccount(tx, account);
-        yield* persistHarnessKey(
-          tx,
-          account,
-          0n,
-          initialized.args.rootKeyType,
-          initialized.args.rootPublicKey,
-        );
-      }),
-  },
-  authorize: {
-    ...HARNESS_MUTATIONS.authorize,
-    persistMutation: (tx, { mutation, bundle }) =>
-      Effect.gen(function* () {
-        const authorized = mutation as HarnessPersistedMutation<AuthorizeArgs>;
-        yield* tx.insert(harnessAuthorizeMutations).values({
-          ...harnessBaseMutationRow(authorized, bundle),
-          newKeyType: authorized.args.keyType,
-          publicKey: authorized.args.publicKey,
-          nonce: authorized.args.nonce.toString(),
-        });
-      }),
-    persistLifecycle: (tx, params) =>
-      persistHarnessLifecycle(tx, params, harnessAuthorizeMutations),
-    persistState: (tx, { mutation }) =>
-      Effect.gen(function* () {
-        const authorized = mutation as HarnessPersistedMutation<AuthorizeArgs>;
-        yield* persistHarnessAccount(tx, authorized.args.account);
-        yield* persistHarnessKey(
-          tx,
-          authorized.args.account,
-          authorized.args.keyId,
-          authorized.args.keyType,
-          authorized.args.publicKey,
-        );
-        yield* persistHarnessNonce(
-          tx,
-          authorized.args.account,
-          authorized.args.nonce,
-        );
-      }),
-  },
-  credit: {
-    ...HARNESS_MUTATIONS.credit,
-    persistMutation: (tx, { mutation, bundle }) =>
-      Effect.gen(function* () {
-        const credited = mutation as HarnessPersistedMutation<CreditArgs>;
-        yield* tx.insert(harnessCreditMutations).values({
-          ...harnessBaseMutationRow(credited, bundle),
-          amount: credited.args.amount.toString(),
-          nonce: credited.args.nonce.toString(),
-        });
-      }),
-    persistLifecycle: (tx, params) =>
-      persistHarnessLifecycle(tx, params, harnessCreditMutations),
-    persistState: (tx, { mutation }) =>
-      Effect.gen(function* () {
-        const credited = mutation as HarnessPersistedMutation<CreditArgs>;
-        const [balance] = yield* tx
-          .select()
-          .from(harnessBalances)
-          .where(eq(harnessBalances.account, credited.args.account))
-          .limit(1);
-        const amount = BigInt(balance?.amount ?? "0") + credited.args.amount;
-        yield* persistHarnessAccount(tx, credited.args.account);
-        yield* persistHarnessBalance(tx, credited.args.account, amount);
-        yield* persistHarnessNonce(
-          tx,
-          credited.args.account,
-          credited.args.nonce,
-        );
-      }),
-  },
-  debit: {
-    ...HARNESS_MUTATIONS.debit,
-    persistMutation: (tx, { mutation, bundle }) =>
-      Effect.gen(function* () {
-        const debited = mutation as HarnessPersistedMutation<
-          DebitArgs,
-          { newBalance: bigint }
-        >;
-        yield* tx.insert(harnessDebitMutations).values({
-          ...harnessBaseMutationRow(debited, bundle),
-          amount: debited.args.amount.toString(),
-          nonce: debited.args.nonce.toString(),
-          newBalance: debited.resolution!.newBalance.toString(),
-        });
-      }),
-    persistLifecycle: (tx, params) =>
-      persistHarnessLifecycle(tx, params, harnessDebitMutations),
-    persistState: (tx, { mutation }) =>
-      Effect.gen(function* () {
-        const debited = mutation as HarnessPersistedMutation<
-          DebitArgs,
-          { newBalance: bigint }
-        >;
-        yield* persistHarnessAccount(tx, debited.args.account);
-        yield* persistHarnessBalance(
-          tx,
-          debited.args.account,
-          debited.resolution?.newBalance ?? 0n,
-        );
-        yield* persistHarnessNonce(
-          tx,
-          debited.args.account,
-          debited.args.nonce,
-        );
-      }),
-  },
-  assert: {
-    ...HARNESS_MUTATIONS.assert,
-    persistMutation: (tx, { mutation, bundle }) =>
-      Effect.gen(function* () {
-        const asserted = mutation as HarnessPersistedMutation<AssertArgs>;
-        yield* tx.insert(harnessAssertMutations).values({
-          ...harnessBaseMutationRow(asserted, bundle),
-          expected: asserted.args.expected.toString(),
-          nonce: asserted.args.nonce.toString(),
-        });
-      }),
-    persistLifecycle: (tx, params) =>
-      persistHarnessLifecycle(tx, params, harnessAssertMutations),
-    persistState: (tx, { mutation }) =>
-      Effect.gen(function* () {
-        const asserted = mutation as HarnessPersistedMutation<AssertArgs>;
-        yield* persistHarnessAccount(tx, asserted.args.account);
-        yield* persistHarnessNonce(
-          tx,
-          asserted.args.account,
-          asserted.args.nonce,
-        );
-      }),
   },
 };
 

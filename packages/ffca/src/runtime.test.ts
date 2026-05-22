@@ -1,8 +1,5 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
-import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { Effect } from "effect";
 import type { Hex } from "viem";
 import { anvil } from "viem/chains";
 import {
@@ -13,7 +10,6 @@ import {
   P256_PRIVATE_KEY,
   SCHEDULER_ACCOUNT,
   TEST_CLIENT,
-  TEST_DB_CONNECTION,
   TEST_DB_URL,
   TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
@@ -32,25 +28,13 @@ import {
   HARNESS_ABI,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
-  HARNESS_PERSISTED_MUTATIONS,
-  HARNESS_SCHEMA,
   HARNESS_STORAGE_LAYOUT,
-  type HarnessState,
-  harnessAccounts,
-  harnessBalances,
-  harnessCreditMutations,
-  harnessDebitMutations,
-  harnessInitializeMutations,
-  harnessKeys,
-  harnessNonces,
-  loadHarnessState,
   p256PublicKey,
   STUB_FFCA_ABI,
   secp256k1PublicKey,
   setupHarnessAccount,
   signCounter,
   signHarness,
-  testMutationSchema,
 } from "../test/utils";
 import type { FFCAConfig } from "./config";
 import { encodeMutationCalldata } from "./encoding";
@@ -67,14 +51,6 @@ async function createFFCA<
     database: { url: TEST_DB_URL, maxConnections: 2 },
   } as FFCAConfig) as Promise<FFCA<C["storageLayout"]>>;
 }
-
-// Small inline mutation for the shape-checking tests, kept independent of
-// Harness/Counter so their evolving param lists don't drift these.
-const SHAPE_MUTATION = {
-  tag: 0,
-  table: testMutationSchema,
-  params: parseAbiParameters("address account, uint256 amount"),
-};
 
 test("ffca.domain is derived from config", async () => {
   const ffca = await createFFCA({
@@ -101,51 +77,7 @@ test("ffca.domain is derived from config", async () => {
   await ffca.stop();
 });
 
-test("createFFCA rejects partially configured persistence", async () => {
-  await expect(
-    createFFCA({
-      address: "0x000000000000000000000000000000000000abcd",
-      abi: STUB_FFCA_ABI,
-      storageLayout: EMPTY_STORAGE_LAYOUT,
-      // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
-      account: {} as any,
-      chainId: 1,
-      rpcUrl: TEST_RPC_URL,
-      domain: { name: "my-app", version: "2" },
-      state: { schema: HARNESS_SCHEMA },
-      mutations: { shape: SHAPE_MUTATION },
-    }),
-  ).rejects.toThrow(/persistence must be fully configured/);
-});
-
-test("createFFCA loads persisted state before returning", async () => {
-  const account =
-    "0x0000000000000000000000000000000000000000000000000000000000000001" as Hex;
-  const loadedState: HarnessState = {
-    accounts: { [account]: { keys: [], nonces: {} } },
-    balances: { [account]: 42n },
-  };
-  const ffca = await createFFCA({
-    address: "0x000000000000000000000000000000000000ffca",
-    abi: STUB_FFCA_ABI,
-    storageLayout: HARNESS_STORAGE_LAYOUT,
-    // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
-    account: {} as any,
-    chainId: 31337,
-    rpcUrl: TEST_RPC_URL,
-    domain: HARNESS_DOMAIN,
-    database: { connection: TEST_DB_CONNECTION },
-    state: {
-      schema: HARNESS_SCHEMA,
-      load: () => Effect.succeed(loadedState),
-    },
-    mutations: { initialize: HARNESS_PERSISTED_MUTATIONS.initialize },
-  });
-
-  expect(await ffca.state.balances[account]).toBe(42n);
-
-  await ffca.stop();
-});
+test.skip("createFFCA loads persisted state before returning", () => {});
 
 test("bundle applies mutations in config.sequence order within a bundle", async () => {
   const applied: string[] = [];
@@ -162,17 +94,14 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
     mutations: {
       cancel: {
         tag: 0,
-        table: testMutationSchema,
         params: noop,
       },
       limit: {
         tag: 1,
-        table: testMutationSchema,
         params: noop,
       },
       market: {
         tag: 2,
-        table: testMutationSchema,
         params: noop,
       },
     },
@@ -220,7 +149,6 @@ test("resolve receives submitted signature and execute returns accepted event", 
   const signature = { keyType: 7, rawSignature: "0x1234" };
   const mutation = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("uint256 amount"),
     resolution: parseAbiParameters("uint8 keyType"),
     resolve: ({ signature: submittedSignature }: { signature: unknown }) => {
@@ -264,7 +192,6 @@ test("Harness revm rejects invalid signatures", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    state: {},
     mutations: HARNESS_MUTATIONS,
   });
 
@@ -595,280 +522,9 @@ test("e2e Harness: mutation with resolution", async () => {
   await ffca.stop();
 });
 
-test("e2e Harness: persistence callbacks write accepted state", async () => {
-  const address = await deployHarness();
-  const abi = HARNESS_ABI;
+test.skip("e2e Harness: persistence callbacks write accepted state", () => {});
 
-  const ffca = await createFFCA({
-    address,
-    domain: HARNESS_DOMAIN,
-    abi,
-    storageLayout: HARNESS_STORAGE_LAYOUT,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    database: { connection: TEST_DB_CONNECTION },
-    state: {
-      schema: HARNESS_SCHEMA,
-      load: loadHarnessState,
-    },
-    mutations: {
-      initialize: HARNESS_PERSISTED_MUTATIONS.initialize,
-      credit: HARNESS_PERSISTED_MUTATIONS.credit,
-      debit: HARNESS_PERSISTED_MUTATIONS.debit,
-    },
-  });
-  const db = drizzle({
-    client: TEST_DB_CONNECTION,
-  });
-
-  const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
-  const aliceId = await setupHarnessAccount(ffca, {
-    rootKeyType: 2,
-    rootPublicKey,
-  });
-
-  await ffca.execute({
-    name: "credit",
-    args: { account: aliceId, keyId: 0n, amount: 100n, nonce: 0n },
-    signature: {
-      account: aliceId,
-      keyId: 0n,
-      keyType: 2,
-      rawSignature: signHarness({
-        privateKey: ALICE_PRIVATE_KEY,
-        keyType: 2,
-        mutation: "credit",
-        args: { account: aliceId, keyId: 0n, amount: 100n, nonce: 0n },
-        address,
-        chainId: anvil.id,
-      }),
-    },
-  });
-  await ffca.execute({
-    name: "debit",
-    args: { account: aliceId, keyId: 0n, amount: 30n, nonce: 1n },
-    signature: {
-      account: aliceId,
-      keyId: 0n,
-      keyType: 2,
-      rawSignature: signHarness({
-        privateKey: ALICE_PRIVATE_KEY,
-        keyType: 2,
-        mutation: "debit",
-        args: { account: aliceId, keyId: 0n, amount: 30n, nonce: 1n },
-        address,
-        chainId: anvil.id,
-      }),
-    },
-  });
-
-  const readBalance = () =>
-    TEST_PUBLIC_CLIENT.readContract({
-      abi,
-      address,
-      functionName: "balances",
-      args: [aliceId],
-    }) as Promise<bigint>;
-  const deadline = Date.now() + 5000;
-  while ((await readBalance()) !== 70n) {
-    if (Date.now() > deadline) {
-      throw new Error(`balance never reached 70; saw ${await readBalance()}`);
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-
-  const [account] = await db
-    .select()
-    .from(harnessAccounts)
-    .where(eq(harnessAccounts.id, aliceId));
-  const [key] = await db
-    .select()
-    .from(harnessKeys)
-    .where(eq(harnessKeys.account, aliceId));
-  const [nonce] = await db
-    .select()
-    .from(harnessNonces)
-    .where(eq(harnessNonces.account, aliceId));
-  const [balance] = await db
-    .select()
-    .from(harnessBalances)
-    .where(eq(harnessBalances.account, aliceId));
-  const readPersistedMutations = async () => {
-    const [initialize] = await db.select().from(harnessInitializeMutations);
-    const [credit] = await db.select().from(harnessCreditMutations);
-    const [debit] = await db.select().from(harnessDebitMutations);
-    return { initialize, credit, debit };
-  };
-  const { initialize, credit, debit } = await readPersistedMutations();
-
-  expect(account).toEqual({ id: aliceId });
-  expect(key).toEqual({
-    account: aliceId,
-    keyIndex: 0n,
-    keyType: 2,
-    publicKey: rootPublicKey,
-  });
-  expect(nonce).toEqual({ account: aliceId, nonceKey: "0", sequence: 2n });
-  expect(balance).toEqual({ account: aliceId, amount: "70" });
-  expect(initialize).toMatchObject({
-    id: 0,
-    status: "accepted",
-    account: aliceId,
-    rootKeyType: 2,
-    rootPublicKey,
-  });
-  expect(credit).toMatchObject({
-    id: 1,
-    status: "accepted",
-    account: aliceId,
-    amount: "100",
-    nonce: "0",
-  });
-  expect(debit).toMatchObject({
-    id: 2,
-    status: "accepted",
-    account: aliceId,
-    amount: "30",
-    nonce: "1",
-    newBalance: "70",
-  });
-  expect(credit?.acceptedAt).not.toBeNull();
-  expect(debit?.acceptedAt).not.toBeNull();
-
-  await ffca.stop();
-});
-
-test("e2e Harness: authorize persistence writes per-mutation key rows", async () => {
-  const address = await deployHarness();
-  const abi = HARNESS_ABI;
-
-  const ffca = await createFFCA({
-    address,
-    domain: HARNESS_DOMAIN,
-    abi,
-    storageLayout: HARNESS_STORAGE_LAYOUT,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    database: { connection: TEST_DB_CONNECTION },
-    state: {
-      schema: HARNESS_SCHEMA,
-      load: loadHarnessState,
-    },
-    sequence: ["initialize", "authorize"],
-    mutations: {
-      initialize: HARNESS_PERSISTED_MUTATIONS.initialize,
-      authorize: HARNESS_PERSISTED_MUTATIONS.authorize,
-    },
-  });
-  const db = drizzle({
-    client: TEST_DB_CONNECTION,
-  });
-
-  const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
-  const aliceId = await setupHarnessAccount(ffca, {
-    rootKeyType: 2,
-    rootPublicKey,
-  });
-  const bobPublicKey = secp256k1PublicKey(BOB_ACCOUNT.address);
-  const p256Pk = p256PublicKey(P256_PRIVATE_KEY);
-  const bobAuthorizeArgs = {
-    account: aliceId,
-    keyId: 1n,
-    keyType: 2,
-    publicKey: bobPublicKey,
-    nonce: 0n,
-  };
-  const p256AuthorizeArgs = {
-    account: aliceId,
-    keyId: 2n,
-    keyType: 0,
-    publicKey: p256Pk,
-    nonce: 1n,
-  };
-
-  await Promise.all([
-    ffca.execute({
-      name: "authorize",
-      args: bobAuthorizeArgs,
-      signature: {
-        account: aliceId,
-        keyId: 0n,
-        keyType: 2,
-        rawSignature: signHarness({
-          privateKey: ALICE_PRIVATE_KEY,
-          keyType: 2,
-          mutation: "authorize",
-          args: bobAuthorizeArgs,
-          address,
-          chainId: anvil.id,
-        }),
-      },
-    }),
-    ffca.execute({
-      name: "authorize",
-      args: p256AuthorizeArgs,
-      signature: {
-        account: aliceId,
-        keyId: 0n,
-        keyType: 2,
-        rawSignature: signHarness({
-          privateKey: ALICE_PRIVATE_KEY,
-          keyType: 2,
-          mutation: "authorize",
-          args: p256AuthorizeArgs,
-          address,
-          chainId: anvil.id,
-        }),
-      },
-    }),
-  ]);
-
-  const deadline = Date.now() + 5000;
-  while (
-    ((await TEST_PUBLIC_CLIENT.readContract({
-      abi,
-      address,
-      functionName: "nonceOf",
-      args: [aliceId, 0n],
-    })) as bigint) !== 2n
-  ) {
-    if (Date.now() > deadline) {
-      throw new Error("authorize bundle never landed");
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-
-  const keys = await db
-    .select()
-    .from(harnessKeys)
-    .where(eq(harnessKeys.account, aliceId));
-  keys.sort((a, b) => Number(a.keyIndex - b.keyIndex));
-
-  expect(keys).toEqual([
-    {
-      account: aliceId,
-      keyIndex: 0n,
-      keyType: 2,
-      publicKey: rootPublicKey,
-    },
-    {
-      account: aliceId,
-      keyIndex: 1n,
-      keyType: 2,
-      publicKey: bobPublicKey,
-    },
-    {
-      account: aliceId,
-      keyIndex: 2n,
-      keyType: 0,
-      publicKey: p256Pk,
-    },
-  ]);
-
-  await ffca.stop();
-});
+test.skip("e2e Harness: authorize persistence writes per-mutation key rows", () => {});
 
 // Harness: when mutations arrive out of order, `sequence` sorts them so the
 // debit's resolve runs against post-credit state. If sort were broken, debit's

@@ -2,11 +2,7 @@ import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
 import { encodeFunctionData, toEventSelector } from "viem";
-import {
-  COUNTER_ABI,
-  COUNTER_MUTATIONS,
-  testMutationSchema,
-} from "../test/utils";
+import { COUNTER_ABI, COUNTER_MUTATIONS } from "../test/utils";
 import {
   decodeForceInclusionLog,
   decodeMutationCalldata,
@@ -45,7 +41,6 @@ function acceptedMutation(
 test("encodeMutationCalldata without resolution", () => {
   const mutation = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const args = {
@@ -64,7 +59,6 @@ test("encodeMutationCalldata without resolution", () => {
 test("encodeMutationCalldata wraps dynamic params as one struct", () => {
   const mutation = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("bytes32 account, bytes publicKey"),
   };
   const args = {
@@ -83,7 +77,6 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
 test("encodeMutationCalldata with resolution", () => {
   const mutation = {
     tag: 1,
-    table: testMutationSchema,
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
@@ -114,7 +107,6 @@ test("encodeMutationCalldata with resolution", () => {
 test("decodeMutationCalldata round-trips without resolution", () => {
   const mutation = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const args = {
@@ -133,7 +125,6 @@ test("decodeMutationCalldata round-trips without resolution", () => {
 test("decodeMutationCalldata round-trips with resolution", () => {
   const mutation = {
     tag: 1,
-    table: testMutationSchema,
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
@@ -202,12 +193,19 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
 
 test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
   const sig = { keyType: 0, rawSignature: "0xbb" as `0x${string}` };
+  const config = {
+    tag: 0,
+    params: parseAbiParameters("bytes data"),
+  };
+  const mutation = acceptedMutation(config, { data: "0x1234" });
+  mutation.signature = sig;
+  const mutationData = encodeMutationCalldata(mutation);
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
     functionName: "enqueue",
-    args: [0, "0x1234", sig] as never,
+    args: [0, mutationData, sig] as never,
   });
-  const actual = encodeEnqueueCalldata(COUNTER_ABI, 0, "0x1234", sig);
+  const actual = encodeEnqueueCalldata(COUNTER_ABI, mutation);
   expect(actual).toBe(expected);
 });
 
@@ -261,12 +259,10 @@ test.skip("decodeForceInclusionLog decodes event args", () => {
 test("encodeBundleArg builds a structured bundle value", () => {
   const transfer = {
     tag: 0,
-    table: testMutationSchema,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const market = {
     tag: 1,
-    table: testMutationSchema,
     params: parseAbiParameters("uint256 size"),
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
