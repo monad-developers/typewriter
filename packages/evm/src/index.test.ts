@@ -75,6 +75,16 @@ test("execute against counter succeeds and commitJournal keeps state", async () 
   const exec = await Effect.runPromise(Effect.scoped(program));
   expect(exec.success).toBe(true);
   expect(exec.revert_data).toBeUndefined();
+  expect(exec.slot_writes).toEqual([
+    {
+      address: COUNTER_ADDR,
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      prev_value:
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+      new_value:
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+    },
+  ]);
 });
 
 test("two executes in one journal both succeed", async () => {

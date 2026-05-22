@@ -42,6 +42,12 @@ export type ExecuteResult = {
   gas_limit: number;
   output: Hex.Hex;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
+  slot_writes: {
+    address: Address.Address;
+    slot: Hex.Hex;
+    prev_value: Hex.Hex;
+    new_value: Hex.Hex;
+  }[];
   revert_data?: Hex.Hex;
 };
 
