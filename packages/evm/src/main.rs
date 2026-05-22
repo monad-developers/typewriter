@@ -145,6 +145,7 @@ struct ExecuteOk {
     gas_limit: u64,
     output: String,
     access_list: Vec<AccessListEntry>,
+    slot_writes: Vec<SlotWriteEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
 }
@@ -154,6 +155,14 @@ struct AccessListEntry {
     address: String,
     #[serde(rename = "storageKeys")]
     storage_keys: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SlotWriteEntry {
+    address: String,
+    slot: String,
+    prev_value: String,
+    new_value: String,
 }
 
 // -----------------------------------------------------------------------------
@@ -334,7 +343,7 @@ impl EvmHarness {
         if journal.committed {
             return Err("top journal is committed; begin a new journal before executing".into());
         }
-        let result = match self.run_two_pass(params) {
+        let mut result = match self.run_two_pass(params) {
             Ok(result) => result,
             Err(error) => {
                 let _ = self.evm.finalize();
@@ -342,6 +351,7 @@ impl EvmHarness {
             }
         };
         if result.success {
+            result.slot_writes = collect_slot_writes(self.evm.0.ctx.journaled_state.evm_state());
             self.record_into_top_journal();
             // Commit the journaled state into the DB so future reads and
             // writes see the post-tx state.
@@ -563,6 +573,7 @@ impl EvmHarness {
             gas_limit,
             output,
             access_list: access_list_wire,
+            slot_writes: Vec::new(),
             revert_data,
         })
     }
@@ -686,6 +697,27 @@ fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
     }
     out.sort_by(|a, b| a.address.cmp(&b.address));
     out
+}
+
+fn collect_slot_writes(state: &revm::state::EvmState) -> Vec<SlotWriteEntry> {
+    let mut writes: Vec<SlotWriteEntry> = Vec::new();
+    for (address, account) in state.iter() {
+        for (slot, slot_state) in account.storage.iter() {
+            let pre = slot_state.original_value();
+            let post = slot_state.present_value();
+            if pre == post {
+                continue;
+            }
+            writes.push(SlotWriteEntry {
+                address: format!("0x{:x}", address),
+                slot: format_u256(*slot),
+                prev_value: format_u256(pre),
+                new_value: format_u256(post),
+            });
+        }
+    }
+    writes.sort_by(|a, b| a.address.cmp(&b.address).then(a.slot.cmp(&b.slot)));
+    writes
 }
 
 fn is_intrinsically_warm(
