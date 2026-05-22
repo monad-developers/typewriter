@@ -142,6 +142,7 @@ struct Response {
 struct ExecuteOk {
     success: bool,
     gas_used: u64,
+    gas_limit: u64,
     output: String,
     access_list: Vec<AccessListEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -465,13 +466,14 @@ impl EvmHarness {
             None => U256::ZERO,
         };
         let chain_id = self.evm.0.ctx.cfg.0.chain_id;
+        let coinbase = self.evm.0.ctx.block.beneficiary;
 
-        let build_tx = |access_list: AccessList| {
+        let build_tx = |access_list: AccessList, gas_limit: u64| {
             TxEnv::builder()
                 .caller(from)
                 .chain_id(Some(chain_id))
                 .kind(TxKind::Call(to))
-                .gas_limit(u64::MAX)
+                .gas_limit(gas_limit)
                 .gas_price(0)
                 .value(value)
                 .data(data.clone())
@@ -482,7 +484,7 @@ impl EvmHarness {
         // Pass 1 — discover the access list from touched accounts/slots.
         let _ = self
             .evm
-            .transact_one(build_tx(AccessList::default()))
+            .transact_one(build_tx(AccessList::default(), u64::MAX))
             .map_err(|e| format!("transact (pass 1): {e:?}"))?;
         let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
         // Drain pass 1's journal state without committing it.
@@ -490,26 +492,44 @@ impl EvmHarness {
 
         // Pass 2 — measure with pre-warmed access list.
         //
-        // Filter out accounts that have no storage keys before building the
-        // pass-2 transaction.  collect_access_list includes every account that
-        // was touched during execution (caller, coinbase, …), but those
-        // accounts are always pre-warmed by the protocol at transaction start
-        // and don't need to appear in the EIP-2930 access list.  Including
-        // them would add a spurious 2400-gas address-declaration cost for
-        // each, inflating gas_used relative to what eth_estimateGas returns
-        // when given the same storage-only access list.
-        let storage_access_list = AccessList(
+        // collect_access_list includes every account touched during execution.
+        // Keep address-only entries for cold callees, but drop addresses that
+        // are already warm at transaction start.
+        let tx_access_list = AccessList(
             touched
                 .0
                 .iter()
-                .filter(|item| !item.storage_keys.is_empty())
+                .filter(|item| {
+                    !item.storage_keys.is_empty()
+                        || (!is_intrinsically_warm(item.address, from, to, coinbase)
+                            && !is_precompile(item.address))
+                })
                 .cloned()
                 .collect(),
         );
-        let result = self
+
+        let mut result = self
             .evm
-            .transact_one(build_tx(storage_access_list))
+            .transact_one(build_tx(tx_access_list.clone(), u64::MAX))
             .map_err(|e| format!("transact (pass 2): {e:?}"))?;
+
+        let gas_limit = match &result {
+            ExecutionResult::Success { gas_used, .. } => {
+                let _ = self.evm.finalize();
+                let gas_limit =
+                    self.estimate_gas_limit(params, tx_access_list.clone(), *gas_used)?;
+
+                // The estimate attempts finalize their own state, so rerun the
+                // successful pass and leave its journal state live for execute().
+                result = self
+                    .evm
+                    .transact_one(build_tx(tx_access_list.clone(), gas_limit))
+                    .map_err(|e| format!("transact (final pass): {e:?}"))?;
+                gas_limit
+            }
+            ExecutionResult::Revert { gas_used, .. } => *gas_used,
+            ExecutionResult::Halt { gas_used, .. } => *gas_used,
+        };
 
         let (success, gas_used, output, revert_data) = match &result {
             ExecutionResult::Success {
@@ -535,15 +555,77 @@ impl EvmHarness {
             ),
         };
 
-        let access_list_wire = encode_access_list(&touched);
+        let access_list_wire = encode_access_list(&tx_access_list);
 
         Ok(ExecuteOk {
             success,
             gas_used,
+            gas_limit,
             output,
             access_list: access_list_wire,
             revert_data,
         })
+    }
+
+    fn estimate_gas_limit(
+        &mut self,
+        params: &ExecuteParams,
+        access_list: AccessList,
+        gas_used: u64,
+    ) -> Result<u64, String> {
+        let mut high = gas_used.max(21_000);
+        while !self.succeeds_with_gas_limit(params, access_list.clone(), high)? {
+            high = high
+                .checked_add((high / 64).max(1_000))
+                .ok_or_else(|| "gas estimate overflow".to_string())?;
+        }
+
+        let mut low = gas_used.saturating_sub(1);
+        while low + 1 < high {
+            let mid = low + (high - low) / 2;
+            if self.succeeds_with_gas_limit(params, access_list.clone(), mid)? {
+                high = mid;
+            } else {
+                low = mid;
+            }
+        }
+
+        Ok(high)
+    }
+
+    fn succeeds_with_gas_limit(
+        &mut self,
+        params: &ExecuteParams,
+        access_list: AccessList,
+        gas_limit: u64,
+    ) -> Result<bool, String> {
+        let from = parse_address(&params.from)?;
+        let to = parse_address(&params.to)?;
+        let data = parse_bytes(&params.data)?;
+        let value = match params.value.as_deref() {
+            Some(v) => parse_u256(v)?,
+            None => U256::ZERO,
+        };
+        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
+
+        let tx = TxEnv::builder()
+            .caller(from)
+            .chain_id(Some(chain_id))
+            .kind(TxKind::Call(to))
+            .gas_limit(gas_limit)
+            .gas_price(0)
+            .value(value)
+            .data(data)
+            .access_list(access_list)
+            .build_fill();
+
+        let result = self
+            .evm
+            .transact_one(tx)
+            .map_err(|e| format!("transact (estimate): {e:?}"))?;
+        let success = matches!(result, ExecutionResult::Success { .. });
+        let _ = self.evm.finalize();
+        Ok(success)
     }
 }
 
@@ -597,9 +679,6 @@ fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
             .collect();
         let mut keys = keys;
         keys.sort();
-        if keys.is_empty() {
-            continue;
-        }
         out.push(AccessListEntry {
             address: format!("0x{:x}", item.address),
             storage_keys: keys,
@@ -607,6 +686,20 @@ fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
     }
     out.sort_by(|a, b| a.address.cmp(&b.address));
     out
+}
+
+fn is_intrinsically_warm(
+    address: Address,
+    caller: Address,
+    to: Address,
+    coinbase: Address,
+) -> bool {
+    address == caller || address == to || address == coinbase
+}
+
+fn is_precompile(address: Address) -> bool {
+    let bytes = address.as_slice();
+    bytes[..19].iter().all(|byte| *byte == 0) && (1..=10).contains(&bytes[19])
 }
 
 fn parse_address(s: &str) -> Result<Address, String> {
