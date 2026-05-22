@@ -3,13 +3,14 @@ import {
   char,
   integer,
   numeric,
+  pgEnum,
   primaryKey,
   serial,
   smallint,
   snakeCase,
   text,
+  timestamp,
 } from "drizzle-orm/pg-core";
-import { mutationColumns } from "ffca";
 
 const pgTable = snakeCase.table;
 
@@ -21,6 +22,28 @@ const uint64 = () => bigint({ mode: "bigint" });
 const uint256 = () => numeric({ precision: 78, scale: 0 });
 const address = () => char({ length: 42 });
 const bytes32 = () => char({ length: 66 });
+
+const mutationStatusEnum = pgEnum("mutation_status", [
+  "accepted",
+  "included",
+  "safe",
+  "finalized",
+]);
+
+const mutationColumns = () => ({
+  id: integer().notNull().primaryKey(),
+  bundleId: integer(),
+  bundlePosition: integer(),
+  blockNumber: uint256(),
+  blockHash: bytes32(),
+  blockTimestamp: uint256(),
+  transactionHash: bytes32(),
+  status: mutationStatusEnum().notNull(),
+  acceptedAt: timestamp().notNull().defaultNow(),
+  includedAt: timestamp(),
+  safeAt: timestamp(),
+  finalizedAt: timestamp(),
+});
 
 export const accounts = pgTable("accounts", {
   id: bytes32().primaryKey(),
