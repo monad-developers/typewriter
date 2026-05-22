@@ -1,5 +1,5 @@
 {
-  "name": "storage-layout",
+  "name": "abipg",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
@@ -11,7 +11,11 @@
   },
   "dependencies": {
     "abitype": "catalog:",
-    "ox": "catalog:"
+    "drizzle-orm": "catalog:"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.2.17",
+    "drizzle-kit": "catalog:"
   },
   "peerDependencies": {
     "typescript": "catalog:"

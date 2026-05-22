@@ -4,8 +4,6 @@
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
-    "jsx": "react-jsx",
-    "allowJs": true,
     "types": ["bun"],
 
     "moduleResolution": "bundler",
@@ -21,15 +19,7 @@
 
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noPropertyAccessFromIndexSignature": true,
-
-    "plugins": [{ "name": "@effect/language-service" }],
-
-    "baseUrl": ".",
-    "paths": {
-      "abipg": ["../abipg/src/index.ts"],
-      "evm": ["../evm/src/index.ts"],
-      "storage-layout": ["../storage-layout/src/index.ts"]
-    }
-  }
+    "noPropertyAccessFromIndexSignature": true
+  },
+  "include": ["src/**/*.ts"]
 }

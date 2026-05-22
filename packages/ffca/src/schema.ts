@@ -1,4 +1,16 @@
-import { char, integer, numeric, pgEnum, timestamp } from "drizzle-orm/pg-core";
+import { abiParametersToColumns } from "abipg";
+import type { AbiParameter } from "abitype";
+import {
+  char,
+  integer,
+  numeric,
+  pgEnum,
+  pgTable,
+  timestamp,
+} from "drizzle-orm/pg-core";
+import type { PgTable } from "drizzle-orm/pg-core/table";
+import type { FFCAConfig } from "./config";
+import { getSignatureAbiParameters } from "./encoding";
 
 // const uint8 = () => smallint();
 // const uint16 = () => integer();
@@ -42,3 +54,49 @@ export const mutationColumns = () => ({
   safeAt: timestamp(),
   finalizedAt: timestamp(),
 });
+
+export type GeneratedMutationSchema<Config extends FFCAConfig = FFCAConfig> = {
+  readonly [Name in keyof Config["mutations"] as `${Lowercase<Name & string>}_mutations`]: PgTable;
+};
+
+export function createMutationSchema<const Config extends FFCAConfig>(
+  config: Pick<Config, "abi" | "mutations">,
+): GeneratedMutationSchema<Config> {
+  const signatureParams = prefixAbiParameters(
+    getSignatureAbiParameters(config.abi),
+    "signature_",
+  );
+  const schema: Record<string, PgTable> = {};
+
+  for (const [name, mutation] of Object.entries(config.mutations)) {
+    const tableName = mutationTableName(name);
+    const params = [
+      ...mutation.params,
+      ...signatureParams,
+      ...("resolution" in mutation
+        ? prefixAbiParameters(mutation.resolution, "resolution_")
+        : []),
+    ] satisfies readonly AbiParameter[];
+
+    schema[tableName] = pgTable(tableName, {
+      ...mutationColumns(),
+      ...abiParametersToColumns(params),
+    });
+  }
+
+  return schema as GeneratedMutationSchema<Config>;
+}
+
+function mutationTableName(name: string): `${Lowercase<string>}_mutations` {
+  return `${name.toLowerCase()}_mutations` as `${Lowercase<string>}_mutations`;
+}
+
+function prefixAbiParameters(
+  params: readonly AbiParameter[],
+  prefix: string,
+): readonly AbiParameter[] {
+  return params.map((param, index) => ({
+    ...param,
+    name: `${prefix}${param.name === undefined || param.name === "" ? `arg${index}` : param.name}`,
+  }));
+}
