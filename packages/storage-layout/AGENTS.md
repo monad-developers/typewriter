@@ -83,4 +83,5 @@ Keep this layer separate from path resolution so storage math remains testable i
 - Prefer small vertical slices with focused tests over broad partial implementations.
 - Keep path parsing/rendering separate from storage-layout resolution. Bracket syntax is syntactic; whether `[3]` is an array index or mapping key is determined by the current Solidity type during resolution.
 - Use `abitype` for Solidity-to-TypeScript primitive type mapping wherever the storage-layout label is also a valid ABI type. Keep storage-specific handling for structs, mappings, enums, packing, and slot math.
+- Type-level filtering generics are useful here. For example, known-key registration should eventually be able to filter storage paths by mapping root/value shape so app hooks can register keys for only the mappings they actually touch, instead of accepting arbitrary path strings.
 - Use Bun and `ox` APIs. Do not add dependencies unless there is a concrete need.
