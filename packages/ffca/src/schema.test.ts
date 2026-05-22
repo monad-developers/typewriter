@@ -101,17 +101,17 @@ test("mutation table supports insert and lifecycle update queries", async () => 
     bundlePosition: 3,
     status: "accepted",
     to: "0x0000000000000000000000000000000000000001",
-    amount: "123",
+    amount: 123n,
     signature_keyType: 0,
     signature_rawSignature: "0xdeadbeef",
   });
 
   await db.update(transferMutations).set({
     status: "included",
-    blockNumber: "4",
+    blockNumber: 4n,
     blockHash:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
-    blockTimestamp: "5",
+    blockTimestamp: 5n,
     transactionHash:
       "0x2222222222222222222222222222222222222222222222222222222222222222",
     includedAt,
@@ -125,11 +125,11 @@ test("mutation table supports insert and lifecycle update queries", async () => 
     bundlePosition: 3,
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
-    amount: "123",
+    amount: 123n,
     signature_keyType: 0,
     signature_rawSignature: "0xdeadbeef",
-    blockNumber: "4",
-    blockTimestamp: "5",
+    blockNumber: 4n,
+    blockTimestamp: 5n,
     transactionHash:
       "0x2222222222222222222222222222222222222222222222222222222222222222",
     includedAt,

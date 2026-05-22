@@ -11,6 +11,7 @@ import {
   type PgCharBuilder,
   type PgIntegerBuilder,
   type PgJsonbBuilder,
+  type PgNumericBigIntBuilder,
   type PgNumericBuilder,
   type PgSmallIntBuilder,
   type PgTextBuilder,
@@ -28,6 +29,7 @@ type AbiPgType =
   | "integer"
   | "bigint"
   | "numeric(78,0)"
+  | "numeric(78,0) bigint"
   | `char(${number})`
   | "char(2 + 2N)"
   | "text"
@@ -80,7 +82,7 @@ export type AbiParameterToColumn<Param extends AbiParameter> =
                 | "int64"
             ? NotNullBuilder<PgBigInt64Builder>
             : Param["type"] extends `uint${string}` | `int${string}`
-              ? NotNullBuilder<PgNumericBuilder>
+              ? NotNullBuilder<PgNumericBigIntBuilder>
               : Param["type"] extends "bytes"
                 ? NotNullBuilder<HexTextBuilder>
                 : Param["type"] extends "string"
@@ -90,9 +92,11 @@ export type AbiParameterToColumn<Param extends AbiParameter> =
                         | `bytes${string}`
                         | "function"
                     ? NotNullBuilder<HexCharBuilder>
-                    : NotNullBuilder<
-                        JsonbBuilderFor<AbiParameterToPgJsonType<Param>>
-                      >;
+                    : Param["type"] extends `u?fixed${string}`
+                      ? NotNullBuilder<PgNumericBuilder>
+                      : NotNullBuilder<
+                          JsonbBuilderFor<AbiParameterToPgJsonType<Param>>
+                        >;
 
 export type AbiParametersToColumns<Params extends readonly AbiParameter[]> = {
   [Index in keyof Params as Index extends `${number}`
@@ -169,8 +173,8 @@ function abiTypeToPgType(abiType: string): AbiPgColumnInfo {
     };
   }
 
-  if (abiType === "uint") return { pg: "numeric(78,0)", complex: false };
-  if (abiType === "int") return { pg: "numeric(78,0)", complex: false };
+  if (abiType === "uint") return { pg: "numeric(78,0) bigint", complex: false };
+  if (abiType === "int") return { pg: "numeric(78,0) bigint", complex: false };
 
   const uintMatch = /^uint([0-9]+)$/.exec(abiType);
   if (uintMatch !== null) {
@@ -183,6 +187,10 @@ function abiTypeToPgType(abiType: string): AbiPgColumnInfo {
   }
 
   if (/^u?fixed([0-9]+)x([0-9]+)$/.test(abiType)) {
+    // Fixed-point values can have a fractional part, so map them to
+    // string-mode numeric rather than bigint. Solidity reserves the fixed
+    // family but does not yet allow it in function signatures, so this branch
+    // is mostly defensive.
     return { pg: "numeric(78,0)", complex: false };
   }
 
@@ -203,6 +211,8 @@ function columnForInfo<Param extends AbiParameter>(
       return bigint({ mode: "bigint" });
     case "numeric(78,0)":
       return numeric({ precision: 78, scale: 0 });
+    case "numeric(78,0) bigint":
+      return numeric({ precision: 78, scale: 0, mode: "bigint" });
     case "text":
       return info.hex ? text().$type<Hex>() : text();
     case "jsonb":
@@ -231,7 +241,7 @@ function unsignedIntPgType(bits: number): AbiPgType {
   if (bits <= 8) return "smallint";
   if (bits <= 24) return "integer";
   if (bits <= 56) return "bigint";
-  return "numeric(78,0)";
+  return "numeric(78,0) bigint";
 }
 
 function signedIntPgType(bits: number): AbiPgType {
@@ -239,7 +249,7 @@ function signedIntPgType(bits: number): AbiPgType {
   if (bits <= 16) return "smallint";
   if (bits <= 32) return "integer";
   if (bits <= 64) return "bigint";
-  return "numeric(78,0)";
+  return "numeric(78,0) bigint";
 }
 
 function assertIntegerBits(bits: number, prefix: "int" | "uint"): void {

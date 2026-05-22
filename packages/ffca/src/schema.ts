@@ -16,7 +16,7 @@ import type { Hex } from "ox";
 import type { FFCAConfig } from "./config";
 import { getSignatureAbiParameters } from "./encoding";
 
-const uint256 = () => numeric({ precision: 78, scale: 0 });
+const uint256 = () => numeric({ precision: 78, scale: 0, mode: "bigint" });
 const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
 
 // TODO: make migration discover enum objects from generated schema instead of

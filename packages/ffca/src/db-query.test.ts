@@ -121,10 +121,10 @@ test("insertMutation inserts a mutation row", async () => {
     status: "accepted",
     account:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
-    amount: "123",
+    amount: 123n,
     signature_keyType: 2,
     signature_rawSignature: "0xdeadbeef",
-    resolution_newBalance: "100",
+    resolution_newBalance: 100n,
   });
 });
 
@@ -176,7 +176,7 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
     id: 2,
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
-    amount: "456",
+    amount: 456n,
     signature_keyType: 2,
     signature_rawSignature: "0xfeed",
   });

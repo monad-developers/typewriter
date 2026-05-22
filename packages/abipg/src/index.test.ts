@@ -178,8 +178,8 @@ test("integer ABI types round-trip through Drizzle-generated migrations", async 
   const row: { id: number } & Record<string, unknown> = { id: 1 };
 
   Object.assign(row, {
-    uintDefault: (2n ** 256n - 1n).toString(),
-    intDefault: (-(2n ** 255n)).toString(),
+    uintDefault: 2n ** 256n - 1n,
+    intDefault: -(2n ** 255n),
   });
   for (let bits = 8; bits <= 256; bits += 8) {
     const uintKey = `u${bits}`;
@@ -240,13 +240,13 @@ test("integer ABI types round-trip through Drizzle-generated migrations", async 
   }).toMatchInlineSnapshot(`
     {
       "i40": -549755813888n,
-      "i72": "-2361183241434822606848",
+      "i72": -2361183241434822606848n,
       "i8": -128,
-      "intDefault": "-57896044618658097711785492504343953926634992332820282019728792003956564819968",
+      "intDefault": -57896044618658097711785492504343953926634992332820282019728792003956564819968n,
       "u32": 4294967295n,
-      "u64": "18446744073709551615",
+      "u64": 18446744073709551615n,
       "u8": 255,
-      "uintDefault": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+      "uintDefault": 115792089237316195423570985008687907853269984665640564039457584007913129639935n,
     }
   `);
   expect(selected).toMatchObject(row);
@@ -503,15 +503,13 @@ test("exported generic column types can describe generated columns", () => {
   expectTypeOf<Many>().toHaveProperty("amount");
 });
 
-function unsignedTestValue(bits: number): number | bigint | string {
+function unsignedTestValue(bits: number): number | bigint {
   if (bits <= 24) return Number(2n ** BigInt(bits) - 1n);
-  if (bits <= 56) return 2n ** BigInt(bits) - 1n;
-  return (2n ** BigInt(bits) - 1n).toString();
+  return 2n ** BigInt(bits) - 1n;
 }
 
-function signedTestValue(bits: number): number | bigint | string {
+function signedTestValue(bits: number): number | bigint {
   const value = -(2n ** BigInt(bits - 1));
   if (bits <= 32) return Number(value);
-  if (bits <= 64) return value;
-  return value.toString();
+  return value;
 }
