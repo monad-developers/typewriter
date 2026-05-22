@@ -93,6 +93,18 @@ export async function loadTestToken(): Promise<ForgeArtifact> {
   ).json()) as ForgeArtifact;
 }
 
+export async function loadCallGasCallee(): Promise<ForgeArtifact> {
+  return (await Bun.file(
+    `${import.meta.dir}/contracts/out/CallGas.sol/CallGasCallee.json`,
+  ).json()) as ForgeArtifact;
+}
+
+export async function loadCallGasCaller(): Promise<ForgeArtifact> {
+  return (await Bun.file(
+    `${import.meta.dir}/contracts/out/CallGas.sol/CallGasCaller.json`,
+  ).json()) as ForgeArtifact;
+}
+
 export function tokenInit(
   artifact: ForgeArtifact,
   tokenAddr: Address.Address = TOKEN_ADDR,
@@ -122,6 +134,32 @@ export function transferData(to: Address.Address, amount: bigint): Hex.Hex {
     "function transfer(address to, uint256 amount) returns (bool)",
   );
   return AbiFunction.encodeData(transfer, [to, amount]);
+}
+
+export function callBurnData(target: Address.Address, count: bigint): Hex.Hex {
+  const callBurn = AbiFunction.from(
+    "function callBurn(address target, uint256 count) returns (uint256)",
+  );
+  return AbiFunction.encodeData(callBurn, [target, count]);
+}
+
+export async function deployArtifact(
+  artifact: ForgeArtifact,
+): Promise<Address.Address> {
+  const hash = await TEST_WALLET_CLIENT.deployContract({
+    abi: artifact.abi,
+    bytecode: artifact.bytecode.object,
+    account: SCHEDULER_ACCOUNT,
+    chain: anvil,
+  });
+  const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
+  if (
+    receipt.contractAddress === null ||
+    receipt.contractAddress === undefined
+  ) {
+    throw new Error("deployment did not return contractAddress");
+  }
+  return receipt.contractAddress;
 }
 
 export async function deployTestToken(

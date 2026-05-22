@@ -39,6 +39,7 @@ export type ExecuteParams = {
 export type ExecuteResult = {
   success: boolean;
   gas_used: number;
+  gas_limit: number;
   output: Hex.Hex;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
   revert_data?: Hex.Hex;
