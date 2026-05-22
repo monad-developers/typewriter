@@ -18,21 +18,28 @@ export type FFCADatabaseTransaction = Parameters<
 // calldata). A `resolve` that mutates state breaks failure isolation and replay
 // determinism.
 
+export type RegisterMappingKeys = (params: {
+  args: unknown;
+  signature: unknown;
+  resolution?: unknown;
+}) => readonly string[] | Promise<readonly string[]>;
+
+type FFCAMutationBase = {
+  tag: number;
+  params: readonly AbiParameter[];
+  registerMappingKeys?: RegisterMappingKeys;
+};
+
 export type FFCAMutationConfig =
-  | {
-      tag: number;
-      params: readonly AbiParameter[];
-    }
-  | {
-      tag: number;
-      params: readonly AbiParameter[];
+  | FFCAMutationBase
+  | (FFCAMutationBase & {
       resolution: readonly AbiParameter[];
       resolve: (params: {
         state: unknown;
         args: unknown;
         signature: unknown;
       }) => unknown | Promise<unknown>;
-    };
+    });
 
 export type FFCAConfig = {
   address: Address.Address;

@@ -14,6 +14,8 @@ import {
   abiParameterToColumn,
 } from "./index";
 
+type Hex = `0x${string}`;
+
 async function applyGeneratedMigration(
   client: PGlite,
   schema: Record<string, unknown>,
@@ -69,7 +71,7 @@ test("single ABI parameter generates a Drizzle column", () => {
   const mutation = pgTable("single_column", { account: column });
 
   type Insert = typeof mutation.$inferInsert;
-  expectTypeOf<Insert>().toExtend<{ account: string }>();
+  expectTypeOf<Insert>().toExtend<{ account: Hex }>();
 });
 
 test("creates deterministic columns from ABI params", () => {
@@ -343,6 +345,15 @@ test("bytes and text ABI types round-trip through Drizzle-generated migrations",
     }
   `);
   expect(selected).toMatchObject(row);
+
+  type Insert = typeof mutation.$inferInsert;
+  expectTypeOf<Insert>().toExtend<{
+    b1: Hex;
+    b32: Hex;
+    dynamicBytes: Hex;
+    callback: Hex;
+    memo: string;
+  }>();
 });
 
 test("misc scalar ABI types round-trip through Drizzle-generated migrations", async () => {
@@ -354,7 +365,7 @@ test("misc scalar ABI types round-trip through Drizzle-generated migrations", as
   const row = {
     id: 1,
     ok: true,
-    account: "0x0000000000000000000000000000000000000001",
+    account: "0x0000000000000000000000000000000000000001" as Hex,
   };
 
   await db.insert(mutation).values(row as typeof mutation.$inferInsert);
