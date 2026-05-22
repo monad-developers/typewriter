@@ -2,28 +2,50 @@ import {
   bigint,
   char,
   integer,
+  jsonb,
   numeric,
   pgEnum,
-  primaryKey,
-  serial,
+  pgTable,
   smallint,
-  snakeCase,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import type { Hex } from "viem";
 
-const pgTable = snakeCase.table;
+const schemaSymbol = Symbol.for("drizzle:Schema");
 
-const uint8 = () => smallint();
-const uint16 = () => integer();
-const uint32 = () => bigint({ mode: "number" });
-const uint40 = () => bigint({ mode: "number" });
-const uint64 = () => bigint({ mode: "bigint" });
-const uint256 = () => numeric({ precision: 78, scale: 0 });
-const address = () => char({ length: 42 });
-const bytes32 = () => char({ length: 66 });
+type SchemaMutable = Record<typeof schemaSymbol, string | undefined>;
 
-const mutationStatusEnum = pgEnum("mutation_status", [
+const uint8 = (name?: string) =>
+  name === undefined ? smallint() : smallint(name);
+const uint16 = (name?: string) =>
+  name === undefined ? integer() : integer(name);
+const uint40 = (name?: string) =>
+  name === undefined
+    ? bigint({ mode: "bigint" })
+    : bigint(name, { mode: "bigint" });
+const uint64 = (name?: string) =>
+  name === undefined
+    ? numeric({ precision: 78, scale: 0 })
+    : numeric(name, { precision: 78, scale: 0 });
+const uint256 = (name?: string) =>
+  name === undefined
+    ? numeric({ precision: 78, scale: 0 })
+    : numeric(name, { precision: 78, scale: 0 });
+const address = (name?: string) =>
+  (name === undefined
+    ? char({ length: 42 })
+    : char(name, { length: 42 })
+  ).$type<Hex>();
+const bytes = (name?: string) =>
+  (name === undefined ? text() : text(name)).$type<Hex>();
+const bytes32 = (name?: string) =>
+  (name === undefined
+    ? char({ length: 66 })
+    : char(name, { length: 66 })
+  ).$type<Hex>();
+
+export const mutationStatusEnum = pgEnum("mutation_status", [
   "accepted",
   "included",
   "safe",
@@ -32,237 +54,130 @@ const mutationStatusEnum = pgEnum("mutation_status", [
 
 const mutationColumns = () => ({
   id: integer().notNull().primaryKey(),
-  bundleId: integer(),
-  bundlePosition: integer(),
-  blockNumber: uint256(),
-  blockHash: bytes32(),
-  blockTimestamp: uint256(),
-  transactionHash: bytes32(),
+  bundleId: integer("bundleId").notNull(),
+  bundlePosition: integer("bundlePosition").notNull(),
+  blockNumber: uint256("blockNumber"),
+  blockHash: bytes32("blockHash"),
+  blockTimestamp: uint256("blockTimestamp"),
+  transactionHash: bytes32("transactionHash"),
   status: mutationStatusEnum().notNull(),
-  acceptedAt: timestamp().notNull().defaultNow(),
-  includedAt: timestamp(),
-  safeAt: timestamp(),
-  finalizedAt: timestamp(),
+  acceptedAt: timestamp("acceptedAt").notNull().defaultNow(),
+  includedAt: timestamp("includedAt"),
+  safeAt: timestamp("safeAt"),
+  finalizedAt: timestamp("finalizedAt"),
 });
 
-export const accounts = pgTable("accounts", {
-  id: bytes32().primaryKey(),
-  serial: serial().notNull(),
+const signatureColumns = () => ({
+  signatureAccount: bytes32("signature_account").notNull(),
+  signatureKeyId: uint64("signature_keyId").notNull(),
+  signatureRawSignature: bytes("signature_rawSignature").notNull(),
 });
 
-export const keys = pgTable(
-  "keys",
-  {
-    account: bytes32()
-      .notNull()
-      .references(() => accounts.id),
-    keyIndex: uint64().notNull(),
-    expiry: uint40().notNull(),
-    keyType: uint8().notNull(),
-    permissions: uint16().notNull(),
-    publicKey: text().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.account, t.keyIndex] })],
-);
-
-export const nonces = pgTable(
-  "nonces",
-  {
-    account: bytes32()
-      .notNull()
-      .references(() => accounts.id),
-    nonceKey: uint256().notNull(),
-    sequence: uint64().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.account, t.nonceKey] })],
-);
-
-export const balances = pgTable(
-  "balances",
-  {
-    account: bytes32()
-      .notNull()
-      .references(() => accounts.id),
-    asset: address().notNull(),
-    amount: uint256().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.account, t.asset] })],
-);
-
-export const instruments = pgTable("instruments", {
-  id: uint64().primaryKey(),
-  base: address().notNull(),
-  baseLotExp: uint16().notNull(),
-  quote: address().notNull(),
-  quoteLotExp: uint16().notNull(),
-});
-
-export const ticks = pgTable(
-  "ticks",
-  {
-    instrumentId: uint64()
-      .notNull()
-      .references(() => instruments.id),
-    side: uint8().notNull(),
-    price: uint64().notNull(),
-    quantity: uint64().notNull(),
-    remainingQuantity: uint64().notNull(),
-    volume: uint32().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.instrumentId, t.side, t.price] })],
-);
-
-export const orders = pgTable(
-  "orders",
-  {
-    orderIndex: uint64().notNull(),
-    account: bytes32()
-      .notNull()
-      .references(() => accounts.id),
-    quantity: uint64().notNull(),
-    instrumentId: uint64()
-      .notNull()
-      .references(() => instruments.id),
-    price: uint64().notNull(),
-    tickVolume: uint32().notNull(),
-    side: uint8().notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.account, t.orderIndex] })],
-);
-
-const signatureColumns = {
+export const initializes = pgTable("initialize_mutations", {
+  ...mutationColumns(),
   account: bytes32().notNull(),
-  keyId: uint64().notNull(),
-  rawSignature: text().notNull(),
-};
-
-export const initializes = pgTable("initializes", {
-  ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
   expiry: uint40().notNull(),
-  rootKeyType: uint8().notNull(),
-  keyType: uint8().notNull(),
+  rootKeyType: uint8("rootKeyType").notNull(),
+  keyType: uint8("keyType").notNull(),
   permissions: uint16().notNull(),
-  rootPublicKey: text().notNull(),
-  publicKey: text().notNull(),
+  rootPublicKey: bytes("rootPublicKey").notNull(),
+  publicKey: bytes("publicKey").notNull(),
+  ...signatureColumns(),
 });
 
-export const authorizes = pgTable("authorizes", {
+export const authorizes = pgTable("authorize_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
+  account: bytes32().notNull(),
   expiry: uint40().notNull(),
-  keyType: uint8().notNull(),
+  keyType: uint8("keyType").notNull(),
   permissions: uint16().notNull(),
-  publicKey: text().notNull(),
+  publicKey: bytes("publicKey").notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const revokes = pgTable("revokes", {
+export const revokes = pgTable("revoke_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
-  revokedKeyId: uint64().notNull(),
+  account: bytes32().notNull(),
+  keyId: uint64("keyId").notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const closeOrders = pgTable("close_orders", {
+export const closeOrders = pgTable("closeorder_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
-  orderId: uint64().notNull(),
+  orderId: uint64("orderId").notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const changeOrders = pgTable("change_orders", {
+export const changeOrders = pgTable("changeorder_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
-  orderId: uint64().notNull(),
+  orderId: uint64("orderId").notNull(),
   price: uint64().notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const limitOrders = pgTable("limit_orders", {
+export const limitOrders = pgTable("limitorder_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
   quantity: uint256().notNull(),
-  instrumentId: uint64().notNull(),
+  instrumentId: uint64("instrumentId").notNull(),
   price: uint64().notNull(),
-  bidOrAsk: uint8().notNull(),
+  bidOrAsk: uint8("bidOrAsk").notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const marketOrders = pgTable("market_orders", {
+export const marketOrders = pgTable("marketorder_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
   quantity: uint256().notNull(),
-  minReceivedQuantity: uint256().notNull(),
-  instrumentId: uint64().notNull(),
-  bidOrAsk: uint8().notNull(),
+  minReceivedQuantity: uint256("minReceivedQuantity").notNull(),
+  instrumentId: uint64("instrumentId").notNull(),
+  bidOrAsk: uint8("bidOrAsk").notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  resolutionFills:
+    jsonb("resolution_fills").$type<{ quantity: string; price: string }[]>(),
+  ...signatureColumns(),
 });
 
-export const fills = pgTable("fills", {
-  id: serial().primaryKey(),
-  marketOrderId: integer()
-    .notNull()
-    .references(() => marketOrders.id),
-  fillIndex: uint8().notNull(),
-  quantity: uint64().notNull(),
-  price: uint64().notNull(),
-});
-
-export const addInstruments = pgTable("add_instruments", {
+export const addInstruments = pgTable("addinstrument_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
-  instrumentId: uint64().notNull(),
+  instrumentId: uint64("instrumentId").notNull(),
   base: address().notNull(),
   quote: address().notNull(),
-  baseLotExp: uint16().notNull(),
-  quoteLotExp: uint16().notNull(),
+  baseLotExp: uint8("baseLotExp").notNull(),
+  quoteLotExp: uint8("quoteLotExp").notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const deposits = pgTable("deposits", {
+export const deposits = pgTable("deposit_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
   asset: address().notNull(),
   amount: uint256().notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const withdrawals = pgTable("withdrawals", {
+export const withdrawals = pgTable("withdrawal_mutations", {
   ...mutationColumns(),
-  ...signatureColumns,
-  accountArg: bytes32().notNull(),
   asset: address().notNull(),
   amount: uint256().notNull(),
   nonce: uint256().notNull(),
   deadline: uint256().notNull(),
+  ...signatureColumns(),
 });
 
-export const APP_SCHEMA = {
-  accounts,
-  keys,
-  nonces,
-  balances,
-  instruments,
-  ticks,
-  orders,
+export const APP_QUERY_SCHEMA = {
   initializes,
   authorizes,
   revokes,
@@ -270,8 +185,20 @@ export const APP_SCHEMA = {
   changeOrders,
   limitOrders,
   marketOrders,
-  fills,
   addInstruments,
   deposits,
   withdrawals,
 };
+
+export function deploymentSchemaName(chainId: number, address: Hex): string {
+  return `ffca_${chainId}_${address.toLowerCase()}`;
+}
+
+export function applyDeploymentSchema(chainId: number, address: Hex): void {
+  const schemaName = deploymentSchemaName(chainId, address);
+  (mutationStatusEnum as unknown as { schema: string | undefined }).schema =
+    schemaName;
+  for (const table of Object.values(APP_QUERY_SCHEMA)) {
+    (table as typeof table & SchemaMutable)[schemaSymbol] = schemaName;
+  }
+}

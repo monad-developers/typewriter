@@ -203,6 +203,8 @@ error KeyExpired();
 error TooEarly();
 error AlreadyExecuted();
 
+event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, Signature sig, uint256 enqueuedBlock);
+
 bytes32 constant EIP712_DOMAIN_TYPEHASH =
     keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
@@ -485,9 +487,11 @@ contract Exchange {
         returns (uint256)
     {
         uint256 index = queue.length;
+        uint256 enqueuedBlock = block.number;
         queue.push(
-            QueuedMutation({mutation: mutation, mutationData: mutationData, sig: sig, enqueuedBlock: block.number})
+            QueuedMutation({mutation: mutation, mutationData: mutationData, sig: sig, enqueuedBlock: enqueuedBlock})
         );
+        emit ForceInclusionQueued(index, uint8(mutation), mutationData, sig, enqueuedBlock);
         return index;
     }
 
