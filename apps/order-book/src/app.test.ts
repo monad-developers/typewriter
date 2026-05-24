@@ -20,8 +20,8 @@ import {
 } from "../test/setup";
 import {
   normalizeSignatureForContract,
+  ORDER_BOOK_BUNDLE_ORDER,
   ORDER_BOOK_MUTATIONS,
-  ORDER_BOOK_SEQUENCE,
   type OrderBookMutationName,
   type SubmittedOrderBookMutation,
 } from "./app";
@@ -50,7 +50,10 @@ async function createOrderBookFFCA(address: Hex) {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
-    sequence: ORDER_BOOK_SEQUENCE,
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ORDER_BOOK_BUNDLE_ORDER,
+    },
     mutations: ORDER_BOOK_MUTATIONS,
   });
 }

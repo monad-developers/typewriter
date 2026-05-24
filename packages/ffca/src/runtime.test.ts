@@ -41,9 +41,9 @@ import {
 import type { FFCAConfig } from "./config";
 import { layerDatabaseLive } from "./db";
 import { encodeMutationCalldata } from "./encoding";
+import type { FFCA } from "./index";
 import { createFFCA as createFFCARaw } from "./index";
 import { deploymentSchemaName, migrate } from "./migrate";
-import type { FFCA } from "./runtime";
 import { createMutationSchema } from "./schema";
 import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
 
@@ -135,7 +135,7 @@ test("createFFCA loads persisted slot state before returning", async () => {
   await ffca.stop();
 });
 
-test("bundle applies mutations in config.sequence order within a bundle", async () => {
+test("bundle applies mutations in bundleOrder within a bundle", async () => {
   const applied: string[] = [];
   const noop = parseAbiParameters("uint256 nonce");
   const ffca = await createFFCA({
@@ -146,7 +146,7 @@ test("bundle applies mutations in config.sequence order within a bundle", async 
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
-    sequence: ["cancel", "limit", "market"],
+    sequencing: { order: "bundle", bundleOrder: ["cancel", "limit", "market"] },
     mutations: {
       cancel: {
         tag: 0,
@@ -369,10 +369,10 @@ test.skip("e2e Counter: scheduler submits detected force inclusion", async () =>
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
+    blockPollingIntervalMs: 50,
     sequencing: {
       order: "fifo",
       submitIntervalMs: 100,
-      blockPollingIntervalMs: 50,
     },
     mutations: COUNTER_MUTATIONS,
   });
@@ -533,7 +533,10 @@ test("e2e Harness: mutation with resolution", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequence: ["initialize", "credit", "debit"],
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ["initialize", "credit", "debit"],
+    },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       credit: HARNESS_MUTATIONS.credit,
@@ -547,7 +550,7 @@ test("e2e Harness: mutation with resolution", async () => {
     rootPublicKey,
   });
 
-  // Submit in dependency order; no `sequence` needed.
+  // Submit in dependency order; no `bundleOrder` needed.
   await ffca.execute({
     name: "credit",
     args: { account: aliceId, keyId: 0n, amount: 100n, nonce: 0n },
@@ -604,10 +607,10 @@ test("e2e Harness: mutation with resolution", async () => {
   await ffca.stop();
 });
 
-// Harness: when mutations arrive out of order, `sequence` sorts them so the
+// Harness: when mutations arrive out of order, `bundleOrder` sorts them so the
 // debit's resolve runs against post-credit state. If sort were broken, debit's
 // resolve would underflow and the bundle would never encode.
-test("e2e Harness: mutations reordered by sequence", async () => {
+test("e2e Harness: mutations reordered by bundle order", async () => {
   const address = await deployHarness();
   const abi = HARNESS_ABI;
 
@@ -619,7 +622,10 @@ test("e2e Harness: mutations reordered by sequence", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequence: ["initialize", "credit", "debit"],
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ["initialize", "credit", "debit"],
+    },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       credit: HARNESS_MUTATIONS.credit,
@@ -633,7 +639,7 @@ test("e2e Harness: mutations reordered by sequence", async () => {
     rootPublicKey,
   });
 
-  // Submit debit before credit — sequence must sort credit first. Each
+  // Submit debit before credit — bundleOrder must sort credit first. Each
   // mutation signs over its own nonce; the contract's nonce check enforces
   // the post-sort order on chain.
   await Promise.all([
@@ -708,7 +714,10 @@ test("e2e Harness: resolution error rejects one mutation", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequence: ["initialize", "credit", "debit"],
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ["initialize", "credit", "debit"],
+    },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       credit: HARNESS_MUTATIONS.credit,
@@ -805,7 +814,10 @@ test("e2e Harness: secp256k1 authorize flow", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequence: ["initialize", "authorize", "credit"],
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ["initialize", "authorize", "credit"],
+    },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       authorize: HARNESS_MUTATIONS.authorize,
@@ -936,7 +948,10 @@ test("e2e Harness: P-256 key authorize and credit", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequence: ["initialize", "authorize", "credit"],
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ["initialize", "authorize", "credit"],
+    },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       authorize: HARNESS_MUTATIONS.authorize,
@@ -1048,7 +1063,10 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequence: ["initialize", "authorize", "credit"],
+    sequencing: {
+      order: "bundle",
+      bundleOrder: ["initialize", "authorize", "credit"],
+    },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
       authorize: HARNESS_MUTATIONS.authorize,

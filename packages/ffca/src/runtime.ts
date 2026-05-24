@@ -15,7 +15,7 @@ import {
 } from "effect";
 import { createEVM, type ExecuteResult } from "ffca-evm";
 import type { Hex, TypedData } from "ox";
-import { createStorageProxy, type StorageProxy } from "storage-layout";
+import { createStorageProxy } from "storage-layout";
 import {
   ContractFunctionRevertedError,
   createPublicClient,
@@ -47,6 +47,12 @@ import {
   encodeExecuteCalldata,
   type FFCAAbi,
 } from "./encoding";
+import type {
+  BlockListener,
+  BundleListener,
+  MutationListener,
+  RuntimeFFCA,
+} from "./ffca";
 import { Rpc } from "./rpc";
 import type { FFCASchema } from "./schema";
 import type {
@@ -60,7 +66,7 @@ import type {
 } from "./types";
 import { Watch } from "./watch";
 
-// TODO sequencing: name-list works (config.sequence). Next is a state-aware
+// TODO sequencing: bundleOrder works. Next is a state-aware
 //   callback (state, mutations) => ordered for fee-priority / fairness rules.
 // TODO decoded projection: apps currently own read-model projection through
 //   events/persistence hooks. Longer term, replace hand-authored projection
@@ -74,13 +80,6 @@ import { Watch } from "./watch";
 
 const DEFAULT_BUNDLE_INTERVAL_MS = 50;
 const DEFAULT_SUBMIT_INTERVAL_MS = 400;
-const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
-const DEFAULT_SAFE_BLOCK_DEPTH = 1;
-const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
-
-type MutationListener = (event: MutationEvent) => void;
-type BundleListener = (event: BundleEvent) => void;
-type BlockListener = (event: BlockEvent) => void;
 
 type SubmittedMutationWithDeferred = {
   mutation: Extract<RuntimeMutation, { status: "submitted" }>;
@@ -88,27 +87,6 @@ type SubmittedMutationWithDeferred = {
 };
 
 type EnqueuedMutation = Extract<RuntimeMutation, { status: "enqueued" }>;
-
-export type FFCA<C extends FFCAConfig> = {
-  readonly state: StorageProxy<C["storageLayout"], true>;
-  readonly schema: FFCASchema<C>;
-  readonly domain: TypedData.Domain;
-  execute(submitted: SubmittedMutation): Promise<MutationEvent>;
-  on(event: "mutation", cb: MutationListener): () => void;
-  on(event: "bundle", cb: BundleListener): () => void;
-  on(event: "block", cb: BlockListener): () => void;
-  stop(): Promise<void>;
-};
-
-export type RuntimeFFCA<C extends FFCAConfig> = {
-  readonly state: StorageProxy<C["storageLayout"], true>;
-  readonly schema: FFCASchema<C>;
-  readonly domain: TypedData.Domain;
-  execute(submitted: SubmittedMutation): Effect.Effect<MutationEvent, unknown>;
-  on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
-  on(event: "bundle", cb: BundleListener): Effect.Effect<() => void>;
-  on(event: "block", cb: BlockListener): Effect.Effect<() => void>;
-};
 
 function mutationToEvent(mutation: RuntimeMutation): MutationEvent {
   const { config: _config, ...event } = mutation;
@@ -180,14 +158,6 @@ function createRevmRevertError(
   });
 }
 
-function blockDepth(value: number | undefined, fallback: number, name: string) {
-  if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${name} must be a safe non-negative integer`);
-  }
-  return value;
-}
-
 export function createRuntimeEffect<const C extends FFCAConfig>(
   config: C,
   schema: Record<string, PgTable>,
@@ -200,6 +170,10 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
     const rpc = yield* Rpc;
     const db = yield* Database;
     const scope = yield* Scope.Scope;
+    const bundleOrder =
+      config.sequencing !== undefined && "bundleOrder" in config.sequencing
+        ? config.sequencing.bundleOrder
+        : undefined;
 
     const domain: TypedData.Domain = {
       name: config.domain.name,
@@ -208,9 +182,7 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       verifyingContract: config.address,
     };
 
-    const sequencingOrder =
-      config.sequencing?.order ??
-      (config.sequence === undefined ? "fifo" : "bundle");
+    const sequencingOrder = config.sequencing?.order ?? "fifo";
     const sequencing = {
       order: sequencingOrder,
       bundleIntervalMs:
@@ -221,50 +193,22 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
           : DEFAULT_BUNDLE_INTERVAL_MS,
       submitIntervalMs:
         config.sequencing?.submitIntervalMs ?? DEFAULT_SUBMIT_INTERVAL_MS,
-      blockPollingIntervalMs:
-        config.sequencing?.blockPollingIntervalMs ??
-        DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     };
     const confirmations = {
-      safeBlockDepth: blockDepth(
-        config.confirmations?.safeBlockDepth,
-        DEFAULT_SAFE_BLOCK_DEPTH,
-        "config.confirmations.safeBlockDepth",
-      ),
-      finalizedBlockDepth: blockDepth(
-        config.confirmations?.finalizedBlockDepth,
-        DEFAULT_FINALIZED_BLOCK_DEPTH,
-        "config.confirmations.finalizedBlockDepth",
-      ),
+      safeBlockDepth: config.confirmations?.safeBlockDepth ?? 1,
+      finalizedBlockDepth: config.confirmations?.finalizedBlockDepth ?? 5,
     };
-    if (confirmations.finalizedBlockDepth < confirmations.safeBlockDepth) {
-      throw new Error(
-        "config.confirmations.finalizedBlockDepth must be greater than or equal to config.confirmations.safeBlockDepth",
-      );
-    }
-
-    if (sequencing.order === "bundle" && config.sequence === undefined) {
-      throw new Error("config.sequence is required for bundle ordering");
-    }
-
     const mutationsByTag = new Map<
       number,
       { name: string; config: FFCAMutationConfig }
     >();
     for (const [name, mutation] of Object.entries(config.mutations)) {
-      if (mutationsByTag.has(mutation.tag)) {
-        throw new Error(`duplicate mutation tag: ${mutation.tag}`);
-      }
       mutationsByTag.set(mutation.tag, { name, config: mutation });
     }
 
-    const rpcUrls = Array.isArray(config.rpcUrl)
-      ? config.rpcUrl
-      : [config.rpcUrl];
-    const rpcUrl = rpcUrls[0];
-    if (rpcUrl === undefined) {
-      throw new Error("At least one RPC URL is required");
-    }
+    const rpcUrl = Array.isArray(config.rpcUrl)
+      ? config.rpcUrl[0]!
+      : config.rpcUrl;
     // viem's `extractChain` is typed with a literal-union of known chain ids;
     // we accept any number at the framework boundary and cast through.
     const chain = extractChain({
@@ -923,7 +867,14 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
         const queued = yield* Queue.clear(mutationQueue);
         if (queued.length === 0) return;
 
-        const order = config.sequence!;
+        if (bundleOrder === undefined) {
+          return yield* Effect.fail(
+            new Error(
+              "config.sequencing.bundleOrder is required for bundle ordering",
+            ),
+          );
+        }
+        const order = bundleOrder;
         queued.sort(
           (a, b) =>
             order.indexOf(a.mutation.name) - order.indexOf(b.mutation.name),

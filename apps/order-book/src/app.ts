@@ -72,7 +72,7 @@ export type SubmittedOrderBookMutation = {
   signature: OrderBookSignature;
 };
 
-export const ORDER_BOOK_SEQUENCE = [
+export const ORDER_BOOK_BUNDLE_ORDER = [
   "Initialize",
   "Authorize",
   "Revoke",

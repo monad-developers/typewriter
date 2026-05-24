@@ -7,8 +7,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
+  ORDER_BOOK_BUNDLE_ORDER,
   ORDER_BOOK_MUTATIONS,
-  ORDER_BOOK_SEQUENCE,
   type OrderBookMutationName,
   type OrderBookSignature,
   type SubmittedOrderBookMutation,
@@ -49,7 +49,10 @@ const app = await createFFCA({
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
   database,
-  sequence: ORDER_BOOK_SEQUENCE,
+  sequencing: {
+    order: "bundle",
+    bundleOrder: ORDER_BOOK_BUNDLE_ORDER,
+  },
   mutations: ORDER_BOOK_MUTATIONS,
 });
 

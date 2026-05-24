@@ -1,13 +1,29 @@
 import { Effect, Exit, Scope } from "effect";
 import type { FFCAConfig } from "./config";
+import type {
+  BlockListener,
+  BundleListener,
+  MutationListener,
+  RuntimeFFCA,
+} from "./ffca";
 import { createFFCAEffect } from "./ffca";
-import type { FFCA } from "./runtime";
+import type { MutationEvent, SubmittedMutation } from "./types";
+
+export type FFCA<C extends FFCAConfig> = {
+  readonly state: RuntimeFFCA<C>["state"];
+  readonly schema: RuntimeFFCA<C>["schema"];
+  readonly domain: RuntimeFFCA<C>["domain"];
+  execute(submitted: SubmittedMutation): Promise<MutationEvent>;
+  on(event: "mutation", cb: MutationListener): () => void;
+  on(event: "bundle", cb: BundleListener): () => void;
+  on(event: "block", cb: BlockListener): () => void;
+  stop(): Promise<void>;
+};
 
 export type {
   FFCAConfig,
   FFCAMutationConfig,
 } from "./config";
-export type { FFCA } from "./runtime";
 export {
   createMutationSchema,
   type FFCAMutationSchema,

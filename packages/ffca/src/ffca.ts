@@ -1,34 +1,40 @@
-import { Data, Effect, Layer, Scope } from "effect";
+import { Effect, Layer, Scope } from "effect";
+import type { TypedData } from "ox";
+import type { StorageProxy } from "storage-layout";
 import { getAbiItem, toEventSelector } from "viem";
 import type { FFCAConfig } from "./config";
+import { validateConfig } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
 import type { FFCAAbi } from "./encoding";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
-import { createRuntimeEffect, type RuntimeFFCA } from "./runtime";
+import { createRuntimeEffect } from "./runtime";
+import type { FFCASchema } from "./schema";
 import { createMutationSchema } from "./schema";
+import type {
+  BlockEvent,
+  BundleEvent,
+  MutationEvent,
+  SubmittedMutation,
+} from "./types";
 import { layerWatchLive } from "./watch";
 
-const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 
-export class FFCAConfigError extends Data.TaggedError("FFCAConfigError")<{
-  readonly message: string;
-}> {}
+export type MutationListener = (event: MutationEvent) => void;
+export type BundleListener = (event: BundleEvent) => void;
+export type BlockListener = (event: BlockEvent) => void;
 
-function primaryRpcUrl(
-  rpcUrl: string | readonly string[],
-): Effect.Effect<string, FFCAConfigError> {
-  if (typeof rpcUrl === "string") return Effect.succeed(rpcUrl);
-  const [first] = rpcUrl;
-  if (first === undefined) {
-    return Effect.fail(
-      new FFCAConfigError({ message: "At least one RPC URL is required" }),
-    );
-  }
-  return Effect.succeed(first);
-}
+export type RuntimeFFCA<C extends FFCAConfig> = {
+  readonly state: StorageProxy<C["storageLayout"], true>;
+  readonly schema: FFCASchema<C>;
+  readonly domain: TypedData.Domain;
+  execute(submitted: SubmittedMutation): Effect.Effect<MutationEvent, unknown>;
+  on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
+  on(event: "bundle", cb: BundleListener): Effect.Effect<() => void>;
+  on(event: "block", cb: BlockListener): Effect.Effect<() => void>;
+};
 
 export function createFFCAEffect<const C extends FFCAConfig>(
   config: C,
@@ -37,7 +43,14 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) check abi for execute, enqueue, and forceExecute
 
-    const rpcUrl = yield* primaryRpcUrl(config.rpcUrl);
+    yield* Effect.try({
+      try: () => validateConfig(config),
+      catch: (cause) => cause,
+    });
+
+    const rpcUrl = Array.isArray(config.rpcUrl)
+      ? config.rpcUrl[0]!
+      : config.rpcUrl;
     const rpcLayer = layerRpc.pipe(
       Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl })),
     );
@@ -56,9 +69,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
       selector: toEventSelector(forceInclusionEvent),
     };
     const watchLayer = layerWatchLive({
-      pollIntervalMs:
-        config.sequencing?.blockPollingIntervalMs ??
-        DEFAULT_BLOCK_POLLING_INTERVAL_MS,
+      pollIntervalMs: config.blockPollingIntervalMs ?? 200,
       maxChainDepth:
         config.confirmations?.finalizedBlockDepth ??
         DEFAULT_FINALIZED_BLOCK_DEPTH,
