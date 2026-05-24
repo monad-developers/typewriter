@@ -6,6 +6,7 @@ import type { ExecuteResult } from "ffca-evm";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";
+import { Database } from "./db";
 import type {
   ResolvedMutation,
   RuntimeBlock,
@@ -52,6 +53,58 @@ export function insertMutation(
     };
 
     yield* tx.insert(table).values(row);
+  });
+}
+
+export function selectNextMutationId(
+  schema: Record<string, PgTable>,
+): Effect.Effect<number, unknown, Database> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    let maxMutationId = -1;
+
+    for (const [tableName, table] of Object.entries(schema)) {
+      if (!tableName.endsWith("_mutations")) continue;
+
+      // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
+      const mutationTable = getColumns(table) as any;
+      const [row] = yield* db
+        .select({
+          maxMutationId: sql<number>`coalesce(max(${mutationTable.id}), -1)`,
+        })
+        .from(table);
+      if (row !== undefined && row.maxMutationId > maxMutationId) {
+        maxMutationId = row.maxMutationId;
+      }
+    }
+
+    return maxMutationId + 1;
+  });
+}
+
+export function selectNextBundleId(
+  schema: Record<string, PgTable>,
+): Effect.Effect<number, unknown, Database> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    let maxBundleId = -1;
+
+    for (const [tableName, table] of Object.entries(schema)) {
+      if (!tableName.endsWith("_mutations")) continue;
+
+      // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
+      const mutationTable = getColumns(table) as any;
+      const [row] = yield* db
+        .select({
+          maxBundleId: sql<number>`coalesce(max(${mutationTable.bundleId}), -1)`,
+        })
+        .from(table);
+      if (row !== undefined && row.maxBundleId > maxBundleId) {
+        maxBundleId = row.maxBundleId;
+      }
+    }
+
+    return maxBundleId + 1;
   });
 }
 

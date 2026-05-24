@@ -1,4 +1,3 @@
-import { sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import {
   Cause,
@@ -37,6 +36,8 @@ import {
   insertSlotWrites,
   selectAccountStorage,
   selectKnownPaths,
+  selectNextBundleId,
+  selectNextMutationId,
   updateMutationLifecycle,
 } from "./db-query";
 import {
@@ -187,36 +188,6 @@ function blockDepth(value: number | undefined, fallback: number, name: string) {
   return value;
 }
 
-// TODO(kyle) move to db-query.ts
-function loadNextIds(
-  schema: Record<string, PgTable>,
-): Effect.Effect<{ mutationId: number; bundleId: number }, unknown, Database> {
-  return Effect.gen(function* () {
-    const db = yield* Database;
-    let maxMutationId = -1;
-    let maxBundleId = -1;
-    for (const [tableName, table] of Object.entries(schema)) {
-      if (!tableName.endsWith("_mutations")) continue;
-
-      // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
-      const mutationTable = table as any;
-      const [row] = yield* db
-        .select({
-          maxMutationId: sql<number>`coalesce(max(${mutationTable.id}), -1)`,
-          maxBundleId: sql<number>`coalesce(max(${mutationTable.bundleId}), -1)`,
-        })
-        .from(table);
-      if (row !== undefined && row.maxMutationId > maxMutationId) {
-        maxMutationId = row.maxMutationId;
-      }
-      if (row !== undefined && row.maxBundleId > maxBundleId) {
-        maxBundleId = row.maxBundleId;
-      }
-    }
-    return { mutationId: maxMutationId + 1, bundleId: maxBundleId + 1 };
-  });
-}
-
 export function createRuntimeEffect<const C extends FFCAConfig>(
   config: C,
   schema: Record<string, PgTable>,
@@ -316,9 +287,8 @@ export function createRuntimeEffect<const C extends FFCAConfig>(
       selectKnownPaths(tx, schema),
     );
 
-    const ids = yield* loadNextIds(schema);
-    mutationId = ids.mutationId;
-    bundleId = ids.bundleId;
+    mutationId = yield* selectNextMutationId(schema);
+    bundleId = yield* selectNextBundleId(schema);
 
     // revm is a startup resource, not part of the background loop. Initialize
     // it before returning so `ffca.state` and `execute()` never race startup.
