@@ -51,8 +51,32 @@
         "typescript": "catalog:",
       },
     },
-    "packages/evm": {
-      "name": "evm",
+    "packages/ffca": {
+      "name": "ffca",
+      "dependencies": {
+        "@effect/sql-pg": "4.0.0-beta.58",
+        "abipg": "workspace:*",
+        "abitype": "catalog:",
+        "drizzle-kit": "catalog:",
+        "drizzle-orm": "catalog:",
+        "effect": "catalog:",
+        "ffca-evm": "workspace:*",
+        "ox": "catalog:",
+        "pg": "8.16.3",
+        "storage-layout": "workspace:*",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/language-service": "catalog:",
+        "@types/pg": "8.15.5",
+        "prool": "catalog:",
+      },
+      "peerDependencies": {
+        "typescript": "catalog:",
+      },
+    },
+    "packages/ffca-evm": {
+      "name": "ffca-evm",
       "dependencies": {
         "effect": "catalog:",
         "ox": "catalog:",
@@ -63,30 +87,6 @@
         "solmate": "github:transmissions11/solmate",
         "storage-layout": "workspace:*",
         "viem": "catalog:",
-      },
-      "peerDependencies": {
-        "typescript": "catalog:",
-      },
-    },
-    "packages/ffca": {
-      "name": "ffca",
-      "dependencies": {
-        "@effect/sql-pg": "4.0.0-beta.58",
-        "abipg": "workspace:*",
-        "abitype": "catalog:",
-        "drizzle-kit": "catalog:",
-        "drizzle-orm": "catalog:",
-        "effect": "catalog:",
-        "evm": "workspace:*",
-        "ox": "catalog:",
-        "pg": "8.16.3",
-        "storage-layout": "workspace:*",
-        "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/language-service": "catalog:",
-        "@types/pg": "8.15.5",
-        "prool": "catalog:",
       },
       "peerDependencies": {
         "typescript": "catalog:",
@@ -335,13 +335,13 @@
 
     "eventemitter3": ["eventemitter3@5.0.4", "", {}, "sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw=="],
 
-    "evm": ["evm@workspace:packages/evm"],
-
     "execa": ["execa@9.6.1", "", { "dependencies": { "@sindresorhus/merge-streams": "^4.0.0", "cross-spawn": "^7.0.6", "figures": "^6.1.0", "get-stream": "^9.0.0", "human-signals": "^8.0.1", "is-plain-obj": "^4.1.0", "is-stream": "^4.0.1", "npm-run-path": "^6.0.0", "pretty-ms": "^9.2.0", "signal-exit": "^4.1.0", "strip-final-newline": "^4.0.0", "yoctocolors": "^2.1.1" } }, "sha512-9Be3ZoN4LmYR90tUoVu2te2BsbzHfhJyfEiAVfz7N5/zv+jduIfLrV2xdQXOHbaD6KgpGdO9PRPM1Y4Q9QkPkA=="],
 
     "fast-check": ["fast-check@4.7.0", "", { "dependencies": { "pure-rand": "^8.0.0" } }, "sha512-NsZRtqvSSoCP0HbNjUD+r1JH8zqZalyp6gLY9e7OYs7NK9b6AHOs2baBFeBG7bVNsuoukh89x2Yg3rPsul8ziQ=="],
 
     "ffca": ["ffca@workspace:packages/ffca"],
+
+    "ffca-evm": ["ffca-evm@workspace:packages/ffca-evm"],
 
     "figures": ["figures@6.1.0", "", { "dependencies": { "is-unicode-supported": "^2.0.0" } }, "sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg=="],
 

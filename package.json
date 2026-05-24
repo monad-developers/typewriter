@@ -20,7 +20,7 @@
   },
   "scripts": {
     "lint": "biome check . && bun run --filter '*' lint",
-    "typecheck": "bun run --filter abipg typecheck && bun run --filter storage-layout typecheck && bun run --filter evm typecheck && bun run --filter ffca typecheck && bun run --filter order-book typecheck",
+    "typecheck": "bun run --filter abipg typecheck && bun run --filter storage-layout typecheck && bun run --filter ffca-evm typecheck && bun run --filter ffca typecheck && bun run --filter order-book typecheck",
     "test": "bun run --filter '*' test",
     "build": "bun run --filter '*' build"
   },

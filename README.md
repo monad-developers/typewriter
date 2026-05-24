@@ -20,6 +20,7 @@ apps/
   order-book/           # FFCA-backed order book app, contracts, frontend, SDK, scripts, tests, and docs
 
 packages/
+  ffca-evm/             # ffca-evm sidecar package
   ffca/                 # framework for crypto apps (work in progress)
 ```
 

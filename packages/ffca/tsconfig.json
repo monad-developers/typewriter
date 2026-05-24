@@ -28,7 +28,7 @@
     "baseUrl": ".",
     "paths": {
       "abipg": ["../abipg/src/index.ts"],
-      "evm": ["../evm/src/index.ts"],
+      "ffca-evm": ["../ffca-evm/src/index.ts"],
       "storage-layout": ["../storage-layout/src/index.ts"]
     }
   }

@@ -1,5 +1,5 @@
 {
-  "name": "evm",
+  "name": "ffca-evm",
   "module": "src/index.ts",
   "type": "module",
   "private": true,

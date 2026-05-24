@@ -2,7 +2,7 @@ import type { AbiParameter } from "abitype";
 import { asc, desc, eq, getColumns, sql } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
-import type { ExecuteResult } from "evm";
+import type { ExecuteResult } from "ffca-evm";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";

@@ -20,7 +20,7 @@
     "paths": {
       "abipg": ["../../packages/abipg/src/index.ts"],
       "ffca": ["../../packages/ffca/src/index.ts"],
-      "evm": ["../../packages/evm/src/index.ts"],
+      "ffca-evm": ["../../packages/ffca-evm/src/index.ts"],
       "order-book-sdk": ["./sdk/index.ts"],
       "storage-layout": ["../../packages/storage-layout/src/index.ts"]
     }

@@ -14,7 +14,7 @@ import {
   Semaphore,
   Stream,
 } from "effect";
-import { createEVM, type ExecuteResult } from "evm";
+import { createEVM, type ExecuteResult } from "ffca-evm";
 import type { Hex, TypedData } from "ox";
 import { createStorageProxy, type StorageProxy } from "storage-layout";
 import {

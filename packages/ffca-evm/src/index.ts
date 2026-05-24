@@ -1,4 +1,4 @@
-// Effect-native client for the evm sidecar.
+// Effect-native client for the ffca-evm sidecar.
 //
 // One subprocess per createEVM. A semaphore (capacity 1) serializes calls so
 // only one request is in flight at a time. The reader fiber parses stdout
@@ -34,7 +34,7 @@ export type {
   Spec,
 } from "./types";
 
-const BINARY_PATH = `${import.meta.dir}/../target/${Bun.env.NODE_ENV === "test" ? "debug" : "release"}/evm`;
+const BINARY_PATH = `${import.meta.dir}/../target/${Bun.env.NODE_ENV === "test" ? "debug" : "release"}/ffca-evm`;
 
 // -----------------------------------------------------------------------------
 // Errors
