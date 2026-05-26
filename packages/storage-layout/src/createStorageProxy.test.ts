@@ -526,6 +526,22 @@ test("enumerates root variables, structs, fixed arrays, and known mapping keys",
   expect(Object.values(state.balances)).toEqual([100n]);
 });
 
+test("mapping enumeration observes known paths added after proxy creation", () => {
+  const balanceSlot = expectSingleSlot(
+    getStorageSlot(layout, `balances[${OWNER}]`),
+  );
+  const { get } = syncGetter({ [balanceSlot]: "0x64" });
+  const knownPaths: string[] = [];
+  const state = createStorageProxy(layout, get, knownPaths);
+
+  expect(Object.keys(state.balances)).toEqual([]);
+
+  knownPaths.push(`balances[${OWNER}]`);
+
+  expect(Object.keys(state.balances)).toEqual([OWNER]);
+  expect(Object.values(state.balances)).toEqual([100n]);
+});
+
 test("does not enumerate dynamic array indices from known paths", () => {
   const slot0 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[0]"));
   const slot2 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[2]"));

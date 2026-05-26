@@ -140,8 +140,16 @@ export function createStorageProxy<
   get: G,
   knownVariables: readonly string[] = [],
 ): StorageProxy<L, G extends AsyncSlotGetter ? true : false> {
-  const normalizedKnownPaths = knownVariables.map(normalizePath);
-  return buildProxy(layout, get, normalizedKnownPaths, null) as StorageProxy<
+  let normalizedKnownPaths = knownVariables.map(normalizePath);
+  let normalizedKnownPathCount = knownVariables.length;
+  const knownPaths = () => {
+    if (knownVariables.length !== normalizedKnownPathCount) {
+      normalizedKnownPaths = knownVariables.map(normalizePath);
+      normalizedKnownPathCount = knownVariables.length;
+    }
+    return normalizedKnownPaths;
+  };
+  return buildProxy(layout, get, knownPaths, null) as StorageProxy<
     L,
     G extends AsyncSlotGetter ? true : false
   >;
@@ -168,7 +176,7 @@ const JS_INTEROP_PROPS = new Set([
 function buildProxy(
   layout: StorageLayout,
   get: SlotGetter,
-  knownPaths: readonly StoragePath[],
+  knownPaths: () => readonly StoragePath[],
   path: StoragePath | null,
 ): object {
   return new Proxy(Object.create(null), {
@@ -230,7 +238,7 @@ function buildProxy(
 function resolveOrSubProxy(
   layout: StorageLayout,
   get: SlotGetter,
-  knownPaths: readonly StoragePath[],
+  knownPaths: () => readonly StoragePath[],
   path: StoragePath,
 ): unknown {
   const type = typeAtPath(layout, path);
@@ -240,7 +248,7 @@ function resolveOrSubProxy(
 
 function enumerableKeys(
   layout: StorageLayout,
-  knownPaths: readonly StoragePath[],
+  knownPaths: () => readonly StoragePath[],
   path: StoragePath | null,
 ): string[] {
   if (path === null) return layout.storage.map((item) => item.label);
@@ -254,7 +262,7 @@ function enumerableKeys(
     );
   }
   if (type.base !== undefined) return [];
-  if (type.key !== undefined) return knownChildProperties(knownPaths, path);
+  if (type.key !== undefined) return knownChildProperties(knownPaths(), path);
   return [];
 }
 

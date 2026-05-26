@@ -44,8 +44,11 @@ export function useMarketOrderMutation() {
     },
     onSuccess: async () => {
       incrementSeq();
-      await queryClient.invalidateQueries({ queryKey: ["balances"] });
-      await queryClient.invalidateQueries({ queryKey: ["instrument-price"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["balances"] }),
+        queryClient.invalidateQueries({ queryKey: ["price"] }),
+        queryClient.invalidateQueries({ queryKey: ["depth"] }),
+      ]);
     },
     onError: (error) => {
       console.error(error);

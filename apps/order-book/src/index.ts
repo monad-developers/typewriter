@@ -394,6 +394,8 @@ type PriceSummary = {
   spread: number | null;
 };
 
+type LiveTickPriceRow = { price: number; remainingQuantity: bigint };
+
 function parseAccountId(idParam: string): Hex | null {
   if (/^0x[0-9a-fA-F]{64}$/.test(idParam)) return idParam as Hex;
   return null;
@@ -488,7 +490,7 @@ async function accountNonces(account: Hex): Promise<Record<string, string>> {
 async function liveTickPrices(
   side: "bids" | "asks",
   instrumentId: number,
-): Promise<{ price: number; remainingQuantity: bigint }[]> {
+): Promise<LiveTickPriceRow[]> {
   const ticks = state.instruments[String(instrumentId) as `${number}`][side];
   const prices = Object.keys(ticks).map(Number);
   const tickRows = await Promise.all(
@@ -501,11 +503,11 @@ async function liveTickPrices(
   return tickRows.filter((row) => row.remainingQuantity > 0n);
 }
 
-async function priceSummary(instrumentId: number): Promise<PriceSummary> {
-  const [bids, asks] = await Promise.all([
-    liveTickPrices("bids", instrumentId),
-    liveTickPrices("asks", instrumentId),
-  ]);
+function summarizePrice(
+  instrumentId: number,
+  bids: LiveTickPriceRow[],
+  asks: LiveTickPriceRow[],
+): PriceSummary {
   const bestBid =
     bids.length > 0 ? Math.max(...bids.map((b) => b.price)) : null;
   const bestAsk =
@@ -523,13 +525,21 @@ async function priceSummary(instrumentId: number): Promise<PriceSummary> {
   };
 }
 
-async function depthSummary(instrumentId: number) {
-  const summary = await priceSummary(instrumentId);
-  const mid = summary.price;
+async function priceSummary(instrumentId: number): Promise<PriceSummary> {
   const [bids, asks] = await Promise.all([
     liveTickPrices("bids", instrumentId),
     liveTickPrices("asks", instrumentId),
   ]);
+  return summarizePrice(instrumentId, bids, asks);
+}
+
+async function depthSummary(instrumentId: number) {
+  const [bids, asks] = await Promise.all([
+    liveTickPrices("bids", instrumentId),
+    liveTickPrices("asks", instrumentId),
+  ]);
+  const summary = summarizePrice(instrumentId, bids, asks);
+  const mid = summary.price;
   const bidTotals: Record<number, string> = {};
   const askTotals: Record<number, string> = {};
   for (const bp of [1, 5, 25] as const) {
