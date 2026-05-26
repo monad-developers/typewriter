@@ -62,7 +62,7 @@ export function MutationPage() {
       <section className="w-full border-b p-4 flex flex-col gap-2">
         <h2 className="text-2xl font-bold">Message</h2>
         <code>id: {mutation?.id ?? "..."}</code>
-        <code>batch: {mutation?.bundleId ?? "..."}</code>
+        <code>batch: {mutation?.batchId ?? "..."}</code>
         <code>
           block:{" "}
           {mutation?.blockNumber ? (

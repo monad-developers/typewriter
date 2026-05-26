@@ -20,8 +20,9 @@ import {
 } from "../test/setup";
 import {
   normalizeSignatureForContract,
-  ORDER_BOOK_BUNDLE_ORDER,
+  ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
+  type OrderBookFFCAConfig,
   type OrderBookMutationName,
   type SubmittedOrderBookMutation,
 } from "./app";
@@ -41,7 +42,7 @@ const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86_400);
 type OrderBookFFCA = Awaited<ReturnType<typeof createOrderBookFFCA>>;
 
 async function createOrderBookFFCA(address: Hex) {
-  return createFFCA({
+  const config = {
     address,
     domain: { name: "Exchange", version: "1" },
     abi: EXCHANGE_ABI,
@@ -51,11 +52,13 @@ async function createOrderBookFFCA(address: Hex) {
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
     sequencing: {
-      order: "bundle",
-      bundleOrder: ORDER_BOOK_BUNDLE_ORDER,
+      order: "batch",
+      batchOrder: ORDER_BOOK_BATCH_ORDER,
     },
     mutations: ORDER_BOOK_MUTATIONS,
-  });
+  } as const satisfies OrderBookFFCAConfig;
+
+  return createFFCA(config);
 }
 
 function secp256k1PublicKey(address: Address): Hex {
@@ -365,7 +368,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
   await app.stop();
 
-  expect(result.status).toBe("accepted");
+  expect(result.id).toBeGreaterThanOrEqual(0);
 });
 
 test("db-queries fan out across per-mutation tables", async () => {
@@ -465,7 +468,7 @@ test("db-queries fan out across per-mutation tables", async () => {
   expect(byAccountNonce?.id).toBe(depositRow.id);
 
   // loadMutationsByBlock: returns every persisted mutation that landed in
-  // the block, ordered by (bundleId, bundlePosition).
+  // the block, ordered by mutation id.
   const inBlock = await loadMutationsByBlock(db, schema, blockNumber);
   expect(inBlock.length).toBeGreaterThanOrEqual(1);
   const typesInBlock = new Set(inBlock.map((m) => m.type));

@@ -164,9 +164,9 @@ export const EXCHANGE_ABI = [
     name: "execute",
     inputs: [
       {
-        name: "bundles",
+        name: "batches",
         type: "tuple[]",
-        internalType: "struct Bundle[]",
+        internalType: "struct Batch[]",
         components: [
           {
             name: "mutations",

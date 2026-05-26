@@ -47,7 +47,7 @@ function randomHumanPrice(): number {
   return 1 + Math.floor(Math.random() * 1_000_000);
 }
 
-type BundleArg = {
+type BatchArg = {
   mutations: number[];
   mutationData: Hex[];
   signatures: { account: Hex; keyId: bigint; rawSignature: Hex }[];
@@ -247,7 +247,7 @@ function reencodeSig(raw: Hex): Hex {
   return raw;
 }
 
-function buildBundle(account: Account, muts: Mut[]): BundleArg {
+function buildBatch(account: Account, muts: Mut[]): BatchArg {
   return {
     mutations: muts.map((m) => m.type),
     mutationData: muts.map(encodeMutationData),
@@ -259,11 +259,11 @@ function buildBundle(account: Account, muts: Mut[]): BundleArg {
   };
 }
 
-async function estimate(bundle: BundleArg): Promise<bigint> {
+async function estimate(batch: BatchArg): Promise<bigint> {
   const data = encodeFunctionData({
     abi: EXCHANGE_ABI,
     functionName: "execute",
-    args: [[bundle], []],
+    args: [[batch], []],
   });
   const { accessList } = await publicClient.createAccessList({
     account: SCHEDULER_ADDRESS,
@@ -283,8 +283,8 @@ async function marginalGas(
   baseline: Mut[],
   extra: Mut,
 ): Promise<bigint> {
-  const base = buildBundle(account, baseline);
-  const plus = buildBundle(account, [...baseline, extra]);
+  const base = buildBatch(account, baseline);
+  const plus = buildBatch(account, [...baseline, extra]);
   const [gBase, gPlus] = await Promise.all([estimate(base), estimate(plus)]);
   return gPlus - gBase;
 }
@@ -329,7 +329,7 @@ console.log(
 );
 console.log(`rpc: ${RPC_URL}`);
 console.log(`scheduler (from): ${SCHEDULER_ADDRESS}`);
-console.log(`baseline bundle size N = ${BASELINE_N}`);
+console.log(`baseline batch size N = ${BASELINE_N}`);
 console.log("");
 
 // Scenario 1: limit order on a fresh tick

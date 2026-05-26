@@ -1,5 +1,5 @@
 import type { FFCAConfig } from "ffca";
-import type { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
+import type { EXCHANGE_ABI, EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
 import type { StorageProxy } from "storage-layout";
 import {
   encodeAbiParameters,
@@ -72,7 +72,7 @@ export type SubmittedOrderBookMutation = {
   signature: OrderBookSignature;
 };
 
-export const ORDER_BOOK_BUNDLE_ORDER = [
+export const ORDER_BOOK_BATCH_ORDER = [
   "Initialize",
   "Authorize",
   "Revoke",
@@ -288,6 +288,21 @@ export const ORDER_BOOK_MUTATIONS = {
     },
   },
 } as const satisfies FFCAConfig["mutations"];
+
+export type OrderBookFFCAConfig = Omit<
+  FFCAConfig,
+  "abi" | "storageLayout" | "mutations" | "sequencing"
+> & {
+  abi: typeof EXCHANGE_ABI;
+  storageLayout: typeof EXCHANGE_STORAGE_LAYOUT;
+  mutations: typeof ORDER_BOOK_MUTATIONS;
+  sequencing: {
+    order: "batch";
+    batchOrder: typeof ORDER_BOOK_BATCH_ORDER;
+    batchIntervalMs?: number;
+    submitIntervalMs?: number;
+  };
+};
 
 export function normalizeSignatureForContract(
   signature: OrderBookSignature,

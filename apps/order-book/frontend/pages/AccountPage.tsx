@@ -227,7 +227,7 @@ export function AccountPage() {
                     </code>
                   </td>
                   <td className="py-2 pr-6">
-                    <code>{m.bundleId ?? "..."}</code>
+                    <code>{m.batchId ?? "..."}</code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>{m.status}</code>

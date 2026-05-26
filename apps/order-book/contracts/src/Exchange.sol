@@ -149,7 +149,7 @@ struct Withdrawal {
     uint256 deadline;
 }
 
-struct Bundle {
+struct Batch {
     Mutation[] mutations;
     bytes[] mutationData;
     Signature[] signatures;
@@ -271,7 +271,7 @@ contract Exchange {
         return block.chainid == INITIAL_CHAIN_ID ? INITIAL_DOMAIN_SEPARATOR : _computeDomainSeparator();
     }
 
-    function execute(Bundle[] calldata bundles, uint256[] calldata forceExecuteIndexes) external {
+    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
         if (msg.sender != SCHEDULER) revert Unauthorized();
 
         for (uint256 i = 0; i < forceExecuteIndexes.length;) {
@@ -293,24 +293,23 @@ contract Exchange {
             }
         }
 
-        for (uint256 b = 0; b < bundles.length;) {
-            Bundle calldata bundle = bundles[b];
+        for (uint256 b = 0; b < batches.length;) {
+            Batch calldata batch = batches[b];
 
             if (
-                bundle.mutations.length != bundle.mutationData.length
-                    || bundle.mutations.length != bundle.signatures.length
+                batch.mutations.length != batch.mutationData.length || batch.mutations.length != batch.signatures.length
             ) {
                 revert LengthMismatch();
             }
 
             Mutation prev = Mutation.Initialize;
-            for (uint256 i = 0; i < bundle.mutations.length;) {
-                Mutation mutation = bundle.mutations[i];
+            for (uint256 i = 0; i < batch.mutations.length;) {
+                Mutation mutation = batch.mutations[i];
                 if (mutation < prev) revert MutationsOutOfOrder();
                 prev = mutation;
 
-                bytes calldata data = bundle.mutationData[i];
-                Signature calldata sig = bundle.signatures[i];
+                bytes calldata data = batch.mutationData[i];
+                Signature calldata sig = batch.signatures[i];
 
                 if (mutation == Mutation.Initialize) {
                     Initialize memory init = abi.decode(data, (Initialize));

@@ -392,7 +392,7 @@ struct Key {
             Censorship resistance
           </h2>
           <p className="leading-relaxed mb-4">
-            Bundle submission is gated to a single{" "}
+            Batch submission is gated to a single{" "}
             <InlineCode>scheduler</InlineCode> address that the server controls.
             That gate is what makes almost all of the features possible: the
             scheduler knows it can't be front-run, so it can deterministically
@@ -403,7 +403,7 @@ struct Key {
             lang="solidity"
             code={`address internal immutable SCHEDULER;
 
-function execute(Bundle[] calldata bundles) external {
+function execute(Batch[] calldata batches) external {
     if (msg.sender != SCHEDULER) revert Unauthorized();
     // ...
 }`}

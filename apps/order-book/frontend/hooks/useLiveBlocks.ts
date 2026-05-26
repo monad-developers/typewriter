@@ -20,7 +20,7 @@ type StreamMutationBase = {
   deadline: string;
 };
 
-export type BundleMutation =
+export type BatchMutation =
   | (StreamMutationBase & { type: "initialize"; payload: InitializePayload })
   | (StreamMutationBase & { type: "authorize"; payload: AuthorizePayload })
   | (StreamMutationBase & { type: "revoke"; payload: RevokePayload })
@@ -34,13 +34,13 @@ export type BundleMutation =
   | (StreamMutationBase & { type: "deposit"; payload: DepositPayload })
   | (StreamMutationBase & { type: "withdrawal"; payload: WithdrawalPayload });
 
-export type LiveBundle = {
+export type LiveBatch = {
   id: number;
   position: number;
-  mutations: BundleMutation[];
+  mutations: BatchMutation[];
 };
 
-export type LiveBlockBundle = {
+export type LiveBlockBatch = {
   id: number;
   position: number;
   mutationCount: number;
@@ -50,36 +50,36 @@ export type LiveBlock = {
   number: string;
   hash: Hex;
   timestamp: string;
-  bundles: LiveBlockBundle[];
+  batches: LiveBlockBatch[];
 };
 
-export const BUNDLE_SLOT_COUNT = 8;
+export const BATCH_SLOT_COUNT = 8;
 export const BLOCK_QUEUE_SIZE = 8;
 
 export function useLiveBlocks(): {
-  bundleSlots: (LiveBundle | null)[];
+  batchSlots: (LiveBatch | null)[];
   blocks: LiveBlock[];
 } {
-  const [bundleSlots, setBundleSlots] = useState<(LiveBundle | null)[]>(() =>
-    Array(BUNDLE_SLOT_COUNT).fill(null),
+  const [batchSlots, setBatchSlots] = useState<(LiveBatch | null)[]>(() =>
+    Array(BATCH_SLOT_COUNT).fill(null),
   );
   const [blocks, setBlocks] = useState<LiveBlock[]>([]);
 
   useEffect(() => {
     const blockSource = new EventSource("/api/events/blocks");
-    const bundleSource = new EventSource("/api/events/bundles");
+    const batchSource = new EventSource("/api/events/batches");
 
-    bundleSource.addEventListener("bundle", (e) => {
+    batchSource.addEventListener("batch", (e) => {
       const data = JSON.parse(e.data) as {
         id: number;
         status: string;
         position: number;
-        mutations: BundleMutation[];
+        mutations: BatchMutation[];
       };
       if (data.status !== "accepted") return;
-      setBundleSlots((prev) => {
+      setBatchSlots((prev) => {
         const next = prev.slice();
-        next[data.position % BUNDLE_SLOT_COUNT] = {
+        next[data.position % BATCH_SLOT_COUNT] = {
           id: data.id,
           position: data.position,
           mutations: data.mutations,
@@ -94,10 +94,10 @@ export function useLiveBlocks(): {
         number?: string;
         hash?: Hex;
         timestamp?: string;
-        bundles?: LiveBlockBundle[];
+        batches?: LiveBlockBatch[];
       };
       if (data.status === "accepted") {
-        setBundleSlots(Array(BUNDLE_SLOT_COUNT).fill(null));
+        setBatchSlots(Array(BATCH_SLOT_COUNT).fill(null));
         return;
       }
       if (data.status === "included") {
@@ -107,7 +107,7 @@ export function useLiveBlocks(): {
           number: data.number,
           hash: data.hash,
           timestamp: data.timestamp,
-          bundles: data.bundles ?? [],
+          batches: data.batches ?? [],
         };
         setBlocks((prev) => {
           if (prev.some((b) => b.hash === block.hash)) return prev;
@@ -120,9 +120,9 @@ export function useLiveBlocks(): {
 
     return () => {
       blockSource.close();
-      bundleSource.close();
+      batchSource.close();
     };
   }, []);
 
-  return { bundleSlots, blocks };
+  return { batchSlots, blocks };
 }

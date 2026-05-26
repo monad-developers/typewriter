@@ -1,14 +1,14 @@
 import { useState } from "react";
 import {
   BLOCK_QUEUE_SIZE,
+  type LiveBatch,
   type LiveBlock,
-  type LiveBundle,
   useLiveBlocks,
 } from "../hooks/useLiveBlocks";
 import { useTps } from "../hooks/useTps";
 import { Link } from "../lib/router";
 
-function bundleColor(mutationCount: number): string {
+function batchColor(mutationCount: number): string {
   if (mutationCount <= 1) return "bg-blue-200";
   if (mutationCount <= 3) return "bg-blue-300";
   if (mutationCount <= 5) return "bg-blue-400";
@@ -20,10 +20,10 @@ const BLOCK_INNER_SLOTS = 8;
 const BLOCK_INNER_KEYS = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
 function BlockColumn({ block }: { block: LiveBlock }) {
-  const bySlot = new Array<LiveBlock["bundles"][number] | undefined>(
+  const bySlot = new Array<LiveBlock["batches"][number] | undefined>(
     BLOCK_INNER_SLOTS,
   );
-  for (const b of block.bundles) {
+  for (const b of block.batches) {
     bySlot[b.position % BLOCK_INNER_SLOTS] = b;
   }
 
@@ -41,13 +41,13 @@ function BlockColumn({ block }: { block: LiveBlock }) {
         }}
       >
         {BLOCK_INNER_KEYS.map((key, i) => {
-          const bundle = bySlot[i];
+          const batch = bySlot[i];
           return (
             <div
               key={key}
               className={
-                bundle
-                  ? bundleColor(bundle.mutationCount)
+                batch
+                  ? batchColor(batch.mutationCount)
                   : "border border-dashed border-zinc-300"
               }
             />
@@ -59,9 +59,9 @@ function BlockColumn({ block }: { block: LiveBlock }) {
 }
 
 function FormingBlockColumn({
-  bundleSlots,
+  batchSlots,
 }: {
-  bundleSlots: (LiveBundle | null)[];
+  batchSlots: (LiveBatch | null)[];
 }) {
   return (
     <div className="border border-dashed border-black flex flex-col gap-1 h-full overflow-hidden p-2">
@@ -73,13 +73,13 @@ function FormingBlockColumn({
           gridTemplateRows: `repeat(${BLOCK_INNER_SLOTS}, 1fr)`,
         }}
       >
-        {bundleSlots.map((bundle, i) => (
+        {batchSlots.map((batch, i) => (
           <div
             // biome-ignore lint/suspicious/noArrayIndexKey: slot position is identity
             key={i}
             className={
-              bundle
-                ? bundleColor(bundle.mutations.length)
+              batch
+                ? batchColor(batch.mutations.length)
                 : "border border-dashed border-zinc-300"
             }
           />
@@ -90,7 +90,7 @@ function FormingBlockColumn({
 }
 
 export function LiveBlocks() {
-  const { bundleSlots, blocks } = useLiveBlocks();
+  const { batchSlots, blocks } = useLiveBlocks();
   const { data: tps } = useTps();
   const [frozenBlocks, setFrozenBlocks] = useState<LiveBlock[] | null>(null);
 
@@ -131,7 +131,7 @@ export function LiveBlocks() {
           gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
         }}
       >
-        <FormingBlockColumn bundleSlots={bundleSlots} />
+        <FormingBlockColumn batchSlots={batchSlots} />
         <section
           aria-label="landed blocks"
           onPointerEnter={() => handleHoverChange(true)}

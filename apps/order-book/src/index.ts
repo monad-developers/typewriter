@@ -7,8 +7,9 @@ import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
-  ORDER_BOOK_BUNDLE_ORDER,
+  ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
+  type OrderBookFFCAConfig,
   type OrderBookMutationName,
   type OrderBookSignature,
   type SubmittedOrderBookMutation,
@@ -40,7 +41,7 @@ const readerConnection = new Bun.SQL({
   max: 25,
 });
 
-const app = await createFFCA({
+const config = {
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
   abi: EXCHANGE_ABI,
@@ -50,11 +51,13 @@ const app = await createFFCA({
   rpcUrl: RPC_URLS,
   database,
   sequencing: {
-    order: "bundle",
-    bundleOrder: ORDER_BOOK_BUNDLE_ORDER,
+    order: "batch",
+    batchOrder: ORDER_BOOK_BATCH_ORDER,
   },
   mutations: ORDER_BOOK_MUTATIONS,
-});
+} as const satisfies OrderBookFFCAConfig;
+
+const app = await createFFCA(config);
 
 const readerDb: QueryDatabase = drizzle({
   client: readerConnection,
@@ -74,7 +77,7 @@ type MutationStatus =
 
 type WireMutation = {
   id: number;
-  bundleId: number | null;
+  batchId: number | null;
   blockNumber: string | null;
   status: MutationStatus;
   account: Hex;
@@ -208,7 +211,7 @@ function wireMutation(event: RuntimeMutation): WireMutation {
   const keyIndex = stringValue(event.signature.keyId);
   return {
     id: event.id,
-    bundleId: null,
+    batchId: null,
     blockNumber: null,
     status,
     account: event.signature.account,
@@ -243,11 +246,11 @@ function serverSentEvent(event: string, value: unknown): Uint8Array {
   );
 }
 
-function wireBundle(value: unknown): Record<string, unknown> {
-  const bundle = asRecord(value);
-  const mutations = Array.isArray(bundle.mutations) ? bundle.mutations : [];
+function wireBatch(value: unknown): Record<string, unknown> {
+  const batch = asRecord(value);
+  const mutations = Array.isArray(batch.mutations) ? batch.mutations : [];
   return {
-    ...bundle,
+    ...batch,
     mutations: mutations.map((mutation) =>
       wireMutation(mutation as RuntimeMutation),
     ),
@@ -256,14 +259,14 @@ function wireBundle(value: unknown): Record<string, unknown> {
 
 function wireBlock(value: unknown): Record<string, unknown> {
   const block = asRecord(value);
-  const bundles = Array.isArray(block.bundles) ? block.bundles : [];
+  const batches = Array.isArray(block.batches) ? block.batches : [];
   return {
     ...block,
     number: block.number !== undefined ? stringValue(block.number) : undefined,
     timestamp:
       block.timestamp !== undefined ? stringValue(block.timestamp) : undefined,
-    bundles: bundles.map((bundle) => {
-      const row = wireBundle(bundle);
+    batches: batches.map((batch) => {
+      const row = wireBatch(batch);
       return {
         ...row,
         mutationCount: Array.isArray(row.mutations) ? row.mutations.length : 0,
@@ -272,13 +275,13 @@ function wireBlock(value: unknown): Record<string, unknown> {
   };
 }
 
-function wireEvent(event: "mutation" | "bundle" | "block", value: unknown) {
+function wireEvent(event: "mutation" | "batch" | "block", value: unknown) {
   if (event === "mutation") return wireMutation(value as RuntimeMutation);
-  if (event === "bundle") return wireBundle(value);
+  if (event === "batch") return wireBatch(value);
   return wireBlock(value);
 }
 
-function eventStream(event: "mutation" | "bundle" | "block"): Response {
+function eventStream(event: "mutation" | "batch" | "block"): Response {
   const stream = new TransformStream<Uint8Array, Uint8Array>();
   const writer = stream.writable.getWriter();
   const write = (value: unknown) => {
@@ -289,8 +292,8 @@ function eventStream(event: "mutation" | "bundle" | "block"): Response {
   const unsubscribe =
     event === "mutation"
       ? app.on("mutation", write)
-      : event === "bundle"
-        ? app.on("bundle", write)
+      : event === "batch"
+        ? app.on("batch", write)
         : app.on("block", write);
   return new Response(stream.readable, {
     headers: {
@@ -335,7 +338,7 @@ async function submit(
     });
     const response: Record<string, unknown> = {
       id: result.id,
-      status: result.status,
+      status: "accepted",
     };
     const resolution = asRecord(
       (result as { resolution?: unknown }).resolution,
@@ -770,7 +773,7 @@ serve({
       },
     },
     "/api/events/blocks": { GET: () => eventStream("block") },
-    "/api/events/bundles": { GET: () => eventStream("bundle") },
+    "/api/events/batches": { GET: () => eventStream("batch") },
     "/api/events/mutations": { GET: () => eventStream("mutation") },
     "/api/blocks/:number": {
       GET: async (req) => {

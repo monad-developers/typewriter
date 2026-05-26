@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {
     Exchange,
-    Bundle,
+    Batch,
     Mutation,
     Signature,
     Initialize,
@@ -57,16 +57,16 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
     function _exec(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs) internal {
         vm.prank(SCHEDULER);
-        this.execute(_bundles(mutations, data, sigs), new uint256[](0));
+        this.execute(_batches(mutations, data, sigs), new uint256[](0));
     }
 
-    function _bundles(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
+    function _batches(Mutation[] memory mutations, bytes[] memory data, Signature[] memory sigs)
         internal
         pure
-        returns (Bundle[] memory bundles)
+        returns (Batch[] memory batches)
     {
-        bundles = new Bundle[](1);
-        bundles[0] = Bundle({mutations: mutations, mutationData: data, signatures: sigs});
+        batches = new Batch[](1);
+        batches[0] = Batch({mutations: mutations, mutationData: data, signatures: sigs});
     }
 
     function _initAccount(uint256 rootPk, uint256 subPk, bytes32 acc, uint16 permissions) internal {
@@ -123,7 +123,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(InvalidAccount.selector);
-        this.execute(_bundles(muts, data, sigs), new uint256[](0));
+        this.execute(_batches(muts, data, sigs), new uint256[](0));
     }
 
     function test_Initialize_AlreadyInitialized() external {
@@ -149,7 +149,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(AlreadyInitialized.selector);
-        this.execute(_bundles(muts, data, sigs), new uint256[](0));
+        this.execute(_batches(muts, data, sigs), new uint256[](0));
     }
 
     function test_Authorize() external {
@@ -241,7 +241,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
-        this.execute(_bundles(muts, data, sigs), new uint256[](0));
+        this.execute(_batches(muts, data, sigs), new uint256[](0));
     }
 
     function test_Revoke() external {
@@ -303,7 +303,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(KeyExpired.selector);
-        this.execute(_bundles(muts, data, sigs), new uint256[](0));
+        this.execute(_batches(muts, data, sigs), new uint256[](0));
     }
 
     function test_PermissionEnforcement() external {
@@ -327,7 +327,7 @@ contract AccountTest is Test, Exchange(address(0xBEEF)) {
 
         vm.prank(SCHEDULER);
         vm.expectRevert(Unauthorized.selector);
-        this.execute(_bundles(muts, data, sigs), new uint256[](0));
+        this.execute(_batches(muts, data, sigs), new uint256[](0));
     }
 
     function test_Initialize_P256RootKey() external {

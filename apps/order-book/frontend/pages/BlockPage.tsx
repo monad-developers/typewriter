@@ -27,13 +27,13 @@ export function BlockPage() {
     : null;
 
   const rows = (mutations.data ?? []).filter(
-    (m): m is typeof m & { bundleId: number } => m.bundleId != null,
+    (m): m is typeof m & { batchId: number } => m.batchId != null,
   );
 
-  const bundleOrder = new Map<number, number>();
+  const batchOrder = new Map<number, number>();
   for (const m of rows) {
-    if (!bundleOrder.has(m.bundleId)) {
-      bundleOrder.set(m.bundleId, bundleOrder.size);
+    if (!batchOrder.has(m.batchId)) {
+      batchOrder.set(m.batchId, batchOrder.size);
     }
   }
 
@@ -103,7 +103,7 @@ export function BlockPage() {
                 <tr
                   key={m.id}
                   className={`border-b last:border-0 ${
-                    (bundleOrder.get(m.bundleId) ?? 0) % 2 === 0
+                    (batchOrder.get(m.batchId) ?? 0) % 2 === 0
                       ? "bg-white"
                       : "bg-gray-50"
                   }`}
@@ -116,7 +116,7 @@ export function BlockPage() {
                     </code>
                   </td>
                   <td className="py-2 pr-6">
-                    <code>{m.bundleId}</code>
+                    <code>{m.batchId}</code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>{m.status}</code>

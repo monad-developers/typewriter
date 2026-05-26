@@ -6,13 +6,11 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
-import type { FFCAConfig, FFCASchema } from "ffca";
+import type { FFCASchema } from "ffca";
 import type { Hex } from "viem";
-import type { ORDER_BOOK_MUTATIONS } from "./app";
+import type { OrderBookFFCAConfig } from "./app";
 
-export type OrderBookSchema = FFCASchema<
-  FFCAConfig & { mutations: typeof ORDER_BOOK_MUTATIONS }
->;
+export type OrderBookSchema = FFCASchema<OrderBookFFCAConfig>;
 
 export type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
 
@@ -20,8 +18,8 @@ export type ApiMutationStatus = "accepted" | "included" | "safe" | "finalized";
 
 export type ApiMutation = {
   id: number;
-  bundleId: number | null;
-  bundlePosition: number | null;
+  batchId: number | null;
+  batchPosition: number | null;
   blockNumber: string | null;
   status: ApiMutationStatus;
   account: Hex;
@@ -51,8 +49,6 @@ export type BlockInfo = {
 // as the `payload` field so consumers see only per-type fields.
 const SHARED_COLUMNS = new Set<string>([
   "id",
-  "bundleId",
-  "bundlePosition",
   "blockNumber",
   "blockHash",
   "blockTimestamp",
@@ -69,8 +65,6 @@ const SHARED_COLUMNS = new Set<string>([
 
 type MutationRow = {
   id: number;
-  bundleId: number | null;
-  bundlePosition: number | null;
   // FFCA's `mutationColumns` declares `blockNumber` / `blockTimestamp` as
   // `numeric(78,0)` in bigint mode, so the read-side gets a JS `bigint` (or
   // `null` when not yet included). `signature_keyId` is `uint64`, also bigint.
@@ -156,8 +150,8 @@ function buildApiMutation(
   const keyId = row.signature_keyId;
   return {
     id: row.id,
-    bundleId: row.bundleId,
-    bundlePosition: row.bundlePosition,
+    batchId: null,
+    batchPosition: null,
     blockNumber: row.blockNumber === null ? null : row.blockNumber.toString(),
     status: row.status,
     account: row.signature_account as Hex,
@@ -198,19 +192,13 @@ function assembleMutations(typed: Typed<MutationRow>[]): ApiMutation[] {
   });
 }
 
-function sortByBundleOrder(a: ApiMutation, b: ApiMutation): number {
-  const aBundle = a.bundleId ?? Number.POSITIVE_INFINITY;
-  const bBundle = b.bundleId ?? Number.POSITIVE_INFINITY;
-  if (aBundle !== bBundle) return aBundle - bBundle;
-  const aPos = a.bundlePosition ?? Number.POSITIVE_INFINITY;
-  const bPos = b.bundlePosition ?? Number.POSITIVE_INFINITY;
-  if (aPos !== bPos) return aPos - bPos;
+function sortByMutationId(a: ApiMutation, b: ApiMutation): number {
   return a.id - b.id;
 }
 
 // Returns block metadata for the first mutation found at `blockNumber` across
 // any per-type table. Returns null if no persisted mutation references the
-// block. Bundles that landed in a block without persisted mutations are not
+// block. Batches that landed in a block without persisted mutations are not
 // representable without a central blocks table, but the runtime never emits
 // such blocks today.
 export async function loadBlock(
@@ -269,7 +257,7 @@ export async function loadMutationsByBlock(
       return rows.map((row) => ({ descriptor, row }));
     }),
   );
-  return assembleMutations(perTable.flat()).sort(sortByBundleOrder);
+  return assembleMutations(perTable.flat()).sort(sortByMutationId);
 }
 
 export async function loadMutationById(

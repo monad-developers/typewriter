@@ -76,7 +76,7 @@ export type WithdrawalPayload = {
 
 type MutationBase = {
   id: number;
-  bundleId: number | null;
+  batchId: number | null;
   blockNumber: string | null;
   status: MutationStatus;
   account: Hex;
