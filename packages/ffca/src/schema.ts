@@ -28,12 +28,8 @@ export const mutationStatusEnum = pgEnum("mutation_status", [
   "finalized",
 ]);
 
-// Persisted mutation rows start at "accepted". Submitted mutations live only in
-// memory until the runtime accepts them.
 const mutationColumns = () => ({
   id: integer().notNull().primaryKey(),
-  bundleId: integer().notNull(),
-  bundlePosition: integer().notNull(),
   blockNumber: uint256(),
   blockHash: bytes32(),
   blockTimestamp: uint256(),

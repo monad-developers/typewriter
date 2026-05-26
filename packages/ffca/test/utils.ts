@@ -39,9 +39,9 @@ export const STUB_FFCA_ABI = [
     name: "execute",
     inputs: [
       {
-        name: "bundles",
+        name: "batches",
         type: "tuple[]",
-        internalType: "struct Bundle[]",
+        internalType: "struct Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
@@ -264,9 +264,9 @@ export const COUNTER_ABI = [
     name: "execute",
     inputs: [
       {
-        name: "bundles",
+        name: "batches",
         type: "tuple[]",
-        internalType: "struct Bundle[]",
+        internalType: "struct Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           {
@@ -637,9 +637,9 @@ export const HARNESS_ABI = [
     name: "execute",
     inputs: [
       {
-        name: "bundles",
+        name: "batches",
         type: "tuple[]",
-        internalType: "struct Bundle[]",
+        internalType: "struct Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           {
@@ -842,7 +842,7 @@ export function signCounter(params: {
 //                    existing key.
 //   credit     (2): adds amount to balance. Signed.
 //   debit      (3): resolve computes newBalance from revm-backed state; the
-//                    contract rejects the bundle if the resolution doesn't
+//                    contract rejects the batch if the resolution doesn't
 //                    match its own pre-state. Signed.
 //   assert     (4): read-only check; the contract reverts if balance !=
 //                    expected. Signed.
@@ -981,7 +981,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
 }
 
 // Sign one of Harness's signed mutation types. Returns the structured
-// signature ffca encodes into bundle.signatures[i].
+// signature ffca encodes into batch.signatures[i].
 export function signHarness(params: {
   keyType: number;
   privateKey: Hex;

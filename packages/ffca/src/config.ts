@@ -9,10 +9,10 @@ export type FFCADatabaseTransaction = Parameters<
 >[0];
 
 // `tag` is the contract enum index for this mutation; encoded as the uint8
-// in the bundle's `mutations[]` field. Hand-authored for now — see the
+// in the batch's `mutations[]` field. Hand-authored for now — see the
 // "derive from the contract" idea in AGENTS.md.
 //
-// `resolve` must be pure: read-only over `state`, `signature`, and `bundle`, no
+// `resolve` must be pure: read-only over `state`, `signature`, and `batch`, no
 // side effects. The runtime calls it once per mutation immediately before revm
 // execution, and treats its return value as canonical (it's encoded into
 // calldata). A `resolve` that mutates state breaks failure isolation and replay
@@ -47,10 +47,10 @@ export type FFCASequencingConfig =
       submitIntervalMs?: number;
     }
   | {
-      order?: "bundle";
-      bundleIntervalMs?: number;
+      order?: "batch";
+      batchIntervalMs?: number;
       submitIntervalMs?: number;
-      bundleOrder: readonly string[];
+      batchOrder: readonly string[];
     };
 
 export type FFCAConfig = {
@@ -70,7 +70,7 @@ export type FFCAConfig = {
   };
   // Runtime sequencing and loop cadence. FIFO is the default: mutations are
   // accepted one-at-a-time as soon as they enter the runtime, while submit still
-  // flushes accepted mutations on an interval. `bundle` mode preserves the
+  // flushes accepted mutations on an interval. `batch` mode preserves the
   // delayed batch sort behavior used by existing apps/tests.
   // TODO(kyle) validate this with zod once the internal config shape settles.
   sequencing?: FFCASequencingConfig;
@@ -119,18 +119,18 @@ export function validateConfig(config: FFCAConfig): void {
     );
   }
 
-  const hasBundleOrder =
-    config.sequencing !== undefined && "bundleOrder" in config.sequencing;
+  const hasBatchOrder =
+    config.sequencing !== undefined && "batchOrder" in config.sequencing;
 
-  if (config.sequencing?.order === "bundle" && hasBundleOrder === false) {
+  if (config.sequencing?.order === "batch" && hasBatchOrder === false) {
     throw new Error(
-      "config.sequencing.bundleOrder is required for bundle ordering",
+      "config.sequencing.batchOrder is required for batch ordering",
     );
   }
 
-  if (config.sequencing?.order === "fifo" && hasBundleOrder) {
+  if (config.sequencing?.order === "fifo" && hasBatchOrder) {
     throw new Error(
-      "config.sequencing.bundleOrder is only valid for bundle ordering",
+      "config.sequencing.batchOrder is only valid for batch ordering",
     );
   }
 

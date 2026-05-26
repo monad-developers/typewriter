@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Data, Duration, Effect, Layer, Schedule } from "effect";
 import type {
   EIP1193Parameters,
   EIP1474Methods,
@@ -79,6 +79,11 @@ export class Rpc extends Context.Service<
     readonly request: EffectEip1193RequestFn<EIP1474Methods>;
   }
 >()("ffca/Rpc") {}
+
+export const rpcRetry = Effect.retry({
+  times: 8,
+  schedule: Schedule.spaced(Duration.millis(200)),
+});
 
 function encodeRequest(id: number, args: { method: string; params?: unknown }) {
   const body: JsonRpcBody = {

@@ -9,36 +9,66 @@ import { scopedDeploymentLock } from "./deployment-lock";
 import type { FFCAAbi } from "./encoding";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
-import { createRuntimeEffect } from "./runtime";
+import { createRuntimeBatchEffect } from "./runtime-batch";
+import { createRuntimeFIFOEffect } from "./runtime-fifo";
 import type { FFCASchema } from "./schema";
 import { createMutationSchema } from "./schema";
 import type {
+  BatchEvent,
   BlockEvent,
-  BundleEvent,
+  FFCAMutation,
+  FFCAMutationResult,
   MutationEvent,
-  SubmittedMutation,
 } from "./types";
 import { layerWatchLive } from "./watch";
 
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 
 export type MutationListener = (event: MutationEvent) => void;
-export type BundleListener = (event: BundleEvent) => void;
-export type BlockListener = (event: BlockEvent) => void;
+export type BatchListener = (event: BatchEvent) => void;
+export type BlockListener<sequence extends "fifo" | "batch"> = (
+  event: BlockEvent<sequence>,
+) => void;
 
-export type RuntimeFFCA<C extends FFCAConfig> = {
+export type RuntimeFFCA<
+  C extends FFCAConfig,
+  sequence extends "fifo" | "batch",
+> = {
   readonly state: StorageProxy<C["storageLayout"], true>;
   readonly schema: FFCASchema<C>;
+  execute(submitted: FFCAMutation): Effect.Effect<FFCAMutationResult, unknown>;
+  program: Effect.Effect<unknown, unknown>;
+} & (sequence extends "fifo"
+  ? {
+      on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
+      on(
+        event: "block",
+        cb: BlockListener<sequence>,
+      ): Effect.Effect<() => void>;
+    }
+  : {
+      on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
+      on(event: "batch", cb: BatchListener): Effect.Effect<() => void>;
+      on(
+        event: "block",
+        cb: BlockListener<sequence>,
+      ): Effect.Effect<() => void>;
+    });
+
+export type RuntimeFFCAWithDomain<
+  C extends FFCAConfig,
+  sequence extends "fifo" | "batch",
+> = RuntimeFFCA<C, sequence> & {
   readonly domain: TypedData.Domain;
-  execute(submitted: SubmittedMutation): Effect.Effect<MutationEvent, unknown>;
-  on(event: "mutation", cb: MutationListener): Effect.Effect<() => void>;
-  on(event: "bundle", cb: BundleListener): Effect.Effect<() => void>;
-  on(event: "block", cb: BlockListener): Effect.Effect<() => void>;
 };
 
 export function createFFCAEffect<const C extends FFCAConfig>(
   config: C,
-): Effect.Effect<RuntimeFFCA<C>, unknown, Scope.Scope> {
+): Effect.Effect<
+  RuntimeFFCAWithDomain<C, "fifo" | "batch">,
+  unknown,
+  Scope.Scope
+> {
   return Effect.gen(function* () {
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) check abi for execute, enqueue, and forceExecute
@@ -51,6 +81,12 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     const rpcUrl = Array.isArray(config.rpcUrl)
       ? config.rpcUrl[0]!
       : config.rpcUrl;
+    const domain: TypedData.Domain = {
+      name: config.domain.name,
+      version: config.domain.version,
+      chainId: config.chainId,
+      verifyingContract: config.address,
+    };
     const rpcLayer = layerRpc.pipe(
       Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl })),
     );
@@ -92,7 +128,19 @@ export function createFFCAEffect<const C extends FFCAConfig>(
       });
       yield* migrate(schema, config.chainId, config.address);
 
-      return yield* createRuntimeEffect(config, schema);
+      let runtime: RuntimeFFCA<C, "fifo" | "batch">;
+      if (config.sequencing?.order === "batch") {
+        runtime = yield* createRuntimeBatchEffect(config, schema);
+      } else {
+        runtime = yield* createRuntimeFIFOEffect(config, schema);
+      }
+
+      yield* Effect.forkScoped(runtime.program);
+
+      return {
+        ...runtime,
+        domain,
+      };
     }).pipe(Effect.provide(servicesContext));
   });
 }

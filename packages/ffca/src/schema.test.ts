@@ -97,8 +97,6 @@ test("mutation table supports insert and lifecycle update queries", async () => 
 
   await db.insert(transferMutations).values({
     id: 1,
-    bundleId: 2,
-    bundlePosition: 3,
     status: "accepted",
     to: "0x0000000000000000000000000000000000000001",
     amount: 123n,
@@ -121,8 +119,6 @@ test("mutation table supports insert and lifecycle update queries", async () => 
 
   expect(row).toMatchObject({
     id: 1,
-    bundleId: 2,
-    bundlePosition: 3,
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
     amount: 123n,

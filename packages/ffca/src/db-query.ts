@@ -8,38 +8,21 @@ import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";
 import { Database } from "./db";
 import type {
-  ResolvedMutation,
+  MutationWithResolution,
   RuntimeBlock,
-  RuntimeBundle,
   RuntimeMutation,
+  SubmittedMutation,
 } from "./types";
-
-type LifecycleMutation = Omit<
-  Extract<
-    RuntimeMutation,
-    { status: "accepted" | "included" | "safe" | "finalized" }
-  >,
-  "status"
-> & {
-  status: "included" | "safe" | "finalized";
-  block?: Pick<
-    RuntimeBlock,
-    "number" | "hash" | "timestamp" | "transactionHash"
-  >;
-};
 
 export function insertMutation(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
-  mutation: ResolvedMutation,
-  bundle: RuntimeBundle,
+  mutation: MutationWithResolution,
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
     const row = {
       id: mutation.id,
-      bundleId: bundle.id,
-      bundlePosition: bundle.position,
       status: "accepted",
       ...abiParameterValues(mutation.config.params, mutation.args),
       ...prefixedObjectValues("signature_", mutation.signature),
@@ -82,36 +65,11 @@ export function selectNextMutationId(
   });
 }
 
-export function selectNextBundleId(
-  schema: Record<string, PgTable>,
-): Effect.Effect<number, unknown, Database> {
-  return Effect.gen(function* () {
-    const db = yield* Database;
-    let maxBundleId = -1;
-
-    for (const [tableName, table] of Object.entries(schema)) {
-      if (!tableName.endsWith("_mutations")) continue;
-
-      // biome-ignore lint/suspicious/noExplicitAny: mutation tables share ffca's id column by convention
-      const mutationTable = getColumns(table) as any;
-      const [row] = yield* db
-        .select({
-          maxBundleId: sql<number>`coalesce(max(${mutationTable.bundleId}), -1)`,
-        })
-        .from(table);
-      if (row !== undefined && row.maxBundleId > maxBundleId) {
-        maxBundleId = row.maxBundleId;
-      }
-    }
-
-    return maxBundleId + 1;
-  });
-}
-
 export function updateMutationLifecycle(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
-  mutation: LifecycleMutation,
+  mutation: SubmittedMutation,
+  block: RuntimeBlock<"fifo" | "batch">,
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
@@ -122,10 +80,10 @@ export function updateMutationLifecycle(
       mutation.status === "included"
         ? {
             status: mutation.status,
-            blockNumber: mutation.block?.number.toString(),
-            blockHash: mutation.block?.hash,
-            blockTimestamp: mutation.block?.timestamp.toString(),
-            transactionHash: mutation.block?.transactionHash,
+            blockNumber: block?.number.toString(),
+            blockHash: block?.hash,
+            blockTimestamp: block?.timestamp.toString(),
+            transactionHash: block?.transactionHash,
             includedAt: sql`NOW()`,
           }
         : mutation.status === "safe"

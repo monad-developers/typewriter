@@ -11,7 +11,7 @@ struct Signature {
     bytes rawSignature;
 }
 
-struct Bundle {
+struct Batch {
     uint8[] mutations;
     bytes[] mutationData;
     Signature[] signatures;
@@ -151,7 +151,7 @@ contract Harness {
         return state.accounts[account].nonces[nonceKey];
     }
 
-    function execute(Bundle[] calldata bundles, uint256[] calldata forceExecuteIndexes) external {
+    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
         for (uint256 i; i < forceExecuteIndexes.length; i++) {
             uint256 index = forceExecuteIndexes[i];
             QueuedMutation storage queued = queue[index];
@@ -167,10 +167,10 @@ contract Harness {
             _applyMemory(mutation, mutationData, sig);
         }
 
-        for (uint256 b; b < bundles.length; b++) {
-            Bundle calldata bundle = bundles[b];
-            for (uint256 i; i < bundle.mutations.length; i++) {
-                _apply(bundle.mutations[i], bundle.mutationData[i], bundle.signatures[i]);
+        for (uint256 b; b < batches.length; b++) {
+            Batch calldata batch = batches[b];
+            for (uint256 i; i < batch.mutations.length; i++) {
+                _apply(batch.mutations[i], batch.mutationData[i], batch.signatures[i]);
             }
         }
     }

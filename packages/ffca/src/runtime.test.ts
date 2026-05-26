@@ -45,7 +45,7 @@ import type { FFCA } from "./index";
 import { createFFCA as createFFCARaw } from "./index";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { createMutationSchema } from "./schema";
-import type { BlockEvent, BundleEvent, MutationEvent } from "./types";
+import type { BatchEvent, BlockEvent, MutationEvent } from "./types";
 
 async function createFFCA<
   const C extends Omit<FFCAConfig, "database"> & { database?: unknown },
@@ -106,9 +106,9 @@ test("createFFCA loads persisted slot state before returning", async () => {
   );
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-      (id, ${TEST_DB_CONNECTION("bundleId")}, ${TEST_DB_CONNECTION("bundlePosition")}, status, amount, nonce, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
     VALUES
-      (0, 0, 0, 'included', 7, 0, 0, '0x')
+      (0, 'included', 7, 0, 0, '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
@@ -126,6 +126,7 @@ test("createFFCA loads persisted slot state before returning", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
+    sequencing: { order: "batch", batchOrder: ["add"] },
     mutations: COUNTER_MUTATIONS,
   });
 
@@ -135,7 +136,7 @@ test("createFFCA loads persisted slot state before returning", async () => {
   await ffca.stop();
 });
 
-test("bundle applies mutations in bundleOrder within a bundle", async () => {
+test("batch applies mutations in batchOrder within a batch", async () => {
   const applied: string[] = [];
   const noop = parseAbiParameters("uint256 nonce");
   const ffca = await createFFCA({
@@ -146,7 +147,7 @@ test("bundle applies mutations in bundleOrder within a bundle", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     domain: { name: "ffca-test", version: "1" },
-    sequencing: { order: "bundle", bundleOrder: ["cancel", "limit", "market"] },
+    sequencing: { order: "batch", batchOrder: ["cancel", "limit", "market"] },
     mutations: {
       cancel: {
         tag: 0,
@@ -166,7 +167,7 @@ test("bundle applies mutations in bundleOrder within a bundle", async () => {
     if (event.status === "accepted") applied.push(event.name);
   });
 
-  // Submit out of order; queue together so they land in the same bundle.
+  // Submit out of order; queue together so they land in the same batch.
   await Promise.all([
     ffca.execute({
       name: "market",
@@ -200,7 +201,7 @@ test("bundle applies mutations in bundleOrder within a bundle", async () => {
   await ffca.stop();
 });
 
-test("resolve receives submitted signature and execute returns accepted event", async () => {
+test("resolve receives submitted signature and execute returns mutation result", async () => {
   const signatures: unknown[] = [];
   const signature = { keyType: 7, rawSignature: "0x1234" };
   const mutation = {
@@ -232,7 +233,7 @@ test("resolve receives submitted signature and execute returns accepted event", 
   });
 
   expect(signatures).toEqual([signature]);
-  expect(result.status).toBe("accepted");
+  expect(result).toEqual({ id: 0, resolution: { keyType: signature.keyType } });
 
   await ffca.stop();
 });
@@ -401,7 +402,8 @@ test.skip("e2e Counter: scheduler submits detected force inclusion", async () =>
         name: "add",
         args: forceArgs,
         signature: forceSignature,
-        isForceInclusion: true,
+        journalId: 0,
+        isForceInclusion: false,
         config: COUNTER_MUTATIONS.add,
       }),
       forceSignature,
@@ -462,9 +464,9 @@ test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
     mutations: COUNTER_MUTATIONS,
   });
 
-  const acceptedBundles: BundleEvent[] = [];
-  ffca.on("bundle", (event) => {
-    if (event.status === "accepted") acceptedBundles.push(event);
+  const acceptedMutations: MutationEvent[] = [];
+  ffca.on("mutation", (event) => {
+    if (event.status === "accepted") acceptedMutations.push(event);
   });
 
   const sign = (args: { amount: bigint; nonce: bigint }) =>
@@ -494,9 +496,7 @@ test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
     }),
   ]);
 
-  expect(acceptedBundles.map((bundle) => bundle.mutations.length)).toEqual([
-    1, 1, 1,
-  ]);
+  expect(acceptedMutations.map((mutation) => mutation.id)).toEqual([0, 1, 2]);
 
   const readTotal = async () => {
     const [total] = (await TEST_PUBLIC_CLIENT.readContract({
@@ -508,7 +508,7 @@ test("e2e Counter: FIFO accepts mutations before submit flush", async () => {
   };
   const deadline = Date.now() + 5000;
   while ((await readTotal()) === 0n) {
-    if (Date.now() > deadline) throw new Error("bundle never landed onchain");
+    if (Date.now() > deadline) throw new Error("batch never landed onchain");
     await new Promise((r) => setTimeout(r, 50));
   }
 
@@ -534,8 +534,8 @@ test("e2e Harness: mutation with resolution", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
-      order: "bundle",
-      bundleOrder: ["initialize", "credit", "debit"],
+      order: "batch",
+      batchOrder: ["initialize", "credit", "debit"],
     },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
@@ -550,7 +550,7 @@ test("e2e Harness: mutation with resolution", async () => {
     rootPublicKey,
   });
 
-  // Submit in dependency order; no `bundleOrder` needed.
+  // Submit in dependency order; no `batchOrder` needed.
   await ffca.execute({
     name: "credit",
     args: { account: aliceId, keyId: 0n, amount: 100n, nonce: 0n },
@@ -607,10 +607,10 @@ test("e2e Harness: mutation with resolution", async () => {
   await ffca.stop();
 });
 
-// Harness: when mutations arrive out of order, `bundleOrder` sorts them so the
+// Harness: when mutations arrive out of order, `batchOrder` sorts them so the
 // debit's resolve runs against post-credit state. If sort were broken, debit's
-// resolve would underflow and the bundle would never encode.
-test("e2e Harness: mutations reordered by bundle order", async () => {
+// resolve would underflow and the batch would never encode.
+test("e2e Harness: mutations reordered by batch order", async () => {
   const address = await deployHarness();
   const abi = HARNESS_ABI;
 
@@ -623,8 +623,8 @@ test("e2e Harness: mutations reordered by bundle order", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
-      order: "bundle",
-      bundleOrder: ["initialize", "credit", "debit"],
+      order: "batch",
+      batchOrder: ["initialize", "credit", "debit"],
     },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
@@ -639,7 +639,7 @@ test("e2e Harness: mutations reordered by bundle order", async () => {
     rootPublicKey,
   });
 
-  // Submit debit before credit — bundleOrder must sort credit first. Each
+  // Submit debit before credit — batchOrder must sort credit first. Each
   // mutation signs over its own nonce; the contract's nonce check enforces
   // the post-sort order on chain.
   await Promise.all([
@@ -701,7 +701,7 @@ test("e2e Harness: mutations reordered by bundle order", async () => {
 });
 
 // Harness: a bad debit resolution rejects that mutation's execute() promise;
-// sibling mutations in the same bundle still land.
+// sibling mutations in the same batch still land.
 test("e2e Harness: resolution error rejects one mutation", async () => {
   const address = await deployHarness();
   const abi = HARNESS_ABI;
@@ -715,8 +715,8 @@ test("e2e Harness: resolution error rejects one mutation", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
-      order: "bundle",
-      bundleOrder: ["initialize", "credit", "debit"],
+      order: "batch",
+      batchOrder: ["initialize", "credit", "debit"],
     },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
@@ -742,7 +742,7 @@ test("e2e Harness: resolution error rejects one mutation", async () => {
       args: [account],
     }) as Promise<bigint>;
 
-  // Alice's debit fails (no balance); Bob's credit succeeds. Same bundle.
+  // Alice's debit fails (no balance); Bob's credit succeeds. Same batch.
   await Promise.all([
     expect(
       ffca.execute({
@@ -815,8 +815,8 @@ test("e2e Harness: secp256k1 authorize flow", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
-      order: "bundle",
-      bundleOrder: ["initialize", "authorize", "credit"],
+      order: "batch",
+      batchOrder: ["initialize", "authorize", "credit"],
     },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
@@ -949,8 +949,8 @@ test("e2e Harness: P-256 key authorize and credit", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
-      order: "bundle",
-      bundleOrder: ["initialize", "authorize", "credit"],
+      order: "batch",
+      batchOrder: ["initialize", "authorize", "credit"],
     },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
@@ -1064,8 +1064,8 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
-      order: "bundle",
-      bundleOrder: ["initialize", "authorize", "credit"],
+      order: "batch",
+      batchOrder: ["initialize", "authorize", "credit"],
     },
     mutations: {
       initialize: HARNESS_MUTATIONS.initialize,
@@ -1161,7 +1161,7 @@ test("e2e Harness: WebAuthn-P256 key authorize and credit", async () => {
 
 // Fan-out: a single happy-path mutation produces the full lifecycle of events
 // to subscribers — submitted/accepted/included for the mutation,
-// accepted/included for its bundle and block. Off-then-on confirms unsubscribe
+// accepted/included for its batch and block. Off-then-on confirms unsubscribe
 // works.
 test("e2e Counter: subscribers receive lifecycle events", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
@@ -1175,17 +1175,18 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
+    sequencing: { order: "batch", batchOrder: ["add"] },
     mutations: COUNTER_MUTATIONS,
   });
 
   const mutationStatuses: MutationEvent["status"][] = [];
-  const bundleStatuses: BundleEvent["status"][] = [];
-  const blockStatuses: BlockEvent["status"][] = [];
+  const batchStatuses: BatchEvent["status"][] = [];
+  const blockStatuses: BlockEvent<"fifo" | "batch">["status"][] = [];
 
   const offMutation = ffca.on("mutation", (e) =>
     mutationStatuses.push(e.status),
   );
-  ffca.on("bundle", (e) => bundleStatuses.push(e.status));
+  ffca.on("batch", (e) => batchStatuses.push(e.status));
   ffca.on("block", (e) => blockStatuses.push(e.status));
 
   const sign = (args: { amount: bigint; nonce: bigint }) =>
@@ -1215,8 +1216,8 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  expect(mutationStatuses).toEqual(["submitted", "accepted", "included"]);
-  expect(bundleStatuses).toEqual(["accepted", "included"]);
+  expect(mutationStatuses).toEqual(["received", "accepted", "included"]);
+  expect(batchStatuses).toEqual(["accepted", "included"]);
   expect(blockStatuses).toEqual(["included"]);
 
   // The disposer returned by on() unsubscribes that listener.
@@ -1226,19 +1227,19 @@ test("e2e Counter: subscribers receive lifecycle events", async () => {
     args: { amount: 3n, nonce: 1n },
     signature: sign({ amount: 3n, nonce: 1n }),
   });
-  while (bundleStatuses.length < 4) {
+  while (batchStatuses.length < 4) {
     if (Date.now() > deadline) {
-      throw new Error("second bundle's included event never arrived");
+      throw new Error("second batch's included event never arrived");
     }
     await new Promise((r) => setTimeout(r, 50));
   }
   // Same three statuses as before — no new mutation events after unsubscribe.
-  expect(mutationStatuses).toEqual(["submitted", "accepted", "included"]);
+  expect(mutationStatuses).toEqual(["received", "accepted", "included"]);
 
   await ffca.stop();
 });
 
-test("e2e Counter: watch advances included bundles by configured block depths", async () => {
+test("e2e Counter: watch advances included batches by configured block depths", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const abi = COUNTER_ABI;
 
@@ -1251,15 +1252,16 @@ test("e2e Counter: watch advances included bundles by configured block depths", 
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     mutations: COUNTER_MUTATIONS,
+    sequencing: { order: "batch", batchOrder: ["add"] },
     confirmations: { safeBlockDepth: 1, finalizedBlockDepth: 3 },
   });
 
   const mutationStatuses: MutationEvent["status"][] = [];
-  const bundleStatuses: BundleEvent["status"][] = [];
-  const blockStatuses: BlockEvent["status"][] = [];
+  const batchStatuses: BatchEvent["status"][] = [];
+  const blockStatuses: BlockEvent<"fifo" | "batch">["status"][] = [];
 
   ffca.on("mutation", (e) => mutationStatuses.push(e.status));
-  ffca.on("bundle", (e) => bundleStatuses.push(e.status));
+  ffca.on("batch", (e) => batchStatuses.push(e.status));
   ffca.on("block", (e) => blockStatuses.push(e.status));
 
   const waitFor = async (predicate: () => boolean, message: string) => {
@@ -1302,13 +1304,13 @@ test("e2e Counter: watch advances included bundles by configured block depths", 
   );
 
   expect(mutationStatuses).toEqual([
-    "submitted",
+    "received",
     "accepted",
     "included",
     "safe",
     "finalized",
   ]);
-  expect(bundleStatuses).toEqual(["accepted", "included", "safe", "finalized"]);
+  expect(batchStatuses).toEqual(["accepted", "included", "safe", "finalized"]);
   expect(blockStatuses).toEqual(["included", "safe", "finalized"]);
 
   await ffca.stop();
