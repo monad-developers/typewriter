@@ -3,7 +3,6 @@ import {
   Deferred,
   Duration,
   Effect,
-  Logger,
   Queue,
   Result,
   Schedule,
@@ -29,6 +28,7 @@ import type {
   MutationListener,
   RuntimeFFCA,
 } from "./ffca";
+import { loggerLayer } from "./logger";
 import { Rpc, rpcRetry } from "./rpc";
 import { requestBlock } from "./rpc-request";
 import {
@@ -250,6 +250,13 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
           mutations: acceptedMutations.map(({ mutation }) => mutation),
         };
 
+        yield* Effect.logDebug("batched mutations").pipe(
+          Effect.annotateLogs({
+            id: batch.id,
+            mutationCount: batch.mutations.length,
+          }),
+        );
+
         batchesById.set(batch.id, batch);
 
         emitBatch(batchToEvent(batch));
@@ -324,6 +331,14 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
             );
           }
 
+          yield* Effect.logDebug("simulated transaction submission").pipe(
+            Effect.annotateLogs({
+              gasLimit: simulateResult.gas_limit,
+              batchCount: batches.length,
+              mutationCount: speculativeJournalIds.length,
+            }),
+          );
+
           const enqueuedMutationIds = yield* Queue.clear(
             enqueuedMutationsQueue,
           );
@@ -383,6 +398,14 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
           }),
         catch: (error) => error as Error,
       });
+
+      yield* Effect.logDebug("submitted transaction").pipe(
+        Effect.annotateLogs({
+          transactionHash: receipt.transactionHash,
+          blockHash: receipt.blockHash,
+          blockNumber: receipt.blockNumber,
+        }),
+      );
 
       const block = yield* requestBlock(receipt.blockHash).pipe(
         Effect.provideService(Rpc, rpc),
@@ -600,6 +623,14 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
           config: mutationConfig,
         } as const satisfies ReceivedMutation;
 
+        yield* Effect.logDebug("received mutation").pipe(
+          Effect.annotateLogs({
+            id: runtimeMutation.id,
+            name: runtimeMutation.name,
+            args: runtimeMutation.args,
+          }),
+        );
+
         mutationsById.set(runtimeMutation.id, runtimeMutation);
 
         emitMutation(mutationToEvent(runtimeMutation));
@@ -611,13 +642,32 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
           deferred,
         });
 
-        const acceptedMutation = yield* Deferred.await(deferred);
+        const acceptedMutation = yield* Deferred.await(deferred).pipe(
+          Effect.tapError((error) =>
+            Effect.logError(error).pipe(
+              Effect.annotateLogs({
+                message: "rejected mutation",
+                id: runtimeMutation.id,
+                name: runtimeMutation.name,
+                args: runtimeMutation.args,
+              }),
+            ),
+          ),
+        );
+
+        yield* Effect.logDebug("accepted mutation").pipe(
+          Effect.annotateLogs({
+            id: runtimeMutation.id,
+            name: runtimeMutation.name,
+            args: runtimeMutation.args,
+          }),
+        );
 
         return {
           id: acceptedMutation.id,
           resolution: acceptedMutation.resolution,
         };
-      }).pipe(Effect.provide(Logger.layer([Logger.formatJson])));
+      }).pipe(Effect.provide(loggerLayer));
     }
 
     function on(

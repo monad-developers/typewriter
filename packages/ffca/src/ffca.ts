@@ -7,6 +7,7 @@ import { validateConfig } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
 import type { FFCAAbi } from "./encoding";
+import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
 import { createRuntimeBatchEffect } from "./runtime-batch";
@@ -31,11 +32,11 @@ export type BlockListener<sequence extends "fifo" | "batch"> = (
 ) => void;
 
 export type RuntimeFFCA<
-  C extends FFCAConfig,
+  config extends FFCAConfig,
   sequence extends "fifo" | "batch",
 > = {
-  readonly state: StorageProxy<C["storageLayout"], true>;
-  readonly schema: FFCASchema<C>;
+  readonly state: StorageProxy<config["storageLayout"], true>;
+  readonly schema: FFCASchema<config>;
   execute(submitted: FFCAMutation): Effect.Effect<FFCAMutationResult, unknown>;
   program: Effect.Effect<unknown, unknown>;
 } & (sequence extends "fifo"
@@ -56,9 +57,9 @@ export type RuntimeFFCA<
     });
 
 export type RuntimeFFCAWithDomain<
-  C extends FFCAConfig,
+  config extends FFCAConfig,
   sequence extends "fifo" | "batch",
-> = RuntimeFFCA<C, sequence> & {
+> = RuntimeFFCA<config, sequence> & {
   readonly domain: TypedData.Domain;
 };
 
@@ -135,12 +136,17 @@ export function createFFCAEffect<const C extends FFCAConfig>(
         runtime = yield* createRuntimeFIFOEffect(config, schema);
       }
 
-      yield* Effect.forkScoped(runtime.program);
+      yield* Effect.forkScoped(runtime.program).pipe(
+        Effect.tapError((error) => Effect.logError(error)),
+      );
 
       return {
         ...runtime,
         domain,
       };
     }).pipe(Effect.provide(servicesContext));
-  });
+  }).pipe(
+    Effect.tapError((error) => Effect.logError(error)),
+    Effect.provide(loggerLayer),
+  );
 }

@@ -2,7 +2,6 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import {
   Duration,
   Effect,
-  Logger,
   Queue,
   Schedule,
   Scope,
@@ -22,6 +21,7 @@ import {
 } from "./db-query";
 import { encodeBatchArg, encodeExecuteCalldata } from "./encoding";
 import type { BlockListener, MutationListener, RuntimeFFCA } from "./ffca";
+import { loggerLayer } from "./logger";
 import { Rpc, rpcRetry } from "./rpc";
 import { requestBlock } from "./rpc-request";
 import {
@@ -408,19 +408,46 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
           config: mutationConfig,
         } as const satisfies Extract<RuntimeMutation, { status: "received" }>;
 
+        yield* Effect.logDebug("received mutation").pipe(
+          Effect.annotateLogs({
+            id: runtimeMutation.id,
+            name: runtimeMutation.name,
+            args: runtimeMutation.args,
+          }),
+        );
+
         mutationsById.set(runtimeMutation.id, runtimeMutation);
 
         emitMutation(mutationToEvent(runtimeMutation));
 
         const acceptedMutation = yield* withSpeculativeStateLock(
           acceptMutation(runtimeMutation),
+        ).pipe(
+          Effect.tapError((error) =>
+            Effect.logError(error).pipe(
+              Effect.annotateLogs({
+                message: "rejected mutation",
+                id: runtimeMutation.id,
+                name: runtimeMutation.name,
+                args: runtimeMutation.args,
+              }),
+            ),
+          ),
+        );
+
+        yield* Effect.logDebug("accepted mutation").pipe(
+          Effect.annotateLogs({
+            id: runtimeMutation.id,
+            name: runtimeMutation.name,
+            args: runtimeMutation.args,
+          }),
         );
 
         return {
           id: acceptedMutation.id,
           resolution: acceptedMutation.resolution,
         };
-      }).pipe(Effect.provide(Logger.layer([Logger.formatJson])));
+      }).pipe(Effect.provide(loggerLayer));
     }
 
     function on(
