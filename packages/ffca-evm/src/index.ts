@@ -13,12 +13,12 @@ import type {
   ExecuteParams,
   ExecuteResult,
   InitParams,
-  PruneJournalsParams,
+  JournalIdsParams,
   ReadStorageParams,
   ReadStorageResult,
   Request,
   Response,
-  RevertJournalsParams,
+  SimulateParams,
 } from "./types";
 
 export type {
@@ -27,10 +27,10 @@ export type {
   ExecuteParams,
   ExecuteResult,
   InitParams,
-  PruneJournalsParams,
+  JournalIdsParams,
   ReadStorageParams,
   ReadStorageResult,
-  RevertJournalsParams,
+  SimulateParams,
   Spec,
 } from "./types";
 
@@ -65,23 +65,20 @@ export type EVM = {
   readonly setBlockContext: (
     params: BlockParams,
   ) => Effect.Effect<void, EvmError>;
-  readonly beginJournal: () => Effect.Effect<void, EvmError>;
   readonly execute: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
   readonly simulate: (
-    params: ExecuteParams,
+    params: SimulateParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
   readonly readStorage: (
     params: ReadStorageParams,
   ) => Effect.Effect<ReadStorageResult, EvmError>;
-  readonly commitJournal: () => Effect.Effect<void, EvmError>;
-  readonly revertJournal: () => Effect.Effect<void, EvmError>;
   readonly revertJournals: (
-    params: RevertJournalsParams,
+    params: JournalIdsParams,
   ) => Effect.Effect<void, EvmError>;
   readonly pruneJournals: (
-    params: PruneJournalsParams,
+    params: JournalIdsParams,
   ) => Effect.Effect<void, EvmError>;
 };
 
@@ -201,11 +198,6 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             id,
             params,
           })).pipe(Effect.asVoid),
-        beginJournal: () =>
-          call<unknown>("beginJournal", (id) => ({
-            method: "beginJournal",
-            id,
-          })).pipe(Effect.asVoid),
         execute: (params) =>
           call<ExecuteResult>("execute", (id) => ({
             method: "execute",
@@ -224,16 +216,6 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             id,
             params,
           })),
-        commitJournal: () =>
-          call<unknown>("commitJournal", (id) => ({
-            method: "commitJournal",
-            id,
-          })).pipe(Effect.asVoid),
-        revertJournal: () =>
-          call<unknown>("revertJournal", (id) => ({
-            method: "revertJournal",
-            id,
-          })).pipe(Effect.asVoid),
         revertJournals: (params) =>
           call<unknown>("revertJournals", (id) => ({
             method: "revertJournals",

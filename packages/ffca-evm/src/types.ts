@@ -36,8 +36,13 @@ export type ExecuteParams = {
   value?: Hex.Hex;
 };
 
+export type SimulateParams = ExecuteParams & {
+  journal_ids: number[];
+};
+
 export type ExecuteResult = {
   success: boolean;
+  journal_id?: number;
   gas_used: number;
   gas_limit: number;
   output: Hex.Hex;
@@ -58,25 +63,18 @@ export type ReadStorageParams = {
 
 export type ReadStorageResult = { [slot: Hex.Hex]: Hex.Hex };
 
-export type RevertJournalsParams = {
-  count: number;
-};
-
-export type PruneJournalsParams = {
-  count: number;
+export type JournalIdsParams = {
+  journal_ids: number[];
 };
 
 export type Request =
   | { method: "init"; id: number; params: InitParams }
   | { method: "setBlockContext"; id: number; params: BlockParams }
-  | { method: "beginJournal"; id: number }
   | { method: "execute"; id: number; params: ExecuteParams }
-  | { method: "simulate"; id: number; params: ExecuteParams }
+  | { method: "simulate"; id: number; params: SimulateParams }
   | { method: "readStorage"; id: number; params: ReadStorageParams }
-  | { method: "commitJournal"; id: number }
-  | { method: "revertJournal"; id: number }
-  | { method: "revertJournals"; id: number; params: RevertJournalsParams }
-  | { method: "pruneJournals"; id: number; params: PruneJournalsParams };
+  | { method: "revertJournals"; id: number; params: JournalIdsParams }
+  | { method: "pruneJournals"; id: number; params: JournalIdsParams };
 
 export type Response<T = unknown> =
   | { id: number; ok: true; result: T }
