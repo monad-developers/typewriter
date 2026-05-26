@@ -204,4 +204,8 @@ export type BlockEvent<sequence extends "fifo" | "batch"> = {
     }
   : {
       batches: Exclude<BatchEvent, { status: "accepted" }>[];
+      forceIncludedMutations: Exclude<
+        MutationEvent,
+        { status: "submitted" | "enqueued" | "rejected" }
+      >[];
     });

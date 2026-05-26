@@ -119,11 +119,20 @@ export function fifoBlockToEvent(
 export function batchBlockToEvent(
   block: RuntimeBlock<"batch">,
 ): BlockEvent<"batch"> {
-  const { batches, ...rest } = block;
   return {
-    ...rest,
-    batches: batches.map(batchToEvent),
-  } as BlockEvent<"batch">;
+    status: block.status,
+    number: block.number,
+    hash: block.hash,
+    timestamp: block.timestamp,
+    transactionHash: block.transactionHash,
+    batches: block.batches.map(batchToEvent) as Exclude<
+      BatchEvent,
+      { status: "accepted" }
+    >[],
+    forceIncludedMutations: block.forceIncludedMutations.map(
+      mutationToEvent,
+    ) as BlockEvent<"batch">["forceIncludedMutations"],
+  };
 }
 
 async function resolveMutation(

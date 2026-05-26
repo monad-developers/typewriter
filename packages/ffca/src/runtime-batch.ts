@@ -283,6 +283,15 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
 
           const batches = batchIds.map((id) => batchesById.get(id)!);
 
+          // Sort journal ids ascending so they're passed to simulate in
+          // application order: revm rewinds in reverse and replays forward,
+          // and each journal's pre-image is only valid relative to the DB
+          // state that existed when execute ran. Force-included mutations
+          // accepted by watchProgram before the next acceptBatch can have
+          // smaller ids than the batched mutations, so plain concatenation
+          // would mis-order rewinds when journals overlap on the same slot.
+          // Journal ids are monotonic in the order evm.execute runs
+          // (ffca-evm/src/main.rs:299-301), so ascending = application order.
           const speculativeJournalIds = batches
             .flatMap((batch) => batch.mutations)
             .map((mutation) => mutation.journalId)
@@ -290,7 +299,8 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
               acceptedForceIncludedMutations.map(
                 (mutation) => mutation.journalId,
               ),
-            );
+            )
+            .sort((a, b) => a - b);
 
           const calldata = encodeExecuteCalldata(
             config.abi,
