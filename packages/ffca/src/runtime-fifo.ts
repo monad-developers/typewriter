@@ -84,18 +84,13 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
       1,
     );
 
-    let nonce: number | undefined;
-    const nextNonce = Effect.gen(function* () {
-      if (nonce === undefined) {
-        nonce = Hex.toNumber(
-          yield* rpc.request({
-            method: "eth_getTransactionCount",
-            params: [config.account.address, "latest"],
-          }),
-        );
-      }
-      return nonce++;
-    });
+    let nonce = Hex.toNumber(
+      yield* rpc.request({
+        method: "eth_getTransactionCount",
+        params: [config.account.address, "latest"],
+      }),
+    );
+    const nextNonce = Effect.sync(() => nonce++);
 
     const walletClient = createRuntimeWalletClient(config);
 
@@ -255,13 +250,13 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
         catch: (error) => error as Error,
       });
 
-      const includedMutations = mutations
-        .map(updateMutationToIncluded)
-        .concat(forceInclusions.map(updateMutationToIncluded));
-
       const block = yield* requestBlock(receipt.blockHash).pipe(
         Effect.provideService(Rpc, rpc),
       );
+
+      const includedMutations = mutations
+        .map(updateMutationToIncluded)
+        .concat(forceInclusions.map(updateMutationToIncluded));
 
       const runtimeBlock: RuntimeBlock<"fifo"> = {
         status: "included",
@@ -282,12 +277,6 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
         }),
       );
 
-      for (const mutation of includedMutations) {
-        yield* db.transaction((tx) =>
-          updateMutationLifecycle(tx, schema, mutation, runtimeBlock),
-        );
-      }
-
       emitBlock(fifoBlockToEvent(runtimeBlock));
       for (const mutation of includedMutations) {
         emitMutation(mutationToEvent(mutation));
@@ -301,25 +290,6 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
         Stream.runForEach((message) =>
           Effect.gen(function* () {
             if (message._tag === "Reorged") {
-              //   for (const block of unfinalizedBlocks) {
-              //     for (const batch of block.batches) {
-              //       const isReorged = message.reorgedBlocks.some((r) =>
-              //         r.transactions.includes(block.transactionHash),
-              //       );
-              //       if (isReorged) {
-              //         const reIncludedBlock = message.newBlocks.find((r) =>
-              //           r.transactions.includes(block.transactionHash),
-              //         );
-              //         if (reIncludedBlock === undefined) {
-              //           return yield* Effect.fail(
-              //             new Error(
-              //               `reorged batch removed from canonical chain: batchId=${batch.id} transactionHash=${block.transactionHash}`,
-              //             ),
-              //           );
-              //         }
-              //       }
-              //     }
-              //   }
               return;
             }
 
@@ -348,12 +318,6 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
               }
 
               mutationsById.set(enqueuedMutation.id, enqueuedMutation);
-
-              // const enqueue: RuntimeEnqueue = {
-              //   transactionHash: log.transactionHash,
-              //   journalId: executeResult.journal_id!,
-              //   mutation: enqueuedMutation,
-              // };
 
               const acceptedMutationCount = yield* Queue.size(
                 acceptedMutationsQueue,

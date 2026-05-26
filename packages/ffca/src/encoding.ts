@@ -1,5 +1,5 @@
 import { type Abi, AbiParameters, type Hex } from "ox";
-import { decodeEventLog, encodeFunctionData } from "viem";
+import { encodeFunctionData } from "viem";
 import type { FFCAMutationConfig } from "./config";
 import type { MutationWithResolution } from "./types";
 
@@ -225,36 +225,6 @@ export function encodeEnqueueCalldata(
       abiTupleFromRecord(sigParams, mutation.signature),
     ],
   });
-}
-
-// Decode a `ForceInclusionQueued` event log into its named arguments.
-export function decodeForceInclusionLog(
-  abi: Abi.Abi,
-  mutationConfig: FFCAMutationConfig,
-  log: { data: Hex.Hex; topics: readonly Hex.Hex[] },
-): {
-  index: bigint;
-  args: unknown;
-  signature: unknown;
-  resolution?: unknown;
-} {
-  const decoded = decodeEventLog({
-    abi: abi as FFCAAbi,
-    eventName: "ForceInclusionQueued",
-    data: log.data,
-    topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
-  });
-  const args = decoded.args as {
-    index: bigint;
-    mutationData: Hex.Hex;
-    sig: unknown;
-  };
-
-  return {
-    index: args.index,
-    signature: args.sig,
-    ...decodeMutationCalldata(mutationConfig, args.mutationData),
-  };
 }
 
 // Build a structured Batch value from resolved mutations.

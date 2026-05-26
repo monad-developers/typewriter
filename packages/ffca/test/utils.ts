@@ -9,8 +9,17 @@ import {
   type TypedData,
 } from "ox";
 import { Authentication } from "ox/webauthn";
-import type { StorageLayout, StorageProxy } from "storage-layout";
-import type { Address, Hex } from "viem";
+import {
+  type AccountStorage,
+  type ConcreteStorageVariable,
+  decodeStorageVariable,
+  getStorageSlot,
+  type StorageLayout,
+  type StorageProxy,
+  type StorageVariableToPrimitiveType,
+} from "storage-layout";
+import { type Address, encodeDeployData, type Hex } from "viem";
+import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
 import type { FFCAMutationConfig } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
@@ -772,15 +781,22 @@ async function deployContract(
   const artifact = await Bun.file(
     `${import.meta.dir}/contracts/out/${name}.sol/${name}.json`,
   ).json();
-  const hash = await TEST_WALLET_CLIENT.deployContract({
+  const data = encodeDeployData({
     abi: artifact.abi,
     bytecode: artifact.bytecode.object as Hex,
-    account: SCHEDULER_ACCOUNT,
-    chain: anvil,
     // biome-ignore lint/suspicious/noExplicitAny: viem deployContract args type
     args: args as any,
   });
-  const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
+
+  const request = await TEST_WALLET_CLIENT.prepareTransactionRequest({
+    account: SCHEDULER_ACCOUNT,
+    chain: anvil,
+    data,
+  });
+  const signed = await TEST_WALLET_CLIENT.signTransaction(request);
+  const receipt = await sendRawTransactionSync(TEST_WALLET_CLIENT, {
+    serializedTransaction: signed,
+  });
   if (
     receipt.contractAddress === null ||
     receipt.contractAddress === undefined
@@ -798,6 +814,26 @@ export async function deployCounter(signerAddress: Address): Promise<Address> {
 }
 
 export const deployHarness = (): Promise<Address> => deployContract("Harness");
+
+export async function readContractStorage<
+  layout extends StorageLayout,
+  variable extends ConcreteStorageVariable<layout>,
+>(
+  layout: layout,
+  address: Address,
+  variable: variable,
+): Promise<StorageVariableToPrimitiveType<layout, variable>> {
+  // @ts-expect-error
+  const slots = getStorageSlot(layout, variable);
+  const values = await Promise.all(
+    slots.map((slot) => TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })),
+  );
+  const storage = Object.fromEntries(
+    slots.map((slot, index) => [slot, values[index]!]),
+  ) as AccountStorage;
+
+  return decodeStorageVariable(layout, variable, storage);
+}
 
 // Mutation definitions for the Counter test fixture. The contract/revm owns
 // acceptance and state transitions; this config only describes encoding.

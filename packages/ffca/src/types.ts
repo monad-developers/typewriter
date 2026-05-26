@@ -124,6 +124,7 @@ export type RuntimeBlock<sequence extends "fifo" | "batch"> = {
     }
   : {
       batches: RuntimeBatch[];
+      forceIncludedMutations: SubmittedMutation[];
     });
 
 export type MutationEvent =

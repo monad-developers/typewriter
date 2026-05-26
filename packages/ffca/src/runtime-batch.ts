@@ -98,27 +98,28 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
     }>();
     const enqueuedMutationsQueue = yield* Queue.unbounded<number>();
     const acceptedBatchesQueue = yield* Queue.unbounded<number>();
+    const acceptedForceInclusionMutationsQueue =
+      yield* Queue.unbounded<number>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedMutationsQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptedBatchesQueue));
+    yield* Scope.addFinalizer(
+      scope,
+      Queue.shutdown(acceptedForceInclusionMutationsQueue),
+    );
 
     const withSpeculativeStateLock = Semaphore.withPermits(
       Semaphore.makeUnsafe(1),
       1,
     );
 
-    let nonce: number | undefined;
-    const nextNonce = Effect.gen(function* () {
-      if (nonce === undefined) {
-        nonce = Hex.toNumber(
-          yield* rpc.request({
-            method: "eth_getTransactionCount",
-            params: [config.account.address, "latest"],
-          }),
-        );
-      }
-      return nonce++;
-    });
+    let nonce = Hex.toNumber(
+      yield* rpc.request({
+        method: "eth_getTransactionCount",
+        params: [config.account.address, "latest"],
+      }),
+    );
+    const nextNonce = Effect.sync(() => nonce++);
 
     const walletClient = createRuntimeWalletClient(config);
 
@@ -261,110 +262,174 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
       }),
     );
 
-    const submit = withSpeculativeStateLock(
-      Effect.gen(function* () {
-        const batchIds = yield* Queue.clear(acceptedBatchesQueue);
-        if (batchIds.length === 0) return;
-
-        const batches = batchIds.map((id) => batchesById.get(id)!);
-
-        const calldata = encodeExecuteCalldata(
-          config.abi,
-          batches.map((batch) => encodeBatchArg(config.abi, batch.mutations)),
-          [],
-        );
-
-        const simulateResult = yield* evm.simulate({
-          from: config.account.address,
-          to: config.address,
-          data: calldata,
-          journal_ids: batches
-            .flatMap((batch) => batch.mutations)
-            .map((mutation) => mutation.journalId),
-        });
-        if (simulateResult.success === false) {
-          return yield* Effect.fail(
-            createRevmRevertError(
-              config,
-              simulateResult.revert_data,
-              "revm simulate reverted",
-            ),
+    const submit = Effect.gen(function* () {
+      const simulation = yield* withSpeculativeStateLock(
+        Effect.gen(function* () {
+          const batchIds = yield* Queue.clear(acceptedBatchesQueue);
+          const forceIncludedIds = yield* Queue.clear(
+            acceptedForceInclusionMutationsQueue,
           );
-        }
-
-        const submitNonce = yield* nextNonce;
-        const request = yield* Effect.tryPromise({
-          try: () =>
-            walletClient.prepareTransactionRequest({
-              to: config.address,
-              data: calldata,
-              accessList: simulateResult.access_list,
-              gas: BigInt(simulateResult.gas_limit),
-              nonce: submitNonce,
-            }),
-          catch: (error) => error as Error,
-        }).pipe(rpcRetry);
-
-        const signed = yield* Effect.tryPromise({
-          try: () => walletClient.signTransaction(request),
-          catch: (error) => error as Error,
-        });
-
-        const receipt = yield* Effect.tryPromise({
-          try: () =>
-            sendRawTransactionSync(walletClient, {
-              serializedTransaction: signed,
-              throwOnReceiptRevert: true,
-            }),
-          catch: (error) => error as Error,
-        });
-
-        const block = yield* requestBlock(receipt.blockHash).pipe(
-          Effect.provideService(Rpc, rpc),
-        );
-
-        for (const batch of batches) {
-          batch.status = "included";
-          for (const mutation of batch.mutations) {
-            updateMutationToIncluded(mutation as AcceptedMutation);
+          if (batchIds.length === 0 && forceIncludedIds.length === 0) {
+            return undefined;
           }
-        }
 
-        const runtimeBlock: RuntimeBlock<"batch"> = {
-          status: "included",
-          number: block.number,
-          hash: block.hash,
-          timestamp: block.timestamp,
-          transactionHash: receipt.transactionHash,
-          batches,
-        };
+          const acceptedForceIncludedMutations = forceIncludedIds.map(
+            (id) =>
+              mutationsById.get(id)! as Extract<
+                AcceptedMutation,
+                { isForceInclusion: true }
+              >,
+          );
 
-        yield* db.transaction((tx) =>
-          Effect.gen(function* () {
-            for (const batch of batches) {
-              for (const mutation of batch.mutations) {
-                yield* updateMutationLifecycle(
-                  tx,
-                  schema,
-                  mutation as SubmittedMutation,
-                  runtimeBlock,
-                );
-              }
-            }
+          const batches = batchIds.map((id) => batchesById.get(id)!);
+
+          const speculativeJournalIds = batches
+            .flatMap((batch) => batch.mutations)
+            .map((mutation) => mutation.journalId)
+            .concat(
+              acceptedForceIncludedMutations.map(
+                (mutation) => mutation.journalId,
+              ),
+            );
+
+          const calldata = encodeExecuteCalldata(
+            config.abi,
+            batches.map((batch) => encodeBatchArg(config.abi, batch.mutations)),
+            acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
+          );
+
+          const simulateResult = yield* evm.simulate({
+            from: config.account.address,
+            to: config.address,
+            data: calldata,
+            journal_ids: speculativeJournalIds,
+          });
+          if (simulateResult.success === false) {
+            return yield* Effect.fail(
+              createRevmRevertError(
+                config,
+                simulateResult.revert_data,
+                "revm simulate reverted",
+              ),
+            );
+          }
+
+          const enqueuedMutationIds = yield* Queue.clear(
+            enqueuedMutationsQueue,
+          );
+          for (const mutationId of enqueuedMutationIds) {
+            const enqueuedMutation = mutationsById.get(
+              mutationId,
+            )! as EnqueuedMutation;
+            const acceptedMutation = yield* acceptMutation(enqueuedMutation);
+
+            yield* Queue.offer(
+              acceptedForceInclusionMutationsQueue,
+              acceptedMutation.id,
+            );
+          }
+
+          return {
+            batches,
+            acceptedForceIncludedMutations,
+            calldata,
+            simulateResult,
+          };
+        }),
+      );
+
+      if (simulation === undefined) return;
+
+      const {
+        batches,
+        acceptedForceIncludedMutations,
+        calldata,
+        simulateResult,
+      } = simulation;
+
+      const submitNonce = yield* nextNonce;
+      const request = yield* Effect.tryPromise({
+        try: () =>
+          walletClient.prepareTransactionRequest({
+            to: config.address,
+            data: calldata,
+            accessList: simulateResult.access_list,
+            gas: BigInt(simulateResult.gas_limit),
+            nonce: submitNonce,
           }),
-        );
+        catch: (error) => error as Error,
+      }).pipe(rpcRetry);
 
-        emitBlock(batchBlockToEvent(runtimeBlock));
-        for (const batch of batches) {
-          emitBatch(batchToEvent(batch));
-          for (const mutation of batch.mutations) {
-            emitMutation(mutationToEvent(mutation));
-          }
+      const signed = yield* Effect.tryPromise({
+        try: () => walletClient.signTransaction(request),
+        catch: (error) => error as Error,
+      });
+
+      const receipt = yield* Effect.tryPromise({
+        try: () =>
+          sendRawTransactionSync(walletClient, {
+            serializedTransaction: signed,
+            throwOnReceiptRevert: true,
+          }),
+        catch: (error) => error as Error,
+      });
+
+      const block = yield* requestBlock(receipt.blockHash).pipe(
+        Effect.provideService(Rpc, rpc),
+      );
+
+      for (const batch of batches) {
+        batch.status = "included";
+        for (const mutation of batch.mutations) {
+          updateMutationToIncluded(mutation as AcceptedMutation);
         }
+      }
 
-        unfinalizedBlocks.push(runtimeBlock);
-      }),
-    );
+      const forceIncludedMutations = acceptedForceIncludedMutations.map(
+        updateMutationToIncluded,
+      );
+
+      const runtimeBlock: RuntimeBlock<"batch"> = {
+        status: "included",
+        number: block.number,
+        hash: block.hash,
+        timestamp: block.timestamp,
+        transactionHash: receipt.transactionHash,
+        batches,
+        forceIncludedMutations,
+      };
+
+      yield* db.transaction((tx) =>
+        Effect.gen(function* () {
+          for (const batch of batches) {
+            for (const mutation of batch.mutations) {
+              yield* updateMutationLifecycle(
+                tx,
+                schema,
+                mutation as SubmittedMutation,
+                runtimeBlock,
+              );
+            }
+          }
+          for (const mutation of forceIncludedMutations) {
+            yield* updateMutationLifecycle(tx, schema, mutation, runtimeBlock);
+          }
+        }),
+      );
+
+      emitBlock(batchBlockToEvent(runtimeBlock));
+      for (const batch of batches) {
+        emitBatch(batchToEvent(batch));
+        for (const mutation of batch.mutations) {
+          emitMutation(mutationToEvent(mutation));
+        }
+      }
+      for (const mutation of forceIncludedMutations) {
+        emitMutation(mutationToEvent(mutation));
+      }
+
+      unfinalizedBlocks.push(runtimeBlock);
+    });
 
     const watchProgram = Effect.gen(function* () {
       yield* watch.messages.pipe(
@@ -398,7 +463,21 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
 
               mutationsById.set(enqueuedMutation.id, enqueuedMutation);
 
-              yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation.id);
+              const acceptedBatchCount =
+                yield* Queue.size(acceptedBatchesQueue);
+
+              if (acceptedBatchCount > 0) {
+                yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation.id);
+              } else {
+                const acceptedMutation = yield* withSpeculativeStateLock(
+                  acceptMutation(enqueuedMutation),
+                );
+
+                yield* Queue.offer(
+                  acceptedForceInclusionMutationsQueue,
+                  acceptedMutation.id,
+                );
+              }
             }
 
             for (const block of unfinalizedBlocks.filter(

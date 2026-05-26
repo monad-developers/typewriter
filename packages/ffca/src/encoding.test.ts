@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
-import { encodeFunctionData, toEventSelector } from "viem";
-import { COUNTER_ABI, COUNTER_MUTATIONS } from "../test/utils";
+import { encodeFunctionData } from "viem";
+import { COUNTER_ABI } from "../test/utils";
 import {
-  decodeForceInclusionLog,
   decodeMutationCalldata,
   encodeBatchArg,
   encodeEnqueueCalldata,
@@ -213,53 +212,6 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
   });
   const actual = encodeEnqueueCalldata(COUNTER_ABI, mutation);
   expect(actual).toBe(expected);
-});
-
-test.skip("decodeForceInclusionLog decodes event args", () => {
-  const eventAbi = COUNTER_ABI.find(
-    (item) => item.type === "event" && item.name === "ForceInclusionQueued",
-  );
-  if (eventAbi === undefined || eventAbi.type !== "event") {
-    throw new Error("ForceInclusionQueued event not found in COUNTER_ABI");
-  }
-
-  const eventParams = [
-    { name: "index", type: "uint256" },
-    { name: "mutation", type: "uint8" },
-    { name: "mutationData", type: "bytes" },
-    {
-      name: "sig",
-      type: "tuple",
-      components: [
-        { name: "keyType", type: "uint8" },
-        { name: "rawSignature", type: "bytes" },
-      ],
-    },
-    { name: "enqueuedBlock", type: "uint256" },
-  ];
-
-  const data = AbiParameters.encode(eventParams, [
-    42n,
-    1,
-    "0xabcd",
-    { keyType: 2, rawSignature: "0xdeadbeef" },
-    100n,
-  ]);
-
-  const topic = toEventSelector(eventAbi);
-  const log = {
-    data,
-    topics: [topic] as `0x${string}`[],
-  };
-
-  const decoded = decodeForceInclusionLog(
-    COUNTER_ABI,
-    COUNTER_MUTATIONS.add,
-    log,
-  );
-  expect(decoded.index).toBe(42n);
-  expect(decoded.args).toEqual({});
-  expect(decoded.signature).toEqual({ keyType: 2, rawSignature: "0xdeadbeef" });
 });
 
 test("encodeBatchArg builds a structured batch value", () => {
