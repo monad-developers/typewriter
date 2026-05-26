@@ -1,19 +1,18 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
-import { encodeFunctionData, toEventSelector } from "viem";
-import { COUNTER_ABI, COUNTER_MUTATIONS } from "../test/utils";
+import { encodeFunctionData } from "viem";
+import { COUNTER_ABI } from "../test/utils";
 import {
-  decodeForceInclusionLog,
   decodeMutationCalldata,
-  encodeBundleArg,
+  encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
   encodeMutationCalldata,
   encodeSignatureCalldata,
   getSignatureAbiParameters,
 } from "./encoding";
-import type { ResolvedMutation } from "./types";
+import type { MutationWithResolution } from "./types";
 
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
@@ -22,16 +21,17 @@ function calldataStructParams(
 }
 
 function acceptedMutation(
-  config: ResolvedMutation["config"],
+  config: MutationWithResolution["config"],
   args: unknown,
   resolution?: unknown,
-): ResolvedMutation {
+): MutationWithResolution {
   return {
     id: 0,
     status: "accepted",
     name: "test",
     args,
     signature: { keyType: 0, rawSignature: "0x" },
+    journalId: 0,
     isForceInclusion: false,
     config,
     resolution,
@@ -177,12 +177,12 @@ test("encodeSignatureCalldata encodes a signature record to ABI bytes", () => {
 });
 
 test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
-  const expectedBundle = {
+  const expectedBatch = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
     signatures: [{ keyType: 0, rawSignature: "0xaa" as `0x${string}` }],
   };
-  const actualBundle = {
+  const actualBatch = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
     signatures: [[0, "0xaa"]],
@@ -190,9 +190,9 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
     functionName: "execute",
-    args: [[expectedBundle], []],
+    args: [[expectedBatch], []],
   });
-  const actual = encodeExecuteCalldata(COUNTER_ABI, [actualBundle], []);
+  const actual = encodeExecuteCalldata(COUNTER_ABI, [actualBatch], []);
   expect(actual).toBe(expected);
 });
 
@@ -214,54 +214,7 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
   expect(actual).toBe(expected);
 });
 
-test.skip("decodeForceInclusionLog decodes event args", () => {
-  const eventAbi = COUNTER_ABI.find(
-    (item) => item.type === "event" && item.name === "ForceInclusionQueued",
-  );
-  if (eventAbi === undefined || eventAbi.type !== "event") {
-    throw new Error("ForceInclusionQueued event not found in COUNTER_ABI");
-  }
-
-  const eventParams = [
-    { name: "index", type: "uint256" },
-    { name: "mutation", type: "uint8" },
-    { name: "mutationData", type: "bytes" },
-    {
-      name: "sig",
-      type: "tuple",
-      components: [
-        { name: "keyType", type: "uint8" },
-        { name: "rawSignature", type: "bytes" },
-      ],
-    },
-    { name: "enqueuedBlock", type: "uint256" },
-  ];
-
-  const data = AbiParameters.encode(eventParams, [
-    42n,
-    1,
-    "0xabcd",
-    { keyType: 2, rawSignature: "0xdeadbeef" },
-    100n,
-  ]);
-
-  const topic = toEventSelector(eventAbi);
-  const log = {
-    data,
-    topics: [topic] as `0x${string}`[],
-  };
-
-  const decoded = decodeForceInclusionLog(
-    COUNTER_ABI,
-    COUNTER_MUTATIONS.add,
-    log,
-  );
-  expect(decoded.index).toBe(42n);
-  expect(decoded.args).toEqual({});
-  expect(decoded.signature).toEqual({ keyType: 2, rawSignature: "0xdeadbeef" });
-});
-
-test("encodeBundleArg builds a structured bundle value", () => {
+test("encodeBatchArg builds a structured batch value", () => {
   const transfer = {
     tag: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
@@ -273,7 +226,7 @@ test("encodeBundleArg builds a structured bundle value", () => {
     resolve: () => ({ fills: [] }),
   };
 
-  const transferResolved: ResolvedMutation = {
+  const transferResolved: MutationWithResolution = {
     id: 0,
     status: "accepted",
     name: "transfer",
@@ -283,15 +236,17 @@ test("encodeBundleArg builds a structured bundle value", () => {
       amount: 100n,
     },
     signature: { keyType: 0, rawSignature: "0xaa" },
+    journalId: 0,
     isForceInclusion: false,
     config: transfer,
   };
-  const marketResolved: ResolvedMutation = {
+  const marketResolved: MutationWithResolution = {
     id: 1,
     status: "accepted",
     name: "market",
     args: { size: 10n },
     signature: { keyType: 1, rawSignature: "0xbb" },
+    journalId: 1,
     isForceInclusion: false,
     resolution: {
       fills: [
@@ -302,20 +257,17 @@ test("encodeBundleArg builds a structured bundle value", () => {
     config: market,
   };
 
-  const bundle = encodeBundleArg(COUNTER_ABI, [
-    transferResolved,
-    marketResolved,
-  ]);
+  const batch = encodeBatchArg(COUNTER_ABI, [transferResolved, marketResolved]);
 
-  expect(bundle.mutations).toEqual([0, 1]);
-  expect(bundle.signatures).toEqual([
+  expect(batch.mutations).toEqual([0, 1]);
+  expect(batch.signatures).toEqual([
     [0, "0xaa"],
     [1, "0xbb"],
   ]);
 
   const [decodedTransfer] = AbiParameters.decode(
     calldataStructParams(transfer.params),
-    bundle.mutationData[0]!,
+    batch.mutationData[0]!,
   );
   expect(decodedTransfer).toEqual(transferResolved.args);
 
@@ -324,7 +276,7 @@ test("encodeBundleArg builds a structured bundle value", () => {
       ...calldataStructParams(market.params),
       ...calldataStructParams(market.resolution),
     ],
-    bundle.mutationData[1]!,
+    batch.mutationData[1]!,
   );
   expect(decodedMarket).toEqual(marketResolved.args);
   expect(decodedResolution).toEqual(marketResolved.resolution);

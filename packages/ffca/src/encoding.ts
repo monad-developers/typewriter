@@ -1,7 +1,7 @@
 import { type Abi, AbiParameters, type Hex } from "ox";
-import { decodeEventLog, encodeFunctionData } from "viem";
+import { encodeFunctionData } from "viem";
 import type { FFCAMutationConfig } from "./config";
-import type { ResolvedMutation } from "./types";
+import type { MutationWithResolution } from "./types";
 
 export type FFCAAbi = [
   {
@@ -9,7 +9,7 @@ export type FFCAAbi = [
     name: "execute";
     inputs: [
       {
-        name: "bundles";
+        name: "batches";
         type: "tuple[]";
         components: [
           { name: "mutations"; type: "uint8[]" },
@@ -88,7 +88,9 @@ function calldataStructParams(
   return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
 }
 
-export function encodeMutationCalldata(mutation: ResolvedMutation): Hex.Hex {
+export function encodeMutationCalldata(
+  mutation: MutationWithResolution,
+): Hex.Hex {
   const params = mutation.config.params;
   if ("resolution" in mutation.config) {
     const resolutionParams = mutation.config.resolution;
@@ -126,9 +128,9 @@ export function decodeMutationCalldata(
 }
 
 // Extract the signature tuple components from the user's ABI.
-// FFCA prescribes that `execute` takes `(Bundle[], uint256[])` where
-//   Bundle = { uint8[] mutations, bytes[] mutationData, Signature[] signatures }
-// This walks the ABI to find `execute` → `bundles` → `signatures`.
+// FFCA prescribes that `execute` takes `(Batch[], uint256[])` where
+//   Batch = { uint8[] mutations, bytes[] mutationData, Signature[] signatures }
+// This walks the ABI to find `execute` -> `batches` -> `signatures`.
 export function getSignatureAbiParameters(
   abi: Abi.Abi,
 ): readonly AbiParameters.Parameter[] {
@@ -139,9 +141,9 @@ export function getSignatureAbiParameters(
     throw new Error("ABI missing execute function");
   }
 
-  const bundles = execute.inputs.find(
+  const batches = execute.inputs.find(
     (input) =>
-      input.name === "bundles" &&
+      input.name === "batches" &&
       input.type === "tuple[]" &&
       "components" in input &&
       Array.isArray(input.components),
@@ -151,11 +153,11 @@ export function getSignatureAbiParameters(
         components: readonly AbiParameters.Parameter[];
       })
     | undefined;
-  if (bundles === undefined) {
-    throw new Error("execute function missing bundles: tuple[] parameter");
+  if (batches === undefined) {
+    throw new Error("execute function missing batches: tuple[] parameter");
   }
 
-  const signatures = bundles.components.find(
+  const signatures = batches.components.find(
     (c) =>
       c.name === "signatures" &&
       c.type === "tuple[]" &&
@@ -168,7 +170,7 @@ export function getSignatureAbiParameters(
       })
     | undefined;
   if (signatures === undefined) {
-    throw new Error("Bundle missing signatures: tuple[] component");
+    throw new Error("Batch missing signatures: tuple[] component");
   }
 
   return signatures.components;
@@ -191,11 +193,11 @@ export function decodeSignatureCalldata(
   return AbiParameters.decode(sigParams, calldata);
 }
 
-// Encode `execute(Bundle[], uint256[])` calldata from structured bundle values
+// Encode `execute(Batch[], uint256[])` calldata from structured batch values
 // and an optional list of force-inclusion queue indexes.
 export function encodeExecuteCalldata(
   abi: Abi.Abi,
-  bundles: readonly {
+  batches: readonly {
     mutations: number[];
     mutationData: Hex.Hex[];
     signatures: readonly unknown[][];
@@ -205,13 +207,13 @@ export function encodeExecuteCalldata(
   return encodeFunctionData({
     abi,
     functionName: "execute",
-    args: [bundles, forceExecuteIndexes],
+    args: [batches, forceExecuteIndexes],
   });
 }
 
 export function encodeEnqueueCalldata(
   abi: Abi.Abi,
-  mutation: ResolvedMutation,
+  mutation: MutationWithResolution,
 ): Hex.Hex {
   const sigParams = getSignatureAbiParameters(abi);
   return encodeFunctionData({
@@ -225,42 +227,12 @@ export function encodeEnqueueCalldata(
   });
 }
 
-// Decode a `ForceInclusionQueued` event log into its named arguments.
-export function decodeForceInclusionLog(
-  abi: Abi.Abi,
-  mutationConfig: FFCAMutationConfig,
-  log: { data: Hex.Hex; topics: readonly Hex.Hex[] },
-): {
-  index: bigint;
-  args: unknown;
-  signature: unknown;
-  resolution?: unknown;
-} {
-  const decoded = decodeEventLog({
-    abi: abi as FFCAAbi,
-    eventName: "ForceInclusionQueued",
-    data: log.data,
-    topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
-  });
-  const args = decoded.args as {
-    index: bigint;
-    mutationData: Hex.Hex;
-    sig: unknown;
-  };
-
-  return {
-    index: args.index,
-    signature: args.sig,
-    ...decodeMutationCalldata(mutationConfig, args.mutationData),
-  };
-}
-
-// Build a structured Bundle value from resolved mutations.
+// Build a structured Batch value from resolved mutations.
 // Each signature is projected from a keyed record to a positional tuple
 // matching the ABI declaration order.
-export function encodeBundleArg(
+export function encodeBatchArg(
   abi: Abi.Abi,
-  mutations: ResolvedMutation[],
+  mutations: MutationWithResolution[],
 ): {
   mutations: number[];
   mutationData: Hex.Hex[];

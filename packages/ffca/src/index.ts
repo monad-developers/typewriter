@@ -1,13 +1,30 @@
 import { Effect, Exit, Scope } from "effect";
+import type { TypedData } from "ox";
 import type { FFCAConfig } from "./config";
+import type {
+  BatchListener,
+  BlockListener,
+  MutationListener,
+  RuntimeFFCA,
+} from "./ffca";
 import { createFFCAEffect } from "./ffca";
-import type { FFCA } from "./runtime";
+import type { FFCAMutation, FFCAMutationResult } from "./types";
+
+export type FFCA<C extends FFCAConfig> = {
+  readonly state: RuntimeFFCA<C, "fifo" | "batch">["state"];
+  readonly schema: RuntimeFFCA<C, "fifo" | "batch">["schema"];
+  readonly domain: TypedData.Domain;
+  execute(submitted: FFCAMutation): Promise<FFCAMutationResult>;
+  on(event: "mutation", cb: MutationListener): () => void;
+  on(event: "batch", cb: BatchListener): () => void;
+  on(event: "block", cb: BlockListener<"fifo" | "batch">): () => void;
+  stop(): Promise<void>;
+};
 
 export type {
   FFCAConfig,
   FFCAMutationConfig,
 } from "./config";
-export type { FFCA } from "./runtime";
 export {
   createMutationSchema,
   type FFCAMutationSchema,
@@ -17,13 +34,13 @@ export {
 export type { KeyType } from "./signature";
 export { verifySignature } from "./signature";
 export type {
+  BatchEvent,
+  BatchStatus,
   BlockEvent,
   BlockStatus,
-  BundleEvent,
-  BundleStatus,
+  FFCAMutation,
   MutationEvent,
   MutationStatus,
-  SubmittedMutation,
 } from "./types";
 
 export async function createFFCA<const C extends FFCAConfig>(
@@ -44,7 +61,7 @@ export async function createFFCA<const C extends FFCAConfig>(
     );
 
     const runtimeOn = ffca.on as unknown as (
-      event: "mutation" | "bundle" | "block",
+      event: "mutation" | "batch" | "block",
       cb: unknown,
     ) => Effect.Effect<() => void>;
     const on = ((event, cb) =>

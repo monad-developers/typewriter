@@ -3,17 +3,15 @@
 // Operations:
 //   init           — one-shot setup: spec, chain id, block context, accounts.
 //   setBlockContext— update block number, timestamp, basefee, coinbase.
-//   beginJournal   — push an empty uncommitted journal.
-//   execute        — run one tx inside the open (uncommitted) journal.
-//   simulate       — run one tx against committed state, ignoring uncommitted
-//                    journals; does not create or modify any journal.
+//   execute        — run one tx and store its successful state transition as a
+//                    journal identified by a numeric id.
+//   simulate       — temporarily undo the given journal ids, run one tx, then
+//                    re-apply the journals; does not create/modify journals.
 //   readStorage    — read raw account storage slots from the sidecar DB.
-//   commitJournal  — mark the top journal as committed.
-//   revertJournal  — pop the top journal and restore its pre-images.
-//   revertJournals — pop and revert the top N journals.
-//   pruneJournals  — drop the bottom N committed journals to free memory.
+//   revertJournals — revert and delete the given journal ids.
+//   pruneJournals  — delete the given journal ids without touching state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, Write};
 
 use monad_revm::{
@@ -41,43 +39,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase")]
 enum Request {
-    Init {
-        id: u64,
-        params: InitParams,
-    },
-    SetBlockContext {
-        id: u64,
-        params: BlockParams,
-    },
-    BeginJournal {
-        id: u64,
-    },
-    Execute {
-        id: u64,
-        params: ExecuteParams,
-    },
-    Simulate {
-        id: u64,
-        params: ExecuteParams,
-    },
-    ReadStorage {
-        id: u64,
-        params: ReadStorageParams,
-    },
-    CommitJournal {
-        id: u64,
-    },
-    RevertJournal {
-        id: u64,
-    },
-    RevertJournals {
-        id: u64,
-        params: RevertJournalsParams,
-    },
-    PruneJournals {
-        id: u64,
-        params: PruneJournalsParams,
-    },
+    Init { id: u64, params: InitParams },
+    SetBlockContext { id: u64, params: BlockParams },
+    Execute { id: u64, params: ExecuteParams },
+    Simulate { id: u64, params: SimulateParams },
+    ReadStorage { id: u64, params: ReadStorageParams },
+    RevertJournals { id: u64, params: JournalIdsParams },
+    PruneJournals { id: u64, params: JournalIdsParams },
 }
 
 #[derive(Deserialize)]
@@ -113,19 +81,34 @@ struct ExecuteParams {
 }
 
 #[derive(Deserialize)]
+struct SimulateParams {
+    from: String,
+    to: String,
+    data: String,
+    value: Option<String>,
+    journal_ids: Vec<u64>,
+}
+
+impl SimulateParams {
+    fn as_execute_params(&self) -> ExecuteParams {
+        ExecuteParams {
+            from: self.from.clone(),
+            to: self.to.clone(),
+            data: self.data.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct ReadStorageParams {
     address: String,
     slots: Vec<String>,
 }
 
 #[derive(Deserialize)]
-struct RevertJournalsParams {
-    count: u64,
-}
-
-#[derive(Deserialize)]
-struct PruneJournalsParams {
-    count: u64,
+struct JournalIdsParams {
+    journal_ids: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -141,6 +124,8 @@ struct Response {
 #[derive(Serialize)]
 struct ExecuteOk {
     success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_id: Option<u64>,
     gas_used: u64,
     gas_limit: u64,
     output: String,
@@ -175,18 +160,18 @@ type Evm = monad_revm::api::builder::DefaultMonadEvm<
 // Per-journal pre/post-image record. revm 34's `transact_one` clears its
 // internal journal log on success, so cross-tx isolation has to live in
 // userland: we capture pre-images on first touch within a journal, post-
-// images each time. revertJournal writes pre-images back; simulate
+// images each time. revertJournals writes pre-images back; simulate
 // un-applies uncommitted journals, runs the simulation, re-applies them.
 #[derive(Default)]
 struct Journal {
-    committed: bool,
-    accounts: std::collections::HashMap<Address, (AccountInfo, AccountInfo)>,
-    storage: std::collections::HashMap<(Address, U256), (U256, U256)>,
+    accounts: HashMap<Address, (AccountInfo, AccountInfo)>,
+    storage: HashMap<(Address, U256), (U256, U256)>,
 }
 
 struct EvmHarness {
     evm: Evm,
-    journals: Vec<Journal>,
+    journals: HashMap<u64, Journal>,
+    next_journal_id: u64,
     initialized: bool,
 }
 
@@ -197,7 +182,8 @@ impl EvmHarness {
         let evm = ctx.build_monad();
         Self {
             evm,
-            journals: Vec::new(),
+            journals: HashMap::new(),
+            next_journal_id: 1,
             initialized: false,
         }
     }
@@ -271,78 +257,31 @@ impl EvmHarness {
         Ok(())
     }
 
-    fn begin_journal(&mut self) -> Result<(), String> {
+    fn revert_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
         self.ensure_initialized()?;
-        self.journals.push(Journal::default());
-        Ok(())
-    }
-
-    fn commit_journal(&mut self) -> Result<(), String> {
-        self.ensure_initialized()?;
-        let journal = self.journals.last_mut().ok_or("no journal is open")?;
-        if journal.committed {
-            return Err("top journal is already committed".into());
-        }
-        journal.committed = true;
-        Ok(())
-    }
-
-    fn revert_journal(&mut self) -> Result<(), String> {
-        self.ensure_initialized()?;
-        let journal = self
-            .journals
-            .pop()
-            .ok_or_else(|| "no journal is open".to_string())?;
-        rewind(self.evm.0.ctx.journaled_state.db_mut(), &journal);
-        Ok(())
-    }
-
-    fn revert_journals(&mut self, params: &RevertJournalsParams) -> Result<(), String> {
-        self.ensure_initialized()?;
-        let count = params.count as usize;
-        if count == 0 {
-            return Ok(());
-        }
-        if count > self.journals.len() {
-            return Err(format!(
-                "cannot revert {count} journals; only {} open",
-                self.journals.len()
-            ));
-        }
+        self.ensure_journal_ids(&params.journal_ids)?;
         let db = self.evm.0.ctx.journaled_state.db_mut();
-        for _ in 0..count {
-            let journal = self.journals.pop().expect("count validated above");
+        for journal_id in params.journal_ids.iter().rev() {
+            let journal = self
+                .journals
+                .remove(journal_id)
+                .expect("journal ids validated above");
             rewind(db, &journal);
         }
         Ok(())
     }
 
-    fn prune_journals(&mut self, params: &PruneJournalsParams) -> Result<(), String> {
+    fn prune_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
         self.ensure_initialized()?;
-        let count = params.count as usize;
-        if count == 0 {
-            return Ok(());
+        self.ensure_journal_ids(&params.journal_ids)?;
+        for journal_id in &params.journal_ids {
+            self.journals.remove(journal_id);
         }
-        let committed_count = self.journals.iter().filter(|j| j.committed).count();
-        if count > committed_count {
-            return Err(format!(
-                "cannot prune {count} journals; only {committed_count} committed"
-            ));
-        }
-        // Remove the oldest `count` committed journals from the bottom.
-        self.journals = self.journals.split_off(count);
         Ok(())
     }
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         self.ensure_initialized()?;
-        let journal = self
-            .journals
-            .last()
-            .ok_or("execute requires an open journal")?;
-        if journal.committed {
-            return Err("top journal is committed; begin a new journal before executing".into());
-        }
         let mut result = match self.run_two_pass(params) {
             Ok(result) => result,
             Err(error) => {
@@ -352,10 +291,15 @@ impl EvmHarness {
         };
         if result.success {
             result.slot_writes = collect_slot_writes(self.evm.0.ctx.journaled_state.evm_state());
-            self.record_into_top_journal();
+            let mut journal = Journal::default();
+            self.record_into_journal(&mut journal);
             // Commit the journaled state into the DB so future reads and
             // writes see the post-tx state.
             self.flush_journal_to_db();
+            let journal_id = self.next_journal_id;
+            self.next_journal_id += 1;
+            self.journals.insert(journal_id, journal);
+            result.journal_id = Some(journal_id);
         } else {
             // A failed tx is observable as a rejection, not as local state.
             // Drain and discard any journal state left by revm.
@@ -364,37 +308,36 @@ impl EvmHarness {
         Ok(result)
     }
 
-    fn simulate(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
+    fn simulate(&mut self, params: &SimulateParams) -> Result<ExecuteOk, String> {
         self.ensure_initialized()?;
-        // Count uncommitted journals from the top of the stack downward.
-        let mut uncommitted_count = 0;
-        for journal in self.journals.iter().rev() {
-            if journal.committed {
-                break;
-            }
-            uncommitted_count += 1;
-        }
+        self.ensure_journal_ids(&params.journal_ids)?;
 
         {
             let db = self.evm.0.ctx.journaled_state.db_mut();
-            for i in 0..uncommitted_count {
-                let idx = self.journals.len() - 1 - i;
-                rewind(db, &self.journals[idx]);
+            for journal_id in params.journal_ids.iter().rev() {
+                let journal = self
+                    .journals
+                    .get(journal_id)
+                    .expect("journal ids validated above");
+                rewind(db, journal);
             }
         }
 
-        let result = self.run_two_pass(params);
+        let result = self.run_two_pass(&params.as_execute_params());
 
         // Drop pass 2's journal-state writes so they never reach the DB.
         let _ = self.evm.finalize();
 
-        // Re-apply post-images in original order regardless of simulate's
-        // success — the uncommitted journals' logical state must be restored.
+        // Re-apply post-images in caller-provided occurrence order regardless
+        // of simulate's success — logical state must be restored.
         {
             let db = self.evm.0.ctx.journaled_state.db_mut();
-            for i in (0..uncommitted_count).rev() {
-                let idx = self.journals.len() - 1 - i;
-                replay(db, &self.journals[idx]);
+            for journal_id in &params.journal_ids {
+                let journal = self
+                    .journals
+                    .get(journal_id)
+                    .expect("journal ids validated above");
+                replay(db, journal);
             }
         }
 
@@ -415,15 +358,11 @@ impl EvmHarness {
         Ok(out)
     }
 
-    // Walk the journal's post-tx state and merge it into the top journal:
+    // Walk the journal's post-tx state and merge it into the output journal:
     //   - record (pre, post) on first sighting of an account/slot
     //   - update only `post` on subsequent sightings (`pre` is already
     //     the journal's earliest-known pre-image).
-    fn record_into_top_journal(&mut self) {
-        let journal = self
-            .journals
-            .last_mut()
-            .expect("execute requires an open journal");
+    fn record_into_journal(&mut self, journal: &mut Journal) {
         let state = self.evm.0.ctx.journaled_state.evm_state();
         for (addr, account) in state.iter() {
             let post_info = account.info.clone();
@@ -457,6 +396,15 @@ impl EvmHarness {
         } else {
             Err("not initialized".into())
         }
+    }
+
+    fn ensure_journal_ids(&self, journal_ids: &[u64]) -> Result<(), String> {
+        for journal_id in journal_ids {
+            if !self.journals.contains_key(journal_id) {
+                return Err(format!("unknown journal id: {journal_id}"));
+            }
+        }
+        Ok(())
     }
 
     // Two-pass execution. Pass 1 discovers the access list; pass 2 runs with
@@ -569,6 +517,7 @@ impl EvmHarness {
 
         Ok(ExecuteOk {
             success,
+            journal_id: None,
             gas_used,
             gas_limit,
             output,
@@ -795,10 +744,6 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
             Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
-        Request::BeginJournal { id } => match harness.begin_journal() {
-            Ok(()) => ok(id, serde_json::json!({})),
-            Err(e) => err(id, e),
-        },
         Request::Execute { id, params } => match harness.execute(&params) {
             Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
             Err(e) => err(id, e),
@@ -809,14 +754,6 @@ fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
         },
         Request::ReadStorage { id, params } => match harness.read_storage(&params) {
             Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
-            Err(e) => err(id, e),
-        },
-        Request::CommitJournal { id } => match harness.commit_journal() {
-            Ok(()) => ok(id, serde_json::json!({})),
-            Err(e) => err(id, e),
-        },
-        Request::RevertJournal { id } => match harness.revert_journal() {
-            Ok(()) => ok(id, serde_json::json!({})),
             Err(e) => err(id, e),
         },
         Request::RevertJournals { id, params } => match harness.revert_journals(&params) {

@@ -151,7 +151,8 @@ test("attaches matching force inclusion enqueue logs", async () => {
     name: "add",
     args: { amount, nonce },
     signature,
-    isForceInclusion: true,
+    journalId: 0,
+    isForceInclusion: false,
     config: COUNTER_MUTATIONS.add,
   });
 

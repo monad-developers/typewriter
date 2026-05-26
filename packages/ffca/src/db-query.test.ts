@@ -21,7 +21,7 @@ import {
 } from "./db-query";
 import { updateSchema } from "./migrate";
 import { createMutationSchema, mutationStatusEnum } from "./schema";
-import type { RuntimeBundle, RuntimeMutation } from "./types";
+import type { RuntimeBlock, RuntimeMutation } from "./types";
 
 const transferConfig = {
   tag: 0,
@@ -68,13 +68,6 @@ function requiredTable<
   return table as Exclude<Schema[Name], undefined>;
 }
 
-const bundle = {
-  status: "accepted",
-  id: 7,
-  position: 11,
-  mutations: [],
-} satisfies RuntimeBundle;
-
 test("insertMutation inserts a mutation row", async () => {
   const schema = createMutationSchema({
     abi: STUB_FFCA_ABI,
@@ -92,6 +85,7 @@ test("insertMutation inserts a mutation row", async () => {
       amount: 123n,
     },
     signature: { keyType: 2, rawSignature: "0xdeadbeef" },
+    journalId: 1,
     isForceInclusion: false,
     config: debitConfig,
     resolution: { newBalance: 100n },
@@ -103,9 +97,7 @@ test("insertMutation inserts a mutation row", async () => {
   await runWithDatabase(
     Effect.gen(function* () {
       const db = yield* Database;
-      yield* db.transaction((tx) =>
-        insertMutation(tx, schema, mutation, bundle),
-      );
+      yield* db.transaction((tx) => insertMutation(tx, schema, mutation));
     }),
   );
 
@@ -116,8 +108,6 @@ test("insertMutation inserts a mutation row", async () => {
 
   expect(row).toMatchObject({
     id: 1,
-    bundleId: 7,
-    bundlePosition: 11,
     status: "accepted",
     account:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
@@ -144,24 +134,37 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
       amount: 456n,
     },
     signature: { keyType: 2, rawSignature: "0xfeed" },
+    journalId: 2,
     isForceInclusion: false,
     config: transferConfig,
   } satisfies Extract<
     RuntimeMutation,
     { status: "accepted" | "included" | "safe" | "finalized" }
   >;
+  const block = {
+    status: "included",
+    number: 4n,
+    hash: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    timestamp: 5n,
+    transactionHash:
+      "0x2222222222222222222222222222222222222222222222222222222222222222",
+    mutations: [{ ...mutation, status: "included" }],
+  } satisfies RuntimeBlock<"fifo">;
 
   await runWithDatabase(
     Effect.gen(function* () {
       const db = yield* Database;
+      yield* db.transaction((tx) => insertMutation(tx, schema, mutation));
       yield* db.transaction((tx) =>
-        insertMutation(tx, schema, mutation, bundle),
-      );
-      yield* db.transaction((tx) =>
-        updateMutationLifecycle(tx, schema, {
-          ...mutation,
-          status: "included",
-        }),
+        updateMutationLifecycle(
+          tx,
+          schema,
+          {
+            ...mutation,
+            status: "included",
+          },
+          block,
+        ),
       );
     }),
   );

@@ -9,7 +9,7 @@ struct Signature {
     bytes rawSignature;
 }
 
-struct Bundle {
+struct Batch {
     uint8[] mutations;
     bytes[] mutationData;
     Signature[] signatures;
@@ -69,7 +69,7 @@ contract Counter {
         );
     }
 
-    function execute(Bundle[] calldata bundles, uint256[] calldata forceExecuteIndexes) public {
+    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) public {
         if (msg.sender != scheduler) revert Unauthorized();
 
         for (uint256 i; i < forceExecuteIndexes.length; i++) {
@@ -99,17 +99,17 @@ contract Counter {
             state.total += add.amount;
         }
 
-        for (uint256 b; b < bundles.length; b++) {
-            Bundle calldata bundle = bundles[b];
-            for (uint256 i; i < bundle.mutations.length; i++) {
-                if (bundle.mutations[i] != ADD) revert UnknownTag();
+        for (uint256 b; b < batches.length; b++) {
+            Batch calldata batch = batches[b];
+            for (uint256 i; i < batch.mutations.length; i++) {
+                if (batch.mutations[i] != ADD) revert UnknownTag();
 
-                AddMutation memory add = abi.decode(bundle.mutationData[i], (AddMutation));
+                AddMutation memory add = abi.decode(batch.mutationData[i], (AddMutation));
                 if (add.nonce != state.nonce) revert InvalidNonce();
 
                 bytes32 structHash = keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
                 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
-                Signature calldata sig = bundle.signatures[i];
+                Signature calldata sig = batch.signatures[i];
 
                 verifySignature(KeyType(sig.keyType), digest, abi.encode(signer), sig.rawSignature);
 

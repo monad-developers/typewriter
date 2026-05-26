@@ -45,35 +45,21 @@ const initWithCounter = {
   },
 } as const;
 
-test("init + beginJournal + commitJournal round-trips with no executes", async () => {
-  const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({});
-    yield* evm.beginJournal();
-    const commit = yield* evm.commitJournal();
-    return commit;
-  });
-
-  const exit = await Effect.runPromiseExit(Effect.scoped(program));
-  expect(Exit.isSuccess(exit)).toBe(true);
-});
-
-test("execute against counter succeeds and commitJournal keeps state", async () => {
+test("execute against counter succeeds and returns a journal id", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
   expect(exec.success).toBe(true);
+  expect(exec.journal_id).toBe(1);
   expect(exec.revert_data).toBeUndefined();
   expect(exec.slot_writes).toEqual([
     {
@@ -87,11 +73,10 @@ test("execute against counter succeeds and commitJournal keeps state", async () 
   ]);
 });
 
-test("two executes in one journal both succeed", async () => {
+test("two executes create sequential journals", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
     const first = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
@@ -102,33 +87,35 @@ test("two executes in one journal both succeed", async () => {
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return { first, second };
   });
 
   const { first, second } = await Effect.runPromise(Effect.scoped(program));
   expect(first.success).toBe(true);
+  expect(first.journal_id).toBe(1);
   expect(second.success).toBe(true);
+  expect(second.journal_id).toBe(2);
 });
 
-test("revertJournal drops writes; next journal starts from pre-revert state", async () => {
+test("revertJournals drops writes; next journal starts from pre-revert state", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
     // Journal 1: increment, revert.
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.revertJournal();
+    const reverted = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+    yield* evm.revertJournals({ journal_ids: [reverted.journal_id!] });
 
     // Journal 2: increment, commit. Slot should go 0 -> 1, not 1 -> 2.
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -136,22 +123,18 @@ test("revertJournal drops writes; next journal starts from pre-revert state", as
   expect(exec.success).toBe(true);
 });
 
-test("sequential committed journals keep local state", async () => {
+test("sequential journals keep local state", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
 
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -159,7 +142,7 @@ test("sequential committed journals keep local state", async () => {
   expect(exec.success).toBe(true);
 });
 
-test("execute outside an open journal fails", async () => {
+test("execute opens a journal automatically", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -170,39 +153,9 @@ test("execute outside an open journal fails", async () => {
     });
   });
 
-  const exit = await Effect.runPromiseExit(Effect.scoped(program));
-  expect(Exit.isFailure(exit)).toBe(true);
-});
-
-test("execute against a committed top journal fails", async () => {
-  const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
-    return yield* evm.execute({
-      from: CALLER,
-      to: COUNTER_ADDR,
-      data: "0x",
-    });
-  });
-
-  const exit = await Effect.runPromiseExit(Effect.scoped(program));
-  expect(Exit.isFailure(exit)).toBe(true);
-});
-
-test("commitJournal on already-committed journal fails", async () => {
-  const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
-    yield* evm.commitJournal();
-    return yield* evm.commitJournal();
-  });
-
-  const exit = await Effect.runPromiseExit(Effect.scoped(program));
-  expect(Exit.isFailure(exit)).toBe(true);
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
+  expect(exec.journal_id).toBe(1);
 });
 
 test("failed execute discards journal writes", async () => {
@@ -213,13 +166,11 @@ test("failed execute discards journal writes", async () => {
         [REVERTING_ADDR]: { code: WRITE_THEN_REVERT_CODE },
       },
     });
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: REVERTING_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -232,7 +183,6 @@ test("execute returns access_list with the counter address + slot 0", async () =
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
     return yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
   });
 
@@ -257,12 +207,11 @@ test("simulate does not mutate state — counter stays at 0 after simulate", asy
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
+      journal_ids: [],
     });
 
     // Real journal: increment once, expect 0 -> 1, NOT 1 -> 2.
-    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
     return sim;
   });
 
@@ -270,60 +219,32 @@ test("simulate does not mutate state — counter stays at 0 after simulate", asy
   expect(sim.success).toBe(true);
 });
 
-test("simulate against a stack of uncommitted journals preserves post-stack state", async () => {
-  // Two open journals each increment. After both, slot is at 2. simulate
-  // must un-apply the stack, run, re-apply — leaving the journal stack's
-  // logical state intact for the eventual commit.
+test("simulate rewinds and re-applies selected journals", async () => {
+  // Two optimistic journals each increment. After both, slot is at 2.
+  // simulate must un-apply the provided journals, run, then re-apply them.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    // journal A still open
-
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    // journal B still open; slot in DB is at 2
-
-    const sim = yield* evm.simulate({
+    const first = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
 
-    // Commit the top journal only. The journal model commits one at a time;
-    // ffca never leaves more than one uncommitted journal open in practice.
-    yield* evm.commitJournal();
-    return sim;
-  });
-
-  const sim = await Effect.runPromise(Effect.scoped(program));
-  expect(sim.success).toBe(true);
-});
-
-test("simulate against committed + uncommitted journals only rewinds uncommitted", async () => {
-  // Committed journal: slot 0 -> 1.
-  // Uncommitted journal: slot 1 -> 2.
-  // simulate must see the committed state (1), not the uncommitted state (2).
-  const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
-
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
-
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-
-    const sim = yield* evm.simulate({
+    const second = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
 
-    yield* evm.commitJournal();
+    const sim = yield* evm.simulate({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+      journal_ids: [first.journal_id!, second.journal_id!],
+    });
+
     return sim;
   });
 
@@ -331,26 +252,55 @@ test("simulate against committed + uncommitted journals only rewinds uncommitted
   expect(sim.success).toBe(true);
 });
 
-test("revertJournal works on a committed journal", async () => {
+test("simulate only rewinds the provided journal ids", async () => {
+  // First journal: slot 0 -> 1. Second journal: slot 1 -> 2.
+  // simulate receives only the second id, so it runs against slot value 1.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginJournal();
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
 
-    // Reverting the committed journal should restore slot to 0.
-    yield* evm.revertJournal();
+    const second = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+
+    const sim = yield* evm.simulate({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+      journal_ids: [second.journal_id!],
+    });
+
+    return sim;
+  });
+
+  const sim = await Effect.runPromise(Effect.scoped(program));
+  expect(sim.success).toBe(true);
+});
+
+test("revertJournals works on a journal", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+
+    const accepted = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+
+    // Reverting the journal should restore slot to 0.
+    yield* evm.revertJournals({ journal_ids: [accepted.journal_id!] });
 
     // Start a new journal and increment; should go 0 -> 1.
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -363,27 +313,33 @@ test("revertJournals reverts multiple journals", async () => {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
+    const first = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
 
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    const second = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
 
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
+    const third = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
 
-    // Revert the two uncommitted journals.
-    yield* evm.revertJournals({ count: 2 });
+    yield* evm.revertJournals({
+      journal_ids: [first.journal_id!, second.journal_id!, third.journal_id!],
+    });
 
-    // Slot should be back to 1 (from the committed journal).
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -391,44 +347,44 @@ test("revertJournals reverts multiple journals", async () => {
   expect(exec.success).toBe(true);
 });
 
-test("revertJournals with count greater than open journals fails", async () => {
+test("revertJournals with an unknown journal id fails", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
-    return yield* evm.revertJournals({ count: 5 });
+    return yield* evm.revertJournals({ journal_ids: [5] });
   });
 
   const exit = await Effect.runPromiseExit(Effect.scoped(program));
   expect(Exit.isFailure(exit)).toBe(true);
 });
 
-test("pruneJournals drops oldest committed journals", async () => {
+test("pruneJournals drops selected journals", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
 
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
+    const first = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
 
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    yield* evm.commitJournal();
+    const second = yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
 
-    yield* evm.pruneJournals({ count: 1 });
+    yield* evm.pruneJournals({ journal_ids: [first.journal_id!] });
 
-    // Reverting the remaining committed journal should restore slot to 1
-    // (from the second committed journal, since the first was pruned).
-    yield* evm.revertJournal();
+    // Reverting the remaining journal should restore slot to 1.
+    yield* evm.revertJournals({ journal_ids: [second.journal_id!] });
 
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -436,13 +392,11 @@ test("pruneJournals drops oldest committed journals", async () => {
   expect(exec.success).toBe(true);
 });
 
-test("pruneJournals on uncommitted journals fails", async () => {
+test("pruneJournals with an unknown journal id fails", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
-    yield* evm.beginJournal();
-    yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
-    return yield* evm.pruneJournals({ count: 1 });
+    return yield* evm.pruneJournals({ journal_ids: [1] });
   });
 
   const exit = await Effect.runPromiseExit(Effect.scoped(program));
@@ -468,13 +422,11 @@ test("setBlockContext updates block parameters", async () => {
     });
     // No stateful assertion possible with the counter contract,
     // but the call should not error.
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -491,13 +443,11 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(params);
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
       data,
     });
-    yield* evm.commitJournal();
     return exec;
   });
 
@@ -540,13 +490,11 @@ test("readStorage decodes committed token state through storage proxy", async ()
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(params);
-    yield* evm.beginJournal();
     const exec = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
       data,
     });
-    yield* evm.commitJournal();
 
     const token = createStorageProxy(tokenStorageLayout, (slots) =>
       Effect.runPromise(evm.readStorage({ address: TOKEN_ADDR, slots })),
@@ -591,7 +539,6 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(params);
-    yield* evm.beginJournal();
     const optimistic = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
@@ -601,8 +548,8 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
       data: transferData(RECIPIENT_ADDR, SIMULATE_AMOUNT),
+      journal_ids: [optimistic.journal_id!],
     });
-    yield* evm.commitJournal();
     return { optimistic, simulated };
   });
 
@@ -673,6 +620,7 @@ test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfe
       from: SCHEDULER_ADDR,
       to: tokenAddr,
       data,
+      journal_ids: [],
     });
   });
   const sidecar = await Effect.runPromise(Effect.scoped(program));
@@ -709,6 +657,7 @@ test("sidecar gas_limit matches eth_estimateGas for Solmate ERC20 transfer", asy
       from: SCHEDULER_ADDR,
       to: tokenAddr,
       data,
+      journal_ids: [],
     });
   });
   const sidecar = await Effect.runPromise(Effect.scoped(program));
@@ -750,6 +699,7 @@ test("sidecar gas_limit includes EIP-150 call headroom", async () => {
       from: SCHEDULER_ADDR,
       to: callerAddr,
       data,
+      journal_ids: [],
     });
   });
   const sidecar = await Effect.runPromise(Effect.scoped(program));

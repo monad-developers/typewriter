@@ -147,7 +147,10 @@ beforeAll(async () => {
   });
 
   const server = Server.create({
-    instance: Instance.anvil({ binary: `${import.meta.dir}/bin/anvil-monad` }),
+    instance: Instance.anvil({
+      binary: `${import.meta.dir}/bin/anvil-monad`,
+      blockTime: 0.4,
+    }),
     port,
   });
   teardown = await server.start();
