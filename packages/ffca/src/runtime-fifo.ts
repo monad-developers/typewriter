@@ -1,4 +1,3 @@
-import type { PgTable } from "drizzle-orm/pg-core";
 import {
   Duration,
   Effect,
@@ -10,7 +9,6 @@ import {
 } from "effect";
 import { Hex } from "ox";
 import { sendRawTransactionSync } from "viem/actions";
-import type { FFCAConfig } from "./config";
 import { Database } from "./db";
 import {
   insertKnownPaths,
@@ -20,7 +18,12 @@ import {
   updateMutationLifecycle,
 } from "./db-query";
 import { encodeBatchArg, encodeExecuteCalldata } from "./encoding";
-import type { BlockListener, MutationListener, RuntimeFFCA } from "./ffca";
+import type {
+  BlockListener,
+  InternalRuntimeFFCA,
+  MutationListener,
+} from "./ffca";
+import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { Rpc, rpcRetry } from "./rpc";
 import { requestBlock } from "./rpc-request";
@@ -39,7 +42,6 @@ import {
   updateMutationToRejected,
   updateMutationToSafe,
 } from "./runtime";
-import type { FFCASchema } from "./schema";
 import type {
   AcceptedMutation,
   BlockEvent,
@@ -53,11 +55,10 @@ import type {
 } from "./types";
 import { Watch } from "./watch";
 
-export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
-  config: config,
-  schema: Record<string, PgTable>,
+export function createRuntimeFIFOEffect(
+  app: InternalApp,
 ): Effect.Effect<
-  RuntimeFFCA<config, "fifo">,
+  InternalRuntimeFFCA<"fifo">,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 > {
@@ -67,10 +68,8 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
     const watch = yield* Watch;
     const scope = yield* Scope.Scope;
 
-    const { evm, state, knownPaths } = yield* createRuntimeState(
-      config,
-      schema,
-    );
+    const schema = app.schema;
+    const { evm, state, knownPaths } = yield* createRuntimeState(app);
 
     let mutationId = yield* selectNextMutationId(schema);
 
@@ -87,12 +86,12 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
     let nonce = Hex.toNumber(
       yield* rpc.request({
         method: "eth_getTransactionCount",
-        params: [config.account.address, "latest"],
+        params: [app.account.address, "latest"],
       }),
     );
     const nextNonce = Effect.sync(() => nonce++);
 
-    const walletClient = createRuntimeWalletClient(config);
+    const walletClient = createRuntimeWalletClient(app);
 
     let unfinalizedBlocks: RuntimeBlock<"fifo">[] = [];
     const mutationListeners = new Set<MutationListener>();
@@ -121,7 +120,7 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
           knownPaths: mutationKnownPaths,
           mutation: acceptedMutation,
         } = yield* executeMutation({
-          config,
+          app,
           state,
           evm,
           mutation,
@@ -182,21 +181,21 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
             .map((mutation) => mutation.journalId);
 
           const calldata = encodeExecuteCalldata(
-            config.abi,
-            [encodeBatchArg(config.abi, mutations)],
+            app.abi,
+            [encodeBatchArg(app.abi, mutations)],
             forceInclusions.map(({ queueIndex }) => queueIndex),
           );
 
           const simulateResult = yield* evm.simulate({
-            from: config.account.address,
-            to: config.address,
+            from: app.account.address,
+            to: app.address,
             data: calldata,
             journal_ids: speculativeJournalIds,
           });
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
-                config,
+                app,
                 simulateResult.revert_data,
                 "revm simulate reverted",
               ),
@@ -227,7 +226,7 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
       const request = yield* Effect.tryPromise({
         try: () =>
           walletClient.prepareTransactionRequest({
-            to: config.address,
+            to: app.address,
             data: calldata,
             accessList: simulateResult.access_list,
             gas: BigInt(simulateResult.gas_limit),
@@ -301,14 +300,14 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
             for (const log of message.block.logs) {
               const enqueuedMutation: EnqueuedMutation = decodeEnqueuedMutation(
                 {
-                  config,
+                  app,
                   log,
                   id: mutationId++,
                 },
               );
 
               const executeResult = yield* enqueueMutation({
-                config,
+                app,
                 evm,
                 mutation: enqueuedMutation,
               });
@@ -338,7 +337,7 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
               const nextStatus = nextBlockStatus(
                 block,
                 message.block.number,
-                config.confirmations,
+                app.confirmations,
               );
               if (nextStatus === undefined) continue;
 
@@ -385,9 +384,13 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
       );
     }).pipe(Effect.withLogSpan("watch"));
 
-    const submitProgram = Effect.sleep(Duration.millis(400)).pipe(
+    const submitIntervalMs = app.sequencing.submitIntervalMs;
+    const submitProgram = Effect.sleep(Duration.millis(submitIntervalMs)).pipe(
       Effect.andThen(
-        Effect.repeat(submit, Schedule.fixed(Duration.millis(400))),
+        Effect.repeat(
+          submit,
+          Schedule.fixed(Duration.millis(submitIntervalMs)),
+        ),
       ),
     );
 
@@ -399,7 +402,7 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
       mutation: FFCAMutation,
     ): Effect.Effect<FFCAMutationResult, unknown> {
       return Effect.gen(function* () {
-        const mutationConfig = config.mutations[mutation.name]!;
+        const mutationConfig = app.mutations[mutation.name]!;
 
         const runtimeMutation = {
           ...mutation,
@@ -477,7 +480,7 @@ export function createRuntimeFIFOEffect<const config extends FFCAConfig>(
 
     return {
       state,
-      schema: schema as FFCASchema<config>,
+      schema,
       execute,
       program,
       on,

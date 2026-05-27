@@ -3,17 +3,17 @@ import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import { getAbiItem, toEventSelector } from "viem";
 import type { FFCAConfig } from "./config";
-import { validateConfig } from "./config";
+import { buildInternalApp } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
 import type { FFCAAbi } from "./encoding";
+import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
 import { createRuntimeBatchEffect } from "./runtime-batch";
 import { createRuntimeFIFOEffect } from "./runtime-fifo";
 import type { FFCASchema } from "./schema";
-import { createMutationSchema } from "./schema";
 import type {
   BatchEvent,
   BlockEvent,
@@ -23,20 +23,15 @@ import type {
 } from "./types";
 import { layerWatchLive } from "./watch";
 
-const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
-
 export type MutationListener = (event: MutationEvent) => void;
 export type BatchListener = (event: BatchEvent) => void;
 export type BlockListener<sequence extends "fifo" | "batch"> = (
   event: BlockEvent<sequence>,
 ) => void;
 
-export type RuntimeFFCA<
-  config extends FFCAConfig,
-  sequence extends "fifo" | "batch",
-> = {
-  readonly state: StorageProxy<config["storageLayout"], true>;
-  readonly schema: FFCASchema<config>;
+export type InternalRuntimeFFCA<sequence extends "fifo" | "batch"> = {
+  readonly state: StorageProxy<InternalApp["storageLayout"], true>;
+  readonly schema: InternalApp["schema"];
   execute(submitted: FFCAMutation): Effect.Effect<FFCAMutationResult, unknown>;
   program: Effect.Effect<unknown, unknown>;
 } & (sequence extends "fifo"
@@ -56,6 +51,14 @@ export type RuntimeFFCA<
       ): Effect.Effect<() => void>;
     });
 
+export type RuntimeFFCA<
+  config extends FFCAConfig,
+  sequence extends "fifo" | "batch",
+> = Omit<InternalRuntimeFFCA<sequence>, "schema" | "state"> & {
+  readonly state: StorageProxy<config["storageLayout"], true>;
+  readonly schema: FFCASchema<config>;
+};
+
 export type RuntimeFFCAWithDomain<
   config extends FFCAConfig,
   sequence extends "fifo" | "batch",
@@ -74,42 +77,31 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) check abi for execute, enqueue, and forceExecute
 
-    yield* Effect.try({
-      try: () => validateConfig(config),
+    const app = yield* Effect.try({
+      try: () => buildInternalApp(config),
       catch: (cause) => cause,
     });
 
-    const rpcUrl = Array.isArray(config.rpcUrl)
-      ? config.rpcUrl[0]!
-      : config.rpcUrl;
-    const domain: TypedData.Domain = {
-      name: config.domain.name,
-      version: config.domain.version,
-      chainId: config.chainId,
-      verifyingContract: config.address,
-    };
     const rpcLayer = layerRpc.pipe(
-      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl })),
+      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl: app.rpcUrl[0]! })),
     );
 
     const dbLayer = layerDatabase.pipe(
-      Layer.provide(Layer.succeed(DatabaseConfig)(config.database)),
+      Layer.provide(Layer.succeed(DatabaseConfig)(app.database)),
     );
 
     const forceInclusionEvent = getAbiItem({
-      abi: config.abi as FFCAAbi,
+      abi: app.abi as FFCAAbi,
       name: "ForceInclusionQueued",
     });
 
     const logFilter = {
-      address: config.address,
+      address: app.address,
       selector: toEventSelector(forceInclusionEvent),
     };
     const watchLayer = layerWatchLive({
-      pollIntervalMs: config.blockPollingIntervalMs ?? 200,
-      maxChainDepth:
-        config.confirmations?.finalizedBlockDepth ??
-        DEFAULT_FINALIZED_BLOCK_DEPTH,
+      pollIntervalMs: app.blockPollingIntervalMs,
+      maxChainDepth: app.confirmations.finalizedBlockDepth,
       logFilter,
     }).pipe(Layer.provide(rpcLayer));
     const services = rpcLayer.pipe(
@@ -120,20 +112,14 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     const servicesContext = yield* Layer.buildWithScope(services, scope);
 
     return yield* Effect.gen(function* () {
-      yield* scopedDeploymentLock(
-        deploymentLockKey(config.chainId, config.address),
-      );
-      const schema = yield* Effect.try({
-        try: () => createMutationSchema(config),
-        catch: (cause) => cause,
-      });
-      yield* migrate(schema, config.chainId, config.address);
+      yield* scopedDeploymentLock(deploymentLockKey(app.chainId, app.address));
+      yield* migrate(app.schema, app.chainId, app.address);
 
-      let runtime: RuntimeFFCA<C, "fifo" | "batch">;
-      if (config.sequencing?.order === "batch") {
-        runtime = yield* createRuntimeBatchEffect(config, schema);
+      let runtime: InternalRuntimeFFCA<"fifo" | "batch">;
+      if (app.sequencing.order === "batch") {
+        runtime = yield* createRuntimeBatchEffect(app);
       } else {
-        runtime = yield* createRuntimeFIFOEffect(config, schema);
+        runtime = yield* createRuntimeFIFOEffect(app);
       }
 
       yield* Effect.forkScoped(runtime.program).pipe(
@@ -142,8 +128,8 @@ export function createFFCAEffect<const C extends FFCAConfig>(
 
       return {
         ...runtime,
-        domain,
-      };
+        domain: app.domain,
+      } as unknown as RuntimeFFCAWithDomain<C, "fifo" | "batch">;
     }).pipe(Effect.provide(servicesContext));
   }).pipe(
     Effect.tapError((error) => Effect.logError(error)),

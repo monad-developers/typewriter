@@ -1,4 +1,3 @@
-import type { PgTable } from "drizzle-orm/pg-core";
 import {
   Deferred,
   Duration,
@@ -12,7 +11,6 @@ import {
 } from "effect";
 import { Hex } from "ox";
 import { sendRawTransactionSync } from "viem/actions";
-import type { FFCAConfig } from "./config";
 import { Database } from "./db";
 import {
   insertKnownPaths,
@@ -25,9 +23,10 @@ import { encodeBatchArg, encodeExecuteCalldata } from "./encoding";
 import type {
   BatchListener,
   BlockListener,
+  InternalRuntimeFFCA,
   MutationListener,
-  RuntimeFFCA,
 } from "./ffca";
+import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { Rpc, rpcRetry } from "./rpc";
 import { requestBlock } from "./rpc-request";
@@ -47,7 +46,6 @@ import {
   updateMutationToRejected,
   updateMutationToSafe,
 } from "./runtime";
-import type { FFCASchema } from "./schema";
 import type {
   AcceptedMutation,
   BatchEvent,
@@ -64,14 +62,10 @@ import type {
 } from "./types";
 import { Watch } from "./watch";
 
-const DEFAULT_BATCH_INTERVAL_MS = 50;
-const DEFAULT_SUBMIT_INTERVAL_MS = 400;
-
-export function createRuntimeBatchEffect<const config extends FFCAConfig>(
-  config: config,
-  schema: Record<string, PgTable>,
+export function createRuntimeBatchEffect(
+  app: InternalApp,
 ): Effect.Effect<
-  RuntimeFFCA<config, "batch">,
+  InternalRuntimeFFCA<"batch">,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 > {
@@ -81,10 +75,8 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
     const watch = yield* Watch;
     const scope = yield* Scope.Scope;
 
-    const { evm, state, knownPaths } = yield* createRuntimeState(
-      config,
-      schema,
-    );
+    const schema = app.schema;
+    const { evm, state, knownPaths } = yield* createRuntimeState(app);
 
     let mutationId = yield* selectNextMutationId(schema);
     let batchId = 0;
@@ -116,17 +108,15 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
     let nonce = Hex.toNumber(
       yield* rpc.request({
         method: "eth_getTransactionCount",
-        params: [config.account.address, "latest"],
+        params: [app.account.address, "latest"],
       }),
     );
     const nextNonce = Effect.sync(() => nonce++);
 
-    const walletClient = createRuntimeWalletClient(config);
+    const walletClient = createRuntimeWalletClient(app);
 
     const batchOrder =
-      config.sequencing !== undefined && "batchOrder" in config.sequencing
-        ? config.sequencing.batchOrder
-        : undefined;
+      app.sequencing.order === "batch" ? app.sequencing.batchOrder : [];
 
     let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
     const mutationListeners = new Set<MutationListener>();
@@ -164,7 +154,7 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
           knownPaths: mutationKnownPaths,
           mutation: acceptedMutation,
         } = yield* executeMutation({
-          config,
+          app,
           state,
           evm,
           mutation,
@@ -212,7 +202,7 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
           return;
         }
 
-        if (batchOrder !== undefined) {
+        if (batchOrder.length > 0) {
           submittedMutations.sort(
             (a, b) =>
               batchOrder.indexOf(
@@ -310,21 +300,21 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
             .sort((a, b) => a - b);
 
           const calldata = encodeExecuteCalldata(
-            config.abi,
-            batches.map((batch) => encodeBatchArg(config.abi, batch.mutations)),
+            app.abi,
+            batches.map((batch) => encodeBatchArg(app.abi, batch.mutations)),
             acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
           );
 
           const simulateResult = yield* evm.simulate({
-            from: config.account.address,
-            to: config.address,
+            from: app.account.address,
+            to: app.address,
             data: calldata,
             journal_ids: speculativeJournalIds,
           });
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
-                config,
+                app,
                 simulateResult.revert_data,
                 "revm simulate reverted",
               ),
@@ -376,7 +366,7 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
       const request = yield* Effect.tryPromise({
         try: () =>
           walletClient.prepareTransactionRequest({
-            to: config.address,
+            to: app.address,
             data: calldata,
             accessList: simulateResult.access_list,
             gas: BigInt(simulateResult.gas_limit),
@@ -480,14 +470,14 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
             for (const log of message.block.logs) {
               const enqueuedMutation: EnqueuedMutation = decodeEnqueuedMutation(
                 {
-                  config,
+                  app,
                   log,
                   id: mutationId++,
                 },
               );
 
               const executeResult = yield* withSpeculativeStateLock(
-                enqueueMutation({ config, evm, mutation: enqueuedMutation }),
+                enqueueMutation({ app, evm, mutation: enqueuedMutation }),
               );
 
               if (executeResult.success === false) {
@@ -519,7 +509,7 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
               const nextStatus = nextBlockStatus(
                 block,
                 message.block.number,
-                config.confirmations,
+                app.confirmations,
               );
               if (nextStatus === undefined) continue;
 
@@ -583,11 +573,8 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
     }).pipe(Effect.withLogSpan("watch"));
 
     const batchIntervalMs =
-      config.sequencing !== undefined && "batchIntervalMs" in config.sequencing
-        ? (config.sequencing.batchIntervalMs ?? DEFAULT_BATCH_INTERVAL_MS)
-        : DEFAULT_BATCH_INTERVAL_MS;
-    const submitIntervalMs =
-      config.sequencing?.submitIntervalMs ?? DEFAULT_SUBMIT_INTERVAL_MS;
+      app.sequencing.order === "batch" ? app.sequencing.batchIntervalMs : 0;
+    const submitIntervalMs = app.sequencing.submitIntervalMs;
 
     const batchProgram = Effect.sleep(Duration.millis(batchIntervalMs)).pipe(
       Effect.andThen(
@@ -614,7 +601,7 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
       mutation: FFCAMutation,
     ): Effect.Effect<FFCAMutationResult, unknown> {
       return Effect.gen(function* () {
-        const mutationConfig = config.mutations[mutation.name]!;
+        const mutationConfig = app.mutations[mutation.name]!;
 
         const runtimeMutation = {
           ...mutation,
@@ -703,7 +690,7 @@ export function createRuntimeBatchEffect<const config extends FFCAConfig>(
 
     return {
       state,
-      schema: schema as FFCASchema<config>,
+      schema,
       execute,
       program,
       on,

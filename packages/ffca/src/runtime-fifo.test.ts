@@ -33,12 +33,12 @@ import {
   signCounter,
   signHarness,
 } from "../test/utils";
-import type { FFCAConfig } from "./config";
+import { buildInternalApp, type FFCAConfig } from "./config";
 import { layerDatabaseLive } from "./db";
 import { encodeMutationCalldata } from "./encoding";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { layerRpcLive } from "./rpc";
-import { createRuntimeFIFOEffect } from "./runtime-fifo";
+import { createRuntimeFIFOEffect as createRuntimeFIFOEffectInternal } from "./runtime-fifo";
 import { createMutationSchema } from "./schema";
 import { layerWatchLive } from "./watch";
 
@@ -59,6 +59,16 @@ function layerRuntimeServices(address: Address) {
   }).pipe(Layer.provide(rpcLayer));
 
   return rpcLayer.pipe(Layer.merge(dbLayer), Layer.merge(watchLayer));
+}
+
+function createRuntimeFIFOEffect(
+  config: FFCAConfig,
+  schema: ReturnType<typeof createMutationSchema>,
+) {
+  return createRuntimeFIFOEffectInternal({
+    ...buildInternalApp(config),
+    schema,
+  });
 }
 
 function requiredTable<
@@ -195,10 +205,14 @@ test("runtime loads persisted slot state before returning", async () => {
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
+    const state = runtime.state as {
+      nonce: Promise<bigint>;
+      total: Promise<bigint>;
+    };
 
     return {
-      total: yield* Effect.promise(() => runtime.state.total),
-      nonce: yield* Effect.promise(() => runtime.state.nonce),
+      total: yield* Effect.promise(() => state.total),
+      nonce: yield* Effect.promise(() => state.nonce),
     };
   });
 

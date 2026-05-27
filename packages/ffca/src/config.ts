@@ -2,6 +2,8 @@ import type { Abi, Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
+import type { InternalApp } from "./internal";
+import { createMutationSchema } from "./schema";
 
 export type FFCADatabase = DatabaseClient;
 export type FFCADatabaseTransaction = Parameters<
@@ -78,6 +80,9 @@ export type FFCAConfig = {
 
 const DEFAULT_SAFE_BLOCK_DEPTH = 1;
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
+const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
+const DEFAULT_BATCH_INTERVAL_MS = 50;
+const DEFAULT_SUBMIT_INTERVAL_MS = 400;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,
@@ -141,4 +146,55 @@ export function validateConfig(config: FFCAConfig): void {
     }
     mutationTags.add(mutation.tag);
   }
+}
+
+export function buildInternalApp(config: FFCAConfig): InternalApp {
+  validateConfig(config);
+
+  const rpcUrl = Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl];
+  const confirmations = {
+    safeBlockDepth:
+      config.confirmations?.safeBlockDepth ?? DEFAULT_SAFE_BLOCK_DEPTH,
+    finalizedBlockDepth:
+      config.confirmations?.finalizedBlockDepth ??
+      DEFAULT_FINALIZED_BLOCK_DEPTH,
+  };
+
+  const sequencing =
+    config.sequencing?.order === "batch"
+      ? {
+          order: "batch" as const,
+          batchIntervalMs:
+            config.sequencing.batchIntervalMs ?? DEFAULT_BATCH_INTERVAL_MS,
+          submitIntervalMs:
+            config.sequencing.submitIntervalMs ?? DEFAULT_SUBMIT_INTERVAL_MS,
+          batchOrder: [...config.sequencing.batchOrder],
+        }
+      : {
+          order: "fifo" as const,
+          submitIntervalMs:
+            config.sequencing?.submitIntervalMs ?? DEFAULT_SUBMIT_INTERVAL_MS,
+        };
+
+  return {
+    address: config.address,
+    domain: {
+      name: config.domain.name,
+      version: config.domain.version,
+      chainId: config.chainId,
+      verifyingContract: config.address,
+    },
+    abi: config.abi,
+    storageLayout: config.storageLayout,
+    account: config.account,
+    chainId: config.chainId,
+    rpcUrl,
+    database: config.database,
+    mutations: config.mutations,
+    schema: createMutationSchema(config),
+    blockPollingIntervalMs:
+      config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
+    confirmations,
+    sequencing,
+  };
 }

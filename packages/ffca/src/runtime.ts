@@ -1,4 +1,3 @@
-import type { PgTable } from "drizzle-orm/pg-core";
 import { Data, Effect, type Scope } from "effect";
 import {
   createEVM,
@@ -17,7 +16,6 @@ import {
   RawContractError,
 } from "viem";
 import * as chains from "viem/chains";
-import type { FFCAConfig } from "./config";
 import { Database } from "./db";
 import { selectAccountStorage, selectKnownPaths } from "./db-query";
 import {
@@ -27,6 +25,7 @@ import {
   encodeExecuteCalldata,
   type FFCAAbi,
 } from "./encoding";
+import type { InternalApp } from "./internal";
 import { Rpc } from "./rpc";
 import type {
   AcceptedMutation,
@@ -181,8 +180,8 @@ export class EncodeMutationError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
-export function executeMutation<const config extends FFCAConfig>(params: {
-  config: config;
+export function executeMutation(params: {
+  app: InternalApp;
   state: unknown;
   evm: EVM;
   mutation: ReceivedMutation | EnqueuedMutation;
@@ -233,13 +232,13 @@ export function executeMutation<const config extends FFCAConfig>(params: {
       try: () =>
         params.mutation.status === "enqueued"
           ? encodeExecuteCalldata(
-              params.config.abi,
+              params.app.abi,
               [],
               [params.mutation.queueIndex],
             )
           : encodeExecuteCalldata(
-              params.config.abi,
-              [encodeBatchArg(params.config.abi, [acceptedMutation])],
+              params.app.abi,
+              [encodeBatchArg(params.app.abi, [acceptedMutation])],
               [],
             ),
       catch: (cause) =>
@@ -247,14 +246,14 @@ export function executeMutation<const config extends FFCAConfig>(params: {
     });
 
     const executeResult = yield* params.evm.execute({
-      from: params.config.account.address,
-      to: params.config.address,
+      from: params.app.account.address,
+      to: params.app.address,
       data: mutationCalldata,
     });
 
     if (executeResult.success === false) {
       return yield* Effect.fail(
-        createRevmRevertError(params.config, executeResult.revert_data),
+        createRevmRevertError(params.app, executeResult.revert_data),
       );
     }
 
@@ -268,30 +267,32 @@ export function executeMutation<const config extends FFCAConfig>(params: {
   });
 }
 
-export function enqueueMutation<const config extends FFCAConfig>(params: {
-  config: config;
+export function enqueueMutation(params: {
+  app: InternalApp;
   evm: EVM;
   mutation: EnqueuedMutation;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
     const enqueueCalldata = encodeEnqueueCalldata(
-      params.config.abi,
+      params.app.abi,
       params.mutation,
     );
 
     return yield* params.evm.execute({
       from: "0x0000000000000000000000000000000000000000",
-      to: params.config.address,
+      to: params.app.address,
       data: enqueueCalldata,
     });
   });
 }
 
-export function decodeEnqueuedMutation<
-  const config extends FFCAConfig,
->(params: { config: config; log: LocalLog; id: number }): EnqueuedMutation {
+export function decodeEnqueuedMutation(params: {
+  app: InternalApp;
+  log: LocalLog;
+  id: number;
+}): EnqueuedMutation {
   const forceInclusionLog = decodeEventLog({
-    abi: params.config.abi as FFCAAbi,
+    abi: params.app.abi as FFCAAbi,
     eventName: "ForceInclusionQueued",
     // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,
@@ -300,7 +301,7 @@ export function decodeEnqueuedMutation<
   }).args;
 
   const [mutationName, mutationConfig] = Object.entries(
-    params.config.mutations,
+    params.app.mutations,
   ).find(
     ([_, mutationConfig]) => mutationConfig.tag === forceInclusionLog.mutation,
   )!;
@@ -318,12 +319,12 @@ export function decodeEnqueuedMutation<
 }
 
 export function createRevmRevertError(
-  config: FFCAConfig,
+  app: InternalApp,
   data: Hex.Hex | undefined,
   message = "revm execute reverted",
 ): ContractFunctionRevertedError {
   return new ContractFunctionRevertedError({
-    abi: config.abi,
+    abi: app.abi,
     data,
     functionName: "execute",
     message,
@@ -331,13 +332,10 @@ export function createRevmRevertError(
   });
 }
 
-export function createRuntimeState<const config extends FFCAConfig>(
-  config: config,
-  schema: Record<string, PgTable>,
-): Effect.Effect<
+export function createRuntimeState(app: InternalApp): Effect.Effect<
   {
     evm: EVM;
-    state: StorageProxy<config["storageLayout"], true>;
+    state: StorageProxy<InternalApp["storageLayout"], true>;
     knownPaths: string[];
   },
   unknown,
@@ -349,8 +347,11 @@ export function createRuntimeState<const config extends FFCAConfig>(
 
     const { initialAccountStorage, knownPaths } = yield* db.transaction((tx) =>
       Effect.gen(function* () {
-        const knownPaths = yield* selectKnownPaths(tx, schema);
-        const initialAccountStorage = yield* selectAccountStorage(tx, schema);
+        const knownPaths = yield* selectKnownPaths(tx, app.schema);
+        const initialAccountStorage = yield* selectAccountStorage(
+          tx,
+          app.schema,
+        );
 
         return {
           knownPaths,
@@ -362,27 +363,27 @@ export function createRuntimeState<const config extends FFCAConfig>(
     const evm = yield* createEVM();
     const code = yield* rpc.request({
       method: "eth_getCode",
-      params: [config.address, "latest"],
+      params: [app.address, "latest"],
     });
 
     if (code === undefined || code === "0x") {
       yield* Effect.logWarning(
-        `no contract code at config.address=${config.address}; ` +
+        `no contract code at app.address=${app.address}; ` +
           "revm code load skipped - runtime will continue but revm has no contract bytecode",
       );
       yield* evm.init({
-        chain_id: config.chainId,
+        chain_id: app.chainId,
         accounts: {
-          [config.address]: {
+          [app.address]: {
             storage: initialAccountStorage,
           },
         },
       });
     } else {
       yield* evm.init({
-        chain_id: config.chainId,
+        chain_id: app.chainId,
         accounts: {
-          [config.address]: {
+          [app.address]: {
             code,
             storage: initialAccountStorage,
           },
@@ -391,9 +392,9 @@ export function createRuntimeState<const config extends FFCAConfig>(
     }
 
     const state = createStorageProxy(
-      config.storageLayout as config["storageLayout"],
+      app.storageLayout,
       async (slots) =>
-        Effect.runPromise(evm.readStorage({ address: config.address, slots })),
+        Effect.runPromise(evm.readStorage({ address: app.address, slots })),
       knownPaths,
     );
 
@@ -401,19 +402,15 @@ export function createRuntimeState<const config extends FFCAConfig>(
   });
 }
 
-export function createRuntimeWalletClient<const config extends FFCAConfig>(
-  config: config,
-) {
-  const rpcUrl = Array.isArray(config.rpcUrl)
-    ? config.rpcUrl[0]!
-    : config.rpcUrl;
+export function createRuntimeWalletClient(app: InternalApp) {
+  const rpcUrl = app.rpcUrl[0]!;
   const chain = extractChain({
     chains: Object.values(chains),
-    id: config.chainId as 1,
+    id: app.chainId as 1,
   });
   const transport = http(rpcUrl, { retryCount: 0 });
   return createWalletClient({
-    account: config.account,
+    account: app.account,
     chain,
     transport,
   });
@@ -422,18 +419,18 @@ export function createRuntimeWalletClient<const config extends FFCAConfig>(
 export function nextBlockStatus(
   block: Pick<RuntimeBlock<"fifo" | "batch">, "number" | "status">,
   currentBlockNumber: bigint,
-  confirmations: FFCAConfig["confirmations"],
+  confirmations: InternalApp["confirmations"],
 ): "safe" | "finalized" | undefined {
   const blockDepth = currentBlockNumber - block.number;
   if (
-    blockDepth >= BigInt(confirmations?.finalizedBlockDepth ?? 5) &&
+    blockDepth >= BigInt(confirmations.finalizedBlockDepth) &&
     block.status !== "finalized"
   ) {
     return "finalized";
   }
 
   if (
-    blockDepth >= BigInt(confirmations?.safeBlockDepth ?? 1) &&
+    blockDepth >= BigInt(confirmations.safeBlockDepth) &&
     block.status !== "safe" &&
     block.status !== "finalized"
   ) {
