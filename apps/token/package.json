@@ -1,5 +1,5 @@
 {
-  "name": "order-book",
+  "name": "token",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,30 +9,25 @@
     "test": "bun test --timeout 60000",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
-    "contracts:build": "forge build --root contracts",
+    "contracts:build": "forge build --root contracts --force",
     "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
-    "deploy": ". .env && forge build --root contracts && forge script --root contracts ./contracts/script/OrderBook.s.sol:OrderBookScript --broadcast --fork-url $BUN_PUBLIC_RPC_URL --private-key $DEPLOYER_PRIVATE_KEY"
+    "deploy": ". .env && forge build --root contracts --force && forge script --root contracts ./contracts/script/Token.s.sol:TokenScript --broadcast --fork-url $BUN_PUBLIC_RPC_URL --private-key $DEPLOYER_PRIVATE_KEY"
   },
   "dependencies": {
     "@tanstack/react-query": "catalog:",
-    "clsx": "2.1.1",
-    "drizzle-orm": "1.0.0-rc.1",
-    "effect": "catalog:",
     "ffca": "workspace:*",
     "ox": "catalog:",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "shiki": "4.0.2",
-    "tailwind-merge": "3.5.0",
-    "viem": "catalog:",
-    "webauthx": "0.1.0"
+    "storage-layout": "workspace:*",
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "bun-plugin-tailwind": "0.1.2",
     "forge-std": "github:foundry-rs/forge-std#620536f",
-    "prool": "0.2.4",
+    "prool": "catalog:",
     "tailwindcss": "4.2.2",
     "tw-animate-css": "1.4.0"
   }

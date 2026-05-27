@@ -8,6 +8,7 @@
     "apps/*"
   ],
   "catalog": {
+    "@tanstack/react-query": "5.96.1",
     "@effect/language-service": "0.85.1",
     "abitype": "1.2.3",
     "drizzle-kit": "1.0.0-rc.1",
@@ -20,7 +21,7 @@
   },
   "scripts": {
     "lint": "biome check . && bun run --filter '*' lint",
-    "typecheck": "bun run --filter abipg typecheck && bun run --filter storage-layout typecheck && bun run --filter ffca-evm typecheck && bun run --filter ffca typecheck && bun run --filter order-book typecheck",
+    "typecheck": "bun run --filter abipg typecheck && bun run --filter storage-layout typecheck && bun run --filter ffca-evm typecheck && bun run --filter ffca typecheck && bun run --filter order-book typecheck && bun run --filter token typecheck",
     "test": "bun run --filter '*' test",
     "build": "bun run --filter '*' build"
   },
