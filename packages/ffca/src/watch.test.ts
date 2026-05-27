@@ -44,6 +44,11 @@ const collect = (
     Effect.orDie,
   );
 
+// The watcher emits the current tip on startup. Drain that sync message first
+// so the tests only assert on blocks that were actually produced by the action
+// under test.
+const syncWatch = (watch: Stream.Stream<WatchMessage>) => collect(watch, 1);
+
 // Wait a bit longer than one poll interval so the watcher observes the cold
 // start before we start mining. Without this the first mined block can land
 // before the watcher's first poll, and the test sees that block as the seed
@@ -55,6 +60,7 @@ test("extends local chain when anvil mines a new block", async () => {
     Effect.gen(function* () {
       const watch = yield* Watch;
       yield* settleColdStart;
+      yield* syncWatch(watch.messages);
       const transactionHash = yield* Effect.promise(() =>
         TEST_WALLET_CLIENT.sendTransaction({
           account: TEST_WALLET_CLIENT.account!,
@@ -86,6 +92,7 @@ test("fetches skipped blocks and emits each extension", async () => {
     Effect.gen(function* () {
       const watch = yield* Watch;
       yield* settleColdStart;
+      yield* syncWatch(watch.messages);
       yield* Effect.promise(() => TEST_CLIENT.mine({ blocks: 3 }));
       return yield* collect(watch.messages, 3);
     }).pipe(Effect.provide(liveLayer())),
@@ -106,22 +113,19 @@ test("fetches skipped blocks and emits each extension", async () => {
     }
     return message.block;
   });
-  expect(blocks.map((block) => block.number)).toMatchInlineSnapshot(
-    [blocks[0]!.number, blocks[0]!.number + 1n, blocks[0]!.number + 2n],
-    `
-    [
-      1n,
-      2n,
-      3n,
-    ]
-  `,
-  );
+  expect(blocks.map((block) => block.number - blocks[0]!.number)).toEqual([
+    0n,
+    1n,
+    2n,
+  ]);
 });
 
 test("emits no message when no new blocks are mined", async () => {
   const program = Effect.scoped(
     Effect.gen(function* () {
       const watch = yield* Watch;
+      yield* settleColdStart;
+      yield* syncWatch(watch.messages);
       return yield* watch.messages.pipe(
         Stream.take(1),
         Stream.runCollect,
@@ -160,6 +164,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
     Effect.gen(function* () {
       const watch = yield* Watch;
       yield* settleColdStart;
+      yield* syncWatch(watch.messages);
       const transactionHash = yield* Effect.promise(() =>
         TEST_WALLET_CLIENT.writeContract({
           account: TEST_WALLET_CLIENT.account!,
@@ -228,6 +233,7 @@ test("emits Reorged with the full replacement path", async () => {
       // Snapshot the pre-reorg state, then mine several blocks to give the
       // watcher a segment it'll later need to roll back from.
       yield* settleColdStart;
+      yield* syncWatch(watch.messages);
       const snapshotId = yield* Effect.promise(() => TEST_CLIENT.snapshot());
       yield* Effect.promise(() => TEST_CLIENT.mine({ blocks: 3 }));
 
