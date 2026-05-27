@@ -469,7 +469,7 @@ Generated pieces:
 - `ForceInclusionQueued` event
 - scheduler-assisted queue execution inside `execute`
 
-Open questions inherited from the force-inclusion plan:
+Open force-inclusion generation questions:
 
 - Must scheduler-assisted execution obey the public delay?
 - Must the scheduler drain old queue entries before new bundle mutations?
