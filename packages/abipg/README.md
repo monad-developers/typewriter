@@ -1,10 +1,6 @@
 # abipg
 
-Runtime ABI params to Drizzle Postgres columns.
-
-`abipg` is for generating flat mutation table columns from ABI params at runtime.
-It does not decode ABI bytes inside Postgres. ffca decodes calldata in
-TypeScript, then inserts typed values into the generated columns.
+TypeScript utilties for creating Drizzle Postgres database objects from ABI parameters.
 
 ## Type Mapping
 
