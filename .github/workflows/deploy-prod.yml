@@ -1,0 +1,45 @@
+name: Production
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/_checks.yml
+
+  deploy:
+    name: Deploy (${{ matrix.service }})
+    needs: checks
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [order-book]
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PROD }}
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install --global @railway/cli
+
+      - name: Deploy ${{ matrix.service }}
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "production" --service "${{ matrix.service }}"
+
+  github-deployment:
+    name: Deployed
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: "exchange-demo / prod"
+    steps:
+      - run: echo "Created GitHub deployment for exchange-demo / prod"

@@ -1,88 +1,16 @@
 name: CI
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
-    branches: [main]
-  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: oven-sh/setup-bun@v2
-      - name: Install monad foundry
-        run: |
-          mkdir -p ~/.foundry/bin
-          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
-            | tar -xz -C ~/.foundry/bin
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: oven-sh/setup-bun@v2
-      - name: Install monad foundry
-        run: |
-          mkdir -p ~/.foundry/bin
-          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
-            | tar -xz -C ~/.foundry/bin
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
-      - run: bun install --frozen-lockfile
-      - run: bun run build
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: oven-sh/setup-bun@v2
-      - name: Install monad foundry
-        run: |
-          mkdir -p ~/.foundry/bin
-          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
-            | tar -xz -C ~/.foundry/bin
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
-      - run: bun install --frozen-lockfile
-      - run: bun run build
-      - run: bun run typecheck
-
-  test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: oven-sh/setup-bun@v2
-      - name: Install monad foundry
-        run: |
-          mkdir -p ~/.foundry/bin
-          curl -fsSL https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.3.0/foundry_v1.5.0-monad.0.3.0_linux_amd64.tar.gz \
-            | tar -xz -C ~/.foundry/bin
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
-      - run: bun install --frozen-lockfile
-      - run: bun run test
+  checks:
+    name: Checks
+    uses: ./.github/workflows/_checks.yml

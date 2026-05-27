@@ -1,0 +1,48 @@
+name: Staging
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - .release.json
+      - CHANGELOG.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/_checks.yml
+
+  deploy:
+    name: Deploy (${{ matrix.service }})
+    needs: checks
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [order-book]
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_STAGING }}
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install --global @railway/cli
+
+      - name: Deploy ${{ matrix.service }}
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "staging" --service "${{ matrix.service }}"
+
+  github-deployment:
+    name: Deployed
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment: "exchange-demo / staging"
+    steps:
+      - run: echo "Created GitHub deployment for exchange-demo / staging"
