@@ -45,7 +45,7 @@ function executeTransfer(State storage state, Transfer calldata transfer) {
 A mutation is the framework equivalent of a transaction, but unlike transactions, they are not submitted directly onchain. Instead mutations are submitted to the application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution.
 
 The lifecycle of a mutation is as follows:
-- **submitted**. The server has received the mutation.
+- **received**. The server has received the mutation.
 - **accepted**. The server has ordered and executed the mutation locally.
 - **included**. The server submitted the mutation onchain and it has been included in a block.
 - **safe**. The block that contains the mutation has been marked "safe" by consensus. (See JSON-RPC "safe" tag).
@@ -53,24 +53,35 @@ The lifecycle of a mutation is as follows:
 
 Some mutations can be executed directly from their submitted arguments, others need resolution with a more complete state view. For example, a transfer may only need `{ from, to, amount }`. A matching engine may need to compute fills based on the current order book. That extra computed data is the mutation's resolution.
 
-<!-- ```sol
-struct Fill {
-    uint64 quantity;
-    uint64 price;
+```sol
+struct MarketOrder {
+    uint256 quanity;
+    uint256 minReceivedQuantity;
+    uint64 instrumentId;
+    uint8 bidOrAsk;
 }
 
 struct MarketOrderResolution {
     Fill[] fills;
 }
-``` -->
+
+struct Fill {
+    uint256 quantity;
+    uint256 price;
+}
+
+function executeMarketOrder(State storage state, MarketOrder calldata marketOrder, MarketOrderResolution calldata resolution) {
+    // ...
+}
+```
 
 ### Accounts and Signatures
 
-Account system is built-in. All apps have accounts.
+The account system is built-in. All apps have accounts.
 
 FFCA requires mutations to be signed with EIP-712 typed data. The runtime builds the digest from the configured domain, mutation name, and mutation arguments; clients do not supply the digest directly.
 
-ffca supports three signature algorithms:
+FFCA supports three signature algorithms:
 
 - P-256
 - WebAuthn-P256
@@ -84,18 +95,44 @@ Account registry shape, key lookup, nonce policy, expiry/deadline checks, bootst
 
 ### Sequencing
 
-[what guarantees]
+Sequencing controls the order mutations are accepted by the server and included onchain. FFCA ships two sequencing modes: FIFO and batch.
 
-[introduce server architecture, bundles, scheduler]
+A mutation is `accepted` once the server has assigned it a position in the local execution order and run it against local state (see [Mutations](#mutations)). When a mutation is submitted with `ffca.execute()`, FFCA places it in an order relative to other mutations submitted around the same time. Mutations are written onchain in groups on a fixed interval, not one at a time.
+
+#### FIFO
+
+```ts
+sequencing: {
+  order: "fifo",
+  submitIntervalMs: 400, // default (ms)
+}
+```
+
+Each call to `ffca.execute()` immediately executes the mutation against local state and returns the accepted mutation, or throws an error if the mutation is rejected. Every `submitIntervalMs`, all accepted mutations are submitted with a single onchain transaction.
+
+Onchain inclusion order matches the order mutations were executed with `ffca.execute()`.
+
+#### Batch
+
+```ts
+sequencing: {
+  order: "batch",
+  batchIntervalMs: 50,   // default (ms)
+  submitIntervalMs: 400, // default (ms)
+  batchOrder: ["CancelOrder", "LimitOrder", "MarketOrder"],
+}
+```
+
+Each call to `ffca.execute()` enqueues the mutation and returns the accepted mutation once the next batch is processed, or throws an error if the mutation is rejected. Every `batchIntervalMs`, all enqueued mutations are gathered into a batch, ordered according to `batchOrder`, and accepted or rejected. Every `submitIntervalMs`, all batches are submitted with a single onchain transaction.
+
+Within a batch, mutations execute in `batchOrder`; across batches, batches are submitted in the order they were accepted.
 
 ## Examples
 
-- **`order-book`**.
-- **`token`**.
+- [`token`](../../apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical FFCA app shape.
+- [`order-book`](../../apps/order-book) is a full exchange application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
 ## Failure modes
-
-For who? User or developer?
 
 ### Reorg handling
 
@@ -123,7 +160,7 @@ Mutations are executed and accepted on the server before they are executed oncha
 
 This can happen when the execution depends on EVM environment opcodes whose values differ from the values used in the mined transaction.
 
-When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "submitted"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorgization.
+When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "received"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorgization.
 
 The server execution environment uses values from the last known block for EVM environment opcodes. Certain EVM environment opcodes, such as `COINBASE` or `PREVRANDAO`, can make divergence more likely or even guaranteed. For a full list of unsupported opcodes, see [contract requirements](#contract-requirements).
 
@@ -142,10 +179,6 @@ Conformance
 
 ### `createFFCA()`
 
-### `mutationColumns`
-
-### `verifySignature()`
-
 ### `ffca.execute()`
 
 ### `ffca.state`
@@ -153,5 +186,7 @@ Conformance
 ### `ffca.domain`
 
 ### `ffca.on()`
+
+### `verifySignature()`
 
 ### Server persistence
