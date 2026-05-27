@@ -176,9 +176,9 @@ test("runtime loads persisted slot state before returning", async () => {
     yield* Effect.promise(
       () => TEST_DB_CONNECTION`
       INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-        (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+        (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
       VALUES
-        (0, 'included', 7, 0, 0, '0x')
+        (0, 'included', 7, 0, 0, '0x', '0x')
     `,
     );
     yield* Effect.promise(
