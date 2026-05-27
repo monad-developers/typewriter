@@ -157,6 +157,11 @@ test("getSignatureAbiParameters extracts Signature components from execute", () 
       },
       {
         "internalType": "bytes",
+        "name": "publicKey",
+        "type": "bytes",
+      },
+      {
+        "internalType": "bytes",
         "name": "rawSignature",
         "type": "bytes",
       },
@@ -180,12 +185,18 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expectedBatch = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
-    signatures: [{ keyType: 0, rawSignature: "0xaa" as `0x${string}` }],
+    signatures: [
+      {
+        keyType: 0,
+        publicKey: "0x1234" as `0x${string}`,
+        rawSignature: "0xaa" as `0x${string}`,
+      },
+    ],
   };
   const actualBatch = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
-    signatures: [[0, "0xaa"]],
+    signatures: [[0, "0x1234", "0xaa"]],
   };
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
@@ -197,18 +208,22 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
 });
 
 test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
-  const sig = { keyType: 0, rawSignature: "0xbb" as `0x${string}` };
+  const signature = {
+    keyType: 0,
+    publicKey: "0x1234" as `0x${string}`,
+    rawSignature: "0xbb" as `0x${string}`,
+  };
   const config = {
     tag: 0,
     params: parseAbiParameters("bytes data"),
   };
   const mutation = acceptedMutation(config, { data: "0x1234" });
-  mutation.signature = sig;
+  mutation.signature = signature;
   const mutationData = encodeMutationCalldata(mutation);
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
     functionName: "enqueue",
-    args: [0, mutationData, sig],
+    args: [0, mutationData, signature],
   });
   const actual = encodeEnqueueCalldata(COUNTER_ABI, mutation);
   expect(actual).toBe(expected);
@@ -235,7 +250,7 @@ test("encodeBatchArg builds a structured batch value", () => {
       to: "0x0000000000000000000000000000000000000002",
       amount: 100n,
     },
-    signature: { keyType: 0, rawSignature: "0xaa" },
+    signature: { keyType: 0, publicKey: "0x1234", rawSignature: "0xaa" },
     journalId: 0,
     isForceInclusion: false,
     config: transfer,
@@ -245,7 +260,7 @@ test("encodeBatchArg builds a structured batch value", () => {
     status: "accepted",
     name: "market",
     args: { size: 10n },
-    signature: { keyType: 1, rawSignature: "0xbb" },
+    signature: { keyType: 1, publicKey: "0x5678", rawSignature: "0xbb" },
     journalId: 1,
     isForceInclusion: false,
     resolution: {
@@ -261,8 +276,8 @@ test("encodeBatchArg builds a structured batch value", () => {
 
   expect(batch.mutations).toEqual([0, 1]);
   expect(batch.signatures).toEqual([
-    [0, "0xaa"],
-    [1, "0xbb"],
+    [0, "0x1234", "0xaa"],
+    [1, "0x5678", "0xbb"],
   ]);
 
   const [decodedTransfer] = AbiParameters.decode(

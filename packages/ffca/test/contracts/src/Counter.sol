@@ -6,6 +6,7 @@ import {KeyType, verifySignature, verifySignatureMemory} from "ffca/Account.sol"
 
 struct Signature {
     uint8 keyType;
+    bytes publicKey;
     bytes rawSignature;
 }
 
@@ -42,14 +43,16 @@ bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
 /// local `apply` mirrors the addition; the contract enforces the signature
 /// and the nonce.
 contract Counter {
-    State public state;
-    address public immutable signer;
-    address public immutable scheduler;
-    bytes32 public immutable domainSeparator;
+    State internal state;
+
+    address immutable SCHEDULER;
+    bytes32 immutable DOMAIN_SEPARATOR;
 
     QueuedMutation[] private queue;
 
-    uint8 constant ADD = 0;
+    enum Mutation {
+        Add
+    }
 
     error Unauthorized();
     error InvalidNonce();
@@ -59,10 +62,9 @@ contract Counter {
 
     event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, Signature sig, uint256 enqueuedBlock);
 
-    constructor(address _signer) {
-        signer = _signer;
-        scheduler = msg.sender;
-        domainSeparator = keccak256(
+    constructor() {
+        SCHEDULER = msg.sender;
+        DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Counter")), keccak256(bytes("1")), block.chainid, address(this)
             )
@@ -70,7 +72,7 @@ contract Counter {
     }
 
     function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) public {
-        if (msg.sender != scheduler) revert Unauthorized();
+        if (msg.sender != SCHEDULER) revert Unauthorized();
 
         for (uint256 i; i < forceExecuteIndexes.length; i++) {
             uint256 index = forceExecuteIndexes[i];
@@ -78,22 +80,22 @@ contract Counter {
 
             if (queued.enqueuedBlock == 0) revert AlreadyExecuted();
 
-            uint8 mutation = queued.mutation;
+            Mutation mutation = Mutation(queued.mutation);
             bytes memory mutationData = queued.mutationData;
             Signature memory sig = queued.sig;
 
             delete queue[index];
 
-            if (mutation != ADD) revert UnknownTag();
+            if (mutation != Mutation.Add) revert UnknownTag();
 
             AddMutation memory add = abi.decode(mutationData, (AddMutation));
 
             if (add.nonce != state.nonce) revert InvalidNonce();
 
             bytes32 structHash = keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
-            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
-            verifySignatureMemory(KeyType(sig.keyType), digest, abi.encode(signer), sig.rawSignature);
+            verifySignatureMemory(KeyType(sig.keyType), digest, sig.publicKey, sig.rawSignature);
 
             state.nonce++;
             state.total += add.amount;
@@ -102,16 +104,16 @@ contract Counter {
         for (uint256 b; b < batches.length; b++) {
             Batch calldata batch = batches[b];
             for (uint256 i; i < batch.mutations.length; i++) {
-                if (batch.mutations[i] != ADD) revert UnknownTag();
+                if (Mutation(batch.mutations[i]) != Mutation.Add) revert UnknownTag();
 
                 AddMutation memory add = abi.decode(batch.mutationData[i], (AddMutation));
                 if (add.nonce != state.nonce) revert InvalidNonce();
 
                 bytes32 structHash = keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
                 Signature calldata sig = batch.signatures[i];
 
-                verifySignature(KeyType(sig.keyType), digest, abi.encode(signer), sig.rawSignature);
+                verifySignature(KeyType(sig.keyType), digest, sig.publicKey, sig.rawSignature);
 
                 state.nonce++;
                 state.total += add.amount;
@@ -135,22 +137,22 @@ contract Counter {
         if (queued.enqueuedBlock == 0) revert AlreadyExecuted();
         if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) revert TooEarly();
 
-        uint8 mutation = queued.mutation;
+        Mutation mutation = Mutation(queued.mutation);
         bytes memory mutationData = queued.mutationData;
         Signature memory sig = queued.sig;
 
         delete queue[index];
 
-        if (mutation != ADD) revert UnknownTag();
+        if (mutation != Mutation.Add) revert UnknownTag();
 
         AddMutation memory add = abi.decode(mutationData, (AddMutation));
 
         if (add.nonce != state.nonce) revert InvalidNonce();
 
         bytes32 structHash = keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
-        verifySignatureMemory(KeyType(sig.keyType), digest, abi.encode(signer), sig.rawSignature);
+        verifySignatureMemory(KeyType(sig.keyType), digest, sig.publicKey, sig.rawSignature);
 
         state.nonce++;
         state.total += add.amount;

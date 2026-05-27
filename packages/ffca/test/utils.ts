@@ -19,6 +19,7 @@ import {
   type StorageVariableToPrimitiveType,
 } from "storage-layout";
 import { type Address, encodeDeployData, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
 import type { FFCAMutationConfig } from "../src/config";
@@ -239,15 +240,8 @@ export const COUNTER_STORAGE_LAYOUT = {
 export const COUNTER_ABI = [
   {
     type: "constructor",
-    inputs: [{ name: "_signer", type: "address", internalType: "address" }],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "domainSeparator",
     inputs: [],
-    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
-    stateMutability: "view",
+    stateMutability: "nonpayable",
   },
   {
     type: "function",
@@ -261,6 +255,7 @@ export const COUNTER_ABI = [
         internalType: "struct Signature",
         components: [
           { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "publicKey", type: "bytes", internalType: "bytes" },
           { name: "rawSignature", type: "bytes", internalType: "bytes" },
         ],
       },
@@ -289,6 +284,7 @@ export const COUNTER_ABI = [
             internalType: "struct Signature[]",
             components: [
               { name: "keyType", type: "uint8", internalType: "uint8" },
+              { name: "publicKey", type: "bytes", internalType: "bytes" },
               {
                 name: "rawSignature",
                 type: "bytes",
@@ -313,30 +309,6 @@ export const COUNTER_ABI = [
     inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
     outputs: [],
     stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "scheduler",
-    inputs: [],
-    outputs: [{ name: "", type: "address", internalType: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "signer",
-    inputs: [],
-    outputs: [{ name: "", type: "address", internalType: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "state",
-    inputs: [],
-    outputs: [
-      { name: "total", type: "uint256", internalType: "uint256" },
-      { name: "nonce", type: "uint256", internalType: "uint256" },
-    ],
-    stateMutability: "view",
   },
   {
     type: "event",
@@ -367,6 +339,7 @@ export const COUNTER_ABI = [
         internalType: "struct Signature",
         components: [
           { name: "keyType", type: "uint8", internalType: "uint8" },
+          { name: "publicKey", type: "bytes", internalType: "bytes" },
           { name: "rawSignature", type: "bytes", internalType: "bytes" },
         ],
       },
@@ -608,20 +581,6 @@ export const HARNESS_ABI = [
   { type: "constructor", inputs: [], stateMutability: "nonpayable" },
   {
     type: "function",
-    name: "balances",
-    inputs: [{ name: "account", type: "bytes32", internalType: "bytes32" }],
-    outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "domainSeparator",
-    inputs: [],
-    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
     name: "enqueue",
     inputs: [
       { name: "mutation", type: "uint8", internalType: "uint8" },
@@ -688,29 +647,6 @@ export const HARNESS_ABI = [
     inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
     outputs: [],
     stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "keyOf",
-    inputs: [
-      { name: "account", type: "bytes32", internalType: "bytes32" },
-      { name: "keyId", type: "uint64", internalType: "uint64" },
-    ],
-    outputs: [
-      { name: "", type: "uint8", internalType: "uint8" },
-      { name: "", type: "bytes", internalType: "bytes" },
-    ],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "nonceOf",
-    inputs: [
-      { name: "account", type: "bytes32", internalType: "bytes32" },
-      { name: "nonceKey", type: "uint192", internalType: "uint192" },
-    ],
-    outputs: [{ name: "", type: "uint64", internalType: "uint64" }],
-    stateMutability: "view",
   },
   {
     type: "event",
@@ -806,11 +742,11 @@ async function deployContract(
   return receipt.contractAddress;
 }
 
-// Deploy Counter wired to a single secp256k1 signer. The contract hardcodes
-// its EIP-712 domain (name="Counter", version="1"); only the signer is a
-// constructor arg.
-export async function deployCounter(signerAddress: Address): Promise<Address> {
-  return deployContract("Counter", [signerAddress]);
+// Deploy Counter. The contract hardcodes its EIP-712 domain (name="Counter",
+// version="1") and takes no constructor args. The parameter is retained only
+// so existing call sites don't need to care about the constructor change.
+export async function deployCounter(_: Address): Promise<Address> {
+  return deployContract("Counter");
 }
 
 export const deployHarness = (): Promise<Address> => deployContract("Harness");
@@ -844,15 +780,16 @@ export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
   },
 };
 
-// Sign Counter's `add` mutation. Counter is a single-signer secp256k1
-// fixture, so this always returns a secp256k1 rawSignature.
+// Sign Counter's `add` mutation. Counter carries the signer public key in the
+// signature payload, so this returns both the secp256k1 publicKey and raw
+// signature.
 export function signCounter(params: {
   privateKey: Hex;
   amount: bigint;
   nonce: bigint;
   address: Address;
   chainId: number;
-}): { keyType: 2; rawSignature: Hex } {
+}): { keyType: 2; publicKey: Hex; rawSignature: Hex } {
   const domain: TypedData.Domain = {
     name: COUNTER_DOMAIN.name,
     version: COUNTER_DOMAIN.version,
@@ -865,8 +802,10 @@ export function signCounter(params: {
     { amount: params.amount, nonce: params.nonce },
     domain,
   );
+  const signerAddress = privateKeyToAccount(params.privateKey).address;
   return {
     keyType: 2,
+    publicKey: secp256k1PublicKey(signerAddress),
     rawSignature: signSecp256k1Raw(digest, params.privateKey),
   };
 }

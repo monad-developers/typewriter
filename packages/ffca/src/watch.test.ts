@@ -29,7 +29,7 @@ const liveLayer = () =>
   }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL })));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
-  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes rawSignature) sig, uint256 enqueuedBlock)",
+  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes publicKey, bytes rawSignature) sig, uint256 enqueuedBlock)",
 );
 
 const collect = (
