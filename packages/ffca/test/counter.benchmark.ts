@@ -5,6 +5,7 @@ import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
   TEST_RPC_URL,
+  USER_ACCOUNT,
   USER_PRIVATE_KEY,
 } from "./setup";
 import {
@@ -12,6 +13,7 @@ import {
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
   COUNTER_STORAGE_LAYOUT,
+  counterNewAccountMutation,
   deployCounter,
   signCounter,
 } from "./utils";
@@ -49,7 +51,7 @@ function formatMs(durationMs: number): string {
 }
 
 test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
-  const address = await deployCounter(SCHEDULER_ACCOUNT.address);
+  const address = await deployCounter(USER_ACCOUNT.address);
   const ffca = await createFFCA({
     address,
     domain: COUNTER_DOMAIN,
@@ -63,6 +65,10 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
     blockPollingIntervalMs: 3_600_000,
     mutations: COUNTER_MUTATIONS,
   } as const satisfies FFCAConfig);
+
+  await ffca.execute(
+    counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+  );
 
   const mutations = Array.from({ length: MUTATION_COUNT }, (_, index) =>
     counterAddMutation({

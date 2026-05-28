@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
 import { encodeFunctionData } from "viem";
-import { COUNTER_ABI } from "../test/utils";
+import { COUNTER_ABI, HARNESS_ABI } from "../test/utils";
 import {
   decodeMutationCalldata,
   encodeBatchArg,
@@ -146,19 +146,37 @@ test("decodeMutationCalldata round-trips with resolution", () => {
   expect(decoded.resolution).toEqual(resolution);
 });
 
-test("getSignatureAbiParameters extracts Signature components from execute", () => {
+test("getSignatureAbiParameters extracts bytes signatures from execute", () => {
   const params = getSignatureAbiParameters(COUNTER_ABI);
   expect(params).toMatchInlineSnapshot(`
     [
       {
+        "internalType": "bytes",
+        "name": "signature",
+        "type": "bytes",
+      },
+    ]
+  `);
+});
+
+test("getSignatureAbiParameters extracts tuple Signature components from execute", () => {
+  const params = getSignatureAbiParameters(HARNESS_ABI);
+  expect(params).toMatchInlineSnapshot(`
+    [
+      {
+        "internalType": "bytes32",
+        "name": "account",
+        "type": "bytes32",
+      },
+      {
+        "internalType": "uint64",
+        "name": "keyId",
+        "type": "uint64",
+      },
+      {
         "internalType": "uint8",
         "name": "keyType",
         "type": "uint8",
-      },
-      {
-        "internalType": "bytes",
-        "name": "publicKey",
-        "type": "bytes",
       },
       {
         "internalType": "bytes",
@@ -182,37 +200,22 @@ test("encodeSignatureCalldata encodes a signature record to ABI bytes", () => {
 });
 
 test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
-  const expectedBatch = {
+  const batch = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
-    signatures: [
-      {
-        keyType: 0,
-        publicKey: "0x1234" as `0x${string}`,
-        rawSignature: "0xaa" as `0x${string}`,
-      },
-    ],
-  };
-  const actualBatch = {
-    mutations: [0],
-    mutationData: ["0x1234" as `0x${string}`],
-    signatures: [[0, "0x1234", "0xaa"]],
+    signatures: ["0xaa" as `0x${string}`],
   };
   const expected = encodeFunctionData({
     abi: COUNTER_ABI,
     functionName: "execute",
-    args: [[expectedBatch], []],
+    args: [[batch], []],
   });
-  const actual = encodeExecuteCalldata(COUNTER_ABI, [actualBatch], []);
+  const actual = encodeExecuteCalldata(COUNTER_ABI, [batch], []);
   expect(actual).toBe(expected);
 });
 
 test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
-  const signature = {
-    keyType: 0,
-    publicKey: "0x1234" as `0x${string}`,
-    rawSignature: "0xbb" as `0x${string}`,
-  };
+  const signature = "0xbb" as `0x${string}`;
   const config = {
     tag: 0,
     params: parseAbiParameters("bytes data"),
@@ -250,7 +253,7 @@ test("encodeBatchArg builds a structured batch value", () => {
       to: "0x0000000000000000000000000000000000000002",
       amount: 100n,
     },
-    signature: { keyType: 0, publicKey: "0x1234", rawSignature: "0xaa" },
+    signature: "0xaa",
     journalId: 0,
     isForceInclusion: false,
     config: transfer,
@@ -260,7 +263,7 @@ test("encodeBatchArg builds a structured batch value", () => {
     status: "accepted",
     name: "market",
     args: { size: 10n },
-    signature: { keyType: 1, publicKey: "0x5678", rawSignature: "0xbb" },
+    signature: "0xbb",
     journalId: 1,
     isForceInclusion: false,
     resolution: {
@@ -275,10 +278,7 @@ test("encodeBatchArg builds a structured batch value", () => {
   const batch = encodeBatchArg(COUNTER_ABI, [transferResolved, marketResolved]);
 
   expect(batch.mutations).toEqual([0, 1]);
-  expect(batch.signatures).toEqual([
-    [0, "0x1234", "0xaa"],
-    [1, "0x5678", "0xbb"],
-  ]);
+  expect(batch.signatures).toEqual(["0xaa", "0xbb"]);
 
   const [decodedTransfer] = AbiParameters.decode(
     calldataStructParams(transfer.params),

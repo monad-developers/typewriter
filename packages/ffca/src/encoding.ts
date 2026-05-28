@@ -16,8 +16,8 @@ export type FFCAAbi = [
           { name: "mutationData"; type: "bytes[]" },
           {
             name: "signatures";
-            type: "tuple[]";
-            components: readonly AbiParameters.Parameter[];
+            type: "tuple[]" | "bytes[]";
+            components?: readonly AbiParameters.Parameter[];
           },
         ];
       },
@@ -33,9 +33,9 @@ export type FFCAAbi = [
       { name: "mutation"; type: "uint8" },
       { name: "mutationData"; type: "bytes" },
       {
-        name: "sig";
-        type: "tuple";
-        components: readonly AbiParameters.Parameter[];
+        name: "sig" | "signature";
+        type: "tuple" | "bytes";
+        components?: readonly AbiParameters.Parameter[];
       },
     ];
     outputs: [];
@@ -56,9 +56,9 @@ export type FFCAAbi = [
       { name: "mutation"; type: "uint8"; indexed: false },
       { name: "mutationData"; type: "bytes"; indexed: false },
       {
-        name: "sig";
-        type: "tuple";
-        components: readonly AbiParameters.Parameter[];
+        name: "sig" | "signature";
+        type: "tuple" | "bytes";
+        components?: readonly AbiParameters.Parameter[];
         indexed: false;
       },
       { name: "enqueuedBlock"; type: "uint256"; indexed: false },
@@ -74,8 +74,14 @@ function abiTupleFromRecord(
   params: readonly AbiParameters.Parameter[],
   record: unknown,
 ): readonly unknown[] {
+  if (!isRecord(record) && params.length === 1) return [record];
+
   const r = record as Record<string, unknown>;
   return params.map((p) => r[p.name ?? ""]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // FFCA mutation params are the flat semantic fields used for EIP-712. Contract
@@ -127,13 +133,23 @@ export function decodeMutationCalldata(
   return { args };
 }
 
-// Extract the signature tuple components from the user's ABI.
+type SignatureAbi =
+  | {
+      readonly kind: "tuple";
+      readonly params: readonly AbiParameters.Parameter[];
+    }
+  | {
+      readonly kind: "bytes";
+      readonly params: readonly AbiParameters.Parameter[];
+    };
+
+// Extract the signature shape from the user's ABI.
 // FFCA prescribes that `execute` takes `(Batch[], uint256[])` where
-//   Batch = { uint8[] mutations, bytes[] mutationData, Signature[] signatures }
+//   Batch = { uint8[] mutations, bytes[] mutationData, bytes[] signatures }
+// Older fixtures can still expose `Signature[]`; support both while tests are
+// covering the transition.
 // This walks the ABI to find `execute` -> `batches` -> `signatures`.
-export function getSignatureAbiParameters(
-  abi: Abi.Abi,
-): readonly AbiParameters.Parameter[] {
+function getSignatureAbi(abi: Abi.Abi): SignatureAbi {
   const execute = abi.find(
     (item) => item.type === "function" && item.name === "execute",
   ) as Extract<Abi.Abi[number], { type: "function" }> | undefined;
@@ -159,21 +175,41 @@ export function getSignatureAbiParameters(
 
   const signatures = batches.components.find(
     (c) =>
-      c.name === "signatures" &&
-      c.type === "tuple[]" &&
-      "components" in c &&
-      Array.isArray(c.components),
+      c.name === "signatures" && (c.type === "tuple[]" || c.type === "bytes[]"),
   ) as
     | (AbiParameters.Parameter & {
-        type: "tuple[]";
-        components: readonly AbiParameters.Parameter[];
+        type: "tuple[]" | "bytes[]";
+        components?: readonly AbiParameters.Parameter[];
       })
     | undefined;
   if (signatures === undefined) {
-    throw new Error("Batch missing signatures: tuple[] component");
+    throw new Error("Batch missing signatures: bytes[] or tuple[] component");
   }
 
-  return signatures.components;
+  if (signatures.type === "bytes[]") {
+    return {
+      kind: "bytes",
+      params: [
+        {
+          name: "signature",
+          type: "bytes",
+          internalType: signatures.internalType?.replace(/\[\]$/, ""),
+        },
+      ],
+    };
+  }
+
+  if (signatures.components === undefined) {
+    throw new Error("Batch signatures tuple[] missing components");
+  }
+
+  return { kind: "tuple", params: signatures.components };
+}
+
+export function getSignatureAbiParameters(
+  abi: Abi.Abi,
+): readonly AbiParameters.Parameter[] {
+  return getSignatureAbi(abi).params;
 }
 
 export function encodeSignatureCalldata(
@@ -200,7 +236,7 @@ export function encodeExecuteCalldata(
   batches: readonly {
     mutations: number[];
     mutationData: Hex.Hex[];
-    signatures: readonly unknown[][];
+    signatures: readonly unknown[];
   }[],
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
@@ -215,14 +251,18 @@ export function encodeEnqueueCalldata(
   abi: Abi.Abi,
   mutation: MutationWithResolution,
 ): Hex.Hex {
-  const sigParams = getSignatureAbiParameters(abi);
+  const signatureAbi = getSignatureAbi(abi);
+  const signatureValue = abiTupleFromRecord(
+    signatureAbi.params,
+    mutation.signature,
+  );
   return encodeFunctionData({
     abi,
     functionName: "enqueue",
     args: [
       mutation.config.tag,
       encodeMutationCalldata(mutation),
-      abiTupleFromRecord(sigParams, mutation.signature),
+      signatureAbi.kind === "bytes" ? signatureValue[0] : signatureValue,
     ],
   });
 }
@@ -236,14 +276,15 @@ export function encodeBatchArg(
 ): {
   mutations: number[];
   mutationData: Hex.Hex[];
-  signatures: readonly unknown[][];
+  signatures: readonly unknown[];
 } {
-  const sigParams = getSignatureAbiParameters(abi);
+  const signatureAbi = getSignatureAbi(abi);
   return {
     mutations: mutations.map((m) => m.config.tag),
     mutationData: mutations.map((m) => encodeMutationCalldata(m)),
-    signatures: mutations.map(
-      (m) => abiTupleFromRecord(sigParams, m.signature) as unknown[],
-    ),
+    signatures: mutations.map((m) => {
+      const signature = abiTupleFromRecord(signatureAbi.params, m.signature);
+      return signatureAbi.kind === "bytes" ? signature[0] : signature;
+    }),
   };
 }

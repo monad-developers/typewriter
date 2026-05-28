@@ -29,7 +29,7 @@ const liveLayer = () =>
   }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] })));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
-  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes publicKey, bytes rawSignature) sig, uint256 enqueuedBlock)",
+  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, bytes signature, uint256 enqueuedBlock)",
 );
 
 const collect = (
@@ -211,14 +211,14 @@ test("attaches matching force inclusion enqueue logs", async () => {
     index: bigint;
     mutation: number;
     mutationData: typeof mutationData;
-    sig: typeof signature;
+    signature: typeof signature;
     enqueuedBlock: bigint;
   };
 
   expect(args.index).toMatchInlineSnapshot(`0n`);
-  expect(args.mutation).toMatchInlineSnapshot(`0`);
+  expect(args.mutation).toMatchInlineSnapshot(`1`);
   expect(args.mutationData).toBe(mutationData);
-  expect(args.sig).toEqual(signature);
+  expect(args.signature).toEqual(signature);
   expect(args.enqueuedBlock).toBe(message.block.number);
 });
 

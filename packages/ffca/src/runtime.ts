@@ -312,6 +312,10 @@ export function decodeEnqueuedMutation(params: {
     strict: true,
   }).args;
 
+  const decodedSignature = forceInclusionLog as typeof forceInclusionLog & {
+    signature?: unknown;
+  };
+
   const [mutationName, mutationConfig] = Object.entries(
     params.app.mutations,
   ).find(
@@ -323,7 +327,10 @@ export function decodeEnqueuedMutation(params: {
     id: params.id,
     name: mutationName,
     config: mutationConfig,
-    signature: forceInclusionLog.sig,
+    signature:
+      "sig" in forceInclusionLog
+        ? forceInclusionLog.sig
+        : decodedSignature.signature,
     isForceInclusion: true,
     queueIndex: forceInclusionLog.index,
     ...decodeMutationCalldata(mutationConfig, forceInclusionLog.mutationData),

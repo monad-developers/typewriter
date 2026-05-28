@@ -14,6 +14,7 @@ import {
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
   COUNTER_STORAGE_LAYOUT,
+  counterNewAccountMutation,
   deployCounter,
   signCounter,
 } from "../test/utils";
@@ -71,7 +72,7 @@ test("createFFCA stops accepting mutations after submit nonce mismatch", async (
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["add"],
+      batchOrder: ["newAccount", "add"],
       batchIntervalMs: 250,
       submitIntervalMs: 25,
     },
@@ -84,6 +85,19 @@ test("createFFCA stops accepting mutations after submit nonce mismatch", async (
   } as const satisfies FFCAConfig;
 
   const ffca = await createFFCA(config);
+
+  const setupIncluded = Promise.withResolvers<void>();
+  const unsubscribe = ffca.on("mutation", (event) => {
+    if (event.name === "newAccount" && event.status === "included") {
+      setupIncluded.resolve();
+    }
+  });
+  await ffca.execute(
+    counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+  );
+  await setupIncluded.promise;
+  unsubscribe();
+
   await TEST_WALLET_CLIENT.sendTransaction({
     account: SCHEDULER_ACCOUNT,
     chain: anvil,
