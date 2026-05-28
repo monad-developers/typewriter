@@ -299,6 +299,9 @@ export function enqueueMutation(params: {
   });
 }
 
+type RawSlotMap = { [slot: Hex.Hex]: Hex.Hex };
+const SLOT_CACHE_MAX_ENTRIES = 200_000;
+
 export function decodeEnqueuedMutation(params: {
   app: InternalApp;
   log: LocalLog;
@@ -350,6 +353,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
     evm: EVM;
     state: StorageProxy<InternalApp["storageLayout"], true>;
     knownPaths: string[];
+    invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
   unknown,
   Database | Rpc | Scope.Scope
@@ -404,14 +408,49 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       });
     }
 
+    let slotCache: RawSlotMap = {};
+    const invalidateStorageCache = (slots?: readonly Hex.Hex[]) => {
+      if (slots === undefined) {
+        slotCache = {};
+        return;
+      }
+
+      for (const slot of slots) {
+        delete slotCache[slot];
+      }
+    };
+
     const state = createStorageProxy(
       app.storageLayout,
-      async (slots) =>
-        Effect.runPromise(evm.readStorage({ address: app.address, slots })),
+      async (slots) => {
+        const missingSlots = slots.filter(
+          (slot) => slotCache[slot] === undefined,
+        );
+        if (missingSlots.length > 0) {
+          const fetched = await Effect.runPromise(
+            evm.readStorage({ address: app.address, slots: missingSlots }),
+          );
+          for (const [slot, value] of Object.entries(fetched) as [
+            Hex.Hex,
+            Hex.Hex,
+          ][]) {
+            slotCache[slot] = value;
+          }
+
+          while (Object.keys(slotCache).length > SLOT_CACHE_MAX_ENTRIES) {
+            const oldestSlot = Object.keys(slotCache).values().next().value;
+            delete slotCache[oldestSlot as Hex.Hex];
+          }
+        }
+
+        return Object.fromEntries(
+          slots.map((slot) => [slot, slotCache[slot]!]),
+        ) as RawSlotMap;
+      },
       knownPaths,
     );
 
-    return { evm, state, knownPaths };
+    return { evm, state, knownPaths, invalidateStorageCache };
   });
 }
 

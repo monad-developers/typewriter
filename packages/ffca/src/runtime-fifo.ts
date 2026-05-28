@@ -69,7 +69,8 @@ export function createRuntimeFIFOEffect(
     const scope = yield* Scope.Scope;
 
     const schema = app.schema;
-    const { evm, state, knownPaths } = yield* createRuntimeState(app);
+    const { evm, state, knownPaths, invalidateStorageCache } =
+      yield* createRuntimeState(app);
     const knownPathSet = new Set(knownPaths);
 
     let mutationId = yield* selectNextMutationId(schema);
@@ -137,6 +138,10 @@ export function createRuntimeFIFOEffect(
 
             return Effect.void;
           }),
+        );
+
+        invalidateStorageCache(
+          executeResult.slot_writes.map((write) => write.slot),
         );
 
         mutationsById.set(acceptedMutation.id, acceptedMutation);
@@ -355,6 +360,10 @@ export function createRuntimeFIFOEffect(
               if (executeResult.success === false) {
                 continue;
               }
+
+              invalidateStorageCache(
+                executeResult.slot_writes.map((write) => write.slot),
+              );
 
               mutationsById.set(enqueuedMutation.id, enqueuedMutation);
 
