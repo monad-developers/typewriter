@@ -348,7 +348,7 @@ contract Token is FFCA {
 #### `execute`
 
 ```sol
-function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external;
+function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external override;
 ```
 
 The contract's main entry point for applying mutations onchain, implemented by the app with the function signature prescribed by `FFCA`: `Batch` is declared in `FFCA` as positionally-aligned `mutations`, `mutationData`, and `signatures` arrays; `forceExecuteIndexes` carries queue indexes for any force-included mutations being settled in the same call (see [`enqueue`](#enqueue)).
@@ -441,7 +441,7 @@ event ForceInclusionQueued(
 #### `forceExecute`
 
 ```sol
-function forceExecute(uint256 index) external
+function forceExecute(uint256 index) external override;
 ```
 
 The escape hatch for users when the scheduler is offline or censoring. After `FORCE_INCLUSION_DELAY` blocks have elapsed since the mutation was enqueued, any caller may invoke `forceExecute(index)` to apply the queued mutation directly. The contract is responsible for enforcing the delay, clearing the queue entry on success, and reverting if the entry is missing or not yet eligible.

@@ -36,7 +36,6 @@ The user-authored Solidity should define app-specific pieces:
 - optional resolution structs
 - account structs and account policy
 - mutation business logic
-- view helpers
 
 ffca should generate the protocol pieces:
 
@@ -83,7 +82,7 @@ but not ffca dispatch or force-inclusion mechanics.
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {KeyType, verifySignature} from "ffca/Account.sol";
+import {KeyType, verifySignature} from "ffca/FFCA.sol";
 
 contract HarnessLogic {
     struct Signature {
@@ -504,7 +503,7 @@ Open questions:
 Developers should be able to import ffca Solidity helpers normally:
 
 ```solidity
-import {KeyType, verifySignature} from "ffca/Account.sol";
+import {KeyType, verifySignature} from "ffca/FFCA.sol";
 ```
 
 Generated outputs should live in a predictable directory, for example:

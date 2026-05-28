@@ -30,6 +30,10 @@ Mapping slots hash keys into one-way storage locations, so mapping keys cannot b
 
 Dynamic array `.length` is different: it lives at the array root slot and can be read directly.
 
+## Performance Notes
+
+- Storage proxy async leaf reads currently issue one getter call per leaf access. A known but unimplemented improvement is to coalesce parallel leaf reads, such as `Promise.all(...)`, into a single deduped slot request while preserving the existing sync getter behavior.
+
 ## Design Constraints
 
 - Keep the package generic Solidity/storage logic; do not include app-specific vocabulary.
