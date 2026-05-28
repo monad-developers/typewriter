@@ -66,7 +66,7 @@ const schema = app.schema;
 const state = app.state;
 
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
-const TPS_WINDOW_MS = 1000;
+const TPS_WINDOW_MS = 10000;
 
 type MutationStatus =
   | "submitted"

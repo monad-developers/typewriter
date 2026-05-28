@@ -96,11 +96,9 @@ export function useLiveBlocks(): {
         timestamp?: string;
         batches?: LiveBlockBatch[];
       };
-      if (data.status === "accepted") {
-        setBatchSlots(Array(BATCH_SLOT_COUNT).fill(null));
-        return;
-      }
       if (data.status === "included") {
+        setBatchSlots(Array(BATCH_SLOT_COUNT).fill(null));
+
         if (data.number == null || data.hash == null || data.timestamp == null)
           return;
         const block: LiveBlock = {
