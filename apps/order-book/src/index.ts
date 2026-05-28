@@ -281,20 +281,30 @@ function wireEvent(event: "mutation" | "batch" | "block", value: unknown) {
   return wireBlock(value);
 }
 
-function eventStream(event: "mutation" | "batch" | "block"): Response {
+function eventStream(
+  req: Request,
+  event: "mutation" | "batch" | "block",
+): Response {
   const stream = new TransformStream<Uint8Array, Uint8Array>();
   const writer = stream.writable.getWriter();
+  let unsubscribe: (() => void) | undefined;
+  const cleanup = () => {
+    unsubscribe?.();
+    req.signal.removeEventListener("abort", cleanup);
+    writer.close().catch(() => {});
+  };
   const write = (value: unknown) => {
     writer
       .write(serverSentEvent(event, wireEvent(event, value)))
-      .catch(() => unsubscribe());
+      .catch(() => cleanup());
   };
-  const unsubscribe =
+  unsubscribe =
     event === "mutation"
       ? app.on("mutation", write)
       : event === "batch"
         ? app.on("batch", write)
         : app.on("block", write);
+  req.signal.addEventListener("abort", cleanup, { once: true });
   return new Response(stream.readable, {
     headers: {
       "Content-Type": "text/event-stream",
@@ -394,7 +404,7 @@ type PriceSummary = {
   spread: number | null;
 };
 
-type LiveTickPriceRow = { price: number; remainingQuantity: bigint };
+type TickSide = "bids" | "asks";
 
 function parseAccountId(idParam: string): Hex | null {
   if (/^0x[0-9a-fA-F]{64}$/.test(idParam)) return idParam as Hex;
@@ -487,31 +497,39 @@ async function accountNonces(account: Hex): Promise<Record<string, string>> {
   return nonces;
 }
 
-async function liveTickPrices(
-  side: "bids" | "asks",
-  instrumentId: number,
-): Promise<LiveTickPriceRow[]> {
+function getPrices(instrumentId: number, side: TickSide): number[] {
   const ticks = state.instruments[String(instrumentId) as `${number}`][side];
   const prices = Object.keys(ticks).map(Number);
-  const tickRows = await Promise.all(
-    prices.map(async (price) => {
-      const tick = ticks[String(price) as `${number}`];
-      const remaining = await tick.remainingQuantity;
-      return { price, remainingQuantity: remaining };
-    }),
-  );
-  return tickRows.filter((row) => row.remainingQuantity > 0n);
+  return prices.sort((a, b) => (side === "asks" ? a - b : b - a));
 }
 
-function summarizePrice(
+async function summarizePrice(
   instrumentId: number,
-  bids: LiveTickPriceRow[],
-  asks: LiveTickPriceRow[],
-): PriceSummary {
-  const bestBid =
-    bids.length > 0 ? Math.max(...bids.map((b) => b.price)) : null;
-  const bestAsk =
-    asks.length > 0 ? Math.min(...asks.map((a) => a.price)) : null;
+  bidPrices: number[],
+  askPrices: number[],
+): Promise<PriceSummary> {
+  let bestBid: number | null = null;
+  let bestAsk: number | null = null;
+
+  for (const price of bidPrices) {
+    const remainingQuantity =
+      await state.instruments[`${instrumentId}`].bids[`${price}`]
+        .remainingQuantity;
+    if (remainingQuantity > 0n) {
+      bestBid = price;
+      break;
+    }
+  }
+  for (const price of askPrices) {
+    const remainingQuantity =
+      await state.instruments[`${instrumentId}`].asks[`${price}`]
+        .remainingQuantity;
+    if (remainingQuantity > 0n) {
+      bestAsk = price;
+      break;
+    }
+  }
+
   const price =
     bestBid !== null && bestAsk !== null
       ? Math.round((bestBid + bestAsk) / 2)
@@ -526,19 +544,17 @@ function summarizePrice(
 }
 
 async function priceSummary(instrumentId: number): Promise<PriceSummary> {
-  const [bids, asks] = await Promise.all([
-    liveTickPrices("bids", instrumentId),
-    liveTickPrices("asks", instrumentId),
-  ]);
-  return summarizePrice(instrumentId, bids, asks);
+  return summarizePrice(
+    instrumentId,
+    getPrices(instrumentId, "bids"),
+    getPrices(instrumentId, "asks"),
+  );
 }
 
 async function depthSummary(instrumentId: number) {
-  const [bids, asks] = await Promise.all([
-    liveTickPrices("bids", instrumentId),
-    liveTickPrices("asks", instrumentId),
-  ]);
-  const summary = summarizePrice(instrumentId, bids, asks);
+  const bidPrices = getPrices(instrumentId, "bids");
+  const askPrices = getPrices(instrumentId, "asks");
+  const summary = await summarizePrice(instrumentId, bidPrices, askPrices);
   const mid = summary.price;
   const bidTotals: Record<number, string> = {};
   const askTotals: Record<number, string> = {};
@@ -546,14 +562,20 @@ async function depthSummary(instrumentId: number) {
     let bidTotal = 0n;
     let askTotal = 0n;
     if (mid !== null) {
-      for (const row of bids) {
-        if (row.price >= mid * (1 - bp / 10_000)) {
-          bidTotal += row.remainingQuantity;
+      for (const price of bidPrices) {
+        if (price >= mid * (1 - bp / 10_000)) {
+          const remainingQuantity =
+            await state.instruments[`${instrumentId}`].bids[`${price}`]
+              .remainingQuantity;
+          bidTotal += remainingQuantity;
         }
       }
-      for (const row of asks) {
-        if (row.price <= mid * (1 + bp / 10_000)) {
-          askTotal += row.remainingQuantity;
+      for (const price of askPrices) {
+        if (price <= mid * (1 + bp / 10_000)) {
+          const remainingQuantity =
+            await state.instruments[`${instrumentId}`].asks[`${price}`]
+              .remainingQuantity;
+          askTotal += remainingQuantity;
         }
       }
     }
@@ -603,19 +625,20 @@ async function estimateMarket(params: {
     }
   | { error: string }
 > {
-  const tickRows = await liveTickPrices(
-    params.side === "buy" ? "asks" : "bids",
+  const prices = getPrices(
     params.instrumentId,
-  );
-  const sortedPrices = tickRows.sort((a, b) =>
-    params.side === "buy" ? a.price - b.price : b.price - a.price,
+    params.side === "buy" ? "asks" : "bids",
   );
   let remaining = params.quantityLots;
   let quoteLots = 0n;
   const fills: { quantity: string; price: number }[] = [];
-  for (const { price, remainingQuantity } of sortedPrices) {
+  for (const price of prices) {
     if (remaining === 0n) break;
-    const available = remainingQuantity;
+    const available =
+      await state.instruments[`${params.instrumentId}`][
+        params.side === "buy" ? "asks" : "bids"
+      ][`${price}`].remainingQuantity;
+    if (available === 0n) continue;
     const fillLots = remaining < available ? remaining : available;
     quoteLots += (fillLots * BigInt(price)) >> 32n;
     remaining -= fillLots;
@@ -638,22 +661,24 @@ async function estimateFillToPrice(params: {
   totalQuantity: string;
   quoteQuantity: string;
 }> {
-  const tickRows = await liveTickPrices(
-    params.side === "buy" ? "asks" : "bids",
+  const prices = getPrices(
     params.instrumentId,
-  );
-  const sortedPrices = tickRows.sort((a, b) =>
-    params.side === "buy" ? a.price - b.price : b.price - a.price,
+    params.side === "buy" ? "asks" : "bids",
   );
   let totalQuantity = 0n;
   let quoteQuantity = 0n;
   const fills: { quantity: string; price: number }[] = [];
-  for (const { price, remainingQuantity } of sortedPrices) {
+  for (const price of prices) {
     if (
       params.side === "buy" ? price > params.priceQ32 : price < params.priceQ32
     ) {
       break;
     }
+    const remainingQuantity =
+      await state.instruments[`${params.instrumentId}`][
+        params.side === "buy" ? "asks" : "bids"
+      ][`${price}`].remainingQuantity;
+    if (remainingQuantity === 0n) continue;
     totalQuantity += remainingQuantity;
     quoteQuantity += (remainingQuantity * BigInt(price)) >> 32n;
     fills.push({ quantity: remainingQuantity.toString(), price });
@@ -782,9 +807,9 @@ serve({
         return json(count / (TPS_WINDOW_MS / 1000));
       },
     },
-    "/api/events/blocks": { GET: () => eventStream("block") },
-    "/api/events/batches": { GET: () => eventStream("batch") },
-    "/api/events/mutations": { GET: () => eventStream("mutation") },
+    "/api/events/blocks": { GET: (req) => eventStream(req, "block") },
+    "/api/events/batches": { GET: (req) => eventStream(req, "batch") },
+    "/api/events/mutations": { GET: (req) => eventStream(req, "mutation") },
     "/api/blocks/:number": {
       GET: async (req) => {
         const number = req.params.number;

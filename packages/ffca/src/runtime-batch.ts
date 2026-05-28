@@ -77,6 +77,7 @@ export function createRuntimeBatchEffect(
 
     const schema = app.schema;
     const { evm, state, knownPaths } = yield* createRuntimeState(app);
+    const knownPathSet = new Set(knownPaths);
 
     let mutationId = yield* selectNextMutationId(schema);
     let batchId = 0;
@@ -173,7 +174,11 @@ export function createRuntimeBatchEffect(
         );
 
         mutationsById.set(acceptedMutation.id, acceptedMutation);
-        knownPaths.push(...mutationKnownPaths);
+        for (const path of mutationKnownPaths) {
+          if (knownPathSet.has(path)) continue;
+          knownPathSet.add(path);
+          knownPaths.push(path);
+        }
 
         const persistStartedAtMs = startTimer();
         yield* db.transaction((tx) =>

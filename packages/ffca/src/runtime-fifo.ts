@@ -70,6 +70,7 @@ export function createRuntimeFIFOEffect(
 
     const schema = app.schema;
     const { evm, state, knownPaths } = yield* createRuntimeState(app);
+    const knownPathSet = new Set(knownPaths);
 
     let mutationId = yield* selectNextMutationId(schema);
 
@@ -139,7 +140,11 @@ export function createRuntimeFIFOEffect(
         );
 
         mutationsById.set(acceptedMutation.id, acceptedMutation);
-        knownPaths.push(...mutationKnownPaths);
+        for (const path of mutationKnownPaths) {
+          if (knownPathSet.has(path)) continue;
+          knownPathSet.add(path);
+          knownPaths.push(path);
+        }
 
         const persistStartedAtMs = startTimer();
         yield* db.transaction((tx) =>
