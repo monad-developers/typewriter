@@ -26,6 +26,7 @@ import {
   type FFCAAbi,
 } from "./encoding";
 import type { InternalApp } from "./internal";
+import { durationMs, startTimer } from "./logger";
 import { Rpc } from "./rpc";
 import type {
   AcceptedMutation,
@@ -245,11 +246,23 @@ export function executeMutation(params: {
         new EncodeMutationError({ mutation: params.mutation, cause }),
     });
 
+    const executeStartedAtMs = startTimer();
     const executeResult = yield* params.evm.execute({
       from: params.app.account.address,
       to: params.app.address,
       data: mutationCalldata,
     });
+
+    yield* Effect.logDebug("executed mutation").pipe(
+      Effect.annotateLogs({
+        id: acceptedMutation.id,
+        name: acceptedMutation.name,
+        success: executeResult.success,
+        slotWriteCount: executeResult.slot_writes.length,
+        knownPathCount: knownPaths.length,
+        duration: durationMs(executeStartedAtMs),
+      }),
+    );
 
     if (executeResult.success === false) {
       return yield* Effect.fail(

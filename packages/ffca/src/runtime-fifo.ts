@@ -24,7 +24,7 @@ import type {
   MutationListener,
 } from "./ffca";
 import type { InternalApp } from "./internal";
-import { loggerLayer } from "./logger";
+import { durationMs, loggerLayer, startTimer } from "./logger";
 import { Rpc, rpcRetry } from "./rpc";
 import { requestBlock } from "./rpc-request";
 import {
@@ -141,6 +141,7 @@ export function createRuntimeFIFOEffect(
         mutationsById.set(acceptedMutation.id, acceptedMutation);
         knownPaths.push(...mutationKnownPaths);
 
+        const persistStartedAtMs = startTimer();
         yield* db.transaction((tx) =>
           Effect.gen(function* () {
             yield* insertMutation(tx, schema, acceptedMutation);
@@ -151,6 +152,14 @@ export function createRuntimeFIFOEffect(
               executeResult.slot_writes,
             );
             yield* insertKnownPaths(tx, schema, mutationKnownPaths);
+          }),
+        );
+
+        yield* Effect.logDebug("persisted accepted mutation").pipe(
+          Effect.annotateLogs({
+            id: acceptedMutation.id,
+            name: acceptedMutation.name,
+            duration: durationMs(persistStartedAtMs),
           }),
         );
 
@@ -186,12 +195,14 @@ export function createRuntimeFIFOEffect(
             forceInclusions.map(({ queueIndex }) => queueIndex),
           );
 
+          const simulationStartedAtMs = startTimer();
           const simulateResult = yield* evm.simulate({
             from: app.account.address,
             to: app.address,
             data: calldata,
             journal_ids: speculativeJournalIds,
           });
+          const duration = durationMs(simulationStartedAtMs);
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
@@ -201,6 +212,14 @@ export function createRuntimeFIFOEffect(
               ),
             );
           }
+
+          yield* Effect.logDebug("simulated transaction submission").pipe(
+            Effect.annotateLogs({
+              gasLimit: simulateResult.gas_limit,
+              mutationCount: speculativeJournalIds.length,
+              duration,
+            }),
+          );
 
           const enqueuedMutationIds = yield* Queue.clear(
             enqueuedMutationsQueue,
@@ -213,7 +232,12 @@ export function createRuntimeFIFOEffect(
             yield* acceptMutation(enqueuedMutation);
           }
 
-          return { mutations, forceInclusions, calldata, simulateResult };
+          return {
+            mutations,
+            forceInclusions,
+            calldata,
+            simulateResult,
+          };
         }),
       );
 
@@ -223,6 +247,7 @@ export function createRuntimeFIFOEffect(
         simulation;
 
       const submitNonce = yield* nextNonce;
+      const transactionStartedAtMs = startTimer();
       const request = yield* Effect.tryPromise({
         try: () =>
           walletClient.prepareTransactionRequest({
@@ -248,6 +273,16 @@ export function createRuntimeFIFOEffect(
           }),
         catch: (error) => error as Error,
       });
+      const duration = durationMs(transactionStartedAtMs);
+
+      yield* Effect.logDebug("submitted transaction").pipe(
+        Effect.annotateLogs({
+          transactionHash: receipt.transactionHash,
+          blockHash: receipt.blockHash,
+          blockNumber: receipt.blockNumber,
+          duration,
+        }),
+      );
 
       const block = yield* requestBlock(receipt.blockHash).pipe(
         Effect.provideService(Rpc, rpc),

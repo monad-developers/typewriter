@@ -27,7 +27,7 @@ import type {
   MutationListener,
 } from "./ffca";
 import type { InternalApp } from "./internal";
-import { loggerLayer } from "./logger";
+import { durationMs, loggerLayer, startTimer } from "./logger";
 import { Rpc, rpcRetry } from "./rpc";
 import { requestBlock } from "./rpc-request";
 import {
@@ -175,6 +175,7 @@ export function createRuntimeBatchEffect(
         mutationsById.set(acceptedMutation.id, acceptedMutation);
         knownPaths.push(...mutationKnownPaths);
 
+        const persistStartedAtMs = startTimer();
         yield* db.transaction((tx) =>
           Effect.gen(function* () {
             yield* insertMutation(tx, schema, acceptedMutation);
@@ -188,6 +189,14 @@ export function createRuntimeBatchEffect(
           }),
         );
 
+        yield* Effect.logDebug("persisted accepted mutation").pipe(
+          Effect.annotateLogs({
+            id: acceptedMutation.id,
+            name: acceptedMutation.name,
+            duration: durationMs(persistStartedAtMs),
+          }),
+        );
+
         emitMutation(mutationToEvent(acceptedMutation));
 
         return acceptedMutation;
@@ -196,6 +205,7 @@ export function createRuntimeBatchEffect(
 
     const acceptBatch = withSpeculativeStateLock(
       Effect.gen(function* () {
+        const batchStartedAtMs = startTimer();
         const submittedMutations = yield* Queue.clear(receivedMutationQueue);
 
         if (submittedMutations.length === 0) {
@@ -244,6 +254,7 @@ export function createRuntimeBatchEffect(
           Effect.annotateLogs({
             id: batch.id,
             mutationCount: batch.mutations.length,
+            duration: durationMs(batchStartedAtMs),
           }),
         );
 
@@ -305,12 +316,14 @@ export function createRuntimeBatchEffect(
             acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
           );
 
+          const simulationStartedAtMs = startTimer();
           const simulateResult = yield* evm.simulate({
             from: app.account.address,
             to: app.address,
             data: calldata,
             journal_ids: speculativeJournalIds,
           });
+          const duration = durationMs(simulationStartedAtMs);
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
@@ -326,6 +339,7 @@ export function createRuntimeBatchEffect(
               gasLimit: simulateResult.gas_limit,
               batchCount: batches.length,
               mutationCount: speculativeJournalIds.length,
+              duration,
             }),
           );
 
@@ -363,6 +377,7 @@ export function createRuntimeBatchEffect(
       } = simulation;
 
       const submitNonce = yield* nextNonce;
+      const transactionStartedAtMs = startTimer();
       const request = yield* Effect.tryPromise({
         try: () =>
           walletClient.prepareTransactionRequest({
@@ -388,12 +403,14 @@ export function createRuntimeBatchEffect(
           }),
         catch: (error) => error as Error,
       });
+      const duration = durationMs(transactionStartedAtMs);
 
       yield* Effect.logDebug("submitted transaction").pipe(
         Effect.annotateLogs({
           transactionHash: receipt.transactionHash,
           blockHash: receipt.blockHash,
           blockNumber: receipt.blockNumber,
+          duration,
         }),
       );
 

@@ -21,3 +21,11 @@ export const loggerLayer = Layer.merge(
   Logger.layer([logger]),
   Layer.succeed(References.MinimumLogLevel, "Debug"),
 );
+
+export function startTimer(): number {
+  return performance.now();
+}
+
+export function durationMs(startMs: number): number {
+  return Math.round((performance.now() - startMs) * 100) / 100;
+}
