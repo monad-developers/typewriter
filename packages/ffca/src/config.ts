@@ -70,6 +70,7 @@ export type FFCAConfig = {
     safeBlockDepth?: number;
     finalizedBlockDepth?: number;
   };
+  onFatalError?: (error: unknown) => void;
   // Runtime sequencing and loop cadence. FIFO is the default: mutations are
   // accepted one-at-a-time as soon as they enter the runtime, while submit still
   // flushes accepted mutations on an interval. `batch` mode preserves the
@@ -195,6 +196,7 @@ export function buildInternalApp(config: FFCAConfig): InternalApp {
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     confirmations,
+    onFatalError: config.onFatalError,
     sequencing,
   };
 }

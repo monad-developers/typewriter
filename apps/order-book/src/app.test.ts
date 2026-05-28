@@ -41,7 +41,10 @@ const Q32 = 1n << 32n;
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86_400);
 type OrderBookFFCA = Awaited<ReturnType<typeof createOrderBookFFCA>>;
 
-async function createOrderBookFFCA(address: Hex) {
+async function createOrderBookFFCA(
+  address: Hex,
+  options: { submitIntervalMs?: number } = {},
+) {
   const config = {
     address,
     domain: { name: "Exchange", version: "1" },
@@ -54,6 +57,7 @@ async function createOrderBookFFCA(address: Hex) {
     sequencing: {
       order: "batch",
       batchOrder: ORDER_BOOK_BATCH_ORDER,
+      submitIntervalMs: options.submitIntervalMs ?? 60_000,
     },
     mutations: ORDER_BOOK_MUTATIONS,
   } as const satisfies OrderBookFFCAConfig;
@@ -281,8 +285,6 @@ test("ffca order book rejects invalid signatures before applying", async () => {
       },
     }),
   ).rejects.toThrow(/InvalidSignature/);
-
-  await app.stop();
 });
 
 test("ffca order book changes an unfilled order to a new price", async () => {
@@ -365,15 +367,12 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       },
     }),
   );
-
-  await app.stop();
-
   expect(result.id).toBeGreaterThanOrEqual(0);
 });
 
 test("db-queries fan out across per-mutation tables", async () => {
   const address = await deployExchange();
-  const app = await createOrderBookFFCA(address);
+  const app = await createOrderBookFFCA(address, { submitIntervalMs: 400 });
   const schema = app.schema;
   const db = drizzle({
     client: TEST_DB_CONNECTION,
@@ -488,6 +487,4 @@ test("db-queries fan out across per-mutation tables", async () => {
   expect(await loadBlock(db, schema, "999999")).toBeNull();
   expect(await loadMutationById(db, schema, 999_999)).toBeNull();
   expect(await loadMutationByAccountNonce(db, schema, maker, "999")).toBeNull();
-
-  await app.stop();
 });

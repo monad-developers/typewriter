@@ -24,6 +24,4 @@ test("ffca.domain is derived from config", async () => {
       "version": "2",
     }
   `);
-
-  await ffca.stop();
 });

@@ -1,4 +1,4 @@
-import { Effect, Layer, Scope } from "effect";
+import { Deferred, Effect, Layer, Scope } from "effect";
 import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import { getAbiItem, toEventSelector } from "viem";
@@ -122,12 +122,37 @@ export function createFFCAEffect<const C extends FFCAConfig>(
         runtime = yield* createRuntimeFIFOEffect(app);
       }
 
-      yield* Effect.forkScoped(runtime.program).pipe(
-        Effect.tapError((error) => Effect.logError(error)),
+      let fatalError: { readonly error: unknown } | undefined;
+      const fatalSignal = yield* Deferred.make<never, unknown>();
+
+      yield* runtime.program.pipe(
+        Effect.tapError((error) =>
+          Effect.gen(function* () {
+            fatalError = { error };
+            yield* Deferred.fail(fatalSignal, error);
+            yield* Effect.sync(() => {
+              if (app.onFatalError !== undefined) {
+                app.onFatalError(error);
+              } else {
+                queueMicrotask(() => {
+                  throw error;
+                });
+              }
+            });
+            yield* Effect.logError(error);
+          }),
+        ),
+        Effect.forkScoped,
       );
 
       return {
         ...runtime,
+        execute: (mutation: FFCAMutation) =>
+          fatalError === undefined
+            ? runtime
+                .execute(mutation)
+                .pipe(Effect.raceFirst(Deferred.await(fatalSignal)))
+            : Effect.fail(fatalError.error),
         domain: app.domain,
       } as unknown as RuntimeFFCAWithDomain<C, "fifo" | "batch">;
     }).pipe(Effect.provide(servicesContext));

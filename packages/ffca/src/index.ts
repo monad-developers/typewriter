@@ -18,7 +18,6 @@ export type FFCA<C extends FFCAConfig> = {
   on(event: "mutation", cb: MutationListener): () => void;
   on(event: "batch", cb: BatchListener): () => void;
   on(event: "block", cb: BlockListener<"fifo" | "batch">): () => void;
-  stop(): Promise<void>;
 };
 
 export type {
@@ -68,16 +67,11 @@ export async function createFFCA<const C extends FFCAConfig>(
       Effect.runSync(runtimeOn(event, cb))) as FFCA<C>["on"];
 
     return {
-      get state() {
-        return ffca.state;
-      },
+      state: ffca.state,
       schema: ffca.schema,
       domain: ffca.domain,
       execute: (submitted) => Effect.runPromise(ffca.execute(submitted)),
       on,
-      stop: async () => {
-        await closeScope();
-      },
     };
   } catch (error) {
     await closeScope();

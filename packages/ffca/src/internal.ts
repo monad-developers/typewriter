@@ -66,5 +66,6 @@ export type InternalApp = {
   schema: Record<string, PgTable>;
   blockPollingIntervalMs: number;
   confirmations: InternalConfirmations;
+  onFatalError: ((error: unknown) => void) | undefined;
   sequencing: InternalSequencing;
 };

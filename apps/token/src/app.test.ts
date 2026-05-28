@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
 import { createFFCA, type FFCAConfig } from "ffca";
+import {
+  type AccountStorage,
+  decodeStorageVariable,
+  getStorageSlot,
+  type StorageLayout,
+  type StorageVariableToPrimitiveType,
+} from "storage-layout";
 import type { Abi, Address } from "viem";
 import { anvil } from "viem/chains";
 import {
@@ -15,17 +22,40 @@ import { signMint, signTransfer, TOKEN_DOMAIN, tokenMutations } from "./app";
 import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
 
 async function readAccount(params: {
-  abi: Abi;
   token: Address;
   account: Address;
 }): Promise<{ nonce: bigint; balance: bigint }> {
-  const [nonce, balance] = (await TEST_PUBLIC_CLIENT.readContract({
-    abi: params.abi,
-    address: params.token,
-    functionName: "accounts",
-    args: [params.account],
-  })) as [bigint, bigint];
-  return { nonce, balance };
+  async function readStorage<
+    layout extends StorageLayout,
+    variable extends string,
+  >(
+    layout: layout,
+    address: Address,
+    variable: variable,
+  ): Promise<StorageVariableToPrimitiveType<layout, variable>> {
+    const slots = getStorageSlot(layout, variable as never);
+    const values = await Promise.all(
+      slots.map((slot) => TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })),
+    );
+    const storage = Object.fromEntries(
+      slots.map((slot, index) => [slot, values[index]!]),
+    ) as AccountStorage;
+
+    return decodeStorageVariable(layout, variable as never, storage);
+  }
+
+  return {
+    nonce: await readStorage(
+      TOKEN_STORAGE_LAYOUT,
+      params.token,
+      `accounts[${params.account}].nonce`,
+    ),
+    balance: await readStorage(
+      TOKEN_STORAGE_LAYOUT,
+      params.token,
+      `accounts[${params.account}].balance`,
+    ),
+  };
 }
 
 test("smoke: FIFO token mint and transfer settle onchain", async () => {
@@ -104,12 +134,10 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
   const deadlineMs = Date.now() + 5_000;
   while (true) {
     const user = await readAccount({
-      abi: abi as Abi,
       token: address,
       account: USER_ACCOUNT.address,
     });
     const recipient = await readAccount({
-      abi: abi as Abi,
       token: address,
       account: RECIPIENT_ACCOUNT.address,
     });
@@ -127,6 +155,4 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-
-  await ffca.stop();
 });
