@@ -27,7 +27,7 @@ import {
     AlreadyExecuted
 } from "src/Exchange.sol";
 
-import {KeyType} from "ffca/Account.sol";
+import {KeyType} from "ffca/FFCA.sol";
 
 contract IntegrationTest is Test, Exchange(address(0xBEEF)) {
     address constant BASE = address(0x1);

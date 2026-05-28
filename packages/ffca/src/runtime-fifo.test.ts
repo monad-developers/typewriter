@@ -23,6 +23,7 @@ import {
   counterNewAccountMutation,
   deployCounter,
   deployHarness,
+  encodeHarnessSignature,
   HARNESS_ABI,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
@@ -89,7 +90,7 @@ function harnessSignature(params: {
   readonly keyType: number;
   readonly rawSignature: `0x${string}`;
 }) {
-  return params;
+  return encodeHarnessSignature(params);
 }
 
 function signHarnessMutation(params: {

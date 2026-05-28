@@ -103,9 +103,9 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
     "0x0000000000000000000000000000000000000000000000000000000000000001";
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.credit_mutations
-      (id, status, account, ${TEST_DB_CONNECTION("keyId")}, amount, nonce, ${TEST_DB_CONNECTION("signature_account")}, ${TEST_DB_CONNECTION("signature_keyId")}, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, account, ${TEST_DB_CONNECTION("keyId")}, amount, nonce, ${TEST_DB_CONNECTION("signature_signature")})
     VALUES
-      (0, 'accepted', ${account}, 0, 1, 0, ${account}, 0, 0, '0x')
+      (0, 'accepted', ${account}, 0, 1, 0, '0x')
   `;
 
   await expect(runMigrate(harnessSchema(), chainId, address)).resolves.toBe(

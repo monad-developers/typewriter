@@ -159,28 +159,13 @@ test("getSignatureAbiParameters extracts bytes signatures from execute", () => {
   `);
 });
 
-test("getSignatureAbiParameters extracts tuple Signature components from execute", () => {
+test("getSignatureAbiParameters extracts bytes signatures from Harness execute", () => {
   const params = getSignatureAbiParameters(HARNESS_ABI);
   expect(params).toMatchInlineSnapshot(`
     [
       {
-        "internalType": "bytes32",
-        "name": "account",
-        "type": "bytes32",
-      },
-      {
-        "internalType": "uint64",
-        "name": "keyId",
-        "type": "uint64",
-      },
-      {
-        "internalType": "uint8",
-        "name": "keyType",
-        "type": "uint8",
-      },
-      {
         "internalType": "bytes",
-        "name": "rawSignature",
+        "name": "signature",
         "type": "bytes",
       },
     ]

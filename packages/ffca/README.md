@@ -77,9 +77,7 @@ function executeMarketOrder(State storage state, MarketOrder calldata marketOrde
 
 ### Accounts and Signatures
 
-The account system is built-in. All apps have accounts.
-
-FFCA requires mutations to be signed with EIP-712 typed data. The runtime builds the digest from the configured domain, mutation name, and mutation arguments; clients do not supply the digest directly.
+Mutations are authorized with signatures, not transactions. Each mutation carries an EIP-712 typed-data signature, and the contract verifies it.
 
 FFCA supports three signature algorithms:
 
@@ -87,11 +85,9 @@ FFCA supports three signature algorithms:
 - WebAuthn-P256
 - secp256k1
 
-The framework owns the EIP-712 digest construction, calldata encoding, and native signature verification primitives for those algorithms. Apps own account policy.
+It exports the primitives that go with them — the `KeyType` enum, a `verifySignature` helper, and the EIP-712 domain typehash. The `Signature` struct itself is app-defined; the contract decides what fields it needs to authenticate the user and authorize the mutation. See [Contract requirements > Signature](#signature) for more information.
 
-`Account` and `Signature` structs are app-defined. The `Signature` struct must include `keyType: uint8` and `rawSignature: bytes`, declared through `FFCAConfig.signature.params`. Apps add whatever other fields their contract expects, such as `account`, `keyId`, nonce metadata, or permission scope.
-
-Account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions are left up to users to implement in their app and contract.
+Accounts are entirely app-defined. The account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions all live in the app's contract and state. FFCA does not impose an `Account` struct or any specific authorization rule.
 
 ### Sequencing
 
@@ -210,10 +206,10 @@ struct State {
 #### Mutations
 
 Each mutation is a Solidity library with:
-- **`struct [Mutation]` definition**.
-- **`execute[Mutation]` function**. Apply the mutation to the state.
-- **`[MUTATION]_TYPEHASH` constant**. EIP 712 typehash of the struct definition.
-- **`verify[Mutation]Signature` function**.
+- **`struct [Mutation]` definition**. The mutation's arguments. The `execute` dispatcher ABI-decodes `Batch.mutationData[i]` into this struct, and the same fields serve as the EIP-712 message body. Field names and order must match the typehash and the `FFCAMutationConfig.params` registered with the runtime.
+- **`execute[Mutation]` function**. Applies the mutation to the state. Called by the dispatcher after the signature has verified — no auth checks here, just the state transition.
+- **`[MUTATION]_TYPEHASH` constant**. EIP-712 typehash of the struct definition, in canonical EIP-712 form: `keccak256("name(type1 field1,type2 field2,...)")` (see [Signature](#signature)).
+- **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `ffca/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
 
 ```sol
 library AddMutation {
@@ -227,7 +223,7 @@ library AddMutation {
     function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest) external {
         Account storage account = state.accounts[signature.accountId];
         if (account.nonce != add.nonce) revert InvalidNonce();
-        verifySignatureMemory(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
+        verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
         account.nonce++;
     }
 
@@ -241,59 +237,50 @@ library AddMutation {
 
 #### Signature
 
-A signature authorizes a mutation on behalf of a user. The outer EVM
-transaction is submitted by the scheduler, so `msg.sender` is always the
-scheduler — it can't identify the user the way it does for direct contract
-calls or for ERC-4337 `UserOperation`s. Each mutation in a batch carries its
-own EIP-712 typed-data signature instead, and the contract verifies it
-during `execute`.
+A signature authorizes a mutation on behalf of a user. The outer EVM transaction is submitted by the server, so `msg.sender` can't be used to identify a user. Each mutation in a batch carries an EIP-712 typed-data signature that the contract verifies.
 
 **`Signature` struct.** The fields of `Signature` are not prescribed — they
 are whatever the contract needs to authenticate the user and authorize the
-mutation. The test fixtures and `apps/order-book` show three independent
-shapes:
+mutation.
 
 ```sol
-// test/contracts/src/Counter2.sol — public key looked up by account id
-struct Signature { bytes32 accountId; bytes rawSignature; }
-
-// test/contracts/src/Harness.sol — multi-key account, keyId selects the key
-struct Signature { bytes32 account; uint64 keyId; uint8 keyType; bytes rawSignature; }
-
-// apps/order-book/contracts/src/Exchange.sol — multi-key account, keyType resolved from the stored key list
-struct Signature { bytes32 account; uint64 keyId; bytes rawSignature; }
+struct Signature { 
+    bytes32 accountId; 
+    bytes rawSignature;
+}
 ```
 
-Each is valid. The contract decides how the fields it declares are used:
-looked up against state-stored accounts, embedded inline, or used to scope a
-signature to a particular key, action, or window.
-
-**Per-mutation typehash.** Each mutation has an EIP-712 typehash. The encoded
-type string lists the mutation's arguments in declaration order:
+**`verify[Mutation]Signature`.** Every signed mutation implements its own
+verifier — see the [Mutations](#mutations) example.
 
 ```sol
-bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
+function verify[Mutation]Signature(
+    State storage state,
+    [Mutation] memory args,
+    Signature memory signature,
+    bytes32 digest
+) external;
 ```
 
-The primary type name (`add`), the parameter names, and their order must
-agree with the mutation's Solidity struct. Standard EIP-712
-typing rules apply (e.g. `uint256`, not `uint`).
+The verifier is responsible for resolving the signer from the `Signature`
+fields (e.g. looking up an account, selecting a key), enforcing replay
+protection (nonce, deadline, scope), and calling one of the `verifySignature`
+helpers below to verify the raw signature against the digest.
 
-**Verification helpers.** `ffca/Account.sol` exports the `KeyType` enum and
-two helpers for verifying a raw signature against a digest:
+Per-mutation verification gives each mutation full control over its
+authorization rules, including whether a signature is required at all —
+bootstrap mutations may not need one.
+
+**Verification helpers.** `ffca/FFCA.sol` exports the `KeyType` enum and
+a `verifySignature` helper for verifying a raw signature:
 
 ```sol
-import {KeyType, verifySignature, verifySignatureMemory} from "ffca/Account.sol";
+import {KeyType, verifySignature} from "ffca/FFCA.sol";
 
-verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes calldata signature) view;
-verifySignatureMemory(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
+verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
 ```
 
-`KeyType` is `{ P256, WebAuthnP256, Secp256k1 }`. The two helpers differ only
-in where `signature` is read from: the calldata variant is used on the hot
-`execute` path; the memory variant is used on paths where the signature has
-been decoded out of storage, such as force-inclusion queue entries. Both
-revert with `InvalidSignature(KeyType)` on a failed check.
+`KeyType` is `{ P256, WebAuthnP256, Secp256k1 }`. `verifySignature` will revert with `InvalidSignature(KeyType)` on a failed check.
 
 Byte layouts:
 
@@ -307,16 +294,31 @@ Byte layouts:
 `WebAuthnP256` verification `staticcall` the precompile at address `0x100`;
 deployments on chains without this precompile will revert from those paths.
 
-#### Contract structure
-
-The contract is a thin wrapper around the `State` struct, the framework-required immutables, and a constructor that wires them up. Everything else lives in the three external functions described below.
+**Per-mutation typehash.** Each mutation has an EIP-712 typehash. The encoded
+type string lists the mutation's arguments in declaration order:
 
 ```sol
-contract Token {
+bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
+```
+
+The primary type name (`add`), the parameter names, and their order must
+agree with the mutation's Solidity struct. Standard EIP-712
+typing rules apply (e.g. `uint256`, not `uint`).
+
+#### Contract structure
+
+The contract inherits from `ffca/FFCA.sol`, which supplies the `SCHEDULER` and `DOMAIN_SEPARATOR` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `enqueue` entry point, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), plus a constructor that assigns the inherited immutables. The three external functions described below — `execute`, `enqueue`, `forceExecute` — handle dispatch and force-inclusion.
+
+```sol
+import {EIP712_DOMAIN_TYPEHASH, FFCA} from "ffca/FFCA.sol";
+
+contract Token is FFCA {
     State private state;
 
-    address private immutable SCHEDULER;
-    bytes32 private immutable DOMAIN_SEPARATOR;
+    enum Mutation {
+        NewAccount,
+        Add
+    }
 
     constructor(address _scheduler) {
         SCHEDULER = _scheduler;
@@ -335,50 +337,106 @@ contract Token {
 }
 ```
 
-**`state`.** A single private storage variable wraps the State struct. The runtime reads its slots through revm via the layout emitted by `forge inspect storageLayout`, so Solidity visibility does not affect framework reads. Keeping `state` private signals that app-side reads should go through `ffca.state`, not through auto-generated public getters.
+**`state`.** A single non-public storage variable wraps the State struct. Underlying storage slots are read directly so Solidity visibility does not affect framework reads.
 
-**`SCHEDULER`.** The framework's signing identity, set once in the constructor and checked by `execute`. Immutable — rotating the scheduler means redeploying.
+**`Mutation` enum.** Designates the valid mutations for the contract.
 
-**`DOMAIN_SEPARATOR`.** The EIP-712 domain separator from the Signature section, computed once in the constructor and cached as an immutable so per-mutation digest construction stays cheap. Apps that want replay protection across chain forks can additionally cache `INITIAL_CHAIN_ID` and recompute the separator from a view function when `block.chainid != INITIAL_CHAIN_ID` — see `apps/order-book`.
+**`SCHEDULER`.** The privileged address for submitting mutations. Declared in `FFCA` as `address internal immutable` — the inheriting contract must assign it in the constructor.
 
-Force-inclusion-enabled contracts add one more storage variable, the queue array, described in the `enqueue` section.
+**`DOMAIN_SEPARATOR`.** The EIP-712 domain separator from the [Signature](#signature) section. Declared in `FFCA` as `bytes32 internal immutable` — the inheriting contract must assign it in the constructor.
 
 #### `execute`
 
 ```sol
-function execute(Bundle[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
-    if (msg.sender != SCHEDULER) revert Unauthorized();
-    // ...
+function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external;
+```
+
+The contract's main entry point for applying mutations onchain, implemented by the app with the function signature prescribed by `FFCA`: `Batch` is declared in `FFCA` as positionally-aligned `mutations`, `mutationData`, and `signatures` arrays; `forceExecuteIndexes` carries queue indexes for any force-included mutations being settled in the same call (see [`enqueue`](#enqueue)).
+
+**Scheduler gating.** Only the scheduler may invoke `execute`:
+
+```sol
+if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
+```
+
+`SCHEDULER` is the inherited immutable assigned in the constructor (see [Contract structure](#contract-structure)).
+
+**Mutation dispatch.** For each `Batch`, iterate the positional arrays and dispatch each mutation by its `uint8` tag (matched against the `Mutation` enum). For each mutation, decode `mutationData[i]` and `signatures[i]` into the mutation's structured types, compute the EIP-712 digest, call `verify[Mutation]Signature`, then call `execute[Mutation]` (see [Mutations](#mutations)). Order within a batch and across batches is significant — it must match the order the runtime accepted server-side.
+
+```sol
+for (uint256 b; b < batches.length; b++) {
+    Batch calldata batch = batches[b];
+    for (uint256 i; i < batch.mutations.length; i++) {
+        if (Mutation(batch.mutations[i]) == Mutation.NewAccount) {
+            // NewAccount requires no signature verification
+            NewAccountMutation.NewAccount memory newAccount =
+                abi.decode(batch.mutationData[i], (NewAccountMutation.NewAccount));
+            NewAccountMutation.executeNewAccount(state, newAccount);
+        } else if (Mutation(batch.mutations[i]) == Mutation.Add) {
+            AddMutation.Add memory add = abi.decode(batch.mutationData[i], (AddMutation.Add));
+            Signature memory signature = abi.decode(batch.signatures[i], (Signature));
+
+            bytes32 structHash = keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
+            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+
+            AddMutation.verifyAddSignature(state, add, signature, digest);
+            AddMutation.executeAdd(state, add);
+        } else {
+            revert UnknownMutation(batch.mutations[i]);
+        }
+    }
 }
 ```
 
-The single entry point through which the framework submits accepted mutations onchain. `execute` is gated on the `SCHEDULER` immutable set at construction (see Contract structure). Only the scheduler may invoke `execute` in normal operation.
+**Force-inclusion dispatch.** For each entry in `forceExecuteIndexes`, look up `queue[index]`, dispatch by `queued.mutation`, decode `queued.signature` into the app's `Signature` struct, verify, apply the mutation, and `delete queue[index]`.
 
-`forceExecuteIndexes` carries the queue indexes of any force-included mutations the runtime is settling in the same call (see `enqueue`); apps without force-inclusion support may revert when this array is non-empty.
+```sol
+for (uint256 i; i < forceExecuteIndexes.length; i++) {
+    uint256 index = forceExecuteIndexes[i];
+    QueuedMutation storage queued = queue[index];
 
-The function iterates each bundle, checks the three arrays are the same length, dispatches each `mutationData[i]` according to `mutations[i]`, verifies its signature, and applies the state change. Order within a bundle and across bundles is significant — it must match the order the runtime accepted server-side.
+    if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+
+    if (Mutation(queued.mutation) == Mutation.NewAccount) {
+        NewAccountMutation.NewAccount memory newAccount =
+            abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
+        NewAccountMutation.executeNewAccount(state, newAccount);
+    } else if (Mutation(queued.mutation) == Mutation.Add) {
+        AddMutation.Add memory add = abi.decode(queued.mutationData, (AddMutation.Add));
+        Signature memory signature = abi.decode(queued.signature, (Signature));
+
+        bytes32 structHash = keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+
+        AddMutation.verifyAddSignature(state, add, signature, digest);
+        AddMutation.executeAdd(state, add);
+    } else {
+        revert UnknownMutation(queued.mutation);
+    }
+
+    delete queue[index];
+}
+```
 
 #### `enqueue`
 
+> Provided by `FFCA`. No app implementation required.
+
 ```sol
-function enqueue(uint8 mutation, bytes calldata mutationData, Signature calldata sig) external
+function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata signature) external returns (uint256);
 ```
 
-The user-facing entry point for force inclusion. A user submits their mutation directly onchain, bypassing the scheduler. The contract stores the queued mutation and emits:
+The user-facing entry point for force inclusion: a user submits their mutation directly onchain, bypassing the `execute()` function with `SCHEDULER` access control. `FFCA` pushes a `QueuedMutation` onto the queue and emits:
 
 ```sol
 event ForceInclusionQueued(
     uint256 index,
     uint8 mutation,
     bytes mutationData,
-    Signature sig,
+    bytes signature,
     uint256 enqueuedBlock
 );
 ```
-
-The runtime's watch loop decodes `ForceInclusionQueued` to discover queued mutations, accepts them through revm, and carries their `index` into the next `execute` call's `forceExecuteIndexes`. The event signature is part of the conformance surface — the watch decoder reads exactly these fields in this order.
-
-Apps that don't support force inclusion may revert from `enqueue` (and `forceExecute`) with a sentinel error such as `ForceInclusionUnsupported()`.
 
 #### `forceExecute`
 
@@ -386,13 +444,39 @@ Apps that don't support force inclusion may revert from `enqueue` (and `forceExe
 function forceExecute(uint256 index) external
 ```
 
-The escape hatch for users when the scheduler is offline or censoring. After `FORCE_INCLUSION_DELAY` has elapsed since the mutation was enqueued, any caller may invoke `forceExecute(index)` to apply the queued mutation directly. The contract is responsible for enforcing the delay, clearing the queue entry on success, and reverting if the entry is missing or not yet eligible.
+The escape hatch for users when the scheduler is offline or censoring. After `FORCE_INCLUSION_DELAY` blocks have elapsed since the mutation was enqueued, any caller may invoke `forceExecute(index)` to apply the queued mutation directly. The contract is responsible for enforcing the delay, clearing the queue entry on success, and reverting if the entry is missing or not yet eligible.
+
+`FORCE_INCLUSION_DELAY` is an app-defined constant — `FFCA` does not impose a value. `Counter.sol` uses `658` blocks (≈4.4 minutes at 0.4 s/block).
 
 `forceExecute` shares the same mutation dispatch and signature verification as `execute`, but is not gated by `msg.sender == scheduler`.
 
+```sol
+if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) {
+    revert ForceInclusionTooEarly((queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number);
+}
+if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+
+if (Mutation(queued.mutation) == Mutation.NewAccount) {
+    NewAccountMutation.NewAccount memory newAccount =
+        abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
+    NewAccountMutation.executeNewAccount(state, newAccount);
+} else if (Mutation(queued.mutation) == Mutation.Add) {
+    AddMutation.Add memory add = abi.decode(queued.mutationData, (AddMutation.Add));
+    Signature memory signature = abi.decode(queued.signature, (Signature));
+
+    bytes32 structHash = keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
+    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+
+    AddMutation.verifyAddSignature(state, add, signature, digest);
+    AddMutation.executeAdd(state, add);
+} else {
+    revert UnknownMutation(queued.mutation);
+}
+```
+
 #### Determinism
 
-The runtime executes contract bytecode in revm against the last known block's environment. Opcodes whose values can't be reproduced offchain produce divergence between accepted and onchain state and must not affect mutation outcomes:
+Opcodes whose values can't be reproduced offchain produce divergence between offchain and onchain state are incompatible with FFCA:
 
 - `block.coinbase` (`COINBASE`) — the miner of the block containing the transaction is not known until inclusion.
 - `block.difficulty` / `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
@@ -400,9 +484,9 @@ The runtime executes contract bytecode in revm against the last known block's en
 - `blobhash(i)` (`BLOBHASH`) and `block.blobbasefee` (`BLOBBASEFEE`) — blob context belongs to the submitting transaction, not the mutation.
 - `gasleft()` (`GAS`) — gas accounting in revm does not match the live EVM, so any branch on remaining gas can diverge.
 
-`block.number` and `block.timestamp` are an open question: today the runtime executes against the last known block's values, but the precise semantics (latest+1 vs. wall-clock vs. scheduler-controlled) are not yet settled. Contracts that read either should treat them as approximate.
+`block.number` and `block.timestamp` are approximations — not guaranteed to match the block a mutation settles in. The server executes accepted mutations against the last known block's values, so what a mutation sees lags the block of inclusion by at least one. They're fine for coarse-grained checks (expiries, epoch windows) but unsafe for tight windows, sub-block timing, or logic that branches on the exact block of inclusion.
 
-`tx.origin` and `msg.sender` are stable. Both resolve to the scheduler in normal `execute` flow, and to the caller in `forceExecute`. They are safe to branch on.
+`tx.origin` and `msg.sender` are stable. Both resolve to the scheduler in normal `execute` flow, and to the caller in `forceExecute`.
 
 ### `createFFCA()`
 

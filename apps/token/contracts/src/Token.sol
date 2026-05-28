@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {EIP712_DOMAIN_TYPEHASH} from "ffca/FFCA.sol";
-import {KeyType, verifySignature} from "ffca/Account.sol";
+import {EIP712_DOMAIN_TYPEHASH, KeyType, verifySignature} from "ffca/FFCA.sol";
 
 struct Signature {
     uint8 keyType;

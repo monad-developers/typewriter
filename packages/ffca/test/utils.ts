@@ -238,7 +238,7 @@ export const COUNTER_ABI = [
       {
         name: "batches",
         type: "tuple[]",
-        internalType: "struct Batch[]",
+        internalType: "struct FFCA.Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           {
@@ -306,7 +306,6 @@ export const COUNTER_ABI = [
     ],
     anonymous: false,
   },
-  { type: "error", name: "AlreadyExecuted", inputs: [] },
   {
     type: "error",
     name: "AccountExists",
@@ -347,7 +346,8 @@ export const COUNTER_ABI = [
 export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
-// Harness.State shape used by the runtime tests.
+// Harness.State shape used by the runtime tests. `state` is stored after
+// FFCA.queue, so the exposed fields start at slots 1 and 2.
 export const HARNESS_STORAGE_LAYOUT = {
   storage: [
     {
@@ -355,7 +355,7 @@ export const HARNESS_STORAGE_LAYOUT = {
       contract: "src/Harness.sol:Harness",
       label: "accounts",
       offset: 0,
-      slot: "0",
+      slot: "1",
       type: "t_mapping(t_bytes32,t_struct(Account)1407_storage)",
     },
     {
@@ -363,7 +363,7 @@ export const HARNESS_STORAGE_LAYOUT = {
       contract: "src/Harness.sol:Harness",
       label: "balances",
       offset: 0,
-      slot: "1",
+      slot: "2",
       type: "t_mapping(t_bytes32,t_uint256)",
     },
   ],
@@ -566,15 +566,9 @@ export const HARNESS_ABI = [
       { name: "mutation", type: "uint8", internalType: "uint8" },
       { name: "mutationData", type: "bytes", internalType: "bytes" },
       {
-        name: "sig",
-        type: "tuple",
-        internalType: "struct Signature",
-        components: [
-          { name: "account", type: "bytes32", internalType: "bytes32" },
-          { name: "keyId", type: "uint64", internalType: "uint64" },
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        name: "signature",
+        type: "bytes",
+        internalType: "bytes",
       },
     ],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
@@ -587,7 +581,7 @@ export const HARNESS_ABI = [
       {
         name: "batches",
         type: "tuple[]",
-        internalType: "struct Batch[]",
+        internalType: "struct FFCA.Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           {
@@ -597,18 +591,8 @@ export const HARNESS_ABI = [
           },
           {
             name: "signatures",
-            type: "tuple[]",
-            internalType: "struct Signature[]",
-            components: [
-              { name: "account", type: "bytes32", internalType: "bytes32" },
-              { name: "keyId", type: "uint64", internalType: "uint64" },
-              { name: "keyType", type: "uint8", internalType: "uint8" },
-              {
-                name: "rawSignature",
-                type: "bytes",
-                internalType: "bytes",
-              },
-            ],
+            type: "bytes[]",
+            internalType: "bytes[]",
           },
         ],
       },
@@ -651,16 +635,10 @@ export const HARNESS_ABI = [
         internalType: "bytes",
       },
       {
-        name: "sig",
-        type: "tuple",
+        name: "signature",
+        type: "bytes",
         indexed: false,
-        internalType: "struct Signature",
-        components: [
-          { name: "account", type: "bytes32", internalType: "bytes32" },
-          { name: "keyId", type: "uint64", internalType: "uint64" },
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        internalType: "bytes",
       },
       {
         name: "enqueuedBlock",
@@ -671,8 +649,19 @@ export const HARNESS_ABI = [
     ],
     anonymous: false,
   },
-  { type: "error", name: "AlreadyExecuted", inputs: [] },
   { type: "error", name: "AlreadyInitialized", inputs: [] },
+  {
+    type: "error",
+    name: "ForceInclusionAlreadyExecuted",
+    inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
+  },
+  {
+    type: "error",
+    name: "ForceInclusionTooEarly",
+    inputs: [
+      { name: "remainingDelay", type: "uint256", internalType: "uint256" },
+    ],
+  },
   { type: "error", name: "InvalidAccount", inputs: [] },
   { type: "error", name: "InvalidNonce", inputs: [] },
   {
@@ -680,8 +669,16 @@ export const HARNESS_ABI = [
     name: "InvalidSignature",
     inputs: [{ name: "keyType", type: "uint8", internalType: "enum KeyType" }],
   },
-  { type: "error", name: "TooEarly", inputs: [] },
-  { type: "error", name: "UnknownTag", inputs: [] },
+  {
+    type: "error",
+    name: "UnauthorizedExecute",
+    inputs: [{ name: "caller", type: "address", internalType: "address" }],
+  },
+  {
+    type: "error",
+    name: "UnknownMutation",
+    inputs: [{ name: "mutation", type: "uint8", internalType: "uint8" }],
+  },
 ] as const satisfies Abi.Abi;
 
 // Deploy a forge-built contract by name. Reads the artifact from the
@@ -900,13 +897,13 @@ export function harnessAccountId(publicKey: Hex): Hex {
 }
 
 // secp256k1 public key for an EOA, in the abi.encode(address) form
-// Account.sol's verifySecp256k1 expects.
+// FFCA.sol's verifySecp256k1 expects.
 export function secp256k1PublicKey(address: Address): Hex {
   return AbiParameters.encode(parseAbiParameters("address"), [address]);
 }
 
 // P-256 public key for a private key, in the abi.encode(uint256 x, uint256 y)
-// form Account.sol's verifyP256 / decodeP256PublicKey accepts.
+// form FFCA.sol's verifyP256 / decodeP256PublicKey accepts.
 export function p256PublicKey(privateKey: Hex): Hex {
   const pk = P256.getPublicKey({ privateKey });
   return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
@@ -928,9 +925,9 @@ export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
 
 // Sign a digest as a WebAuthn-P256 challenge. Returns rawSignature in the
 // abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset,
-// uint256 r, uint256 s) form Account.sol's verifyWebAuthnP256 expects.
+// uint256 r, uint256 s) form FFCA.sol's verifyWebAuthnP256 expects.
 //
-// rpId/origin are fixed to empty strings — Account.sol doesn't inspect
+// rpId/origin are fixed to empty strings — FFCA.sol doesn't inspect
 // either, so their values don't affect on-chain verification. Real apps
 // that care about origin enforcement would do that check off-chain
 // (browser refuses to sign for the wrong RP ID anyway).
@@ -942,7 +939,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
     userVerification: "required",
   });
   const sig = P256.sign({ payload, privateKey, hash: true });
-  // Account.sol's verifyChallenge expects the byte offset at which the
+  // FFCA.sol's verifyChallenge expects the byte offset at which the
   // base64url-encoded challenge VALUE starts inside clientDataJSON. ox's
   // `challengeIndex` points at the JSON key (`"challenge":"`), so add 13
   // to land on the first byte of the value.
@@ -991,6 +988,25 @@ export function signHarness(params: {
   throw new Error(`signHarness: unknown keyType ${params.keyType}`);
 }
 
+export function encodeHarnessSignature(params: {
+  readonly account: Hex;
+  readonly keyId: bigint;
+  readonly keyType: number;
+  readonly rawSignature: Hex;
+}): Hex {
+  return AbiParameters.encode(
+    [
+      {
+        type: "tuple",
+        components: parseAbiParameters(
+          "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
+        ),
+      },
+    ],
+    [params],
+  );
+}
+
 function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = Secp256k1.sign({ payload: digest, privateKey });
   return AbiParameters.encode(
@@ -1019,12 +1035,12 @@ export async function setupHarnessAccount(
       rootKeyType: params.rootKeyType,
       rootPublicKey: params.rootPublicKey,
     },
-    signature: {
+    signature: encodeHarnessSignature({
       account,
       keyId: 0n,
       keyType: params.rootKeyType,
       rawSignature: "0x",
-    },
+    }),
   });
   return account;
 }

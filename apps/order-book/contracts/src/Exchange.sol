@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {KeyType, verifySignature, verifySignatureMemory} from "ffca/Account.sol";
+import {KeyType, verifySignature} from "ffca/FFCA.sol";
 
 struct Key {
     uint40 expiry;
@@ -250,7 +250,7 @@ function verifyMemory(Key[] storage keys, bytes32 digest, uint64 keyId, bytes me
     if (stored.permissions == 0) revert KeyNotFound();
     if (stored.expiry != 0 && stored.expiry < block.timestamp) revert KeyExpired();
 
-    verifySignatureMemory(stored.keyType, digest, stored.publicKey, signature);
+    verifySignature(stored.keyType, digest, stored.publicKey, signature);
     return stored.permissions;
 }
 

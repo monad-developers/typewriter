@@ -26,7 +26,7 @@ import {
     REVOKE_TYPEHASH
 } from "src/Exchange.sol";
 
-import {KeyType} from "ffca/Account.sol";
+import {KeyType} from "ffca/FFCA.sol";
 
 contract AccountTest is Test, Exchange(address(0xBEEF)) {
     uint256 pk1 = 0xA11CE;

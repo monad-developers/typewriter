@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {FFCA, EIP712_DOMAIN_TYPEHASH} from "ffca/FFCA.sol";
-import {KeyType, verifySignature, verifySignatureMemory} from "ffca/Account.sol";
+import {
+    FFCA,
+    EIP712_DOMAIN_TYPEHASH,
+    KeyType,
+    UnknownMutation,
+    UnauthorizedExecute,
+    ForceInclusionTooEarly,
+    ForceInclusionAlreadyExecuted,
+    verifySignature
+} from "ffca/FFCA.sol";
 
 struct Account {
     KeyType keyType;
@@ -22,11 +30,7 @@ struct Signature {
 }
 
 error AccountExists(bytes32 accountId);
-error UnknownMutation(uint8 mutation);
 error InvalidNonce(uint256 expectedNonce, uint256 receivedNonce);
-error UnauthorizedExecute(address caller);
-error ForceInclusionTooEarly(uint256 remainingDelay);
-error ForceInclusionAlreadyExecuted(uint256 index);
 
 library NewAccountMutation {
     struct NewAccount {
@@ -52,13 +56,15 @@ library AddMutation {
 
     bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
 
-    function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest) internal {
+    function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest)
+        internal
+    {
         Account storage account = state.accounts[signature.accountId];
         if (account.nonce != add.nonce) revert InvalidNonce(account.nonce, add.nonce);
         bytes memory publicKey = account.publicKey.length == 0 ? signature.publicKey : account.publicKey;
         if (publicKey.length == 0) revert InvalidNonce(account.nonce, add.nonce);
         KeyType keyType = account.publicKey.length == 0 ? KeyType.Secp256k1 : KeyType(account.keyType);
-        verifySignatureMemory(keyType, digest, publicKey, signature.rawSignature);
+        verifySignature(keyType, digest, publicKey, signature.rawSignature);
         account.nonce++;
     }
 
@@ -91,7 +97,7 @@ contract Counter is FFCA {
         );
     }
 
-    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) public {
+    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external override {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
 
         for (uint256 i; i < forceExecuteIndexes.length; i++) {
@@ -101,7 +107,8 @@ contract Counter is FFCA {
             if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
 
             if (Mutation(queued.mutation) == Mutation.NewAccount) {
-                NewAccountMutation.NewAccount memory newAccount = abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
+                NewAccountMutation.NewAccount memory newAccount =
+                    abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
                 NewAccountMutation.executeNewAccount(state, newAccount);
             } else if (Mutation(queued.mutation) == Mutation.Add) {
                 AddMutation.Add memory add = abi.decode(queued.mutationData, (AddMutation.Add));
@@ -123,7 +130,8 @@ contract Counter is FFCA {
             Batch calldata batch = batches[b];
             for (uint256 i; i < batch.mutations.length; i++) {
                 if (Mutation(batch.mutations[i]) == Mutation.NewAccount) {
-                    NewAccountMutation.NewAccount memory newAccount = abi.decode(batch.mutationData[i], (NewAccountMutation.NewAccount));
+                    NewAccountMutation.NewAccount memory newAccount =
+                        abi.decode(batch.mutationData[i], (NewAccountMutation.NewAccount));
                     NewAccountMutation.executeNewAccount(state, newAccount);
                 } else if (Mutation(batch.mutations[i]) == Mutation.Add) {
                     AddMutation.Add memory add = abi.decode(batch.mutationData[i], (AddMutation.Add));
@@ -141,16 +149,17 @@ contract Counter is FFCA {
         }
     }
 
-    function forceExecute(uint256 index) external {
+    function forceExecute(uint256 index) external override {
         QueuedMutation storage queued = queue[index];
 
-        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) revert ForceInclusionTooEarly(
-            (queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number
-        );
+        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) {
+            revert ForceInclusionTooEarly((queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number);
+        }
         if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
 
         if (Mutation(queued.mutation) == Mutation.NewAccount) {
-            NewAccountMutation.NewAccount memory newAccount = abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
+            NewAccountMutation.NewAccount memory newAccount =
+                abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
             NewAccountMutation.executeNewAccount(state, newAccount);
         } else if (Mutation(queued.mutation) == Mutation.Add) {
             AddMutation.Add memory add = abi.decode(queued.mutationData, (AddMutation.Add));
