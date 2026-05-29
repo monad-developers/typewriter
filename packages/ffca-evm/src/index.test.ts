@@ -723,16 +723,14 @@ test("init twice fails", async () => {
 });
 
 test("an interrupted execute does not desync subsequent calls", async () => {
-  // Regression: the protocol used to match responses by FIFO queue order.
-  // If a caller was interrupted between sending its request and taking
-  // its response, the sidecar's eventual reply would orphan the queue and
-  // every subsequent call would observe `id N, expected N+1`. Per-id
-  // dispatch makes the orphan a no-op — the next call must succeed.
+  // Interruption safety. createEVM serializes calls through a semaphore and
+  // each native call returns its own response synchronously, so an execute
+  // that is interrupted around the semaphore/native-call boundary must not
+  // leave the harness or the request-id sequence in a state that breaks the
+  // next caller.
   //
-  // We hammer many short-timeout calls to land at least one in the
-  // dangerous window between "request written" and "response taken". On
-  // the new code every iteration is safe; on the old code the protocol
-  // would desync as soon as any orphan landed.
+  // We hammer many zero-timeout calls so at least one is interrupted in that
+  // window, then assert a normal execute still succeeds.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -746,7 +744,7 @@ test("an interrupted execute does not desync subsequent calls", async () => {
       );
     }
 
-    // Drain any in-flight orphan responses from the sidecar.
+    // Let any interrupted fibers settle before the final call.
     yield* Effect.sleep("50 millis");
 
     return yield* evm.execute({
@@ -760,10 +758,10 @@ test("an interrupted execute does not desync subsequent calls", async () => {
   expect(exec.success).toBe(true);
 });
 
-test("concurrent calls are dispatched by id, not arrival order", async () => {
-  // Per-id dispatch lets multiple calls be in flight at once. The sidecar
-  // processes them in arrival order, but each response routes back to its
-  // own caller regardless of when it lands.
+test("concurrent execute submissions serialize into sequential journals", async () => {
+  // createEVM serializes calls through a semaphore, so executes submitted
+  // concurrently run one at a time and each opens the next sequential
+  // journal id rather than racing or interleaving.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
