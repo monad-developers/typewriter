@@ -3,10 +3,6 @@ name = "ffca-evm"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "ffca-evm"
-path = "src/main.rs"
-
 [lib]
 crate-type = ["cdylib"]
 path = "src/lib.rs"

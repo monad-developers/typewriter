@@ -3,11 +3,14 @@
   "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "napi": {
+    "binaryName": "ffca-evm"
+  },
   "scripts": {
-    "build": "cargo build --release && rm -f target/release/ffca_evm.node && cp target/release/libffca_evm.so target/release/ffca_evm.node",
-    "build:napi:debug": "cargo build && rm -f target/debug/ffca_evm.node && cp target/debug/libffca_evm.so target/debug/ffca_evm.node",
+    "build": "napi build --release --output-dir native",
+    "build:debug": "napi build --output-dir native",
     "lint:effect": "effect-language-service diagnostics --project tsconfig.json",
-    "test": "bun run build:napi:debug && bun test",
+    "test": "bun run build:debug && bun test",
     "typecheck": "tsc --noEmit",
     "lint": "cargo fmt --check && cargo clippy -- -D warnings && forge fmt --check test/contracts"
   },
@@ -17,6 +20,7 @@
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
+    "@napi-rs/cli": "3.6.2",
     "prool": "catalog:",
     "solmate": "github:transmissions11/solmate",
     "storage-layout": "workspace:*",

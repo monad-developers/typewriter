@@ -1,4 +1,7 @@
-// Sidecar that wraps monad-revm and speaks line-delimited JSON over stdio.
+// Shared EVM harness: wire types, the `EvmHarness` over monad-revm, request
+// dispatch, and conversion helpers. The native addon (`lib.rs`) is the only
+// caller; it owns one `EvmHarness` per instance and forwards JSON through
+// `dispatch_json`.
 //
 // Operations:
 //   init           — one-shot setup: spec, chain id, block context, accounts.
@@ -7,12 +10,11 @@
 //                    journal identified by a numeric id.
 //   simulate       — temporarily undo the given journal ids, run one tx, then
 //                    re-apply the journals; does not create/modify journals.
-//   readStorage    — read raw account storage slots from the sidecar DB.
+//   readStorage    — read raw account storage slots from the in-memory DB.
 //   revertJournals — revert and delete the given journal ids.
 //   pruneJournals  — delete the given journal ids without touching state.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{self, BufRead, Write};
 
 use monad_revm::{
     api::{builder::MonadBuilder, default_ctx::monad_context_with_db},
@@ -168,7 +170,7 @@ struct Journal {
     storage: HashMap<(Address, U256), (U256, U256)>,
 }
 
-struct EvmHarness {
+pub struct EvmHarness {
     evm: Evm,
     journals: HashMap<u64, Journal>,
     next_journal_id: u64,
@@ -176,7 +178,7 @@ struct EvmHarness {
 }
 
 impl EvmHarness {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
         let evm = ctx.build_monad();
@@ -589,6 +591,12 @@ impl EvmHarness {
     }
 }
 
+impl Default for EvmHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn rewind(db: &mut InMemoryDB, journal: &Journal) {
     for (addr, (pre, _post)) in journal.accounts.iter() {
         db.insert_account_info(*addr, pre.clone());
@@ -712,7 +720,7 @@ fn format_u256(value: U256) -> String {
     format!("0x{}", hex::encode(value.to_be_bytes::<32>()))
 }
 
-// ffca handles sequencing, gas, and balance accounting upstream — the sidecar
+// ffca handles sequencing, gas, and balance accounting upstream — the harness
 // just executes bytecode. Disable revm's tx-level checks so we don't have to
 // stage them in to make every execute go through.
 fn relax_cfg(cfg: &mut MonadCfgEnv) {
@@ -733,6 +741,27 @@ fn parse_spec(s: &str) -> Option<MonadSpecId> {
 
 // -----------------------------------------------------------------------------
 // Dispatch
+
+// Parse one JSON request, run it against the harness, and serialize the
+// response back to JSON. This is the single entry point the native addon
+// calls; it never returns `Err` so the FFI boundary stays infallible and the
+// protocol (id-correlated ok/error envelopes) is owned entirely in Rust.
+pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
+    let response = match serde_json::from_str::<Request>(request_json) {
+        Ok(req) => dispatch(harness, req),
+        Err(e) => Response {
+            id: 0,
+            ok: false,
+            result: None,
+            error: Some(format!("parse error: {e}")),
+        },
+    };
+    // Our `Response` is a fixed shape of strings/numbers/JSON values, so
+    // serialization cannot realistically fail; fall back to a hand-built
+    // envelope rather than panicking at the FFI boundary if it ever does.
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"id":0,"ok":false,"error":"response serialize error"}"#.into())
+}
 
 fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
     match req {
@@ -783,32 +812,4 @@ fn err(id: u64, error: String) -> Response {
         result: None,
         error: Some(error),
     }
-}
-
-fn main() -> io::Result<()> {
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-
-    let mut harness = EvmHarness::new();
-
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch(&mut harness, req),
-            Err(e) => Response {
-                id: 0,
-                ok: false,
-                result: None,
-                error: Some(format!("parse error: {e}")),
-            },
-        };
-        let s = serde_json::to_string(&response).unwrap();
-        writeln!(out, "{s}")?;
-        out.flush()?;
-    }
-    Ok(())
 }

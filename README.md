@@ -20,7 +20,7 @@ apps/
   order-book/           # FFCA-backed order book app, contracts, frontend, SDK, scripts, tests, and docs
 
 packages/
-  ffca-evm/             # ffca-evm sidecar package
+  ffca-evm/             # in-process revm execution harness (napi-rs native addon)
   ffca/                 # framework for crypto apps (work in progress)
 ```
 
@@ -29,7 +29,7 @@ The app serves the frontend, hosts the FFCA runtime that batches and submits to 
 ## Prerequisites
 
 - [Bun](https://bun.sh) v1.3+
-- [Monad Foundry](https://github.com/category-labs/foundry) — the `category-labs` fork of Foundry, not upstream `foundry-rs`. Install by downloading the latest release for your platform and placing the binaries on your PATH. The fork is required because the test suite verifies gas estimation parity between the revm sidecar and `eth_estimateGas`, which only holds under Monad gas rules. Anvil must be started with `--monad` to enable those rules — the test setup does this automatically, but any manual `anvil` invocation needs the flag too.
+- [Monad Foundry](https://github.com/category-labs/foundry) — the `category-labs` fork of Foundry, not upstream `foundry-rs`. Install by downloading the latest release for your platform and placing the binaries on your PATH. The fork is required because the test suite verifies gas estimation parity between the revm harness and `eth_estimateGas`, which only holds under Monad gas rules. Anvil must be started with `--monad` to enable those rules — the test setup does this automatically, but any manual `anvil` invocation needs the flag too.
 - Postgres (for the backend)
 
 ## Quick start

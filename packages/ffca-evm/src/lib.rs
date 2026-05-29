@@ -1,8 +1,14 @@
-#![allow(dead_code)]
+// napi-rs addon: the production transport for ffca-evm.
+//
+// The native class owns one `EvmHarness` (see `harness.rs`) and exposes a
+// single `call` method that forwards a JSON request and returns a JSON
+// response. The JSON protocol is intentionally preserved across the FFI
+// boundary so the Rust harness stays transport-agnostic and the TypeScript
+// client owns one instance per `createEVM()`.
 
-include!("main.rs");
+mod harness;
 
-use napi::bindgen_prelude::Result as NapiResult;
+use harness::{dispatch_json, EvmHarness};
 use napi_derive::napi;
 
 #[napi]
@@ -26,18 +32,7 @@ impl NativeEvm {
     }
 
     #[napi]
-    pub fn call(&mut self, request_json: String) -> NapiResult<String> {
-        let response = match serde_json::from_str::<Request>(&request_json) {
-            Ok(req) => dispatch(&mut self.harness, req),
-            Err(e) => Response {
-                id: 0,
-                ok: false,
-                result: None,
-                error: Some(format!("parse error: {e}")),
-            },
-        };
-
-        serde_json::to_string(&response)
-            .map_err(|e| napi::Error::from_reason(format!("response serialize error: {e}")))
+    pub fn call(&mut self, request_json: String) -> String {
+        dispatch_json(&mut self.harness, &request_json)
     }
 }
