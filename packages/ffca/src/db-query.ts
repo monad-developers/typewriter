@@ -1,5 +1,5 @@
 import type { AbiParameter } from "abitype";
-import { asc, desc, eq, getColumns, sql } from "drizzle-orm";
+import { asc, desc, eq, getColumns, inArray, sql } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { ExecuteResult } from "ffca-evm";
@@ -21,22 +21,57 @@ export function insertMutation(
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
-    const row = {
-      id: mutation.id,
-      status: "accepted",
-      ...abiParameterValues(mutation.config.params, mutation.args),
-      ...prefixedObjectValues("signature_", mutation.signature),
-      ...("resolution" in mutation.config
-        ? abiParameterValues(
-            mutation.config.resolution,
-            requiredValue(mutation.resolution),
-            "resolution_",
-          )
-        : {}),
-    };
-
-    yield* tx.insert(table).values(row);
+    yield* tx.insert(table).values(mutationRow(mutation));
   });
+}
+
+// Batched counterpart to `insertMutation`. Mutations are grouped by their
+// generated table (one per mutation name) so each table receives a single
+// multi-row insert instead of one statement per mutation.
+export function insertMutations(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+  mutations: readonly MutationWithResolution[],
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    if (mutations.length === 0) return;
+
+    const rowsByTable = new Map<
+      string,
+      { table: PgTable; rows: Record<string, unknown>[] }
+    >();
+    for (const mutation of mutations) {
+      const tableName = `${mutation.name.toLowerCase()}_mutations`;
+      let group = rowsByTable.get(tableName);
+      if (group === undefined) {
+        group = { table: getMutationTable(schema, mutation.name), rows: [] };
+        rowsByTable.set(tableName, group);
+      }
+      group.rows.push(mutationRow(mutation));
+    }
+
+    for (const { table, rows } of rowsByTable.values()) {
+      yield* tx.insert(table).values(rows);
+    }
+  });
+}
+
+function mutationRow(
+  mutation: MutationWithResolution,
+): Record<string, unknown> {
+  return {
+    id: mutation.id,
+    status: "accepted",
+    ...abiParameterValues(mutation.config.params, mutation.args),
+    ...prefixedObjectValues("signature_", mutation.signature),
+    ...("resolution" in mutation.config
+      ? abiParameterValues(
+          mutation.config.resolution,
+          requiredValue(mutation.resolution),
+          "resolution_",
+        )
+      : {}),
+  };
 }
 
 export function selectNextMutationId(
@@ -76,22 +111,71 @@ export function updateMutationLifecycle(
     const columns = getColumns(table);
     const idColumn = (columns as Record<"id", PgColumn>).id;
 
-    const set: Record<string, unknown> =
-      mutation.status === "included"
-        ? {
-            status: mutation.status,
-            blockNumber: block?.number.toString(),
-            blockHash: block?.hash,
-            blockTimestamp: block?.timestamp.toString(),
-            transactionHash: block?.transactionHash,
-            includedAt: sql`NOW()`,
-          }
-        : mutation.status === "safe"
-          ? { status: mutation.status, safeAt: sql`NOW()` }
-          : { status: mutation.status, finalizedAt: sql`NOW()` };
-
-    yield* tx.update(table).set(set).where(eq(idColumn, mutation.id));
+    yield* tx
+      .update(table)
+      .set(lifecycleSet(mutation.status, block))
+      .where(eq(idColumn, mutation.id));
   });
+}
+
+// Batched counterpart to `updateMutationLifecycle`. Mutations are grouped by
+// (table, status) — the lifecycle `set` only depends on the target status and
+// the shared block — so each group becomes a single `UPDATE ... WHERE id IN
+// (...)` instead of one statement per mutation.
+export function updateMutationsLifecycle(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+  mutations: readonly SubmittedMutation[],
+  block: RuntimeBlock<"fifo" | "batch">,
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    if (mutations.length === 0) return;
+
+    const groups = new Map<
+      string,
+      { table: PgTable; status: SubmittedMutation["status"]; ids: number[] }
+    >();
+    for (const mutation of mutations) {
+      const key = `${mutation.name.toLowerCase()}_mutations|${mutation.status}`;
+      let group = groups.get(key);
+      if (group === undefined) {
+        group = {
+          table: getMutationTable(schema, mutation.name),
+          status: mutation.status,
+          ids: [],
+        };
+        groups.set(key, group);
+      }
+      group.ids.push(mutation.id);
+    }
+
+    for (const { table, status, ids } of groups.values()) {
+      const columns = getColumns(table);
+      const idColumn = (columns as Record<"id", PgColumn>).id;
+      yield* tx
+        .update(table)
+        .set(lifecycleSet(status, block))
+        .where(inArray(idColumn, ids));
+    }
+  });
+}
+
+function lifecycleSet(
+  status: SubmittedMutation["status"],
+  block: RuntimeBlock<"fifo" | "batch">,
+): Record<string, unknown> {
+  return status === "included"
+    ? {
+        status,
+        blockNumber: block?.number.toString(),
+        blockHash: block?.hash,
+        blockTimestamp: block?.timestamp.toString(),
+        transactionHash: block?.transactionHash,
+        includedAt: sql`NOW()`,
+      }
+    : status === "safe"
+      ? { status, safeAt: sql`NOW()` }
+      : { status, finalizedAt: sql`NOW()` };
 }
 
 export function insertSlotWrites(
@@ -110,6 +194,33 @@ export function insertSlotWrites(
         value: write.new_value,
       })),
     );
+  });
+}
+
+// Batched counterpart to `insertSlotWrites`. Slot writes from every mutation
+// are flattened into a single insert. The flatten preserves the order of
+// `entries` (and of each mutation's writes), which keeps the table's `serial`
+// id monotonic in application order so `selectAccountStorage` still resolves
+// the latest value per slot correctly.
+export function insertSlotWritesMany(
+  tx: FFCADatabaseTransaction,
+  schema: Record<string, PgTable>,
+  entries: readonly {
+    mutation: Pick<RuntimeMutation, "id">;
+    slotWrites: ExecuteResult["slot_writes"];
+  }[],
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    const rows = entries.flatMap(({ mutation, slotWrites }) =>
+      slotWrites.map((write) => ({
+        mutationId: mutation.id,
+        slot: write.slot,
+        value: write.new_value,
+      })),
+    );
+    if (rows.length === 0) return;
+
+    yield* tx.insert(getTable(schema, "slot_writes")).values(rows);
   });
 }
 
