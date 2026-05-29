@@ -14,6 +14,17 @@ import type {
   SubmittedMutation,
 } from "./types";
 
+/** Postgres protocol limit: 32767 bind parameters per query. */
+const MAX_PG_PARAMS = 32_767;
+
+function chunk<T>(array: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
+
 export function insertMutation(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
@@ -51,7 +62,11 @@ export function insertMutations(
     }
 
     for (const { table, rows } of rowsByTable.values()) {
-      yield* tx.insert(table).values(rows);
+      const columnCount = Object.keys(rows[0]!).length;
+      const chunkSize = Math.floor(MAX_PG_PARAMS / Math.max(1, columnCount));
+      for (const batch of chunk(rows, chunkSize)) {
+        yield* tx.insert(table).values(batch);
+      }
     }
   });
 }
@@ -152,10 +167,12 @@ export function updateMutationsLifecycle(
     for (const { table, status, ids } of groups.values()) {
       const columns = getColumns(table);
       const idColumn = (columns as Record<"id", PgColumn>).id;
-      yield* tx
-        .update(table)
-        .set(lifecycleSet(status, block))
-        .where(inArray(idColumn, ids));
+      for (const batch of chunk(ids, 30_000)) {
+        yield* tx
+          .update(table)
+          .set(lifecycleSet(status, block))
+          .where(inArray(idColumn, batch));
+      }
     }
   });
 }
@@ -220,7 +237,10 @@ export function insertSlotWritesMany(
     );
     if (rows.length === 0) return;
 
-    yield* tx.insert(getTable(schema, "slot_writes")).values(rows);
+    // slot_writes rows have 3 columns (mutationId, slot, value)
+    for (const batch of chunk(rows, 10_000)) {
+      yield* tx.insert(getTable(schema, "slot_writes")).values(batch);
+    }
   });
 }
 
@@ -232,10 +252,13 @@ export function insertKnownPaths(
   return Effect.gen(function* () {
     if (paths.length === 0) return;
 
-    yield* tx
-      .insert(getTable(schema, "known_paths"))
-      .values(paths.map((path) => ({ path })))
-      .onConflictDoNothing();
+    const rows = paths.map((path) => ({ path }));
+    for (const batch of chunk(rows, 30_000)) {
+      yield* tx
+        .insert(getTable(schema, "known_paths"))
+        .values(batch)
+        .onConflictDoNothing();
+    }
   });
 }
 
