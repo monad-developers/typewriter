@@ -4,9 +4,10 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "cargo build --release",
+    "build": "cargo build --release && rm -f target/release/ffca_evm.node && cp target/release/libffca_evm.so target/release/ffca_evm.node",
+    "build:napi:debug": "cargo build && rm -f target/debug/ffca_evm.node && cp target/debug/libffca_evm.so target/debug/ffca_evm.node",
     "lint:effect": "effect-language-service diagnostics --project tsconfig.json",
-    "test": "cargo build && bun test",
+    "test": "bun run build:napi:debug && bun test",
     "typecheck": "tsc --noEmit",
     "lint": "cargo fmt --check && cargo clippy -- -D warnings && forge fmt --check test/contracts"
   },
