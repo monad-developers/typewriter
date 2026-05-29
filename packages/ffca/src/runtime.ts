@@ -9,13 +9,9 @@ import type { Hex } from "ox";
 import { createStorageProxy, type StorageProxy } from "storage-layout";
 import {
   ContractFunctionRevertedError,
-  createWalletClient,
   decodeEventLog,
-  extractChain,
-  http,
   RawContractError,
 } from "viem";
-import * as chains from "viem/chains";
 import { Database } from "./db";
 import { selectAccountStorage, selectKnownPaths } from "./db-query";
 import {
@@ -451,20 +447,6 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
     );
 
     return { evm, state, knownPaths, invalidateStorageCache };
-  });
-}
-
-export function createRuntimeWalletClient(app: InternalApp) {
-  const rpcUrl = app.rpcUrl[0]!;
-  const chain = extractChain({
-    chains: Object.values(chains),
-    id: app.chainId as 1,
-  });
-  const transport = http(rpcUrl, { retryCount: 0 });
-  return createWalletClient({
-    account: app.account,
-    chain,
-    transport,
   });
 }
 

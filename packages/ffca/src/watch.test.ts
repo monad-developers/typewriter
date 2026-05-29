@@ -26,7 +26,7 @@ const liveLayer = () =>
   layerWatchLive({
     pollIntervalMs: POLL_INTERVAL_MS,
     maxChainDepth: 16,
-  }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL })));
+  }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] })));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
   "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes publicKey, bytes rawSignature) sig, uint256 enqueuedBlock)",
@@ -185,7 +185,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
             address: counterAddress,
             selector: toEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
           },
-        }).pipe(Layer.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL }))),
+        }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] }))),
       ),
     ),
   );

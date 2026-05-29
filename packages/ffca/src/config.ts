@@ -152,7 +152,9 @@ export function validateConfig(config: FFCAConfig): void {
 export function buildInternalApp(config: FFCAConfig): InternalApp {
   validateConfig(config);
 
-  const rpcUrl = Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl];
+  const rpcUrls = Array.isArray(config.rpcUrl)
+    ? config.rpcUrl
+    : [config.rpcUrl];
   const confirmations = {
     safeBlockDepth:
       config.confirmations?.safeBlockDepth ?? DEFAULT_SAFE_BLOCK_DEPTH,
@@ -189,7 +191,7 @@ export function buildInternalApp(config: FFCAConfig): InternalApp {
     storageLayout: config.storageLayout,
     account: config.account,
     chainId: config.chainId,
-    rpcUrl,
+    rpcUrls,
     database: config.database,
     mutations: config.mutations,
     schema: createMutationSchema(config),

@@ -83,7 +83,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     });
 
     const rpcLayer = layerRpc.pipe(
-      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrl: app.rpcUrl[0]! })),
+      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrls: app.rpcUrls })),
     );
 
     const dbLayer = layerDatabase.pipe(

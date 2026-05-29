@@ -1,4 +1,12 @@
-import { Context, Data, Duration, Effect, Layer, Schedule } from "effect";
+import {
+  Context,
+  Data,
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Schedule,
+} from "effect";
 import type {
   EIP1193Parameters,
   EIP1474Methods,
@@ -29,6 +37,11 @@ export type EffectEip1193RequestFn<
 >(
   args: parameters,
 ) => Effect.Effect<returnType, RpcRequestError>;
+
+type RawRequest = (args: {
+  method: string;
+  params?: unknown;
+}) => Effect.Effect<unknown, RpcRequestError>;
 
 type JsonRpcBody = {
   readonly jsonrpc: "2.0";
@@ -69,21 +82,31 @@ export class RpcRequestError extends Data.TaggedError("RpcRequestError")<{
 export class RpcConfig extends Context.Service<
   RpcConfig,
   {
-    readonly rpcUrl: string;
+    readonly rpcUrls: readonly string[];
   }
 >()("ffca/RpcConfig") {}
 
 export class Rpc extends Context.Service<
   Rpc,
   {
+    /**
+     * Round-robins requests across the configured providers. Each attempt has
+     * a {@link REQUEST_TIMEOUT} timeout and retries advance to the next
+     * provider.
+     */
     readonly request: EffectEip1193RequestFn<EIP1474Methods>;
+    /**
+     * Fans a request out to every configured provider concurrently, returning
+     * the first non-error response. If every provider errors, the first
+     * provider's error is returned. Does not retry.
+     */
+    readonly requestMultiplexed: EffectEip1193RequestFn<EIP1474Methods>;
   }
 >()("ffca/Rpc") {}
 
-export const rpcRetry = Effect.retry({
-  times: 8,
-  schedule: Schedule.spaced(Duration.millis(200)),
-});
+const REQUEST_TIMEOUT = Duration.seconds(5);
+const RETRY_TIMES = 8;
+const RETRY_DELAY = Duration.millis(200);
 
 function encodeRequest(id: number, args: { method: string; params?: unknown }) {
   const body: JsonRpcBody = {
@@ -111,12 +134,10 @@ function decodeResponse<TResult>(
   return payload.result;
 }
 
-export function makeHttpRpcRequest(
-  rpcUrl: string,
-): EffectEip1193RequestFn<EIP1474Methods> {
+function makeRawHttpRequest(rpcUrl: string): RawRequest {
   let id = 0;
 
-  const request = (args: { method: string; params?: unknown }) => {
+  return (args) => {
     const body = encodeRequest(++id, args);
     return Effect.tryPromise({
       try: async (signal) => {
@@ -151,8 +172,76 @@ export function makeHttpRpcRequest(
       },
     });
   };
+}
 
-  return request as EffectEip1193RequestFn<EIP1474Methods>;
+function makeRpc(rpcUrls: readonly string[]): {
+  request: EffectEip1193RequestFn<EIP1474Methods>;
+  requestMultiplexed: EffectEip1193RequestFn<EIP1474Methods>;
+} {
+  const providers = rpcUrls.map(makeRawHttpRequest);
+
+  const withTimeout = (
+    effect: Effect.Effect<unknown, RpcRequestError>,
+    method: string,
+  ) =>
+    effect.pipe(
+      Effect.timeoutOrElse({
+        duration: REQUEST_TIMEOUT,
+        orElse: () =>
+          Effect.fail(
+            new RpcRequestError({
+              message: `RPC request timed out after ${Duration.toMillis(
+                REQUEST_TIMEOUT,
+              )}ms: ${method}`,
+              method,
+            }),
+          ),
+      }),
+    );
+
+  // Round-robin cursor shared across requests; advanced once per attempt so
+  // retries rotate onto the next provider.
+  let cursor = 0;
+
+  const request: RawRequest = (args) => {
+    const attempt = Effect.suspend(() => {
+      const provider = providers[cursor % providers.length]!;
+      cursor += 1;
+      return withTimeout(provider(args), args.method);
+    });
+    return attempt.pipe(
+      Effect.retry({
+        times: RETRY_TIMES,
+        schedule: Schedule.spaced(RETRY_DELAY),
+      }),
+    );
+  };
+
+  const requestMultiplexed: RawRequest = (args) =>
+    Effect.gen(function* () {
+      const firstError = yield* Deferred.make<RpcRequestError>();
+      const attempts = providers.map((provider, index) => {
+        const attempt = withTimeout(provider(args), args.method);
+        return index === 0
+          ? attempt.pipe(
+              Effect.tapError((error) => Deferred.succeed(firstError, error)),
+            )
+          : attempt;
+      });
+      return yield* Effect.raceAll(attempts).pipe(
+        Effect.catch(() =>
+          Deferred.await(firstError).pipe(
+            Effect.flatMap((error) => Effect.fail(error)),
+          ),
+        ),
+      );
+    });
+
+  return {
+    request: request as EffectEip1193RequestFn<EIP1474Methods>,
+    requestMultiplexed:
+      requestMultiplexed as EffectEip1193RequestFn<EIP1474Methods>,
+  };
 }
 
 export const layerRpc: Layer.Layer<Rpc, RpcConfigError, RpcConfig> =
@@ -160,15 +249,20 @@ export const layerRpc: Layer.Layer<Rpc, RpcConfigError, RpcConfig> =
     Rpc,
     Effect.gen(function* () {
       const config = yield* RpcConfig;
-      const request = yield* Effect.try({
-        try: () => makeHttpRpcRequest(config.rpcUrl),
+      const { request, requestMultiplexed } = yield* Effect.try({
+        try: () => {
+          if (config.rpcUrls.length === 0) {
+            throw new Error("at least one rpc url is required");
+          }
+          return makeRpc(config.rpcUrls);
+        },
         catch: (cause) =>
           new RpcConfigError({
             message: "Failed to create RPC provider",
             cause,
           }),
       });
-      return Rpc.of({ request });
+      return Rpc.of({ request, requestMultiplexed });
     }),
   );
 

@@ -8,7 +8,7 @@ import {
   Stream,
 } from "effect";
 import { Hex } from "ox";
-import { sendRawTransactionSync } from "viem/actions";
+import { formatTransactionReceipt, parseTransaction } from "viem";
 import { Database } from "./db";
 import {
   insertKnownPaths,
@@ -25,12 +25,11 @@ import type {
 } from "./ffca";
 import type { InternalApp } from "./internal";
 import { durationMs, loggerLayer, startTimer } from "./logger";
-import { Rpc, rpcRetry } from "./rpc";
+import { Rpc } from "./rpc";
 import { requestBlock } from "./rpc-request";
 import {
   createRevmRevertError,
   createRuntimeState,
-  createRuntimeWalletClient,
   decodeEnqueuedMutation,
   enqueueMutation,
   executeMutation,
@@ -92,8 +91,6 @@ export function createRuntimeFIFOEffect(
       }),
     );
     const nextNonce = Effect.sync(() => nonce++);
-
-    const walletClient = createRuntimeWalletClient(app);
 
     let unfinalizedBlocks: RuntimeBlock<"fifo">[] = [];
     const mutationListeners = new Set<MutationListener>();
@@ -258,31 +255,55 @@ export function createRuntimeFIFOEffect(
 
       const submitNonce = yield* nextNonce;
       const transactionStartedAtMs = startTimer();
-      const request = yield* Effect.tryPromise({
-        try: () =>
-          walletClient.prepareTransactionRequest({
+
+      // Fees come from `eth_fillTransaction` (round-robined); gas, nonce, and
+      // access list come from the local simulation. The node returns the
+      // fully-filled transaction as `raw`, which we parse straight back into a
+      // signable transaction (instead of rebuilding it field by field), sign
+      // locally, and broadcast via the multiplexed `eth_sendRawTransactionSync`
+      // so the fastest non-erroring provider wins.
+      const filled = yield* rpc.request({
+        method: "eth_fillTransaction",
+        params: [
+          {
+            from: app.account.address,
             to: app.address,
             data: calldata,
+            gas: Hex.fromNumber(simulateResult.gas_limit),
+            nonce: Hex.fromNumber(submitNonce),
             accessList: simulateResult.access_list,
-            gas: BigInt(simulateResult.gas_limit),
-            nonce: submitNonce,
-          }),
-        catch: (error) => error as Error,
-      }).pipe(rpcRetry);
+          },
+        ],
+      });
 
+      // `eth_fillTransaction` returns an already-signed `raw`; strip its
+      // signature fields so the account re-signs over the correct payload.
+      const transaction = parseTransaction(filled.raw);
+      delete transaction.r;
+      delete transaction.s;
+      delete transaction.v;
+      delete transaction.yParity;
       const signed = yield* Effect.tryPromise({
-        try: () => walletClient.signTransaction(request),
+        try: () => app.account.signTransaction(transaction),
         catch: (error) => error as Error,
       });
 
-      const receipt = yield* Effect.tryPromise({
-        try: () =>
-          sendRawTransactionSync(walletClient, {
-            serializedTransaction: signed,
-            throwOnReceiptRevert: true,
-          }),
-        catch: (error) => error as Error,
-      });
+      const receipt = formatTransactionReceipt(
+        yield* rpc.requestMultiplexed({
+          method: "eth_sendRawTransactionSync",
+          params: [signed],
+        }),
+      );
+
+      if (receipt.status === "reverted") {
+        return yield* Effect.fail(
+          createRevmRevertError(
+            app,
+            undefined,
+            `settlement transaction reverted onchain: ${receipt.transactionHash}`,
+          ),
+        );
+      }
       const duration = durationMs(transactionStartedAtMs);
 
       yield* Effect.logDebug("submitted transaction").pipe(

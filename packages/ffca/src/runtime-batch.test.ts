@@ -48,7 +48,7 @@ import { createMutationSchema } from "./schema";
 import { layerWatchLive } from "./watch";
 
 function layerRuntimeServices(address: Address) {
-  const rpcLayer = layerRpcLive({ rpcUrl: TEST_RPC_URL });
+  const rpcLayer = layerRpcLive({ rpcUrls: [TEST_RPC_URL] });
   const dbLayer = layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 });
   const forceInclusionEvent = getAbiItem({
     abi: COUNTER_ABI,

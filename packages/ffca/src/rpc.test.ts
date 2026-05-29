@@ -8,7 +8,7 @@ test("Rpc service makes an EIP-1193 request to Anvil", async () => {
     Effect.gen(function* () {
       const rpc = yield* Rpc;
       return yield* rpc.request({ method: "eth_chainId" });
-    }).pipe(Effect.provide(layerRpcLive({ rpcUrl: TEST_RPC_URL }))),
+    }).pipe(Effect.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] }))),
   );
 
   expect(chainId).toBe("0x7a69");

@@ -60,7 +60,7 @@ export type InternalApp = {
   storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;
-  rpcUrl: string[];
+  rpcUrls: string[];
   database: DatabaseOptions;
   mutations: { [name: string]: InternalMutation };
   schema: Record<string, PgTable>;
