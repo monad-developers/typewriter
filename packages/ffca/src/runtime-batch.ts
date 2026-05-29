@@ -318,8 +318,9 @@ export function createRuntimeBatchEffect(
             .sort((a, b) => a - b);
 
           const calldata = encodeExecuteCalldata(
-            app.abi,
-            batches.map((batch) => encodeBatchArg(app.abi, batch.mutations)),
+            batches.map((batch) =>
+              encodeBatchArg(app.signature.params, batch.mutations),
+            ),
             acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
           );
 
@@ -334,7 +335,6 @@ export function createRuntimeBatchEffect(
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
-                app,
                 simulateResult.revert_data,
                 "revm simulate reverted",
               ),
@@ -428,7 +428,6 @@ export function createRuntimeBatchEffect(
       if (receipt.status === "reverted") {
         return yield* Effect.fail(
           createRevmRevertError(
-            app,
             undefined,
             `settlement transaction reverted onchain: ${receipt.transactionHash}`,
           ),

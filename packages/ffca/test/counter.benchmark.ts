@@ -9,9 +9,9 @@ import {
   USER_PRIVATE_KEY,
 } from "./setup";
 import {
-  COUNTER_ABI,
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
   counterNewAccountMutation,
   deployCounter,
@@ -55,7 +55,7 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
   const ffca = await createFFCA({
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

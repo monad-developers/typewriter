@@ -84,6 +84,8 @@ Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the
 
 When a suite-wide test run reports many failures, especially with `beforeEach`/`afterEach` timeouts or "Unhandled error between tests", run a single test in isolation to see the actual error. Cascading setup failures hide the root cause — `bun test -t "name fragment"` (or `bun test path/to/file.test.ts`) cuts through the noise and surfaces the real exception in the first failing test.
 
+If a suite-wide test run hits two timeout failures, cancel the process early; the rest are likely to timeout for the same reason.
+
 ## Lint / format
 
 Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.

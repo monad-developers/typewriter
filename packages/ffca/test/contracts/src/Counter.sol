@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {
-    FFCA,
-    EIP712_DOMAIN_TYPEHASH,
-    KeyType,
-    UnknownMutation,
-    UnauthorizedExecute,
-    ForceInclusionTooEarly,
-    ForceInclusionAlreadyExecuted,
-    verifySignature
-} from "ffca/FFCA.sol";
+import {FFCA, EIP712_DOMAIN_TYPEHASH, KeyType, UnknownMutation, verifySignature} from "ffca/FFCA.sol";
 
 struct Account {
     KeyType keyType;
@@ -54,7 +45,15 @@ library AddMutation {
         uint256 nonce;
     }
 
+    function executeAdd(State storage state, Add memory add) internal {
+        state.total += add.amount;
+    }
+
     bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
+
+    function hashAdd(Add memory add) internal pure returns (bytes32) {
+        return keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
+    }
 
     function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest)
         internal
@@ -67,14 +66,7 @@ library AddMutation {
         verifySignature(keyType, digest, publicKey, signature.rawSignature);
         account.nonce++;
     }
-
-    function executeAdd(State storage state, Add memory add) internal {
-        state.total += add.amount;
-    }
 }
-
-// .0001 downtime / month / (.4 s / block) * 2,629,800 s / month
-uint256 constant FORCE_INCLUSION_DELAY = 658;
 
 /// Single-signer secp256k1 fixture for ffca's submit path. `add` mutations
 /// must be EIP-712-signed by the address set at construction time. ffca's
@@ -95,85 +87,25 @@ contract Counter is FFCA {
                 EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Counter")), keccak256(bytes("1")), block.chainid, address(this)
             )
         );
+        // .0001 downtime / month / (.4 s / block) * 2,629,800 s / month
+        FORCE_INCLUSION_DELAY = 658;
     }
 
-    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external override {
-        if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
-
-        for (uint256 i; i < forceExecuteIndexes.length; i++) {
-            uint256 index = forceExecuteIndexes[i];
-            QueuedMutation storage queued = queue[index];
-
-            if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
-
-            if (Mutation(queued.mutation) == Mutation.NewAccount) {
-                NewAccountMutation.NewAccount memory newAccount =
-                    abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
-                NewAccountMutation.executeNewAccount(state, newAccount);
-            } else if (Mutation(queued.mutation) == Mutation.Add) {
-                AddMutation.Add memory add = abi.decode(queued.mutationData, (AddMutation.Add));
-                Signature memory signature = abi.decode(queued.signature, (Signature));
-
-                bytes32 structHash = keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                AddMutation.verifyAddSignature(state, add, signature, digest);
-                AddMutation.executeAdd(state, add);
-            } else {
-                revert UnknownMutation(queued.mutation);
-            }
-
-            delete queue[index];
-        }
-
-        for (uint256 b; b < batches.length; b++) {
-            Batch calldata batch = batches[b];
-            for (uint256 i; i < batch.mutations.length; i++) {
-                if (Mutation(batch.mutations[i]) == Mutation.NewAccount) {
-                    NewAccountMutation.NewAccount memory newAccount =
-                        abi.decode(batch.mutationData[i], (NewAccountMutation.NewAccount));
-                    NewAccountMutation.executeNewAccount(state, newAccount);
-                } else if (Mutation(batch.mutations[i]) == Mutation.Add) {
-                    AddMutation.Add memory add = abi.decode(batch.mutationData[i], (AddMutation.Add));
-                    Signature memory signature = abi.decode(batch.signatures[i], (Signature));
-
-                    bytes32 structHash = keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
-                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                    AddMutation.verifyAddSignature(state, add, signature, digest);
-                    AddMutation.executeAdd(state, add);
-                } else {
-                    revert UnknownMutation(batch.mutations[i]);
-                }
-            }
-        }
-    }
-
-    function forceExecute(uint256 index) external override {
-        QueuedMutation storage queued = queue[index];
-
-        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) {
-            revert ForceInclusionTooEarly((queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number);
-        }
-        if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
-
-        if (Mutation(queued.mutation) == Mutation.NewAccount) {
-            NewAccountMutation.NewAccount memory newAccount =
-                abi.decode(queued.mutationData, (NewAccountMutation.NewAccount));
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+        if (Mutation(mutation) == Mutation.NewAccount) {
+            NewAccountMutation.NewAccount memory newAccount = abi.decode(mutationData, (NewAccountMutation.NewAccount));
             NewAccountMutation.executeNewAccount(state, newAccount);
-        } else if (Mutation(queued.mutation) == Mutation.Add) {
-            AddMutation.Add memory add = abi.decode(queued.mutationData, (AddMutation.Add));
-            Signature memory signature = abi.decode(queued.signature, (Signature));
+        } else if (Mutation(mutation) == Mutation.Add) {
+            AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
+            Signature memory signature = abi.decode(signatureData, (Signature));
 
-            bytes32 structHash = keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
+            bytes32 structHash = AddMutation.hashAdd(add);
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
             AddMutation.verifyAddSignature(state, add, signature, digest);
             AddMutation.executeAdd(state, add);
         } else {
-            revert UnknownMutation(queued.mutation);
+            revert UnknownMutation(mutation);
         }
-
-        delete queue[index];
     }
 }

@@ -93,13 +93,11 @@ export async function signTransfer(params: {
     message: params.transfer,
   });
   const { v, r, s } = parseSignature(signature as Hex);
-  return {
-    keyType: 2,
-    rawSignature: encodeAbiParameters(
-      parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-      [Number(v), r, s],
-    ),
-  };
+  const rawSignature = encodeAbiParameters(
+    parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
+    [Number(v), r, s],
+  );
+  return { keyType: 2, rawSignature };
 }
 
 export async function signMint(params: {
@@ -119,11 +117,9 @@ export async function signMint(params: {
     message: params.mint,
   });
   const { v, r, s } = parseSignature(signature as Hex);
-  return {
-    keyType: 2,
-    rawSignature: encodeAbiParameters(
-      parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-      [Number(v), r, s],
-    ),
-  };
+  const rawSignature = encodeAbiParameters(
+    parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
+    [Number(v), r, s],
+  );
+  return { keyType: 2, rawSignature };
 }

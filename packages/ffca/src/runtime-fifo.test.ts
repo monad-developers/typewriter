@@ -16,17 +16,17 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_ABI,
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
   counterNewAccountMutation,
   deployCounter,
   deployHarness,
   encodeHarnessSignature,
-  HARNESS_ABI,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
+  HARNESS_SIGNATURE_PARAMS,
   HARNESS_STORAGE_LAYOUT,
   harnessAccountId,
   p256PublicKey,
@@ -37,7 +37,11 @@ import {
 } from "../test/utils";
 import { buildInternalApp, type FFCAConfig } from "./config";
 import { layerDatabaseLive } from "./db";
-import { encodeMutationCalldata } from "./encoding";
+import {
+  encodeMutationCalldata,
+  encodeSignatureCalldata,
+  FFCA_ABI,
+} from "./encoding";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { layerRpcLive } from "./rpc";
 import { createRuntimeFIFOEffect as createRuntimeFIFOEffectInternal } from "./runtime-fifo";
@@ -48,9 +52,12 @@ function layerRuntimeServices(address: Address) {
   const rpcLayer = layerRpcLive({ rpcUrls: [TEST_RPC_URL] });
   const dbLayer = layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 });
   const forceInclusionEvent = getAbiItem({
-    abi: COUNTER_ABI,
+    abi: FFCA_ABI,
     name: "ForceInclusionQueued",
   });
+  if (forceInclusionEvent === undefined) {
+    throw new Error("missing FFCA ForceInclusionQueued event");
+  }
   const watchLayer = layerWatchLive({
     pollIntervalMs: 200,
     maxChainDepth: 5,
@@ -123,7 +130,7 @@ test("createRuntimeFIFOEffect", async () => {
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -163,7 +170,7 @@ test("runtime loads persisted slot state before returning", async () => {
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -188,9 +195,9 @@ test("runtime loads persisted slot state before returning", async () => {
     yield* Effect.promise(
       () => TEST_DB_CONNECTION`
       INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-        (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_signature")})
+        (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
       VALUES
-        (0, 'included', 7, 0, '0x')
+        (0, 'included', 7, 0, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
     `,
     );
     yield* Effect.promise(
@@ -226,7 +233,7 @@ test("execute() returns an accepted mutation", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -289,7 +296,7 @@ test("execute() accepts multiple mutations", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -371,7 +378,7 @@ test("runtime emits mutation and block events", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -509,7 +516,7 @@ test("runtime persists mutations to database", async () => {
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -563,15 +570,15 @@ test("runtime persists mutations to database", async () => {
     status: string;
     amount: bigint;
     nonce: bigint;
-    signature_signature: `0x${string}`;
+    signature_rawSignature: `0x${string}`;
   }[];
   const mutationRows = addMutationRows.map(
-    ({ id, status, amount, nonce, signature_signature }) => ({
+    ({ id, status, amount, nonce, signature_rawSignature }) => ({
       id,
       status,
       amount,
       nonce,
-      has_signature: signature_signature.startsWith("0x"),
+      has_signature: signature_rawSignature.startsWith("0x"),
     }),
   );
   const slotRows = await db
@@ -631,7 +638,7 @@ test("runtime submits a mutation onchain", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -698,7 +705,7 @@ test("runtime finalizes a mutation", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -762,7 +769,7 @@ test("runtime rejects a Harness mutation when resolution throws", async () => {
   const config: FFCAConfig = {
     address,
     domain: HARNESS_DOMAIN,
-    abi: HARNESS_ABI,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -831,7 +838,7 @@ test("runtime handles Harness account management with multiple signature types",
   const config: FFCAConfig = {
     address,
     domain: HARNESS_DOMAIN,
-    abi: HARNESS_ABI,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -989,7 +996,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1040,9 +1047,13 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
         account: USER_ACCOUNT,
         chain: anvil,
         address,
-        abi: COUNTER_ABI,
+        abi: FFCA_ABI,
         functionName: "enqueue",
-        args: [COUNTER_MUTATIONS.add.tag, mutationData, signature],
+        args: [
+          COUNTER_MUTATIONS.add.tag,
+          mutationData,
+          encodeSignatureCalldata(COUNTER_SIGNATURE_PARAMS, signature),
+        ],
       }),
     );
 
@@ -1086,7 +1097,7 @@ test("runtime delays force inclusion behind already accepted mutations", async (
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1149,9 +1160,16 @@ test("runtime delays force inclusion behind already accepted mutations", async (
         account: USER_ACCOUNT,
         chain: anvil,
         address,
-        abi: COUNTER_ABI,
+        abi: FFCA_ABI,
         functionName: "enqueue",
-        args: [COUNTER_MUTATIONS.add.tag, mutationData, forceIncludedSignature],
+        args: [
+          COUNTER_MUTATIONS.add.tag,
+          mutationData,
+          encodeSignatureCalldata(
+            COUNTER_SIGNATURE_PARAMS,
+            forceIncludedSignature,
+          ),
+        ],
       }),
     );
 
@@ -1171,7 +1189,7 @@ test("runtime handles failing mutation", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1231,7 +1249,7 @@ test("runtime program handles interrupt", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

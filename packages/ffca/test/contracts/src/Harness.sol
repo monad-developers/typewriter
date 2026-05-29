@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {
-    FFCA,
-    EIP712_DOMAIN_TYPEHASH,
-    KeyType,
-    UnknownMutation,
-    UnauthorizedExecute,
-    ForceInclusionTooEarly,
-    ForceInclusionAlreadyExecuted,
-    verifySignature
-} from "ffca/FFCA.sol";
+import {FFCA, EIP712_DOMAIN_TYPEHASH, KeyType, UnknownMutation, verifySignature} from "ffca/FFCA.sol";
 
 struct Signature {
     bytes32 account;
@@ -62,6 +53,10 @@ library InitializeMutation {
 
     bytes32 constant INITIALIZE_TYPEHASH = keccak256("initialize(uint8 rootKeyType,bytes rootPublicKey)");
 
+    function hashInitialize(Initialize memory initialize) internal pure returns (bytes32) {
+        return keccak256(abi.encode(INITIALIZE_TYPEHASH, initialize.rootKeyType, keccak256(initialize.rootPublicKey)));
+    }
+
     function executeInitialize(State storage state, Initialize memory initialize, Signature memory signature) internal {
         bytes32 expected = keccak256(initialize.rootPublicKey);
         if (signature.account != expected) revert InvalidAccount();
@@ -81,6 +76,19 @@ library AuthorizeMutation {
 
     bytes32 constant AUTHORIZE_TYPEHASH =
         keccak256("authorize(bytes32 account,uint64 keyId,uint8 keyType,bytes publicKey,uint256 nonce)");
+
+    function hashAuthorize(Authorize memory authorize) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                AUTHORIZE_TYPEHASH,
+                authorize.account,
+                authorize.keyId,
+                authorize.keyType,
+                keccak256(authorize.publicKey),
+                authorize.nonce
+            )
+        );
+    }
 
     function verifyAuthorizeSignature(
         State storage state,
@@ -105,6 +113,10 @@ library CreditMutation {
     }
 
     bytes32 constant CREDIT_TYPEHASH = keccak256("credit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
+
+    function hashCredit(Credit memory credit) internal pure returns (bytes32) {
+        return keccak256(abi.encode(CREDIT_TYPEHASH, credit.account, credit.keyId, credit.amount, credit.nonce));
+    }
 
     function verifyCreditSignature(
         State storage state,
@@ -134,6 +146,10 @@ library DebitMutation {
 
     bytes32 constant DEBIT_TYPEHASH = keccak256("debit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
 
+    function hashDebit(Debit memory debit) internal pure returns (bytes32) {
+        return keccak256(abi.encode(DEBIT_TYPEHASH, debit.account, debit.keyId, debit.amount, debit.nonce));
+    }
+
     function verifyDebitSignature(State storage state, Debit memory debit, Signature memory signature, bytes32 digest)
         internal
     {
@@ -161,6 +177,13 @@ library AssertMutation {
 
     bytes32 constant ASSERT_TYPEHASH = keccak256("assert(bytes32 account,uint64 keyId,uint256 expected,uint256 nonce)");
 
+    function hashAssert(Assert memory assertion) internal pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(ASSERT_TYPEHASH, assertion.account, assertion.keyId, assertion.expected, assertion.nonce)
+            );
+    }
+
     function verifyAssertSignature(
         State storage state,
         Assert memory assertion,
@@ -174,9 +197,6 @@ library AssertMutation {
         require(state.balances[signature.account] == assertion.expected, "assert failed");
     }
 }
-
-// .0001 downtime / month / (.4 s / block) * 2,629,800 s / month
-uint256 constant FORCE_INCLUSION_DELAY = 658;
 
 /// Multi-key fixture for ffca's submit path. Accounts are 32-byte ids; each
 /// holds a list of keys (any of the three KeyTypes from FFCA.sol).
@@ -214,245 +234,55 @@ contract Harness is FFCA {
                 EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Harness")), keccak256(bytes("1")), block.chainid, address(this)
             )
         );
+        // .0001 downtime / month / (.4 s / block) * 2,629,800 s / month
+        FORCE_INCLUSION_DELAY = 658;
     }
 
-    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external override {
-        if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
-
-        for (uint256 i; i < forceExecuteIndexes.length; i++) {
-            uint256 index = forceExecuteIndexes[i];
-            QueuedMutation storage queued = queue[index];
-
-            if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
-
-            if (Mutation(queued.mutation) == Mutation.Initialize) {
-                InitializeMutation.Initialize memory initialize =
-                    abi.decode(queued.mutationData, (InitializeMutation.Initialize));
-                Signature memory signature = abi.decode(queued.signature, (Signature));
-
-                InitializeMutation.executeInitialize(state, initialize, signature);
-            } else if (Mutation(queued.mutation) == Mutation.Authorize) {
-                AuthorizeMutation.Authorize memory authorize =
-                    abi.decode(queued.mutationData, (AuthorizeMutation.Authorize));
-                Signature memory signature = abi.decode(queued.signature, (Signature));
-
-                bytes32 structHash = keccak256(
-                    abi.encode(
-                        AuthorizeMutation.AUTHORIZE_TYPEHASH,
-                        authorize.account,
-                        authorize.keyId,
-                        authorize.keyType,
-                        keccak256(authorize.publicKey),
-                        authorize.nonce
-                    )
-                );
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                AuthorizeMutation.verifyAuthorizeSignature(state, authorize, signature, digest);
-                AuthorizeMutation.executeAuthorize(state, authorize, signature);
-            } else if (Mutation(queued.mutation) == Mutation.Credit) {
-                CreditMutation.Credit memory credit = abi.decode(queued.mutationData, (CreditMutation.Credit));
-                Signature memory signature = abi.decode(queued.signature, (Signature));
-
-                bytes32 structHash = keccak256(
-                    abi.encode(
-                        CreditMutation.CREDIT_TYPEHASH, credit.account, credit.keyId, credit.amount, credit.nonce
-                    )
-                );
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                CreditMutation.verifyCreditSignature(state, credit, signature, digest);
-                CreditMutation.executeCredit(state, credit, signature);
-            } else if (Mutation(queued.mutation) == Mutation.Debit) {
-                (DebitMutation.Debit memory debit, DebitMutation.DebitResolution memory resolution) =
-                    abi.decode(queued.mutationData, (DebitMutation.Debit, DebitMutation.DebitResolution));
-                Signature memory signature = abi.decode(queued.signature, (Signature));
-
-                bytes32 structHash = keccak256(
-                    abi.encode(DebitMutation.DEBIT_TYPEHASH, debit.account, debit.keyId, debit.amount, debit.nonce)
-                );
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                DebitMutation.verifyDebitSignature(state, debit, signature, digest);
-                DebitMutation.executeDebit(state, debit, resolution, signature);
-            } else if (Mutation(queued.mutation) == Mutation.Assert) {
-                AssertMutation.Assert memory assertion = abi.decode(queued.mutationData, (AssertMutation.Assert));
-                Signature memory signature = abi.decode(queued.signature, (Signature));
-
-                bytes32 structHash = keccak256(
-                    abi.encode(
-                        AssertMutation.ASSERT_TYPEHASH,
-                        assertion.account,
-                        assertion.keyId,
-                        assertion.expected,
-                        assertion.nonce
-                    )
-                );
-                bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                AssertMutation.verifyAssertSignature(state, assertion, signature, digest);
-                AssertMutation.executeAssert(state, assertion, signature);
-            } else {
-                revert UnknownMutation(queued.mutation);
-            }
-
-            delete queue[index];
-        }
-
-        for (uint256 b; b < batches.length; b++) {
-            Batch calldata batch = batches[b];
-            for (uint256 i; i < batch.mutations.length; i++) {
-                if (Mutation(batch.mutations[i]) == Mutation.Initialize) {
-                    InitializeMutation.Initialize memory initialize =
-                        abi.decode(batch.mutationData[i], (InitializeMutation.Initialize));
-                    Signature memory signature = abi.decode(batch.signatures[i], (Signature));
-
-                    InitializeMutation.executeInitialize(state, initialize, signature);
-                } else if (Mutation(batch.mutations[i]) == Mutation.Authorize) {
-                    AuthorizeMutation.Authorize memory authorize =
-                        abi.decode(batch.mutationData[i], (AuthorizeMutation.Authorize));
-                    Signature memory signature = abi.decode(batch.signatures[i], (Signature));
-
-                    bytes32 structHash = keccak256(
-                        abi.encode(
-                            AuthorizeMutation.AUTHORIZE_TYPEHASH,
-                            authorize.account,
-                            authorize.keyId,
-                            authorize.keyType,
-                            keccak256(authorize.publicKey),
-                            authorize.nonce
-                        )
-                    );
-                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                    AuthorizeMutation.verifyAuthorizeSignature(state, authorize, signature, digest);
-                    AuthorizeMutation.executeAuthorize(state, authorize, signature);
-                } else if (Mutation(batch.mutations[i]) == Mutation.Credit) {
-                    CreditMutation.Credit memory credit = abi.decode(batch.mutationData[i], (CreditMutation.Credit));
-                    Signature memory signature = abi.decode(batch.signatures[i], (Signature));
-
-                    bytes32 structHash = keccak256(
-                        abi.encode(
-                            CreditMutation.CREDIT_TYPEHASH, credit.account, credit.keyId, credit.amount, credit.nonce
-                        )
-                    );
-                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                    CreditMutation.verifyCreditSignature(state, credit, signature, digest);
-                    CreditMutation.executeCredit(state, credit, signature);
-                } else if (Mutation(batch.mutations[i]) == Mutation.Debit) {
-                    (DebitMutation.Debit memory debit, DebitMutation.DebitResolution memory resolution) =
-                        abi.decode(batch.mutationData[i], (DebitMutation.Debit, DebitMutation.DebitResolution));
-                    Signature memory signature = abi.decode(batch.signatures[i], (Signature));
-
-                    bytes32 structHash = keccak256(
-                        abi.encode(DebitMutation.DEBIT_TYPEHASH, debit.account, debit.keyId, debit.amount, debit.nonce)
-                    );
-                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                    DebitMutation.verifyDebitSignature(state, debit, signature, digest);
-                    DebitMutation.executeDebit(state, debit, resolution, signature);
-                } else if (Mutation(batch.mutations[i]) == Mutation.Assert) {
-                    AssertMutation.Assert memory assertion = abi.decode(batch.mutationData[i], (AssertMutation.Assert));
-                    Signature memory signature = abi.decode(batch.signatures[i], (Signature));
-
-                    bytes32 structHash = keccak256(
-                        abi.encode(
-                            AssertMutation.ASSERT_TYPEHASH,
-                            assertion.account,
-                            assertion.keyId,
-                            assertion.expected,
-                            assertion.nonce
-                        )
-                    );
-                    bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                    AssertMutation.verifyAssertSignature(state, assertion, signature, digest);
-                    AssertMutation.executeAssert(state, assertion, signature);
-                } else {
-                    revert UnknownMutation(batch.mutations[i]);
-                }
-            }
-        }
-    }
-
-    function forceExecute(uint256 index) external override {
-        QueuedMutation storage queued = queue[index];
-
-        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) {
-            revert ForceInclusionTooEarly((queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number);
-        }
-        if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
-
-        if (Mutation(queued.mutation) == Mutation.Initialize) {
-            InitializeMutation.Initialize memory initialize =
-                abi.decode(queued.mutationData, (InitializeMutation.Initialize));
-            Signature memory signature = abi.decode(queued.signature, (Signature));
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+        if (Mutation(mutation) == Mutation.Initialize) {
+            InitializeMutation.Initialize memory initialize = abi.decode(mutationData, (InitializeMutation.Initialize));
+            Signature memory signature = abi.decode(signatureData, (Signature));
 
             InitializeMutation.executeInitialize(state, initialize, signature);
-        } else if (Mutation(queued.mutation) == Mutation.Authorize) {
-            AuthorizeMutation.Authorize memory authorize =
-                abi.decode(queued.mutationData, (AuthorizeMutation.Authorize));
-            Signature memory signature = abi.decode(queued.signature, (Signature));
+        } else if (Mutation(mutation) == Mutation.Authorize) {
+            AuthorizeMutation.Authorize memory authorize = abi.decode(mutationData, (AuthorizeMutation.Authorize));
+            Signature memory signature = abi.decode(signatureData, (Signature));
 
-            bytes32 structHash = keccak256(
-                abi.encode(
-                    AuthorizeMutation.AUTHORIZE_TYPEHASH,
-                    authorize.account,
-                    authorize.keyId,
-                    authorize.keyType,
-                    keccak256(authorize.publicKey),
-                    authorize.nonce
-                )
-            );
+            bytes32 structHash = AuthorizeMutation.hashAuthorize(authorize);
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
             AuthorizeMutation.verifyAuthorizeSignature(state, authorize, signature, digest);
             AuthorizeMutation.executeAuthorize(state, authorize, signature);
-        } else if (Mutation(queued.mutation) == Mutation.Credit) {
-            CreditMutation.Credit memory credit = abi.decode(queued.mutationData, (CreditMutation.Credit));
-            Signature memory signature = abi.decode(queued.signature, (Signature));
+        } else if (Mutation(mutation) == Mutation.Credit) {
+            CreditMutation.Credit memory credit = abi.decode(mutationData, (CreditMutation.Credit));
+            Signature memory signature = abi.decode(signatureData, (Signature));
 
-            bytes32 structHash = keccak256(
-                abi.encode(CreditMutation.CREDIT_TYPEHASH, credit.account, credit.keyId, credit.amount, credit.nonce)
-            );
+            bytes32 structHash = CreditMutation.hashCredit(credit);
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
             CreditMutation.verifyCreditSignature(state, credit, signature, digest);
             CreditMutation.executeCredit(state, credit, signature);
-        } else if (Mutation(queued.mutation) == Mutation.Debit) {
+        } else if (Mutation(mutation) == Mutation.Debit) {
             (DebitMutation.Debit memory debit, DebitMutation.DebitResolution memory resolution) =
-                abi.decode(queued.mutationData, (DebitMutation.Debit, DebitMutation.DebitResolution));
-            Signature memory signature = abi.decode(queued.signature, (Signature));
+                abi.decode(mutationData, (DebitMutation.Debit, DebitMutation.DebitResolution));
+            Signature memory signature = abi.decode(signatureData, (Signature));
 
-            bytes32 structHash = keccak256(
-                abi.encode(DebitMutation.DEBIT_TYPEHASH, debit.account, debit.keyId, debit.amount, debit.nonce)
-            );
+            bytes32 structHash = DebitMutation.hashDebit(debit);
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
             DebitMutation.verifyDebitSignature(state, debit, signature, digest);
             DebitMutation.executeDebit(state, debit, resolution, signature);
-        } else if (Mutation(queued.mutation) == Mutation.Assert) {
-            AssertMutation.Assert memory assertion = abi.decode(queued.mutationData, (AssertMutation.Assert));
-            Signature memory signature = abi.decode(queued.signature, (Signature));
+        } else if (Mutation(mutation) == Mutation.Assert) {
+            AssertMutation.Assert memory assertion = abi.decode(mutationData, (AssertMutation.Assert));
+            Signature memory signature = abi.decode(signatureData, (Signature));
 
-            bytes32 structHash = keccak256(
-                abi.encode(
-                    AssertMutation.ASSERT_TYPEHASH,
-                    assertion.account,
-                    assertion.keyId,
-                    assertion.expected,
-                    assertion.nonce
-                )
-            );
+            bytes32 structHash = AssertMutation.hashAssert(assertion);
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
             AssertMutation.verifyAssertSignature(state, assertion, signature, digest);
             AssertMutation.executeAssert(state, assertion, signature);
         } else {
-            revert UnknownMutation(queued.mutation);
+            revert UnknownMutation(mutation);
         }
-
-        delete queue[index];
     }
 }

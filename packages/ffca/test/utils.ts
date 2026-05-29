@@ -34,6 +34,12 @@ import {
 // deployCounter() so client-side digests align with the on-chain
 // domainSeparator.
 export const COUNTER_DOMAIN = { name: "Counter", version: "1" } as const;
+export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
+  "bytes32 accountId, bytes publicKey, bytes rawSignature",
+);
+export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
+  "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
+);
 
 export const EMPTY_STORAGE_LAYOUT = {
   storage: [],
@@ -41,8 +47,8 @@ export const EMPTY_STORAGE_LAYOUT = {
 } as const satisfies StorageLayout;
 
 // Minimal ABI for tests that createFFCA without a real contract. Contains the
-// execute function and ForceInclusionQueued event so signatureParamsFromAbi
-// and the watch layer have the shapes they expect.
+// execute function and ForceInclusionQueued event so the runtime and watch
+// layer have the shapes they expect.
 export const STUB_FFCA_ABI = [
   {
     type: "function",
@@ -56,13 +62,9 @@ export const STUB_FFCA_ABI = [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
           {
-            name: "signatures",
-            type: "tuple[]",
-            internalType: "struct Signature[]",
-            components: [
-              { name: "keyType", type: "uint8", internalType: "uint8" },
-              { name: "rawSignature", type: "bytes", internalType: "bytes" },
-            ],
+            name: "signatureData",
+            type: "bytes[]",
+            internalType: "bytes[]",
           },
         ],
       },
@@ -98,14 +100,10 @@ export const STUB_FFCA_ABI = [
         internalType: "bytes",
       },
       {
-        name: "sig",
-        type: "tuple",
+        name: "signatureData",
+        type: "bytes",
         indexed: false,
-        internalType: "struct Signature",
-        components: [
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        internalType: "bytes",
       },
       {
         name: "enqueuedBlock",
@@ -226,7 +224,7 @@ export const COUNTER_ABI = [
     inputs: [
       { name: "mutation", type: "uint8", internalType: "uint8" },
       { name: "mutationData", type: "bytes", internalType: "bytes" },
-      { name: "signature", type: "bytes", internalType: "bytes" },
+      { name: "signatureData", type: "bytes", internalType: "bytes" },
     ],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
     stateMutability: "nonpayable",
@@ -247,7 +245,7 @@ export const COUNTER_ABI = [
             internalType: "bytes[]",
           },
           {
-            name: "signatures",
+            name: "signatureData",
             type: "bytes[]",
             internalType: "bytes[]",
           },
@@ -292,7 +290,7 @@ export const COUNTER_ABI = [
         internalType: "bytes",
       },
       {
-        name: "signature",
+        name: "signatureData",
         type: "bytes",
         indexed: false,
         internalType: "bytes",
@@ -473,7 +471,7 @@ export const HARNESS_STORAGE_LAYOUT = {
         {
           astId: 1390,
           contract: "src/Harness.sol:Harness",
-          label: "sig",
+          label: "signatureData",
           offset: 0,
           slot: "2",
           type: "t_struct(Signature)1372_storage",
@@ -566,7 +564,7 @@ export const HARNESS_ABI = [
       { name: "mutation", type: "uint8", internalType: "uint8" },
       { name: "mutationData", type: "bytes", internalType: "bytes" },
       {
-        name: "signature",
+        name: "signatureData",
         type: "bytes",
         internalType: "bytes",
       },
@@ -590,7 +588,7 @@ export const HARNESS_ABI = [
             internalType: "bytes[]",
           },
           {
-            name: "signatures",
+            name: "signatureData",
             type: "bytes[]",
             internalType: "bytes[]",
           },
@@ -635,7 +633,7 @@ export const HARNESS_ABI = [
         internalType: "bytes",
       },
       {
-        name: "signature",
+        name: "signatureData",
         type: "bytes",
         indexed: false,
         internalType: "bytes",
@@ -769,23 +767,31 @@ export function counterAccountId(publicKey: Hex): Hex {
 }
 
 export function counterNewAccountMutation(params: { address: Address }) {
+  const publicKey = secp256k1PublicKey(params.address);
   return {
     name: "newAccount",
-    args: { keyType: 2, publicKey: secp256k1PublicKey(params.address) },
-    signature: "0x",
+    args: { keyType: 2, publicKey },
+    signature: {
+      accountId: counterAccountId(publicKey),
+      publicKey,
+      rawSignature: "0x",
+    },
   };
 }
 
-// Sign Counter's `add` mutation. Counter signatures are now the raw bytes
-// passed through FFCA's bytes[] signature channel; the contract decodes them as
-// `(bytes32 accountId, bytes publicKey, bytes rawSignature)`.
+// Sign Counter's `add` mutation. The runtime ABI-encodes this record against
+// COUNTER_SIGNATURE_PARAMS before passing it through FFCA's signatureData channel.
 export function signCounter(params: {
   privateKey: Hex;
   amount: bigint;
   nonce: bigint;
   address: Address;
   chainId: number;
-}): Hex {
+}): {
+  readonly accountId: Hex;
+  readonly publicKey: Hex;
+  readonly rawSignature: Hex;
+} {
   const domain: TypedData.Domain = {
     name: COUNTER_DOMAIN.name,
     version: COUNTER_DOMAIN.version,
@@ -801,17 +807,7 @@ export function signCounter(params: {
   const signerAddress = privateKeyToAccount(params.privateKey).address;
   const publicKey = secp256k1PublicKey(signerAddress);
   const rawSignature = signSecp256k1Raw(digest, params.privateKey);
-  return AbiParameters.encode(
-    [
-      {
-        type: "tuple",
-        components: parseAbiParameters(
-          "bytes32 accountId, bytes publicKey, bytes rawSignature",
-        ),
-      },
-    ],
-    [{ accountId: counterAccountId(publicKey), publicKey, rawSignature }],
-  );
+  return { accountId: counterAccountId(publicKey), publicKey, rawSignature };
 }
 
 // Mutation definitions for the Harness test fixture. Tags match the contract:
@@ -960,7 +956,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
 }
 
 // Sign one of Harness's signed mutation types. Returns the structured
-// signature ffca encodes into batch.signatures[i].
+// signature ffca encodes into batch.signatureData[i].
 export function signHarness(params: {
   keyType: number;
   privateKey: Hex;
@@ -993,18 +989,8 @@ export function encodeHarnessSignature(params: {
   readonly keyId: bigint;
   readonly keyType: number;
   readonly rawSignature: Hex;
-}): Hex {
-  return AbiParameters.encode(
-    [
-      {
-        type: "tuple",
-        components: parseAbiParameters(
-          "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
-        ),
-      },
-    ],
-    [params],
-  );
+}): typeof params {
+  return params;
 }
 
 function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {

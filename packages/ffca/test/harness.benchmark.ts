@@ -11,9 +11,9 @@ import {
 import {
   deployHarness,
   encodeHarnessSignature,
-  HARNESS_ABI,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
+  HARNESS_SIGNATURE_PARAMS,
   HARNESS_STORAGE_LAYOUT,
   harnessAccountId,
   secp256k1PublicKey,
@@ -107,7 +107,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
-    abi: HARNESS_ABI,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

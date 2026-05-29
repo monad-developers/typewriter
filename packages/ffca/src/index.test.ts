@@ -10,9 +10,9 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_ABI,
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
   counterNewAccountMutation,
   deployCounter,
@@ -65,7 +65,7 @@ test("createFFCA stops accepting mutations after submit nonce mismatch", async (
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

@@ -12,9 +12,6 @@ bytes32 constant EIP712_DOMAIN_TYPEHASH =
 address constant P256_VERIFIER = address(0x100);
 
 error UnknownMutation(uint8 mutation);
-error UnauthorizedExecute(address caller);
-error ForceInclusionTooEarly(uint256 remainingDelay);
-error ForceInclusionAlreadyExecuted(uint256 index);
 error InvalidSignature(KeyType keyType);
 
 function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view {
@@ -86,38 +83,82 @@ abstract contract FFCA {
     struct Batch {
         uint8[] mutations;
         bytes[] mutationData;
-        bytes[] signatures;
+        bytes[] signatureData;
     }
 
     struct QueuedMutation {
         uint8 mutation;
         bytes mutationData;
-        bytes signature;
+        bytes signatureData;
         uint256 enqueuedBlock;
     }
 
     event ForceInclusionQueued(
-        uint256 index, uint8 mutation, bytes mutationData, bytes signature, uint256 enqueuedBlock
+        uint256 index, uint8 mutation, bytes mutationData, bytes signatureData, uint256 enqueuedBlock
     );
+
+    error UnauthorizedExecute(address caller);
+    error ForceInclusionTooEarly(uint256 remainingDelay);
+    error ForceInclusionAlreadyExecuted(uint256 index);
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
+    uint256 internal immutable FORCE_INCLUSION_DELAY;
 
     QueuedMutation[] internal queue;
 
-    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external virtual;
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal virtual;
 
-    function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata signature) external returns (uint256) {
+    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
+        if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
+
+        for (uint256 i; i < forceExecuteIndexes.length; i++) {
+            uint256 index = forceExecuteIndexes[i];
+            QueuedMutation storage queued = queue[index];
+
+            if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+
+            dispatch(queued.mutation, queued.mutationData, queued.signatureData);
+
+            delete queue[index];
+        }
+
+        for (uint256 b; b < batches.length; b++) {
+            Batch calldata batch = batches[b];
+            for (uint256 i; i < batch.mutations.length; i++) {
+                dispatch(batch.mutations[i], batch.mutationData[i], batch.signatureData[i]);
+            }
+        }
+    }
+
+    function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata signatureData)
+        external
+        returns (uint256)
+    {
         uint256 index = queue.length;
         uint256 enqueuedBlock = block.number;
         queue.push(
             QueuedMutation({
-                mutation: mutation, mutationData: mutationData, signature: signature, enqueuedBlock: enqueuedBlock
+                mutation: mutation,
+                mutationData: mutationData,
+                signatureData: signatureData,
+                enqueuedBlock: enqueuedBlock
             })
         );
-        emit ForceInclusionQueued(index, mutation, mutationData, signature, enqueuedBlock);
+        emit ForceInclusionQueued(index, mutation, mutationData, signatureData, enqueuedBlock);
         return index;
     }
 
-    function forceExecute(uint256 index) external virtual;
+    function forceExecute(uint256 index) external {
+        QueuedMutation storage queued = queue[index];
+
+        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) {
+            revert ForceInclusionTooEarly((queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number);
+        }
+        if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+
+        dispatch(queued.mutation, queued.mutationData, queued.signatureData);
+
+        delete queue[index];
+    }
 }

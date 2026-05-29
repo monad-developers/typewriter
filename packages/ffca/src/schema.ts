@@ -14,7 +14,6 @@ import {
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import type { Hex } from "ox";
 import type { FFCAConfig } from "./config";
-import { getSignatureAbiParameters } from "./encoding";
 
 const uint256 = () => numeric({ precision: 78, scale: 0, mode: "bigint" });
 const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
@@ -73,10 +72,10 @@ export type FFCASchema<Config extends FFCAConfig = FFCAConfig> =
   FFCAStateSchema & FFCAMutationSchema<Config>;
 
 export function createMutationSchema<const Config extends FFCAConfig>(
-  config: Pick<Config, "abi" | "mutations">,
+  config: Pick<Config, "signature" | "mutations">,
 ): FFCASchema<Config> {
   const signatureColumns = prefixColumnNames(
-    abiParametersToColumns(getSignatureAbiParameters(config.abi)),
+    abiParametersToColumns(config.signature.params),
     "signature_",
   );
   const schema: Record<string, PgTable> = stateTables();

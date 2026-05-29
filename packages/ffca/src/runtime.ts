@@ -16,10 +16,11 @@ import { Database } from "./db";
 import { selectAccountStorage, selectKnownPaths } from "./db-query";
 import {
   decodeMutationCalldata,
+  decodeSignatureCalldata,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
-  type FFCAAbi,
+  FFCA_ABI,
 } from "./encoding";
 import type { InternalApp } from "./internal";
 import { durationMs, startTimer } from "./logger";
@@ -228,14 +229,9 @@ export function executeMutation(params: {
     const mutationCalldata = yield* Effect.try({
       try: () =>
         params.mutation.status === "enqueued"
-          ? encodeExecuteCalldata(
-              params.app.abi,
-              [],
-              [params.mutation.queueIndex],
-            )
+          ? encodeExecuteCalldata([], [params.mutation.queueIndex])
           : encodeExecuteCalldata(
-              params.app.abi,
-              [encodeBatchArg(params.app.abi, [acceptedMutation])],
+              [encodeBatchArg(params.app.signature.params, [acceptedMutation])],
               [],
             ),
       catch: (cause) =>
@@ -262,7 +258,7 @@ export function executeMutation(params: {
 
     if (executeResult.success === false) {
       return yield* Effect.fail(
-        createRevmRevertError(params.app, executeResult.revert_data),
+        createRevmRevertError(executeResult.revert_data),
       );
     }
 
@@ -283,7 +279,7 @@ export function enqueueMutation(params: {
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
     const enqueueCalldata = encodeEnqueueCalldata(
-      params.app.abi,
+      params.app.signature.params,
       params.mutation,
     );
 
@@ -304,17 +300,13 @@ export function decodeEnqueuedMutation(params: {
   id: number;
 }): EnqueuedMutation {
   const forceInclusionLog = decodeEventLog({
-    abi: params.app.abi as FFCAAbi,
+    abi: FFCA_ABI,
     eventName: "ForceInclusionQueued",
     // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,
     data: params.log.data,
     strict: true,
   }).args;
-
-  const decodedSignature = forceInclusionLog as typeof forceInclusionLog & {
-    signature?: unknown;
-  };
 
   const [mutationName, mutationConfig] = Object.entries(
     params.app.mutations,
@@ -327,10 +319,10 @@ export function decodeEnqueuedMutation(params: {
     id: params.id,
     name: mutationName,
     config: mutationConfig,
-    signature:
-      "sig" in forceInclusionLog
-        ? forceInclusionLog.sig
-        : decodedSignature.signature,
+    signature: decodeSignatureCalldata(
+      params.app.signature.params,
+      forceInclusionLog.signatureData,
+    ),
     isForceInclusion: true,
     queueIndex: forceInclusionLog.index,
     ...decodeMutationCalldata(mutationConfig, forceInclusionLog.mutationData),
@@ -338,12 +330,11 @@ export function decodeEnqueuedMutation(params: {
 }
 
 export function createRevmRevertError(
-  app: InternalApp,
   data: Hex.Hex | undefined,
   message = "revm execute reverted",
 ): ContractFunctionRevertedError {
   return new ContractFunctionRevertedError({
-    abi: app.abi,
+    abi: FFCA_ABI,
     data,
     functionName: "execute",
     message,

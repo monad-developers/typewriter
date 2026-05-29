@@ -2,40 +2,91 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {Bundle, Signature, Token} from "../src/Token.sol";
+import {EIP712_DOMAIN_TYPEHASH} from "ffca/FFCA.sol";
+import {MintMutation} from "../src/Mint.sol";
+import {InvalidNonce, InvalidSignatureType, Signature, SignatureExpired, State} from "../src/Token.sol";
+import {TransferMutation} from "../src/Transfer.sol";
 
 contract TokenTest is Test {
-    Token token;
-    address scheduler = address(0x1234);
-    uint256 minterPrivateKey = 1;
-    address minter = vm.addr(minterPrivateKey);
+    State internal state;
+    bytes32 internal domainSeparator;
+    uint256 internal userPrivateKey = 1;
+    address internal user = vm.addr(userPrivateKey);
+    address internal recipient = address(0xBEEF);
 
     function setUp() public {
-        token = new Token(scheduler);
+        domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Token")), keccak256(bytes("1")), block.chainid, address(this)
+            )
+        );
     }
 
-    function testSchedulerCanMint() public {
-        uint8[] memory mutations = new uint8[](1);
-        mutations[0] = token.MINT();
+    function testMintSignatureAndExecution() public {
+        MintMutation.Mint memory mint = MintMutation.Mint({to: user, amount: 100, nonce: 0, deadline: 1});
+        Signature memory signature = sign(userPrivateKey, MintMutation.hashMint(mint));
 
-        bytes[] memory mutationData = new bytes[](1);
-        mutationData[0] = abi.encode(minter, uint256(100), uint256(0), uint256(1));
+        MintMutation.verifyMintSignature(state, mint, signature, digest(MintMutation.hashMint(mint)));
+        MintMutation.executeMint(state, mint);
 
-        Signature[] memory signatures = new Signature[](1);
-        bytes32 structHash = keccak256(abi.encode(token.MINT_TYPEHASH(), minter, uint256(100), uint256(0), uint256(1)));
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", token.domainSeparator(), structHash));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(minterPrivateKey, digest);
-        signatures[0] = Signature({keyType: 2, rawSignature: abi.encode(v, r, s)});
+        assertEq(state.totalSupply, 100);
+        assertEq(state.accounts[user].nonce, 1);
+        assertEq(state.accounts[user].balance, 100);
+    }
 
-        Bundle[] memory bundles = new Bundle[](1);
-        bundles[0] = Bundle({mutations: mutations, mutationData: mutationData, signatures: signatures});
+    function testTransferSignatureAndExecution() public {
+        state.accounts[user].nonce = 1;
+        state.accounts[user].balance = 100;
+        TransferMutation.Transfer memory transfer =
+            TransferMutation.Transfer({from: user, to: recipient, amount: 40, nonce: 1, deadline: 1});
+        Signature memory signature = sign(userPrivateKey, TransferMutation.hashTransfer(transfer));
 
-        vm.prank(scheduler);
-        token.execute(bundles, new uint256[](0));
+        TransferMutation.verifyTransferSignature(
+            state, transfer, signature, digest(TransferMutation.hashTransfer(transfer))
+        );
+        TransferMutation.executeTransfer(state, transfer);
 
-        (uint256 nonce, uint256 balance) = token.accounts(minter);
-        assertEq(token.totalSupply(), 100);
-        assertEq(nonce, 1);
-        assertEq(balance, 100);
+        assertEq(state.accounts[user].nonce, 2);
+        assertEq(state.accounts[user].balance, 60);
+        assertEq(state.accounts[recipient].balance, 40);
+    }
+
+    function testVerifierRejectsInvalidNonce() public {
+        MintMutation.Mint memory mint = MintMutation.Mint({to: user, amount: 100, nonce: 1, deadline: 1});
+        Signature memory signature = sign(userPrivateKey, MintMutation.hashMint(mint));
+
+        vm.expectRevert(InvalidNonce.selector);
+        this.verifyMint(mint, signature);
+    }
+
+    function testVerifierRejectsExpiredSignature() public {
+        vm.warp(100);
+        MintMutation.Mint memory mint = MintMutation.Mint({to: user, amount: 100, nonce: 0, deadline: 99});
+        Signature memory signature = sign(userPrivateKey, MintMutation.hashMint(mint));
+
+        vm.expectRevert(SignatureExpired.selector);
+        this.verifyMint(mint, signature);
+    }
+
+    function testVerifierRejectsUnsupportedSignatureType() public {
+        MintMutation.Mint memory mint = MintMutation.Mint({to: user, amount: 100, nonce: 0, deadline: 1});
+        Signature memory signature = sign(userPrivateKey, MintMutation.hashMint(mint));
+        signature.keyType = 0;
+
+        vm.expectRevert(InvalidSignatureType.selector);
+        this.verifyMint(mint, signature);
+    }
+
+    function verifyMint(MintMutation.Mint memory mint, Signature memory signature) external {
+        MintMutation.verifyMintSignature(state, mint, signature, digest(MintMutation.hashMint(mint)));
+    }
+
+    function digest(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    }
+
+    function sign(uint256 privateKey, bytes32 structHash) internal view returns (Signature memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest(structHash));
+        return Signature({keyType: 2, rawSignature: abi.encode(v, r, s)});
     }
 }
