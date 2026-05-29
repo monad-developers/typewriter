@@ -9,15 +9,16 @@ import {
   Semaphore,
   Stream,
 } from "effect";
+import type { ExecuteResult } from "ffca-evm";
 import { Hex } from "ox";
 import { formatTransactionReceipt, parseTransaction } from "viem";
 import { Database } from "./db";
 import {
   insertKnownPaths,
-  insertMutation,
-  insertSlotWrites,
+  insertMutations,
+  insertSlotWritesMany,
   selectNextMutationId,
-  updateMutationLifecycle,
+  updateMutationsLifecycle,
 } from "./db-query";
 import { encodeBatchArg, encodeExecuteCalldata } from "./encoding";
 import type {
@@ -60,6 +61,15 @@ import type {
   SubmittedMutation,
 } from "./types";
 import { Watch } from "./watch";
+
+// Everything `acceptMutation` produces that a later batched DB write needs.
+// `acceptMutation` no longer touches the database itself; the caller collects
+// these and persists them together.
+type AcceptedMutationResult = {
+  mutation: AcceptedMutation;
+  slotWrites: ExecuteResult["slot_writes"];
+  knownPaths: readonly string[];
+};
 
 export function createRuntimeBatchEffect(
   app: InternalApp,
@@ -146,7 +156,13 @@ export function createRuntimeBatchEffect(
       }
     };
 
-    function acceptMutation(mutation: ReceivedMutation | EnqueuedMutation) {
+    // Executes a mutation against speculative state and updates in-memory
+    // bookkeeping, but performs no database writes. Persistence is batched by
+    // the caller (`acceptBatch`, `submit`, and `watch`) so many mutations share
+    // a single set of insert statements.
+    function acceptMutation(
+      mutation: ReceivedMutation | EnqueuedMutation,
+    ): Effect.Effect<AcceptedMutationResult, unknown> {
       return Effect.gen(function* () {
         const {
           executeResult,
@@ -182,31 +198,13 @@ export function createRuntimeBatchEffect(
           knownPaths.push(path);
         }
 
-        const persistStartedAtMs = startTimer();
-        yield* db.transaction((tx) =>
-          Effect.gen(function* () {
-            yield* insertMutation(tx, schema, acceptedMutation);
-            yield* insertSlotWrites(
-              tx,
-              schema,
-              acceptedMutation,
-              executeResult.slot_writes,
-            );
-            yield* insertKnownPaths(tx, schema, mutationKnownPaths);
-          }),
-        );
-
-        yield* Effect.logDebug("persisted accepted mutation").pipe(
-          Effect.annotateLogs({
-            id: acceptedMutation.id,
-            name: acceptedMutation.name,
-            duration: durationMs(persistStartedAtMs),
-          }),
-        );
-
         emitMutation(mutationToEvent(acceptedMutation));
 
-        return acceptedMutation;
+        return {
+          mutation: acceptedMutation,
+          slotWrites: executeResult.slot_writes,
+          knownPaths: mutationKnownPaths,
+        };
       });
     }
 
@@ -231,16 +229,15 @@ export function createRuntimeBatchEffect(
           );
         }
 
-        const acceptedMutations: {
-          mutation: AcceptedMutation;
+        const acceptedMutations: (AcceptedMutationResult & {
           deferred: Deferred.Deferred<AcceptedMutation, unknown>;
-        }[] = [];
+        })[] = [];
 
         for (const { mutationId, deferred } of submittedMutations) {
           const mutation = mutationsById.get(mutationId)! as ReceivedMutation;
           const result = yield* Effect.result(acceptMutation(mutation));
           if (Result.isSuccess(result)) {
-            acceptedMutations.push({ mutation: result.success, deferred });
+            acceptedMutations.push({ ...result.success, deferred });
           } else {
             yield* Deferred.fail(deferred, result.failure);
           }
@@ -249,6 +246,37 @@ export function createRuntimeBatchEffect(
         if (acceptedMutations.length === 0) {
           return;
         }
+
+        const persistStartedAtMs = startTimer();
+        yield* db.transaction((tx) =>
+          Effect.gen(function* () {
+            yield* insertMutations(
+              tx,
+              schema,
+              acceptedMutations.map((entry) => entry.mutation),
+            );
+            yield* insertSlotWritesMany(
+              tx,
+              schema,
+              acceptedMutations.map((entry) => ({
+                mutation: entry.mutation,
+                slotWrites: entry.slotWrites,
+              })),
+            );
+            yield* insertKnownPaths(
+              tx,
+              schema,
+              acceptedMutations.flatMap((entry) => entry.knownPaths),
+            );
+          }),
+        );
+
+        yield* Effect.logDebug("persisted accepted mutations").pipe(
+          Effect.annotateLogs({
+            mutationCount: acceptedMutations.length,
+            duration: durationMs(persistStartedAtMs),
+          }),
+        );
 
         const batch: RuntimeBatch = {
           status: "accepted",
@@ -353,16 +381,50 @@ export function createRuntimeBatchEffect(
           const enqueuedMutationIds = yield* Queue.clear(
             enqueuedMutationsQueue,
           );
+          const acceptedEnqueuedMutations: AcceptedMutationResult[] = [];
           for (const mutationId of enqueuedMutationIds) {
             const enqueuedMutation = mutationsById.get(
               mutationId,
             )! as EnqueuedMutation;
-            const acceptedMutation = yield* acceptMutation(enqueuedMutation);
-
-            yield* Queue.offer(
-              acceptedForceInclusionMutationsQueue,
-              acceptedMutation.id,
+            acceptedEnqueuedMutations.push(
+              yield* acceptMutation(enqueuedMutation),
             );
+          }
+
+          // Persist all newly accepted force-inclusion mutations in one pass,
+          // then publish them — keeping the insert ahead of the lifecycle
+          // update a later `submit` will run against the same rows.
+          if (acceptedEnqueuedMutations.length > 0) {
+            yield* db.transaction((tx) =>
+              Effect.gen(function* () {
+                yield* insertMutations(
+                  tx,
+                  schema,
+                  acceptedEnqueuedMutations.map((entry) => entry.mutation),
+                );
+                yield* insertSlotWritesMany(
+                  tx,
+                  schema,
+                  acceptedEnqueuedMutations.map((entry) => ({
+                    mutation: entry.mutation,
+                    slotWrites: entry.slotWrites,
+                  })),
+                );
+                yield* insertKnownPaths(
+                  tx,
+                  schema,
+                  acceptedEnqueuedMutations.flatMap(
+                    (entry) => entry.knownPaths,
+                  ),
+                );
+              }),
+            );
+            for (const { mutation } of acceptedEnqueuedMutations) {
+              yield* Queue.offer(
+                acceptedForceInclusionMutationsQueue,
+                mutation.id,
+              );
+            }
           }
 
           return {
@@ -469,22 +531,12 @@ export function createRuntimeBatchEffect(
         forceIncludedMutations,
       };
 
+      const includedMutations: SubmittedMutation[] = [
+        ...batches.flatMap((batch) => batch.mutations as SubmittedMutation[]),
+        ...forceIncludedMutations,
+      ];
       yield* db.transaction((tx) =>
-        Effect.gen(function* () {
-          for (const batch of batches) {
-            for (const mutation of batch.mutations) {
-              yield* updateMutationLifecycle(
-                tx,
-                schema,
-                mutation as SubmittedMutation,
-                runtimeBlock,
-              );
-            }
-          }
-          for (const mutation of forceIncludedMutations) {
-            yield* updateMutationLifecycle(tx, schema, mutation, runtimeBlock);
-          }
-        }),
+        updateMutationsLifecycle(tx, schema, includedMutations, runtimeBlock),
       );
 
       emitBlock(batchBlockToEvent(runtimeBlock));
@@ -514,6 +566,7 @@ export function createRuntimeBatchEffect(
               timestamp: Hex.fromNumber(message.block.timestamp),
             });
 
+            const acceptedForceInclusions: AcceptedMutationResult[] = [];
             for (const log of message.block.logs) {
               const enqueuedMutation: EnqueuedMutation = decodeEnqueuedMutation(
                 {
@@ -543,13 +596,46 @@ export function createRuntimeBatchEffect(
               if (acceptedBatchCount > 0) {
                 yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation.id);
               } else {
-                const acceptedMutation = yield* withSpeculativeStateLock(
-                  acceptMutation(enqueuedMutation),
+                acceptedForceInclusions.push(
+                  yield* withSpeculativeStateLock(
+                    acceptMutation(enqueuedMutation),
+                  ),
                 );
+              }
+            }
 
+            // Persist every force-inclusion mutation accepted for this block in
+            // one pass, then publish them. The insert stays ahead of the offer
+            // so the lifecycle update `submit` later runs hits existing rows.
+            if (acceptedForceInclusions.length > 0) {
+              yield* db.transaction((tx) =>
+                Effect.gen(function* () {
+                  yield* insertMutations(
+                    tx,
+                    schema,
+                    acceptedForceInclusions.map((entry) => entry.mutation),
+                  );
+                  yield* insertSlotWritesMany(
+                    tx,
+                    schema,
+                    acceptedForceInclusions.map((entry) => ({
+                      mutation: entry.mutation,
+                      slotWrites: entry.slotWrites,
+                    })),
+                  );
+                  yield* insertKnownPaths(
+                    tx,
+                    schema,
+                    acceptedForceInclusions.flatMap(
+                      (entry) => entry.knownPaths,
+                    ),
+                  );
+                }),
+              );
+              for (const { mutation } of acceptedForceInclusions) {
                 yield* Queue.offer(
                   acceptedForceInclusionMutationsQueue,
-                  acceptedMutation.id,
+                  mutation.id,
                 );
               }
             }
@@ -592,18 +678,14 @@ export function createRuntimeBatchEffect(
               }
 
               yield* db.transaction((tx) =>
-                Effect.gen(function* () {
-                  for (const batch of block.batches) {
-                    for (const mutation of batch.mutations) {
-                      yield* updateMutationLifecycle(
-                        tx,
-                        schema,
-                        mutation as SubmittedMutation,
-                        block,
-                      );
-                    }
-                  }
-                }),
+                updateMutationsLifecycle(
+                  tx,
+                  schema,
+                  block.batches.flatMap(
+                    (batch) => batch.mutations as SubmittedMutation[],
+                  ),
+                  block,
+                ),
               );
 
               emitBlock(batchBlockToEvent(block));
