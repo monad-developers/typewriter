@@ -1,13 +1,20 @@
 // Effect-native client for the ffca-evm sidecar.
 //
-// One subprocess per createEVM. A semaphore (capacity 1) serializes calls so
-// only one request is in flight at a time. The reader fiber parses stdout
-// lines and pushes responses onto a queue; each call writes its request and
-// then takes one response. On EOF the reader shuts the queue down, which
-// fails any in-flight take with InterruptedException and propagates out.
+// One subprocess per createEVM. Each request carries a monotonically
+// increasing id; the reader fiber dispatches responses to per-call Deferreds
+// keyed by that id. This makes the protocol interruption-safe: if a caller is
+// interrupted between sending and awaiting, it removes its deferred from the
+// pending map, and the eventual response is looked up, not found, and
+// silently discarded. It also lets multiple calls be in flight concurrently —
+// the sidecar processes them in arrival order.
+//
+// On reader EOF / read error / parse error every pending deferred is failed
+// with a typed EvmError and a sticky death flag is set so subsequent calls
+// fail with the same error rather than registering a deferred that would
+// never resolve.
 
 import { type Subprocess, spawn } from "bun";
-import { Data, Effect, Queue, Ref, type Scope, Semaphore } from "effect";
+import { Data, Deferred, Effect, type Scope } from "effect";
 import type {
   BlockParams,
   ExecuteParams,
@@ -94,14 +101,29 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
         stderr: "inherit",
       });
 
-      const responses = yield* Queue.unbounded<Response, EvmError>();
-      const sem = yield* Semaphore.make(1);
-      const locked = sem.withPermits(1);
-      const idCounterRef = yield* Ref.make(1);
+      // In-flight calls register a Deferred under their request id; the
+      // reader fiber resolves them as responses arrive. An interrupted caller
+      // removes its entry, so the eventual response is dispatched to no one.
+      const pending = new Map<number, Deferred.Deferred<Response, EvmError>>();
+      let idCounter = 1;
+      // Sticky failure: once the reader fiber dies, every subsequent call
+      // fails with the same error rather than registering a deferred that
+      // would never be resolved.
+      let deathError: EvmError | undefined;
 
-      // Reader fiber — buffers stdout, splits on \n, offers each parsed
-      // response. On EOF, read error, or parse error, fails the response queue
-      // so any in-flight call observes a typed EvmError.
+      const failPending = (error: EvmError) =>
+        Effect.gen(function* () {
+          const deferreds = [...pending.values()];
+          pending.clear();
+          for (const deferred of deferreds) {
+            yield* Deferred.fail(deferred, error);
+          }
+        });
+
+      // Reader fiber — buffers stdout, splits on \n, dispatches each parsed
+      // response to its registered deferred by id. On EOF, read error, or
+      // parse error, fails every pending deferred and marks the protocol
+      // dead so subsequent calls also fail.
       const readerEffect = Effect.gen(function* () {
         const reader = proc.stdout.getReader();
         const decoder = new TextDecoder();
@@ -123,7 +145,7 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             if (idx === -1) break;
             const line = buffer.slice(0, idx);
             buffer = buffer.slice(idx + 1);
-            if (!line.trim()) continue;
+            if (line.trim() === "") continue;
             const parsed = yield* Effect.try({
               try: () => JSON.parse(line) as Response,
               catch: (e) =>
@@ -132,16 +154,25 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
                   cause: e,
                 }),
             });
-            yield* Queue.offer(responses, parsed);
+            const deferred = pending.get(parsed.id);
+            if (deferred === undefined) {
+              // Caller was interrupted between sending the request and
+              // awaiting the response; drop the orphan.
+              continue;
+            }
+            pending.delete(parsed.id);
+            yield* Deferred.succeed(deferred, parsed);
           }
         }
       });
 
       yield* readerEffect.pipe(
         Effect.catch((error) =>
-          Queue.fail(responses, error).pipe(Effect.asVoid),
+          Effect.gen(function* () {
+            deathError = error;
+            yield* failPending(error);
+          }),
         ),
-        Effect.ensuring(Queue.shutdown(responses)),
         Effect.forkScoped,
       );
 
@@ -149,42 +180,54 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
         method: Request["method"],
         build: (id: number) => Request,
       ): Effect.Effect<T, EvmError> =>
-        locked(
+        Effect.acquireUseRelease(
+          // Acquire (uninterruptible): claim an id, create a deferred,
+          // register it. If the reader has already died, fail upfront
+          // instead of registering a deferred that would never resolve.
           Effect.gen(function* () {
-            const id = yield* Ref.getAndUpdate(idCounterRef, (n) => n + 1);
-            const req = build(id);
-
-            yield* Effect.try({
-              try: () => {
-                proc.stdin.write(`${JSON.stringify(req)}\n`);
-                proc.stdin.flush();
-              },
-              catch: (e) =>
-                new EvmCrashed({ message: "stdin write failed", cause: e }),
-            });
-
-            const res = yield* Queue.take(responses);
-            if (res.id !== id) {
-              const responseError = res.ok ? undefined : res.error;
-              // Mismatches often mean the TypeScript client and sidecar binary
-              // are out of sync.
-              return yield* new EvmProtocolError({
-                message:
-                  `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
-                  (responseError === undefined
-                    ? ""
-                    : `; response error: ${responseError}`),
-              });
+            if (deathError !== undefined) {
+              return yield* Effect.fail(deathError);
             }
-            if (!res.ok) {
-              return yield* new EvmCallError({
-                method,
-                message: `${method} failed: ${res.error}`,
-                cause: res.error,
-              });
+            const id = idCounter++;
+            const deferred = yield* Deferred.make<Response, EvmError>();
+            if (deathError !== undefined) {
+              return yield* Effect.fail(deathError);
             }
-            return res.result as T;
+            pending.set(id, deferred);
+            return { id, deferred };
           }),
+          // Use (interruptible): send the request and await the response.
+          // If the caller is interrupted here, release still runs and the
+          // pending entry is dropped, so the orphan response is discarded
+          // by the reader when it eventually arrives.
+          ({ id, deferred }) =>
+            Effect.gen(function* () {
+              const req = build(id);
+              yield* Effect.try({
+                try: () => {
+                  proc.stdin.write(`${JSON.stringify(req)}\n`);
+                  proc.stdin.flush();
+                },
+                catch: (e) =>
+                  new EvmCrashed({ message: "stdin write failed", cause: e }),
+              });
+              const res = yield* Deferred.await(deferred);
+              if (!res.ok) {
+                return yield* new EvmCallError({
+                  method,
+                  message: `${method} failed: ${res.error}`,
+                  cause: res.error,
+                });
+              }
+              return res.result as T;
+            }),
+          // Release (uninterruptible): remove our entry. Idempotent if the
+          // reader already removed it on dispatch, or if failPending
+          // cleared the map on reader death.
+          ({ id }) =>
+            Effect.sync(() => {
+              pending.delete(id);
+            }),
         );
 
       const evm: EVM = {

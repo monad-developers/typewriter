@@ -721,3 +721,63 @@ test("init twice fails", async () => {
   const exit = await Effect.runPromiseExit(Effect.scoped(program));
   expect(Exit.isFailure(exit)).toBe(true);
 });
+
+test("an interrupted execute does not desync subsequent calls", async () => {
+  // Regression: the protocol used to match responses by FIFO queue order.
+  // If a caller was interrupted between sending its request and taking
+  // its response, the sidecar's eventual reply would orphan the queue and
+  // every subsequent call would observe `id N, expected N+1`. Per-id
+  // dispatch makes the orphan a no-op — the next call must succeed.
+  //
+  // We hammer many short-timeout calls to land at least one in the
+  // dangerous window between "request written" and "response taken". On
+  // the new code every iteration is safe; on the old code the protocol
+  // would desync as soon as any orphan landed.
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+
+    for (let i = 0; i < 100; i++) {
+      yield* Effect.ignore(
+        Effect.timeout(
+          evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" }),
+          "0 millis",
+        ),
+      );
+    }
+
+    // Drain any in-flight orphan responses from the sidecar.
+    yield* Effect.sleep("50 millis");
+
+    return yield* evm.execute({
+      from: CALLER,
+      to: COUNTER_ADDR,
+      data: "0x",
+    });
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec.success).toBe(true);
+});
+
+test("concurrent calls are dispatched by id, not arrival order", async () => {
+  // Per-id dispatch lets multiple calls be in flight at once. The sidecar
+  // processes them in arrival order, but each response routes back to its
+  // own caller regardless of when it lands.
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+    return yield* Effect.all(
+      Array.from({ length: 5 }, () =>
+        evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" }),
+      ),
+      { concurrency: "unbounded" },
+    );
+  });
+
+  const results = await Effect.runPromise(Effect.scoped(program));
+  expect(results.length).toBe(5);
+  expect(results.every((r) => r.success)).toBe(true);
+  const journalIds = results.map((r) => r.journal_id!).sort((a, b) => a - b);
+  expect(journalIds).toEqual([1, 2, 3, 4, 5]);
+});
