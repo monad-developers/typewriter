@@ -100,6 +100,7 @@ abstract contract FFCA {
     error UnauthorizedExecute(address caller);
     error ForceInclusionTooEarly(uint256 remainingDelay);
     error ForceInclusionAlreadyExecuted(uint256 index);
+    error LengthMismatch();
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
@@ -125,6 +126,12 @@ abstract contract FFCA {
 
         for (uint256 b; b < batches.length; b++) {
             Batch calldata batch = batches[b];
+            if (
+                batch.mutations.length != batch.mutationData.length
+                    || batch.mutations.length != batch.signatureData.length
+            ) {
+                revert LengthMismatch();
+            }
             for (uint256 i; i < batch.mutations.length; i++) {
                 dispatch(batch.mutations[i], batch.mutationData[i], batch.signatureData[i]);
             }
