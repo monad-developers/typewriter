@@ -45,7 +45,7 @@ FROM oven/bun:${BUN_VERSION}-debian AS build
 ARG RUST_VERSION
 
 # System deps required by forge build (git for github: deps, libssl/ca-certs
-# for TLS), the Rust sidecar build, and Next.js builds. Rust stays in this
+# for TLS), the Rust native addon build, and Next.js builds. Rust stays in this
 # build stage; the runtime image receives only the built workspace output.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

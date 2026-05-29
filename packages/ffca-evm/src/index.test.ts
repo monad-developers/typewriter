@@ -1,5 +1,5 @@
-// Each test spawns its own sidecar (one createEVM per test) and exercises
-// the journal protocol against a hand-written counter contract.
+// Each test creates its own in-process native EVM (one createEVM per test)
+// and exercises the journal protocol against a hand-written counter contract.
 //
 // Counter runtime bytecode — increments storage slot 0 by 1 on any call:
 //   PUSH1 0x00 DUP1 SLOAD PUSH1 0x01 ADD SWAP1 SSTORE STOP
@@ -598,7 +598,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
   `);
 });
 
-test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfer", async () => {
+test("harness access list matches eth_createAccessList for Solmate ERC20 transfer", async () => {
   const artifact = await loadTestToken();
   const tokenAddr = await deployTestToken(artifact);
   const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
@@ -623,12 +623,12 @@ test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfe
       journal_ids: [],
     });
   });
-  const sidecar = await Effect.runPromise(Effect.scoped(program));
-  expect(normalizeAccessRecord(sidecar.access_list)).toEqual(rpcAccessList);
+  const harness = await Effect.runPromise(Effect.scoped(program));
+  expect(normalizeAccessRecord(harness.access_list)).toEqual(rpcAccessList);
 });
 
-test("sidecar gas_limit matches eth_estimateGas for Solmate ERC20 transfer", async () => {
-  // The sidecar uses two-pass execution: pass 1 discovers the access list,
+test("harness gas_limit matches eth_estimateGas for Solmate ERC20 transfer", async () => {
+  // The harness uses two-pass execution: pass 1 discovers the access list,
   // then it binary-searches the smallest successful gas limit with those slots
   // pre-warmed (an EIP-2930 tx).
   const artifact = await loadTestToken();
@@ -660,13 +660,13 @@ test("sidecar gas_limit matches eth_estimateGas for Solmate ERC20 transfer", asy
       journal_ids: [],
     });
   });
-  const sidecar = await Effect.runPromise(Effect.scoped(program));
+  const harness = await Effect.runPromise(Effect.scoped(program));
 
-  expect(BigInt(sidecar.gas_limit)).toEqual(rpcGasEstimate);
-  expect(sidecar.gas_used).toBeLessThanOrEqual(sidecar.gas_limit);
+  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+  expect(harness.gas_used).toBeLessThanOrEqual(harness.gas_limit);
 });
 
-test("sidecar gas_limit includes EIP-150 call headroom", async () => {
+test("harness gas_limit includes EIP-150 call headroom", async () => {
   const calleeArtifact = await loadCallGasCallee();
   const callerArtifact = await loadCallGasCaller();
   const calleeAddr = await deployArtifact(calleeArtifact);
@@ -702,13 +702,13 @@ test("sidecar gas_limit includes EIP-150 call headroom", async () => {
       journal_ids: [],
     });
   });
-  const sidecar = await Effect.runPromise(Effect.scoped(program));
+  const harness = await Effect.runPromise(Effect.scoped(program));
 
-  expect(normalizeAccessRecord(sidecar.access_list)).toEqual(
+  expect(normalizeAccessRecord(harness.access_list)).toEqual(
     normalizeAccessRecord(rpcAccessList),
   );
-  expect(BigInt(sidecar.gas_limit)).toEqual(rpcGasEstimate);
-  expect(sidecar.gas_used).toBeLessThan(sidecar.gas_limit);
+  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+  expect(harness.gas_used).toBeLessThan(harness.gas_limit);
 });
 
 test("init twice fails", async () => {

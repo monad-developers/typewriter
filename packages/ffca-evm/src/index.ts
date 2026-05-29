@@ -27,10 +27,12 @@ export type {
   Spec,
 } from "./types";
 
-const env = Bun.env as { readonly FFCA_EVM_PROFILE?: string };
-const BUILD_PROFILE =
-  env.FFCA_EVM_PROFILE ?? (Bun.env.NODE_ENV === "test" ? "debug" : "release");
-const NATIVE_PATH = `${import.meta.dir}/../target/${BUILD_PROFILE}/ffca_evm.node`;
+// The native addon is built by `napi build` (see package.json) and always
+// staged at the same path regardless of profile: `bun run build` produces a
+// release addon, `bun run build:debug` (used by `bun run test`) a debug one.
+// Tests and production therefore load the exact same artifact and code path;
+// only the compile profile differs, which changes optimization, not behavior.
+const NATIVE_PATH = `${import.meta.dir}/../native/ffca-evm.node`;
 
 type NativeEvmHandle = {
   readonly call: (requestJson: string) => string;
@@ -93,14 +95,14 @@ function loadNativeAddon(): NativeAddon {
     throw new EvmCrashed({
       message:
         `failed to load ffca-evm native addon at ${NATIVE_PATH}; ` +
-        "run `bun run --filter ffca-evm build:napi:debug` for tests or `bun run --filter ffca-evm build` for release",
+        "run `bun run --filter ffca-evm build:debug` for tests or `bun run --filter ffca-evm build` for release",
       cause,
     });
   }
 }
 
 // Creates one native EVM harness per createEVM. A semaphore (capacity 1)
-// preserves the previous one-request-at-a-time sidecar semantics.
+// serializes calls so the harness only ever sees one request at a time.
 export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.gen(function* () {

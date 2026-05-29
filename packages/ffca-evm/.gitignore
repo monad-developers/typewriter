@@ -1,1 +1,4 @@
 target/
+
+# napi-rs build output (.node addon + generated .d.ts), produced by `napi build`
+native/
