@@ -222,14 +222,14 @@ export function insertSlotWrites(
 export function insertSlotWritesMany(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
-  entries: readonly {
+  mutationsWithResults: readonly {
     mutation: Pick<RuntimeMutation, "id">;
-    slotWrites: ExecuteResult["slot_writes"];
+    executeResult: Pick<ExecuteResult, "slot_writes">;
   }[],
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
-    const rows = entries.flatMap(({ mutation, slotWrites }) =>
-      slotWrites.map((write) => ({
+    const rows = mutationsWithResults.flatMap(({ mutation, executeResult }) =>
+      executeResult.slot_writes.map((write) => ({
         mutationId: mutation.id,
         slot: write.slot,
         value: write.new_value,

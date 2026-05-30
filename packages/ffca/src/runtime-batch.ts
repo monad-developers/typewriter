@@ -60,16 +60,8 @@ import type {
   RuntimeMutation,
   SubmittedMutation,
 } from "./types";
+import { dedupe } from "./utils";
 import { Watch } from "./watch";
-
-// Everything `acceptMutation` produces that a later batched DB write needs.
-// `acceptMutation` no longer touches the database itself; the caller collects
-// these and persists them together.
-type AcceptedMutationResult = {
-  mutation: AcceptedMutation;
-  slotWrites: ExecuteResult["slot_writes"];
-  knownPaths: readonly string[];
-};
 
 export function createRuntimeBatchEffect(
   app: InternalApp,
@@ -162,7 +154,14 @@ export function createRuntimeBatchEffect(
     // a single set of insert statements.
     function acceptMutation(
       mutation: ReceivedMutation | EnqueuedMutation,
-    ): Effect.Effect<AcceptedMutationResult, unknown> {
+    ): Effect.Effect<
+      {
+        mutation: AcceptedMutation;
+        executeResult: ExecuteResult;
+        knownPaths: readonly string[];
+      },
+      unknown
+    > {
       return Effect.gen(function* () {
         const {
           executeResult,
@@ -202,7 +201,7 @@ export function createRuntimeBatchEffect(
 
         return {
           mutation: acceptedMutation,
-          slotWrites: executeResult.slot_writes,
+          executeResult,
           knownPaths: mutationKnownPaths,
         };
       });
@@ -229,9 +228,12 @@ export function createRuntimeBatchEffect(
           );
         }
 
-        const acceptedMutations: (AcceptedMutationResult & {
+        const acceptedMutations: {
+          mutation: AcceptedMutation;
+          executeResult: ExecuteResult;
+          knownPaths: readonly string[];
           deferred: Deferred.Deferred<AcceptedMutation, unknown>;
-        })[] = [];
+        }[] = [];
 
         for (const { mutationId, deferred } of submittedMutations) {
           const mutation = mutationsById.get(mutationId)! as ReceivedMutation;
@@ -255,18 +257,11 @@ export function createRuntimeBatchEffect(
               schema,
               acceptedMutations.map((entry) => entry.mutation),
             );
-            yield* insertSlotWritesMany(
-              tx,
-              schema,
-              acceptedMutations.map((entry) => ({
-                mutation: entry.mutation,
-                slotWrites: entry.slotWrites,
-              })),
-            );
+            yield* insertSlotWritesMany(tx, schema, acceptedMutations);
             yield* insertKnownPaths(
               tx,
               schema,
-              acceptedMutations.flatMap((entry) => entry.knownPaths),
+              dedupe(acceptedMutations.flatMap(({ knownPaths }) => knownPaths)),
             );
           }),
         );
@@ -381,7 +376,11 @@ export function createRuntimeBatchEffect(
           const enqueuedMutationIds = yield* Queue.clear(
             enqueuedMutationsQueue,
           );
-          const acceptedEnqueuedMutations: AcceptedMutationResult[] = [];
+          const acceptedEnqueuedMutations: {
+            mutation: AcceptedMutation;
+            executeResult: ExecuteResult;
+            knownPaths: readonly string[];
+          }[] = [];
           for (const mutationId of enqueuedMutationIds) {
             const enqueuedMutation = mutationsById.get(
               mutationId,
@@ -405,16 +404,15 @@ export function createRuntimeBatchEffect(
                 yield* insertSlotWritesMany(
                   tx,
                   schema,
-                  acceptedEnqueuedMutations.map((entry) => ({
-                    mutation: entry.mutation,
-                    slotWrites: entry.slotWrites,
-                  })),
+                  acceptedEnqueuedMutations,
                 );
                 yield* insertKnownPaths(
                   tx,
                   schema,
-                  acceptedEnqueuedMutations.flatMap(
-                    (entry) => entry.knownPaths,
+                  dedupe(
+                    acceptedEnqueuedMutations.flatMap(
+                      (entry) => entry.knownPaths,
+                    ),
                   ),
                 );
               }),
@@ -566,14 +564,14 @@ export function createRuntimeBatchEffect(
               timestamp: Hex.fromNumber(message.block.timestamp),
             });
 
-            const acceptedForceInclusions: AcceptedMutationResult[] = [];
+            const acceptedForceInclusions: {
+              mutation: AcceptedMutation;
+              executeResult: ExecuteResult;
+              knownPaths: readonly string[];
+            }[] = [];
             for (const log of message.block.logs) {
               const enqueuedMutation: EnqueuedMutation = decodeEnqueuedMutation(
-                {
-                  app,
-                  log,
-                  id: mutationId++,
-                },
+                { app, log, id: mutationId++ },
               );
 
               const executeResult = yield* withSpeculativeStateLock(
@@ -618,16 +616,15 @@ export function createRuntimeBatchEffect(
                   yield* insertSlotWritesMany(
                     tx,
                     schema,
-                    acceptedForceInclusions.map((entry) => ({
-                      mutation: entry.mutation,
-                      slotWrites: entry.slotWrites,
-                    })),
+                    acceptedForceInclusions,
                   );
                   yield* insertKnownPaths(
                     tx,
                     schema,
-                    acceptedForceInclusions.flatMap(
-                      (entry) => entry.knownPaths,
+                    dedupe(
+                      acceptedForceInclusions.flatMap(
+                        (entry) => entry.knownPaths,
+                      ),
                     ),
                   );
                 }),
