@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
-import { createFFCA, type FFCAConfig, type FFCAMutation } from "../src";
+import type { FFCAConfig, FFCAMutation } from "../src";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
@@ -19,6 +19,8 @@ import {
   secp256k1PublicKey,
   signHarness,
 } from "./utils";
+
+process.env.NODE_ENV = "production";
 
 const MUTATION_COUNT = 10_000;
 
@@ -103,6 +105,7 @@ async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
 }
 
 test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
+  const { createFFCA } = await import("../src");
   const address = await deployHarness();
   const ffca = await createFFCA({
     address,

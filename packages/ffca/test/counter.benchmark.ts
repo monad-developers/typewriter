@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
-import { createFFCA, type FFCAConfig, type FFCAMutation } from "../src";
+import type { FFCAConfig, FFCAMutation } from "../src";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
@@ -17,6 +17,8 @@ import {
   deployCounter,
   signCounter,
 } from "./utils";
+
+process.env.NODE_ENV = "production";
 
 const MUTATION_COUNT = 10_000;
 
@@ -51,6 +53,7 @@ function formatMs(durationMs: number): string {
 }
 
 test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
+  const { createFFCA } = await import("../src");
   const address = await deployCounter(USER_ACCOUNT.address);
   const ffca = await createFFCA({
     address,
