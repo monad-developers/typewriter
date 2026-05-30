@@ -546,15 +546,9 @@ export function createRuntimeEffect(
     }>();
     const enqueuedMutationsQueue = yield* Queue.unbounded<number>();
     const acceptedBatchesQueue = yield* Queue.unbounded<number>();
-    const acceptedForceInclusionMutationsQueue =
-      yield* Queue.unbounded<number>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedMutationsQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptedBatchesQueue));
-    yield* Scope.addFinalizer(
-      scope,
-      Queue.shutdown(acceptedForceInclusionMutationsQueue),
-    );
 
     const withSpeculativeStateLock = Semaphore.withPermits(
       Semaphore.makeUnsafe(1),
@@ -762,32 +756,63 @@ export function createRuntimeEffect(
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
           const batchIds = yield* Queue.clear(acceptedBatchesQueue);
-          const forceIncludedIds = yield* Queue.clear(
-            acceptedForceInclusionMutationsQueue,
+          const enqueuedMutationIds = yield* Queue.clear(
+            enqueuedMutationsQueue,
           );
-          if (batchIds.length === 0 && forceIncludedIds.length === 0) {
+          if (batchIds.length === 0 && enqueuedMutationIds.length === 0) {
             return undefined;
           }
 
-          const acceptedForceIncludedMutations = forceIncludedIds.map(
-            (id) =>
-              mutationsById.get(id)! as Extract<
-                AcceptedMutation,
-                { isForceInclusion: true }
-              >,
-          );
-
           const batches = batchIds.map((id) => batchesById.get(id)!);
 
-          // Sort journal ids ascending so they're passed to simulate in
-          // application order: revm rewinds in reverse and replays forward,
-          // and each journal's pre-image is only valid relative to the DB
-          // state that existed when execute ran. Force-included mutations
-          // accepted by watchProgram before the next acceptBatch can have
-          // smaller ids than the batched mutations, so plain concatenation
-          // would mis-order rewinds when journals overlap on the same slot.
-          // Journal ids are monotonic in the order evm.execute runs
-          // (ffca-evm/src/harness.rs:301-302), so ascending = application order.
+          const acceptedEnqueuedMutations: {
+            mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
+            executeResult: ExecuteResult;
+            knownPaths: readonly string[];
+          }[] = [];
+          for (const mutationId of enqueuedMutationIds) {
+            const enqueuedMutation = mutationsById.get(
+              mutationId,
+            )! as EnqueuedMutation;
+            acceptedEnqueuedMutations.push(
+              (yield* acceptMutation(enqueuedMutation)) as {
+                mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
+                executeResult: ExecuteResult;
+                knownPaths: readonly string[];
+              },
+            );
+          }
+
+          if (acceptedEnqueuedMutations.length > 0) {
+            yield* db.transaction((tx) =>
+              Effect.gen(function* () {
+                yield* insertMutations(
+                  tx,
+                  schema,
+                  acceptedEnqueuedMutations.map((entry) => entry.mutation),
+                );
+                yield* insertSlotWritesMany(
+                  tx,
+                  schema,
+                  acceptedEnqueuedMutations,
+                );
+                yield* insertKnownPaths(
+                  tx,
+                  schema,
+                  dedupe(
+                    acceptedEnqueuedMutations.flatMap(
+                      (entry) => entry.knownPaths,
+                    ),
+                  ),
+                );
+              }),
+            );
+          }
+
+          const acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
+            ({ mutation }) => mutation,
+          );
+
           const speculativeJournalIds = batches
             .flatMap((batch) => batch.mutations)
             .map((mutation) => mutation.journalId)
@@ -795,8 +820,7 @@ export function createRuntimeEffect(
               acceptedForceIncludedMutations.map(
                 (mutation) => mutation.journalId,
               ),
-            )
-            .sort((a, b) => a - b);
+            );
 
           const calldata = encodeExecuteCalldata(
             batches.map((batch) =>
@@ -830,58 +854,6 @@ export function createRuntimeEffect(
               duration,
             }),
           );
-
-          const enqueuedMutationIds = yield* Queue.clear(
-            enqueuedMutationsQueue,
-          );
-          const acceptedEnqueuedMutations: {
-            mutation: AcceptedMutation;
-            executeResult: ExecuteResult;
-            knownPaths: readonly string[];
-          }[] = [];
-          for (const mutationId of enqueuedMutationIds) {
-            const enqueuedMutation = mutationsById.get(
-              mutationId,
-            )! as EnqueuedMutation;
-            acceptedEnqueuedMutations.push(
-              yield* acceptMutation(enqueuedMutation),
-            );
-          }
-
-          // Persist all newly accepted force-inclusion mutations in one pass,
-          // then publish them — keeping the insert ahead of the lifecycle
-          // update a later `submit` will run against the same rows.
-          if (acceptedEnqueuedMutations.length > 0) {
-            yield* db.transaction((tx) =>
-              Effect.gen(function* () {
-                yield* insertMutations(
-                  tx,
-                  schema,
-                  acceptedEnqueuedMutations.map((entry) => entry.mutation),
-                );
-                yield* insertSlotWritesMany(
-                  tx,
-                  schema,
-                  acceptedEnqueuedMutations,
-                );
-                yield* insertKnownPaths(
-                  tx,
-                  schema,
-                  dedupe(
-                    acceptedEnqueuedMutations.flatMap(
-                      (entry) => entry.knownPaths,
-                    ),
-                  ),
-                );
-              }),
-            );
-            for (const { mutation } of acceptedEnqueuedMutations) {
-              yield* Queue.offer(
-                acceptedForceInclusionMutationsQueue,
-                mutation.id,
-              );
-            }
-          }
 
           return {
             batches,
@@ -1022,11 +994,6 @@ export function createRuntimeEffect(
               timestamp: Hex.fromNumber(message.block.timestamp),
             });
 
-            const acceptedForceInclusions: {
-              mutation: AcceptedMutation;
-              executeResult: ExecuteResult;
-              knownPaths: readonly string[];
-            }[] = [];
             for (const log of message.block.logs) {
               const enqueuedMutation: EnqueuedMutation = decodeEnqueuedMutation(
                 {
@@ -1049,59 +1016,7 @@ export function createRuntimeEffect(
               );
 
               mutationsById.set(enqueuedMutation.id, enqueuedMutation);
-
-              const acceptedBatchCount =
-                yield* Queue.size(acceptedBatchesQueue);
-
-              if (acceptedBatchCount > 0) {
-                yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation.id);
-              } else {
-                acceptedForceInclusions.push(
-                  yield* withSpeculativeStateLock(
-                    acceptMutation(enqueuedMutation),
-                  ),
-                );
-              }
-            }
-
-            // Persist every force-inclusion mutation accepted for this block in
-            // one pass, then publish them. The insert stays ahead of the offer
-            // so the lifecycle update `submit` later runs hits existing rows.
-            // TODO: Keep direct force-inclusion acceptance and persistence under
-            // the same speculative-state lock, or persist explicit application
-            // order. `slot_writes.id` currently encodes replay order, so another
-            // batch persisting between execution and this insert can make restart
-            // hydration pick the wrong latest slot value.
-            if (acceptedForceInclusions.length > 0) {
-              yield* db.transaction((tx) =>
-                Effect.gen(function* () {
-                  yield* insertMutations(
-                    tx,
-                    schema,
-                    acceptedForceInclusions.map((entry) => entry.mutation),
-                  );
-                  yield* insertSlotWritesMany(
-                    tx,
-                    schema,
-                    acceptedForceInclusions,
-                  );
-                  yield* insertKnownPaths(
-                    tx,
-                    schema,
-                    dedupe(
-                      acceptedForceInclusions.flatMap(
-                        (entry) => entry.knownPaths,
-                      ),
-                    ),
-                  );
-                }),
-              );
-              for (const { mutation } of acceptedForceInclusions) {
-                yield* Queue.offer(
-                  acceptedForceInclusionMutationsQueue,
-                  mutation.id,
-                );
-              }
+              yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation.id);
             }
 
             for (const block of unfinalizedBlocks.filter(
@@ -1126,12 +1041,26 @@ export function createRuntimeEffect(
                   }
                 }
               }
+              for (const mutation of block.forceIncludedMutations) {
+                if (nextStatus === "safe") {
+                  updateMutationToSafe(mutation);
+                } else {
+                  updateMutationToFinalized(mutation);
+                }
+              }
+
+              const submittedMutations = [
+                ...block.batches.flatMap(
+                  (batch) => batch.mutations as SubmittedMutation[],
+                ),
+                ...block.forceIncludedMutations,
+              ];
 
               if (nextStatus === "finalized") {
                 yield* evm.pruneJournals({
-                  journal_ids: block.batches
-                    .flatMap((batch) => batch.mutations)
-                    .map((mutation) => mutation.journalId),
+                  journal_ids: submittedMutations.map(
+                    (mutation) => mutation.journalId,
+                  ),
                 });
                 for (const batch of block.batches) {
                   batchesById.delete(batch.id);
@@ -1139,17 +1068,13 @@ export function createRuntimeEffect(
                     mutationsById.delete(mutation.id);
                   }
                 }
+                for (const mutation of block.forceIncludedMutations) {
+                  mutationsById.delete(mutation.id);
+                }
               }
 
               yield* db.transaction((tx) =>
-                updateMutationsLifecycle(
-                  tx,
-                  schema,
-                  block.batches.flatMap(
-                    (batch) => batch.mutations as SubmittedMutation[],
-                  ),
-                  block,
-                ),
+                updateMutationsLifecycle(tx, schema, submittedMutations, block),
               );
 
               emitBlock(block);
@@ -1159,6 +1084,9 @@ export function createRuntimeEffect(
                 for (const mutation of batch.mutations) {
                   emitMutation(mutationToEvent(mutation));
                 }
+              }
+              for (const mutation of block.forceIncludedMutations) {
+                emitMutation(mutationToEvent(mutation));
               }
             }
             unfinalizedBlocks = unfinalizedBlocks.filter(
