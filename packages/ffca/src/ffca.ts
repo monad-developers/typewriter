@@ -11,8 +11,7 @@ import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
-import { createRuntimeBatchEffect } from "./runtime-batch";
-import { createRuntimeFIFOEffect } from "./runtime-fifo";
+import { createRuntimeEffect } from "./runtime";
 import type { FFCASchema } from "./schema";
 import type {
   BatchEvent,
@@ -115,12 +114,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
       yield* scopedDeploymentLock(deploymentLockKey(app.chainId, app.address));
       yield* migrate(app.schema, app.chainId, app.address);
 
-      let runtime: InternalRuntimeFFCA<"fifo" | "batch">;
-      if (app.sequencing.order === "batch") {
-        runtime = yield* createRuntimeBatchEffect(app);
-      } else {
-        runtime = yield* createRuntimeFIFOEffect(app);
-      }
+      const runtime = yield* createRuntimeEffect(app);
 
       let fatalError: { readonly error: unknown } | undefined;
       const fatalSignal = yield* Deferred.make<never, unknown>();
