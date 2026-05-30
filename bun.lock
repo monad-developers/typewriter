@@ -105,7 +105,7 @@
       },
       "devDependencies": {
         "@effect/language-service": "catalog:",
-        "@napi-rs/cli": "^3.6.2",
+        "@napi-rs/cli": "3.6.2",
         "prool": "catalog:",
         "solmate": "github:transmissions11/solmate",
         "storage-layout": "workspace:*",
