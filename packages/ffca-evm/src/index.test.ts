@@ -1,5 +1,5 @@
-// Each test spawns its own sidecar (one createEVM per test) and exercises
-// the journal protocol against a hand-written counter contract.
+// Each test creates its own in-process native EVM (one createEVM per test)
+// and exercises the journal protocol against a hand-written counter contract.
 //
 // Counter runtime bytecode — increments storage slot 0 by 1 on any call:
 //   PUSH1 0x00 DUP1 SLOAD PUSH1 0x01 ADD SWAP1 SSTORE STOP
@@ -598,7 +598,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
   `);
 });
 
-test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfer", async () => {
+test("harness access list matches eth_createAccessList for Solmate ERC20 transfer", async () => {
   const artifact = await loadTestToken();
   const tokenAddr = await deployTestToken(artifact);
   const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
@@ -623,12 +623,12 @@ test("sidecar access list matches eth_createAccessList for Solmate ERC20 transfe
       journal_ids: [],
     });
   });
-  const sidecar = await Effect.runPromise(Effect.scoped(program));
-  expect(normalizeAccessRecord(sidecar.access_list)).toEqual(rpcAccessList);
+  const harness = await Effect.runPromise(Effect.scoped(program));
+  expect(normalizeAccessRecord(harness.access_list)).toEqual(rpcAccessList);
 });
 
-test("sidecar gas_limit matches eth_estimateGas for Solmate ERC20 transfer", async () => {
-  // The sidecar uses two-pass execution: pass 1 discovers the access list,
+test("harness gas_limit matches eth_estimateGas for Solmate ERC20 transfer", async () => {
+  // The harness uses two-pass execution: pass 1 discovers the access list,
   // then it binary-searches the smallest successful gas limit with those slots
   // pre-warmed (an EIP-2930 tx).
   const artifact = await loadTestToken();
@@ -660,13 +660,13 @@ test("sidecar gas_limit matches eth_estimateGas for Solmate ERC20 transfer", asy
       journal_ids: [],
     });
   });
-  const sidecar = await Effect.runPromise(Effect.scoped(program));
+  const harness = await Effect.runPromise(Effect.scoped(program));
 
-  expect(BigInt(sidecar.gas_limit)).toEqual(rpcGasEstimate);
-  expect(sidecar.gas_used).toBeLessThanOrEqual(sidecar.gas_limit);
+  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+  expect(harness.gas_used).toBeLessThanOrEqual(harness.gas_limit);
 });
 
-test("sidecar gas_limit includes EIP-150 call headroom", async () => {
+test("harness gas_limit includes EIP-150 call headroom", async () => {
   const calleeArtifact = await loadCallGasCallee();
   const callerArtifact = await loadCallGasCaller();
   const calleeAddr = await deployArtifact(calleeArtifact);
@@ -702,13 +702,13 @@ test("sidecar gas_limit includes EIP-150 call headroom", async () => {
       journal_ids: [],
     });
   });
-  const sidecar = await Effect.runPromise(Effect.scoped(program));
+  const harness = await Effect.runPromise(Effect.scoped(program));
 
-  expect(normalizeAccessRecord(sidecar.access_list)).toEqual(
+  expect(normalizeAccessRecord(harness.access_list)).toEqual(
     normalizeAccessRecord(rpcAccessList),
   );
-  expect(BigInt(sidecar.gas_limit)).toEqual(rpcGasEstimate);
-  expect(sidecar.gas_used).toBeLessThan(sidecar.gas_limit);
+  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+  expect(harness.gas_used).toBeLessThan(harness.gas_limit);
 });
 
 test("init twice fails", async () => {
@@ -723,16 +723,14 @@ test("init twice fails", async () => {
 });
 
 test("an interrupted execute does not desync subsequent calls", async () => {
-  // Regression: the protocol used to match responses by FIFO queue order.
-  // If a caller was interrupted between sending its request and taking
-  // its response, the sidecar's eventual reply would orphan the queue and
-  // every subsequent call would observe `id N, expected N+1`. Per-id
-  // dispatch makes the orphan a no-op — the next call must succeed.
+  // Interruption safety. createEVM serializes calls through a semaphore and
+  // each native call returns its own response synchronously, so an execute
+  // that is interrupted around the semaphore/native-call boundary must not
+  // leave the harness or the request-id sequence in a state that breaks the
+  // next caller.
   //
-  // We hammer many short-timeout calls to land at least one in the
-  // dangerous window between "request written" and "response taken". On
-  // the new code every iteration is safe; on the old code the protocol
-  // would desync as soon as any orphan landed.
+  // We hammer many zero-timeout calls so at least one is interrupted in that
+  // window, then assert a normal execute still succeeds.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -746,7 +744,7 @@ test("an interrupted execute does not desync subsequent calls", async () => {
       );
     }
 
-    // Drain any in-flight orphan responses from the sidecar.
+    // Let any interrupted fibers settle before the final call.
     yield* Effect.sleep("50 millis");
 
     return yield* evm.execute({
@@ -760,10 +758,10 @@ test("an interrupted execute does not desync subsequent calls", async () => {
   expect(exec.success).toBe(true);
 });
 
-test("concurrent calls are dispatched by id, not arrival order", async () => {
-  // Per-id dispatch lets multiple calls be in flight at once. The sidecar
-  // processes them in arrival order, but each response routes back to its
-  // own caller regardless of when it lands.
+test("concurrent execute submissions serialize into sequential journals", async () => {
+  // createEVM serializes calls through a semaphore, so executes submitted
+  // concurrently run one at a time and each opens the next sequential
+  // journal id rather than racing or interleaving.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);

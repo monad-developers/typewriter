@@ -306,7 +306,7 @@ export function createRuntimeBatchEffect(
           // smaller ids than the batched mutations, so plain concatenation
           // would mis-order rewinds when journals overlap on the same slot.
           // Journal ids are monotonic in the order evm.execute runs
-          // (ffca-evm/src/main.rs:299-301), so ascending = application order.
+          // (ffca-evm/src/harness.rs:301-302), so ascending = application order.
           const speculativeJournalIds = batches
             .flatMap((batch) => batch.mutations)
             .map((mutation) => mutation.journalId)

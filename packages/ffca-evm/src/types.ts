@@ -1,4 +1,4 @@
-// Wire types — one-to-one with src/main.rs.
+// Wire types — one-to-one with src/harness.rs.
 //
 // Snake-case for payload fields, camelCase for the request method
 // discriminator (matches `#[serde(tag = "method", rename_all = "camelCase")]`
