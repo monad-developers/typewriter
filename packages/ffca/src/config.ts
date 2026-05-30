@@ -72,9 +72,9 @@ export type FFCAConfig = {
   };
   onFatalError?: (error: unknown) => void;
   // Runtime sequencing and loop cadence. FIFO is the default: mutations are
-  // accepted one-at-a-time as soon as they enter the runtime, while submit still
-  // flushes accepted mutations on an interval. `batch` mode preserves the
-  // delayed batch sort behavior used by existing apps/tests.
+  // accepted in arrival order through short internal batches, while submit still
+  // flushes accepted mutations on an interval. `batch` mode uses the same
+  // internals, but may reorder each batch by `batchOrder`.
   // TODO(kyle) validate this with zod once the internal config shape settles.
   sequencing?: FFCASequencingConfig;
 };

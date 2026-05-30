@@ -47,9 +47,10 @@ import {
   encodeSignatureCalldata,
   FFCA_ABI,
 } from "./encoding";
+import type { InternalRuntimeFFCA } from "./ffca";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { layerRpcLive } from "./rpc";
-import { createRuntimeBatchEffect as createRuntimeBatchEffectInternal } from "./runtime-batch";
+import { createRuntimeEffect as createRuntimeBatchEffectInternal } from "./runtime";
 import { createMutationSchema } from "./schema";
 import { layerWatchLive } from "./watch";
 
@@ -429,7 +430,9 @@ test("runtime emits mutation, batch, and block events", async () => {
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeMutation));
 
-    const unsubscribeBatch = yield* runtime.on("batch", (event) => {
+    const batchRuntime = runtime as InternalRuntimeFFCA<"batch">;
+
+    const unsubscribeBatch = yield* batchRuntime.on("batch", (event) => {
       events.push({
         event: "batch",
         id: event.id,
@@ -439,7 +442,7 @@ test("runtime emits mutation, batch, and block events", async () => {
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeBatch));
 
-    const unsubscribeBlock = yield* runtime.on("block", (event) => {
+    const unsubscribeBlock = yield* batchRuntime.on("block", (event) => {
       events.push({
         event: "block",
         status: event.status,
@@ -906,6 +909,121 @@ test("runtime reorders Harness mutations by batch order", async () => {
   });
 
   await expect(Effect.runPromise(program)).resolves.toBe(70n);
+});
+
+test("fifo runtime preserves submission order without batch reordering", async () => {
+  const address = await deployHarness();
+  const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
+  const account = harnessAccountId(rootPublicKey);
+
+  const config: FFCAConfig = {
+    address,
+    domain: HARNESS_DOMAIN,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
+    storageLayout: HARNESS_STORAGE_LAYOUT,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    sequencing: { order: "fifo", submitIntervalMs: 3_600_000 },
+    database: { url: TEST_DB_URL, maxConnections: 1 },
+    mutations: {
+      initialize: HARNESS_MUTATIONS.initialize,
+      credit: HARNESS_MUTATIONS.credit,
+      debit: HARNESS_MUTATIONS.debit,
+    },
+  };
+
+  const schema = createMutationSchema(config);
+  const services = layerRuntimeServices(address);
+
+  const program = Effect.gen(function* () {
+    const scope = yield* Scope.make();
+    const scopedServices = yield* Layer.buildWithScope(services, scope);
+
+    yield* migrate(schema, config.chainId, config.address).pipe(
+      Effect.provide(scopedServices),
+    );
+
+    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+      Effect.provide(scopedServices),
+      Effect.provideService(Scope.Scope, scope),
+    );
+
+    const initializeFiber = yield* Effect.forkChild(
+      runtime.execute({
+        name: "initialize",
+        args: { rootKeyType: 2, rootPublicKey },
+        signature: harnessSignature({
+          account,
+          keyId: 0n,
+          keyType: 2,
+          rawSignature: "0x",
+        }),
+      }),
+    );
+    yield* Effect.sleep("1 millis");
+
+    const debitArgs = { account, keyId: 0n, amount: 30n, nonce: 1n };
+    const debitFiber = yield* Effect.forkChild(
+      runtime.execute({
+        name: "debit",
+        args: debitArgs,
+        signature: signHarnessMutation({
+          address,
+          account,
+          keyId: 0n,
+          keyType: 2,
+          privateKey: ALICE_PRIVATE_KEY,
+          mutation: "debit",
+          args: debitArgs,
+        }),
+      }),
+    );
+    yield* Effect.sleep("1 millis");
+
+    const creditArgs = { account, keyId: 0n, amount: 100n, nonce: 0n };
+    const creditFiber = yield* Effect.forkChild(
+      runtime.execute({
+        name: "credit",
+        args: creditArgs,
+        signature: signHarnessMutation({
+          address,
+          account,
+          keyId: 0n,
+          keyType: 2,
+          privateKey: ALICE_PRIVATE_KEY,
+          mutation: "credit",
+          args: creditArgs,
+        }),
+      }),
+    );
+    yield* Effect.sleep("1 millis");
+
+    const runtimeFiber = yield* Effect.forkChild(runtime.program);
+    const initializeExit = yield* Fiber.await(initializeFiber);
+    const debitExit = yield* Fiber.await(debitFiber);
+    const creditExit = yield* Fiber.await(creditFiber);
+    yield* Fiber.interrupt(runtimeFiber);
+
+    const state = runtime.state as unknown as {
+      readonly balances: { readonly [key: `0x${string}`]: Promise<bigint> };
+    };
+    return {
+      initializeSucceeded: Exit.isSuccess(initializeExit),
+      debitFailed: Exit.isFailure(debitExit),
+      creditSucceeded: Exit.isSuccess(creditExit),
+      balance: yield* Effect.promise(() => state.balances[account]!),
+    };
+  });
+
+  await expect(Effect.runPromise(program)).resolves.toMatchInlineSnapshot(`
+    {
+      "balance": 100n,
+      "creditSucceeded": true,
+      "debitFailed": true,
+      "initializeSucceeded": true,
+    }
+  `);
 });
 
 test("runtime rejects a Harness mutation when resolution throws", async () => {
