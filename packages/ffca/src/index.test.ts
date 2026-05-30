@@ -10,10 +10,11 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_ABI,
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
+  counterNewAccountMutation,
   deployCounter,
   signCounter,
 } from "../test/utils";
@@ -64,14 +65,14 @@ test("createFFCA stops accepting mutations after submit nonce mismatch", async (
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["add"],
+      batchOrder: ["newAccount", "add"],
       batchIntervalMs: 250,
       submitIntervalMs: 25,
     },
@@ -84,6 +85,19 @@ test("createFFCA stops accepting mutations after submit nonce mismatch", async (
   } as const satisfies FFCAConfig;
 
   const ffca = await createFFCA(config);
+
+  const setupIncluded = Promise.withResolvers<void>();
+  const unsubscribe = ffca.on("mutation", (event) => {
+    if (event.name === "newAccount" && event.status === "included") {
+      setupIncluded.resolve();
+    }
+  });
+  await ffca.execute(
+    counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+  );
+  await setupIncluded.promise;
+  unsubscribe();
+
   await TEST_WALLET_CLIENT.sendTransaction({
     account: SCHEDULER_ACCOUNT,
     chain: anvil,

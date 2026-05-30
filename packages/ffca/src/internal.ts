@@ -1,5 +1,5 @@
 import type { PgTable } from "drizzle-orm/pg-core";
-import type { Abi, Address } from "ox";
+import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseOptions } from "./db";
@@ -56,7 +56,7 @@ type InternalSequencing = InternalFIFOSequencing | InternalBatchSequencing;
 export type InternalApp = {
   address: Address.Address;
   domain: InternalDomain;
-  abi: Abi.Abi;
+  signature: { params: readonly AbiParameter[] };
   storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;

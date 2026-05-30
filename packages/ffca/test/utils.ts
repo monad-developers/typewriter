@@ -34,6 +34,12 @@ import {
 // deployCounter() so client-side digests align with the on-chain
 // domainSeparator.
 export const COUNTER_DOMAIN = { name: "Counter", version: "1" } as const;
+export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
+  "bytes32 accountId, bytes publicKey, bytes rawSignature",
+);
+export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
+  "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
+);
 
 export const EMPTY_STORAGE_LAYOUT = {
   storage: [],
@@ -41,8 +47,8 @@ export const EMPTY_STORAGE_LAYOUT = {
 } as const satisfies StorageLayout;
 
 // Minimal ABI for tests that createFFCA without a real contract. Contains the
-// execute function and ForceInclusionQueued event so signatureParamsFromAbi
-// and the watch layer have the shapes they expect.
+// execute function and ForceInclusionQueued event so the runtime and watch
+// layer have the shapes they expect.
 export const STUB_FFCA_ABI = [
   {
     type: "function",
@@ -56,13 +62,9 @@ export const STUB_FFCA_ABI = [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
           {
-            name: "signatures",
-            type: "tuple[]",
-            internalType: "struct Signature[]",
-            components: [
-              { name: "keyType", type: "uint8", internalType: "uint8" },
-              { name: "rawSignature", type: "bytes", internalType: "bytes" },
-            ],
+            name: "signatureData",
+            type: "bytes[]",
+            internalType: "bytes[]",
           },
         ],
       },
@@ -98,14 +100,10 @@ export const STUB_FFCA_ABI = [
         internalType: "bytes",
       },
       {
-        name: "sig",
-        type: "tuple",
+        name: "signatureData",
+        type: "bytes",
         indexed: false,
-        internalType: "struct Signature",
-        components: [
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        internalType: "bytes",
       },
       {
         name: "enqueuedBlock",
@@ -119,103 +117,80 @@ export const STUB_FFCA_ABI = [
 ] as const satisfies Abi.Abi;
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
-// Counter.State shape used by the runtime tests.
+// Counter.State shape used by the runtime tests. `state` is stored at contract
+// slot 1, so the exposed fields start at slots 1 and 2.
 export const COUNTER_STORAGE_LAYOUT = {
   storage: [
     {
-      astId: 827,
+      astId: 903,
       contract: "src/Counter.sol:Counter",
       label: "total",
-      offset: 0,
-      slot: "0",
-      type: "t_uint256",
-    },
-    {
-      astId: 829,
-      contract: "src/Counter.sol:Counter",
-      label: "nonce",
       offset: 0,
       slot: "1",
       type: "t_uint256",
     },
+    {
+      astId: 908,
+      contract: "src/Counter.sol:Counter",
+      label: "accounts",
+      offset: 0,
+      slot: "2",
+      type: "t_mapping(t_bytes32,t_struct(Account)901_storage)",
+    },
   ],
   types: {
-    "t_array(t_struct(QueuedMutation)845_storage)dyn_storage": {
-      encoding: "dynamic_array",
-      label: "struct QueuedMutation[]",
-      numberOfBytes: "32",
-      base: "t_struct(QueuedMutation)845_storage",
-    },
+    t_bytes32: { encoding: "inplace", label: "bytes32", numberOfBytes: "32" },
     t_bytes_storage: { encoding: "bytes", label: "bytes", numberOfBytes: "32" },
-    "t_struct(QueuedMutation)845_storage": {
+    "t_enum(KeyType)5": {
       encoding: "inplace",
-      label: "struct QueuedMutation",
-      numberOfBytes: "160",
-      members: [
-        {
-          astId: 837,
-          contract: "src/Counter.sol:Counter",
-          label: "mutation",
-          offset: 0,
-          slot: "0",
-          type: "t_uint8",
-        },
-        {
-          astId: 839,
-          contract: "src/Counter.sol:Counter",
-          label: "mutationData",
-          offset: 0,
-          slot: "1",
-          type: "t_bytes_storage",
-        },
-        {
-          astId: 842,
-          contract: "src/Counter.sol:Counter",
-          label: "sig",
-          offset: 0,
-          slot: "2",
-          type: "t_struct(Signature)814_storage",
-        },
-        {
-          astId: 844,
-          contract: "src/Counter.sol:Counter",
-          label: "enqueuedBlock",
-          offset: 0,
-          slot: "4",
-          type: "t_uint256",
-        },
-      ],
+      label: "enum KeyType",
+      numberOfBytes: "1",
     },
-    "t_struct(Signature)814_storage": {
+    "t_mapping(t_bytes32,t_struct(Account)901_storage)": {
+      encoding: "mapping",
+      key: "t_bytes32",
+      label: "mapping(bytes32 => struct Account)",
+      numberOfBytes: "32",
+      value: "t_struct(Account)901_storage",
+    },
+    "t_struct(Account)901_storage": {
       encoding: "inplace",
-      label: "struct Signature",
-      numberOfBytes: "64",
+      label: "struct Account",
+      numberOfBytes: "96",
       members: [
         {
-          astId: 811,
+          astId: 896,
           contract: "src/Counter.sol:Counter",
           label: "keyType",
           offset: 0,
           slot: "0",
-          type: "t_uint8",
+          type: "t_enum(KeyType)5",
         },
         {
-          astId: 813,
+          astId: 898,
           contract: "src/Counter.sol:Counter",
-          label: "rawSignature",
+          label: "publicKey",
           offset: 0,
           slot: "1",
           type: "t_bytes_storage",
         },
+        {
+          astId: 900,
+          contract: "src/Counter.sol:Counter",
+          label: "nonce",
+          offset: 0,
+          slot: "2",
+          type: "t_uint256",
+        },
       ],
     },
-    "t_struct(State)830_storage": {
+    "t_struct(State)909_storage": {
       encoding: "inplace",
       label: "struct State",
       numberOfBytes: "64",
       members: [
         {
-          astId: 827,
+          astId: 903,
           contract: "src/Counter.sol:Counter",
           label: "total",
           offset: 0,
@@ -223,12 +198,12 @@ export const COUNTER_STORAGE_LAYOUT = {
           type: "t_uint256",
         },
         {
-          astId: 829,
+          astId: 908,
           contract: "src/Counter.sol:Counter",
-          label: "nonce",
+          label: "accounts",
           offset: 0,
           slot: "1",
-          type: "t_uint256",
+          type: "t_mapping(t_bytes32,t_struct(Account)901_storage)",
         },
       ],
     },
@@ -249,16 +224,7 @@ export const COUNTER_ABI = [
     inputs: [
       { name: "mutation", type: "uint8", internalType: "uint8" },
       { name: "mutationData", type: "bytes", internalType: "bytes" },
-      {
-        name: "sig",
-        type: "tuple",
-        internalType: "struct Signature",
-        components: [
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "publicKey", type: "bytes", internalType: "bytes" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
-      },
+      { name: "signatureData", type: "bytes", internalType: "bytes" },
     ],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
     stateMutability: "nonpayable",
@@ -270,7 +236,7 @@ export const COUNTER_ABI = [
       {
         name: "batches",
         type: "tuple[]",
-        internalType: "struct Batch[]",
+        internalType: "struct FFCA.Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           {
@@ -279,18 +245,9 @@ export const COUNTER_ABI = [
             internalType: "bytes[]",
           },
           {
-            name: "signatures",
-            type: "tuple[]",
-            internalType: "struct Signature[]",
-            components: [
-              { name: "keyType", type: "uint8", internalType: "uint8" },
-              { name: "publicKey", type: "bytes", internalType: "bytes" },
-              {
-                name: "rawSignature",
-                type: "bytes",
-                internalType: "bytes",
-              },
-            ],
+            name: "signatureData",
+            type: "bytes[]",
+            internalType: "bytes[]",
           },
         ],
       },
@@ -333,15 +290,10 @@ export const COUNTER_ABI = [
         internalType: "bytes",
       },
       {
-        name: "sig",
-        type: "tuple",
+        name: "signatureData",
+        type: "bytes",
         indexed: false,
-        internalType: "struct Signature",
-        components: [
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "publicKey", type: "bytes", internalType: "bytes" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        internalType: "bytes",
       },
       {
         name: "enqueuedBlock",
@@ -352,22 +304,48 @@ export const COUNTER_ABI = [
     ],
     anonymous: false,
   },
-  { type: "error", name: "AlreadyExecuted", inputs: [] },
-  { type: "error", name: "InvalidNonce", inputs: [] },
   {
     type: "error",
-    name: "InvalidSignature",
-    inputs: [{ name: "keyType", type: "uint8", internalType: "enum KeyType" }],
+    name: "AccountExists",
+    inputs: [{ name: "accountId", type: "bytes32", internalType: "bytes32" }],
   },
-  { type: "error", name: "TooEarly", inputs: [] },
-  { type: "error", name: "Unauthorized", inputs: [] },
-  { type: "error", name: "UnknownTag", inputs: [] },
+  {
+    type: "error",
+    name: "ForceInclusionAlreadyExecuted",
+    inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
+  },
+  {
+    type: "error",
+    name: "ForceInclusionTooEarly",
+    inputs: [
+      { name: "remainingDelay", type: "uint256", internalType: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "InvalidNonce",
+    inputs: [
+      { name: "expectedNonce", type: "uint256", internalType: "uint256" },
+      { name: "receivedNonce", type: "uint256", internalType: "uint256" },
+    ],
+  },
+  {
+    type: "error",
+    name: "UnauthorizedExecute",
+    inputs: [{ name: "caller", type: "address", internalType: "address" }],
+  },
+  {
+    type: "error",
+    name: "UnknownMutation",
+    inputs: [{ name: "mutation", type: "uint8", internalType: "uint8" }],
+  },
 ] as const satisfies Abi.Abi;
 
 export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
-// Harness.State shape used by the runtime tests.
+// Harness.State shape used by the runtime tests. `state` is stored after
+// FFCA.queue, so the exposed fields start at slots 1 and 2.
 export const HARNESS_STORAGE_LAYOUT = {
   storage: [
     {
@@ -375,7 +353,7 @@ export const HARNESS_STORAGE_LAYOUT = {
       contract: "src/Harness.sol:Harness",
       label: "accounts",
       offset: 0,
-      slot: "0",
+      slot: "1",
       type: "t_mapping(t_bytes32,t_struct(Account)1407_storage)",
     },
     {
@@ -383,7 +361,7 @@ export const HARNESS_STORAGE_LAYOUT = {
       contract: "src/Harness.sol:Harness",
       label: "balances",
       offset: 0,
-      slot: "1",
+      slot: "2",
       type: "t_mapping(t_bytes32,t_uint256)",
     },
   ],
@@ -493,7 +471,7 @@ export const HARNESS_STORAGE_LAYOUT = {
         {
           astId: 1390,
           contract: "src/Harness.sol:Harness",
-          label: "sig",
+          label: "signatureData",
           offset: 0,
           slot: "2",
           type: "t_struct(Signature)1372_storage",
@@ -586,15 +564,9 @@ export const HARNESS_ABI = [
       { name: "mutation", type: "uint8", internalType: "uint8" },
       { name: "mutationData", type: "bytes", internalType: "bytes" },
       {
-        name: "sig",
-        type: "tuple",
-        internalType: "struct Signature",
-        components: [
-          { name: "account", type: "bytes32", internalType: "bytes32" },
-          { name: "keyId", type: "uint64", internalType: "uint64" },
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        name: "signatureData",
+        type: "bytes",
+        internalType: "bytes",
       },
     ],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
@@ -607,7 +579,7 @@ export const HARNESS_ABI = [
       {
         name: "batches",
         type: "tuple[]",
-        internalType: "struct Batch[]",
+        internalType: "struct FFCA.Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           {
@@ -616,19 +588,9 @@ export const HARNESS_ABI = [
             internalType: "bytes[]",
           },
           {
-            name: "signatures",
-            type: "tuple[]",
-            internalType: "struct Signature[]",
-            components: [
-              { name: "account", type: "bytes32", internalType: "bytes32" },
-              { name: "keyId", type: "uint64", internalType: "uint64" },
-              { name: "keyType", type: "uint8", internalType: "uint8" },
-              {
-                name: "rawSignature",
-                type: "bytes",
-                internalType: "bytes",
-              },
-            ],
+            name: "signatureData",
+            type: "bytes[]",
+            internalType: "bytes[]",
           },
         ],
       },
@@ -671,16 +633,10 @@ export const HARNESS_ABI = [
         internalType: "bytes",
       },
       {
-        name: "sig",
-        type: "tuple",
+        name: "signatureData",
+        type: "bytes",
         indexed: false,
-        internalType: "struct Signature",
-        components: [
-          { name: "account", type: "bytes32", internalType: "bytes32" },
-          { name: "keyId", type: "uint64", internalType: "uint64" },
-          { name: "keyType", type: "uint8", internalType: "uint8" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        internalType: "bytes",
       },
       {
         name: "enqueuedBlock",
@@ -691,8 +647,19 @@ export const HARNESS_ABI = [
     ],
     anonymous: false,
   },
-  { type: "error", name: "AlreadyExecuted", inputs: [] },
   { type: "error", name: "AlreadyInitialized", inputs: [] },
+  {
+    type: "error",
+    name: "ForceInclusionAlreadyExecuted",
+    inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
+  },
+  {
+    type: "error",
+    name: "ForceInclusionTooEarly",
+    inputs: [
+      { name: "remainingDelay", type: "uint256", internalType: "uint256" },
+    ],
+  },
   { type: "error", name: "InvalidAccount", inputs: [] },
   { type: "error", name: "InvalidNonce", inputs: [] },
   {
@@ -700,8 +667,16 @@ export const HARNESS_ABI = [
     name: "InvalidSignature",
     inputs: [{ name: "keyType", type: "uint8", internalType: "enum KeyType" }],
   },
-  { type: "error", name: "TooEarly", inputs: [] },
-  { type: "error", name: "UnknownTag", inputs: [] },
+  {
+    type: "error",
+    name: "UnauthorizedExecute",
+    inputs: [{ name: "caller", type: "address", internalType: "address" }],
+  },
+  {
+    type: "error",
+    name: "UnknownMutation",
+    inputs: [{ name: "mutation", type: "uint8", internalType: "uint8" }],
+  },
 ] as const satisfies Abi.Abi;
 
 // Deploy a forge-built contract by name. Reads the artifact from the
@@ -773,23 +748,50 @@ export async function readContractStorage<
 
 // Mutation definitions for the Counter test fixture. The contract/revm owns
 // acceptance and state transitions; this config only describes encoding.
-export const COUNTER_MUTATIONS: { add: FFCAMutationConfig } = {
-  add: {
+export const COUNTER_MUTATIONS: {
+  newAccount: FFCAMutationConfig;
+  add: FFCAMutationConfig;
+} = {
+  newAccount: {
     tag: 0,
+    params: parseAbiParameters("uint8 keyType, bytes publicKey"),
+  },
+  add: {
+    tag: 1,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
   },
 };
 
-// Sign Counter's `add` mutation. Counter carries the signer public key in the
-// signature payload, so this returns both the secp256k1 publicKey and raw
-// signature.
+export function counterAccountId(publicKey: Hex): Hex {
+  return Hash.keccak256(publicKey) as Hex;
+}
+
+export function counterNewAccountMutation(params: { address: Address }) {
+  const publicKey = secp256k1PublicKey(params.address);
+  return {
+    name: "newAccount",
+    args: { keyType: 2, publicKey },
+    signature: {
+      accountId: counterAccountId(publicKey),
+      publicKey,
+      rawSignature: "0x",
+    },
+  };
+}
+
+// Sign Counter's `add` mutation. The runtime ABI-encodes this record against
+// COUNTER_SIGNATURE_PARAMS before passing it through FFCA's signatureData channel.
 export function signCounter(params: {
   privateKey: Hex;
   amount: bigint;
   nonce: bigint;
   address: Address;
   chainId: number;
-}): { keyType: 2; publicKey: Hex; rawSignature: Hex } {
+}): {
+  readonly accountId: Hex;
+  readonly publicKey: Hex;
+  readonly rawSignature: Hex;
+} {
   const domain: TypedData.Domain = {
     name: COUNTER_DOMAIN.name,
     version: COUNTER_DOMAIN.version,
@@ -803,11 +805,9 @@ export function signCounter(params: {
     domain,
   );
   const signerAddress = privateKeyToAccount(params.privateKey).address;
-  return {
-    keyType: 2,
-    publicKey: secp256k1PublicKey(signerAddress),
-    rawSignature: signSecp256k1Raw(digest, params.privateKey),
-  };
+  const publicKey = secp256k1PublicKey(signerAddress);
+  const rawSignature = signSecp256k1Raw(digest, params.privateKey);
+  return { accountId: counterAccountId(publicKey), publicKey, rawSignature };
 }
 
 // Mutation definitions for the Harness test fixture. Tags match the contract:
@@ -893,13 +893,13 @@ export function harnessAccountId(publicKey: Hex): Hex {
 }
 
 // secp256k1 public key for an EOA, in the abi.encode(address) form
-// Account.sol's verifySecp256k1 expects.
+// FFCA.sol's verifySecp256k1 expects.
 export function secp256k1PublicKey(address: Address): Hex {
   return AbiParameters.encode(parseAbiParameters("address"), [address]);
 }
 
 // P-256 public key for a private key, in the abi.encode(uint256 x, uint256 y)
-// form Account.sol's verifyP256 / decodeP256PublicKey accepts.
+// form FFCA.sol's verifyP256 / decodeP256PublicKey accepts.
 export function p256PublicKey(privateKey: Hex): Hex {
   const pk = P256.getPublicKey({ privateKey });
   return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
@@ -921,9 +921,9 @@ export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
 
 // Sign a digest as a WebAuthn-P256 challenge. Returns rawSignature in the
 // abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset,
-// uint256 r, uint256 s) form Account.sol's verifyWebAuthnP256 expects.
+// uint256 r, uint256 s) form FFCA.sol's verifyWebAuthnP256 expects.
 //
-// rpId/origin are fixed to empty strings — Account.sol doesn't inspect
+// rpId/origin are fixed to empty strings — FFCA.sol doesn't inspect
 // either, so their values don't affect on-chain verification. Real apps
 // that care about origin enforcement would do that check off-chain
 // (browser refuses to sign for the wrong RP ID anyway).
@@ -935,7 +935,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
     userVerification: "required",
   });
   const sig = P256.sign({ payload, privateKey, hash: true });
-  // Account.sol's verifyChallenge expects the byte offset at which the
+  // FFCA.sol's verifyChallenge expects the byte offset at which the
   // base64url-encoded challenge VALUE starts inside clientDataJSON. ox's
   // `challengeIndex` points at the JSON key (`"challenge":"`), so add 13
   // to land on the first byte of the value.
@@ -956,7 +956,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
 }
 
 // Sign one of Harness's signed mutation types. Returns the structured
-// signature ffca encodes into batch.signatures[i].
+// signature ffca encodes into batch.signatureData[i].
 export function signHarness(params: {
   keyType: number;
   privateKey: Hex;
@@ -982,6 +982,15 @@ export function signHarness(params: {
     return signWebAuthnP256Raw(digest, params.privateKey);
   if (params.keyType === 2) return signSecp256k1Raw(digest, params.privateKey);
   throw new Error(`signHarness: unknown keyType ${params.keyType}`);
+}
+
+export function encodeHarnessSignature(params: {
+  readonly account: Hex;
+  readonly keyId: bigint;
+  readonly keyType: number;
+  readonly rawSignature: Hex;
+}): typeof params {
+  return params;
 }
 
 function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
@@ -1012,12 +1021,12 @@ export async function setupHarnessAccount(
       rootKeyType: params.rootKeyType,
       rootPublicKey: params.rootPublicKey,
     },
-    signature: {
+    signature: encodeHarnessSignature({
       account,
       keyId: 0n,
       keyType: params.rootKeyType,
       rawSignature: "0x",
-    },
+    }),
   });
   return account;
 }

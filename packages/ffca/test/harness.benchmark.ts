@@ -10,9 +10,10 @@ import {
 } from "./setup";
 import {
   deployHarness,
-  HARNESS_ABI,
+  encodeHarnessSignature,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
+  HARNESS_SIGNATURE_PARAMS,
   HARNESS_STORAGE_LAYOUT,
   harnessAccountId,
   secp256k1PublicKey,
@@ -27,7 +28,7 @@ function harnessSignature(params: {
   readonly keyType: number;
   readonly rawSignature: `0x${string}`;
 }) {
-  return params;
+  return encodeHarnessSignature(params);
 }
 
 function harnessCreditMutation(params: {
@@ -106,7 +107,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   const ffca = await createFFCA({
     address,
     domain: HARNESS_DOMAIN,
-    abi: HARNESS_ABI,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

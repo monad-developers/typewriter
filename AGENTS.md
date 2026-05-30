@@ -6,6 +6,10 @@ Repo-wide guidance. Per-app specifics live in each workspace's own `AGENTS.md` /
 
 A Bun monorepo. Apps live under `apps/*`; reusable framework code lives under `packages/*`. The current state is one app (`order-book-*`) plus a framework package (`ffca`) being extracted from it.
 
+## Docs
+
+`README.md` and `packages/ffca/README.md` are copies of each other. Keep them in sync when editing either file.
+
 ## Common commands
 
 Run from the repo root:
@@ -80,9 +84,15 @@ Prefer `.toMatchInlineSnapshot()` over hand-written equality assertions when the
 
 When a suite-wide test run reports many failures, especially with `beforeEach`/`afterEach` timeouts or "Unhandled error between tests", run a single test in isolation to see the actual error. Cascading setup failures hide the root cause — `bun test -t "name fragment"` (or `bun test path/to/file.test.ts`) cuts through the noise and surfaces the real exception in the first failing test.
 
+If a suite-wide test run hits two timeout failures, cancel the process early; the rest are likely to timeout for the same reason.
+
 ## Lint / format
 
 Biome 2.x (`biome.json`) for JS/TS/CSS; `forge fmt` for Solidity. `noNonNullAssertion` is off — `!` is allowed.
+
+## Foundry
+
+Use the Monad version of Foundry for all `forge` and `anvil` commands. The contracts and tests rely on Monad-specific gas rules and Monad/RIP-7212 behavior, including the P-256 precompile at `address(0x100)`, so upstream stable Foundry is not sufficient.
 
 Prefer specific validity checks over truthy/falsy shortcuts: `if (mutation === undefined)` over `if (!mutation)`, `if (xs.length === 0)` over `if (!xs.length)`. `!x` collapses undefined / null / 0 / "" / false / NaN into one branch — for domain values that could legitimately be `0` or `""` it silently wrong-paths, and even when those cases can't occur the explicit form makes the intended invariant readable. Reach for `!x` only on actual booleans.
 

@@ -1,8 +1,8 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
-import { EXCHANGE_ABI, EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
-import type { Address, Hex } from "viem";
+import { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
+import { type Address, type Hex, parseAbiParameters } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
@@ -44,7 +44,11 @@ const readerConnection = new Bun.SQL({
 const config = {
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
-  abi: EXCHANGE_ABI,
+  signature: {
+    params: parseAbiParameters(
+      "bytes32 account, uint64 keyId, bytes rawSignature",
+    ),
+  },
   storageLayout: EXCHANGE_STORAGE_LAYOUT,
   account,
   chainId: CHAIN.id,

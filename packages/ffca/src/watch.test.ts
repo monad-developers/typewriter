@@ -13,10 +13,11 @@ import {
 import {
   COUNTER_ABI,
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   deployCounter,
   signCounter,
 } from "../test/utils";
-import { encodeMutationCalldata } from "./encoding";
+import { encodeMutationCalldata, encodeSignatureCalldata } from "./encoding";
 import { layerRpcLive } from "./rpc";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
 
@@ -29,7 +30,7 @@ const liveLayer = () =>
   }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] })));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
-  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, (uint8 keyType, bytes publicKey, bytes rawSignature) sig, uint256 enqueuedBlock)",
+  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, bytes signatureData, uint256 enqueuedBlock)",
 );
 
 const collect = (
@@ -149,6 +150,10 @@ test("attaches matching force inclusion enqueue logs", async () => {
     address: counterAddress,
     chainId: anvil.id,
   });
+  const signatureData = encodeSignatureCalldata(
+    COUNTER_SIGNATURE_PARAMS,
+    signature,
+  );
   const mutationData = encodeMutationCalldata({
     id: 0,
     status: "accepted",
@@ -172,7 +177,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           address: counterAddress,
           abi: COUNTER_ABI,
           functionName: "enqueue",
-          args: [COUNTER_MUTATIONS.add.tag, mutationData, signature],
+          args: [COUNTER_MUTATIONS.add.tag, mutationData, signatureData],
         }),
       );
       return { messages: yield* collect(watch.messages, 1), transactionHash };
@@ -211,14 +216,14 @@ test("attaches matching force inclusion enqueue logs", async () => {
     index: bigint;
     mutation: number;
     mutationData: typeof mutationData;
-    sig: typeof signature;
+    signatureData: typeof signatureData;
     enqueuedBlock: bigint;
   };
 
   expect(args.index).toMatchInlineSnapshot(`0n`);
-  expect(args.mutation).toMatchInlineSnapshot(`0`);
+  expect(args.mutation).toMatchInlineSnapshot(`1`);
   expect(args.mutationData).toBe(mutationData);
-  expect(args.sig).toEqual(signature);
+  expect(args.signatureData).toEqual(signatureData);
   expect(args.enqueuedBlock).toBe(message.block.number);
 });
 

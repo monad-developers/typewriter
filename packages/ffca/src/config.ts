@@ -1,4 +1,4 @@
-import type { Abi, Address } from "ox";
+import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
@@ -58,13 +58,13 @@ export type FFCASequencingConfig =
 export type FFCAConfig = {
   address: Address.Address;
   domain: { name: string; version: string };
-  abi: Abi.Abi;
   storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
   mutations: { [name: string]: FFCAMutationConfig };
+  signature: { params: readonly AbiParameter[] };
   blockPollingIntervalMs?: number;
   confirmations?: {
     safeBlockDepth?: number;
@@ -187,7 +187,7 @@ export function buildInternalApp(config: FFCAConfig): InternalApp {
       chainId: config.chainId,
       verifyingContract: config.address,
     },
-    abi: config.abi,
+    signature: config.signature,
     storageLayout: config.storageLayout,
     account: config.account,
     chainId: config.chainId,

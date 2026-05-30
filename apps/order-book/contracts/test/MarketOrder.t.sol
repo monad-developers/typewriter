@@ -4,17 +4,18 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 
 import {
-    Exchange,
-    MarketOrder,
-    MarketOrderResolution,
-    Fill,
     InvalidInstrument,
     InvalidMutation,
     SlippageExceeded,
-    InsufficientBalance
+    InsufficientBalance,
+    Signature,
+    State
 } from "src/Exchange.sol";
+import {Fill, MarketOrderMutation} from "src/MarketOrder.sol";
 
-contract MarketOrderTest is Test, Exchange(address(0)) {
+contract MarketOrderTest is Test {
+    State internal state;
+
     address constant BASE = address(1);
     address constant QUOTE = address(2);
     bytes32 constant ACCOUNT = bytes32(uint256(100));
@@ -36,7 +37,21 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         state.instruments[0].bids[10 * Q32].remainingQuantity = 100;
     }
 
-    function callMarketOrder(MarketOrder memory order, MarketOrderResolution memory res, bytes32 account) external {
+    function _executeMarketOrder(
+        MarketOrderMutation.MarketOrder memory order,
+        MarketOrderMutation.MarketOrderResolution memory res,
+        bytes32 account
+    ) internal {
+        MarketOrderMutation.executeMarketOrder(
+            state, order, res, Signature({account: account, keyId: 0, rawSignature: ""})
+        );
+    }
+
+    function callMarketOrder(
+        MarketOrderMutation.MarketOrder memory order,
+        MarketOrderMutation.MarketOrderResolution memory res,
+        bytes32 account
+    ) external {
         _executeMarketOrder(order, res, account);
     }
 
@@ -44,8 +59,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         Fill[] memory fills = new Fill[](0);
 
         try this.callMarketOrder(
-            MarketOrder({quantity: 1, minReceivedQuantity: 0, instrumentId: 99, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 1, minReceivedQuantity: 0, instrumentId: 99, bidOrAsk: 0, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -63,8 +80,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 
@@ -87,8 +106,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 
@@ -115,8 +136,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrder({quantity: 15, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 15, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 
@@ -133,8 +156,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         fills[0] = Fill({quantity: 5, price: 10 * Q32});
 
         try this.callMarketOrder(
-            MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -148,8 +173,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         fills[0] = Fill({quantity: 10, price: 10 * Q32});
 
         try this.callMarketOrder(
-            MarketOrder({quantity: 10, minReceivedQuantity: 999, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 10, minReceivedQuantity: 999, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -169,8 +196,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         try this.callMarketOrder(
-            MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0}),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrder({
+                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
+            }),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -197,10 +226,10 @@ contract MarketOrderTest is Test, Exchange(address(0)) {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrder({
+            MarketOrderMutation.MarketOrder({
                 quantity: 10 << 18, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderResolution({fills: fills}),
+            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 

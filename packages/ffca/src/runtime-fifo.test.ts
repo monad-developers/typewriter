@@ -16,15 +16,17 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_ABI,
   COUNTER_DOMAIN,
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
+  counterNewAccountMutation,
   deployCounter,
   deployHarness,
-  HARNESS_ABI,
+  encodeHarnessSignature,
   HARNESS_DOMAIN,
   HARNESS_MUTATIONS,
+  HARNESS_SIGNATURE_PARAMS,
   HARNESS_STORAGE_LAYOUT,
   harnessAccountId,
   p256PublicKey,
@@ -35,7 +37,11 @@ import {
 } from "../test/utils";
 import { buildInternalApp, type FFCAConfig } from "./config";
 import { layerDatabaseLive } from "./db";
-import { encodeMutationCalldata } from "./encoding";
+import {
+  encodeMutationCalldata,
+  encodeSignatureCalldata,
+  FFCA_ABI,
+} from "./encoding";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { layerRpcLive } from "./rpc";
 import { createRuntimeFIFOEffect as createRuntimeFIFOEffectInternal } from "./runtime-fifo";
@@ -46,9 +52,12 @@ function layerRuntimeServices(address: Address) {
   const rpcLayer = layerRpcLive({ rpcUrls: [TEST_RPC_URL] });
   const dbLayer = layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 });
   const forceInclusionEvent = getAbiItem({
-    abi: COUNTER_ABI,
+    abi: FFCA_ABI,
     name: "ForceInclusionQueued",
   });
+  if (forceInclusionEvent === undefined) {
+    throw new Error("missing FFCA ForceInclusionQueued event");
+  }
   const watchLayer = layerWatchLive({
     pollIntervalMs: 200,
     maxChainDepth: 5,
@@ -88,7 +97,7 @@ function harnessSignature(params: {
   readonly keyType: number;
   readonly rawSignature: `0x${string}`;
 }) {
-  return params;
+  return encodeHarnessSignature(params);
 }
 
 function signHarnessMutation(params: {
@@ -121,7 +130,7 @@ test("createRuntimeFIFOEffect", async () => {
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -161,7 +170,7 @@ test("runtime loads persisted slot state before returning", async () => {
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -186,9 +195,9 @@ test("runtime loads persisted slot state before returning", async () => {
     yield* Effect.promise(
       () => TEST_DB_CONNECTION`
       INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-        (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+        (id, status, amount, nonce, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
       VALUES
-        (0, 'included', 7, 0, 0, '0x', '0x')
+        (0, 'included', 7, 0, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
     `,
     );
     yield* Effect.promise(
@@ -196,8 +205,7 @@ test("runtime loads persisted slot state before returning", async () => {
       INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
         (${TEST_DB_CONNECTION("mutationId")}, slot, value)
       VALUES
-        (0, ${"0x0000000000000000000000000000000000000000000000000000000000000000"}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"}),
-        (0, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, ${"0x0000000000000000000000000000000000000000000000000000000000000001"})
+        (0, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"})
     `,
     );
 
@@ -206,19 +214,16 @@ test("runtime loads persisted slot state before returning", async () => {
       Effect.provideService(Scope.Scope, scope),
     );
     const state = runtime.state as {
-      nonce: Promise<bigint>;
       total: Promise<bigint>;
     };
 
     return {
       total: yield* Effect.promise(() => state.total),
-      nonce: yield* Effect.promise(() => state.nonce),
     };
   });
 
   await expect(Effect.runPromise(program)).resolves.toEqual({
     total: 7n,
-    nonce: 1n,
   });
 });
 
@@ -228,7 +233,7 @@ test("execute() returns an accepted mutation", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -255,6 +260,10 @@ test("execute() returns an accepted mutation", async () => {
     );
 
     yield* Effect.forkChild(runtime.program);
+
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
 
     const mutationResult = yield* runtime.execute({
       name: "add",
@@ -275,7 +284,7 @@ test("execute() returns an accepted mutation", async () => {
 
   expect(mutationResult).toMatchInlineSnapshot(`
     {
-      "id": 0,
+      "id": 1,
       "resolution": undefined,
     }
   `);
@@ -287,7 +296,7 @@ test("execute() accepts multiple mutations", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -314,6 +323,10 @@ test("execute() accepts multiple mutations", async () => {
     );
 
     yield* Effect.forkChild(runtime.program);
+
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
 
     const mutationResults = [];
     for (const { amount, nonce } of [
@@ -344,15 +357,15 @@ test("execute() accepts multiple mutations", async () => {
   expect(mutationResults).toMatchInlineSnapshot(`
     [
       {
-        "id": 0,
-        "resolution": undefined,
-      },
-      {
         "id": 1,
         "resolution": undefined,
       },
       {
         "id": 2,
+        "resolution": undefined,
+      },
+      {
+        "id": 3,
         "resolution": undefined,
       },
     ]
@@ -365,7 +378,7 @@ test("runtime emits mutation and block events", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -403,7 +416,9 @@ test("runtime emits mutation and block events", async () => {
         isForceInclusion:
           "isForceInclusion" in event ? event.isForceInclusion : undefined,
       });
-      if (event.status === "included") included.resolve();
+      if (event.status === "included" && event.name === "add") {
+        included.resolve();
+      }
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeMutation));
 
@@ -417,6 +432,10 @@ test("runtime emits mutation and block events", async () => {
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeBlock));
 
     yield* Effect.forkChild(runtime.program);
+
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
 
     yield* runtime.execute({
       name: "add",
@@ -441,12 +460,26 @@ test("runtime emits mutation and block events", async () => {
         "event": "mutation",
         "id": 0,
         "isForceInclusion": undefined,
-        "name": "add",
+        "name": "newAccount",
         "status": "received",
       },
       {
         "event": "mutation",
         "id": 0,
+        "isForceInclusion": false,
+        "name": "newAccount",
+        "status": "accepted",
+      },
+      {
+        "event": "mutation",
+        "id": 1,
+        "isForceInclusion": undefined,
+        "name": "add",
+        "status": "received",
+      },
+      {
+        "event": "mutation",
+        "id": 1,
         "isForceInclusion": false,
         "name": "add",
         "status": "accepted",
@@ -455,12 +488,20 @@ test("runtime emits mutation and block events", async () => {
         "event": "block",
         "mutationIds": [
           0,
+          1,
         ],
         "status": "included",
       },
       {
         "event": "mutation",
         "id": 0,
+        "isForceInclusion": false,
+        "name": "newAccount",
+        "status": "included",
+      },
+      {
+        "event": "mutation",
+        "id": 1,
         "isForceInclusion": false,
         "name": "add",
         "status": "included",
@@ -475,7 +516,7 @@ test("runtime persists mutations to database", async () => {
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -503,6 +544,10 @@ test("runtime persists mutations to database", async () => {
 
     yield* Effect.forkChild(runtime.program);
 
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
+
     yield* runtime.execute({
       name: "add",
       args: { amount: 7n, nonce: 0n },
@@ -525,15 +570,15 @@ test("runtime persists mutations to database", async () => {
     status: string;
     amount: bigint;
     nonce: bigint;
-    signature_keyType: number;
+    signature_rawSignature: `0x${string}`;
   }[];
   const mutationRows = addMutationRows.map(
-    ({ id, status, amount, nonce, signature_keyType }) => ({
+    ({ id, status, amount, nonce, signature_rawSignature }) => ({
       id,
       status,
       amount,
       nonce,
-      signature_keyType,
+      has_signature: signature_rawSignature.startsWith("0x"),
     }),
   );
   const slotRows = await db
@@ -549,9 +594,9 @@ test("runtime persists mutations to database", async () => {
     [
       {
         "amount": 7n,
-        "id": 0,
+        "has_signature": true,
+        "id": 1,
         "nonce": 0n,
-        "signature_keyType": 2,
         "status": "accepted",
       },
     ]
@@ -559,13 +604,28 @@ test("runtime persists mutations to database", async () => {
   expect(slotRows).toMatchInlineSnapshot(`
     [
       {
-        "mutationId": 0,
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "mutationId": 1,
+        "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000007",
       },
       {
         "mutationId": 0,
-        "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "slot": "0x4d5e1cceefe7c333a82a954f09fd3c3d92bb609f28430423d579251115de6c55",
+        "value": "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+      },
+      {
+        "mutationId": 0,
+        "slot": "0x8ab7381f68a0ae9f01a74b7a3e436aeef59d866ed6b095c7f39d48c20836c133",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000002",
+      },
+      {
+        "mutationId": 0,
+        "slot": "0x8ab7381f68a0ae9f01a74b7a3e436aeef59d866ed6b095c7f39d48c20836c134",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000041",
+      },
+      {
+        "mutationId": 1,
+        "slot": "0x8ab7381f68a0ae9f01a74b7a3e436aeef59d866ed6b095c7f39d48c20836c135",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000001",
       },
     ]
@@ -578,7 +638,7 @@ test("runtime submits a mutation onchain", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -607,11 +667,15 @@ test("runtime submits a mutation onchain", async () => {
     const pwr = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
-      if (event.status === "included") pwr.resolve();
+      if (event.status === "included" && event.name === "add") pwr.resolve();
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe));
 
     yield* Effect.forkChild(runtime.program);
+
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
 
     yield* runtime.execute({
       name: "add",
@@ -633,9 +697,6 @@ test("runtime submits a mutation onchain", async () => {
   expect(
     await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
   ).toBe(7n);
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "nonce"),
-  ).toBe(1n);
 });
 
 test("runtime finalizes a mutation", async () => {
@@ -644,7 +705,7 @@ test("runtime finalizes a mutation", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -673,10 +734,14 @@ test("runtime finalizes a mutation", async () => {
     const pwr = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
-      if (event.status === "finalized") pwr.resolve();
+      if (event.status === "finalized" && event.name === "add") pwr.resolve();
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe));
     yield* Effect.forkChild(runtime.program);
+
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
 
     yield* runtime.execute({
       name: "add",
@@ -704,7 +769,7 @@ test("runtime rejects a Harness mutation when resolution throws", async () => {
   const config: FFCAConfig = {
     address,
     domain: HARNESS_DOMAIN,
-    abi: HARNESS_ABI,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -773,7 +838,7 @@ test("runtime handles Harness account management with multiple signature types",
   const config: FFCAConfig = {
     address,
     domain: HARNESS_DOMAIN,
-    abi: HARNESS_ABI,
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
     storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -931,7 +996,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -957,9 +1022,13 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
       Effect.provideService(Scope.Scope, scope),
     );
 
+    const setupIncluded = Promise.withResolvers<void>();
     const pwr = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
+      if (event.status === "included" && event.name === "newAccount") {
+        setupIncluded.resolve();
+      }
       if (event.status === "included" && event.isForceInclusion) {
         pwr.resolve();
       }
@@ -968,14 +1037,23 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
 
     yield* Effect.forkChild(runtime.program);
 
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
+    yield* Effect.promise(() => setupIncluded.promise);
+
     yield* Effect.promise(() =>
       userWalletClient.writeContract({
         account: USER_ACCOUNT,
         chain: anvil,
         address,
-        abi: COUNTER_ABI,
+        abi: FFCA_ABI,
         functionName: "enqueue",
-        args: [COUNTER_MUTATIONS.add.tag, mutationData, signature],
+        args: [
+          COUNTER_MUTATIONS.add.tag,
+          mutationData,
+          encodeSignatureCalldata(COUNTER_SIGNATURE_PARAMS, signature),
+        ],
       }),
     );
 
@@ -987,9 +1065,6 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
   expect(
     await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
   ).toBe(amount);
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "nonce"),
-  ).toBe(1n);
 });
 
 test("runtime delays force inclusion behind already accepted mutations", async () => {
@@ -1022,7 +1097,7 @@ test("runtime delays force inclusion behind already accepted mutations", async (
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1048,18 +1123,25 @@ test("runtime delays force inclusion behind already accepted mutations", async (
       Effect.provideService(Scope.Scope, scope),
     );
 
+    const setupIncluded = Promise.withResolvers<void>();
     const pwr1 = Promise.withResolvers<void>();
     const pwr2 = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
       if (event.status === "included") {
+        if (event.name === "newAccount") setupIncluded.resolve();
         if (event.isForceInclusion) pwr1.resolve();
-        else pwr2.resolve();
+        else if (event.name === "add") pwr2.resolve();
       }
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe));
 
     yield* Effect.forkChild(runtime.program);
+
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    );
+    yield* Effect.promise(() => setupIncluded.promise);
 
     yield* runtime.execute({
       name: "add",
@@ -1078,9 +1160,16 @@ test("runtime delays force inclusion behind already accepted mutations", async (
         account: USER_ACCOUNT,
         chain: anvil,
         address,
-        abi: COUNTER_ABI,
+        abi: FFCA_ABI,
         functionName: "enqueue",
-        args: [COUNTER_MUTATIONS.add.tag, mutationData, forceIncludedSignature],
+        args: [
+          COUNTER_MUTATIONS.add.tag,
+          mutationData,
+          encodeSignatureCalldata(
+            COUNTER_SIGNATURE_PARAMS,
+            forceIncludedSignature,
+          ),
+        ],
       }),
     );
 
@@ -1092,9 +1181,6 @@ test("runtime delays force inclusion behind already accepted mutations", async (
   expect(
     await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
   ).toBe(acceptedAmount + forceIncludedAmount);
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "nonce"),
-  ).toBe(2n);
 });
 
 test("runtime handles failing mutation", async () => {
@@ -1103,7 +1189,7 @@ test("runtime handles failing mutation", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1127,6 +1213,11 @@ test("runtime handles failing mutation", async () => {
     const runtime = yield* createRuntimeFIFOEffect(config, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
+    );
+
+    yield* Effect.forkChild(runtime.program);
+    yield* runtime.execute(
+      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
     );
 
     return yield* Effect.exit(
@@ -1150,9 +1241,6 @@ test("runtime handles failing mutation", async () => {
   expect(
     await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
   ).toBe(0n);
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "nonce"),
-  ).toBe(0n);
 });
 
 test("runtime program handles interrupt", async () => {
@@ -1161,7 +1249,7 @@ test("runtime program handles interrupt", async () => {
   const config: FFCAConfig = {
     address,
     domain: COUNTER_DOMAIN,
-    abi: COUNTER_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

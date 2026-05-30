@@ -201,8 +201,10 @@ export function migrate(
           return;
         }
 
-        // TODO: Track the generated schema as deployment metadata and compare it
+        // TODO(kyle) Track the generated schema as deployment metadata and compare it
         // here before deciding whether an existing schema is safe to reuse.
+
+        // TODO(kyle) Update the status of any unfinalized mutations that may have finalized.
 
         yield* deleteUnsettledMutations(db, schema as Record<string, PgTable>);
       }),

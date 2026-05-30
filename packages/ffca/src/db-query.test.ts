@@ -8,7 +8,7 @@ import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
-import { STUB_FFCA_ABI } from "../test/utils";
+import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import type { FFCAConfig, FFCAMutationConfig } from "./config";
 import { Database, layerDatabaseLive } from "./db";
 import {
@@ -34,6 +34,13 @@ const debitConfig = {
   resolution: parseAbiParameters("uint256 newBalance"),
   resolve: () => ({ newBalance: 0n }),
 } satisfies FFCAMutationConfig;
+
+const testSignature = {
+  accountId:
+    "0x1111111111111111111111111111111111111111111111111111111111111111",
+  publicKey: "0x1234",
+  rawSignature: "0xdeadbeef",
+} as const;
 
 async function applyGeneratedMigration(
   schema: Record<string, unknown>,
@@ -70,9 +77,9 @@ function requiredTable<
 
 test("insertMutation inserts a mutation row", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Debit: debitConfig },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   await applyGeneratedMigration(schema);
 
   const mutation = {
@@ -84,7 +91,7 @@ test("insertMutation inserts a mutation row", async () => {
         "0x1111111111111111111111111111111111111111111111111111111111111111",
       amount: 123n,
     },
-    signature: { keyType: 2, rawSignature: "0xdeadbeef" },
+    signature: testSignature,
     journalId: 1,
     isForceInclusion: false,
     config: debitConfig,
@@ -112,17 +119,18 @@ test("insertMutation inserts a mutation row", async () => {
     account:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
     amount: 123n,
-    signature_keyType: 2,
-    signature_rawSignature: "0xdeadbeef",
+    signature_accountId: testSignature.accountId,
+    signature_publicKey: testSignature.publicKey,
+    signature_rawSignature: testSignature.rawSignature,
     resolution_newBalance: 100n,
   });
 });
 
 test("updateMutationLifecycle updates lifecycle columns", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   await applyGeneratedMigration(schema);
 
   const mutation = {
@@ -133,7 +141,7 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
       to: "0x0000000000000000000000000000000000000001",
       amount: 456n,
     },
-    signature: { keyType: 2, rawSignature: "0xfeed" },
+    signature: { ...testSignature, rawSignature: "0xfeed" },
     journalId: 2,
     isForceInclusion: false,
     config: transferConfig,
@@ -180,7 +188,8 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
     amount: 456n,
-    signature_keyType: 2,
+    signature_accountId: testSignature.accountId,
+    signature_publicKey: testSignature.publicKey,
     signature_rawSignature: "0xfeed",
   });
   expect(includedAt).toBeInstanceOf(Date);
@@ -188,9 +197,9 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
 
 test("insertSlotWrites records raw slot writes", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   await applyGeneratedMigration(schema);
 
   await runWithDatabase(
@@ -241,9 +250,9 @@ test("insertSlotWrites records raw slot writes", async () => {
 
 test("selectAccountStorage replays latest slot writes", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   await applyGeneratedMigration(schema);
   const slot =
     "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -287,9 +296,9 @@ test("selectAccountStorage replays latest slot writes", async () => {
 
 test("insertKnownPaths upserts known paths", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   await applyGeneratedMigration(schema);
 
   const paths = await runWithDatabase(
