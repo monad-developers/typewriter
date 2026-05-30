@@ -113,17 +113,6 @@ abstract contract FFCA {
     function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
 
-        for (uint256 i; i < forceExecuteIndexes.length; i++) {
-            uint256 index = forceExecuteIndexes[i];
-            QueuedMutation storage queued = queue[index];
-
-            if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
-
-            dispatch(queued.mutation, queued.mutationData, queued.signatureData);
-
-            delete queue[index];
-        }
-
         for (uint256 b; b < batches.length; b++) {
             Batch calldata batch = batches[b];
             if (
@@ -135,6 +124,17 @@ abstract contract FFCA {
             for (uint256 i; i < batch.mutations.length; i++) {
                 dispatch(batch.mutations[i], batch.mutationData[i], batch.signatureData[i]);
             }
+        }
+
+        for (uint256 i; i < forceExecuteIndexes.length; i++) {
+            uint256 index = forceExecuteIndexes[i];
+            QueuedMutation storage queued = queue[index];
+
+            if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+
+            dispatch(queued.mutation, queued.mutationData, queued.signatureData);
+
+            delete queue[index];
         }
     }
 
