@@ -3,7 +3,7 @@
 // FFCA persists one generated table per mutation type. To answer API queries
 // that span mutation types, fan out across those tables and merge app-side.
 
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { FFCASchema } from "ffca";
@@ -77,9 +77,9 @@ type MutationRow = {
   includedAt: Date | null;
   safeAt: Date | null;
   finalizedAt: Date | null;
-  signature_account: string;
-  signature_keyId: bigint;
-  signature_rawSignature: string;
+  signature_account?: string;
+  signature_keyId?: bigint;
+  signature_rawSignature?: string;
   // Payload-specific columns vary by table; widened to any here. Each
   // descriptor's `projectPayload` handles the per-type field projection.
   // biome-ignore lint/suspicious/noExplicitAny: per-type payload columns differ
@@ -147,14 +147,16 @@ function buildApiMutation(
   row: MutationRow,
   payload: unknown,
 ): ApiMutation {
-  const keyId = row.signature_keyId;
+  const decodedSignature = decodeStoredSignature(row);
+  const account = (row.signature_account ?? decodedSignature.account) as Hex;
+  const keyId = row.signature_keyId ?? decodedSignature.keyId;
   return {
     id: row.id,
     batchId: null,
     batchPosition: null,
     blockNumber: row.blockNumber === null ? null : row.blockNumber.toString(),
     status: row.status,
-    account: row.signature_account as Hex,
+    account,
     keyIndex: keyId === null || keyId === undefined ? null : keyId.toString(),
     nonce:
       descriptor.hasNonce && row.nonce !== undefined && row.nonce !== null
@@ -176,6 +178,16 @@ function buildApiMutation(
     finalizedAt: toIso(row.finalizedAt),
     transactionHash: (row.transactionHash ?? null) as Hex | null,
     payload,
+  };
+}
+
+function decodeStoredSignature(row: MutationRow): {
+  account: Hex;
+  keyId: bigint;
+} {
+  return {
+    account: row.signature_account as Hex,
+    keyId: row.signature_keyId ?? 0n,
   };
 }
 
@@ -299,19 +311,16 @@ export async function loadMutationByAccountNonce(
       const rows = (await db
         .select()
         .from(descriptor.table as PgTable)
-        .where(
-          and(
-            eq(descriptor.table.signature_account, account),
-            eq(descriptor.table.nonce, filter),
-          ),
-        )
+        .where(eq(descriptor.table.nonce, filter))
         .limit(1)) as MutationRow[];
       return rows.map((row) => ({ descriptor, row }));
     }),
   );
   const typed = perTable.flat();
   if (typed.length === 0) return null;
-  const [first] = assembleMutations(typed.slice(0, 1));
+  const [first] = assembleMutations(typed).filter(
+    (mutation) => mutation.account === account,
+  );
   return first ?? null;
 }
 
@@ -327,7 +336,6 @@ export async function loadMutationsByAccount(
       const rows = (await db
         .select()
         .from(descriptor.table as PgTable)
-        .where(eq(descriptor.table.signature_account, account))
         .orderBy(desc(descriptor.table.id))
         .limit(limit)) as MutationRow[];
       return rows.map((row) => ({ descriptor, row }));
@@ -336,7 +344,9 @@ export async function loadMutationsByAccount(
   const typed = perTable.flat();
   // Apply the global limit after the per-table top-N has been gathered.
   typed.sort((a, b) => b.row.id - a.row.id);
-  return assembleMutations(typed.slice(0, limit));
+  return assembleMutations(typed)
+    .filter((mutation) => mutation.account === account)
+    .slice(0, limit);
 }
 
 // Count mutations whose `acceptedAt` is within the last `windowMs` ms,

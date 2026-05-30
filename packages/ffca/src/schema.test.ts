@@ -7,7 +7,7 @@ import {
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { TEST_DB_CONNECTION } from "../test/setup";
-import { STUB_FFCA_ABI } from "../test/utils";
+import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import type { FFCAConfig } from "./config";
 import { updateSchema } from "./migrate";
 import { createMutationSchema, mutationStatusEnum } from "./schema";
@@ -38,7 +38,7 @@ function requiredTable<
 
 test("createMutationSchema creates lowercased flat mutation tables", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
         tag: 0,
@@ -51,7 +51,7 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
         resolve: () => ({ newBalance: 0n }),
       },
     },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   const statements = await applyGeneratedMigration(schema);
   const sql = statements.join("\n");
 
@@ -74,7 +74,8 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
   expect(sql).toContain('"status" "mutation_status" NOT NULL');
   expect(sql).toContain('"to" char(42) NOT NULL');
   expect(sql).toContain('"amount" numeric(78,0) NOT NULL');
-  expect(sql).toContain('"signature_keyType" smallint NOT NULL');
+  expect(sql).toContain('"signature_accountId" char(66) NOT NULL');
+  expect(sql).toContain('"signature_publicKey" text NOT NULL');
   expect(sql).toContain('"signature_rawSignature" text NOT NULL');
   expect(sql).toContain('CREATE TABLE "debit_mutations"');
   expect(sql).toContain('"resolution_newBalance" numeric(78,0) NOT NULL');
@@ -82,14 +83,14 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
 
 test("mutation table supports insert and lifecycle update queries", async () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
         tag: 0,
         params: parseAbiParameters("address to, uint256 amount"),
       },
     },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
   await applyGeneratedMigration(schema);
   const db = drizzle({ client: TEST_DB_CONNECTION });
   const transferMutations = requiredTable(schema, "transfer_mutations");
@@ -100,7 +101,9 @@ test("mutation table supports insert and lifecycle update queries", async () => 
     status: "accepted",
     to: "0x0000000000000000000000000000000000000001",
     amount: 123n,
-    signature_keyType: 0,
+    signature_accountId:
+      "0x1111111111111111111111111111111111111111111111111111111111111111",
+    signature_publicKey: "0x1234",
     signature_rawSignature: "0xdeadbeef",
   });
 
@@ -122,7 +125,9 @@ test("mutation table supports insert and lifecycle update queries", async () => 
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
     amount: 123n,
-    signature_keyType: 0,
+    signature_accountId:
+      "0x1111111111111111111111111111111111111111111111111111111111111111",
+    signature_publicKey: "0x1234",
     signature_rawSignature: "0xdeadbeef",
     blockNumber: 4n,
     blockTimestamp: 5n,
@@ -134,7 +139,7 @@ test("mutation table supports insert and lifecycle update queries", async () => 
 
 test("createMutationSchema exposes table names from config keys", () => {
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
         tag: 0,
@@ -145,7 +150,7 @@ test("createMutationSchema exposes table names from config keys", () => {
         params: parseAbiParameters("bytes32 account"),
       },
     },
-  } satisfies Pick<FFCAConfig, "abi" | "mutations">);
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
 
   const keys = ["transfer_mutations", "cancelorder_mutations"] satisfies Array<
     keyof typeof schema

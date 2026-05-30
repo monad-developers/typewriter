@@ -4,7 +4,7 @@ import {
   type MutationEvent,
   type MutationStatus,
 } from "ffca";
-import type { Abi, Address, Hex } from "viem";
+import { type Address, type Hex, parseAbiParameters } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
@@ -47,15 +47,14 @@ const scheduler = privateKeyToAccount(
   requireEnv("SCHEDULER_PRIVATE_KEY") as Hex,
 );
 const database = { url: requireEnv("DATABASE_URL"), maxConnections: 25 };
-const artifact = await Bun.file(
-  `${import.meta.dir}/../contracts/out/Token.sol/Token.json`,
-).json();
 const bootId = crypto.randomUUID();
 const addresses = new Set<Address>([scheduler.address]);
 const mutations = new Map<number, MutationEvent>();
 const config = {
   address: tokenAddress,
-  abi: artifact.abi as Abi,
+  signature: {
+    params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
+  },
   storageLayout: TOKEN_STORAGE_LAYOUT,
   account: scheduler,
   chainId,

@@ -209,10 +209,12 @@ function prefixedObjectValues(
   prefix: string,
   value: unknown,
 ): Record<string, unknown> {
+  if (!isRecord(value)) {
+    return { [`${prefix}signature`]: serializeJsonValue(value) };
+  }
+
   const row: Record<string, unknown> = {};
-  for (const [name, entry] of Object.entries(
-    value as Record<string, unknown>,
-  )) {
+  for (const [name, entry] of Object.entries(value)) {
     row[`${prefix}${name}`] = serializeJsonValue(entry);
   }
   return row;

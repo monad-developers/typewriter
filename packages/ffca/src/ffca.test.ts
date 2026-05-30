@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { SCHEDULER_ACCOUNT, TEST_DB_URL, TEST_RPC_URL } from "../test/setup";
-import { EMPTY_STORAGE_LAYOUT, STUB_FFCA_ABI } from "../test/utils";
+import { COUNTER_SIGNATURE_PARAMS, EMPTY_STORAGE_LAYOUT } from "../test/utils";
 import { createFFCA } from "./index";
 
 test("ffca.domain is derived from config", async () => {
   const ffca = await createFFCA({
     address: "0x000000000000000000000000000000000000abcd",
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: EMPTY_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: 1,

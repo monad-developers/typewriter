@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import {
   COUNTER_MUTATIONS,
+  COUNTER_SIGNATURE_PARAMS,
   EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
 } from "../test/utils";
@@ -13,7 +14,7 @@ function createFFCA(_config: FFCAConfig): void {}
 
 const baseConfig = {
   address: "0x0000000000000000000000000000000000000000",
-  abi: [],
+  signature: { params: COUNTER_SIGNATURE_PARAMS },
   // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
   account: {} as any,
   chainId: 1,

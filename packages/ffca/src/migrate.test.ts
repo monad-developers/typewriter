@@ -3,7 +3,11 @@ import { parseAbiParameters } from "abitype";
 import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
-import { HARNESS_ABI, HARNESS_MUTATIONS, STUB_FFCA_ABI } from "../test/utils";
+import {
+  COUNTER_SIGNATURE_PARAMS,
+  HARNESS_MUTATIONS,
+  HARNESS_SIGNATURE_PARAMS,
+} from "../test/utils";
 import { layerDatabaseLive } from "./db";
 import { migrate } from "./migrate";
 import { createMutationSchema } from "./schema";
@@ -22,7 +26,10 @@ const runMigrate = (
   );
 
 const harnessSchema = () =>
-  createMutationSchema({ abi: HARNESS_ABI, mutations: HARNESS_MUTATIONS });
+  createMutationSchema({
+    signature: { params: HARNESS_SIGNATURE_PARAMS },
+    mutations: HARNESS_MUTATIONS,
+  });
 
 const HARNESS_TABLES = [
   "assert_mutations",
@@ -105,7 +112,7 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.credit_mutations
       (id, status, account, ${TEST_DB_CONNECTION("keyId")}, amount, nonce, ${TEST_DB_CONNECTION("signature_account")}, ${TEST_DB_CONNECTION("signature_keyId")}, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
     VALUES
-      (0, 'accepted', ${account}, 0, 1, 0, ${account}, 0, 0, '0x')
+      (0, 'accepted', ${account}, 0, 1, 0, ${account}, 0, 2, '0x')
   `;
 
   await expect(runMigrate(harnessSchema(), chainId, address)).resolves.toBe(
@@ -125,7 +132,7 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const schemaName = "ffca_31340_0x000000000000000000000000000000000000ffca";
   const schema = createMutationSchema({
-    abi: STUB_FFCA_ABI,
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       add: {
         tag: 0,
@@ -138,10 +145,10 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-      (id, status, amount, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
     VALUES
-      (0, 'accepted', 1, 0, '0x'),
-      (1, 'included', 2, 0, '0x')
+      (0, 'accepted', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
+      (1, 'included', 2, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes

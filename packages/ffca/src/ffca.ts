@@ -6,7 +6,7 @@ import type { FFCAConfig } from "./config";
 import { buildInternalApp } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
-import type { FFCAAbi } from "./encoding";
+import { FFCA_ABI } from "./encoding";
 import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
@@ -75,7 +75,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
 > {
   return Effect.gen(function* () {
     // TODO(kyle) check mutation names against sequencing order if applicable
-    // TODO(kyle) check abi for execute, enqueue, and forceExecute
+    // TODO(kyle) validate the fixed FFCA entrypoints
 
     const app = yield* Effect.try({
       try: () => buildInternalApp(config),
@@ -91,7 +91,7 @@ export function createFFCAEffect<const C extends FFCAConfig>(
     );
 
     const forceInclusionEvent = getAbiItem({
-      abi: app.abi as FFCAAbi,
+      abi: FFCA_ABI,
       name: "ForceInclusionQueued",
     });
 

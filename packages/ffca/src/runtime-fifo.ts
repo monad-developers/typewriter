@@ -197,8 +197,7 @@ export function createRuntimeFIFOEffect(
             .map((mutation) => mutation.journalId);
 
           const calldata = encodeExecuteCalldata(
-            app.abi,
-            [encodeBatchArg(app.abi, mutations)],
+            [encodeBatchArg(app.signature.params, mutations)],
             forceInclusions.map(({ queueIndex }) => queueIndex),
           );
 
@@ -213,7 +212,6 @@ export function createRuntimeFIFOEffect(
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
-                app,
                 simulateResult.revert_data,
                 "revm simulate reverted",
               ),
@@ -298,7 +296,6 @@ export function createRuntimeFIFOEffect(
       if (receipt.status === "reverted") {
         return yield* Effect.fail(
           createRevmRevertError(
-            app,
             undefined,
             `settlement transaction reverted onchain: ${receipt.transactionHash}`,
           ),

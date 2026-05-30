@@ -35,7 +35,7 @@ type RequestLogEntry = {
   status: "ok" | "error";
   duration: number;
 };
-type TokenSignature = { keyType: number; rawSignature: Hex };
+type TokenSignature = { signature: Hex };
 
 const STORAGE_PREFIX = "token";
 const TRANSFER_TYPES = {
@@ -47,6 +47,15 @@ const TRANSFER_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
 } as const;
+const TOKEN_SIGNATURE_PARAMS = [
+  {
+    type: "tuple",
+    components: [
+      { name: "keyType", type: "uint8" },
+      { name: "rawSignature", type: "bytes" },
+    ],
+  },
+] as const;
 
 function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -130,16 +139,18 @@ async function signTransfer(params: {
     },
   });
   const { v, r, s } = parseSignature(signature);
+  const rawSignature = encodeAbiParameters(
+    [
+      { name: "v", type: "uint8" },
+      { name: "r", type: "bytes32" },
+      { name: "s", type: "bytes32" },
+    ],
+    [Number(v), r, s],
+  );
   return {
-    keyType: 2,
-    rawSignature: encodeAbiParameters(
-      [
-        { name: "v", type: "uint8" },
-        { name: "r", type: "bytes32" },
-        { name: "s", type: "bytes32" },
-      ],
-      [Number(v), r, s],
-    ),
+    signature: encodeAbiParameters(TOKEN_SIGNATURE_PARAMS, [
+      { keyType: 2, rawSignature },
+    ]),
   };
 }
 

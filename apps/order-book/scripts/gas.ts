@@ -50,7 +50,7 @@ function randomHumanPrice(): number {
 type BatchArg = {
   mutations: number[];
   mutationData: Hex[];
-  signatures: { account: Hex; keyId: bigint; rawSignature: Hex }[];
+  signatureData: Hex[];
 };
 
 type Mut =
@@ -247,15 +247,35 @@ function reencodeSig(raw: Hex): Hex {
   return raw;
 }
 
+function encodeSignature(account: Account, rawSignature: Hex): Hex {
+  return encodeAbiParameters(
+    [
+      {
+        type: "tuple",
+        components: [
+          { type: "bytes32", name: "account" },
+          { type: "uint64", name: "keyId" },
+          { type: "bytes", name: "rawSignature" },
+        ],
+      },
+    ],
+    [
+      {
+        account: account.accountHex,
+        keyId: BigInt(account.keyId),
+        rawSignature,
+      },
+    ],
+  );
+}
+
 function buildBatch(account: Account, muts: Mut[]): BatchArg {
   return {
     mutations: muts.map((m) => m.type),
     mutationData: muts.map(encodeMutationData),
-    signatures: muts.map((m) => ({
-      account: account.accountHex,
-      keyId: BigInt(account.keyId),
-      rawSignature: reencodeSig(signMutation(account, m)),
-    })),
+    signatureData: muts.map((m) =>
+      encodeSignature(account, reencodeSig(signMutation(account, m))),
+    ),
   };
 }
 

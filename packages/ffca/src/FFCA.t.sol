@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {InvalidSignature, KeyType, verifyChallenge, verifySignature} from "ffca/Account.sol";
+import {InvalidSignature, KeyType, verifyChallenge, verifySignature} from "ffca/FFCA.sol";
 
 interface Vm {
     function addr(uint256 privateKey) external returns (address);

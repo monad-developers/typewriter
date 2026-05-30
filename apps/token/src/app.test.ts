@@ -7,7 +7,7 @@ import {
   type StorageLayout,
   type StorageVariableToPrimitiveType,
 } from "storage-layout";
-import type { Abi, Address } from "viem";
+import { type Address, parseAbiParameters } from "viem";
 import { anvil } from "viem/chains";
 import {
   deployToken,
@@ -59,10 +59,12 @@ async function readAccount(params: {
 }
 
 test("smoke: FIFO token mint and transfer settle onchain", async () => {
-  const { address, abi } = await deployToken();
+  const { address } = await deployToken();
   const config = {
     address,
-    abi: abi as Abi,
+    signature: {
+      params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
+    },
     storageLayout: TOKEN_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

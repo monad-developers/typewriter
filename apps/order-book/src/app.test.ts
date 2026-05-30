@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
+import { EIP712_TYPES, EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
 import {
-  EIP712_TYPES,
-  EXCHANGE_ABI,
-  EXCHANGE_STORAGE_LAYOUT,
-} from "order-book-sdk";
-import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
+  type Address,
+  encodeAbiParameters,
+  type Hex,
+  keccak256,
+  parseAbiParameters,
+} from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
 import {
@@ -48,7 +50,11 @@ async function createOrderBookFFCA(
   const config = {
     address,
     domain: { name: "Exchange", version: "1" },
-    abi: EXCHANGE_ABI,
+    signature: {
+      params: parseAbiParameters(
+        "bytes32 account, uint64 keyId, bytes rawSignature",
+      ),
+    },
     storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -284,7 +290,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
         deadline: FAR_DEADLINE,
       },
     }),
-  ).rejects.toThrow(/InvalidSignature/);
+  ).rejects.toThrow(/reverted/);
 });
 
 test("ffca order book changes an unfilled order to a new price", async () => {

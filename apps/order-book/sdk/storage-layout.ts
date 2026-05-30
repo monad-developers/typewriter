@@ -9,7 +9,7 @@ export const EXCHANGE_STORAGE_LAYOUT = {
       contract: "src/Exchange.sol:Exchange",
       label: "accounts",
       offset: 0,
-      slot: "0",
+      slot: "1",
       type: "t_mapping(t_bytes32,t_struct(Account)41404_storage)",
     },
     {
@@ -17,7 +17,7 @@ export const EXCHANGE_STORAGE_LAYOUT = {
       contract: "src/Exchange.sol:Exchange",
       label: "instruments",
       offset: 0,
-      slot: "1",
+      slot: "2",
       type: "t_mapping(t_uint64,t_struct(Instrument)41434_storage)",
     },
   ],

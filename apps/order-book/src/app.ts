@@ -1,5 +1,5 @@
 import type { FFCAConfig } from "ffca";
-import type { EXCHANGE_ABI, EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
+import type { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
 import type { StorageProxy } from "storage-layout";
 import {
   encodeAbiParameters,
@@ -291,9 +291,8 @@ export const ORDER_BOOK_MUTATIONS = {
 
 export type OrderBookFFCAConfig = Omit<
   FFCAConfig,
-  "abi" | "storageLayout" | "mutations" | "sequencing"
+  "storageLayout" | "mutations" | "sequencing"
 > & {
-  abi: typeof EXCHANGE_ABI;
   storageLayout: typeof EXCHANGE_STORAGE_LAYOUT;
   mutations: typeof ORDER_BOOK_MUTATIONS;
   sequencing: {
@@ -307,14 +306,19 @@ export type OrderBookFFCAConfig = Omit<
 export function normalizeSignatureForContract(
   signature: OrderBookSignature,
 ): OrderBookSignature {
-  if (signature.rawSignature.length !== 132) return signature;
+  const rawSignature =
+    signature.rawSignature.length === 132
+      ? (() => {
+          const { v, r, s } = parseSignature(signature.rawSignature);
+          return encodeAbiParameters(
+            [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
+            [Number(v), r, s],
+          );
+        })()
+      : signature.rawSignature;
 
-  const { v, r, s } = parseSignature(signature.rawSignature);
   return {
     ...signature,
-    rawSignature: encodeAbiParameters(
-      [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-      [Number(v), r, s],
-    ),
+    rawSignature,
   };
 }

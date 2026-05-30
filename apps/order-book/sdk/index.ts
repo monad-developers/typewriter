@@ -154,13 +154,6 @@ export const EXCHANGE_ABI = [
   },
   {
     type: "function",
-    name: "DOMAIN_SEPARATOR",
-    inputs: [],
-    outputs: [{ name: "", type: "bytes32", internalType: "bytes32" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
     name: "execute",
     inputs: [
       {
@@ -175,14 +168,9 @@ export const EXCHANGE_ABI = [
           },
           { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
           {
-            name: "signatures",
-            type: "tuple[]",
-            internalType: "struct Signature[]",
-            components: [
-              { name: "account", type: "bytes32", internalType: "bytes32" },
-              { name: "keyId", type: "uint64", internalType: "uint64" },
-              { name: "rawSignature", type: "bytes", internalType: "bytes" },
-            ],
+            name: "signatureData",
+            type: "bytes[]",
+            internalType: "bytes[]",
           },
         ],
       },
@@ -202,14 +190,9 @@ export const EXCHANGE_ABI = [
       { name: "mutation", type: "uint8", internalType: "enum Mutation" },
       { name: "mutationData", type: "bytes", internalType: "bytes" },
       {
-        name: "sig",
-        type: "tuple",
-        internalType: "struct Signature",
-        components: [
-          { name: "account", type: "bytes32", internalType: "bytes32" },
-          { name: "keyId", type: "uint64", internalType: "uint64" },
-          { name: "rawSignature", type: "bytes", internalType: "bytes" },
-        ],
+        name: "signatureData",
+        type: "bytes",
+        internalType: "bytes",
       },
     ],
     outputs: [{ name: "", type: "uint256", internalType: "uint256" }],
@@ -230,24 +213,31 @@ export const EXCHANGE_ABI = [
       { name: "mutation", type: "uint8", indexed: false },
       { name: "mutationData", type: "bytes", indexed: false },
       {
-        name: "sig",
-        type: "tuple",
+        name: "signatureData",
+        type: "bytes",
         indexed: false,
-        components: [
-          { name: "account", type: "bytes32" },
-          { name: "keyId", type: "uint64" },
-          { name: "rawSignature", type: "bytes" },
-        ],
       },
       { name: "enqueuedBlock", type: "uint256", indexed: false },
     ],
     anonymous: false,
   },
   { type: "error", name: "AlreadyInitialized", inputs: [] },
-  { type: "error", name: "AlreadyExecuted", inputs: [] },
   { type: "error", name: "AmountNotLotMultiple", inputs: [] },
+  {
+    type: "error",
+    name: "ForceInclusionAlreadyExecuted",
+    inputs: [{ name: "index", type: "uint256", internalType: "uint256" }],
+  },
+  {
+    type: "error",
+    name: "ForceInclusionTooEarly",
+    inputs: [
+      { name: "remainingDelay", type: "uint256", internalType: "uint256" },
+    ],
+  },
   { type: "error", name: "InstrumentAlreadyExists", inputs: [] },
   { type: "error", name: "InsufficientBalance", inputs: [] },
+  { type: "error", name: "InvalidAccount", inputs: [] },
   { type: "error", name: "InvalidInstrument", inputs: [] },
   { type: "error", name: "InvalidMutation", inputs: [] },
   { type: "error", name: "InvalidNonce", inputs: [] },
@@ -259,15 +249,22 @@ export const EXCHANGE_ABI = [
   { type: "error", name: "InvalidTick", inputs: [] },
   { type: "error", name: "KeyExpired", inputs: [] },
   { type: "error", name: "KeyNotFound", inputs: [] },
-  { type: "error", name: "LengthMismatch", inputs: [] },
   { type: "error", name: "LotExpTooLarge", inputs: [] },
-  { type: "error", name: "MutationsOutOfOrder", inputs: [] },
   { type: "error", name: "OrderNotFound", inputs: [] },
   { type: "error", name: "SignatureExpired", inputs: [] },
   { type: "error", name: "SlippageExceeded", inputs: [] },
   { type: "error", name: "TickPartiallyFilled", inputs: [] },
-  { type: "error", name: "TooEarly", inputs: [] },
   { type: "error", name: "Unauthorized", inputs: [] },
+  {
+    type: "error",
+    name: "UnauthorizedExecute",
+    inputs: [{ name: "caller", type: "address", internalType: "address" }],
+  },
+  {
+    type: "error",
+    name: "UnknownMutation",
+    inputs: [{ name: "mutation", type: "uint8", internalType: "uint8" }],
+  },
 ] as const;
 
 export type InstrumentConfig = {
