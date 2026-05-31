@@ -1,5 +1,10 @@
+import type { AbiParametersToPrimitiveTypes } from "abitype";
 import type { Address } from "ox";
-import type { StorageLayout } from "storage-layout";
+import type {
+  ConcreteStorageVariable,
+  StorageLayout,
+  StorageProxy,
+} from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { InternalApp } from "./internal";
@@ -20,51 +25,99 @@ export type FFCADatabaseTransaction = Parameters<
 // calldata). A `resolve` that mutates state breaks failure isolation and replay
 // determinism.
 
-export type RegisterMappingKeys = (params: {
-  args: unknown;
-  signature: unknown;
-  resolution?: unknown;
-}) => readonly string[] | Promise<readonly string[]>;
-
-type FFCAMutationBase = {
-  tag: number;
+export type StorageConfig = StorageLayout;
+export type MutationConfig = {
   params: readonly AbiParameter[];
-  registerMappingKeys?: RegisterMappingKeys;
+  resolution?: readonly AbiParameter[];
 };
+export type MutationsConfig = { [name: string]: MutationConfig };
+export type SignatureConfig = readonly AbiParameter[];
+export type SequencingConfig = "fifo" | "batch";
 
-export type FFCAMutationConfig =
-  | FFCAMutationBase
-  | (FFCAMutationBase & {
-      resolution: readonly AbiParameter[];
+export type RegisterMappingKeys<
+  storageConfig extends StorageConfig,
+  mutationConfig extends MutationConfig,
+  signatureConfig extends SignatureConfig,
+  ///
+  storageVariables = ConcreteStorageVariable<storageConfig>,
+> = (
+  params: mutationConfig extends { resolution: readonly AbiParameter[] }
+    ? {
+        params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+        signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+        resolution: AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>;
+      }
+    : {
+        params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+        signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      },
+) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
+
+export type FFCAMutationConfig<
+  storageConfig extends StorageConfig,
+  mutationConfig extends MutationConfig,
+  signatureConfig extends SignatureConfig,
+> = mutationConfig extends { resolution: readonly AbiParameter[] }
+  ? {
+      tag: number;
+      params: mutationConfig["params"];
+      resolution: mutationConfig["resolution"];
       resolve: (params: {
-        state: unknown;
-        args: unknown;
-        signature: unknown;
-      }) => unknown | Promise<unknown>;
-    });
+        state: StorageProxy<storageConfig, true>;
+        params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+        signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      }) =>
+        | AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>
+        | Promise<AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>>;
+      registerMappingKeys?: RegisterMappingKeys<
+        storageConfig,
+        mutationConfig,
+        signatureConfig
+      >;
+    }
+  : {
+      tag: number;
+      params: mutationConfig["params"];
+      registerMappingKeys?: RegisterMappingKeys<
+        storageConfig,
+        mutationConfig,
+        signatureConfig
+      >;
+    };
 
-export type FFCASequencingConfig =
+export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
   | {
-      order?: "fifo";
+      order: sequencingConfig extends "fifo" ? sequencingConfig : never;
       submitIntervalMs?: number;
     }
   | {
-      order?: "batch";
+      order: sequencingConfig extends "batch" ? sequencingConfig : never;
       batchIntervalMs?: number;
       submitIntervalMs?: number;
       batchOrder: readonly string[];
     };
 
-export type FFCAConfig = {
+export type FFCAConfig<
+  storageConfig extends StorageConfig = StorageConfig,
+  mutationsConfig extends MutationsConfig = MutationsConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+  sequencingConfig extends SequencingConfig = SequencingConfig,
+> = {
   address: Address.Address;
   domain: { name: string; version: string };
-  storageLayout: StorageLayout;
+  storageLayout: storageConfig;
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
-  mutations: { [name: string]: FFCAMutationConfig };
-  signature: { params: readonly AbiParameter[] };
+  mutations: {
+    [name in keyof mutationsConfig]: FFCAMutationConfig<
+      storageConfig,
+      mutationsConfig[name],
+      signatureConfig
+    >;
+  };
+  signature: { params: signatureConfig };
   blockPollingIntervalMs?: number;
   confirmations?: {
     safeBlockDepth?: number;
@@ -76,7 +129,7 @@ export type FFCAConfig = {
   // flushes accepted mutations on an interval. `batch` mode uses the same
   // internals, but may reorder each batch by `batchOrder`.
   // TODO(kyle) validate this with zod once the internal config shape settles.
-  sequencing?: FFCASequencingConfig;
+  sequencing?: FFCASequencingConfig<sequencingConfig>;
 };
 
 const DEFAULT_SAFE_BLOCK_DEPTH = 1;
@@ -149,7 +202,7 @@ export function validateConfig(config: FFCAConfig): void {
   }
 }
 
-export function buildInternalApp(config: FFCAConfig): InternalApp {
+export function buildInternalApp(config: FFCAConfigFFCAConfig): InternalApp {
   validateConfig(config);
 
   const rpcUrls = Array.isArray(config.rpcUrl)

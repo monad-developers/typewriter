@@ -1,6 +1,15 @@
+import type { AbiParameter, AbiParametersToPrimitiveTypes } from "abitype";
 import { Effect, Exit, Scope } from "effect";
 import type { TypedData } from "ox";
-import type { FFCAConfig } from "./config";
+import type { StorageLayout, StorageProxy } from "storage-layout";
+import type {
+  FFCAConfig,
+  MutationConfig,
+  MutationsConfig,
+  SequencingConfig,
+  SignatureConfig,
+  StorageConfig,
+} from "./config";
 import type {
   BatchListener,
   BlockListener,
@@ -10,8 +19,13 @@ import type {
 import { createFFCAEffect } from "./ffca";
 import type { FFCAMutation, FFCAMutationResult } from "./types";
 
-export type FFCA<C extends FFCAConfig> = {
-  readonly state: RuntimeFFCA<C, "fifo" | "batch">["state"];
+export type FFCA<
+  storageConfig extends StorageConfig = StorageConfig,
+  mutationsConfig extends MutationsConfig = MutationsConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+  sequencingConfig extends SequencingConfig = SequencingConfig,
+> = {
+  readonly state: StorageProxy<storageConfig, true>;
   readonly schema: RuntimeFFCA<C, "fifo" | "batch">["schema"];
   readonly domain: TypedData.Domain;
   execute(submitted: FFCAMutation): Promise<FFCAMutationResult>;
@@ -24,11 +38,10 @@ export type {
   FFCAConfig,
   FFCAMutationConfig,
 } from "./config";
-export {
-  createMutationSchema,
-  type FFCAMutationSchema,
-  type FFCASchema,
-  type FFCAStateSchema,
+export type {
+  FFCAMutationSchema,
+  FFCASchema,
+  FFCAStateSchema,
 } from "./schema";
 export type { KeyType } from "./signature";
 export { verifySignature } from "./signature";
@@ -42,9 +55,21 @@ export type {
   MutationStatus,
 } from "./types";
 
-export async function createFFCA<const C extends FFCAConfig>(
-  config: C,
-): Promise<FFCA<C>> {
+export async function createFFCA<
+  storageConfig extends StorageConfig,
+  mutationsConfig extends MutationsConfig,
+  signatureConfig extends SignatureConfig,
+  sequencingConfig extends SequencingConfig,
+>(
+  config: FFCAConfig<
+    storageConfig,
+    mutationsConfig,
+    signatureConfig,
+    sequencingConfig
+  >,
+): Promise<
+  FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig>
+> {
   const scope = Effect.runSync(Scope.make());
   let closed = false;
 

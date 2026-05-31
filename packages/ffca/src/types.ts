@@ -1,15 +1,28 @@
+import type { AbiParameter, AbiParametersToPrimitiveTypes } from "abitype";
 import type { Hex } from "ox";
-import type { FFCAMutationConfig } from "./config";
+import type {
+  FFCAMutationConfig,
+  MutationConfig,
+  SignatureConfig,
+} from "./config";
 
-export type FFCAMutation = {
-  name: string;
-  args: unknown;
-  signature: unknown;
+export type FFCAMutation<
+  name extends string,
+  mutationConfig extends MutationConfig,
+  signatureConfig extends SignatureConfig,
+> = {
+  name: name;
+  args: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+  signature: AbiParametersToPrimitiveTypes<signatureConfig>;
 };
-export type FFCAMutationResult = {
-  id: number;
-  resolution?: unknown;
-};
+
+export type FFCAMutationResult<mutationConfig extends MutationConfig> =
+  mutationConfig extends { resolution: readonly AbiParameter[] }
+    ? {
+        id: number;
+        resolution: AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>;
+      }
+    : { id: number };
 
 export type MutationStatus =
   | "received"
