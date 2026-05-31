@@ -1,7 +1,7 @@
 import { expectTypeOf, test } from "bun:test";
-import { parseAbiParameters } from "abitype";
+import { parseAbiParameters, type AbiParametersToPrimitiveTypes } from "abitype";
 import type { StorageProxy } from "storage-layout";
-import type { Address, Hex } from "viem";
+import type { Address, Hex, ParseAbiParameters } from "viem";
 import {
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
@@ -10,12 +10,26 @@ import {
   HARNESS_MUTATIONS,
   HARNESS_STORAGE_LAYOUT,
 } from "../test/utils";
-import type { FFCAConfig } from "./config";
-import { createFFCA } from "./index";
+import type { FFCAConfig, MutationsConfig, SequencingConfig, SignatureConfig, StorageConfig } from "./config";
+import { createFFCA, type FFCA } from "./index";
 
 // Stub mirroring `createFFCA`'s param signature. These tests only exercise
 // the FFCAConfig type — calling the real runtime would boot anvil.
-function createFFCAStub(_config: FFCAConfig): void {}
+ declare function createFFCATest<
+  storageConfig extends StorageConfig,
+  mutationsConfig extends MutationsConfig,
+  signatureConfig extends SignatureConfig,
+  sequencingConfig extends SequencingConfig,
+>(
+  config: FFCAConfig<
+    storageConfig,
+    mutationsConfig,
+    signatureConfig,
+    sequencingConfig
+  >,
+): Promise<
+  FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig>
+>;
 
 const baseConfig = {
   address: "0x0000000000000000000000000000000000000000",
@@ -29,15 +43,15 @@ const baseConfig = {
   domain: { name: "", version: "1" },
 } as const;
 
-test("createFFCAStub state", () => {
-  createFFCAStub({
+test("createFFCATest state", () => {
+  createFFCATest({
     ...baseConfig,
     mutations: {},
   });
 });
 
-test("createFFCAStub mutation", () => {
-  createFFCAStub({
+test("createFFCATest mutation", () => {
+  createFFCATest({
     ...baseConfig,
     mutations: {
       transfer: {
@@ -48,30 +62,29 @@ test("createFFCAStub mutation", () => {
   });
 });
 
-test("createFFCAStub mutation with resolution", () => {
-  createFFCAStub({
+test("createFFCATest mutation with resolution", () => {
+  createFFCATest({
     ...baseConfig,
     mutations: {
       marketOrder: {
         tag: 1,
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-        resolve: () => {},
+        resolve: () => [[]],
       },
     },
   });
 });
 
-test("createFFCAStub mutation with registered mapping keys", () => {
-  createFFCAStub({
+test("createFFCATest mutation with registered mapping keys", () => {
+  createFFCATest({
     ...baseConfig,
     mutations: {
       credit: {
         tag: 2,
         params: parseAbiParameters("bytes32 account, uint256 amount"),
-        registerMappingKeys: ({ args }) => {
-          const { account } = args as { account: string };
-          return [`balances[${account}]`];
+        registerMappingKeys: ({ params }) => {
+          return [`balances[${params.account}]`];
         },
       },
     },
@@ -80,16 +93,16 @@ test("createFFCAStub mutation with registered mapping keys", () => {
 
 // Counter keeps the config minimal: no user-owned persisted schema is needed
 // for this type-level check.
-test("createFFCAStub Counter (no schema)", () => {
-  createFFCAStub({
+test("createFFCATest Counter (no schema)", () => {
+  createFFCATest({
     ...baseConfig,
     confirmations: { safeBlockDepth: 2, finalizedBlockDepth: 8 },
     mutations: COUNTER_MUTATIONS,
   });
 });
 
-test("createFFCAStub Harness", () => {
-  createFFCAStub({
+test("createFFCATest Harness", () => {
+  createFFCATest({
     ...baseConfig,
     mutations: HARNESS_MUTATIONS,
   });
@@ -139,10 +152,10 @@ test("execute input is a discriminated union typed from mutations and signature"
   expectTypeOf<Input>().toEqualTypeOf<
     | {
         name: "transfer";
-        args: [Address, Address, bigint];
-        signature: [number, Hex];
+        params: readonly [Address, Address, bigint];
+        signature: readonly [number, Hex];
       }
-    | { name: "mint"; args: [Address, bigint]; signature: [number, Hex] }
+    | { name: "mint"; params: readonly [Address, bigint]; signature: readonly [number, Hex] }
   >();
 });
 
@@ -154,7 +167,7 @@ test("execute output includes resolution when mutation defines it", async () => 
         tag: 0,
         params: parseAbiParameters("uint256 size"),
         resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-        resolve: () => [],
+        resolve: () => [[]],
       },
     },
   });

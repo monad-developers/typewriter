@@ -14,10 +14,10 @@ import type {
   BatchListener,
   BlockListener,
   MutationListener,
-  RuntimeFFCA,
 } from "./ffca";
 import { createFFCAEffect } from "./ffca";
 import type { FFCAMutation, FFCAMutationResult } from "./types";
+import type { FFCASchema } from "./schema";
 
 export type FFCA<
   storageConfig extends StorageConfig = StorageConfig,
@@ -26,9 +26,11 @@ export type FFCA<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   readonly state: StorageProxy<storageConfig, true>;
-  readonly schema: RuntimeFFCA<C, "fifo" | "batch">["schema"];
+  readonly schema: FFCASchema<mutationsConfig>;
   readonly domain: TypedData.Domain;
-  execute(submitted: FFCAMutation): Promise<FFCAMutationResult>;
+  execute<name extends keyof mutationsConfig & string>(
+    submitted: FFCAMutation<name, mutationsConfig[name], signatureConfig>
+  ): Promise<FFCAMutationResult<mutationsConfig[name]>>;
   on(event: "mutation", cb: MutationListener): () => void;
   on(event: "batch", cb: BatchListener): () => void;
   on(event: "block", cb: BlockListener<"fifo" | "batch">): () => void;
@@ -56,10 +58,10 @@ export type {
 } from "./types";
 
 export async function createFFCA<
-  storageConfig extends StorageConfig,
-  mutationsConfig extends MutationsConfig,
-  signatureConfig extends SignatureConfig,
-  sequencingConfig extends SequencingConfig,
+  const storageConfig extends StorageConfig,
+  const mutationsConfig extends MutationsConfig,
+  const signatureConfig extends SignatureConfig,
+  const sequencingConfig extends SequencingConfig,
 >(
   config: FFCAConfig<
     storageConfig,
@@ -92,7 +94,9 @@ export async function createFFCA<
       Effect.runSync(runtimeOn(event, cb))) as FFCA<C>["on"];
 
     return {
+      // @ts-expect-error
       state: ffca.state,
+      // @ts-expect-error
       schema: ffca.schema,
       domain: ffca.domain,
       execute: (submitted) => Effect.runPromise(ffca.execute(submitted)),

@@ -12,7 +12,7 @@ export type FFCAMutation<
   signatureConfig extends SignatureConfig,
 > = {
   name: name;
-  args: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+  params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
   signature: AbiParametersToPrimitiveTypes<signatureConfig>;
 };
 
@@ -140,28 +140,38 @@ export type RuntimeBlock<sequence extends "fifo" | "batch"> = {
       forceIncludedMutations: SubmittedMutation[];
     });
 
-export type MutationEvent =
+  export type MutationListener = (event: MutationEvent) => void;
+  export type BatchListener = (event: BatchEvent) => void;
+  export type BlockListener<sequence extends "fifo" | "batch"> = (
+    event: BlockEvent<sequence>,
+  ) => void;
+
+export type MutationEvent<
+  name extends string,
+  mutationConfig extends MutationConfig,
+  signatureConfig extends SignatureConfig,
+> =
   | {
       status: "received";
       id: number;
-      name: string;
-      args: unknown;
-      signature: unknown;
+      name: name;
+      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
     }
   | {
       status: "enqueued";
       id: number;
-      name: string;
-      args: unknown;
-      signature: unknown;
+      name: name;
+      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
       resolution?: unknown;
     }
   | {
       status: "accepted";
       id: number;
-      name: string;
-      args: unknown;
-      signature: unknown;
+      name: name;
+      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
       journalId: number;
       isForceInclusion: boolean;
       resolution?: unknown;
@@ -169,9 +179,9 @@ export type MutationEvent =
   | {
       status: "included" | "safe" | "finalized";
       id: number;
-      name: string;
-      args: unknown;
-      signature: unknown;
+      name: name;
+      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
       journalId: number;
       isForceInclusion: boolean;
       resolution?: unknown;
@@ -179,14 +189,15 @@ export type MutationEvent =
   | {
       status: "rejected";
       id: number;
-      name: string;
-      args: unknown;
-      signature: unknown;
+      name: name;
+      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
+      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
       isForceInclusion: boolean;
       error: unknown;
     };
 
-export type BatchEvent = {
+export type BatchEvent<
+> = {
   status: "accepted" | "included" | "safe" | "finalized";
   id: number;
   position: number;

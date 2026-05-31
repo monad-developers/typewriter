@@ -54,9 +54,9 @@ export type RegisterMappingKeys<
 ) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
 
 export type FFCAMutationConfig<
-  storageConfig extends StorageConfig,
-  mutationConfig extends MutationConfig,
-  signatureConfig extends SignatureConfig,
+  storageConfig extends StorageConfig = StorageConfig,
+  mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
 > = mutationConfig extends { resolution: readonly AbiParameter[] }
   ? {
       tag: number;
@@ -110,7 +110,7 @@ export type FFCAConfig<
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
-  mutations: {
+  mutations: mutationsConfig & {
     [name in keyof mutationsConfig]: FFCAMutationConfig<
       storageConfig,
       mutationsConfig[name],
@@ -202,7 +202,7 @@ export function validateConfig(config: FFCAConfig): void {
   }
 }
 
-export function buildInternalApp(config: FFCAConfigFFCAConfig): InternalApp {
+export function buildInternalApp(config: FFCAConfig): InternalApp {
   validateConfig(config);
 
   const rpcUrls = Array.isArray(config.rpcUrl)
@@ -246,6 +246,7 @@ export function buildInternalApp(config: FFCAConfigFFCAConfig): InternalApp {
     chainId: config.chainId,
     rpcUrls,
     database: config.database,
+    // @ts-expect-error
     mutations: config.mutations,
     schema: createMutationSchema(config),
     blockPollingIntervalMs:
