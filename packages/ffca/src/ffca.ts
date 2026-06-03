@@ -90,19 +90,11 @@ export type InternalRuntimeFFCA<
   >,
   "execute"
 > & {
-  execute(
-    submitted:
-      | {
-          name: string;
-          args: unknown;
-          signature: unknown;
-        }
-      | {
-          name: string;
-          params: unknown;
-          signature: unknown;
-        },
-  ): Effect.Effect<FFCAMutationResult, unknown>;
+  execute(submitted: {
+    name: string;
+    params: unknown;
+    signature: unknown;
+  }): Effect.Effect<FFCAMutationResult, unknown>;
 };
 
 export type { BatchListener, BlockListener, MutationListener } from "./types";
@@ -200,7 +192,7 @@ export function createFFCAEffect<
             ? runtime
                 .execute({
                   name: mutation.name,
-                  args: mutation.params,
+                  params: mutation.params,
                   signature: mutation.signature,
                 })
                 .pipe(Effect.raceFirst(Deferred.await(fatalSignal)))

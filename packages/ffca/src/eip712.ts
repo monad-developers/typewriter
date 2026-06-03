@@ -5,14 +5,14 @@ import type { FFCAMutationConfig } from "./config";
 export function hashMutationEip712(
   mutation: FFCAMutationConfig,
   name: string,
-  args: unknown,
+  params: unknown,
   domain: TypedData.Domain,
 ): Hex.Hex {
   return TypedData.getSignPayload({
     domain,
     types: buildEip712Types(mutation, name),
     primaryType: name,
-    message: args as Record<string, unknown>,
+    message: params as Record<string, unknown>,
   });
 }
 

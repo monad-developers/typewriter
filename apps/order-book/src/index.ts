@@ -103,7 +103,7 @@ type RuntimeMutation = {
   id: number;
   status: string;
   name: OrderBookMutationName;
-  args: Record<string, unknown>;
+  params: Record<string, unknown>;
   signature: OrderBookSignature;
   resolution?: unknown;
 };
@@ -125,53 +125,53 @@ function stringValue(value: unknown): string {
 }
 
 function mutationPayload(mutation: RuntimeMutation): unknown {
-  const args = mutation.args;
+  const params = mutation.params;
   switch (mutation.name) {
     case "Initialize":
       return {
         id: mutation.id,
-        expiry: args.expiry,
-        rootKeyType: args.rootKeyType,
-        keyType: args.keyType,
-        permissions: args.permissions,
-        rootPublicKey: args.rootPublicKey,
-        publicKey: args.publicKey,
+        expiry: params.expiry,
+        rootKeyType: params.rootKeyType,
+        keyType: params.keyType,
+        permissions: params.permissions,
+        rootPublicKey: params.rootPublicKey,
+        publicKey: params.publicKey,
       };
     case "Authorize":
       return {
         id: mutation.id,
-        expiry: args.expiry,
-        keyType: args.keyType,
-        permissions: args.permissions,
-        publicKey: args.publicKey,
+        expiry: params.expiry,
+        keyType: params.keyType,
+        permissions: params.permissions,
+        publicKey: params.publicKey,
       };
     case "Revoke":
-      return { id: mutation.id, revokedKeyId: stringValue(args.keyId) };
+      return { id: mutation.id, revokedKeyId: stringValue(params.keyId) };
     case "CloseOrder":
-      return { id: mutation.id, orderId: stringValue(args.orderId) };
+      return { id: mutation.id, orderId: stringValue(params.orderId) };
     case "ChangeOrder":
       return {
         id: mutation.id,
-        orderId: stringValue(args.orderId),
-        price: stringValue(args.price),
+        orderId: stringValue(params.orderId),
+        price: stringValue(params.price),
       };
     case "LimitOrder":
       return {
         id: mutation.id,
-        quantity: stringValue(args.quantity),
-        instrumentId: stringValue(args.instrumentId),
-        price: stringValue(args.price),
-        bidOrAsk: args.bidOrAsk,
+        quantity: stringValue(params.quantity),
+        instrumentId: stringValue(params.instrumentId),
+        price: stringValue(params.price),
+        bidOrAsk: params.bidOrAsk,
       };
     case "MarketOrder": {
       const resolution = asRecord(mutation.resolution);
       const fills = Array.isArray(resolution.fills) ? resolution.fills : [];
       return {
         id: mutation.id,
-        quantity: stringValue(args.quantity),
-        minReceivedQuantity: stringValue(args.minReceivedQuantity),
-        instrumentId: stringValue(args.instrumentId),
-        bidOrAsk: args.bidOrAsk,
+        quantity: stringValue(params.quantity),
+        minReceivedQuantity: stringValue(params.minReceivedQuantity),
+        instrumentId: stringValue(params.instrumentId),
+        bidOrAsk: params.bidOrAsk,
         fills: fills.map((fill) => {
           const row = asRecord(fill);
           return {
@@ -184,23 +184,23 @@ function mutationPayload(mutation: RuntimeMutation): unknown {
     case "AddInstrument":
       return {
         id: mutation.id,
-        instrumentId: stringValue(args.instrumentId),
-        base: args.base,
-        quote: args.quote,
-        baseLotExp: args.baseLotExp,
-        quoteLotExp: args.quoteLotExp,
+        instrumentId: stringValue(params.instrumentId),
+        base: params.base,
+        quote: params.quote,
+        baseLotExp: params.baseLotExp,
+        quoteLotExp: params.quoteLotExp,
       };
     case "Deposit":
       return {
         id: mutation.id,
-        asset: args.asset,
-        amount: stringValue(args.amount),
+        asset: params.asset,
+        amount: stringValue(params.amount),
       };
     case "Withdrawal":
       return {
         id: mutation.id,
-        asset: args.asset,
-        amount: stringValue(args.amount),
+        asset: params.asset,
+        amount: stringValue(params.amount),
       };
   }
 }
@@ -212,7 +212,7 @@ function wireMutation(event: RuntimeMutation): WireMutation {
       ? "submitted"
       : (event.status as MutationStatus);
   const nonce =
-    event.args.nonce !== undefined ? stringValue(event.args.nonce) : null;
+    event.params.nonce !== undefined ? stringValue(event.params.nonce) : null;
   const keyIndex = stringValue(event.signature.keyId);
   return {
     id: event.id,
@@ -223,8 +223,8 @@ function wireMutation(event: RuntimeMutation): WireMutation {
     keyIndex,
     nonce,
     deadline:
-      event.args.deadline !== undefined
-        ? stringValue(event.args.deadline)
+      event.params.deadline !== undefined
+        ? stringValue(event.params.deadline)
         : "0",
     type: mutationType(event.name),
     submittedAt: now,

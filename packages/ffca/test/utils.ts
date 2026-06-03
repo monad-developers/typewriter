@@ -688,7 +688,7 @@ export const HARNESS_ABI = [
 // artifact JSON.
 async function deployContract(
   name: string,
-  args?: readonly unknown[],
+  constructorParams?: readonly unknown[],
 ): Promise<Address> {
   const artifact = await Bun.file(
     `${import.meta.dir}/contracts/out/${name}.sol/${name}.json`,
@@ -697,7 +697,7 @@ async function deployContract(
     abi: artifact.abi,
     bytecode: artifact.bytecode.object as Hex,
     // biome-ignore lint/suspicious/noExplicitAny: viem deployContract args type
-    args: args as any,
+    args: constructorParams as any,
   });
 
   const request = await TEST_WALLET_CLIENT.prepareTransactionRequest({
@@ -719,7 +719,7 @@ async function deployContract(
 }
 
 // Deploy Counter. The contract hardcodes its EIP-712 domain (name="Counter",
-// version="1") and takes no constructor args. The parameter is retained only
+// version="1") and takes no constructor params. The parameter is retained only
 // so existing call sites don't need to care about the constructor change.
 export async function deployCounter(_: Address): Promise<Address> {
   return deployContract("Counter");
@@ -968,7 +968,7 @@ export function signHarness(params: {
   keyType: number;
   privateKey: Hex;
   mutation: "authorize" | "credit" | "debit" | "assert";
-  args: Record<string, unknown>;
+  params: Record<string, unknown>;
   address: Address;
   chainId: number;
 }): Hex {
@@ -981,7 +981,7 @@ export function signHarness(params: {
   const digest = hashMutationEip712(
     HARNESS_MUTATIONS[params.mutation],
     params.mutation,
-    params.args,
+    params.params,
     domain,
   );
   if (params.keyType === 0) return signP256Raw(digest, params.privateKey);
@@ -1024,7 +1024,7 @@ export async function setupHarnessAccount(
   const account = harnessAccountId(params.rootPublicKey);
   await ffca.execute({
     name: "initialize",
-    args: {
+    params: {
       rootKeyType: params.rootKeyType,
       rootPublicKey: params.rootPublicKey,
     },

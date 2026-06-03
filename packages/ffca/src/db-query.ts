@@ -77,7 +77,7 @@ function mutationRow(
   return {
     id: mutation.id,
     status: "accepted",
-    ...abiParameterValues(mutation.config.params, mutation.args),
+    ...abiParameterValues(mutation.config.params, mutation.params),
     ...prefixedObjectValues("signature_", mutation.signature),
     ...(mutation.config.resolution !== undefined
       ? abiParameterValues(

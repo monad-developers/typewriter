@@ -35,10 +35,10 @@ export type EffectEip1193RequestFn<
       >["ReturnType"]
     : unknown,
 >(
-  args: parameters,
+  request: parameters,
 ) => Effect.Effect<returnType, RpcRequestError>;
 
-type RawRequest = (args: {
+type RawRequest = (request: {
   method: string;
   params?: unknown;
 }) => Effect.Effect<unknown, RpcRequestError>;
@@ -108,14 +108,17 @@ const REQUEST_TIMEOUT = Duration.seconds(5);
 const RETRY_TIMES = 8;
 const RETRY_DELAY = Duration.millis(200);
 
-function encodeRequest(id: number, args: { method: string; params?: unknown }) {
+function encodeRequest(
+  id: number,
+  request: { method: string; params?: unknown },
+) {
   const body: JsonRpcBody = {
     jsonrpc: "2.0",
     id,
-    method: args.method,
+    method: request.method,
   };
-  if (args.params !== undefined) {
-    return { ...body, params: args.params };
+  if (request.params !== undefined) {
+    return { ...body, params: request.params };
   }
   return body;
 }
@@ -137,8 +140,8 @@ function decodeResponse<TResult>(
 function makeRawHttpRequest(rpcUrl: string): RawRequest {
   let id = 0;
 
-  return (args) => {
-    const body = encodeRequest(++id, args);
+  return (request) => {
+    const body = encodeRequest(++id, request);
     return Effect.tryPromise({
       try: async (signal) => {
         const response = await fetch(rpcUrl, {
@@ -203,11 +206,11 @@ function makeRpc(rpcUrls: readonly string[]): {
   // retries rotate onto the next provider.
   let cursor = 0;
 
-  const request: RawRequest = (args) => {
+  const request: RawRequest = (rpcRequest) => {
     const attempt = Effect.suspend(() => {
       const provider = providers[cursor % providers.length]!;
       cursor += 1;
-      return withTimeout(provider(args), args.method);
+      return withTimeout(provider(rpcRequest), rpcRequest.method);
     });
     return attempt.pipe(
       Effect.retry({
@@ -217,11 +220,11 @@ function makeRpc(rpcUrls: readonly string[]): {
     );
   };
 
-  const requestMultiplexed: RawRequest = (args) =>
+  const requestMultiplexed: RawRequest = (rpcRequest) =>
     Effect.gen(function* () {
       const firstError = yield* Deferred.make<RpcRequestError>();
       const attempts = providers.map((provider, index) => {
-        const attempt = withTimeout(provider(args), args.method);
+        const attempt = withTimeout(provider(rpcRequest), rpcRequest.method);
         return index === 0
           ? attempt.pipe(
               Effect.tapError((error) => Deferred.succeed(firstError, error)),

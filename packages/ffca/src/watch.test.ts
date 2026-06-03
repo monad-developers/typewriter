@@ -158,7 +158,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
     id: 0,
     status: "accepted",
     name: "add",
-    args: { amount, nonce },
+    params: { amount, nonce },
     signature,
     journalId: 0,
     isForceInclusion: false,
@@ -212,7 +212,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
     data: log.data,
     topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
   });
-  const args = decoded.args as {
+  const eventParams = decoded.args as {
     index: bigint;
     mutation: number;
     mutationData: typeof mutationData;
@@ -220,11 +220,11 @@ test("attaches matching force inclusion enqueue logs", async () => {
     enqueuedBlock: bigint;
   };
 
-  expect(args.index).toMatchInlineSnapshot(`0n`);
-  expect(args.mutation).toMatchInlineSnapshot(`1`);
-  expect(args.mutationData).toBe(mutationData);
-  expect(args.signatureData).toEqual(signatureData);
-  expect(args.enqueuedBlock).toBe(message.block.number);
+  expect(eventParams.index).toMatchInlineSnapshot(`0n`);
+  expect(eventParams.mutation).toMatchInlineSnapshot(`1`);
+  expect(eventParams.mutationData).toBe(mutationData);
+  expect(eventParams.signatureData).toEqual(signatureData);
+  expect(eventParams.enqueuedBlock).toBe(message.block.number);
 });
 
 test("emits Reorged with the full replacement path", async () => {

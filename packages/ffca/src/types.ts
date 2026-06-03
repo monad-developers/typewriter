@@ -80,7 +80,7 @@ export type RuntimeMutation =
       status: "received";
       id: number;
       name: string;
-      args: unknown;
+      params: unknown;
       signature: unknown;
       config: FFCAMutationConfig;
     }
@@ -88,7 +88,7 @@ export type RuntimeMutation =
       status: "enqueued";
       id: number;
       name: string;
-      args: unknown;
+      params: unknown;
       signature: unknown;
       config: FFCAMutationConfig;
       resolution?: unknown;
@@ -97,7 +97,7 @@ export type RuntimeMutation =
       status: "accepted";
       id: number;
       name: string;
-      args: unknown;
+      params: unknown;
       signature: unknown;
       journalId: number;
       isForceInclusion: boolean;
@@ -108,7 +108,7 @@ export type RuntimeMutation =
       status: "included" | "safe" | "finalized";
       id: number;
       name: string;
-      args: unknown;
+      params: unknown;
       signature: unknown;
       journalId: number;
       isForceInclusion: boolean;
@@ -119,7 +119,7 @@ export type RuntimeMutation =
       status: "rejected";
       id: number;
       name: string;
-      args: unknown;
+      params: unknown;
       signature: unknown;
       isForceInclusion: boolean;
       config: FFCAMutationConfig;
@@ -257,14 +257,14 @@ export type MutationEvent<
       status: "received";
       id: number;
       name: name;
-      args: MutationParams<mutationConfig>;
+      params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
     }
   | {
       status: "enqueued";
       id: number;
       name: name;
-      args: MutationParams<mutationConfig>;
+      params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
       resolution?: unknown;
     }
@@ -272,7 +272,7 @@ export type MutationEvent<
       status: "accepted";
       id: number;
       name: name;
-      args: MutationParams<mutationConfig>;
+      params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
       journalId: number;
       isForceInclusion: boolean;
@@ -282,7 +282,7 @@ export type MutationEvent<
       status: "included" | "safe" | "finalized";
       id: number;
       name: name;
-      args: MutationParams<mutationConfig>;
+      params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
       journalId: number;
       isForceInclusion: boolean;
@@ -292,7 +292,7 @@ export type MutationEvent<
       status: "rejected";
       id: number;
       name: name;
-      args: MutationParams<mutationConfig>;
+      params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
       isForceInclusion: boolean;
       error: unknown;

@@ -77,32 +77,35 @@ export function encodeMutationCalldata(
         ...calldataStructParams(params),
         ...calldataStructParams(resolutionParams),
       ],
-      [mutation.args, mutation.resolution],
+      [mutation.params, mutation.resolution],
     );
   }
 
-  return AbiParameters.encode(calldataStructParams(params), [mutation.args]);
+  return AbiParameters.encode(calldataStructParams(params), [mutation.params]);
 }
 
 export function decodeMutationCalldata(
   mutationConfig: FFCAMutationConfig,
   calldata: Hex.Hex,
-): { args: unknown; resolution?: unknown } {
+): { params: unknown; resolution?: unknown } {
   const params = mutationConfig.params;
   if (mutationConfig.resolution !== undefined) {
     const resolutionParams = mutationConfig.resolution;
-    const [args, resolution] = AbiParameters.decode(
+    const [decodedParams, resolution] = AbiParameters.decode(
       [
         ...calldataStructParams(params),
         ...calldataStructParams(resolutionParams),
       ],
       calldata,
     );
-    return { args, resolution };
+    return { params: decodedParams, resolution };
   }
 
-  const [args] = AbiParameters.decode(calldataStructParams(params), calldata);
-  return { args };
+  const [decodedParams] = AbiParameters.decode(
+    calldataStructParams(params),
+    calldata,
+  );
+  return { params: decodedParams };
 }
 
 export function encodeSignatureCalldata(

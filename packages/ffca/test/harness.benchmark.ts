@@ -43,7 +43,7 @@ function harnessCreditMutation(params: {
   typeof HARNESS_MUTATIONS.credit,
   typeof HARNESS_SIGNATURE_PARAMS
 > {
-  const args = {
+  const mutationParams = {
     account: params.account,
     keyId: 0n,
     amount: params.amount,
@@ -52,7 +52,7 @@ function harnessCreditMutation(params: {
 
   return {
     name: "credit",
-    params: args,
+    params: mutationParams,
     signature: harnessSignature({
       account: params.account,
       keyId: 0n,
@@ -61,7 +61,7 @@ function harnessCreditMutation(params: {
         keyType: 2,
         privateKey: USER_PRIVATE_KEY,
         mutation: "credit",
-        args,
+        params: mutationParams,
         address: params.address,
         chainId: anvil.id,
       }),
