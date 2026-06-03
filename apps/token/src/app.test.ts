@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createFFCA, type FFCAConfig } from "ffca";
+import { createFFCA } from "ffca";
 import {
   type AccountStorage,
   decodeStorageVariable,
@@ -7,7 +7,7 @@ import {
   type StorageLayout,
   type StorageVariableToPrimitiveType,
 } from "storage-layout";
-import { type Address, parseAbiParameters } from "viem";
+import type { Address } from "viem";
 import { anvil } from "viem/chains";
 import {
   deployToken,
@@ -18,7 +18,14 @@ import {
   TEST_RPC_URL,
   USER_ACCOUNT,
 } from "../test/setup";
-import { signMint, signTransfer, TOKEN_DOMAIN, tokenMutations } from "./app";
+import {
+  signMint,
+  signTransfer,
+  TOKEN_DOMAIN,
+  TOKEN_SIGNATURE_PARAMS,
+  type TokenFFCAConfig,
+  tokenMutations,
+} from "./app";
 import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
 
 async function readAccount(params: {
@@ -62,9 +69,7 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
   const { address } = await deployToken();
   const config = {
     address,
-    signature: {
-      params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
-    },
+    signature: { params: TOKEN_SIGNATURE_PARAMS },
     storageLayout: TOKEN_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -73,8 +78,12 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     domain: TOKEN_DOMAIN,
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
     mutations: tokenMutations,
-  } as const satisfies FFCAConfig;
-  const ffca = await createFFCA(config);
+  } as const satisfies TokenFFCAConfig;
+  const ffca = await createFFCA<
+    typeof TOKEN_STORAGE_LAYOUT,
+    typeof tokenMutations,
+    typeof TOKEN_SIGNATURE_PARAMS
+  >(config);
 
   const acceptedMutationIds: number[] = [];
   ffca.on("mutation", (event) => {
@@ -90,7 +99,7 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
   };
   await ffca.execute({
     name: "Mint",
-    args: mint,
+    params: mint,
     signature: await signMint({
       account: USER_ACCOUNT,
       token: address,
@@ -108,7 +117,7 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
   };
   await ffca.execute({
     name: "Transfer",
-    args: transfer,
+    params: transfer,
     signature: await signTransfer({
       account: USER_ACCOUNT,
       token: address,

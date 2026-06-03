@@ -1,32 +1,15 @@
-import {
-  createFFCA,
-  type FFCAConfig,
-  type MutationEvent,
-  type MutationStatus,
-} from "ffca";
-import { type Address, type Hex, parseAbiParameters } from "viem";
+import { createFFCA, type MutationEvent, type MutationStatus } from "ffca";
+import type { Address, Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
   signMint,
   TOKEN_DOMAIN,
+  TOKEN_SIGNATURE_PARAMS,
   type TokenSignature,
   tokenMutations,
 } from "./app";
 import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
-
-function json(value: unknown, init?: ResponseInit): Response {
-  return new Response(
-    JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v)),
-    {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...init?.headers,
-      },
-    },
-  );
-}
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -36,65 +19,70 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function sse(value: unknown): string {
-  return `data: ${JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`;
-}
-
 const rpcUrl = requireEnv("BUN_PUBLIC_RPC_URL");
 const chainId = Number(process.env.CHAIN_ID ?? "31337");
 const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
 const scheduler = privateKeyToAccount(
   requireEnv("SCHEDULER_PRIVATE_KEY") as Hex,
 );
-const database = { url: requireEnv("DATABASE_URL"), maxConnections: 25 };
-const bootId = crypto.randomUUID();
 const addresses = new Set<Address>([scheduler.address]);
 const mutations = new Map<number, MutationEvent>();
-const config = {
+
+const ffca = await createFFCA<
+  typeof TOKEN_STORAGE_LAYOUT,
+  typeof tokenMutations,
+  typeof TOKEN_SIGNATURE_PARAMS
+>({
   address: tokenAddress,
-  signature: {
-    params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
-  },
+  signature: { params: TOKEN_SIGNATURE_PARAMS },
   storageLayout: TOKEN_STORAGE_LAYOUT,
   account: scheduler,
   chainId,
   rpcUrl,
-  database,
+  database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   domain: TOKEN_DOMAIN,
   sequencing: { order: "fifo" },
   mutations: tokenMutations,
-} as const satisfies FFCAConfig;
-const ffca = await createFFCA(config);
+});
+
 ffca.on("mutation", (mutation) => {
   mutations.set(mutation.id, mutation);
 });
+
+function sse(value: unknown): string {
+  return `data: ${JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`;
+}
+
+const bootId = crypto.randomUUID();
 
 const server = Bun.serve({
   port: Number(process.env.PORT ?? "3000"),
   routes: {
     "/": index,
-    "/health": () => json({ ok: true }),
-    "/api/config": () => json({ chainId, tokenAddress }),
-    "/api/boot-id": () => json({ id: bootId }),
+    "/api/config": () => Response.json({ chainId, tokenAddress }),
+    "/api/boot-id": () => Response.json({ id: bootId }),
     "/api/state": async () => {
-      const accounts: Record<Address, { balance: bigint; nonce: bigint }> = {};
+      const accounts: Record<Address, { balance: string; nonce: string }> = {};
       for (const address of addresses) {
         const account = ffca.state.accounts[address];
         accounts[address] = {
-          balance: await account.balance,
-          nonce: await account.nonce,
+          balance: (await account.balance).toString(),
+          nonce: (await account.nonce).toString(),
         };
       }
-      return json({ totalSupply: await ffca.state.totalSupply, accounts });
+      return Response.json({
+        totalSupply: (await ffca.state.totalSupply).toString(),
+        accounts,
+      });
     },
     "/api/account/:address": async (req) => {
       const account = ffca.state.accounts[req.params.address as Address];
-      return json({
-        balance: await account.balance,
-        nonce: await account.nonce,
+      return Response.json({
+        balance: (await account.balance).toString(),
+        nonce: (await account.nonce).toString(),
       });
     },
-    "/api/addresses": () => json([...addresses]),
+    "/api/addresses": () => Response.json([...addresses]),
     "/api/sign-in": {
       POST: async () => {
         const privateKey = generatePrivateKey();
@@ -107,7 +95,7 @@ const server = Bun.serve({
         };
         const mutation = await ffca.execute({
           name: "Mint",
-          args: mint,
+          params: mint,
           signature: await signMint({
             account,
             token: tokenAddress,
@@ -116,7 +104,7 @@ const server = Bun.serve({
           }),
         });
         addresses.add(account.address);
-        return json({
+        return Response.json({
           address: account.address,
           privateKey,
           bootId,
@@ -135,7 +123,7 @@ const server = Bun.serve({
         };
         const mutation = await ffca.execute({
           name: "Mint",
-          args: {
+          params: {
             to: body.to,
             amount: BigInt(body.amount),
             nonce: BigInt(body.nonce),
@@ -144,7 +132,7 @@ const server = Bun.serve({
           signature: body.signature,
         });
         addresses.add(body.to);
-        return json(mutation);
+        return Response.json(mutation);
       },
     },
     "/api/transfer": {
@@ -159,7 +147,7 @@ const server = Bun.serve({
         };
         const mutation = await ffca.execute({
           name: "Transfer",
-          args: {
+          params: {
             from: body.from,
             to: body.to,
             amount: BigInt(body.amount),
@@ -170,7 +158,7 @@ const server = Bun.serve({
         });
         addresses.add(body.from);
         addresses.add(body.to);
-        return json(mutation);
+        return Response.json(mutation);
       },
     },
     "/api/mutation/:id/status": {

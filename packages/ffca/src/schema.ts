@@ -73,7 +73,7 @@ export type FFCASchema<
 > = FFCAStateSchema & FFCAMutationSchema<mutationsConfig>;
 
 export function createMutationSchema(
-  config: FFCAConfig
+  config: Pick<FFCAConfig, "signature" | "mutations">,
 ): FFCASchema {
   const signatureColumns = prefixColumnNames(
     abiParametersToColumns(config.signature.params),
@@ -84,7 +84,7 @@ export function createMutationSchema(
   for (const [name, mutation] of Object.entries(config.mutations)) {
     const tableName = mutationTableName(name);
     const resolutionColumns =
-      "resolution" in mutation
+      mutation.resolution !== undefined
         ? prefixColumnNames(
             abiParametersToColumns(mutation.resolution),
             "resolution_",
@@ -102,7 +102,7 @@ export function createMutationSchema(
     );
   }
 
-  return schema as FFCASchema<Config>;
+  return schema as FFCASchema;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {

@@ -2,13 +2,14 @@ import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
 import { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
-import { type Address, type Hex, parseAbiParameters } from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
+  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookFFCAConfig,
   type OrderBookMutationName,
   type OrderBookSignature,
@@ -44,11 +45,7 @@ const readerConnection = new Bun.SQL({
 const config = {
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
-  signature: {
-    params: parseAbiParameters(
-      "bytes32 account, uint64 keyId, bytes rawSignature",
-    ),
-  },
+  signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
   storageLayout: EXCHANGE_STORAGE_LAYOUT,
   account,
   chainId: CHAIN.id,
@@ -61,7 +58,11 @@ const config = {
   mutations: ORDER_BOOK_MUTATIONS,
 } as const satisfies OrderBookFFCAConfig;
 
-const app = await createFFCA(config);
+const app = await createFFCA<
+  typeof EXCHANGE_STORAGE_LAYOUT,
+  typeof ORDER_BOOK_MUTATIONS,
+  typeof ORDER_BOOK_SIGNATURE_PARAMS
+>(config);
 
 const readerDb: QueryDatabase = drizzle({
   client: readerConnection,
@@ -335,21 +336,21 @@ function signatureFromBody(body: Record<string, unknown>): OrderBookSignature {
   };
 }
 
-async function submit(
+async function submit<const name extends OrderBookMutationName>(
   req: Request,
-  name: OrderBookMutationName,
-  buildArgs: (
+  name: name,
+  buildParams: (
     body: Record<string, unknown>,
-  ) => SubmittedOrderBookMutation["args"],
+  ) => Extract<SubmittedOrderBookMutation, { name: name }>["params"],
 ) {
   const body = (await req.json()) as Record<string, unknown>;
   try {
     const signature = signatureFromBody(body);
     const result = await app.execute({
       name,
-      args: buildArgs(body),
+      params: buildParams(body),
       signature: normalizeSignatureForContract(signature),
-    });
+    } as Parameters<typeof app.execute>[0]);
     const response: Record<string, unknown> = {
       id: result.id,
       status: "accepted",
@@ -725,7 +726,7 @@ serve({
       POST: (req) =>
         submit(req, "Revoke", (body) => ({
           account: body.account as Hex,
-          keyId: Number(body.keyId),
+          keyId: BigInt(body.keyId as string | number | bigint),
           nonce: BigInt(body.nonce as string | number | bigint),
           deadline: BigInt(body.deadline as string | number | bigint),
         })),

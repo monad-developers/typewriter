@@ -70,7 +70,7 @@ export function encodeMutationCalldata(
   mutation: MutationWithResolution,
 ): Hex.Hex {
   const params = mutation.config.params;
-  if ("resolution" in mutation.config) {
+  if (mutation.config.resolution !== undefined) {
     const resolutionParams = mutation.config.resolution;
     return AbiParameters.encode(
       [
@@ -89,7 +89,7 @@ export function decodeMutationCalldata(
   calldata: Hex.Hex,
 ): { args: unknown; resolution?: unknown } {
   const params = mutationConfig.params;
-  if ("resolution" in mutationConfig) {
+  if (mutationConfig.resolution !== undefined) {
     const resolutionParams = mutationConfig.resolution;
     const [args, resolution] = AbiParameters.decode(
       [

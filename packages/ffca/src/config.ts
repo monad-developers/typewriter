@@ -1,4 +1,4 @@
-import type { AbiParametersToPrimitiveTypes } from "abitype";
+import type { AbiParameterToPrimitiveType } from "abitype";
 import type { Address } from "ox";
 import type {
   ConcreteStorageVariable,
@@ -15,24 +15,30 @@ export type FFCADatabaseTransaction = Parameters<
   Parameters<DatabaseClient["transaction"]>[0]
 >[0];
 
-// `tag` is the contract enum index for this mutation; encoded as the uint8
-// in the batch's `mutations[]` field. Hand-authored for now — see the
-// "derive from the contract" idea in AGENTS.md.
-//
-// `resolve` must be pure: read-only over `state`, `signature`, and `batch`, no
-// side effects. The runtime calls it once per mutation immediately before revm
-// execution, and treats its return value as canonical (it's encoded into
-// calldata). A `resolve` that mutates state breaks failure isolation and replay
-// determinism.
-
 export type StorageConfig = StorageLayout;
-export type MutationConfig = {
-  params: readonly AbiParameter[];
-  resolution?: readonly AbiParameter[];
-};
+export type MutationConfig =
+  | {
+      params: readonly AbiParameter[];
+      resolution?: never;
+    }
+  | {
+      params: readonly AbiParameter[];
+      resolution: readonly AbiParameter[];
+    };
 export type MutationsConfig = { [name: string]: MutationConfig };
 export type SignatureConfig = readonly AbiParameter[];
 export type SequencingConfig = "fifo" | "batch";
+
+export type AbiParametersToValue<params extends readonly AbiParameter[]> =
+  params extends readonly [
+    infer head extends AbiParameter,
+    ...infer tail extends readonly AbiParameter[],
+  ]
+    ? (head extends AbiParameter & { name: infer name extends string }
+        ? { [key in name]: AbiParameterToPrimitiveType<head> }
+        : unknown) &
+        AbiParametersToValue<tail>
+    : object;
 
 export type RegisterMappingKeys<
   storageConfig extends StorageConfig,
@@ -43,15 +49,27 @@ export type RegisterMappingKeys<
 > = (
   params: mutationConfig extends { resolution: readonly AbiParameter[] }
     ? {
-        params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-        signature: AbiParametersToPrimitiveTypes<signatureConfig>;
-        resolution: AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>;
+        params: AbiParametersToValue<mutationConfig["params"]>;
+        signature: SignatureValue<signatureConfig>;
+        resolution: AbiParametersToValue<mutationConfig["resolution"]>;
       }
     : {
-        params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-        signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+        params: AbiParametersToValue<mutationConfig["params"]>;
+        signature: SignatureValue<signatureConfig>;
+        resolution?: never;
       },
 ) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
+
+type MutationResolution<
+  mutationConfig extends { resolution: readonly AbiParameter[] },
+> = readonly AbiParameter[] extends mutationConfig["resolution"]
+  ? unknown
+  : AbiParametersToValue<mutationConfig["resolution"]>;
+
+type SignatureValue<signatureConfig extends SignatureConfig> =
+  readonly AbiParameter[] extends signatureConfig
+    ? unknown
+    : AbiParametersToValue<signatureConfig>;
 
 export type FFCAMutationConfig<
   storageConfig extends StorageConfig = StorageConfig,
@@ -64,11 +82,11 @@ export type FFCAMutationConfig<
       resolution: mutationConfig["resolution"];
       resolve: (params: {
         state: StorageProxy<storageConfig, true>;
-        params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-        signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+        params: AbiParametersToValue<mutationConfig["params"]>;
+        signature: SignatureValue<signatureConfig>;
       }) =>
-        | AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>
-        | Promise<AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>>;
+        | MutationResolution<mutationConfig>
+        | Promise<MutationResolution<mutationConfig>>;
       registerMappingKeys?: RegisterMappingKeys<
         storageConfig,
         mutationConfig,
@@ -78,6 +96,8 @@ export type FFCAMutationConfig<
   : {
       tag: number;
       params: mutationConfig["params"];
+      resolution?: never;
+      resolve?: never;
       registerMappingKeys?: RegisterMappingKeys<
         storageConfig,
         mutationConfig,
@@ -98,37 +118,23 @@ export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
     };
 
 export type FFCAConfig<
-  storageConfig extends StorageConfig = StorageConfig,
-  mutationsConfig extends MutationsConfig = MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   address: Address.Address;
   domain: { name: string; version: string };
-  storageLayout: storageConfig;
+  storageLayout: StorageConfig;
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
-  mutations: mutationsConfig & {
-    [name in keyof mutationsConfig]: FFCAMutationConfig<
-      storageConfig,
-      mutationsConfig[name],
-      signatureConfig
-    >;
-  };
-  signature: { params: signatureConfig };
+  mutations: { [name: string]: FFCAMutationConfig };
+  signature: { params: SignatureConfig };
   blockPollingIntervalMs?: number;
   confirmations?: {
     safeBlockDepth?: number;
     finalizedBlockDepth?: number;
   };
   onFatalError?: (error: unknown) => void;
-  // Runtime sequencing and loop cadence. FIFO is the default: mutations are
-  // accepted in arrival order through short internal batches, while submit still
-  // flushes accepted mutations on an interval. `batch` mode uses the same
-  // internals, but may reorder each batch by `batchOrder`.
-  // TODO(kyle) validate this with zod once the internal config shape settles.
   sequencing?: FFCASequencingConfig<sequencingConfig>;
 };
 

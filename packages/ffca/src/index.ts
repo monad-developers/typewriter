@@ -1,23 +1,22 @@
-import type { AbiParameter, AbiParametersToPrimitiveTypes } from "abitype";
 import { Effect, Exit, Scope } from "effect";
 import type { TypedData } from "ox";
-import type { StorageLayout, StorageProxy } from "storage-layout";
+import type { StorageProxy } from "storage-layout";
 import type {
   FFCAConfig,
-  MutationConfig,
   MutationsConfig,
   SequencingConfig,
   SignatureConfig,
   StorageConfig,
 } from "./config";
+import { createFFCAEffect } from "./ffca";
+import type { FFCASchema } from "./schema";
 import type {
   BatchListener,
   BlockListener,
+  FFCAMutationInput,
+  FFCAMutationResult,
   MutationListener,
-} from "./ffca";
-import { createFFCAEffect } from "./ffca";
-import type { FFCAMutation, FFCAMutationResult } from "./types";
-import type { FFCASchema } from "./schema";
+} from "./types";
 
 export type FFCA<
   storageConfig extends StorageConfig = StorageConfig,
@@ -28,12 +27,21 @@ export type FFCA<
   readonly state: StorageProxy<storageConfig, true>;
   readonly schema: FFCASchema<mutationsConfig>;
   readonly domain: TypedData.Domain;
-  execute<name extends keyof mutationsConfig & string>(
-    submitted: FFCAMutation<name, mutationsConfig[name], signatureConfig>
-  ): Promise<FFCAMutationResult<mutationsConfig[name]>>;
-  on(event: "mutation", cb: MutationListener): () => void;
-  on(event: "batch", cb: BatchListener): () => void;
-  on(event: "block", cb: BlockListener<"fifo" | "batch">): () => void;
+  execute: <const name extends keyof mutationsConfig & string>(
+    submitted: FFCAMutationInput<mutationsConfig, signatureConfig, name>,
+  ) => Promise<FFCAMutationResult<mutationsConfig[name]>>;
+  on(
+    event: "mutation",
+    cb: MutationListener<mutationsConfig, signatureConfig>,
+  ): () => void;
+  on(
+    event: "batch",
+    cb: BatchListener<mutationsConfig, signatureConfig>,
+  ): () => void;
+  on(
+    event: "block",
+    cb: BlockListener<sequencingConfig, mutationsConfig, signatureConfig>,
+  ): () => void;
 };
 
 export type {
@@ -53,22 +61,19 @@ export type {
   BlockEvent,
   BlockStatus,
   FFCAMutation,
+  FFCAMutationInput,
+  FFCAMutationResult,
   MutationEvent,
   MutationStatus,
 } from "./types";
 
 export async function createFFCA<
-  const storageConfig extends StorageConfig,
-  const mutationsConfig extends MutationsConfig,
-  const signatureConfig extends SignatureConfig,
-  const sequencingConfig extends SequencingConfig,
+  const storageConfig extends StorageConfig = StorageConfig,
+  const mutationsConfig extends MutationsConfig = MutationsConfig,
+  const signatureConfig extends SignatureConfig = SignatureConfig,
+  const sequencingConfig extends SequencingConfig = SequencingConfig,
 >(
-  config: FFCAConfig<
-    storageConfig,
-    mutationsConfig,
-    signatureConfig,
-    sequencingConfig
-  >,
+  config: FFCAConfig<sequencingConfig>,
 ): Promise<
   FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig>
 > {
@@ -90,16 +95,27 @@ export async function createFFCA<
       event: "mutation" | "batch" | "block",
       cb: unknown,
     ) => Effect.Effect<() => void>;
-    const on = ((event, cb) =>
-      Effect.runSync(runtimeOn(event, cb))) as FFCA<C>["on"];
+    const on = ((event, cb) => Effect.runSync(runtimeOn(event, cb))) as FFCA<
+      storageConfig,
+      mutationsConfig,
+      signatureConfig,
+      sequencingConfig
+    >["on"];
+
+    const execute = ((
+      submitted: FFCAMutationInput<mutationsConfig, signatureConfig>,
+    ) => Effect.runPromise(ffca.execute(submitted as never))) as FFCA<
+      storageConfig,
+      mutationsConfig,
+      signatureConfig,
+      sequencingConfig
+    >["execute"];
 
     return {
-      // @ts-expect-error
-      state: ffca.state,
-      // @ts-expect-error
-      schema: ffca.schema,
+      state: ffca.state as StorageProxy<storageConfig, true>,
+      schema: ffca.schema as FFCASchema<mutationsConfig>,
       domain: ffca.domain,
-      execute: (submitted) => Effect.runPromise(ffca.execute(submitted)),
+      execute,
       on,
     };
   } catch (error) {

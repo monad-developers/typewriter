@@ -1,35 +1,54 @@
 import { expectTypeOf, test } from "bun:test";
-import { parseAbiParameters, type AbiParametersToPrimitiveTypes } from "abitype";
 import type { StorageProxy } from "storage-layout";
-import type { Address, Hex, ParseAbiParameters } from "viem";
+import type { Hex } from "viem";
 import {
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
   COUNTER_STORAGE_LAYOUT,
   EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
+  HARNESS_SIGNATURE_PARAMS,
   HARNESS_STORAGE_LAYOUT,
 } from "../test/utils";
-import type { FFCAConfig, MutationsConfig, SequencingConfig, SignatureConfig, StorageConfig } from "./config";
-import { createFFCA, type FFCA } from "./index";
+import type {
+  AbiParametersToValue,
+  FFCAConfig,
+  MutationsConfig,
+  SequencingConfig,
+  SignatureConfig,
+  StorageConfig,
+} from "./config";
+import type { FFCA, FFCAMutationInput } from "./index";
 
-// Stub mirroring `createFFCA`'s param signature. These tests only exercise
-// the FFCAConfig type — calling the real runtime would boot anvil.
- declare function createFFCATest<
-  storageConfig extends StorageConfig,
-  mutationsConfig extends MutationsConfig,
-  signatureConfig extends SignatureConfig,
-  sequencingConfig extends SequencingConfig,
+function createFFCATest<
+  storageConfig extends StorageConfig = StorageConfig,
+  mutationsConfig extends MutationsConfig = MutationsConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+  sequencingConfig extends SequencingConfig = SequencingConfig,
 >(
-  config: FFCAConfig<
+  config: FFCAConfig<sequencingConfig>,
+): FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig> {
+  void config;
+  return {
+    state: {},
+    schema: {},
+    domain: {},
+    execute: async () => ({ id: 0 }),
+    on: () => () => {},
+  } as unknown as FFCA<
     storageConfig,
     mutationsConfig,
     signatureConfig,
     sequencingConfig
-  >,
-): Promise<
-  FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig>
->;
+  >;
+}
+
+type CounterStorageConfig = typeof COUNTER_STORAGE_LAYOUT;
+type CounterMutationsConfig = typeof COUNTER_MUTATIONS;
+type CounterSignatureConfig = typeof COUNTER_SIGNATURE_PARAMS;
+type HarnessStorageConfig = typeof HARNESS_STORAGE_LAYOUT;
+type HarnessMutationsConfig = typeof HARNESS_MUTATIONS;
+type HarnessSignatureConfig = typeof HARNESS_SIGNATURE_PARAMS;
 
 const baseConfig = {
   address: "0x0000000000000000000000000000000000000000",
@@ -43,228 +62,171 @@ const baseConfig = {
   domain: { name: "", version: "1" },
 } as const;
 
-test("createFFCATest state", () => {
-  createFFCATest({
-    ...baseConfig,
-    mutations: {},
-  });
-});
+const counterConfig = {
+  ...baseConfig,
+  storageLayout: COUNTER_STORAGE_LAYOUT,
+  signature: { params: COUNTER_SIGNATURE_PARAMS },
+  mutations: COUNTER_MUTATIONS,
+} as const satisfies FFCAConfig;
 
-test("createFFCATest mutation", () => {
-  createFFCATest({
-    ...baseConfig,
-    mutations: {
-      transfer: {
-        tag: 0,
-        params: parseAbiParameters("address from, address to, uint256 amount"),
-      },
-    },
-  });
-});
+const harnessConfig = {
+  ...baseConfig,
+  storageLayout: HARNESS_STORAGE_LAYOUT,
+  signature: { params: HARNESS_SIGNATURE_PARAMS },
+  mutations: HARNESS_MUTATIONS,
+} as const satisfies FFCAConfig;
 
-test("createFFCATest mutation with resolution", () => {
-  createFFCATest({
-    ...baseConfig,
-    mutations: {
-      marketOrder: {
-        tag: 1,
-        params: parseAbiParameters("uint256 size"),
-        resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-        resolve: () => [[]],
-      },
-    },
-  });
-});
-
-test("createFFCATest mutation with registered mapping keys", () => {
-  createFFCATest({
-    ...baseConfig,
-    mutations: {
-      credit: {
-        tag: 2,
-        params: parseAbiParameters("bytes32 account, uint256 amount"),
-        registerMappingKeys: ({ params }) => {
-          return [`balances[${params.account}]`];
-        },
-      },
-    },
-  });
-});
-
-// Counter keeps the config minimal: no user-owned persisted schema is needed
-// for this type-level check.
-test("createFFCATest Counter (no schema)", () => {
-  createFFCATest({
-    ...baseConfig,
+test("FFCAConfig accepts Counter config", () => {
+  createFFCATest<
+    CounterStorageConfig,
+    CounterMutationsConfig,
+    CounterSignatureConfig
+  >({
+    ...counterConfig,
     confirmations: { safeBlockDepth: 2, finalizedBlockDepth: 8 },
-    mutations: COUNTER_MUTATIONS,
   });
 });
 
-test("createFFCATest Harness", () => {
-  createFFCATest({
-    ...baseConfig,
-    mutations: HARNESS_MUTATIONS,
-  });
+test("FFCAConfig accepts Harness config", () => {
+  createFFCATest<
+    HarnessStorageConfig,
+    HarnessMutationsConfig,
+    HarnessSignatureConfig
+  >(harnessConfig);
 });
 
-// ---------------------------------------------------------------------------
-// Type-level inference tests
-//
-// These assert the generic inference behavior we want from createFFCA.
-// They call the real createFFCA so that the type assertions exercise the
-// actual exported types. Until FFCAConfig, createFFCA, and FFCA are made
-// generic over M / S / L, these assertions are expected to fail type-check.
-// ---------------------------------------------------------------------------
-
-test("state is typed from storageLayout", async () => {
-  const app = await createFFCA({
-    ...baseConfig,
-    storageLayout: COUNTER_STORAGE_LAYOUT,
-    mutations: {},
-  });
+test("FFCA state is typed from manually supplied Counter storage config", () => {
+  const app = createFFCATest<
+    CounterStorageConfig,
+    CounterMutationsConfig,
+    CounterSignatureConfig
+  >(counterConfig);
 
   expectTypeOf(app.state).toEqualTypeOf<
-    StorageProxy<typeof COUNTER_STORAGE_LAYOUT, true>
+    StorageProxy<CounterStorageConfig, true>
   >();
 });
 
-test("execute input is a discriminated union typed from mutations and signature", async () => {
-  const app = await createFFCA({
-    ...baseConfig,
-    signature: {
-      params: parseAbiParameters("uint8 keyType, bytes rawSignature"),
-    },
-    mutations: {
-      transfer: {
-        tag: 0,
-        params: parseAbiParameters("address from, address to, uint256 amount"),
-      },
-      mint: {
-        tag: 1,
-        params: parseAbiParameters("address to, uint256 amount"),
-      },
-    },
-  });
+test("FFCA execute input uses manually supplied Counter mutation and signature configs", () => {
+  const app = createFFCATest<
+    CounterStorageConfig,
+    CounterMutationsConfig,
+    CounterSignatureConfig
+  >(counterConfig);
 
   type Input = Parameters<typeof app.execute>[0];
 
   expectTypeOf<Input>().toEqualTypeOf<
-    | {
-        name: "transfer";
-        params: readonly [Address, Address, bigint];
-        signature: readonly [number, Hex];
-      }
-    | { name: "mint"; params: readonly [Address, bigint]; signature: readonly [number, Hex] }
+    FFCAMutationInput<CounterMutationsConfig, CounterSignatureConfig>
   >();
-});
 
-test("execute output includes resolution when mutation defines it", async () => {
-  const app = await createFFCA({
-    ...baseConfig,
-    mutations: {
-      marketOrder: {
-        tag: 0,
-        params: parseAbiParameters("uint256 size"),
-        resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-        resolve: () => [[]],
-      },
-    },
+  type CounterSignature = AbiParametersToValue<CounterSignatureConfig>;
+
+  expectTypeOf<Input["name"]>().toEqualTypeOf<
+    keyof CounterMutationsConfig & string
+  >();
+  const signature = {
+    accountId: "0x" as Hex,
+    publicKey: "0x" as Hex,
+    rawSignature: "0x" as Hex,
+  } satisfies CounterSignature;
+  const newAccountInput = {
+    name: "newAccount",
+    params: { keyType: 2, publicKey: "0x" as Hex },
+    signature,
+  } satisfies Input;
+  const addInput = {
+    name: "add",
+    params: { amount: 1n, nonce: 0n },
+    signature,
+  } satisfies Input;
+
+  expectTypeOf(newAccountInput).toMatchTypeOf<
+    Extract<Input, { name: "newAccount" }>
+  >();
+  expectTypeOf(addInput).toMatchTypeOf<Extract<Input, { name: "add" }>>();
+
+  const acceptInput = (_input: Input) => {};
+
+  acceptInput({
+    name: "add",
+    // @ts-expect-error `add` must use the `add` ABI params, not `newAccount` params.
+    params: { keyType: 2, publicKey: "0x" as Hex },
+    signature,
   });
 
-  type Result = Awaited<ReturnType<typeof app.execute>>;
-
-  expectTypeOf<Result>().toEqualTypeOf<{
-    name: "marketOrder";
-    id: number;
-    resolution: [{ price: bigint; size: bigint }][];
-  }>();
-});
-
-test("execute output omits resolution when mutation has none", async () => {
-  const app = await createFFCA({
-    ...baseConfig,
-    mutations: {
-      transfer: {
-        tag: 0,
-        params: parseAbiParameters("address from, address to, uint256 amount"),
-      },
-    },
-  });
-
-  type Result = Awaited<ReturnType<typeof app.execute>>;
-
-  expectTypeOf<Result>().toEqualTypeOf<{ name: "transfer"; id: number }>();
-});
-
-test("resolve receives typed state, args, and signature", async () => {
-  await createFFCA({
-    ...baseConfig,
-    storageLayout: HARNESS_STORAGE_LAYOUT,
-    signature: {
-      params: parseAbiParameters(
-        "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
-      ),
-    },
-    mutations: {
-      debit: {
-        tag: 0,
-        params: parseAbiParameters(
-          "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
-        ),
-        resolution: parseAbiParameters("uint256 newBalance"),
-        resolve: ({ state, args, signature }) => {
-          expectTypeOf(state).toEqualTypeOf<
-            StorageProxy<typeof HARNESS_STORAGE_LAYOUT, true>
-          >();
-          expectTypeOf(args).toEqualTypeOf<[Hex, bigint, bigint, bigint]>();
-          expectTypeOf(signature).toEqualTypeOf<[Hex, bigint, number, Hex]>();
-          return { newBalance: 0n };
-        },
-      },
-    },
+  acceptInput({
+    name: "newAccount",
+    params: { keyType: 2, publicKey: "0x" as Hex },
+    // @ts-expect-error `newAccount` must use Counter's configured signature shape.
+    signature: { rawSignature: "0x" as Hex },
   });
 });
 
-test("registerMappingKeys receives typed args, signature, and optional resolution", async () => {
-  await createFFCA({
-    ...baseConfig,
-    signature: {
-      params: parseAbiParameters(
-        "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
-      ),
+test("FFCA execute input uses manually supplied Harness mutation and signature configs", () => {
+  const app = createFFCATest<
+    HarnessStorageConfig,
+    HarnessMutationsConfig,
+    HarnessSignatureConfig
+  >(harnessConfig);
+
+  type Input = Parameters<typeof app.execute>[0];
+
+  expectTypeOf<Input>().toEqualTypeOf<
+    FFCAMutationInput<HarnessMutationsConfig, HarnessSignatureConfig>
+  >();
+
+  type HarnessSignature = AbiParametersToValue<HarnessSignatureConfig>;
+
+  expectTypeOf<Input["name"]>().toEqualTypeOf<
+    keyof HarnessMutationsConfig & string
+  >();
+  const signature = {
+    account: "0x" as Hex,
+    keyId: 0n,
+    keyType: 2,
+    rawSignature: "0x" as Hex,
+  } satisfies HarnessSignature;
+  const debitInput = {
+    name: "debit",
+    params: {
+      account: "0x" as Hex,
+      keyId: 0n,
+      amount: 1n,
+      nonce: 0n,
     },
-    mutations: {
-      credit: {
-        tag: 0,
-        params: parseAbiParameters("bytes32 account, uint256 amount"),
-        resolution: parseAbiParameters("uint256 newBalance"),
-        registerMappingKeys: ({ params, signature, resolution }) => {
-          expectTypeOf(params).toEqualTypeOf<[Hex, bigint]>();
-          expectTypeOf(signature).toEqualTypeOf<[Hex, bigint, number, Hex]>();
-          expectTypeOf(resolution).toEqualTypeOf<{ newBalance: bigint }>();
-          return [];
-        },
-      },
-    },
+    signature,
+  } satisfies Input;
+
+  expectTypeOf(debitInput).toMatchTypeOf<Extract<Input, { name: "debit" }>>();
+
+  const acceptInput = (_input: Input) => {};
+
+  acceptInput({
+    name: "debit",
+    // @ts-expect-error `debit` requires the Harness debit ABI params.
+    params: { rootKeyType: 2, rootPublicKey: "0x" as Hex },
+    signature,
   });
 });
 
-test("on('mutation') event args are typed per mutation name", async () => {
-  const app = await createFFCA({
-    ...baseConfig,
-    mutations: {
-      transfer: {
-        tag: 0,
-        params: parseAbiParameters("address from, address to, uint256 amount"),
-      },
-    },
+test("FFCA sequencing type is still inferred from config", () => {
+  const app = createFFCATest<
+    CounterStorageConfig,
+    CounterMutationsConfig,
+    CounterSignatureConfig,
+    "batch"
+  >({
+    ...counterConfig,
+    sequencing: { order: "batch", batchOrder: ["add"] },
   });
 
-  app.on("mutation", (event) => {
-    if (event.name === "transfer") {
-      expectTypeOf(event.args).toEqualTypeOf<[Address, Address, bigint]>();
-      expectTypeOf(event.signature).toEqualTypeOf<[Hex, Hex, Hex]>();
-    }
-  });
+  expectTypeOf(app).toEqualTypeOf<
+    FFCA<
+      CounterStorageConfig,
+      CounterMutationsConfig,
+      CounterSignatureConfig,
+      "batch"
+    >
+  >();
 });

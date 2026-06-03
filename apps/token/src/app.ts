@@ -9,26 +9,58 @@ import {
 import type { PrivateKeyAccount } from "viem/accounts";
 
 export const TOKEN_DOMAIN = { name: "Token", version: "1" } as const;
+export const TOKEN_SIGNATURE_PARAMS = parseAbiParameters(
+  "uint8 keyType, bytes rawSignature",
+);
 
 export type TokenSignature = {
   keyType: number;
   rawSignature: Hex;
 };
 
-export type MintArgs = {
+export type MintParams = {
   to: Address;
   amount: bigint;
   nonce: bigint;
   deadline: bigint;
 };
 
-export type TransferArgs = {
+export type TransferParams = {
   from: Address;
   to: Address;
   amount: bigint;
   nonce: bigint;
   deadline: bigint;
 };
+
+export const tokenMutations = {
+  Transfer: {
+    tag: 0,
+    params: parseAbiParameters(
+      "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ params }) => {
+      const transfer = params as TransferParams;
+      return [
+        `accounts[${transfer.from}].nonce`,
+        `accounts[${transfer.from}].balance`,
+        `accounts[${transfer.to}].balance`,
+      ];
+    },
+  },
+  Mint: {
+    tag: 1,
+    params: parseAbiParameters(
+      "address to, uint256 amount, uint256 nonce, uint256 deadline",
+    ),
+    registerMappingKeys: ({ params }) => {
+      const mint = params as MintParams;
+      return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
+    },
+  },
+} as const satisfies FFCAConfig["mutations"];
+
+export type TokenFFCAConfig = FFCAConfig<"fifo">;
 
 const TRANSFER_TYPES = {
   Transfer: [
@@ -49,38 +81,11 @@ const MINT_TYPES = {
   ],
 } as const;
 
-export const tokenMutations = {
-  Transfer: {
-    tag: 0,
-    params: parseAbiParameters(
-      "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
-    ),
-    registerMappingKeys: ({ args }) => {
-      const transfer = args as TransferArgs;
-      return [
-        `accounts[${transfer.from}].nonce`,
-        `accounts[${transfer.from}].balance`,
-        `accounts[${transfer.to}].balance`,
-      ];
-    },
-  },
-  Mint: {
-    tag: 1,
-    params: parseAbiParameters(
-      "address to, uint256 amount, uint256 nonce, uint256 deadline",
-    ),
-    registerMappingKeys: ({ args }) => {
-      const mint = args as MintArgs;
-      return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
-    },
-  },
-} satisfies FFCAConfig["mutations"];
-
 export async function signTransfer(params: {
   account: PrivateKeyAccount;
   token: Address;
   chainId: number;
-  transfer: TransferArgs;
+  transfer: TransferParams;
 }): Promise<TokenSignature> {
   const signature = await params.account.signTypedData({
     domain: {
@@ -104,7 +109,7 @@ export async function signMint(params: {
   account: PrivateKeyAccount;
   token: Address;
   chainId: number;
-  mint: MintArgs;
+  mint: MintParams;
 }): Promise<TokenSignature> {
   const signature = await params.account.signTypedData({
     domain: {

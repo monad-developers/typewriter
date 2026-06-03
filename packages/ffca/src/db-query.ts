@@ -79,7 +79,7 @@ function mutationRow(
     status: "accepted",
     ...abiParameterValues(mutation.config.params, mutation.args),
     ...prefixedObjectValues("signature_", mutation.signature),
-    ...("resolution" in mutation.config
+    ...(mutation.config.resolution !== undefined
       ? abiParameterValues(
           mutation.config.resolution,
           requiredValue(mutation.resolution),

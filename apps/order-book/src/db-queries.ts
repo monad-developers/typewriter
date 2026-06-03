@@ -8,9 +8,9 @@ import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { FFCASchema } from "ffca";
 import type { Hex } from "viem";
-import type { OrderBookFFCAConfig } from "./app";
+import type { ORDER_BOOK_MUTATIONS } from "./app";
 
-export type OrderBookSchema = FFCASchema<OrderBookFFCAConfig>;
+export type OrderBookSchema = FFCASchema<typeof ORDER_BOOK_MUTATIONS>;
 
 export type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
 

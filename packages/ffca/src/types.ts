@@ -1,28 +1,58 @@
-import type { AbiParameter, AbiParametersToPrimitiveTypes } from "abitype";
+import type { AbiParameter } from "abitype";
 import type { Hex } from "ox";
 import type {
+  AbiParametersToValue,
   FFCAMutationConfig,
   MutationConfig,
   SignatureConfig,
 } from "./config";
 
+type MutationParams<mutationConfig extends MutationConfig> =
+  readonly AbiParameter[] extends mutationConfig["params"]
+    ? unknown
+    : AbiParametersToValue<mutationConfig["params"]>;
+
+type MutationResolution<
+  mutationConfig extends { resolution: readonly AbiParameter[] },
+> = readonly AbiParameter[] extends mutationConfig["resolution"]
+  ? unknown
+  : AbiParametersToValue<mutationConfig["resolution"]>;
+
+type SignatureValue<signatureConfig extends SignatureConfig> =
+  readonly AbiParameter[] extends signatureConfig
+    ? unknown
+    : AbiParametersToValue<signatureConfig>;
+
 export type FFCAMutation<
-  name extends string,
-  mutationConfig extends MutationConfig,
-  signatureConfig extends SignatureConfig,
+  name extends string = string,
+  mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
 > = {
   name: name;
-  params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-  signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+  params: MutationParams<mutationConfig>;
+  signature: SignatureValue<signatureConfig>;
 };
 
-export type FFCAMutationResult<mutationConfig extends MutationConfig> =
-  mutationConfig extends { resolution: readonly AbiParameter[] }
-    ? {
-        id: number;
-        resolution: AbiParametersToPrimitiveTypes<mutationConfig["resolution"]>;
-      }
-    : { id: number };
+export type FFCAMutationInput<
+  mutationsConfig extends Record<string, MutationConfig>,
+  signatureConfig extends SignatureConfig,
+  name extends keyof mutationsConfig & string = keyof mutationsConfig & string,
+> = {
+  [name in keyof mutationsConfig & string]: FFCAMutation<
+    name,
+    mutationsConfig[name],
+    signatureConfig
+  >;
+}[name];
+
+export type FFCAMutationResult<
+  mutationConfig extends MutationConfig = MutationConfig,
+> = mutationConfig extends { resolution: readonly AbiParameter[] }
+  ? {
+      id: number;
+      resolution: MutationResolution<mutationConfig>;
+    }
+  : { id: number };
 
 export type MutationStatus =
   | "received"
@@ -140,38 +170,110 @@ export type RuntimeBlock<sequence extends "fifo" | "batch"> = {
       forceIncludedMutations: SubmittedMutation[];
     });
 
-  export type MutationListener = (event: MutationEvent) => void;
-  export type BatchListener = (event: BatchEvent) => void;
-  export type BlockListener<sequence extends "fifo" | "batch"> = (
-    event: BlockEvent<sequence>,
-  ) => void;
+export type MutationListener<
+  mutationsConfig extends Record<string, MutationConfig> = Record<
+    string,
+    MutationConfig
+  >,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = (event: MutationEventForConfig<mutationsConfig, signatureConfig>) => void;
+export type BatchListener<
+  mutationsConfig extends Record<string, MutationConfig> = Record<
+    string,
+    MutationConfig
+  >,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = (event: BatchEventForConfig<mutationsConfig, signatureConfig>) => void;
+export type BlockListener<
+  sequence extends "fifo" | "batch",
+  mutationsConfig extends Record<string, MutationConfig> = Record<
+    string,
+    MutationConfig
+  >,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = (
+  event: BlockEventForConfig<sequence, mutationsConfig, signatureConfig>,
+) => void;
+
+export type MutationEventForConfig<
+  mutationsConfig extends Record<string, MutationConfig>,
+  signatureConfig extends SignatureConfig,
+  name extends keyof mutationsConfig & string = keyof mutationsConfig & string,
+> = {
+  [key in name]: MutationEvent<key, mutationsConfig[key], signatureConfig>;
+}[name];
+
+export type BatchEventForConfig<
+  mutationsConfig extends Record<string, MutationConfig>,
+  signatureConfig extends SignatureConfig,
+> = {
+  status: "accepted" | "included" | "safe" | "finalized";
+  id: number;
+  position: number;
+  mutations: Exclude<
+    MutationEventForConfig<mutationsConfig, signatureConfig>,
+    { status: "submitted" | "enqueued" | "rejected" }
+  >[];
+  forceIncludedMutations?: Exclude<
+    MutationEventForConfig<mutationsConfig, signatureConfig>,
+    { status: "submitted" | "enqueued" | "rejected" }
+  >[];
+};
+
+export type BlockEventForConfig<
+  sequence extends "fifo" | "batch",
+  mutationsConfig extends Record<string, MutationConfig>,
+  signatureConfig extends SignatureConfig,
+> = {
+  status: BlockStatus;
+  number: bigint;
+  hash: Hex.Hex;
+  timestamp: bigint;
+  transactionHash: Hex.Hex;
+} & (sequence extends "fifo"
+  ? {
+      mutations: Exclude<
+        MutationEventForConfig<mutationsConfig, signatureConfig>,
+        { status: "submitted" | "enqueued" | "rejected" }
+      >[];
+    }
+  : {
+      batches: Exclude<
+        BatchEventForConfig<mutationsConfig, signatureConfig>,
+        { status: "accepted" }
+      >[];
+      forceIncludedMutations: Exclude<
+        MutationEventForConfig<mutationsConfig, signatureConfig>,
+        { status: "submitted" | "enqueued" | "rejected" }
+      >[];
+    });
 
 export type MutationEvent<
-  name extends string,
-  mutationConfig extends MutationConfig,
-  signatureConfig extends SignatureConfig,
+  name extends string = string,
+  mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
 > =
   | {
       status: "received";
       id: number;
       name: name;
-      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      args: MutationParams<mutationConfig>;
+      signature: SignatureValue<signatureConfig>;
     }
   | {
       status: "enqueued";
       id: number;
       name: name;
-      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      args: MutationParams<mutationConfig>;
+      signature: SignatureValue<signatureConfig>;
       resolution?: unknown;
     }
   | {
       status: "accepted";
       id: number;
       name: name;
-      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      args: MutationParams<mutationConfig>;
+      signature: SignatureValue<signatureConfig>;
       journalId: number;
       isForceInclusion: boolean;
       resolution?: unknown;
@@ -180,8 +282,8 @@ export type MutationEvent<
       status: "included" | "safe" | "finalized";
       id: number;
       name: name;
-      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      args: MutationParams<mutationConfig>;
+      signature: SignatureValue<signatureConfig>;
       journalId: number;
       isForceInclusion: boolean;
       resolution?: unknown;
@@ -190,28 +292,36 @@ export type MutationEvent<
       status: "rejected";
       id: number;
       name: name;
-      params: AbiParametersToPrimitiveTypes<mutationConfig["params"]>;
-      signature: AbiParametersToPrimitiveTypes<signatureConfig>;
+      args: MutationParams<mutationConfig>;
+      signature: SignatureValue<signatureConfig>;
       isForceInclusion: boolean;
       error: unknown;
     };
 
 export type BatchEvent<
+  name extends string = string,
+  mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
 > = {
   status: "accepted" | "included" | "safe" | "finalized";
   id: number;
   position: number;
   mutations: Exclude<
-    MutationEvent,
+    MutationEvent<name, mutationConfig, signatureConfig>,
     { status: "submitted" | "enqueued" | "rejected" }
   >[];
   forceIncludedMutations?: Exclude<
-    MutationEvent,
+    MutationEvent<name, mutationConfig, signatureConfig>,
     { status: "submitted" | "enqueued" | "rejected" }
   >[];
 };
 
-export type BlockEvent<sequence extends "fifo" | "batch"> = {
+export type BlockEvent<
+  sequence extends "fifo" | "batch",
+  name extends string = string,
+  mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = {
   status: BlockStatus;
   number: bigint;
   hash: Hex.Hex;
@@ -222,14 +332,17 @@ export type BlockEvent<sequence extends "fifo" | "batch"> = {
 } & (sequence extends "fifo"
   ? {
       mutations: Exclude<
-        MutationEvent,
+        MutationEvent<name, mutationConfig, signatureConfig>,
         { status: "submitted" | "enqueued" | "rejected" }
       >[];
     }
   : {
-      batches: Exclude<BatchEvent, { status: "accepted" }>[];
+      batches: Exclude<
+        BatchEvent<name, mutationConfig, signatureConfig>,
+        { status: "accepted" }
+      >[];
       forceIncludedMutations: Exclude<
-        MutationEvent,
+        MutationEvent<name, mutationConfig, signatureConfig>,
         { status: "submitted" | "enqueued" | "rejected" }
       >[];
     });

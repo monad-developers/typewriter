@@ -2,13 +2,7 @@ import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
 import { EIP712_TYPES, EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
-import {
-  type Address,
-  encodeAbiParameters,
-  type Hex,
-  keccak256,
-  parseAbiParameters,
-} from "viem";
+import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
 import {
@@ -24,6 +18,7 @@ import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
+  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookFFCAConfig,
   type OrderBookMutationName,
   type SubmittedOrderBookMutation,
@@ -50,11 +45,7 @@ async function createOrderBookFFCA(
   const config = {
     address,
     domain: { name: "Exchange", version: "1" },
-    signature: {
-      params: parseAbiParameters(
-        "bytes32 account, uint64 keyId, bytes rawSignature",
-      ),
-    },
+    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
     storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -68,7 +59,11 @@ async function createOrderBookFFCA(
     mutations: ORDER_BOOK_MUTATIONS,
   } as const satisfies OrderBookFFCAConfig;
 
-  return createFFCA(config);
+  return createFFCA<
+    typeof EXCHANGE_STORAGE_LAYOUT,
+    typeof ORDER_BOOK_MUTATIONS,
+    typeof ORDER_BOOK_SIGNATURE_PARAMS
+  >(config);
 }
 
 function secp256k1PublicKey(address: Address): Hex {
@@ -81,123 +76,123 @@ function accountId(publicKey: Hex): Hex {
 
 function messageFor(
   name: OrderBookMutationName,
-  args: Record<string, unknown>,
+  params: Record<string, unknown>,
 ) {
   switch (name) {
     case "Initialize":
       return {
-        account: args.account,
-        expiry: args.expiry,
-        rootKeyType: args.rootKeyType,
-        keyType: args.keyType,
-        permissions: args.permissions,
-        rootPublicKey: args.rootPublicKey,
-        publicKey: args.publicKey,
+        account: params.account,
+        expiry: params.expiry,
+        rootKeyType: params.rootKeyType,
+        keyType: params.keyType,
+        permissions: params.permissions,
+        rootPublicKey: params.rootPublicKey,
+        publicKey: params.publicKey,
       };
     case "Authorize":
       return {
-        account: args.account,
-        expiry: args.expiry,
-        keyType: args.keyType,
-        permissions: args.permissions,
-        publicKey: args.publicKey,
-        nonce: args.nonce,
-        deadline: args.deadline,
+        account: params.account,
+        expiry: params.expiry,
+        keyType: params.keyType,
+        permissions: params.permissions,
+        publicKey: params.publicKey,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "Revoke":
       return {
-        account: args.account,
-        keyId: BigInt(args.keyId as number),
-        nonce: args.nonce,
-        deadline: args.deadline,
+        account: params.account,
+        keyId: params.keyId,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "CloseOrder":
       return {
-        orderId: BigInt(args.orderId as number),
-        nonce: args.nonce,
-        deadline: args.deadline,
+        orderId: BigInt(params.orderId as number),
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "ChangeOrder":
       return {
-        orderId: BigInt(args.orderId as number),
-        price: args.price,
-        nonce: args.nonce,
-        deadline: args.deadline,
+        orderId: BigInt(params.orderId as number),
+        price: params.price,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "LimitOrder":
       return {
-        quantity: args.quantity,
-        instrumentId: BigInt(args.instrumentId as number),
-        price: args.price,
-        bidOrAsk: args.bidOrAsk,
-        nonce: args.nonce,
-        deadline: args.deadline,
+        quantity: params.quantity,
+        instrumentId: BigInt(params.instrumentId as number),
+        price: params.price,
+        bidOrAsk: params.bidOrAsk,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "MarketOrder":
       return {
-        quantity: args.quantity,
-        minReceivedQuantity: args.minReceivedQuantity,
-        instrumentId: BigInt(args.instrumentId as number),
-        bidOrAsk: args.bidOrAsk,
-        nonce: args.nonce,
-        deadline: args.deadline,
+        quantity: params.quantity,
+        minReceivedQuantity: params.minReceivedQuantity,
+        instrumentId: BigInt(params.instrumentId as number),
+        bidOrAsk: params.bidOrAsk,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "AddInstrument":
       return {
-        instrumentId: BigInt(args.instrumentId as number),
-        base: args.base,
-        quote: args.quote,
-        baseLotExp: args.baseLotExp,
-        quoteLotExp: args.quoteLotExp,
-        nonce: args.nonce,
-        deadline: args.deadline,
+        instrumentId: BigInt(params.instrumentId as number),
+        base: params.base,
+        quote: params.quote,
+        baseLotExp: params.baseLotExp,
+        quoteLotExp: params.quoteLotExp,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
     case "Deposit":
     case "Withdrawal":
       return {
-        asset: args.asset,
-        amount: args.amount,
-        nonce: args.nonce,
-        deadline: args.deadline,
+        asset: params.asset,
+        amount: params.amount,
+        nonce: params.nonce,
+        deadline: params.deadline,
       };
   }
 }
 
-async function signedMutation(params: {
-  name: OrderBookMutationName;
-  args: SubmittedOrderBookMutation["args"];
+async function signedMutation<const name extends OrderBookMutationName>(input: {
+  name: name;
+  params: Extract<SubmittedOrderBookMutation, { name: name }>["params"];
   signerKeyId: bigint;
   privateKey: Hex;
   address: Address;
   account: Hex;
-}): Promise<SubmittedOrderBookMutation> {
+}): Promise<Extract<SubmittedOrderBookMutation, { name: name }>> {
   const rawSignature =
-    params.name === "Initialize"
+    input.name === "Initialize"
       ? "0x"
       : await signTypedData({
-          privateKey: params.privateKey,
+          privateKey: input.privateKey,
           domain: {
             name: "Exchange",
             version: "1",
             chainId: anvil.id,
-            verifyingContract: params.address,
+            verifyingContract: input.address,
           },
           types: EIP712_TYPES,
-          primaryType: params.name,
+          primaryType: input.name,
           message: messageFor(
-            params.name,
-            params.args as Record<string, unknown>,
-          ) as never,
-        });
+            input.name,
+            input.params as Record<string, unknown>,
+          ),
+        } as never);
   return {
-    name: params.name,
-    args: params.args,
+    name: input.name,
+    params: input.params,
     signature: {
-      account: params.account,
-      keyId: params.signerKeyId,
+      account: input.account,
+      keyId: input.signerKeyId,
       rawSignature,
     },
-  };
+  } as Extract<SubmittedOrderBookMutation, { name: name }>;
 }
 
 async function setupAccount(params: {
@@ -216,7 +211,7 @@ async function setupAccount(params: {
       privateKey: params.privateKey,
       signerKeyId: 0n,
       account: id,
-      args: {
+      params: {
         account: id,
         expiry: 0,
         rootKeyType: 2,
@@ -237,7 +232,7 @@ function executeOrderBookMutation(
   return app.execute({
     ...submitted,
     signature: normalizeSignatureForContract(submitted.signature),
-  });
+  } as Parameters<OrderBookFFCA["execute"]>[0]);
 }
 
 async function waitForIncluded(
@@ -272,7 +267,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
     privateKey: MAKER_PRIVATE_KEY,
     signerKeyId: 1n,
     account: maker,
-    args: {
+    params: {
       asset: BASE,
       amount: 11n,
       nonce: 0n,
@@ -283,7 +278,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
   await expect(
     executeOrderBookMutation(app, {
       ...signed,
-      args: {
+      params: {
         asset: BASE,
         amount: 10n,
         nonce: 0n,
@@ -311,7 +306,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
       account: maker,
-      args: {
+      params: {
         instrumentId: 0,
         base: BASE,
         quote: QUOTE,
@@ -330,7 +325,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
       account: maker,
-      args: {
+      params: {
         asset: QUOTE,
         amount: 100n,
         nonce: 1n,
@@ -346,7 +341,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
       account: maker,
-      args: {
+      params: {
         quantity: 10n,
         instrumentId: 0,
         price: 5n * Q32,
@@ -365,7 +360,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
       account: maker,
-      args: {
+      params: {
         orderId: 0,
         price: 6n * Q32,
         nonce: 3n,
@@ -398,7 +393,7 @@ test("db-queries fan out across per-mutation tables", async () => {
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
       account: maker,
-      args: {
+      params: {
         instrumentId: 0,
         base: BASE,
         quote: QUOTE,
@@ -417,7 +412,7 @@ test("db-queries fan out across per-mutation tables", async () => {
       privateKey: MAKER_PRIVATE_KEY,
       signerKeyId: 1n,
       account: maker,
-      args: {
+      params: {
         asset: BASE,
         amount: 7n,
         nonce: 1n,
