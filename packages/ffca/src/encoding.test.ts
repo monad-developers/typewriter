@@ -22,14 +22,14 @@ function calldataStructParams(
 
 function acceptedMutation(
   config: MutationWithResolution["config"],
-  args: unknown,
+  params: unknown,
   resolution?: unknown,
 ): MutationWithResolution {
   return {
     id: 0,
     status: "accepted",
     name: "test",
-    args,
+    params,
     signature: "0x",
     journalId: 0,
     isForceInclusion: false,
@@ -43,17 +43,17 @@ test("encodeMutationCalldata without resolution", () => {
     tag: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
-  const args = {
+  const params = {
     from: "0x0000000000000000000000000000000000000001",
     to: "0x0000000000000000000000000000000000000002",
     amount: 100n,
   } as const;
 
-  const encoded = encodeMutationCalldata(acceptedMutation(mutation, args));
+  const encoded = encodeMutationCalldata(acceptedMutation(mutation, params));
 
   expect(
     AbiParameters.decode(calldataStructParams(mutation.params), encoded),
-  ).toEqual([args]);
+  ).toEqual([params]);
 });
 
 test("encodeMutationCalldata wraps dynamic params as one struct", () => {
@@ -61,17 +61,17 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
     tag: 0,
     params: parseAbiParameters("bytes32 account, bytes publicKey"),
   };
-  const args = {
+  const params = {
     account:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
     publicKey: "0x1234",
   } as const;
 
-  const encoded = encodeMutationCalldata(acceptedMutation(mutation, args));
+  const encoded = encodeMutationCalldata(acceptedMutation(mutation, params));
 
   expect(
     AbiParameters.decode(calldataStructParams(mutation.params), encoded),
-  ).toEqual([args]);
+  ).toEqual([params]);
 });
 
 test("encodeMutationCalldata with resolution", () => {
@@ -81,7 +81,7 @@ test("encodeMutationCalldata with resolution", () => {
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
   };
-  const args = { size: 10n };
+  const params = { size: 10n };
   const resolution = {
     fills: [
       { price: 100n, size: 6n },
@@ -90,7 +90,7 @@ test("encodeMutationCalldata with resolution", () => {
   };
 
   const encoded = encodeMutationCalldata(
-    acceptedMutation(mutation, args, resolution),
+    acceptedMutation(mutation, params, resolution),
   );
 
   expect(
@@ -101,7 +101,7 @@ test("encodeMutationCalldata with resolution", () => {
       ],
       encoded,
     ),
-  ).toEqual([args, resolution]);
+  ).toEqual([params, resolution]);
 });
 
 test("decodeMutationCalldata round-trips without resolution", () => {
@@ -109,16 +109,16 @@ test("decodeMutationCalldata round-trips without resolution", () => {
     tag: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
-  const args = {
+  const params = {
     from: "0x0000000000000000000000000000000000000001",
     to: "0x0000000000000000000000000000000000000002",
     amount: 100n,
   };
 
-  const encoded = encodeMutationCalldata(acceptedMutation(mutation, args));
+  const encoded = encodeMutationCalldata(acceptedMutation(mutation, params));
   const decoded = decodeMutationCalldata(mutation, encoded);
 
-  expect(decoded.args).toEqual(args);
+  expect(decoded.params).toEqual(params);
   expect(decoded.resolution).toBeUndefined();
 });
 
@@ -129,7 +129,7 @@ test("decodeMutationCalldata round-trips with resolution", () => {
     resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
     resolve: () => ({ fills: [] }),
   };
-  const args = { size: 10n };
+  const params = { size: 10n };
   const resolution = {
     fills: [
       { price: 100n, size: 6n },
@@ -138,11 +138,11 @@ test("decodeMutationCalldata round-trips with resolution", () => {
   };
 
   const encoded = encodeMutationCalldata(
-    acceptedMutation(mutation, args, resolution),
+    acceptedMutation(mutation, params, resolution),
   );
   const decoded = decodeMutationCalldata(mutation, encoded);
 
-  expect(decoded.args).toEqual(args);
+  expect(decoded.params).toEqual(params);
   expect(decoded.resolution).toEqual(resolution);
 });
 
@@ -224,7 +224,7 @@ test("encodeBatchArg builds a structured batch value", () => {
     id: 0,
     status: "accepted",
     name: "transfer",
-    args: {
+    params: {
       from: "0x0000000000000000000000000000000000000001",
       to: "0x0000000000000000000000000000000000000002",
       amount: 100n,
@@ -243,7 +243,7 @@ test("encodeBatchArg builds a structured batch value", () => {
     id: 1,
     status: "accepted",
     name: "market",
-    args: { size: 10n },
+    params: { size: 10n },
     signature: {
       accountId:
         "0x2222222222222222222222222222222222222222222222222222222222222222",
@@ -279,7 +279,7 @@ test("encodeBatchArg builds a structured batch value", () => {
     calldataStructParams(transfer.params),
     batch.mutationData[0]!,
   );
-  expect(decodedTransfer).toEqual(transferResolved.args);
+  expect(decodedTransfer).toEqual(transferResolved.params);
 
   const [decodedMarket, decodedResolution] = AbiParameters.decode(
     [
@@ -288,6 +288,6 @@ test("encodeBatchArg builds a structured batch value", () => {
     ],
     batch.mutationData[1]!,
   );
-  expect(decodedMarket).toEqual(marketResolved.args);
+  expect(decodedMarket).toEqual(marketResolved.params);
   expect(decodedResolution).toEqual(marketResolved.resolution);
 });

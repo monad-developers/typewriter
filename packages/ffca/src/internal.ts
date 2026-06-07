@@ -5,7 +5,7 @@ import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseOptions } from "./db";
 
 type InternalRegisterMappingKeys = (params: {
-  args: unknown;
+  params: unknown;
   signature: unknown;
   resolution?: unknown;
 }) => readonly string[] | Promise<readonly string[]>;
@@ -22,7 +22,7 @@ type InternalMutation =
       resolution: readonly AbiParameter[];
       resolve: (params: {
         state: unknown;
-        args: unknown;
+        params: unknown;
         signature: unknown;
       }) => unknown | Promise<unknown>;
     });

@@ -2,13 +2,14 @@ import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
 import { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
-import { type Address, type Hex, parseAbiParameters } from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
+  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookFFCAConfig,
   type OrderBookMutationName,
   type OrderBookSignature,
@@ -44,11 +45,7 @@ const readerConnection = new Bun.SQL({
 const config = {
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
-  signature: {
-    params: parseAbiParameters(
-      "bytes32 account, uint64 keyId, bytes rawSignature",
-    ),
-  },
+  signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
   storageLayout: EXCHANGE_STORAGE_LAYOUT,
   account,
   chainId: CHAIN.id,
@@ -61,7 +58,11 @@ const config = {
   mutations: ORDER_BOOK_MUTATIONS,
 } as const satisfies OrderBookFFCAConfig;
 
-const app = await createFFCA(config);
+const app = await createFFCA<
+  typeof EXCHANGE_STORAGE_LAYOUT,
+  typeof ORDER_BOOK_MUTATIONS,
+  typeof ORDER_BOOK_SIGNATURE_PARAMS
+>(config);
 
 const readerDb: QueryDatabase = drizzle({
   client: readerConnection,
@@ -102,7 +103,7 @@ type RuntimeMutation = {
   id: number;
   status: string;
   name: OrderBookMutationName;
-  args: Record<string, unknown>;
+  params: Record<string, unknown>;
   signature: OrderBookSignature;
   resolution?: unknown;
 };
@@ -124,53 +125,53 @@ function stringValue(value: unknown): string {
 }
 
 function mutationPayload(mutation: RuntimeMutation): unknown {
-  const args = mutation.args;
+  const params = mutation.params;
   switch (mutation.name) {
     case "Initialize":
       return {
         id: mutation.id,
-        expiry: args.expiry,
-        rootKeyType: args.rootKeyType,
-        keyType: args.keyType,
-        permissions: args.permissions,
-        rootPublicKey: args.rootPublicKey,
-        publicKey: args.publicKey,
+        expiry: params.expiry,
+        rootKeyType: params.rootKeyType,
+        keyType: params.keyType,
+        permissions: params.permissions,
+        rootPublicKey: params.rootPublicKey,
+        publicKey: params.publicKey,
       };
     case "Authorize":
       return {
         id: mutation.id,
-        expiry: args.expiry,
-        keyType: args.keyType,
-        permissions: args.permissions,
-        publicKey: args.publicKey,
+        expiry: params.expiry,
+        keyType: params.keyType,
+        permissions: params.permissions,
+        publicKey: params.publicKey,
       };
     case "Revoke":
-      return { id: mutation.id, revokedKeyId: stringValue(args.keyId) };
+      return { id: mutation.id, revokedKeyId: stringValue(params.keyId) };
     case "CloseOrder":
-      return { id: mutation.id, orderId: stringValue(args.orderId) };
+      return { id: mutation.id, orderId: stringValue(params.orderId) };
     case "ChangeOrder":
       return {
         id: mutation.id,
-        orderId: stringValue(args.orderId),
-        price: stringValue(args.price),
+        orderId: stringValue(params.orderId),
+        price: stringValue(params.price),
       };
     case "LimitOrder":
       return {
         id: mutation.id,
-        quantity: stringValue(args.quantity),
-        instrumentId: stringValue(args.instrumentId),
-        price: stringValue(args.price),
-        bidOrAsk: args.bidOrAsk,
+        quantity: stringValue(params.quantity),
+        instrumentId: stringValue(params.instrumentId),
+        price: stringValue(params.price),
+        bidOrAsk: params.bidOrAsk,
       };
     case "MarketOrder": {
       const resolution = asRecord(mutation.resolution);
       const fills = Array.isArray(resolution.fills) ? resolution.fills : [];
       return {
         id: mutation.id,
-        quantity: stringValue(args.quantity),
-        minReceivedQuantity: stringValue(args.minReceivedQuantity),
-        instrumentId: stringValue(args.instrumentId),
-        bidOrAsk: args.bidOrAsk,
+        quantity: stringValue(params.quantity),
+        minReceivedQuantity: stringValue(params.minReceivedQuantity),
+        instrumentId: stringValue(params.instrumentId),
+        bidOrAsk: params.bidOrAsk,
         fills: fills.map((fill) => {
           const row = asRecord(fill);
           return {
@@ -183,23 +184,23 @@ function mutationPayload(mutation: RuntimeMutation): unknown {
     case "AddInstrument":
       return {
         id: mutation.id,
-        instrumentId: stringValue(args.instrumentId),
-        base: args.base,
-        quote: args.quote,
-        baseLotExp: args.baseLotExp,
-        quoteLotExp: args.quoteLotExp,
+        instrumentId: stringValue(params.instrumentId),
+        base: params.base,
+        quote: params.quote,
+        baseLotExp: params.baseLotExp,
+        quoteLotExp: params.quoteLotExp,
       };
     case "Deposit":
       return {
         id: mutation.id,
-        asset: args.asset,
-        amount: stringValue(args.amount),
+        asset: params.asset,
+        amount: stringValue(params.amount),
       };
     case "Withdrawal":
       return {
         id: mutation.id,
-        asset: args.asset,
-        amount: stringValue(args.amount),
+        asset: params.asset,
+        amount: stringValue(params.amount),
       };
   }
 }
@@ -211,7 +212,7 @@ function wireMutation(event: RuntimeMutation): WireMutation {
       ? "submitted"
       : (event.status as MutationStatus);
   const nonce =
-    event.args.nonce !== undefined ? stringValue(event.args.nonce) : null;
+    event.params.nonce !== undefined ? stringValue(event.params.nonce) : null;
   const keyIndex = stringValue(event.signature.keyId);
   return {
     id: event.id,
@@ -222,8 +223,8 @@ function wireMutation(event: RuntimeMutation): WireMutation {
     keyIndex,
     nonce,
     deadline:
-      event.args.deadline !== undefined
-        ? stringValue(event.args.deadline)
+      event.params.deadline !== undefined
+        ? stringValue(event.params.deadline)
         : "0",
     type: mutationType(event.name),
     submittedAt: now,
@@ -335,21 +336,21 @@ function signatureFromBody(body: Record<string, unknown>): OrderBookSignature {
   };
 }
 
-async function submit(
+async function submit<const name extends OrderBookMutationName>(
   req: Request,
-  name: OrderBookMutationName,
-  buildArgs: (
+  name: name,
+  buildParams: (
     body: Record<string, unknown>,
-  ) => SubmittedOrderBookMutation["args"],
+  ) => Extract<SubmittedOrderBookMutation, { name: name }>["params"],
 ) {
   const body = (await req.json()) as Record<string, unknown>;
   try {
     const signature = signatureFromBody(body);
     const result = await app.execute({
       name,
-      args: buildArgs(body),
+      params: buildParams(body),
       signature: normalizeSignatureForContract(signature),
-    });
+    } as Parameters<typeof app.execute>[0]);
     const response: Record<string, unknown> = {
       id: result.id,
       status: "accepted",
@@ -725,7 +726,7 @@ serve({
       POST: (req) =>
         submit(req, "Revoke", (body) => ({
           account: body.account as Hex,
-          keyId: Number(body.keyId),
+          keyId: BigInt(body.keyId as string | number | bigint),
           nonce: BigInt(body.nonce as string | number | bigint),
           deadline: BigInt(body.deadline as string | number | bigint),
         })),

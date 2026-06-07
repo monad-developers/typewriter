@@ -17,13 +17,13 @@ test("hashMutationEip712 matches viem hashTypedData for a flat mutation", () => 
     tag: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
-  const args = {
+  const params = {
     from: "0x0000000000000000000000000000000000000001" as `0x${string}`,
     to: "0x0000000000000000000000000000000000000002" as `0x${string}`,
     amount: 100n,
   };
 
-  const got = hashMutationEip712(mutation, "Transfer", args, domain);
+  const got = hashMutationEip712(mutation, "Transfer", params, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -34,7 +34,7 @@ test("hashMutationEip712 matches viem hashTypedData for a flat mutation", () => 
       ],
     },
     primaryType: "Transfer",
-    message: args,
+    message: params,
   });
 
   expect(got).toBe(want);
@@ -45,9 +45,9 @@ test("hashMutationEip712 handles a tuple param via synthesized struct name", () 
     tag: 0,
     params: parseAbiParameters("(uint256 price, uint256 size) fill"),
   };
-  const args = { fill: { price: 100n, size: 6n } };
+  const params = { fill: { price: 100n, size: 6n } };
 
-  const got = hashMutationEip712(mutation, "Settle", args, domain);
+  const got = hashMutationEip712(mutation, "Settle", params, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -58,7 +58,7 @@ test("hashMutationEip712 handles a tuple param via synthesized struct name", () 
       ],
     },
     primaryType: "Settle",
-    message: args,
+    message: params,
   });
 
   expect(got).toBe(want);
@@ -71,7 +71,7 @@ test("hashMutationEip712 handles tuple[] arrays", () => {
       "address taker, (uint256 price, uint256 size)[] fills",
     ),
   };
-  const args = {
+  const params = {
     taker: "0x0000000000000000000000000000000000000003" as `0x${string}`,
     fills: [
       { price: 100n, size: 6n },
@@ -79,7 +79,7 @@ test("hashMutationEip712 handles tuple[] arrays", () => {
     ],
   };
 
-  const got = hashMutationEip712(mutation, "Batch", args, domain);
+  const got = hashMutationEip712(mutation, "Batch", params, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -93,7 +93,7 @@ test("hashMutationEip712 handles tuple[] arrays", () => {
       ],
     },
     primaryType: "Batch",
-    message: args,
+    message: params,
   });
 
   expect(got).toBe(want);
@@ -106,14 +106,14 @@ test("hashMutationEip712 handles nested tuples", () => {
       "(address account, (uint256 price, uint256 size) fill) order",
     ),
   };
-  const args = {
+  const params = {
     order: {
       account: "0x0000000000000000000000000000000000000004" as `0x${string}`,
       fill: { price: 100n, size: 6n },
     },
   };
 
-  const got = hashMutationEip712(mutation, "PlaceOrder", args, domain);
+  const got = hashMutationEip712(mutation, "PlaceOrder", params, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -128,7 +128,7 @@ test("hashMutationEip712 handles nested tuples", () => {
       ],
     },
     primaryType: "PlaceOrder",
-    message: args,
+    message: params,
   });
 
   expect(got).toBe(want);
@@ -149,9 +149,9 @@ test("hashMutationEip712 uses internalType struct name when present", () => {
       },
     ],
   };
-  const args = { fill: { price: 100n, size: 6n } };
+  const params = { fill: { price: 100n, size: 6n } };
 
-  const got = hashMutationEip712(mutation, "Settle", args, domain);
+  const got = hashMutationEip712(mutation, "Settle", params, domain);
   const want = hashTypedData({
     domain,
     types: {
@@ -162,7 +162,7 @@ test("hashMutationEip712 uses internalType struct name when present", () => {
       ],
     },
     primaryType: "Settle",
-    message: args,
+    message: params,
   });
 
   expect(got).toBe(want);

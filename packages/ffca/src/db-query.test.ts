@@ -86,7 +86,7 @@ test("insertMutation inserts a mutation row", async () => {
     status: "accepted",
     id: 1,
     name: "Debit",
-    args: {
+    params: {
       account:
         "0x1111111111111111111111111111111111111111111111111111111111111111",
       amount: 123n,
@@ -137,7 +137,7 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
     status: "accepted",
     id: 2,
     name: "Transfer",
-    args: {
+    params: {
       to: "0x0000000000000000000000000000000000000001",
       amount: 456n,
     },

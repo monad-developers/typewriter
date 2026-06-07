@@ -13,7 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import type { Hex } from "ox";
-import type { FFCAConfig } from "./config";
+import type { FFCAConfig, MutationsConfig } from "./config";
 
 const uint256 = () => numeric({ precision: 78, scale: 0, mode: "bigint" });
 const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
@@ -64,16 +64,17 @@ export type FFCAStateSchema = {
   >[Name];
 };
 
-export type FFCAMutationSchema<Config extends FFCAConfig = FFCAConfig> = {
-  readonly [Name in keyof Config["mutations"] as `${Lowercase<Name & string>}_mutations`]: PgTable;
+export type FFCAMutationSchema<mutationsConfig extends MutationsConfig> = {
+  readonly [name in keyof mutationsConfig as `${Lowercase<name & string>}_mutations`]: PgTable;
 };
 
-export type FFCASchema<Config extends FFCAConfig = FFCAConfig> =
-  FFCAStateSchema & FFCAMutationSchema<Config>;
+export type FFCASchema<
+  mutationsConfig extends MutationsConfig = MutationsConfig,
+> = FFCAStateSchema & FFCAMutationSchema<mutationsConfig>;
 
-export function createMutationSchema<const Config extends FFCAConfig>(
-  config: Pick<Config, "signature" | "mutations">,
-): FFCASchema<Config> {
+export function createMutationSchema(
+  config: Pick<FFCAConfig, "signature" | "mutations">,
+): FFCASchema {
   const signatureColumns = prefixColumnNames(
     abiParametersToColumns(config.signature.params),
     "signature_",
@@ -83,7 +84,7 @@ export function createMutationSchema<const Config extends FFCAConfig>(
   for (const [name, mutation] of Object.entries(config.mutations)) {
     const tableName = mutationTableName(name);
     const resolutionColumns =
-      "resolution" in mutation
+      mutation.resolution !== undefined
         ? prefixColumnNames(
             abiParametersToColumns(mutation.resolution),
             "resolution_",
@@ -101,7 +102,7 @@ export function createMutationSchema<const Config extends FFCAConfig>(
     );
   }
 
-  return schema as FFCASchema<Config>;
+  return schema as FFCASchema;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {

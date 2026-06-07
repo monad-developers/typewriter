@@ -58,7 +58,6 @@ import type {
   BatchEvent,
   BlockEvent,
   EnqueuedMutation,
-  FFCAMutation,
   FFCAMutationResult,
   MutationEvent,
   ReceivedMutation,
@@ -73,6 +72,12 @@ import type { LocalLog } from "./watch";
 import { Watch } from "./watch";
 
 const FIFO_BATCH_INTERVAL_MS = 4;
+
+type RuntimeExecuteInput = {
+  name: string;
+  params: unknown;
+  signature: unknown;
+};
 
 export function updateMutationToAccepted(
   mutation: ReceivedMutation | EnqueuedMutation,
@@ -170,10 +175,10 @@ async function resolveMutation(
   mutation: ReceivedMutation,
   state: unknown,
 ): Promise<unknown> {
-  if ("resolve" in mutation.config) {
+  if (mutation.config.resolve !== undefined) {
     return mutation.config.resolve({
-      state,
-      args: mutation.args,
+      state: state as never,
+      params: mutation.params as never,
       signature: mutation.signature,
     });
   }
@@ -184,8 +189,13 @@ async function registerKnownPaths(
   mutation: AcceptedMutation,
 ): Promise<readonly string[]> {
   if (mutation.config.registerMappingKeys === undefined) return [];
-  return mutation.config.registerMappingKeys({
-    args: mutation.args,
+  const registerMappingKeys = mutation.config.registerMappingKeys as (params: {
+    params: unknown;
+    signature: unknown;
+    resolution?: unknown;
+  }) => readonly string[] | Promise<readonly string[]>;
+  return registerMappingKeys({
+    params: mutation.params,
     signature: mutation.signature,
     resolution: mutation.resolution,
   });
@@ -1125,13 +1135,15 @@ export function createRuntimeEffect(
     });
 
     function execute(
-      mutation: FFCAMutation,
+      mutation: RuntimeExecuteInput,
     ): Effect.Effect<FFCAMutationResult, unknown> {
       return Effect.gen(function* () {
         const mutationConfig = app.mutations[mutation.name]!;
 
         const runtimeMutation = {
-          ...mutation,
+          name: mutation.name,
+          params: mutation.params,
+          signature: mutation.signature,
           id: mutationId++,
           status: "received",
           config: mutationConfig,
@@ -1141,7 +1153,7 @@ export function createRuntimeEffect(
           Effect.annotateLogs({
             id: runtimeMutation.id,
             name: runtimeMutation.name,
-            args: runtimeMutation.args,
+            params: runtimeMutation.params,
           }),
         );
 
@@ -1163,7 +1175,7 @@ export function createRuntimeEffect(
                 message: "rejected mutation",
                 id: runtimeMutation.id,
                 name: runtimeMutation.name,
-                args: runtimeMutation.args,
+                params: runtimeMutation.params,
               }),
             ),
           ),
@@ -1173,7 +1185,7 @@ export function createRuntimeEffect(
           Effect.annotateLogs({
             id: runtimeMutation.id,
             name: runtimeMutation.name,
-            args: runtimeMutation.args,
+            params: runtimeMutation.params,
           }),
         );
 

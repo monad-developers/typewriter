@@ -4,7 +4,11 @@ import { COUNTER_SIGNATURE_PARAMS, EMPTY_STORAGE_LAYOUT } from "../test/utils";
 import { createFFCA } from "./index";
 
 test("ffca.domain is derived from config", async () => {
-  const ffca = await createFFCA({
+  const ffca = await createFFCA<
+    typeof EMPTY_STORAGE_LAYOUT,
+    Record<string, never>,
+    typeof COUNTER_SIGNATURE_PARAMS
+  >({
     address: "0x000000000000000000000000000000000000abcd",
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     storageLayout: EMPTY_STORAGE_LAYOUT,

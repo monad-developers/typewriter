@@ -24,10 +24,14 @@ function counterAddMutation(params: {
   readonly address: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): FFCAMutation {
+}): FFCAMutation<
+  "add",
+  typeof COUNTER_MUTATIONS.add,
+  typeof COUNTER_SIGNATURE_PARAMS
+> {
   return {
     name: "add",
-    args: { amount: params.amount, nonce: params.nonce },
+    params: { amount: params.amount, nonce: params.nonce },
     signature: signCounter({
       privateKey: USER_PRIVATE_KEY,
       amount: params.amount,
@@ -84,7 +88,11 @@ test("createFFCA stops accepting mutations after submit nonce mismatch", async (
     mutations: COUNTER_MUTATIONS,
   } as const satisfies FFCAConfig;
 
-  const ffca = await createFFCA(config);
+  const ffca = await createFFCA<
+    typeof COUNTER_STORAGE_LAYOUT,
+    typeof COUNTER_MUTATIONS,
+    typeof COUNTER_SIGNATURE_PARAMS
+  >(config);
 
   const setupIncluded = Promise.withResolvers<void>();
   const unsubscribe = ffca.on("mutation", (event) => {

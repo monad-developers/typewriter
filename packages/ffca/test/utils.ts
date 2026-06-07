@@ -22,6 +22,7 @@ import { type Address, encodeDeployData, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
+import type { FFCAMutation } from "../src";
 import type { FFCAMutationConfig } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
 import {
@@ -687,7 +688,7 @@ export const HARNESS_ABI = [
 // artifact JSON.
 async function deployContract(
   name: string,
-  args?: readonly unknown[],
+  constructorParams?: readonly unknown[],
 ): Promise<Address> {
   const artifact = await Bun.file(
     `${import.meta.dir}/contracts/out/${name}.sol/${name}.json`,
@@ -696,7 +697,7 @@ async function deployContract(
     abi: artifact.abi,
     bytecode: artifact.bytecode.object as Hex,
     // biome-ignore lint/suspicious/noExplicitAny: viem deployContract args type
-    args: args as any,
+    args: constructorParams as any,
   });
 
   const request = await TEST_WALLET_CLIENT.prepareTransactionRequest({
@@ -718,7 +719,7 @@ async function deployContract(
 }
 
 // Deploy Counter. The contract hardcodes its EIP-712 domain (name="Counter",
-// version="1") and takes no constructor args. The parameter is retained only
+// version="1") and takes no constructor params. The parameter is retained only
 // so existing call sites don't need to care about the constructor change.
 export async function deployCounter(_: Address): Promise<Address> {
   return deployContract("Counter");
@@ -748,10 +749,7 @@ export async function readContractStorage<
 
 // Mutation definitions for the Counter test fixture. The contract/revm owns
 // acceptance and state transitions; this config only describes encoding.
-export const COUNTER_MUTATIONS: {
-  newAccount: FFCAMutationConfig;
-  add: FFCAMutationConfig;
-} = {
+export const COUNTER_MUTATIONS = {
   newAccount: {
     tag: 0,
     params: parseAbiParameters("uint8 keyType, bytes publicKey"),
@@ -760,17 +758,26 @@ export const COUNTER_MUTATIONS: {
     tag: 1,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
   },
+} as const satisfies {
+  newAccount: FFCAMutationConfig;
+  add: FFCAMutationConfig;
 };
 
 export function counterAccountId(publicKey: Hex): Hex {
   return Hash.keccak256(publicKey) as Hex;
 }
 
-export function counterNewAccountMutation(params: { address: Address }) {
+export function counterNewAccountMutation(params: {
+  address: Address;
+}): FFCAMutation<
+  "newAccount",
+  typeof COUNTER_MUTATIONS.newAccount,
+  typeof COUNTER_SIGNATURE_PARAMS
+> {
   const publicKey = secp256k1PublicKey(params.address);
   return {
     name: "newAccount",
-    args: { keyType: 2, publicKey },
+    params: { keyType: 2, publicKey },
     signature: {
       accountId: counterAccountId(publicKey),
       publicKey,
@@ -827,13 +834,7 @@ type DebitArgs = {
   amount: bigint;
   nonce: bigint;
 };
-export const HARNESS_MUTATIONS: {
-  initialize: FFCAMutationConfig;
-  authorize: FFCAMutationConfig;
-  credit: FFCAMutationConfig;
-  debit: FFCAMutationConfig;
-  assert: FFCAMutationConfig;
-} = {
+export const HARNESS_MUTATIONS = {
   initialize: {
     tag: 0,
     params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
@@ -858,17 +859,17 @@ export const HARNESS_MUTATIONS: {
     resolution: parseAbiParameters("uint256 newBalance"),
     resolve: async ({
       state,
-      args,
+      params,
     }: {
       state: unknown;
-      args: unknown;
+      params: unknown;
       signature: unknown;
     }) => {
       const harnessStorage = state as StorageProxy<
         typeof HARNESS_STORAGE_LAYOUT,
         true
       >;
-      const debit = args as DebitArgs;
+      const debit = params as DebitArgs;
       const balance = await harnessStorage.balances[debit.account];
       if (balance === undefined) {
         return { newBalance: -debit.amount };
@@ -884,6 +885,12 @@ export const HARNESS_MUTATIONS: {
       "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
     ),
   },
+} as const satisfies {
+  initialize: FFCAMutationConfig;
+  authorize: FFCAMutationConfig;
+  credit: FFCAMutationConfig;
+  debit: FFCAMutationConfig;
+  assert: FFCAMutationConfig;
 };
 
 // Derive the bytes32 account id from a public key (matches Harness.sol's
@@ -961,7 +968,7 @@ export function signHarness(params: {
   keyType: number;
   privateKey: Hex;
   mutation: "authorize" | "credit" | "debit" | "assert";
-  args: Record<string, unknown>;
+  params: Record<string, unknown>;
   address: Address;
   chainId: number;
 }): Hex {
@@ -974,7 +981,7 @@ export function signHarness(params: {
   const digest = hashMutationEip712(
     HARNESS_MUTATIONS[params.mutation],
     params.mutation,
-    params.args,
+    params.params,
     domain,
   );
   if (params.keyType === 0) return signP256Raw(digest, params.privateKey);
@@ -1017,7 +1024,7 @@ export async function setupHarnessAccount(
   const account = harnessAccountId(params.rootPublicKey);
   await ffca.execute({
     name: "initialize",
-    args: {
+    params: {
       rootKeyType: params.rootKeyType,
       rootPublicKey: params.rootPublicKey,
     },

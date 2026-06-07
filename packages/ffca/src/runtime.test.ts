@@ -113,7 +113,7 @@ function signHarnessMutation(params: {
   readonly keyType: number;
   readonly privateKey: `0x${string}`;
   readonly mutation: "authorize" | "credit" | "debit" | "assert";
-  readonly args: Record<string, unknown>;
+  readonly params: Record<string, unknown>;
 }) {
   return harnessSignature({
     account: params.account,
@@ -123,7 +123,7 @@ function signHarnessMutation(params: {
       keyType: params.keyType,
       privateKey: params.privateKey,
       mutation: params.mutation,
-      args: params.args,
+      params: params.params,
       address: params.address,
       chainId: anvil.id,
     }),
@@ -273,7 +273,7 @@ test("execute() returns an accepted mutation", async () => {
 
     const mutationResult = yield* runtime.execute({
       name: "add",
-      args: { amount: 7n, nonce: 0n },
+      params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
         amount: 7n,
@@ -345,7 +345,7 @@ test("execute() accepts multiple mutations in a batch", async () => {
       mutationResults.push(
         yield* runtime.execute({
           name: "add",
-          args: { amount, nonce },
+          params: { amount, nonce },
           signature: signCounter({
             privateKey: USER_PRIVATE_KEY,
             amount,
@@ -459,7 +459,7 @@ test("runtime emits mutation, batch, and block events", async () => {
 
     yield* runtime.execute({
       name: "add",
-      args: { amount: 7n, nonce: 0n },
+      params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
         amount: 7n,
@@ -602,7 +602,7 @@ test("runtime persists mutations to database", async () => {
 
     yield* runtime.execute({
       name: "add",
-      args: { amount: 7n, nonce: 0n },
+      params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
         amount: 7n,
@@ -731,7 +731,7 @@ test("runtime submits a mutation onchain", async () => {
 
     yield* runtime.execute({
       name: "add",
-      args: { amount: 7n, nonce: 0n },
+      params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
         amount: 7n,
@@ -798,7 +798,7 @@ test("runtime finalizes a mutation", async () => {
 
     yield* runtime.execute({
       name: "add",
-      args: { amount: 7n, nonce: 0n },
+      params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
         amount: 7n,
@@ -859,7 +859,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
 
     yield* runtime.execute({
       name: "initialize",
-      args: { rootKeyType: 2, rootPublicKey },
+      params: { rootKeyType: 2, rootPublicKey },
       signature: harnessSignature({
         account,
         keyId: 0n,
@@ -874,7 +874,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
       [
         runtime.execute({
           name: "debit",
-          args: debitArgs,
+          params: debitArgs,
           signature: signHarnessMutation({
             address,
             account,
@@ -882,12 +882,12 @@ test("runtime reorders Harness mutations by batch order", async () => {
             keyType: 2,
             privateKey: ALICE_PRIVATE_KEY,
             mutation: "debit",
-            args: debitArgs,
+            params: debitArgs,
           }),
         }),
         runtime.execute({
           name: "credit",
-          args: creditArgs,
+          params: creditArgs,
           signature: signHarnessMutation({
             address,
             account,
@@ -895,7 +895,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
             keyType: 2,
             privateKey: ALICE_PRIVATE_KEY,
             mutation: "credit",
-            args: creditArgs,
+            params: creditArgs,
           }),
         }),
       ],
@@ -952,7 +952,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
     const initializeFiber = yield* Effect.forkChild(
       runtime.execute({
         name: "initialize",
-        args: { rootKeyType: 2, rootPublicKey },
+        params: { rootKeyType: 2, rootPublicKey },
         signature: harnessSignature({
           account,
           keyId: 0n,
@@ -967,7 +967,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
     const debitFiber = yield* Effect.forkChild(
       runtime.execute({
         name: "debit",
-        args: debitArgs,
+        params: debitArgs,
         signature: signHarnessMutation({
           address,
           account,
@@ -975,7 +975,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
           keyType: 2,
           privateKey: ALICE_PRIVATE_KEY,
           mutation: "debit",
-          args: debitArgs,
+          params: debitArgs,
         }),
       }),
     );
@@ -985,7 +985,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
     const creditFiber = yield* Effect.forkChild(
       runtime.execute({
         name: "credit",
-        args: creditArgs,
+        params: creditArgs,
         signature: signHarnessMutation({
           address,
           account,
@@ -993,7 +993,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
           keyType: 2,
           privateKey: ALICE_PRIVATE_KEY,
           mutation: "credit",
-          args: creditArgs,
+          params: creditArgs,
         }),
       }),
     );
@@ -1067,7 +1067,7 @@ test("runtime rejects a Harness mutation when resolution throws", async () => {
 
     yield* runtime.execute({
       name: "initialize",
-      args: { rootKeyType: 2, rootPublicKey },
+      params: { rootKeyType: 2, rootPublicKey },
       signature: harnessSignature({
         account,
         keyId: 0n,
@@ -1080,7 +1080,7 @@ test("runtime rejects a Harness mutation when resolution throws", async () => {
     return yield* Effect.exit(
       runtime.execute({
         name: "debit",
-        args: debitArgs,
+        params: debitArgs,
         signature: signHarnessMutation({
           address,
           account,
@@ -1088,7 +1088,7 @@ test("runtime rejects a Harness mutation when resolution throws", async () => {
           keyType: 2,
           privateKey: ALICE_PRIVATE_KEY,
           mutation: "debit",
-          args: debitArgs,
+          params: debitArgs,
         }),
       }),
     );
@@ -1145,7 +1145,7 @@ test("runtime handles Harness account management with multiple signature types",
 
     yield* runtime.execute({
       name: "initialize",
-      args: { rootKeyType: 2, rootPublicKey },
+      params: { rootKeyType: 2, rootPublicKey },
       signature: harnessSignature({
         account,
         keyId: 0n,
@@ -1163,7 +1163,7 @@ test("runtime handles Harness account management with multiple signature types",
     };
     yield* runtime.execute({
       name: "authorize",
-      args: authorizeP256Args,
+      params: authorizeP256Args,
       signature: signHarnessMutation({
         address,
         account,
@@ -1171,7 +1171,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyType: 2,
         privateKey: ALICE_PRIVATE_KEY,
         mutation: "authorize",
-        args: authorizeP256Args,
+        params: authorizeP256Args,
       }),
     });
 
@@ -1183,7 +1183,7 @@ test("runtime handles Harness account management with multiple signature types",
     };
     yield* runtime.execute({
       name: "credit",
-      args: p256CreditArgs,
+      params: p256CreditArgs,
       signature: signHarnessMutation({
         address,
         account,
@@ -1191,7 +1191,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyType: 0,
         privateKey: P256_PRIVATE_KEY,
         mutation: "credit",
-        args: p256CreditArgs,
+        params: p256CreditArgs,
       }),
     });
 
@@ -1204,7 +1204,7 @@ test("runtime handles Harness account management with multiple signature types",
     };
     yield* runtime.execute({
       name: "authorize",
-      args: authorizeWebAuthnArgs,
+      params: authorizeWebAuthnArgs,
       signature: signHarnessMutation({
         address,
         account,
@@ -1212,7 +1212,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyType: 0,
         privateKey: P256_PRIVATE_KEY,
         mutation: "authorize",
-        args: authorizeWebAuthnArgs,
+        params: authorizeWebAuthnArgs,
       }),
     });
 
@@ -1224,7 +1224,7 @@ test("runtime handles Harness account management with multiple signature types",
     };
     yield* runtime.execute({
       name: "credit",
-      args: webAuthnCreditArgs,
+      params: webAuthnCreditArgs,
       signature: signHarnessMutation({
         address,
         account,
@@ -1232,7 +1232,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyType: 1,
         privateKey: P256_PRIVATE_KEY,
         mutation: "credit",
-        args: webAuthnCreditArgs,
+        params: webAuthnCreditArgs,
       }),
     });
 
@@ -1260,7 +1260,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     id: 0,
     status: "accepted",
     name: "add",
-    args: { amount, nonce },
+    params: { amount, nonce },
     signature,
     journalId: 0,
     isForceInclusion: false,
@@ -1387,7 +1387,7 @@ test("runtime handles failing mutation", async () => {
     return yield* Effect.exit(
       runtime.execute({
         name: "add",
-        args: { amount: 7n, nonce: 1n },
+        params: { amount: 7n, nonce: 1n },
         signature: signCounter({
           privateKey: USER_PRIVATE_KEY,
           amount: 7n,

@@ -26,10 +26,14 @@ function counterAddMutation(params: {
   readonly address: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): FFCAMutation {
+}): FFCAMutation<
+  "add",
+  typeof COUNTER_MUTATIONS.add,
+  typeof COUNTER_SIGNATURE_PARAMS
+> {
   return {
     name: "add",
-    args: { amount: params.amount, nonce: params.nonce },
+    params: { amount: params.amount, nonce: params.nonce },
     signature: signCounter({
       privateKey: USER_PRIVATE_KEY,
       amount: params.amount,
@@ -55,7 +59,7 @@ function formatMs(durationMs: number): string {
 test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
   const { createFFCA } = await import("../src");
   const address = await deployCounter(USER_ACCOUNT.address);
-  const ffca = await createFFCA({
+  const config = {
     address,
     domain: COUNTER_DOMAIN,
     signature: { params: COUNTER_SIGNATURE_PARAMS },
@@ -67,7 +71,13 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
     mutations: COUNTER_MUTATIONS,
-  } as const satisfies FFCAConfig);
+  } as const satisfies FFCAConfig;
+
+  const ffca = await createFFCA<
+    typeof COUNTER_STORAGE_LAYOUT,
+    typeof COUNTER_MUTATIONS,
+    typeof COUNTER_SIGNATURE_PARAMS
+  >(config);
 
   await ffca.execute(
     counterNewAccountMutation({ address: USER_ACCOUNT.address }),

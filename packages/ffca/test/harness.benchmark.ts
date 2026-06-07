@@ -38,8 +38,12 @@ function harnessCreditMutation(params: {
   readonly account: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): FFCAMutation {
-  const args = {
+}): FFCAMutation<
+  "credit",
+  typeof HARNESS_MUTATIONS.credit,
+  typeof HARNESS_SIGNATURE_PARAMS
+> {
+  const mutationParams = {
     account: params.account,
     keyId: 0n,
     amount: params.amount,
@@ -48,7 +52,7 @@ function harnessCreditMutation(params: {
 
   return {
     name: "credit",
-    args,
+    params: mutationParams,
     signature: harnessSignature({
       account: params.account,
       keyId: 0n,
@@ -57,7 +61,7 @@ function harnessCreditMutation(params: {
         keyType: 2,
         privateKey: USER_PRIVATE_KEY,
         mutation: "credit",
-        args,
+        params: mutationParams,
         address: params.address,
         chainId: anvil.id,
       }),
@@ -107,7 +111,11 @@ async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
 test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
   const { createFFCA } = await import("../src");
   const address = await deployHarness();
-  const ffca = await createFFCA({
+  const configMutations = {
+    initialize: HARNESS_MUTATIONS.initialize,
+    credit: HARNESS_MUTATIONS.credit,
+  } as const satisfies FFCAConfig["mutations"];
+  const config = {
     address,
     domain: HARNESS_DOMAIN,
     signature: { params: HARNESS_SIGNATURE_PARAMS },
@@ -123,11 +131,14 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-    mutations: {
-      initialize: HARNESS_MUTATIONS.initialize,
-      credit: HARNESS_MUTATIONS.credit,
-    },
-  } as const satisfies FFCAConfig);
+    mutations: configMutations,
+  } as const satisfies FFCAConfig;
+
+  const ffca = await createFFCA<
+    typeof HARNESS_STORAGE_LAYOUT,
+    typeof configMutations,
+    typeof HARNESS_SIGNATURE_PARAMS
+  >(config);
 
   const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
@@ -135,7 +146,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   await withoutConsoleOutput(() =>
     ffca.execute({
       name: "initialize",
-      args: {
+      params: {
         rootKeyType: 2,
         rootPublicKey,
       },
