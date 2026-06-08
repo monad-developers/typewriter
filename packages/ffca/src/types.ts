@@ -276,7 +276,6 @@ export type MutationEvent<
       name: name;
       params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
-      journalId: number;
       isForceInclusion: boolean;
       resolution?: unknown;
     }
@@ -286,7 +285,6 @@ export type MutationEvent<
       name: name;
       params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
-      journalId: number;
       isForceInclusion: boolean;
       resolution?: unknown;
     }

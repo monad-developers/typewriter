@@ -2,13 +2,14 @@
 
 Full stack framework for building crypto apps.
 
-- **Custom sequencing**. Applications define their transaction ordering (fifo, batch, or any rule it chooses).
+- **Custom sequencing**. Applications define their transaction ordering (fifo or batch).
 - **Sub-block confirmations**. Applications can issue responses in milliseconds, before transactions finalize onchain.
 - **Modern signature primitives**. EIP-712 plus native P-256, WebAuthn-P256, and secp256k1 verification; apps define their own account policy.
 - **Minimal dependencies**. No external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over what users experience.
 - **Local first**. Build rapidly with a powerful local development loop.
 
-> This project is under active development. Not ready for production use.
+> [!WARNING]
+> ⚠️ **This project is under active development. Not ready for production use.**
 
 ## Concepts
 
@@ -25,40 +26,33 @@ struct State {
 
 ### Mutations
 
-Updates to application state are done with mutations. Mutations are app-defined state transistions requested by a user and executed onchain.
+Mutations are app-defined state transitions requested by a user and executed onchain. Updates to application state are done with mutations.
 
 ```solidity
 struct Transfer {
     bytes32 from;
     bytes32 to;
     uint256 amount;
+    uint256 nonce;
 }
 
 function executeTransfer(State storage state, Transfer memory transfer) {
-    state.account[tranfer.from].balance -= transfer.amount;
+    state.accounts[transfer.from].balance -= transfer.amount;
     unchecked {
-        state.account[transfer.to].balance += transfer.amount;
+        state.accounts[transfer.to].balance += transfer.amount;
     }
 }
 ```
 
-A mutation is the framework equivalent of a transaction, but unlike transactions, they are not submitted directly onchain. Instead mutations are submitted to the application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution.
-
-The lifecycle of a mutation is as follows:
-- **received**. The server has received the mutation.
-- **accepted**. The server has ordered and executed the mutation locally.
-- **included**. The server submitted the mutation onchain and it has been included in a block.
-- **safe**. The block that contains the mutation has been marked "safe" by consensus. (See JSON-RPC "safe" tag).
-- **finalized**. The block that contains the mutation has been marked "finalized" by consensus. (See JSON-RPC "finalized" tag).
-
-Some mutations can be executed directly from their submitted arguments, others need resolution with a more complete state view. For example, a transfer may only need `{ from, to, amount }`. A matching engine may need to compute fills based on the current order book. That extra computed data is the mutation's resolution.
+Some mutations can be executed directly from their submitted arguments, others need resolution with a more complete state view. For example, a transfer may only need `{ from, to, amount }`, but a matching engine may need to compute fills based on the current order book. That extra computed data is the mutation's resolution.
 
 ```solidity
 struct MarketOrder {
-    uint256 quanity;
+    uint256 quantity;
     uint256 minReceivedQuantity;
     uint64 instrumentId;
     uint8 bidOrAsk;
+    uint256 nonce;
 }
 
 struct MarketOrderResolution {
@@ -75,9 +69,11 @@ function executeMarketOrder(State storage state, MarketOrder calldata marketOrde
 }
 ```
 
+<!-- How are resolutions created? -->
+
 ### Accounts and Signatures
 
-Mutations are authorized with signatures, not transactions. Each mutation carries an EIP-712 typed-data signature, and the contract verifies it.
+Mutations are authorized with an EIP-712 typed-data signature, and the contract verifies it.
 
 FFCA supports three signature algorithms:
 
@@ -85,15 +81,44 @@ FFCA supports three signature algorithms:
 - WebAuthn-P256
 - secp256k1
 
-It exports the primitives that go with them — the `KeyType` enum, a `verifySignature` helper, and the EIP-712 domain typehash. The `Signature` struct itself is app-defined; the contract decides what fields it needs to authenticate the user and authorize the mutation. See [Contract requirements > Signature](#signature) for more information.
+It exports the primitives that go with them — the `KeyType` enum, a `verifySignature` helper, and the EIP-712 domain typehash. The `Signature` struct itself is app-defined; the contract decides what fields it needs to authenticate the user and authorize the mutation.
 
 Accounts are entirely app-defined. The account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions all live in the app's contract and state. FFCA does not impose an `Account` struct or any specific authorization rule.
 
+```solidity
+import {KeyType, verifySignature} from "ffca/FFCA.sol";
+
+// App-defined — FFCA imposes no Account or Signature shape.
+struct Account {
+    KeyType keyType;
+    bytes publicKey;
+    uint256 nonce;
+}
+
+struct Signature {
+    bytes32 accountId;
+    bytes rawSignature;
+}
+
+// The FFCA primitive checks a raw signature against a digest. A mutation's
+// verifier calls it after resolving the account and applying replay protection.
+verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
+```
+
+See [Contract requirements > Signature](#signature) for the full verifier and signature byte layouts.
+
 ### Server runtime
 
-Mutations are submitted to an application server, not directly to the chain. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. Each mutation is executed locally in an embedded EVM (revm) against the server's copy of contract state, and once the server knows the mutation will succeed onchain it responds `accepted` — usually within milliseconds, before a block is produced. The lifecycle from there is described in [Mutations](#mutations).
+A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. Each mutation is executed locally in an embedded EVM (revm) against the server's copy of contract state, and once the server knows the mutation will succeed onchain it responds `accepted` — usually within milliseconds, before a block is produced.
 
-`createFFCA` instantiates the runtime: it connects to the chain and database, hydrates local state, and starts submitting accepted mutations onchain.
+The lifecycle of a mutation is as follows:
+- **received**. The server has received the mutation.
+- **accepted**. The server has ordered and executed the mutation locally.
+- **included**. The server submitted the mutation onchain and it has been included in a block.
+- **safe**. The block that contains the mutation has been marked "safe" by consensus. (See JSON-RPC "safe" tag).
+- **finalized**. The block that contains the mutation has been marked "finalized" by consensus. (See JSON-RPC "finalized" tag).
+
+`createFFCA` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
 `FFCAConfig` requires `address`, `domain`, `storageLayout`, `account`, `chainId`, `rpcUrl`, `database`, `mutations`, and `signature`. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
@@ -104,10 +129,9 @@ import { privateKeyToAccount } from "viem/accounts";
 
 const ffca = await createFFCA({
   address, // the deployed FFCA contract
-  abi,
-  storageLayout, // from `forge inspect <Contract> storageLayout`
+  storageLayout,
   domain: { name: "Token", version: "1" },
-  account: privateKeyToAccount(schedulerPrivateKey), // the scheduler
+  account: privateKeyToAccount(privateKey), // the transaction submitter
   chainId,
   rpcUrl,
   database: { url: databaseUrl },
@@ -124,19 +148,17 @@ const ffca = await createFFCA({
   },
 });
 
-// submit a signed mutation; resolves once accepted
-const accepted = await ffca.execute({ name: "Transfer", args, signature });
-```
+// ... setup web server
 
-Accepted mutations are written onchain in groups on a fixed interval (see [Sequencing](#sequencing)), not one transaction at a time.
+// submit a signed mutation; resolves once accepted
+const accepted = await ffca.execute({ name: "Transfer", params, signature });
+```
 
 > Onchain submission is gated to a single scheduler address that the server controls (see [Contract structure](#contract-structure)). Because no one else can submit transactions, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
 
 #### Sequencing
 
 Sequencing controls the order mutations are accepted by the server and included onchain. FFCA ships two sequencing modes: FIFO and batch. FIFO is the default when `sequencing.order` is omitted.
-
-A mutation is `accepted` once the server has assigned it a position in the local execution order and run it against local state (see [Mutations](#mutations)). When a mutation is submitted with `ffca.execute()`, FFCA places it in an order relative to other mutations submitted around the same time. Mutations are written onchain in groups on a fixed interval, not one at a time.
 
 ##### FIFO
 
@@ -209,7 +231,7 @@ Mutations are executed and accepted on the server before they are executed oncha
 
 This can happen when the execution depends on EVM environment opcodes whose values differ from the values used in the mined transaction, or on state the server cannot reproduce locally, such as another contract's storage (see [Determinism](#determinism)).
 
-When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "received"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorgization.
+When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "received"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorganization.
 
 The server execution environment uses values from the last known block for EVM environment opcodes. Certain EVM environment opcodes, such as `COINBASE` or `PREVRANDAO`, can make divergence more likely or even guaranteed. For a full list of unsupported opcodes, see [contract requirements](#contract-requirements).
 
@@ -217,7 +239,7 @@ The server execution environment uses values from the last known block for EVM e
 
 ### Crash recovery
 
-The server can be restarted at any time without losing accepted state. Every mutatio and raw slot write is persisted to Postgres as it happens. On startup, the runtime rehydrates its local execution environment from the persisted slot writes.
+The server can be restarted at any time without losing accepted state. Every mutation and raw slot write is persisted to Postgres as it happens. On startup, the runtime rehydrates its local execution environment from the persisted slot writes.
 
 Mutations that were accepted before the crash but had not yet reached `finalized` are reconciled with the underlying chain on restart.
 
@@ -225,7 +247,7 @@ Mutations that were accepted before the crash but had not yet reached `finalized
 
 ### Contract requirements
 
-In order to be FFCA-compliant, a smart contract must written with Solidity and implement certain data structures and methods. 
+In order to be FFCA-compliant, a smart contract must be written with Solidity and implement certain data structures and methods.
 
 #### State
 
@@ -251,7 +273,7 @@ struct State {
 Each mutation is a Solidity library with:
 - **`struct [Mutation]` definition**. The mutation's arguments. The app's `dispatch` function ABI-decodes the mutation's `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and order must match the `FFCAMutationConfig.params` registered with the runtime.
 - **`execute[Mutation]` function**. Applies the mutation to the state. Called by `dispatch` after the signature has verified — no auth checks here, just the state transition.
-- **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name, parameter names, and declaration order must match the mutation's struct (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
+- **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name must match the mutation's registered name (the key in the runtime's `mutations` config, which the client signs as the `primaryType`), and whose parameter names and declaration order must match the mutation's `params` (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). The type name is independent of the Solidity struct name — e.g. an `Add` struct registered under the name `add` uses `keccak256("add(uint256 amount,uint256 nonce)")`. `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
 - **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `ffca/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
 
 ```solidity
@@ -267,14 +289,14 @@ library AddMutation {
         return keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
     }
 
-    function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest) external {
+    function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest) internal {
         Account storage account = state.accounts[signature.accountId];
-        if (account.nonce != add.nonce) revert InvalidNonce();
+        if (account.nonce != add.nonce) revert InvalidNonce(account.nonce, add.nonce);
         verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
         account.nonce++;
     }
 
-    function executeAdd(State storage state, Add memory add) external {
+    function executeAdd(State storage state, Add memory add) internal {
         state.total += add.amount;
     }
 }
@@ -303,7 +325,7 @@ verifier — see the [Mutations](#mutations) example.
 ```solidity
 function verify[Mutation]Signature(
     State storage state,
-    [Mutation] memory args,
+    [Mutation] memory [mutation],
     Signature memory signature,
     bytes32 digest
 ) external;
@@ -385,7 +407,7 @@ contract Token is FFCA {
 
 **`DOMAIN_SEPARATOR`.** The EIP-712 domain separator from the [Signature](#signature) section. Declared in `FFCA` as `bytes32 internal immutable` — the inheriting contract must assign it in the constructor.
 
-**`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `FFCA` as `uint256 internal immutable` — `FFCA` does not impose a value, so the inheriting contract must assign it in the constructor. `Counter.sol` uses `658` blocks (≈4.4 minutes at 0.4 s/block).
+**`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `FFCA` as `uint256 internal immutable` — `FFCA` does not impose a value, so the inheriting contract must assign it in the constructor. All examples in this repo use `658` blocks (≈4.4 minutes at 0.4 s/block).
 
 **Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `FFCA` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 
@@ -450,7 +472,7 @@ function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signat
 
 #### Determinism
 
-Opcodes whose values can't be reproduced offchain produce divergence between offchain and onchain state are incompatible with FFCA:
+Opcodes whose values can't be reproduced offchain produce divergence between offchain and onchain state, so they are incompatible with FFCA:
 
 - `block.coinbase` (`COINBASE`) — the miner of the block containing the transaction is not known until inclusion.
 - `block.difficulty` / `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
@@ -464,16 +486,209 @@ Opcodes whose values can't be reproduced offchain produce divergence between off
 
 Calls to external contracts are not allowed. The server executes mutations against its own local state, which only covers the FFCA contract — it has no view of other contracts' storage, so any external call (or the state it depends on) cannot be reproduced offchain and will diverge.
 
-### `createFFCA()`
+### Server runtime
 
-### `ffca.domain`
+The JavaScript surface exported from `ffca`: the `createFFCA` entry point and the `FFCA` handle it returns (`state`, `schema`, `domain`, `execute`, `on`, `close`).
 
-### `ffca.execute()`
+#### `createFFCA()`
 
-### `ffca.state`
+```ts
+function createFFCA(config: FFCAConfig): Promise<FFCA>;
+```
 
-### `ffca.schema`
+Starts the runtime and resolves to the `FFCA` handle (see the [Server runtime](#server-runtime) example for a full call). On startup it connects to the chain and database, runs migrations, and hydrates local revm state from persisted slot writes; from there it accepts mutations and submits them onchain.
 
-### `ffca.on()`
+**`FFCAConfig`.** Required fields:
 
-### `verifySignature()`
+- `address` — the deployed FFCA contract.
+- `domain` — `{ name, version }`; combined with `chainId` and `address` to form the EIP-712 domain exposed as [`ffca.domain`](#ffcadomain).
+- `storageLayout` — the contract's storage layout, an opt-in `solc` output generated with `extra_output = ["storageLayout"]` in `foundry.toml` (or `forge build --extra-output storageLayout`). Types [`ffca.state`](#ffcastate).
+- `account` — the scheduler `PrivateKeyAccount`; signs and submits the onchain `execute` transactions.
+- `chainId` — number.
+- `rpcUrl` — `string | string[]`.
+- `database` — `{ url, maxConnections? }` (Postgres).
+- `mutations` — a record of mutation name → `FFCAMutationConfig` (below).
+- `signature` — `{ params }`, the ABI parameters each mutation's signature decodes to.
+
+Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ safeBlockDepth?, finalizedBlockDepth? }`, defaults `1` / `5`), `onFatalError` (`(error) => void`; without it a fatal runtime error is rethrown), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
+
+**`FFCAMutationConfig`.** Each entry in `mutations` describes one mutation:
+
+- `tag` — the `uint8` that matches the contract's `Mutation` enum ordinal.
+- `params` — ABI parameters for the mutation arguments. Their names and order are the EIP-712 message fields and must match the contract's `[MUTATION]_TYPEHASH` (see [Mutations](#mutations-1)).
+- `resolution?` — ABI parameters for data computed during acceptance (e.g. fills). Omit for mutations that execute directly from their arguments.
+- `resolve?` — required when `resolution` is set: `({ state, params, signature }) => resolution`. Computes the resolution against [`ffca.state`](#ffcastate) before the mutation executes.
+- `registerMappingKeys?` — `({ params, signature, resolution? }) => string[]`. Returns the storage paths the mutation touches, so the runtime can persist and reload the mapping and dynamic-array slots it modifies.
+
+```ts
+mutations: {
+  Transfer: {
+    tag: 0,
+    params: parseAbiParameters("address from, address to, uint256 amount, uint256 nonce"),
+    registerMappingKeys: ({ params }) => [
+      `accounts[${params.from}].nonce`,
+      `accounts[${params.from}].balance`,
+      `accounts[${params.to}].balance`,
+    ],
+  },
+  // a mutation with a computed resolution
+  MarketOrder: {
+    tag: 1,
+    params: parseAbiParameters("uint256 quantity, uint8 bidOrAsk, uint256 nonce"),
+    resolution: parseAbiParameters("(uint64 quantity, uint64 price)[] fills"),
+    resolve: ({ state, params }) => resolveMarket(state, params),
+    registerMappingKeys: ({ params, resolution }) => [/* paths, including resolution-derived ones */],
+  },
+}
+```
+
+#### `ffca.domain`
+
+```ts
+ffca.domain: TypedData.Domain; // { name, version, chainId, verifyingContract }
+```
+
+The resolved EIP-712 domain, derived from `config.domain` plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
+
+```ts
+"/api/domain": () => jsonResponse(ffca.domain),
+```
+
+#### `ffca.execute()`
+
+```ts
+ffca.execute(input: { name, params, signature }): Promise<{ id } | { id, resolution }>;
+```
+
+Submits a signed mutation. `name` is a key from `config.mutations`, `params` matches that mutation's `params`, and `signature` matches `config.signature.params`. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`, plus `resolution` for mutations that define one. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
+
+```ts
+const accepted = await ffca.execute({ name: "Transfer", params, signature });
+// accepted.id
+```
+
+#### `ffca.state`
+
+```ts
+ffca.state: StorageProxy<storageLayout>;
+```
+
+`ffca.state` is how an app reads the contract's onchain state. It replaces the public getters and `view` functions you would normally read over `eth_call`: state is read directly from storage slots (typed by `storageLayout`), so the contract needs no public accessors and Solidity visibility doesn't matter. Reads resolve against the runtime's local, revm-backed mirror of that storage rather than issuing an `eth_call` per read; field accesses return promises, and mappings are indexed by key.
+
+```ts
+const account = ffca.state.accounts[address];
+const balance = await account.balance; // bigint
+const nonce = await account.nonce;
+```
+
+`ffca.state` reflects locally accepted state, which can be ahead of what is `included` or `finalized` onchain.
+
+#### `ffca.schema`
+
+```ts
+ffca.schema: FFCASchema;
+```
+
+The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. ffca owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
+
+One table per entry in `config.mutations`, named `<name>_mutations` with the mutation name lowercased — a mutation registered as `Transfer` becomes `ffca.schema.transfer_mutations`, `MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
+
+Every mutation table starts with the same **lifecycle columns**:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `integer`, primary key | mutation id; matches the `ffca.execute()` result and event `id` |
+| `status` | `mutation_status` enum | one of `accepted`, `included`, `safe`, `finalized` |
+| `executionIndex` | `numeric(78,0)` bigint | onchain execution index; set once included |
+| `blockNumber` | `numeric(78,0)` bigint | inclusion block; null until included |
+| `blockHash` | `char(66)` (hex) | null until included |
+| `blockTimestamp` | `numeric(78,0)` bigint | null until included |
+| `transactionHash` | `char(66)` (hex) | the settlement transaction; null until included |
+| `acceptedAt` | `timestamp`, defaults to now | |
+| `includedAt` | `timestamp` | null until included |
+| `safeAt` | `timestamp` | null until safe |
+| `finalizedAt` | `timestamp` | null until finalized |
+
+Then three groups of payload columns:
+
+- **Param columns** — one per ABI parameter in the mutation's `params`, named after the parameter (an unnamed parameter becomes `arg<index>`).
+- **Signature columns** — one per ABI parameter in `config.signature.params`, each prefixed `signature_`.
+- **Resolution columns** — for mutations that declare a `resolution`, one per resolution parameter, each prefixed `resolution_`.
+
+Payload columns are typed from their ABI type:
+
+| ABI type | Postgres column |
+| --- | --- |
+| `bool` | `boolean` |
+| `address` | `char(42)` (hex) |
+| `bytes1`–`bytes32` | `char(2 + 2·N)` (hex) — e.g. `bytes32` is `char(66)` |
+| `bytes`, `string` | `text` |
+| arrays and tuples | `jsonb` |
+
+Integer types map by bit width:
+
+| Postgres column | Unsigned (`uintN`) | Signed (`intN`) |
+| --- | --- | --- |
+| `smallint` | `uint8` | `int8`, `int16` |
+| `integer` | `uint16`, `uint24` | `int24`, `int32` |
+| `bigint` | `uint32`–`uint56` | `int40`–`int64` |
+| `numeric(78,0)` bigint | `uint64`–`uint256` | `int72`–`int256` |
+
+Pass a mutation table to a Drizzle client to query:
+
+```ts
+import { desc } from "drizzle-orm";
+
+const recent = await db
+  .select()
+  .from(ffca.schema.transfer_mutations)
+  .orderBy(desc(ffca.schema.transfer_mutations.id))
+  .limit(20);
+```
+
+#### `ffca.on()`
+
+```ts
+ffca.on(event, callback): () => void;
+```
+
+Subscribes to runtime events; returns an unsubscribe function. There are three events, each with its own payload type.
+
+**`"mutation"` → `MutationEvent`** — fires every time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `id` (number), `name` (the mutation name), `params`, and `signature`; the rest depends on `status`:
+
+| `status` | Additional fields |
+| --- | --- |
+| `"received"` | — |
+| `"enqueued"` | `resolution?` |
+| `"accepted"` | `isForceInclusion`, `resolution?` |
+| `"included"` / `"safe"` / `"finalized"` | `isForceInclusion`, `resolution?` |
+| `"rejected"` | `isForceInclusion`, `error` |
+
+This status set is wider than the happy-path lifecycle in [Server runtime](#server-runtime): `enqueued` occurs for force-included mutations — those a user submits directly onchain via `enqueue()` (see [Force inclusion](#force-inclusion)) — once the runtime detects and reconciles them, and `rejected` (carrying the rejection `error`) when a mutation fails. `resolution` is present once a mutation with a resolution is accepted. `isForceInclusion` marks mutations that entered through the force-inclusion queue.
+
+**`"batch"` → `BatchEvent`** — fires when a batch changes status; batch sequencing only. Fields:
+
+- `status` — `"accepted" | "included" | "safe" | "finalized"`
+- `id` — number
+- `position` — the batch's position in submission order
+- `mutations` — the batch's `MutationEvent`s (`accepted` and later; never `enqueued`/`rejected`)
+- `forceIncludedMutations?` — force-included mutations settled alongside the batch
+
+**`"block"` → `BlockEvent`** — fires when a submitted block reaches a confirmation depth. Common fields:
+
+- `status` — `"included" | "safe" | "finalized"` (block events never fire for `accepted`, which is pre-block)
+- `number` — block number (`bigint`)
+- `hash` — block hash
+- `timestamp` — block timestamp (`bigint`)
+- `transactionHash` — the settlement transaction
+
+The remaining fields depend on sequencing:
+
+- FIFO — `mutations`: the block's `MutationEvent`s.
+- batch — `batches`: the block's `BatchEvent`s (excluding `accepted`); and `forceIncludedMutations`.
+
+```ts
+const unsubscribe = ffca.on("mutation", (mutation) => {
+  console.log(mutation.id, mutation.status);
+});
+```

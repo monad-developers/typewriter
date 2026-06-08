@@ -55,7 +55,6 @@ export type {
   FFCAStateSchema,
 } from "./schema";
 export type { KeyType } from "./signature";
-export { verifySignature } from "./signature";
 export type {
   BatchEvent,
   BatchStatus,
