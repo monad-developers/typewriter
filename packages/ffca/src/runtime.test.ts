@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { Cause, Effect, Exit, Fiber, Layer, Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, Schedule, Scope } from "effect";
 import {
   type Address,
   createWalletClient,
@@ -580,6 +580,8 @@ test("runtime persists mutations to database", async () => {
 
   const schema = createMutationSchema(config);
   const services = layerRuntimeServices(address);
+  const db = drizzle({ client: TEST_DB_CONNECTION });
+  const addMutations = requiredTable(schema, "add_mutations");
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
@@ -611,12 +613,19 @@ test("runtime persists mutations to database", async () => {
         chainId: anvil.id,
       }),
     });
+
+    yield* Effect.tryPromise(() => db.select().from(addMutations)).pipe(
+      Effect.flatMap((rows) =>
+        rows.length > 0
+          ? Effect.succeed(rows)
+          : Effect.fail(new Error("mutation not persisted yet")),
+      ),
+      Effect.retry({ times: 100, schedule: Schedule.spaced("10 millis") }),
+    );
   });
 
   await Effect.runPromise(program);
 
-  const db = drizzle({ client: TEST_DB_CONNECTION });
-  const addMutations = requiredTable(schema, "add_mutations");
   const addMutationRows = (await db.select().from(addMutations)) as {
     id: number;
     status: string;

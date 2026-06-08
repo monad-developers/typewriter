@@ -706,6 +706,29 @@ export function createRuntimeEffect(
           return;
         }
 
+        const batch: RuntimeBatch = {
+          status: "accepted",
+          id: batchId++,
+          position: batchPosition++,
+          mutations: acceptedMutations.map(({ mutation }) => mutation),
+        };
+
+        yield* Effect.logDebug("batched mutations").pipe(
+          Effect.annotateLogs({
+            id: batch.id,
+            mutationCount: batch.mutations.length,
+            duration: durationMs(batchStartedAtMs),
+          }),
+        );
+
+        batchesById.set(batch.id, batch);
+
+        emitBatch(batchToEvent(batch));
+
+        for (const { mutation, deferred } of acceptedMutations) {
+          yield* Deferred.succeed(deferred, mutation);
+        }
+
         const persistStartedAtMs = startTimer();
         yield* db.transaction((tx) =>
           Effect.gen(function* () {
@@ -730,30 +753,7 @@ export function createRuntimeEffect(
           }),
         );
 
-        const batch: RuntimeBatch = {
-          status: "accepted",
-          id: batchId++,
-          position: batchPosition++,
-          mutations: acceptedMutations.map(({ mutation }) => mutation),
-        };
-
-        yield* Effect.logDebug("batched mutations").pipe(
-          Effect.annotateLogs({
-            id: batch.id,
-            mutationCount: batch.mutations.length,
-            duration: durationMs(batchStartedAtMs),
-          }),
-        );
-
-        batchesById.set(batch.id, batch);
-
-        emitBatch(batchToEvent(batch));
-
         yield* Queue.offer(acceptedBatchesQueue, batch.id);
-
-        for (const { mutation, deferred } of acceptedMutations) {
-          yield* Deferred.succeed(deferred, mutation);
-        }
       }),
     );
 
