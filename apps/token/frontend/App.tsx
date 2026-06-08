@@ -1,17 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import superjson from "superjson";
 import {
   type Address,
   encodeAbiParameters,
   formatUnits,
   type Hex,
+  keccak256,
+  parseAbiParameters,
   parseSignature,
   parseUnits,
+  toHex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 type Account = { address: Address; privateKey: Hex };
-type AddressInfo = { balance: string; nonce: string };
+type AddressInfo = { balance: bigint; nonce: bigint };
 type TxStatus =
   | "received"
   | "enqueued"
@@ -35,9 +39,16 @@ type RequestLogEntry = {
   status: "ok" | "error";
   duration: number;
 };
-type TokenSignature = { signature: Hex };
+type TokenSignature = { keyType: number; rawSignature: Hex };
 
-const STORAGE_PREFIX = "token";
+const MINT_TYPES = {
+  Mint: [
+    { name: "to", type: "address" },
+    { name: "amount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
 const TRANSFER_TYPES = {
   Transfer: [
     { name: "from", type: "address" },
@@ -47,15 +58,6 @@ const TRANSFER_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
 } as const;
-const TOKEN_SIGNATURE_PARAMS = [
-  {
-    type: "tuple",
-    components: [
-      { name: "keyType", type: "uint8" },
-      { name: "rawSignature", type: "bytes" },
-    ],
-  },
-] as const;
 
 function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -68,18 +70,36 @@ function relativeTime(timestamp: number) {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
-function loadAccount(): Account | null {
-  const address = localStorage.getItem(`${STORAGE_PREFIX}:address`);
-  const privateKey = localStorage.getItem(`${STORAGE_PREFIX}:privateKey`);
+function loadAccount(prefix: string): Account | null {
+  const address = localStorage.getItem(`${prefix}:address`);
+  const privateKey = localStorage.getItem(`${prefix}:privateKey`);
   if (address?.startsWith("0x") !== true) return null;
   if (privateKey?.startsWith("0x") !== true) return null;
   return { address: address as Address, privateKey: privateKey as Hex };
 }
 
-function clearFastStorage() {
-  localStorage.removeItem(`${STORAGE_PREFIX}:address`);
-  localStorage.removeItem(`${STORAGE_PREFIX}:privateKey`);
-  localStorage.removeItem(`${STORAGE_PREFIX}:boot-id`);
+function domainHash(domain: {
+  name: string;
+  version: string;
+  chainId: number;
+  verifyingContract: Address;
+}): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      parseAbiParameters("bytes32, bytes32, bytes32, uint256, address"),
+      [
+        keccak256(
+          toHex(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+          ),
+        ),
+        keccak256(toHex(domain.name)),
+        keccak256(toHex(domain.version)),
+        BigInt(domain.chainId),
+        domain.verifyingContract,
+      ],
+    ),
+  );
 }
 
 async function request<T>(params: {
@@ -97,7 +117,8 @@ async function request<T>(params: {
       params.body === undefined
         ? undefined
         : { "Content-Type": "application/json" },
-    body: params.body === undefined ? undefined : JSON.stringify(params.body),
+    body:
+      params.body === undefined ? undefined : superjson.stringify(params.body),
   });
   const duration = performance.now() - start;
   if (params.log === true) {
@@ -109,12 +130,46 @@ async function request<T>(params: {
     });
   }
   if (!res.ok) throw new Error(await res.text());
-  return (await res.json()) as T;
+  return superjson.parse(await res.text()) as T;
+}
+
+async function signMint(params: {
+  account: Account;
+  domain: {
+    name: string;
+    version: string;
+    chainId: number;
+    verifyingContract: Address;
+  };
+  mint: { to: Address; amount: bigint; nonce: bigint; deadline: bigint };
+}): Promise<TokenSignature> {
+  const signer = privateKeyToAccount(params.account.privateKey);
+  const signature = await signer.signTypedData({
+    domain: params.domain,
+    types: MINT_TYPES,
+    primaryType: "Mint",
+    message: params.mint,
+  });
+  const { v, r, s } = parseSignature(signature);
+  const rawSignature = encodeAbiParameters(
+    [
+      { name: "v", type: "uint8" },
+      { name: "r", type: "bytes32" },
+      { name: "s", type: "bytes32" },
+    ],
+    [Number(v), r, s],
+  );
+  return { keyType: 2, rawSignature };
 }
 
 async function signTransfer(params: {
   account: Account;
-  config: { chainId: number; tokenAddress: Address };
+  domain: {
+    name: string;
+    version: string;
+    chainId: number;
+    verifyingContract: Address;
+  };
   to: Address;
   amount: bigint;
   nonce: bigint;
@@ -122,12 +177,7 @@ async function signTransfer(params: {
 }): Promise<TokenSignature> {
   const signer = privateKeyToAccount(params.account.privateKey);
   const signature = await signer.signTypedData({
-    domain: {
-      name: "Token",
-      version: "1",
-      chainId: params.config.chainId,
-      verifyingContract: params.config.tokenAddress,
-    },
+    domain: params.domain,
     types: TRANSFER_TYPES,
     primaryType: "Transfer",
     message: {
@@ -147,11 +197,7 @@ async function signTransfer(params: {
     ],
     [Number(v), r, s],
   );
-  return {
-    signature: encodeAbiParameters(TOKEN_SIGNATURE_PARAMS, [
-      { keyType: 2, rawSignature },
-    ]),
-  };
+  return { keyType: 2, rawSignature };
 }
 
 export function App() {
@@ -168,18 +214,18 @@ export function App() {
       [{ id: Date.now() + Math.random(), ...entry }, ...prev].slice(0, 24),
     );
   }, []);
-  const configQuery = useQuery({
-    queryKey: ["config"],
+  const domainQuery = useQuery({
+    queryKey: ["domain"],
     queryFn: () =>
-      request<{ chainId: number; tokenAddress: Address }>({
-        path: "/api/config",
+      request<{
+        name: string;
+        version: string;
+        chainId: number;
+        verifyingContract: Address;
+      }>({
+        path: "/api/domain",
         record,
       }),
-    staleTime: Infinity,
-  });
-  const bootIdQuery = useQuery({
-    queryKey: ["boot-id"],
-    queryFn: () => request<{ id: string }>({ path: "/api/boot-id", record }),
     staleTime: Infinity,
   });
   const accountQuery = useQuery({
@@ -198,7 +244,7 @@ export function App() {
     enabled: account !== null,
     refetchInterval: 5_000,
   });
-  const config = configQuery.data ?? null;
+  const domain = domainQuery.data ?? null;
   const info = accountQuery.data ?? null;
   const addresses = addressesQuery.data ?? [];
   const recipients = useMemo(
@@ -207,19 +253,9 @@ export function App() {
   );
 
   useEffect(() => {
-    if (bootIdQuery.isError) {
-      clearFastStorage();
-      return;
-    }
-    if (bootIdQuery.data === undefined) return;
-    if (
-      bootIdQuery.data.id !== localStorage.getItem(`${STORAGE_PREFIX}:boot-id`)
-    ) {
-      clearFastStorage();
-      return;
-    }
-    setAccount(loadAccount());
-  }, [bootIdQuery.data, bootIdQuery.isError]);
+    if (domainQuery.data === undefined) return;
+    setAccount(loadAccount(domainHash(domainQuery.data)));
+  }, [domainQuery.data]);
 
   useEffect(() => {
     if (to === ("" as Address) && recipients.length > 0) setTo(recipients[0]!);
@@ -238,21 +274,53 @@ export function App() {
   }
 
   const signInMutation = useMutation({
-    mutationFn: () =>
-      request<{
-        address: Address;
-        privateKey: Hex;
-        bootId: string;
-        mutationId: number;
-      }>({ method: "POST", path: "/api/sign-in", record }),
+    mutationFn: async () => {
+      if (domain === null) throw new Error("missing domain");
+      const privateKey = generatePrivateKey();
+      const newAccount = privateKeyToAccount(privateKey);
+      const info = await queryClient.fetchQuery({
+        queryKey: ["account", newAccount.address],
+        queryFn: () =>
+          request<AddressInfo>({
+            path: `/api/account/${newAccount.address}`,
+            record,
+          }),
+      });
+      const mint = {
+        to: newAccount.address,
+        amount: 1_000n,
+        nonce: info.nonce,
+        deadline: BigInt(Math.floor(Date.now() / 1000) + 60),
+      };
+      const signature = await signMint({
+        account: { address: newAccount.address, privateKey },
+        domain,
+        mint,
+      });
+      const result = await request<{ id: number }>({
+        method: "POST",
+        path: "/api",
+        record,
+        body: {
+          name: "Mint",
+          params: mint,
+          signature,
+        },
+      });
+      return {
+        address: newAccount.address,
+        privateKey,
+        mutationId: result.id,
+      };
+    },
     onMutate: () => {
       setError(null);
     },
     onSuccess: async (result) => {
+      const prefix = domainHash(domainQuery.data!);
       const next = { address: result.address, privateKey: result.privateKey };
-      localStorage.setItem(`${STORAGE_PREFIX}:address`, result.address);
-      localStorage.setItem(`${STORAGE_PREFIX}:privateKey`, result.privateKey);
-      localStorage.setItem(`${STORAGE_PREFIX}:boot-id`, result.bootId);
+      localStorage.setItem(`${prefix}:address`, result.address);
+      localStorage.setItem(`${prefix}:privateKey`, result.privateKey);
       setAccount(next);
       await queryClient.invalidateQueries({ queryKey: ["addresses"] });
       await queryClient.invalidateQueries({
@@ -278,8 +346,8 @@ export function App() {
 
   const transferMutation = useMutation({
     mutationFn: async () => {
-      if (account === null || config === null) {
-        throw new Error("missing account or config");
+      if (account === null || domain === null) {
+        throw new Error("missing account or domain");
       }
       const current = await queryClient.fetchQuery({
         queryKey: ["account", account.address],
@@ -294,24 +362,27 @@ export function App() {
       const deadline = BigInt(Math.floor(Date.now() / 1000) + 60);
       const signature = await signTransfer({
         account,
-        config,
+        domain,
         to,
         amount: amountUnits,
-        nonce: BigInt(current.nonce),
+        nonce: current.nonce,
         deadline,
       });
       const start = performance.now();
       const result = await request<{ id: number }>({
         method: "POST",
-        path: "/api/transfer",
+        path: "/api",
         log: true,
         record,
         body: {
-          from: account.address,
-          to,
-          amount: amountUnits.toString(),
-          nonce: current.nonce,
-          deadline: deadline.toString(),
+          name: "Transfer",
+          params: {
+            from: account.address,
+            to,
+            amount: amountUnits,
+            nonce: current.nonce,
+            deadline,
+          },
           signature,
         },
       });
@@ -352,7 +423,7 @@ export function App() {
 
   const pending = signInMutation.isPending || transferMutation.isPending;
 
-  if (bootIdQuery.isPending) return null;
+  if (domainQuery.isPending) return null;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -365,8 +436,8 @@ export function App() {
           <a
             className="text-blue-500 hover:underline"
             href={
-              config?.tokenAddress
-                ? `https://testnet.monadscan.com/address/${config.tokenAddress}`
+              domain?.verifyingContract
+                ? `https://testnet.monadscan.com/address/${domain.verifyingContract}`
                 : "/"
             }
           >
@@ -397,9 +468,9 @@ export function App() {
               <h2 className="text-2xl font-bold">Account Overview</h2>
               <code className="break-all">address: {account.address}</code>
               <code className="break-all">
-                balance: {formatUnits(BigInt(info?.balance ?? "0"), 0)}
+                balance: {formatUnits(info?.balance ?? 0n, 0)}
               </code>
-              <code>transaction count: {info?.nonce ?? "..."}</code>
+              <code>transaction count: {String(info?.nonce ?? "...")}</code>
               <label className="flex items-center gap-2">
                 <code>gas sponsorship:</code>
                 <input type="checkbox" checked readOnly />

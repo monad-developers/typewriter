@@ -1,13 +1,18 @@
 import { createFFCA, type MutationEvent, type MutationStatus } from "ffca";
-import type { Address, Hex } from "viem";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import superjson from "superjson";
+import {
+  type Address,
+  type Hex,
+  type ParseAbiParameters,
+  parseAbiParameters,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
 import {
-  signMint,
+  type MintParams,
   TOKEN_DOMAIN,
   TOKEN_SIGNATURE_PARAMS,
-  type TokenSignature,
-  tokenMutations,
+  type TransferParams,
 } from "./app";
 import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
 
@@ -19,18 +24,30 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function jsonResponse(data: unknown): Response {
+  return new Response(superjson.stringify(data), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 const rpcUrl = requireEnv("BUN_PUBLIC_RPC_URL");
-const chainId = Number(process.env.CHAIN_ID ?? "31337");
+const chainId = Number(requireEnv("CHAIN_ID"));
 const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
 const scheduler = privateKeyToAccount(
   requireEnv("SCHEDULER_PRIVATE_KEY") as Hex,
 );
-const addresses = new Set<Address>([scheduler.address]);
 const mutations = new Map<number, MutationEvent>();
 
 const ffca = await createFFCA<
   typeof TOKEN_STORAGE_LAYOUT,
-  typeof tokenMutations,
+  {
+    Transfer: {
+      params: ParseAbiParameters<"address from, address to, uint256 amount, uint256 nonce, uint256 deadline">;
+    };
+    Mint: {
+      params: ParseAbiParameters<"address to, uint256 amount, uint256 nonce, uint256 deadline">;
+    };
+  },
   typeof TOKEN_SIGNATURE_PARAMS
 >({
   address: tokenAddress,
@@ -42,7 +59,32 @@ const ffca = await createFFCA<
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   domain: TOKEN_DOMAIN,
   sequencing: { order: "fifo" },
-  mutations: tokenMutations,
+  mutations: {
+    Transfer: {
+      tag: 0,
+      params: parseAbiParameters(
+        "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
+      ),
+      registerMappingKeys: ({ params }) => {
+        const transfer = params as TransferParams;
+        return [
+          `accounts[${transfer.from}].nonce`,
+          `accounts[${transfer.from}].balance`,
+          `accounts[${transfer.to}].balance`,
+        ];
+      },
+    },
+    Mint: {
+      tag: 1,
+      params: parseAbiParameters(
+        "address to, uint256 amount, uint256 nonce, uint256 deadline",
+      ),
+      registerMappingKeys: ({ params }) => {
+        const mint = params as MintParams;
+        return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
+      },
+    },
+  },
 });
 
 ffca.on("mutation", (mutation) => {
@@ -53,112 +95,39 @@ function sse(value: unknown): string {
   return `data: ${JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`;
 }
 
-const bootId = crypto.randomUUID();
-
 const server = Bun.serve({
   port: Number(process.env.PORT ?? "3000"),
   routes: {
     "/": index,
-    "/api/config": () => Response.json({ chainId, tokenAddress }),
-    "/api/boot-id": () => Response.json({ id: bootId }),
-    "/api/state": async () => {
-      const accounts: Record<Address, { balance: string; nonce: string }> = {};
-      for (const address of addresses) {
-        const account = ffca.state.accounts[address];
-        accounts[address] = {
-          balance: (await account.balance).toString(),
-          nonce: (await account.nonce).toString(),
-        };
-      }
-      return Response.json({
-        totalSupply: (await ffca.state.totalSupply).toString(),
-        accounts,
-      });
-    },
+    "/api/domain": () => jsonResponse(ffca.domain),
     "/api/account/:address": async (req) => {
       const account = ffca.state.accounts[req.params.address as Address];
-      return Response.json({
-        balance: (await account.balance).toString(),
-        nonce: (await account.nonce).toString(),
+      return jsonResponse({
+        balance: await account.balance,
+        nonce: await account.nonce,
       });
     },
-    "/api/addresses": () => Response.json([...addresses]),
-    "/api/sign-in": {
-      POST: async () => {
-        const privateKey = generatePrivateKey();
-        const account = privateKeyToAccount(privateKey);
-        const mint = {
-          to: account.address,
-          amount: 1_000n,
-          nonce: await ffca.state.accounts[account.address].nonce,
-          deadline: BigInt(Math.floor(Date.now() / 1000) + 60),
-        };
-        const mutation = await ffca.execute({
-          name: "Mint",
-          params: mint,
-          signature: await signMint({
-            account,
-            token: tokenAddress,
-            chainId,
-            mint,
-          }),
-        });
-        addresses.add(account.address);
-        return Response.json({
-          address: account.address,
-          privateKey,
-          bootId,
-          mutationId: mutation.id,
-        });
-      },
-    },
-    "/api/mint": {
+    "/api/addresses": () => jsonResponse(Object.keys(ffca.state.accounts)),
+    "/api": {
       POST: async (req) => {
-        const body = (await req.json()) as {
-          to: Address;
-          amount: string;
-          nonce: string;
-          deadline: string;
-          signature: TokenSignature;
+        const body = superjson.parse(await req.text()) as {
+          name: string;
+          params: unknown;
+          signature: unknown;
         };
+        if (
+          typeof body.name !== "string" ||
+          body.params === undefined ||
+          body.signature === undefined
+        ) {
+          return new Response("Bad Request", { status: 400 });
+        }
         const mutation = await ffca.execute({
-          name: "Mint",
-          params: {
-            to: body.to,
-            amount: BigInt(body.amount),
-            nonce: BigInt(body.nonce),
-            deadline: BigInt(body.deadline),
-          },
+          name: body.name,
+          params: body.params,
           signature: body.signature,
-        });
-        addresses.add(body.to);
-        return Response.json(mutation);
-      },
-    },
-    "/api/transfer": {
-      POST: async (req) => {
-        const body = (await req.json()) as {
-          from: Address;
-          to: Address;
-          amount: string;
-          nonce: string;
-          deadline: string;
-          signature: TokenSignature;
-        };
-        const mutation = await ffca.execute({
-          name: "Transfer",
-          params: {
-            from: body.from,
-            to: body.to,
-            amount: BigInt(body.amount),
-            nonce: BigInt(body.nonce),
-            deadline: BigInt(body.deadline),
-          },
-          signature: body.signature,
-        });
-        addresses.add(body.from);
-        addresses.add(body.to);
-        return Response.json(mutation);
+        } as never);
+        return jsonResponse(mutation);
       },
     },
     "/api/mutation/:id/status": {
