@@ -16,6 +16,7 @@ import { FFCA_ABI } from "./encoding";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
+import { requestExecutionIndex } from "./rpc-request";
 import { createRuntimeEffect } from "./runtime";
 import type { FFCASchema } from "./schema";
 import type {
@@ -156,7 +157,8 @@ export function createFFCAEffect<
 
     return yield* Effect.gen(function* () {
       yield* scopedDeploymentLock(deploymentLockKey(app.chainId, app.address));
-      yield* migrate(app.schema, app.chainId, app.address);
+      const executionIndex = yield* requestExecutionIndex(app.address);
+      yield* migrate(app.schema, app.chainId, app.address, executionIndex);
 
       const runtime = yield* createRuntimeEffect(app);
 

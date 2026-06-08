@@ -41,6 +41,13 @@ export const FFCA_ABI = [
     stateMutability: "nonpayable",
   },
   {
+    type: "function",
+    name: "executionIndex",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
     type: "event",
     name: "ForceInclusionQueued",
     inputs: [

@@ -7,6 +7,7 @@ import {
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
+import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import type { FFCAConfig, FFCAMutationConfig } from "./config";
@@ -17,9 +18,10 @@ import {
   insertSlotWrites,
   selectAccountStorage,
   selectKnownPaths,
+  selectNextMutationId,
   updateMutationLifecycle,
 } from "./db-query";
-import { updateSchema } from "./migrate";
+import { deploymentSchemaName, migrate, updateSchema } from "./migrate";
 import { createMutationSchema, mutationStatusEnum } from "./schema";
 import type { RuntimeBlock, RuntimeMutation } from "./types";
 
@@ -195,6 +197,31 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
   expect(includedAt).toBeInstanceOf(Date);
 });
 
+test("selectNextMutationId resumes after the max id across mutation tables", async () => {
+  const schema = createMutationSchema({
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: { Debit: debitConfig, Transfer: transferConfig },
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  await applyGeneratedMigration(schema);
+
+  await TEST_DB_CONNECTION`
+    INSERT INTO transfer_mutations
+      (id, status, ${TEST_DB_CONNECTION("to")}, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+    VALUES
+      (2, 'included', '0x0000000000000000000000000000000000000001', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+  `;
+  await TEST_DB_CONNECTION`
+    INSERT INTO debit_mutations
+      (id, status, account, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")}, ${TEST_DB_CONNECTION("resolution_newBalance")})
+    VALUES
+      (7, 'included', '0x1111111111111111111111111111111111111111111111111111111111111111', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x', 0)
+  `;
+
+  const nextId = await runWithDatabase(selectNextMutationId(schema));
+
+  expect(nextId).toBe(8);
+});
+
 test("insertSlotWrites records raw slot writes", async () => {
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
@@ -291,6 +318,53 @@ test("selectAccountStorage replays latest slot writes", async () => {
   expect(storage).toEqual({
     [slot]:
       "0x000000000000000000000000000000000000000000000000000000000000000b",
+  });
+});
+
+test("selectAccountStorage uses slot writes after redeploy migration cleanup", async () => {
+  const schema = createMutationSchema({
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: { Transfer: transferConfig },
+  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  const chainId = 31341;
+  const address =
+    "0x000000000000000000000000000000000000ffca" as Address.Address;
+  const schemaName = deploymentSchemaName(chainId, address);
+  const slot =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
+  const settledValue =
+    "0x000000000000000000000000000000000000000000000000000000000000000a";
+  const unsettledValue =
+    "0x000000000000000000000000000000000000000000000000000000000000000b";
+
+  await runWithDatabase(migrate(schema, chainId, address, 0n));
+
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.transfer_mutations
+      (id, status, ${TEST_DB_CONNECTION("to")}, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+    VALUES
+      (1, 'included', '0x0000000000000000000000000000000000000001', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
+      (2, 'accepted', '0x0000000000000000000000000000000000000002', 2, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+  `;
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+      (${TEST_DB_CONNECTION("mutationId")}, slot, value)
+    VALUES
+      (1, ${slot}, ${settledValue}),
+      (2, ${slot}, ${unsettledValue})
+  `;
+
+  await runWithDatabase(migrate(schema, chainId, address, 0n));
+
+  const storage = await runWithDatabase(
+    Effect.gen(function* () {
+      const db = yield* Database;
+      return yield* db.transaction((tx) => selectAccountStorage(tx, schema));
+    }),
+  );
+
+  expect(storage).toEqual({
+    [slot]: settledValue,
   });
 });
 

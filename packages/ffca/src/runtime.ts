@@ -52,7 +52,7 @@ import type {
 import type { InternalApp } from "./internal";
 import { durationMs, loggerLayer, startTimer } from "./logger";
 import { Rpc } from "./rpc";
-import { requestBlock } from "./rpc-request";
+import { requestBlock, requestExecutionIndex } from "./rpc-request";
 import type {
   AcceptedMutation,
   BatchEvent,
@@ -545,6 +545,7 @@ export function createRuntimeEffect(
     const knownPathSet = new Set(knownPaths);
 
     let mutationId = yield* selectNextMutationId(schema);
+    let nextExecutionIndex = yield* requestExecutionIndex(app.address);
     let batchId = 0;
     let batchPosition = 0;
 
@@ -647,6 +648,8 @@ export function createRuntimeEffect(
             return Effect.void;
           }),
         );
+
+        acceptedMutation.executionIndex = nextExecutionIndex++;
 
         invalidateStorageCache(
           executeResult.slot_writes.map((write) => write.slot),
@@ -793,6 +796,10 @@ export function createRuntimeEffect(
             );
           }
 
+          const acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
+            ({ mutation }) => mutation,
+          );
+
           if (acceptedEnqueuedMutations.length > 0) {
             yield* db.transaction((tx) =>
               Effect.gen(function* () {
@@ -818,10 +825,6 @@ export function createRuntimeEffect(
               }),
             );
           }
-
-          const acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
-            ({ mutation }) => mutation,
-          );
 
           const speculativeJournalIds = batches
             .flatMap((batch) => batch.mutations)

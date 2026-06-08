@@ -107,6 +107,7 @@ abstract contract FFCA {
     uint256 internal immutable FORCE_INCLUSION_DELAY;
 
     QueuedMutation[] internal queue;
+    uint256 public executionIndex;
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal virtual;
 
@@ -123,6 +124,7 @@ abstract contract FFCA {
             }
             for (uint256 i; i < batch.mutations.length; i++) {
                 dispatch(batch.mutations[i], batch.mutationData[i], batch.signatureData[i]);
+                executionIndex++;
             }
         }
 
@@ -133,6 +135,7 @@ abstract contract FFCA {
             if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
 
             dispatch(queued.mutation, queued.mutationData, queued.signatureData);
+            executionIndex++;
 
             delete queue[index];
         }
@@ -165,6 +168,7 @@ abstract contract FFCA {
         if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
 
         dispatch(queued.mutation, queued.mutationData, queued.signatureData);
+        executionIndex++;
 
         delete queue[index];
     }

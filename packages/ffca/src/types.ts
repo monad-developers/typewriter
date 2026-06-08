@@ -102,6 +102,7 @@ export type RuntimeMutation =
       journalId: number;
       isForceInclusion: boolean;
       config: FFCAMutationConfig;
+      executionIndex?: bigint;
       resolution?: unknown;
     } & ForceInclusion)
   | ({
@@ -113,6 +114,7 @@ export type RuntimeMutation =
       journalId: number;
       isForceInclusion: boolean;
       config: FFCAMutationConfig;
+      executionIndex?: bigint;
       resolution?: unknown;
     } & ForceInclusion)
   | ({

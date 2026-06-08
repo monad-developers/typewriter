@@ -16,9 +16,10 @@ const runMigrate = (
   schema: Record<string, unknown>,
   chainId: number,
   address: Address.Address,
+  executionIndex: bigint,
 ) =>
   Effect.runPromise(
-    migrate(schema, chainId, address).pipe(
+    migrate(schema, chainId, address, executionIndex).pipe(
       Effect.provide(
         layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 }),
       ),
@@ -47,7 +48,7 @@ test("migrate creates the configured schema", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31337_0x000000000000000000000000000000000000ffca";
 
-  const schemaName = await runMigrate(harnessSchema(), chainId, address);
+  const schemaName = await runMigrate(harnessSchema(), chainId, address, 0n);
 
   const tables = await TEST_DB_CONNECTION<{ table_name: string }[]>`
       SELECT table_name
@@ -83,8 +84,18 @@ test("migrate is idempotent when schema already exists", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const testSchema = "ffca_31338_0x000000000000000000000000000000000000ffca";
 
-  const firstSchemaName = await runMigrate(harnessSchema(), chainId, address);
-  const secondSchemaName = await runMigrate(harnessSchema(), chainId, address);
+  const firstSchemaName = await runMigrate(
+    harnessSchema(),
+    chainId,
+    address,
+    0n,
+  );
+  const secondSchemaName = await runMigrate(
+    harnessSchema(),
+    chainId,
+    address,
+    0n,
+  );
 
   const tables = await TEST_DB_CONNECTION<{ table_name: string }[]>`
       SELECT table_name
@@ -104,7 +115,7 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
     "0x000000000000000000000000000000000000ffca" as Address.Address;
   const schemaName = "ffca_31339_0x000000000000000000000000000000000000ffca";
 
-  await runMigrate(harnessSchema(), chainId, address);
+  await runMigrate(harnessSchema(), chainId, address, 0n);
 
   const account =
     "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -115,7 +126,7 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
       (0, 'accepted', ${account}, 0, 1, 0, ${account}, 0, 2, '0x')
   `;
 
-  await expect(runMigrate(harnessSchema(), chainId, address)).resolves.toBe(
+  await expect(runMigrate(harnessSchema(), chainId, address, 0n)).resolves.toBe(
     schemaName,
   );
 
@@ -141,7 +152,7 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
     },
   });
 
-  await runMigrate(schema, chainId, address);
+  await runMigrate(schema, chainId, address, 0n);
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
@@ -158,7 +169,7 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
       (1, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, ${"0x0000000000000000000000000000000000000000000000000000000000000002"})
   `;
 
-  await runMigrate(schema, chainId, address);
+  await runMigrate(schema, chainId, address, 0n);
 
   const mutations = await TEST_DB_CONNECTION<{ id: number }[]>`
     SELECT id
@@ -173,4 +184,128 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
 
   expect(mutations).toEqual([{ id: 1 }]);
   expect(slotWrites).toEqual([{ mutationId: 1 }]);
+});
+
+test("migrate removes newer unsettled slot writes for the same slot", async () => {
+  const chainId = 31341;
+  const address =
+    "0x000000000000000000000000000000000000ffca" as Address.Address;
+  const schemaName = "ffca_31341_0x000000000000000000000000000000000000ffca";
+  const schema = createMutationSchema({
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: {
+      add: {
+        tag: 0,
+        params: parseAbiParameters("uint256 amount"),
+      },
+    },
+  });
+  const slot =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
+
+  await runMigrate(schema, chainId, address, 0n);
+
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+      (id, status, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+    VALUES
+      (0, 'included', 7, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
+      (1, 'accepted', 11, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+  `;
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+      (${TEST_DB_CONNECTION("mutationId")}, slot, value)
+    VALUES
+      (0, ${slot}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"}),
+      (1, ${slot}, ${"0x000000000000000000000000000000000000000000000000000000000000000b"})
+  `;
+
+  await runMigrate(schema, chainId, address, 0n);
+
+  const mutations = await TEST_DB_CONNECTION<{ id: number }[]>`
+    SELECT id
+    FROM ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+    ORDER BY id
+  `;
+  const slotWrites = await TEST_DB_CONNECTION<
+    { mutationId: number; slot: string; value: string }[]
+  >`
+    SELECT ${TEST_DB_CONNECTION("mutationId")}, slot, value
+    FROM ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+    ORDER BY id
+  `;
+
+  expect(mutations).toEqual([{ id: 0 }]);
+  expect(slotWrites).toEqual([
+    {
+      mutationId: 0,
+      slot,
+      value:
+        "0x0000000000000000000000000000000000000000000000000000000000000007",
+    },
+  ]);
+});
+
+test("migrate recovers accepted mutations below the onchain applied count", async () => {
+  const chainId = 31342;
+  const address =
+    "0x000000000000000000000000000000000000ffca" as Address.Address;
+  const schemaName = "ffca_31342_0x000000000000000000000000000000000000ffca";
+  const schema = createMutationSchema({
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: {
+      add: {
+        tag: 0,
+        params: parseAbiParameters("uint256 amount"),
+      },
+    },
+  });
+  const slot =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
+
+  await runMigrate(schema, chainId, address, 0n);
+
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+      (id, ${TEST_DB_CONNECTION("executionIndex")}, status, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+    VALUES
+      (0, 0, 'accepted', 7, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
+      (1, 1, 'accepted', 11, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+  `;
+  await TEST_DB_CONNECTION`
+    INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+      (${TEST_DB_CONNECTION("mutationId")}, slot, value)
+    VALUES
+      (0, ${slot}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"}),
+      (1, ${slot}, ${"0x000000000000000000000000000000000000000000000000000000000000000b"})
+  `;
+
+  await runMigrate(schema, chainId, address, 1n);
+
+  const mutations = await TEST_DB_CONNECTION<
+    { id: number; executionIndex: string; status: string }[]
+  >`
+    SELECT id, ${TEST_DB_CONNECTION("executionIndex")}, status
+    FROM ${TEST_DB_CONNECTION(schemaName)}.add_mutations
+    ORDER BY id
+  `;
+  const slotWrites = await TEST_DB_CONNECTION<
+    { mutationId: number; slot: string; value: string }[]
+  >`
+    SELECT ${TEST_DB_CONNECTION("mutationId")}, slot, value
+    FROM ${TEST_DB_CONNECTION(schemaName)}.slot_writes
+    ORDER BY id
+  `;
+
+  expect(mutations).toEqual([
+    { id: 0, executionIndex: "0", status: "included" },
+  ]);
+  expect(slotWrites).toEqual([
+    {
+      mutationId: 0,
+      slot,
+      value:
+        "0x0000000000000000000000000000000000000000000000000000000000000007",
+    },
+  ]);
 });

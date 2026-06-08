@@ -29,6 +29,7 @@ export const mutationStatusEnum = pgEnum("mutation_status", [
 
 const mutationColumns = () => ({
   id: integer().notNull().primaryKey(),
+  executionIndex: uint256(),
   blockNumber: uint256(),
   blockHash: bytes32(),
   blockTimestamp: uint256(),

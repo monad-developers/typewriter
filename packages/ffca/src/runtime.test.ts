@@ -153,7 +153,7 @@ test("createRuntimeBatchEffect", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -194,7 +194,7 @@ test("runtime loads persisted slot state before returning", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -211,7 +211,7 @@ test("runtime loads persisted slot state before returning", async () => {
       INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
         (${TEST_DB_CONNECTION("mutationId")}, slot, value)
       VALUES
-        (0, ${"0x0000000000000000000000000000000000000000000000000000000000000001"}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"})
+        (0, ${"0x0000000000000000000000000000000000000000000000000000000000000002"}, ${"0x0000000000000000000000000000000000000000000000000000000000000007"})
     `,
     );
 
@@ -256,7 +256,7 @@ test("execute() returns an accepted mutation", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -321,7 +321,7 @@ test("execute() accepts multiple mutations in a batch", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -404,7 +404,7 @@ test("runtime emits mutation, batch, and block events", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -585,7 +585,7 @@ test("runtime persists mutations to database", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -640,7 +640,7 @@ test("runtime persists mutations to database", async () => {
       value: schema.slot_writes.value,
     })
     .from(schema.slot_writes)
-    .orderBy(schema.slot_writes.slot);
+    .orderBy(schema.slot_writes.slot, schema.slot_writes.mutationId);
 
   expect(mutationRows).toMatchInlineSnapshot(`
     [
@@ -656,29 +656,39 @@ test("runtime persists mutations to database", async () => {
   expect(slotRows).toMatchInlineSnapshot(`
     [
       {
+        "mutationId": 0,
+        "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000001",
+      },
+      {
         "mutationId": 1,
         "slot": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "value": "0x0000000000000000000000000000000000000000000000000000000000000002",
+      },
+      {
+        "mutationId": 1,
+        "slot": "0x0000000000000000000000000000000000000000000000000000000000000002",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000007",
       },
       {
         "mutationId": 0,
-        "slot": "0x4d5e1cceefe7c333a82a954f09fd3c3d92bb609f28430423d579251115de6c55",
-        "value": "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
-      },
-      {
-        "mutationId": 0,
-        "slot": "0x8ab7381f68a0ae9f01a74b7a3e436aeef59d866ed6b095c7f39d48c20836c133",
+        "slot": "0x4b34b6d94765684e75e2287a756838f958648a9e09745d6f59261d2605c63349",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000002",
       },
       {
         "mutationId": 0,
-        "slot": "0x8ab7381f68a0ae9f01a74b7a3e436aeef59d866ed6b095c7f39d48c20836c134",
+        "slot": "0x4b34b6d94765684e75e2287a756838f958648a9e09745d6f59261d2605c6334a",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000041",
       },
       {
         "mutationId": 1,
-        "slot": "0x8ab7381f68a0ae9f01a74b7a3e436aeef59d866ed6b095c7f39d48c20836c135",
+        "slot": "0x4b34b6d94765684e75e2287a756838f958648a9e09745d6f59261d2605c6334b",
         "value": "0x0000000000000000000000000000000000000000000000000000000000000001",
+      },
+      {
+        "mutationId": 0,
+        "slot": "0x7219189c07c0f389dfd1501044939ed0dc585059dc8f86641b63920b63f92dc7",
+        "value": "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
       },
     ]
   `);
@@ -707,7 +717,7 @@ test("runtime submits a mutation onchain", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -774,7 +784,7 @@ test("runtime finalizes a mutation", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -846,7 +856,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -940,7 +950,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -1054,7 +1064,7 @@ test("runtime rejects a Harness mutation when resolution throws", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -1132,7 +1142,7 @@ test("runtime handles Harness account management with multiple signature types",
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -1292,7 +1302,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -1369,7 +1379,7 @@ test("runtime handles failing mutation", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -1430,7 +1440,7 @@ test("runtime program handles interrupt", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address).pipe(
+    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 

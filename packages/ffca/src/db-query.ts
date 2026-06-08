@@ -1,12 +1,22 @@
 import type { AbiParameter } from "abitype";
-import { asc, desc, eq, getColumns, inArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getColumns,
+  inArray,
+  lt,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { ExecuteResult } from "ffca-evm";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";
-import { Database } from "./db";
+import { Database, type DatabaseClient } from "./db";
 import type {
   MutationWithResolution,
   RuntimeBlock,
@@ -16,6 +26,7 @@ import type {
 
 /** Postgres protocol limit: 32767 bind parameters per query. */
 const MAX_PG_PARAMS = 32_767;
+const SETTLED_MUTATION_STATUSES = ["included", "safe", "finalized"];
 
 function chunk<T>(array: readonly T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -76,6 +87,7 @@ function mutationRow(
 ): Record<string, unknown> {
   return {
     id: mutation.id,
+    executionIndex: (mutation as { executionIndex: bigint }).executionIndex,
     status: "accepted",
     ...abiParameterValues(mutation.config.params, mutation.params),
     ...prefixedObjectValues("signature_", mutation.signature),
@@ -174,6 +186,82 @@ export function updateMutationsLifecycle(
           .where(inArray(idColumn, batch));
       }
     }
+  });
+}
+
+export function recoverIncludedMutationsBeforeExecutionIndex(
+  tx: DatabaseClient,
+  table: PgTable,
+  executionIndex: bigint,
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    const columns = getColumns(table) as unknown as Record<
+      "status" | "executionIndex",
+      PgColumn
+    >;
+    const { status: statusColumn, executionIndex: executionIndexColumn } =
+      columns;
+
+    yield* tx
+      .update(table)
+      .set({ status: "included", includedAt: sql`NOW()` })
+      .where(
+        and(
+          eq(statusColumn, "accepted"),
+          lt(executionIndexColumn, executionIndex),
+        ),
+      );
+  });
+}
+
+export function deleteSlotWritesForUnsettledMutations(
+  tx: DatabaseClient,
+  schema: Record<string, PgTable>,
+  mutationTable: PgTable,
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    const { slot_writes: slotWritesTable } = schema as Record<
+      "slot_writes",
+      PgTable
+    >;
+
+    const slotWritesColumns = getColumns(slotWritesTable) as unknown as Record<
+      "mutationId",
+      PgColumn
+    >;
+    const mutationIdColumn = slotWritesColumns.mutationId;
+
+    const mutationColumns = getColumns(mutationTable) as unknown as Record<
+      "id" | "status",
+      PgColumn
+    >;
+    const { id: idColumn, status: statusColumn } = mutationColumns;
+
+    yield* tx
+      .delete(slotWritesTable)
+      .where(
+        inArray(
+          mutationIdColumn,
+          tx
+            .select({ id: idColumn })
+            .from(mutationTable)
+            .where(notInArray(statusColumn, SETTLED_MUTATION_STATUSES)),
+        ),
+      );
+  });
+}
+
+export function deleteUnsettledMutationRows(
+  tx: DatabaseClient,
+  table: PgTable,
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function* () {
+    const columns = getColumns(table) as unknown as Record<"status", PgColumn>;
+    const { status: statusColumn } = columns;
+
+    yield* tx
+      .delete(table)
+      .where(notInArray(statusColumn, SETTLED_MUTATION_STATUSES));
   });
 }
 

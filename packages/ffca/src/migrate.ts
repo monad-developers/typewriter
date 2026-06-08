@@ -2,8 +2,8 @@ import {
   generateDrizzleJson,
   generateMigration,
 } from "drizzle-kit/api-postgres";
-import { getColumns, inArray, notInArray } from "drizzle-orm";
-import type { PgColumn, PgEnum } from "drizzle-orm/pg-core";
+import { getColumns } from "drizzle-orm";
+import type { PgEnum } from "drizzle-orm/pg-core";
 import { isPgEnum } from "drizzle-orm/pg-core";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import { isTable } from "drizzle-orm/table";
@@ -11,6 +11,11 @@ import { Data, Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import type { Address } from "ox";
 import { Database, type DatabaseClient } from "./db";
+import {
+  deleteSlotWritesForUnsettledMutations,
+  deleteUnsettledMutationRows,
+  recoverIncludedMutationsBeforeExecutionIndex,
+} from "./db-query";
 import { mutationStatusEnum } from "./schema";
 
 const schemaSymbol = Symbol.for("drizzle:Schema");
@@ -96,53 +101,11 @@ function doesSchemaExist(
   });
 }
 
-function deleteUnsettledMutations(
-  db: DatabaseClient,
-  schema: Record<string, PgTable>,
-): Effect.Effect<void, unknown> {
-  return Effect.gen(function* () {
-    const { slot_writes: slotWritesTable } = schema;
-    const slotWritesColumns =
-      slotWritesTable === undefined ? undefined : getColumns(slotWritesTable);
-    const mutationIdColumn = (
-      slotWritesColumns as Record<"mutationId", PgColumn> | undefined
-    )?.mutationId;
-
-    const mutationTables = Object.values(schema).filter((table) => {
-      if (!isTable(table)) return false;
-      const columns = getColumns(table);
-      return "id" in columns && "status" in columns;
-    });
-
-    for (const table of mutationTables) {
-      const columns = getColumns(table) as unknown as Record<string, PgColumn>;
-      const { id: idColumn, status: statusColumn } = columns;
-      const unsettled = notInArray(statusColumn!, [
-        "included",
-        "safe",
-        "finalized",
-      ]);
-
-      if (slotWritesTable !== undefined && mutationIdColumn !== undefined) {
-        yield* db
-          .delete(slotWritesTable)
-          .where(
-            inArray(
-              mutationIdColumn,
-              db.select({ id: idColumn! }).from(table).where(unsettled),
-            ),
-          );
-      }
-
-      yield* db.delete(table).where(unsettled);
-    }
-  });
-}
-
 export function migrate(
   schema: Record<string, unknown>,
   chainId: number,
   address: Address.Address,
+  executionIndex: bigint,
 ): Effect.Effect<string, unknown, Database> {
   return Effect.gen(function* () {
     const db = yield* Database;
@@ -206,7 +169,23 @@ export function migrate(
 
         // TODO(kyle) Update the status of any unfinalized mutations that may have finalized.
 
-        yield* deleteUnsettledMutations(db, schema as Record<string, PgTable>);
+        const typedSchema = schema as Record<string, PgTable>;
+        const mutationTables = Object.values(typedSchema).filter((table) => {
+          if (!isTable(table)) return false;
+          const columns = getColumns(table);
+          return "id" in columns && "status" in columns;
+        });
+
+        for (const table of mutationTables) {
+          yield* recoverIncludedMutationsBeforeExecutionIndex(
+            db,
+            table,
+            executionIndex,
+          );
+
+          yield* deleteSlotWritesForUnsettledMutations(db, typedSchema, table);
+          yield* deleteUnsettledMutationRows(db, table);
+        }
       }),
     );
 

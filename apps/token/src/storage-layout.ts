@@ -7,7 +7,7 @@ export const TOKEN_STORAGE_LAYOUT = {
       contract: "src/Token.sol:Token",
       label: "totalSupply",
       offset: 0,
-      slot: "1",
+      slot: "2",
       type: "t_uint256",
     },
     {
@@ -15,7 +15,7 @@ export const TOKEN_STORAGE_LAYOUT = {
       contract: "src/Token.sol:Token",
       label: "accounts",
       offset: 0,
-      slot: "2",
+      slot: "3",
       type: "t_mapping(t_address,t_struct(Account)_storage)",
     },
   ],

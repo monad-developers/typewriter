@@ -119,7 +119,7 @@ export const STUB_FFCA_ABI = [
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
 // Counter.State shape used by the runtime tests. `state` is stored at contract
-// slot 1, so the exposed fields start at slots 1 and 2.
+// slot 2, so the exposed fields start at slots 2 and 3.
 export const COUNTER_STORAGE_LAYOUT = {
   storage: [
     {
@@ -127,7 +127,7 @@ export const COUNTER_STORAGE_LAYOUT = {
       contract: "src/Counter.sol:Counter",
       label: "total",
       offset: 0,
-      slot: "1",
+      slot: "2",
       type: "t_uint256",
     },
     {
@@ -135,7 +135,7 @@ export const COUNTER_STORAGE_LAYOUT = {
       contract: "src/Counter.sol:Counter",
       label: "accounts",
       offset: 0,
-      slot: "2",
+      slot: "3",
       type: "t_mapping(t_bytes32,t_struct(Account)901_storage)",
     },
   ],
@@ -346,7 +346,8 @@ export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
 
 // Copied from forge's generated `storageLayout` and flattened to the app-owned
 // Harness.State shape used by the runtime tests. `state` is stored after
-// FFCA.queue, so the exposed fields start at slots 1 and 2.
+// FFCA.queue and FFCA.executionIndex, so the exposed fields start at
+// slots 2 and 3.
 export const HARNESS_STORAGE_LAYOUT = {
   storage: [
     {
@@ -354,7 +355,7 @@ export const HARNESS_STORAGE_LAYOUT = {
       contract: "src/Harness.sol:Harness",
       label: "accounts",
       offset: 0,
-      slot: "1",
+      slot: "2",
       type: "t_mapping(t_bytes32,t_struct(Account)1407_storage)",
     },
     {
@@ -362,7 +363,7 @@ export const HARNESS_STORAGE_LAYOUT = {
       contract: "src/Harness.sol:Harness",
       label: "balances",
       offset: 0,
-      slot: "2",
+      slot: "3",
       type: "t_mapping(t_bytes32,t_uint256)",
     },
   ],
