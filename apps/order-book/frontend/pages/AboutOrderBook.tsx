@@ -2,22 +2,22 @@ import architectureDiagram from "../architecture.svg";
 import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
+import { useDomainContext } from "../contexts/DomainContext";
 import exchangeScreenshot from "../image.png";
 import { Link } from "../lib/router";
 import orderSequencingScreenshot from "../order-sequencing.png";
-
-const CHAIN_ID = Number(process.env.BUN_PUBLIC_CHAIN_ID ?? "0");
-const EXCHANGE_ADDRESS =
-  process.env.BUN_PUBLIC_EXCHANGE_ADDRESS ??
-  "0x0000000000000000000000000000000000000000";
 
 const CHAIN_NAMES: Record<number, string> = {
   10143: "Monad testnet",
   31337: "Anvil (local)",
 };
-const CHAIN_NAME = CHAIN_NAMES[CHAIN_ID] ?? `Chain ${CHAIN_ID}`;
 
 export function AboutOrderBook() {
+  const { domain } = useDomainContext();
+  const chainId = domain?.chainId ?? 0;
+  const chainName = domain
+    ? (CHAIN_NAMES[domain.chainId] ?? `Chain ${domain.chainId}`)
+    : "Loading...";
   const apiUrl =
     typeof window !== "undefined" ? `${window.location.origin}/api` : "/api";
   return (
@@ -482,19 +482,20 @@ function forceExecute(uint256 index) external {
               <tr className="border-b border-black">
                 <td className="px-3 py-2 font-semibold w-32">Chain</td>
                 <td className="px-3 py-2">
-                  {CHAIN_NAME} (id {CHAIN_ID})
+                  {chainName} (id {chainId})
                 </td>
               </tr>
               <tr className="border-b border-black">
                 <td className="px-3 py-2 font-semibold">Exchange</td>
                 <td className="px-3 py-2 break-all">
                   <a
-                    href={`https://testnet.monadscan.com/address/${EXCHANGE_ADDRESS}`}
+                    href={`https://testnet.monadscan.com/address/${domain?.verifyingContract ?? "0x0000000000000000000000000000000000000000"}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-blue-500 hover:underline"
                   >
-                    {EXCHANGE_ADDRESS}
+                    {domain?.verifyingContract ??
+                      "0x0000000000000000000000000000000000000000"}
                   </a>
                 </td>
               </tr>

@@ -14,7 +14,7 @@ Order-book uses one root `.env` file. Start from the app-level example:
 cp .env.example.local .env
 ```
 
-Scripts require `API_URL` and `SCHEDULER_ADDRESS`. They reuse `BUN_PUBLIC_CHAIN_ID`, `BUN_PUBLIC_EXCHANGE_ADDRESS`, and `BUN_PUBLIC_RPC_URL` from `.env`; set `CHAIN_ID`, `EXCHANGE_ADDRESS`, or `RPC_URL` only for one-off overrides.
+Scripts require `API_URL`. They read `CHAIN_ID`, `EXCHANGE_ADDRESS`, and `RPC_URL` from `.env`; set those only for one-off overrides.
 
 ## Scripts
 

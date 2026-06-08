@@ -3,7 +3,7 @@ import { useBlock } from "../hooks/useBlock";
 import { type ApiMutation, useMutations } from "../hooks/useMutations";
 import { Link, useMatch } from "../lib/router";
 
-const MUTATION_COLUMNS = ["id", "batch", "status", "account", "description"];
+const MUTATION_COLUMNS = ["id", "status", "account", "description"];
 
 const linkClass = "text-blue-500 hover:underline";
 
@@ -26,16 +26,7 @@ export function BlockPage() {
     ? dedupeTransactionHash(mutations.data)
     : null;
 
-  const rows = (mutations.data ?? []).filter(
-    (m): m is typeof m & { batchId: number } => m.batchId != null,
-  );
-
-  const batchOrder = new Map<number, number>();
-  for (const m of rows) {
-    if (!batchOrder.has(m.batchId)) {
-      batchOrder.set(m.batchId, batchOrder.size);
-    }
-  }
+  const rows = mutations.data ?? [];
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -100,14 +91,7 @@ export function BlockPage() {
               </tr>
             ) : (
               rows.map((m) => (
-                <tr
-                  key={m.id}
-                  className={`border-b last:border-0 ${
-                    (batchOrder.get(m.batchId) ?? 0) % 2 === 0
-                      ? "bg-white"
-                      : "bg-gray-50"
-                  }`}
-                >
+                <tr key={m.id} className="border-b last:border-0">
                   <td className="py-2 pr-6">
                     <code>
                       <Link to={`/mutation/${m.id}`} className={linkClass}>
@@ -116,20 +100,15 @@ export function BlockPage() {
                     </code>
                   </td>
                   <td className="py-2 pr-6">
-                    <code>{m.batchId}</code>
-                  </td>
-                  <td className="py-2 pr-6">
                     <code>{m.status}</code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>
                       <Link
-                        to={`/account/${m.accountSerial ?? m.account}`}
+                        to={`/account/${m.signature_account}`}
                         className={linkClass}
                       >
-                        {m.accountSerial != null
-                          ? m.accountSerial
-                          : shortAddr(m.account)}
+                        {shortAddr(m.signature_account)}
                       </Link>
                     </code>
                   </td>

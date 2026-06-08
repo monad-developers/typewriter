@@ -1,22 +1,30 @@
 import { useMutation } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
-import { bytesToHex, hashTypedData, keccak256 } from "viem";
+import { bytesToHex, hashTypedData } from "viem";
 import { Authentication as ClientAuthentication } from "webauthx/client";
+import type { SubmittedOrderBookMutation } from "../../src/app";
 import { useAccountContext } from "../contexts/AccountContext";
-import { EIP712_DOMAIN, EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
+import { useDomainContext } from "../contexts/DomainContext";
+import { request } from "../lib/api";
+import { EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
 import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
 import { encodeWebAuthnSignature, identify, RP_ID } from "../lib/webauthn";
 
 export function useSignIn() {
   const { setAccount } = useAccountContext();
+  const { domain } = useDomainContext();
 
   return useMutation({
     mutationFn: async () => {
+      if (domain === null) throw new Error("Missing domain");
       const [accountId, sessionKey] = await Promise.all([
         identify(),
         generateSessionKey(),
       ]);
       const sessionPublicKey = await exportPublicKey(sessionKey);
+      const { keys } = await request<{ keys: unknown[] }>(
+        `/api/account/${accountId}`,
+      );
 
       const nonce =
         BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n;
@@ -32,7 +40,7 @@ export function useSignIn() {
       };
 
       const hash = hashTypedData({
-        domain: EIP712_DOMAIN,
+        domain,
         types: { Authorize: EIP712_TYPES.Authorize },
         primaryType: "Authorize" as const,
         message,
@@ -45,25 +53,16 @@ export function useSignIn() {
 
       const rawSignature = encodeWebAuthnSignature(assertion);
 
-      const res = await fetch("/api/authorize", {
+      await request("/api", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...message,
-          nonce: nonce.toString(),
-          deadline: MAX_DEADLINE.toString(),
-          keyId: 0,
-          rawSignature,
-        }),
+        body: {
+          name: "Authorize",
+          params: message,
+          signature: { account: accountId, keyId: 0n, rawSignature },
+        } satisfies Extract<SubmittedOrderBookMutation, { name: "Authorize" }>,
       });
 
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.error ?? "Authorize failed");
-      }
-
-      const nonceKey = BigInt(keccak256(sessionPublicKey)) >> 64n;
-      await setAccount({ accountId, keyId: 1, nonceKey, sessionKey });
+      await setAccount({ accountId, keyId: keys.length, sessionKey });
     },
   });
 }

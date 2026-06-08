@@ -32,29 +32,28 @@ cp .env.example.testnet .env
 
 | Variable | Used by | Description |
 |---|---|---|
-| `DEPLOYER_PRIVATE_KEY` | `bun dev`, `bun start`, `bun run deploy` | Funded deployer/backend wallet private key |
-| `SCHEDULER_ADDRESS` | `bun run deploy` | EOA authorized to call `Exchange.execute()` |
+| `PRIVATE_KEY` | `bun dev`, `bun start`, `bun run deploy` | Funded deployer/backend wallet private key |
 | `DATABASE_URL` | `bun dev`, `bun start`, tests with Postgres | Postgres connection string |
-| `BUN_PUBLIC_EXCHANGE_ADDRESS` | Backend, frontend, scripts | Deployed `Exchange` contract address |
-| `BUN_PUBLIC_RPC_URL` | Backend, frontend, scripts, deploy | RPC endpoint. The backend accepts comma-separated failover URLs |
-| `BUN_PUBLIC_CHAIN_ID` | Backend, frontend, scripts | Chain ID, for example `31337` for Anvil or `10143` for Monad testnet |
+| `EXCHANGE_ADDRESS` | Backend, scripts | Deployed `Exchange` contract address |
+| `RPC_URL` | Backend, scripts, deploy | RPC endpoint. The backend accepts comma-separated failover URLs |
+| `CHAIN_ID` | Backend, scripts | Chain ID, for example `31337` for Anvil or `10143` for Monad testnet |
 | `BUN_PUBLIC_RP_ID` | Frontend | WebAuthn relying party ID, usually the hostname |
 | `BUN_PUBLIC_ORIGIN` | Frontend | Expected WebAuthn origin |
 | `API_URL` | Scripts | Running order-book backend URL |
 
-`BUN_PUBLIC_*` variables are intentionally public. `bunfig.toml` exposes them to browser code.
+`BUN_PUBLIC_*` variables are only used for browser-facing WebAuthn settings. `bunfig.toml` exposes them to browser code.
 
 ### Script Overrides
 
-Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL` and reuse the `BUN_PUBLIC_*` chain settings above.
+Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL` and read `CHAIN_ID`, `EXCHANGE_ADDRESS`, and `RPC_URL` from `.env`.
 
 Set these only for one-off overrides:
 
 | Variable | Description |
 |---|---|
-| `CHAIN_ID` | Overrides `BUN_PUBLIC_CHAIN_ID` for scripts |
-| `EXCHANGE_ADDRESS` | Overrides `BUN_PUBLIC_EXCHANGE_ADDRESS` for scripts |
-| `RPC_URL` | Overrides `BUN_PUBLIC_RPC_URL` for scripts |
+| `CHAIN_ID` | One-off override for scripts |
+| `EXCHANGE_ADDRESS` | One-off override for scripts |
+| `RPC_URL` | One-off override for scripts |
 
 Order-entry scripts also take command-specific variables such as `INSTRUMENT`, `SIDE`, `QUANTITY`, `PRICE`, and `INTERVAL`; see `scripts/README.md`.
 

@@ -1,5 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getNonce, useAccountContext } from "../contexts/AccountContext";
+import { useDomainContext } from "../contexts/DomainContext";
+import { request } from "../lib/api";
 import { signMarketOrder } from "./useSign";
 
 type MarketOrderParams = {
@@ -10,13 +12,15 @@ type MarketOrderParams = {
 
 export function useMarketOrderMutation() {
   const { account, incrementSeq } = useAccountContext();
+  const { domain } = useDomainContext();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ instrumentId, side, amount }: MarketOrderParams) => {
       if (!account) throw new Error("No account");
+      if (domain === null) throw new Error("Missing domain");
 
-      const signed = await signMarketOrder(account, getNonce(account), {
+      const signed = await signMarketOrder(account, domain, getNonce(account), {
         quantity: BigInt(amount),
         minReceivedQuantity: 0n,
         instrumentId,
@@ -24,23 +28,15 @@ export function useMarketOrderMutation() {
       });
 
       const start = performance.now();
-      const res = await fetch("/api/market-order", {
+      const result = await request("/api", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(signed),
+        body: signed,
       });
       console.log(
         `[tx-latency] market-order ${(performance.now() - start).toFixed(1)}ms`,
       );
 
-      if (!res.ok) {
-        const err = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(err?.error ?? "Order failed");
-      }
-
-      return res.json();
+      return result;
     },
     onSuccess: async () => {
       incrementSeq();

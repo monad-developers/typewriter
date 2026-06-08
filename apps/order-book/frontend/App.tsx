@@ -6,6 +6,7 @@ import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
+import { DomainProvider } from "./contexts/DomainContext";
 import { useBalances } from "./hooks/useBalances";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
@@ -20,6 +21,7 @@ function Auth() {
   const signUp = useSignUp();
   const demoSignUp = useDemoSignUp();
   const isPending = signUp.isPending || demoSignUp.isPending;
+  const error = signUp.error ?? demoSignUp.error;
 
   return (
     <main className="flex-1 flex items-center justify-center">
@@ -40,6 +42,11 @@ function Auth() {
         >
           {demoSignUp.isPending ? "Creating..." : "or try the demo"}
         </button>
+        {error ? (
+          <div className="text-sm text-red-600 max-w-sm text-center">
+            {error instanceof Error ? error.message : "Create account failed"}
+          </div>
+        ) : null}
       </div>
     </main>
   );
@@ -48,6 +55,7 @@ function Auth() {
 function ExchangeRoute() {
   const { account, loading } = useAccountContext();
   const balances = useBalances(account?.accountId);
+
   if (loading) return <Shell compact />;
   if (!account)
     return (
@@ -125,9 +133,11 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider>
-        <AccountProvider>
-          <Routes />
-        </AccountProvider>
+        <DomainProvider>
+          <AccountProvider>
+            <Routes />
+          </AccountProvider>
+        </DomainProvider>
       </RouterProvider>
     </QueryClientProvider>
   );

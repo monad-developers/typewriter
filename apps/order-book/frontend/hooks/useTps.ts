@@ -1,12 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
+import { request } from "../lib/api";
 
 export function useTps() {
   return useQuery({
     queryKey: ["tps"],
     queryFn: async () => {
-      const res = await fetch("/api/tps");
-      if (!res.ok) throw new Error("Failed to fetch tps");
-      return (await res.json()) as number;
+      return request<number>("/api/tps");
     },
     refetchInterval: 1000,
   });

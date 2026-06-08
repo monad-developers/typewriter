@@ -6,7 +6,8 @@ import {Exchange} from "../src/Exchange.sol";
 
 contract OrderBookScript is Script {
     function run() external {
-        address scheduler = vm.envAddress("SCHEDULER_ADDRESS");
+        uint256 privateKey = vm.envUint("PRIVATE_KEY");
+        address scheduler = vm.addr(privateKey);
 
         vm.startBroadcast();
         new Exchange(scheduler);

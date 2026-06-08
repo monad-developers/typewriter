@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
-import { EIP712_TYPES, EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
+import {
+  ALL_PERMISSIONS,
+  EIP712_TYPES,
+  EXCHANGE_STORAGE_LAYOUT,
+} from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
@@ -19,18 +23,14 @@ import {
   ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
   ORDER_BOOK_SIGNATURE_PARAMS,
-  type OrderBookFFCAConfig,
-  type OrderBookMutationName,
   type SubmittedOrderBookMutation,
 } from "./app";
 import {
-  loadBlock,
-  loadMutationByAccountNonce,
-  loadMutationById,
-  loadMutationsByAccount,
-  loadMutationsByBlock,
+  selectBlock,
+  selectMutationById,
+  selectMutationsByAccount,
+  selectMutationsByBlock,
 } from "./db-queries";
-import { ALL_PERMISSIONS } from "./exchange";
 
 const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
@@ -42,7 +42,11 @@ async function createOrderBookFFCA(
   address: Hex,
   options: { submitIntervalMs?: number } = {},
 ) {
-  const config = {
+  return createFFCA<
+    typeof EXCHANGE_STORAGE_LAYOUT,
+    typeof ORDER_BOOK_MUTATIONS,
+    typeof ORDER_BOOK_SIGNATURE_PARAMS
+  >({
     address,
     domain: { name: "Exchange", version: "1" },
     signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
@@ -57,13 +61,7 @@ async function createOrderBookFFCA(
       submitIntervalMs: options.submitIntervalMs ?? 60_000,
     },
     mutations: ORDER_BOOK_MUTATIONS,
-  } as const satisfies OrderBookFFCAConfig;
-
-  return createFFCA<
-    typeof EXCHANGE_STORAGE_LAYOUT,
-    typeof ORDER_BOOK_MUTATIONS,
-    typeof ORDER_BOOK_SIGNATURE_PARAMS
-  >(config);
+  });
 }
 
 function secp256k1PublicKey(address: Address): Hex {
@@ -74,10 +72,7 @@ function accountId(publicKey: Hex): Hex {
   return keccak256(publicKey);
 }
 
-function messageFor(
-  name: OrderBookMutationName,
-  params: Record<string, unknown>,
-) {
+function messageFor(name: string, params: Record<string, unknown>) {
   switch (name) {
     case "Initialize":
       return {
@@ -158,7 +153,7 @@ function messageFor(
   }
 }
 
-async function signedMutation<const name extends OrderBookMutationName>(input: {
+async function signedMutation<const name extends string>(input: {
   name: name;
   params: Extract<SubmittedOrderBookMutation, { name: name }>["params"];
   signerKeyId: bigint;
@@ -307,7 +302,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       signerKeyId: 1n,
       account: maker,
       params: {
-        instrumentId: 0,
+        instrumentId: 0n,
         base: BASE,
         quote: QUOTE,
         baseLotExp: 0,
@@ -343,7 +338,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       account: maker,
       params: {
         quantity: 10n,
-        instrumentId: 0,
+        instrumentId: 0n,
         price: 5n * Q32,
         bidOrAsk: 0,
         nonce: 2n,
@@ -361,7 +356,7 @@ test("ffca order book changes an unfilled order to a new price", async () => {
       signerKeyId: 1n,
       account: maker,
       params: {
-        orderId: 0,
+        orderId: 0n,
         price: 6n * Q32,
         nonce: 3n,
         deadline: FAR_DEADLINE,
@@ -394,7 +389,7 @@ test("db-queries fan out across per-mutation tables", async () => {
       signerKeyId: 1n,
       account: maker,
       params: {
-        instrumentId: 0,
+        instrumentId: 0n,
         base: BASE,
         quote: QUOTE,
         baseLotExp: 0,
@@ -438,54 +433,39 @@ test("db-queries fan out across per-mutation tables", async () => {
   };
   const blockNumber = depositRow.blockNumber.toString();
 
-  // loadBlock: any per-type table referencing this block returns its metadata.
-  const block = await loadBlock(db, schema, blockNumber);
+  // selectBlock: any per-type table referencing this block returns its metadata.
+  const block = await selectBlock(db, schema, blockNumber);
   expect(block).toMatchObject({
     number: blockNumber,
     hash: depositRow.blockHash,
     timestamp: depositRow.blockTimestamp.toString(),
   });
 
-  // loadMutationById: globally unique id resolves through the right table.
-  const byId = await loadMutationById(db, schema, depositRow.id);
+  // selectMutationById: globally unique id resolves through the right table.
+  const byId = await selectMutationById(db, schema, depositRow.id);
   expect(byId).toMatchObject({
     id: depositRow.id,
-    type: "deposit",
     status: "included",
-    account: maker,
-    nonce: "1",
-    blockNumber,
+    signature_account: maker,
+    nonce: 1n,
+    blockNumber: depositRow.blockNumber,
   });
-  expect((byId?.payload as { asset: string; amount: string }).amount).toBe("7");
+  expect(byId).toMatchObject({ asset: BASE, amount: 7n });
 
-  // loadMutationByAccountNonce: looks across nonce-bearing tables.
-  const byAccountNonce = await loadMutationByAccountNonce(
-    db,
-    schema,
-    maker,
-    "1",
-  );
-  expect(byAccountNonce?.id).toBe(depositRow.id);
-
-  // loadMutationsByBlock: returns every persisted mutation that landed in
+  // selectMutationsByBlock: returns every persisted mutation that landed in
   // the block, ordered by mutation id.
-  const inBlock = await loadMutationsByBlock(db, schema, blockNumber);
+  const inBlock = await selectMutationsByBlock(db, schema, blockNumber);
   expect(inBlock.length).toBeGreaterThanOrEqual(1);
-  const typesInBlock = new Set(inBlock.map((m) => m.type));
-  expect(typesInBlock.has("deposit")).toBe(true);
+  const idsInBlock = new Set(inBlock.map((m) => m.id));
+  expect(idsInBlock.has(depositRow.id)).toBe(true);
 
-  // loadMutationsByAccount: most recent N mutations for this account across
+  // selectMutationsByAccount: most recent N mutations for this account across
   // all per-type tables, ordered by id desc.
-  const recent = await loadMutationsByAccount(db, schema, maker, 10);
-  expect(recent.map((m) => m.type)).toEqual([
-    "deposit",
-    "addInstrument",
-    "initialize",
-  ]);
-  expect(recent.every((m) => m.account === maker)).toBe(true);
+  const recent = await selectMutationsByAccount(db, schema, maker, 10);
+  expect(recent[0]?.id).toBe(depositRow.id);
+  expect(recent.every((m) => m.signature_account === maker)).toBe(true);
 
   // 404 paths.
-  expect(await loadBlock(db, schema, "999999")).toBeNull();
-  expect(await loadMutationById(db, schema, 999_999)).toBeNull();
-  expect(await loadMutationByAccountNonce(db, schema, maker, "999")).toBeNull();
+  expect(await selectBlock(db, schema, "999999")).toBeNull();
+  expect(await selectMutationById(db, schema, 999_999)).toBeNull();
 });

@@ -3,8 +3,9 @@ import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import type { Hex } from "viem";
 import { keccak256 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import type { SubmittedOrderBookMutation } from "../../src/app";
 import { useAccountContext } from "../contexts/AccountContext";
-import { MAX_DEADLINE } from "../lib/eip712";
+import { request } from "../lib/api";
 import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
 
 export function useDemoSignUp() {
@@ -21,30 +22,28 @@ export function useDemoSignUp() {
       const sessionKey = await generateSessionKey();
       const sessionPublicKey = await exportPublicKey(sessionKey);
 
-      const initRes = await fetch("/api/initialize", {
+      await request("/api", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          account: accountId,
-          expiry: 0,
-          rootKeyType: 2,
-          keyType: 0,
-          permissions: DEFAULT_NON_ROOT_PERMISSIONS,
-          rootPublicKey,
-          publicKey: sessionPublicKey,
-          keyId: 0,
-          nonce: "0",
-          deadline: MAX_DEADLINE.toString(),
-          rawSignature: "0x",
-        }),
+        body: {
+          name: "Initialize",
+          params: {
+            account: accountId,
+            expiry: 0,
+            rootKeyType: 2,
+            keyType: 0,
+            permissions: DEFAULT_NON_ROOT_PERMISSIONS,
+            rootPublicKey,
+            publicKey: sessionPublicKey,
+          },
+          signature: {
+            account: accountId,
+            keyId: 0n,
+            rawSignature: "0x",
+          },
+        } satisfies Extract<SubmittedOrderBookMutation, { name: "Initialize" }>,
       });
-      if (!initRes.ok) {
-        const body = await initRes.json();
-        throw new Error(body.error ?? "Initialize failed");
-      }
 
-      const nonceKey = BigInt(keccak256(sessionPublicKey)) >> 64n;
-      await setAccount({ accountId, keyId: 1, nonceKey, sessionKey });
+      await setAccount({ accountId, keyId: 1, sessionKey });
     },
   });
 }

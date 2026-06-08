@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import type { Address, Hex } from "viem";
+import type { Hex } from "viem";
+import { request } from "../lib/api";
 
 export type MutationStatus =
   | "submitted"
@@ -8,112 +9,29 @@ export type MutationStatus =
   | "safe"
   | "finalized";
 
-export type InitializePayload = {
+export type ApiMutation = {
   id: number;
-  expiry: number;
-  rootKeyType: number;
-  keyType: number;
-  permissions: number;
-  rootPublicKey: Hex;
-  publicKey: Hex;
-};
-
-export type AuthorizePayload = {
-  id: number;
-  expiry: number;
-  keyType: number;
-  permissions: number;
-  publicKey: Hex;
-};
-
-export type RevokePayload = {
-  id: number;
-  revokedKeyId: string;
-};
-
-export type CloseOrderPayload = {
-  id: number;
-  orderId: string;
-};
-
-export type LimitOrderPayload = {
-  id: number;
-  quantity: string;
-  instrumentId: string;
-  price: string;
-  bidOrAsk: number;
-};
-
-export type MarketOrderPayload = {
-  id: number;
-  quantity: string;
-  minReceivedQuantity: string;
-  instrumentId: string;
-  bidOrAsk: number;
-  fills: { quantity: string; price: string }[];
-};
-
-export type AddInstrumentPayload = {
-  id: number;
-  instrumentId: string;
-  base: Address;
-  quote: Address;
-  baseLotExp: number;
-  quoteLotExp: number;
-};
-
-export type DepositPayload = {
-  id: number;
-  asset: Address;
-  amount: string;
-};
-
-export type WithdrawalPayload = {
-  id: number;
-  asset: Address;
-  amount: string;
-};
-
-type MutationBase = {
-  id: number;
-  batchId: number | null;
-  blockNumber: string | null;
-  status: MutationStatus;
-  account: Hex;
-  accountSerial: number | null;
-  keyIndex: string | null;
-  nonce: string | null;
-  deadline: string;
-  submittedAt: string | null;
-  acceptedAt: string | null;
-  includedAt: string | null;
-  safeAt: string | null;
-  finalizedAt: string | null;
+  executionIndex: bigint | null;
+  blockNumber: bigint | null;
+  blockHash: Hex | null;
+  blockTimestamp: bigint | null;
   transactionHash: Hex | null;
+  status: MutationStatus;
+  acceptedAt: Date;
+  includedAt: Date | null;
+  safeAt: Date | null;
+  finalizedAt: Date | null;
+  signature_account: Hex;
+  signature_keyId: bigint;
+  signature_rawSignature: Hex;
+  [column: string]: unknown;
 };
-
-export type ApiMutation =
-  | (MutationBase & { type: "initialize"; payload: InitializePayload | null })
-  | (MutationBase & { type: "authorize"; payload: AuthorizePayload | null })
-  | (MutationBase & { type: "revoke"; payload: RevokePayload | null })
-  | (MutationBase & { type: "closeOrder"; payload: CloseOrderPayload | null })
-  | (MutationBase & { type: "limitOrder"; payload: LimitOrderPayload | null })
-  | (MutationBase & { type: "marketOrder"; payload: MarketOrderPayload | null })
-  | (MutationBase & {
-      type: "addInstrument";
-      payload: AddInstrumentPayload | null;
-    })
-  | (MutationBase & { type: "deposit"; payload: DepositPayload | null })
-  | (MutationBase & { type: "withdrawal"; payload: WithdrawalPayload | null });
 
 export function useMutations(blockNumber: string | undefined) {
   return useQuery({
     queryKey: ["mutations", blockNumber],
     queryFn: async () => {
-      const res = await fetch(`/api/mutations?block=${blockNumber}`);
-      if (!res.ok)
-        throw new Error(`Failed to fetch mutations for block ${blockNumber}`);
-      return (await res.json()) as ApiMutation[];
+      return request<ApiMutation[]>(`/api/mutations?block=${blockNumber}`);
     },
     enabled: !!blockNumber,
     refetchInterval: 1000,

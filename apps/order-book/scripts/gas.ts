@@ -6,7 +6,6 @@ import {
   priceToQ32,
   TokenAmount,
 } from "order-book-sdk";
-import type { Address } from "ox/Address";
 import type { Hex } from "viem";
 import {
   createPublicClient,
@@ -15,7 +14,7 @@ import {
   http,
   parseSignature,
 } from "viem";
-import { MutationType } from "../src/exchange";
+import { privateKeyToAccount } from "viem/accounts";
 import { CHAIN_ID, EXCHANGE_ADDRESS, requiredEnv } from "./src/constants";
 import {
   type Account,
@@ -25,19 +24,25 @@ import {
   sign,
 } from "./src/sdk";
 
-const RPC_URL = requiredEnv(
-  "RPC_URL or BUN_PUBLIC_RPC_URL",
-  process.env.RPC_URL ?? process.env.BUN_PUBLIC_RPC_URL,
-);
-const SCHEDULER_ADDRESS = requiredEnv(
-  "SCHEDULER_ADDRESS",
-  process.env.SCHEDULER_ADDRESS,
-) as Address;
+const RPC_URL = requiredEnv("RPC_URL", process.env.RPC_URL);
 
 const BASELINE_N = 10;
 const SETTLE_MS = 1000;
 
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
+
+const PRIVATE_KEY = requiredEnv(
+  "PRIVATE_KEY",
+  process.env.PRIVATE_KEY,
+) as `0x${string}`;
+const SCHEDULER_ADDRESS = privateKeyToAccount(PRIVATE_KEY).address;
+
+enum MutationType {
+  CloseOrder = 3,
+  ChangeOrder = 4,
+  LimitOrder = 5,
+  MarketOrder = 6,
+}
 
 const publicClient = createPublicClient({ transport: http(RPC_URL) });
 
@@ -348,7 +353,7 @@ console.log(
   `measuring marginal gas costs against ${EXCHANGE_ADDRESS} on chain ${CHAIN_ID}`,
 );
 console.log(`rpc: ${RPC_URL}`);
-console.log(`scheduler (from): ${SCHEDULER_ADDRESS}`);
+console.log(`scheduler (from private key): ${SCHEDULER_ADDRESS}`);
 console.log(`baseline batch size N = ${BASELINE_N}`);
 console.log("");
 

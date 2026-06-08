@@ -4,7 +4,7 @@ import {
 } from "../components/MutationLifecycle";
 import { MarketOrderFills, MutationParams } from "../components/MutationParams";
 import { useAccount } from "../hooks/useAccount";
-import { useMutation, useMutationByNonce } from "../hooks/useMutation";
+import { useMutation } from "../hooks/useMutation";
 import type { ApiMutation } from "../hooks/useMutations";
 import { Link, useMatch } from "../lib/router";
 
@@ -12,11 +12,10 @@ const KEY_TYPE_LABELS = ["P256", "WebAuthnP256", "Secp256k1"] as const;
 
 function stageTimestamps(mutation: ApiMutation): StageTimestamps {
   const out: StageTimestamps = {};
-  if (mutation.submittedAt) out.submitted = mutation.submittedAt;
-  if (mutation.acceptedAt) out.accepted = mutation.acceptedAt;
-  if (mutation.includedAt) out.included = mutation.includedAt;
-  if (mutation.safeAt) out.safe = mutation.safeAt;
-  if (mutation.finalizedAt) out.finalized = mutation.finalizedAt;
+  if (mutation.acceptedAt) out.accepted = mutation.acceptedAt.toISOString();
+  if (mutation.includedAt) out.included = mutation.includedAt.toISOString();
+  if (mutation.safeAt) out.safe = mutation.safeAt.toISOString();
+  if (mutation.finalizedAt) out.finalized = mutation.finalizedAt.toISOString();
   return out;
 }
 
@@ -26,12 +25,27 @@ function shortAddr(addr: string) {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
-function computeRequiresNonce(nonce: string): string | null {
-  const n = BigInt(nonce);
-  const seq = n & ((1n << 64n) - 1n);
-  if (seq === 0n) return null;
-  const nonceKey = n >> 64n;
-  return ((nonceKey << 64n) | (seq - 1n)).toString();
+function mutationKind(mutation: ApiMutation | undefined) {
+  if (mutation === undefined) return "...";
+  if (mutation.rootKeyType !== undefined) return "initialize";
+  if (mutation.keyType !== undefined && mutation.publicKey !== undefined)
+    return "authorize";
+  if (mutation.keyId !== undefined) return "revoke";
+  if (mutation.orderId !== undefined && mutation.price !== undefined)
+    return "changeOrder";
+  if (mutation.orderId !== undefined) return "closeOrder";
+  if (mutation.quantity !== undefined && mutation.price !== undefined)
+    return "limitOrder";
+  if (
+    mutation.quantity !== undefined &&
+    mutation.minReceivedQuantity !== undefined
+  )
+    return "marketOrder";
+  if (mutation.base !== undefined && mutation.quote !== undefined)
+    return "addInstrument";
+  if (mutation.asset !== undefined && mutation.amount !== undefined)
+    return "assetMovement";
+  return "unknown";
 }
 
 export function MutationPage() {
@@ -43,18 +57,10 @@ export function MutationPage() {
 
   const timestamps = mutation ? stageTimestamps(mutation) : undefined;
 
-  const requiresNonce = mutation?.nonce
-    ? computeRequiresNonce(mutation.nonce)
-    : null;
-  const requires = useMutationByNonce(
-    mutation?.account,
-    requiresNonce ?? undefined,
-  );
-
-  const account = useAccount(mutation?.account);
+  const account = useAccount(mutation?.signature_account);
   const keyType =
-    mutation && mutation.keyIndex != null && account.data
-      ? (account.data.keys[Number(mutation.keyIndex)]?.keyType ?? null)
+    mutation && account.data
+      ? (account.data.keys[Number(mutation.signature_keyId)]?.keyType ?? null)
       : null;
 
   return (
@@ -62,12 +68,14 @@ export function MutationPage() {
       <section className="w-full border-b p-4 flex flex-col gap-2">
         <h2 className="text-2xl font-bold">Message</h2>
         <code>id: {mutation?.id ?? "..."}</code>
-        <code>batch: {mutation?.batchId ?? "..."}</code>
+        <code>
+          execution index: {mutation?.executionIndex?.toString() ?? "..."}
+        </code>
         <code>
           block:{" "}
-          {mutation?.blockNumber ? (
+          {mutation?.blockNumber != null ? (
             <Link to={`/block/${mutation.blockNumber}`} className={linkClass}>
-              {mutation.blockNumber}
+              {mutation.blockNumber.toString()}
             </Link>
           ) : (
             "..."
@@ -83,11 +91,11 @@ export function MutationPage() {
       <div className="w-full border-b flex flex-col md:flex-row">
         <section className="flex-1 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
           <h2 className="text-2xl font-bold mb-2">Parameters</h2>
-          <code>type: {mutation?.type ?? "..."}</code>
+          <code>type: {mutationKind(mutation)}</code>
           {mutation ? <MutationParams mutation={mutation} /> : null}
         </section>
 
-        {mutation?.type === "marketOrder" ? (
+        {Array.isArray(mutation?.resolution_fills) ? (
           <section className="flex-1 min-w-0 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
             <h2 className="text-2xl font-bold mb-2">Resolution</h2>
             <MarketOrderFills mutation={mutation} />
@@ -100,26 +108,10 @@ export function MutationPage() {
             account:{" "}
             {mutation ? (
               <Link
-                to={`/account/${mutation.accountSerial ?? mutation.account}`}
+                to={`/account/${mutation.signature_account}`}
                 className={linkClass}
               >
-                {mutation.accountSerial != null
-                  ? mutation.accountSerial
-                  : shortAddr(mutation.account)}
-              </Link>
-            ) : (
-              "..."
-            )}
-          </code>
-          <code>
-            requires:{" "}
-            {mutation == null ? (
-              "..."
-            ) : requiresNonce == null ? (
-              "none"
-            ) : requires.data ? (
-              <Link to={`/mutation/${requires.data.id}`} className={linkClass}>
-                {requires.data.id}
+                {shortAddr(mutation.signature_account)}
               </Link>
             ) : (
               "..."
@@ -129,7 +121,7 @@ export function MutationPage() {
             type:{" "}
             {mutation == null
               ? "..."
-              : mutation.keyIndex == null
+              : mutation.signature_keyId === 0n
                 ? "root"
                 : keyType != null
                   ? KEY_TYPE_LABELS[keyType]

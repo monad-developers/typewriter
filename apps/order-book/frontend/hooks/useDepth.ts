@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { request } from "../lib/api";
 
 type DepthResponse = {
   instrumentId: number;
@@ -10,9 +11,7 @@ export function useDepth(instrumentId: number) {
   return useQuery({
     queryKey: ["depth", instrumentId],
     queryFn: async () => {
-      const res = await fetch(`/api/depth?instrumentId=${instrumentId}`);
-      if (!res.ok) throw new Error("Failed to fetch depth");
-      return (await res.json()) as DepthResponse;
+      return request<DepthResponse>(`/api/depth?instrumentId=${instrumentId}`);
     },
     refetchInterval: 500,
   });

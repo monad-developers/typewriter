@@ -32,11 +32,23 @@ const ASSET_SYMBOLS: Record<Address, string> = {
   [BTC]: "BTC",
 };
 
-const KEY_TYPE_NAMES = ["p256", "webauthn-p256", "secp256k1"];
-
-function keyTypeName(keyType: number) {
-  return KEY_TYPE_NAMES[keyType] ?? `keyType ${keyType}`;
-}
+const PARAM_EXCLUDES = new Set([
+  "id",
+  "executionIndex",
+  "blockNumber",
+  "blockHash",
+  "blockTimestamp",
+  "transactionHash",
+  "status",
+  "acceptedAt",
+  "includedAt",
+  "safeAt",
+  "finalizedAt",
+  "signature_account",
+  "signature_keyId",
+  "signature_rawSignature",
+  "resolution_fills",
+]);
 
 function assetSymbol(asset: Address) {
   return ASSET_SYMBOLS[asset] ?? asset;
@@ -46,24 +58,10 @@ function instrumentEntry(instrumentId: number) {
   return INSTRUMENT_BY_ID.get(instrumentId);
 }
 
-function formatBaseQuantity(quantity: string, instrumentId: number) {
+function formatPrice(priceQ32: string | number | bigint, instrumentId: number) {
   const entry = instrumentEntry(instrumentId);
-  if (!entry) return quantity;
-  const amount = TokenAmount.fromRaw(
-    BigInt(quantity),
-    entry.config.base,
-  ).human.toFixed(2);
-  return `${amount} ${assetSymbol(entry.config.base)}`;
-}
-
-function formatPrice(priceQ32: string, instrumentId: number) {
-  const entry = instrumentEntry(instrumentId);
-  if (!entry) return priceQ32;
+  if (entry === undefined) return String(priceQ32);
   return `$${q32ToPrice(BigInt(priceQ32), entry.config).toFixed(2)}`;
-}
-
-function formatAmount(amount: string, asset: Address) {
-  return TokenAmount.fromRaw(BigInt(amount), asset).human.toFixed(2);
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -74,157 +72,77 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function formatValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value))
+    return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  if (typeof value === "object") {
+    return JSON.stringify(value, (_, item) =>
+      typeof item === "bigint" ? item.toString() : item,
+    );
+  }
+  return String(value);
+}
+
+function formatParam(label: string, value: unknown, mutation: ApiMutation) {
+  if (label === "asset" || label === "base" || label === "quote") {
+    return typeof value === "string"
+      ? assetSymbol(value as Address)
+      : formatValue(value);
+  }
+  if (label === "instrumentId") {
+    const id = Number(value);
+    return instrumentEntry(id)?.name ?? formatValue(value);
+  }
+  if (label === "price" && mutation.instrumentId !== undefined) {
+    return formatPrice(
+      value as string | number | bigint,
+      Number(mutation.instrumentId),
+    );
+  }
+  if (label === "bidOrAsk") return Number(value) === 0 ? "buy" : "sell";
+  return formatValue(value);
+}
+
 export function MutationParams({ mutation }: { mutation: ApiMutation }) {
-  return <>{renderRows(mutation)}</>;
+  const rows = Object.entries(mutation).filter(
+    ([key, value]) => !PARAM_EXCLUDES.has(key) && value !== undefined,
+  );
+
+  if (rows.length === 0) return <Row label="params" value="none" />;
+
+  return (
+    <>
+      {rows.map(([key, value]) => (
+        <Row key={key} label={key} value={formatParam(key, value, mutation)} />
+      ))}
+    </>
+  );
 }
 
-function renderRows(mutation: ApiMutation) {
-  if (mutation.payload == null) {
-    return <Row label="payload" value="submitted" />;
-  }
-  switch (mutation.type) {
-    case "initialize":
-      return (
-        <>
-          <Row label="expiry" value={mutation.payload.expiry || "no expiry"} />
-          <Row
-            label="root key type"
-            value={keyTypeName(mutation.payload.rootKeyType)}
-          />
-          <Row label="key type" value={keyTypeName(mutation.payload.keyType)} />
-          <Row
-            label="permissions"
-            value={`0b${mutation.payload.permissions.toString(2).padStart(8, "0")}`}
-          />
-          <Row label="root public key" value={mutation.payload.rootPublicKey} />
-          <Row label="public key" value={mutation.payload.publicKey} />
-        </>
-      );
-    case "authorize":
-      return (
-        <>
-          <Row label="expiry" value={mutation.payload.expiry || "no expiry"} />
-          <Row label="key type" value={keyTypeName(mutation.payload.keyType)} />
-          <Row
-            label="permissions"
-            value={`0b${mutation.payload.permissions.toString(2).padStart(8, "0")}`}
-          />
-          <Row label="public key" value={mutation.payload.publicKey} />
-        </>
-      );
-    case "revoke":
-      return (
-        <Row label="revoked key id" value={mutation.payload.revokedKeyId} />
-      );
-    case "closeOrder":
-      return <Row label="order id" value={mutation.payload.orderId} />;
-    case "limitOrder": {
-      const id = Number(mutation.payload.instrumentId);
-      return (
-        <>
-          <Row
-            label="instrument"
-            value={instrumentEntry(id)?.name ?? `#${id}`}
-          />
-          <Row
-            label="side"
-            value={mutation.payload.bidOrAsk === 0 ? "buy" : "sell"}
-          />
-          <Row
-            label="quantity"
-            value={formatBaseQuantity(mutation.payload.quantity, id)}
-          />
-          <Row label="price" value={formatPrice(mutation.payload.price, id)} />
-        </>
-      );
-    }
-    case "marketOrder": {
-      const id = Number(mutation.payload.instrumentId);
-      const entry = instrumentEntry(id);
-      const receivedAsset =
-        entry &&
-        (mutation.payload.bidOrAsk === 0
-          ? entry.config.base
-          : entry.config.quote);
-      return (
-        <>
-          <Row
-            label="instrument"
-            value={instrumentEntry(id)?.name ?? `#${id}`}
-          />
-          <Row
-            label="side"
-            value={mutation.payload.bidOrAsk === 0 ? "buy" : "sell"}
-          />
-          <Row
-            label="quantity"
-            value={formatBaseQuantity(mutation.payload.quantity, id)}
-          />
-          <Row
-            label="min received"
-            value={
-              receivedAsset
-                ? formatAmount(
-                    mutation.payload.minReceivedQuantity,
-                    receivedAsset,
-                  )
-                : mutation.payload.minReceivedQuantity
-            }
-          />
-        </>
-      );
-    }
-    case "addInstrument":
-      return (
-        <>
-          <Row label="instrument id" value={mutation.payload.instrumentId} />
-          <Row label="base" value={assetSymbol(mutation.payload.base)} />
-          <Row label="quote" value={assetSymbol(mutation.payload.quote)} />
-          <Row label="base lot exp" value={mutation.payload.baseLotExp} />
-          <Row label="quote lot exp" value={mutation.payload.quoteLotExp} />
-        </>
-      );
-    case "deposit":
-      return (
-        <>
-          <Row label="asset" value={assetSymbol(mutation.payload.asset)} />
-          <Row
-            label="amount"
-            value={formatAmount(
-              mutation.payload.amount,
-              mutation.payload.asset,
-            )}
-          />
-        </>
-      );
-    case "withdrawal":
-      return (
-        <>
-          <Row label="asset" value={assetSymbol(mutation.payload.asset)} />
-          <Row
-            label="amount"
-            value={formatAmount(
-              mutation.payload.amount,
-              mutation.payload.asset,
-            )}
-          />
-        </>
-      );
-  }
+function isFill(
+  value: unknown,
+): value is { quantity: unknown; price: unknown } {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "quantity" in value &&
+    "price" in value
+  );
 }
 
-export function MarketOrderFills({
-  mutation,
-}: {
-  mutation: Extract<ApiMutation, { type: "marketOrder" }>;
-}) {
-  if (mutation.payload == null)
-    return <code className="text-muted-foreground">Pending</code>;
-  const id = Number(mutation.payload.instrumentId);
-  const entry = instrumentEntry(id);
-  const fills = mutation.payload.fills;
+export function MarketOrderFills({ mutation }: { mutation: ApiMutation }) {
+  const fills = Array.isArray(mutation.resolution_fills)
+    ? mutation.resolution_fills.filter(isFill)
+    : [];
   if (fills.length === 0)
     return <code className="text-muted-foreground">No fills</code>;
+
+  const instrumentId = Number(mutation.instrumentId);
+  const entry = instrumentEntry(instrumentId);
 
   return (
     <table className="w-full border-collapse">
@@ -239,21 +157,22 @@ export function MarketOrderFills({
         </tr>
       </thead>
       <tbody>
-        {fills.map((f, i) => (
+        {fills.map((fill, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: fill position is the identity
           <tr key={i} className="border-b last:border-0">
             <td className="py-2 pr-6">
               <code>
                 {entry
                   ? `${TokenAmount.fromRaw(
-                      BigInt(f.quantity) << BigInt(entry.config.baseLotExp),
+                      BigInt(formatValue(fill.quantity)) <<
+                        BigInt(entry.config.baseLotExp),
                       entry.config.base,
                     ).human.toFixed(2)} ${assetSymbol(entry.config.base)}`
-                  : f.quantity}
+                  : formatValue(fill.quantity)}
               </code>
             </td>
             <td className="py-2 pr-6">
-              <code>{formatPrice(f.price, id)}</code>
+              <code>{formatPrice(formatValue(fill.price), instrumentId)}</code>
             </td>
           </tr>
         ))}

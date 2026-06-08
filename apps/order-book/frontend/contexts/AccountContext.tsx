@@ -1,99 +1,120 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext } from "react";
-import type { Hex } from "viem";
-import { EXCHANGE_ADDRESS } from "../lib/eip712";
+import { bytesToHex, type Hex } from "viem";
 import {
   clearSessionKey,
   loadSessionKey,
   saveSessionKey,
 } from "../lib/sessionKeyStore";
+import { useDomainContext } from "./DomainContext";
 
 export type Account = {
   accountId: Hex;
   keyId: number;
   nonceKey: bigint;
+  seq: bigint;
   sessionKey: CryptoKeyPair;
 };
 
 export function getNonce(account: Account): bigint {
-  const seq = BigInt(localStorage.getItem("ob:seq") ?? "0");
-  return (account.nonceKey << 64n) | seq;
+  return (account.nonceKey << 64n) | account.seq;
 }
 
 type AccountContextValue = {
   account: Account | null;
   loading: boolean;
-  setAccount: (account: Account | null) => Promise<void>;
+  setAccount: (
+    account: Pick<Account, "accountId" | "keyId" | "sessionKey"> | null,
+  ) => Promise<void>;
   incrementSeq: () => void;
 };
 
 const AccountContext = createContext<AccountContextValue | null>(null);
 
-async function clearStoredAccount(): Promise<void> {
-  localStorage.removeItem("ob:exchangeAddress");
-  localStorage.removeItem("ob:accountId");
-  localStorage.removeItem("ob:keyId");
-  localStorage.removeItem("ob:nonceKey");
-  localStorage.removeItem("ob:seq");
-  await clearSessionKey();
+async function clearStoredAccount(prefix: Hex): Promise<void> {
+  localStorage.removeItem(`${prefix}:accountId`);
+  localStorage.removeItem(`${prefix}:keyId`);
+  await clearSessionKey(prefix);
 }
 
-async function loadAccount(): Promise<Account | null> {
-  const storedAddress = localStorage.getItem("ob:exchangeAddress");
-  if (storedAddress && storedAddress !== EXCHANGE_ADDRESS) {
-    await clearStoredAccount();
+function randomNonceKey(): bigint {
+  return BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24))));
+}
+
+async function loadAccount(storagePrefix: Hex): Promise<Account | null> {
+  const accountId = localStorage.getItem(
+    `${storagePrefix}:accountId`,
+  ) as Hex | null;
+  const keyIdStr = localStorage.getItem(`${storagePrefix}:keyId`);
+  const sessionKey = await loadSessionKey(storagePrefix);
+
+  if (accountId === null || keyIdStr === null || sessionKey === null) {
     return null;
   }
 
-  const accountId = localStorage.getItem("ob:accountId") as Hex | null;
-  const keyIdStr = localStorage.getItem("ob:keyId");
-  const nonceKeyStr = localStorage.getItem("ob:nonceKey");
-  const sessionKey = await loadSessionKey();
-  if (accountId && keyIdStr && nonceKeyStr && sessionKey) {
-    return {
-      accountId,
-      keyId: Number(keyIdStr),
-      nonceKey: BigInt(nonceKeyStr),
-      sessionKey,
-    };
-  }
-  return null;
+  return {
+    accountId,
+    keyId: Number(keyIdStr),
+    nonceKey: randomNonceKey(),
+    seq: 0n,
+    sessionKey,
+  };
 }
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
+  const { storagePrefix, loading: domainLoading } = useDomainContext();
 
   const { data: account = null, isLoading: loading } = useQuery({
-    queryKey: ["account"],
-    queryFn: loadAccount,
+    queryKey: ["account", storagePrefix],
+    queryFn: () => loadAccount(storagePrefix!),
+    enabled: storagePrefix !== null,
     staleTime: Number.POSITIVE_INFINITY,
   });
 
   const setAccount = useCallback(
-    async (account: Account | null) => {
-      if (account) {
-        localStorage.setItem("ob:exchangeAddress", EXCHANGE_ADDRESS);
-        localStorage.setItem("ob:accountId", account.accountId);
-        localStorage.setItem("ob:keyId", String(account.keyId));
-        localStorage.setItem("ob:nonceKey", account.nonceKey.toString());
-        localStorage.removeItem("ob:seq");
-        await saveSessionKey(account.sessionKey);
+    async (
+      nextAccount: Pick<Account, "accountId" | "keyId" | "sessionKey"> | null,
+    ) => {
+      if (storagePrefix === null) throw new Error("Missing domain");
+      let account: Account | null = null;
+      if (nextAccount) {
+        account = {
+          ...nextAccount,
+          nonceKey: randomNonceKey(),
+          seq: 0n,
+        };
+        localStorage.setItem(`${storagePrefix}:accountId`, account.accountId);
+        localStorage.setItem(`${storagePrefix}:keyId`, String(account.keyId));
+        await saveSessionKey(storagePrefix, account.sessionKey);
       } else {
-        await clearStoredAccount();
+        await clearStoredAccount(storagePrefix);
       }
-      queryClient.setQueryData(["account"], account);
+      queryClient.setQueryData(["account", storagePrefix], account);
     },
-    [queryClient],
+    [queryClient, storagePrefix],
   );
 
   const incrementSeq = useCallback(() => {
-    const seq = BigInt(localStorage.getItem("ob:seq") ?? "0");
-    localStorage.setItem("ob:seq", (seq + 1n).toString());
-  }, []);
+    if (storagePrefix === null) return;
+    queryClient.setQueryData<Account | null>(
+      ["account", storagePrefix],
+      (account) => {
+        return account == null
+          ? account
+          : { ...account, seq: account.seq + 1n };
+      },
+    );
+  }, [queryClient, storagePrefix]);
 
   return (
     <AccountContext.Provider
-      value={{ account, loading, setAccount, incrementSeq }}
+      value={{
+        account,
+        loading: domainLoading || loading,
+        setAccount,
+        incrementSeq,
+      }}
     >
       {children}
     </AccountContext.Provider>

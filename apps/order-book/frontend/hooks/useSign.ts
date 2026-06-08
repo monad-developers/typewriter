@@ -6,11 +6,18 @@ import {
   hashTypedData,
   hexToBytes,
 } from "viem";
+import type { SubmittedOrderBookMutation } from "../../src/app";
 import type { Account } from "../contexts/AccountContext";
-import { EIP712_DOMAIN, EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
+import type { AppDomain } from "../lib/domain";
+import { EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
 
 const P256_N =
   0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
+type SignedMutation<name extends SubmittedOrderBookMutation["name"]> = Extract<
+  SubmittedOrderBookMutation,
+  { name: name }
+>;
 
 async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
   const sig = await crypto.subtle.sign(
@@ -30,6 +37,7 @@ async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
 
 export async function signMarketOrder(
   account: Account,
+  domain: AppDomain,
   nonce: bigint,
   params: {
     quantity: bigint;
@@ -37,9 +45,9 @@ export async function signMarketOrder(
     instrumentId: number;
     bidOrAsk: 0 | 1;
   },
-) {
+): Promise<SignedMutation<"MarketOrder">> {
   const hash = hashTypedData({
-    domain: EIP712_DOMAIN,
+    domain,
     types: { MarketOrder: EIP712_TYPES.MarketOrder },
     primaryType: "MarketOrder",
     message: {
@@ -55,19 +63,24 @@ export async function signMarketOrder(
   const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
-    ...params,
-    quantity: params.quantity.toString(),
-    minReceivedQuantity: params.minReceivedQuantity.toString(),
-    account: account.accountId,
-    keyId: account.keyId,
-    nonce: nonce.toString(),
-    deadline: MAX_DEADLINE.toString(),
-    rawSignature,
+    name: "MarketOrder",
+    params: {
+      ...params,
+      instrumentId: BigInt(params.instrumentId),
+      nonce,
+      deadline: MAX_DEADLINE,
+    },
+    signature: {
+      account: account.accountId,
+      keyId: BigInt(account.keyId),
+      rawSignature,
+    },
   };
 }
 
 export async function signLimitOrder(
   account: Account,
+  domain: AppDomain,
   nonce: bigint,
   params: {
     quantity: bigint;
@@ -75,9 +88,9 @@ export async function signLimitOrder(
     price: bigint;
     bidOrAsk: 0 | 1;
   },
-) {
+): Promise<SignedMutation<"LimitOrder">> {
   const hash = hashTypedData({
-    domain: EIP712_DOMAIN,
+    domain,
     types: { LimitOrder: EIP712_TYPES.LimitOrder },
     primaryType: "LimitOrder",
     message: {
@@ -93,25 +106,29 @@ export async function signLimitOrder(
   const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
-    ...params,
-    quantity: params.quantity.toString(),
-    instrumentId: params.instrumentId,
-    price: params.price.toString(),
-    account: account.accountId,
-    keyId: account.keyId,
-    nonce: nonce.toString(),
-    deadline: MAX_DEADLINE.toString(),
-    rawSignature,
+    name: "LimitOrder",
+    params: {
+      ...params,
+      instrumentId: BigInt(params.instrumentId),
+      nonce,
+      deadline: MAX_DEADLINE,
+    },
+    signature: {
+      account: account.accountId,
+      keyId: BigInt(account.keyId),
+      rawSignature,
+    },
   };
 }
 
 export async function signCloseOrder(
   account: Account,
+  domain: AppDomain,
   nonce: bigint,
   params: { orderId: number },
-) {
+): Promise<SignedMutation<"CloseOrder">> {
   const hash = hashTypedData({
-    domain: EIP712_DOMAIN,
+    domain,
     types: { CloseOrder: EIP712_TYPES.CloseOrder },
     primaryType: "CloseOrder",
     message: {
@@ -124,22 +141,28 @@ export async function signCloseOrder(
   const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
-    ...params,
-    account: account.accountId,
-    keyId: account.keyId,
-    nonce: nonce.toString(),
-    deadline: MAX_DEADLINE.toString(),
-    rawSignature,
+    name: "CloseOrder",
+    params: {
+      orderId: BigInt(params.orderId),
+      nonce,
+      deadline: MAX_DEADLINE,
+    },
+    signature: {
+      account: account.accountId,
+      keyId: BigInt(account.keyId),
+      rawSignature,
+    },
   };
 }
 
 export async function signDeposit(
   account: Account,
+  domain: AppDomain,
   nonce: bigint,
   params: { asset: Address; amount: bigint },
-) {
+): Promise<SignedMutation<"Deposit">> {
   const hash = hashTypedData({
-    domain: EIP712_DOMAIN,
+    domain,
     types: { Deposit: EIP712_TYPES.Deposit },
     primaryType: "Deposit",
     message: {
@@ -153,12 +176,17 @@ export async function signDeposit(
   const rawSignature = await signP256(account.sessionKey, hash);
 
   return {
-    asset: params.asset,
-    amount: params.amount.toString(),
-    account: account.accountId,
-    keyId: account.keyId,
-    nonce: nonce.toString(),
-    deadline: MAX_DEADLINE.toString(),
-    rawSignature,
+    name: "Deposit",
+    params: {
+      asset: params.asset,
+      amount: params.amount,
+      nonce,
+      deadline: MAX_DEADLINE,
+    },
+    signature: {
+      account: account.accountId,
+      keyId: BigInt(account.keyId),
+      rawSignature,
+    },
   };
 }

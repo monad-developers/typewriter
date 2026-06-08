@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { Address, Hex } from "viem";
+import { request } from "../lib/api";
 import type { ApiMutation } from "./useMutations";
 
 export type ApiKey = {
@@ -31,9 +32,7 @@ export function useAccount(idOrAddress: string | undefined) {
   return useQuery({
     queryKey: ["account", idOrAddress],
     queryFn: async () => {
-      const res = await fetch(`/api/account/${idOrAddress}`);
-      if (!res.ok) throw new Error(`Failed to fetch account ${idOrAddress}`);
-      return (await res.json()) as ApiAccount;
+      return request<ApiAccount>(`/api/account/${idOrAddress}`);
     },
     enabled: !!idOrAddress,
     refetchInterval: 1000,

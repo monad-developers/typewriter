@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { request } from "../lib/api";
 
 type PriceResponse = {
   instrumentId: number;
@@ -12,9 +13,7 @@ export function usePrice(instrumentId: number) {
   return useQuery({
     queryKey: ["price", instrumentId],
     queryFn: async () => {
-      const res = await fetch(`/api/price?instrumentId=${instrumentId}`);
-      if (!res.ok) throw new Error("Failed to fetch price");
-      return (await res.json()) as PriceResponse;
+      return request<PriceResponse>(`/api/price?instrumentId=${instrumentId}`);
     },
     refetchInterval: 500,
   });

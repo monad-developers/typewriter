@@ -3,7 +3,7 @@ import { bytesToHex } from "viem";
 export async function generateSessionKey(): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
-    false,
+    true,
     ["sign", "verify"],
   );
 }

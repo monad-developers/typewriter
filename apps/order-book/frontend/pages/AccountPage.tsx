@@ -44,7 +44,7 @@ const PERMISSIONS = [
 
 const KEY_COLUMNS = ["type", "permissions", "expiry", "publicKey"];
 const BALANCE_COLUMNS = ["asset", "amount"];
-const MUTATION_COLUMNS = ["id", "block", "batch", "status", "description"];
+const MUTATION_COLUMNS = ["id", "block", "status", "description"];
 
 const linkClass = "text-blue-500 hover:underline";
 
@@ -214,20 +214,17 @@ export function AccountPage() {
                   </td>
                   <td className="py-2 pr-6">
                     <code>
-                      {m.blockNumber ? (
+                      {m.blockNumber != null ? (
                         <Link
                           to={`/block/${m.blockNumber}`}
                           className={linkClass}
                         >
-                          {m.blockNumber}
+                          {m.blockNumber.toString()}
                         </Link>
                       ) : (
                         "..."
                       )}
                     </code>
-                  </td>
-                  <td className="py-2 pr-6">
-                    <code>{m.batchId ?? "..."}</code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>{m.status}</code>
