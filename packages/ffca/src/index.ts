@@ -25,7 +25,7 @@ export type FFCA<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   readonly state: StorageProxy<storageConfig, true>;
-  readonly schema: FFCASchema<mutationsConfig>;
+  readonly schema: FFCASchema<mutationsConfig, signatureConfig>;
   readonly domain: TypedData.Domain;
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: FFCAMutationInput<mutationsConfig, signatureConfig, name>,
@@ -113,7 +113,10 @@ export async function createFFCA<
 
     return {
       state: ffca.state as StorageProxy<storageConfig, true>,
-      schema: ffca.schema as FFCASchema<mutationsConfig>,
+      schema: ffca.schema as unknown as FFCASchema<
+        mutationsConfig,
+        signatureConfig
+      >,
       domain: ffca.domain,
       execute,
       close: closeScope,

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, expectTypeOf, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import {
   generateDrizzleJson,
@@ -51,7 +51,7 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
         resolve: () => ({ newBalance: 0n }),
       },
     },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   const statements = await applyGeneratedMigration(schema);
   const sql = statements.join("\n");
 
@@ -91,7 +91,7 @@ test("mutation table supports insert and lifecycle update queries", async () => 
         params: parseAbiParameters("address to, uint256 amount"),
       },
     },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
   const db = drizzle({ client: TEST_DB_CONNECTION });
   const transferMutations = requiredTable(schema, "transfer_mutations");
@@ -157,4 +157,42 @@ test("createMutationSchema exposes table names from config keys", () => {
     keyof typeof schema
   >;
   expect(keys).toEqual(["transfer_mutations", "cancelorder_mutations"]);
+});
+
+test("createMutationSchema preserves generated column types", () => {
+  const schema = createMutationSchema({
+    signature: { params: COUNTER_SIGNATURE_PARAMS },
+    mutations: {
+      Transfer: {
+        tag: 0,
+        params: parseAbiParameters("address to, uint256 amount"),
+      },
+      Debit: {
+        tag: 1,
+        params: parseAbiParameters("bytes32 account, uint256 amount"),
+        resolution: parseAbiParameters("uint256 newBalance"),
+        resolve: () => ({ newBalance: 0n }),
+      },
+    },
+  });
+
+  expectTypeOf<typeof schema.transfer_mutations.$inferInsert>().toExtend<{
+    id: number;
+    status: "accepted" | "included" | "safe" | "finalized";
+    to: `0x${string}`;
+    amount: bigint;
+    signature_accountId: `0x${string}`;
+    signature_publicKey: `0x${string}`;
+    signature_rawSignature: `0x${string}`;
+  }>();
+  expectTypeOf<typeof schema.debit_mutations.$inferInsert>().toExtend<{
+    account: `0x${string}`;
+    amount: bigint;
+    resolution_newBalance: bigint;
+  }>();
+  expectTypeOf<typeof schema.slot_writes.$inferInsert>().toExtend<{
+    mutationId: number;
+    slot: `0x${string}`;
+    value: `0x${string}`;
+  }>();
 });

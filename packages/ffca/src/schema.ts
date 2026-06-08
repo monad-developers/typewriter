@@ -1,10 +1,12 @@
-import { abiParametersToColumns } from "abipg";
+import { type AbiParametersToColumns, abiParametersToColumns } from "abipg";
 import {
   type AnyPgColumnBuilder,
   char,
   index,
   integer,
   numeric,
+  type PgBuildColumns,
+  type PgTableWithColumns,
   pgEnum,
   pgTable,
   serial,
@@ -13,7 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import type { Hex } from "ox";
-import type { FFCAConfig, MutationsConfig } from "./config";
+import type { MutationsConfig, SignatureConfig } from "./config";
 
 const uint256 = () => numeric({ precision: 78, scale: 0, mode: "bigint" });
 const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
@@ -65,19 +67,80 @@ export type FFCAStateSchema = {
   >[Name];
 };
 
-export type FFCAMutationSchema<mutationsConfig extends MutationsConfig> = {
-  readonly [name in keyof mutationsConfig as `${Lowercase<name & string>}_mutations`]: PgTable;
-};
-
 export type FFCASchema<
   mutationsConfig extends MutationsConfig = MutationsConfig,
-> = FFCAStateSchema & FFCAMutationSchema<mutationsConfig>;
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = FFCAStateSchema & FFCAMutationSchema<mutationsConfig, signatureConfig>;
 
-export function createMutationSchema(
-  config: Pick<FFCAConfig, "signature" | "mutations">,
-): FFCASchema {
+export type FFCAMutationSchema<
+  mutationsConfig extends MutationsConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = {
+  readonly [name in keyof mutationsConfig as MutationTableName<
+    name & string
+  >]: MutationTable<
+    MutationTableName<name & string>,
+    mutationsConfig[name],
+    signatureConfig
+  >;
+};
+
+type MutationTableName<name extends string> = `${Lowercase<name>}_mutations`;
+
+type ColumnGroup = Record<string, AnyPgColumnBuilder>;
+
+type PrefixColumnNames<Columns, prefix extends string> = {
+  readonly [name in keyof Columns &
+    string as `${prefix}${name}`]: Columns[name] extends AnyPgColumnBuilder
+    ? Columns[name]
+    : never;
+};
+
+type ColumnGroupFrom<Columns> = {
+  readonly [name in keyof Columns &
+    string]: Columns[name] extends AnyPgColumnBuilder ? Columns[name] : never;
+};
+
+type ResolutionColumns<mutationConfig extends MutationsConfig[string]> =
+  mutationConfig extends {
+    resolution: infer resolution extends SignatureConfig;
+  }
+    ? PrefixColumnNames<AbiParametersToColumns<resolution>, "resolution_">
+    : Record<never, never>;
+
+type MutationTableColumns<
+  mutationConfig extends MutationsConfig[string],
+  signatureConfig extends SignatureConfig,
+> = ColumnGroupFrom<
+  ReturnType<typeof mutationColumns> &
+    AbiParametersToColumns<mutationConfig["params"]> &
+    PrefixColumnNames<AbiParametersToColumns<signatureConfig>, "signature_"> &
+    ResolutionColumns<mutationConfig>
+>;
+
+type MutationTable<
+  tableName extends string,
+  mutationConfig extends MutationsConfig[string],
+  signatureConfig extends SignatureConfig,
+> = PgTableWithColumns<{
+  name: tableName;
+  schema: undefined;
+  columns: PgBuildColumns<
+    tableName,
+    MutationTableColumns<mutationConfig, signatureConfig>
+  >;
+  dialect: "pg";
+}>;
+
+export function createMutationSchema<
+  const mutationsConfig extends MutationsConfig,
+  const signatureConfig extends SignatureConfig,
+>(config: {
+  readonly signature: { readonly params: signatureConfig };
+  readonly mutations: mutationsConfig;
+}): FFCASchema<mutationsConfig, signatureConfig> {
   const signatureColumns = prefixColumnNames(
-    abiParametersToColumns(config.signature.params),
+    abiParametersToColumns(config.signature.params) as ColumnGroup,
     "signature_",
   );
   const schema: Record<string, PgTable> = stateTables();
@@ -87,10 +150,10 @@ export function createMutationSchema(
     const resolutionColumns =
       mutation.resolution !== undefined
         ? prefixColumnNames(
-            abiParametersToColumns(mutation.resolution),
+            abiParametersToColumns(mutation.resolution) as ColumnGroup,
             "resolution_",
           )
-        : {};
+        : ({} as ColumnGroup);
 
     schema[tableName] = pgTable(
       tableName,
@@ -103,27 +166,28 @@ export function createMutationSchema(
     );
   }
 
-  return schema as FFCASchema;
+  return schema as FFCASchema<mutationsConfig, signatureConfig>;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {
   return `${name.toLowerCase()}_mutations` as `${Lowercase<string>}_mutations`;
 }
 
-function prefixColumnNames<Columns extends Record<string, AnyPgColumnBuilder>>(
-  columns: Columns,
-  prefix: string,
-): Record<string, AnyPgColumnBuilder> {
+function prefixColumnNames<
+  const prefix extends string,
+  Columns extends Record<string, AnyPgColumnBuilder>,
+>(columns: Columns, prefix: prefix): PrefixColumnNames<Columns, prefix> {
   const prefixed: Record<string, AnyPgColumnBuilder> = {};
-  for (const [name, column] of Object.entries(columns)) {
+  for (const [name, column] of Object.entries(columns) as [
+    string,
+    AnyPgColumnBuilder,
+  ][]) {
     prefixed[`${prefix}${name}`] = column;
   }
-  return prefixed;
+  return prefixed as PrefixColumnNames<Columns, prefix>;
 }
 
-function mergeColumns(
-  ...groups: readonly Record<string, AnyPgColumnBuilder>[]
-): Record<string, AnyPgColumnBuilder> {
+function mergeColumns(...groups: readonly ColumnGroup[]): ColumnGroup {
   const columns: Record<string, AnyPgColumnBuilder> = {};
   for (const group of groups) {
     for (const [name, column] of Object.entries(group)) {
