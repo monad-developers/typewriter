@@ -429,8 +429,8 @@ export function App() {
     <div className="min-h-screen w-full flex flex-col">
       <div className="w-full border-b p-4 flex flex-col gap-2">
         <p className="text-lg">
-          Transfer tokens through an FFCA FIFO runtime while tracing every API
-          request and watching accepted mutations settle onchain.
+          Transfer tokens with FIFO transaction sequencing while tracing every
+          API request and watching accepted mutations settle onchain.
         </p>
         <div className="flex items-center gap-3 text-sm">
           <a
@@ -477,20 +477,28 @@ export function App() {
               </label>
               <label className="flex items-center gap-2 cursor-not-allowed opacity-50">
                 <code>session keys:</code>
-                <input type="checkbox" disabled />
+                <input type="checkbox" checked readOnly />
               </label>
             </div>
             <div className="border-l -my-4" />
             <div className="flex-1 min-w-0 overflow-y-auto flex flex-col gap-2">
               <h2 className="text-2xl font-bold">Request Log</h2>
-              {logs.map((log) => (
-                <code
-                  key={log.id}
-                  className={`text-xs border-b pb-1 ${log.status === "ok" ? "text-gray-500" : "text-red-500"}`}
-                >
-                  {log.method} {log.path} {Math.round(log.duration)}ms
-                </code>
-              ))}
+              {logs.map((log) => {
+                const color = log.status === "ok" ? "#6b7280" : "#ef4444";
+
+                return (
+                  <div
+                    key={log.id}
+                    className="flex items-baseline gap-2 border-b pb-1 text-xs"
+                  >
+                    <span style={{ color, fontWeight: 600 }}>{log.method}</span>
+                    <span style={{ color }}>{log.path}</span>
+                    <span className="text-gray-400">
+                      {Math.round(log.duration)}ms
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </header>
 

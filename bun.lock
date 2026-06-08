@@ -47,7 +47,7 @@
         "react": "19.2.4",
         "react-dom": "19.2.4",
         "storage-layout": "workspace:*",
-        "superjson": "^2.2.6",
+        "superjson": "2.2.6",
         "viem": "catalog:",
       },
       "devDependencies": {

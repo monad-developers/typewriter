@@ -11,7 +11,7 @@
     "build": "tsc --noEmit",
     "contracts:build": "forge build --root contracts --force",
     "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
-    "deploy": ". .env && forge build --root contracts --force && forge script --root contracts ./contracts/script/Token.s.sol:TokenScript --broadcast --fork-url $BUN_PUBLIC_RPC_URL --private-key $DEPLOYER_PRIVATE_KEY"
+    "deploy": ". .env && forge build --root contracts --force && forge script --root contracts ./contracts/script/Token.s.sol:TokenScript --broadcast --fork-url $RPC_URL --private-key $PRIVATE_KEY"
   },
   "dependencies": {
     "@tanstack/react-query": "catalog:",

@@ -30,12 +30,10 @@ function jsonResponse(data: unknown): Response {
   });
 }
 
-const rpcUrl = requireEnv("BUN_PUBLIC_RPC_URL");
+const rpcUrl = requireEnv("RPC_URL");
 const chainId = Number(requireEnv("CHAIN_ID"));
 const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
-const scheduler = privateKeyToAccount(
-  requireEnv("SCHEDULER_PRIVATE_KEY") as Hex,
-);
+const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
 const mutations = new Map<number, MutationEvent>();
 
 const ffca = await createFFCA<
@@ -107,7 +105,10 @@ const server = Bun.serve({
         nonce: await account.nonce,
       });
     },
-    "/api/addresses": () => jsonResponse(Object.keys(ffca.state.accounts)),
+    "/api/addresses": () =>
+      jsonResponse([
+        ...new Set([...Object.keys(ffca.state.accounts), scheduler.address]),
+      ]),
     "/api": {
       POST: async (req) => {
         const body = superjson.parse(await req.text()) as {

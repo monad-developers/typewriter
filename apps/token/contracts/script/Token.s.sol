@@ -6,9 +6,10 @@ import {Token} from "../src/Token.sol";
 
 contract TokenScript is Script {
     function run() external {
-        address scheduler = vm.envAddress("SCHEDULER_ADDRESS");
+        uint256 privateKey = vm.envUint("PRIVATE_KEY");
+        address scheduler = vm.addr(privateKey);
 
-        vm.startBroadcast();
+        vm.startBroadcast(privateKey);
         Token token = new Token(scheduler);
         vm.stopBroadcast();
 
