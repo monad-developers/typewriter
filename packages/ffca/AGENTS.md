@@ -8,7 +8,9 @@ Instructions for agents working on `packages/ffca`.
 
 ## Motivations
 
-ffca exists to push what crypto app experiences can be, by giving ambitious teams a foundation to build on. Applications are the fundamental unit to optimize for: they define the requirements that everything below them — sequencing, accounts, confirmations, settlement — has to answer to.
+Building a production crypto app today means assembling a stack of disconnected systems — sequencing, account abstraction, settlement, layer 2 scaling, indexing — and carrying the hard-won knowledge of how they fit together. The result is fragmented even when it works, and the assembly is the reason apps ship with a less ambitious product than they originally planned.
+
+ffca is a full-stack framework that unifies that stack behind a single opinionated runtime — one that abstracts transaction submission the way React's runtime abstracted DOM rendering. Developers describe their app's state and the mutations that change it; the runtime owns ordering, confirmation, and settlement. Applications are the fundamental unit to optimize for: they define the requirements that everything below them — sequencing, accounts, confirmations, settlement — has to answer to.
 
 ## Beliefs
 
@@ -17,6 +19,7 @@ What we believe that makes ffca different.
 - **Compete on technical merit, not ideology.** The next generation of crypto apps will be defined by what works, not by adherence to existing camps.
 - **Blockchains are the database, not the backend.** They occupy the persistence layer of the stack; everything else — sequencing, validation, application logic — lives above them.
 - **Write logic once.** Contract and backend shouldn't duplicate the same logic in two places. Pick one home for each piece and let the other defer to it.
+- **A handful of apps, not contracts for everyone.** Only a few crypto apps of real consequence will be built. ffca optimizes for taking the best teams from idea to production as fast as possible — and for letting those apps show what a chain can do beyond "EVM, but faster" — rather than putting contract authorship in everyone's hands.
 - **Focus compounds.** Outcomes follow a power law, so doubling down on the core idea beats spreading thin across adjacent ones. Every new surface dilutes the one that matters.
 - **Pragmatism over assembly.** Everything ffca enables is technically possible today by stitching together L2 rollups, account abstraction providers, and other middleware. ffca delivers the same results without the cruft.
 
