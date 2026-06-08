@@ -16,7 +16,7 @@ Full stack framework for building crypto apps.
 
 Application state lives onchain, where the Solidity state definition serves as the ground truth.
 
-```sol
+```solidity
 struct State {
     uint256 totalSupply;
     mapping(bytes32 => Account) accounts;
@@ -27,7 +27,7 @@ struct State {
 
 Updates to application state are done with mutations. Mutations are app-defined state transistions requested by a user and executed onchain.
 
-```sol
+```solidity
 struct Transfer {
     bytes32 from;
     bytes32 to;
@@ -53,7 +53,7 @@ The lifecycle of a mutation is as follows:
 
 Some mutations can be executed directly from their submitted arguments, others need resolution with a more complete state view. For example, a transfer may only need `{ from, to, amount }`. A matching engine may need to compute fills based on the current order book. That extra computed data is the mutation's resolution.
 
-```sol
+```solidity
 struct MarketOrder {
     uint256 quanity;
     uint256 minReceivedQuantity;
@@ -231,7 +231,7 @@ In order to be FFCA-compliant, a smart contract must written with Solidity and i
 
 All application state is contained in a single `struct State`.
 
-```sol
+```solidity
 struct Account {
     KeyType keyType;
     bytes publicKey;
@@ -254,7 +254,7 @@ Each mutation is a Solidity library with:
 - **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name, parameter names, and declaration order must match the mutation's struct (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
 - **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `ffca/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
 
-```sol
+```solidity
 library AddMutation {
     struct Add {
         uint256 amount;
@@ -290,7 +290,7 @@ A signature authorizes a mutation on behalf of a user. The outer EVM transaction
 are whatever the contract needs to authenticate the user and authorize the
 mutation.
 
-```sol
+```solidity
 struct Signature { 
     bytes32 accountId; 
     bytes rawSignature;
@@ -300,7 +300,7 @@ struct Signature {
 **`verify[Mutation]Signature`.** Every signed mutation implements its own
 verifier — see the [Mutations](#mutations) example.
 
-```sol
+```solidity
 function verify[Mutation]Signature(
     State storage state,
     [Mutation] memory args,
@@ -321,7 +321,7 @@ bootstrap mutations may not need one.
 **Verification helpers.** `ffca/FFCA.sol` exports the `KeyType` enum and
 a `verifySignature` helper for verifying a raw signature:
 
-```sol
+```solidity
 import {KeyType, verifySignature} from "ffca/FFCA.sol";
 
 verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
@@ -348,7 +348,7 @@ hash (see [`hash[Mutation]`](#mutations)) and the contract's `DOMAIN_SEPARATOR`.
 
 The contract inherits from `ffca/FFCA.sol`, which supplies the `SCHEDULER`, `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `execute`, `enqueue`, and `forceExecute` entry points, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), a constructor that assigns the inherited immutables, and a single `dispatch` function (see [`dispatch`](#dispatch)). `FFCA` uses the app's `dispatch` to build the external-facing `execute`, `enqueue`, and `forceExecute` methods, routing every mutation — whether batched by the scheduler or force-included — through it.
 
-```sol
+```solidity
 import {EIP712_DOMAIN_TYPEHASH, FFCA} from "ffca/FFCA.sol";
 
 contract Token is FFCA {
@@ -389,7 +389,7 @@ contract Token is FFCA {
 
 **Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `FFCA` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 
-```sol
+```solidity
 // Scheduler-gated settlement. `forceExecuteIndexes` settles queued
 // force-included mutations alongside the batches.
 function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external;
@@ -405,7 +405,7 @@ function forceExecute(uint256 index) external;
 
 `enqueue` emits `ForceInclusionQueued`, which clients and watchers decode to discover queued mutations:
 
-```sol
+```solidity
 event ForceInclusionQueued(
     uint256 index,
     uint8 mutation,
@@ -417,7 +417,7 @@ event ForceInclusionQueued(
 
 #### `dispatch`
 
-```sol
+```solidity
 function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override;
 ```
 
@@ -425,7 +425,7 @@ The single function an app must implement. `FFCA` calls `dispatch` once per muta
 
 For each mutation, branch on the `uint8` tag (matched against the `Mutation` enum), decode `mutationData` and `signatureData` into the mutation's structured types, compute the EIP-712 digest, call `verify[Mutation]Signature`, then call `execute[Mutation]` (see [Mutations](#mutations)). Revert with `UnknownMutation(mutation)` on an unrecognized tag.
 
-```sol
+```solidity
 function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
     if (Mutation(mutation) == Mutation.NewAccount) {
         // NewAccount requires no signature verification
