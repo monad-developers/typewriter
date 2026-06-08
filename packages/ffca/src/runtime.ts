@@ -566,14 +566,6 @@ export function createRuntimeEffect(
       1,
     );
 
-    let nonce = Hex.toNumber(
-      yield* rpc.request({
-        method: "eth_getTransactionCount",
-        params: [app.account.address, "latest"],
-      }),
-    );
-    const nextNonce = Effect.sync(() => nonce++);
-
     const batchOrder =
       app.sequencing.order === "batch" ? app.sequencing.batchOrder : [];
 
@@ -886,12 +878,11 @@ export function createRuntimeEffect(
         simulateResult,
       } = simulation;
 
-      const submitNonce = yield* nextNonce;
       const transactionStartedAtMs = startTimer();
 
-      // Fees come from `eth_fillTransaction` (round-robined); gas, nonce, and
-      // access list come from the local simulation. The node returns the
-      // fully-filled transaction as `raw`, which we parse straight back into a
+      // Fees and nonce come from `eth_fillTransaction` (round-robined); gas and
+      // access list come from the local simulation. The node returns the fully-
+      // filled transaction as `raw`, which we parse straight back into a
       // signable transaction (instead of rebuilding it field by field), sign
       // locally, and broadcast via the multiplexed `eth_sendRawTransactionSync`
       // so the fastest non-erroring provider wins.
@@ -903,7 +894,6 @@ export function createRuntimeEffect(
             to: app.address,
             data: calldata,
             gas: Hex.fromNumber(simulateResult.gas_limit),
-            nonce: Hex.fromNumber(submitNonce),
             accessList: simulateResult.access_list,
           },
         ],

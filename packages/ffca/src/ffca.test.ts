@@ -26,10 +26,14 @@ test("ffca.domain is derived from config", async () => {
     mutations: {},
   });
 
-  expect(ffca.domain).toEqual({
-    chainId: anvil.id,
-    name: "my-app",
-    verifyingContract: address,
-    version: "2",
-  });
+  try {
+    expect(ffca.domain).toEqual({
+      chainId: anvil.id,
+      name: "my-app",
+      verifyingContract: address,
+      version: "2",
+    });
+  } finally {
+    await ffca.close();
+  }
 });

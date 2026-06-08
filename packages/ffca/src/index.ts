@@ -30,6 +30,7 @@ export type FFCA<
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: FFCAMutationInput<mutationsConfig, signatureConfig, name>,
   ) => Promise<FFCAMutationResult<mutationsConfig[name]>>;
+  close: () => Promise<void>;
   on(
     event: "mutation",
     cb: MutationListener<mutationsConfig, signatureConfig>,
@@ -116,6 +117,7 @@ export async function createFFCA<
       schema: ffca.schema as FFCASchema<mutationsConfig>,
       domain: ffca.domain,
       execute,
+      close: closeScope,
       on,
     };
   } catch (error) {
