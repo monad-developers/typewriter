@@ -490,7 +490,7 @@ test("async: dynamic array length returns a promise", async () => {
   const { get } = asyncGetter({ [lengthSlot]: "0x2" });
   const state = createStorageProxy(layout, get);
 
-  const length = state.dynamicNumbers.length as unknown as Promise<number>;
+  const length = state.dynamicNumbers.length;
   expect(length).toBeInstanceOf(Promise);
   expect(await length).toBe(2);
 });

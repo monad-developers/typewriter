@@ -63,36 +63,37 @@ type AsyncSlotGetter = (slots: Hex.Hex[]) => Promise<SlotMap>;
 /** Sync or async slot reader. */
 type SlotGetter = SyncSlotGetter | AsyncSlotGetter;
 
-type DeepReadonly<T> = [T] extends [readonly unknown[]]
-  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+type StorageProxyValue<T, isAsync extends boolean> = [T] extends [
+  readonly unknown[],
+]
+  ? number extends T["length"]
+    ? T extends readonly (infer Element)[]
+      ? DynamicArrayProxy<Element, isAsync>
+      : never
+    : { readonly [K in keyof T]: StorageProxyValue<T[K], isAsync> }
   : [T] extends [object]
-    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
-    : T;
+    ? { readonly [K in keyof T]: StorageProxyValue<T[K], isAsync> }
+    : isAsync extends true
+      ? Promise<T>
+      : T;
 
-/**
- * Recursively wrap every leaf value in `Promise<>`. Composite shapes
- * (objects, tuples, arrays) keep their readonly structure; only the terminal
- * primitive positions become promises. Used to model an async-backed proxy's
- * return type.
- */
-type DeepPromise<T> = [T] extends [readonly unknown[]]
-  ? { readonly [K in keyof T]: DeepPromise<T[K]> }
-  : [T] extends [object]
-    ? { readonly [K in keyof T]: DeepPromise<T[K]> }
-    : Promise<T>;
+type DynamicArrayProxy<Element, isAsync extends boolean> = {
+  readonly [index: number]: StorageProxyValue<Element, isAsync>;
+  readonly length: isAsync extends true ? Promise<number> : number;
+};
 
 /**
  * Inferred shape of the proxy returned by {@link createStorageProxy}. The
  * structural shape mirrors {@link StorageLayoutToPrimitiveType}; when the
- * getter is asynchronous, leaf positions are wrapped in `Promise<>`. The whole
- * projection is recursively readonly because proxy writes are rejected.
+ * getter is asynchronous, leaf positions are wrapped in `Promise<>`. Dynamic
+ * array `.length` is also a storage read, so async-backed proxies expose it as
+ * `Promise<number>`. The whole projection is recursively readonly because proxy
+ * writes are rejected.
  */
 export type StorageProxy<
   L extends StorageLayout,
   isAsync extends boolean,
-> = isAsync extends true
-  ? DeepPromise<StorageLayoutToPrimitiveType<L>>
-  : DeepReadonly<StorageLayoutToPrimitiveType<L>>;
+> = StorageProxyValue<StorageLayoutToPrimitiveType<L>, isAsync>;
 
 const decodeStorageVariableRuntime = decodeStorageVariable as (
   layout: StorageLayout,

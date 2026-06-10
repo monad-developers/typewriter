@@ -27,6 +27,10 @@ test("createStorageProxy follows sync and async getter shapes", () => {
   expectTypeOf(syncState.fixedNumbers).toEqualTypeOf<
     readonly [bigint, bigint, bigint]
   >();
+  expectTypeOf(syncState.dynamicNumbers).toEqualTypeOf<{
+    readonly [index: number]: bigint;
+    readonly length: number;
+  }>();
 
   expectTypeOf(asyncState.totalSupply).toEqualTypeOf<Promise<bigint>>();
   expectTypeOf(asyncState.metadata).toEqualTypeOf<{
@@ -45,9 +49,10 @@ test("createStorageProxy follows sync and async getter shapes", () => {
     readonly [Promise<bigint>, Promise<bigint>, Promise<bigint>]
   >();
   expectTypeOf<(typeof asyncState.fixedNumbers)["length"]>().toEqualTypeOf<3>();
-  expectTypeOf(asyncState.dynamicNumbers).toEqualTypeOf<
-    readonly Promise<bigint>[]
-  >();
+  expectTypeOf(asyncState.dynamicNumbers).toEqualTypeOf<{
+    readonly [index: number]: Promise<bigint>;
+    readonly length: Promise<number>;
+  }>();
 });
 
 test("createStorageProxy gracefully falls back for loose layouts", () => {
