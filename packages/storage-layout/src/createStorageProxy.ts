@@ -141,14 +141,16 @@ export function createStorageProxy<
   get: G,
   knownVariables: readonly string[] = [],
 ): StorageProxy<L, G extends AsyncSlotGetter ? true : false> {
-  let normalizedKnownPaths = knownVariables.map(normalizePath);
-  let normalizedKnownPathCount = knownVariables.length;
+  let knownPathIndex = buildKnownPathIndex(knownVariables);
+  let indexedKnownPathCount = knownVariables.length;
   const knownPaths = () => {
-    if (knownVariables.length !== normalizedKnownPathCount) {
-      normalizedKnownPaths = knownVariables.map(normalizePath);
-      normalizedKnownPathCount = knownVariables.length;
+    if (knownVariables.length < indexedKnownPathCount) {
+      knownPathIndex = buildKnownPathIndex(knownVariables);
+    } else if (knownVariables.length > indexedKnownPathCount) {
+      indexKnownPaths(knownPathIndex, knownVariables, indexedKnownPathCount);
     }
-    return normalizedKnownPaths;
+    indexedKnownPathCount = knownVariables.length;
+    return knownPathIndex;
   };
   return buildProxy(layout, get, knownPaths, null) as StorageProxy<
     L,
@@ -177,7 +179,7 @@ const JS_INTEROP_PROPS = new Set([
 function buildProxy(
   layout: StorageLayout,
   get: SlotGetter,
-  knownPaths: () => readonly StoragePath[],
+  knownPaths: () => KnownPathIndex,
   path: StoragePath | null,
 ): object {
   return new Proxy(Object.create(null), {
@@ -239,7 +241,7 @@ function buildProxy(
 function resolveOrSubProxy(
   layout: StorageLayout,
   get: SlotGetter,
-  knownPaths: () => readonly StoragePath[],
+  knownPaths: () => KnownPathIndex,
   path: StoragePath,
 ): unknown {
   const type = typeAtPath(layout, path);
@@ -249,7 +251,7 @@ function resolveOrSubProxy(
 
 function enumerableKeys(
   layout: StorageLayout,
-  knownPaths: () => readonly StoragePath[],
+  knownPaths: () => KnownPathIndex,
   path: StoragePath | null,
 ): string[] {
   if (path === null) return layout.storage.map((item) => item.label);
@@ -268,32 +270,55 @@ function enumerableKeys(
 }
 
 function knownChildProperties(
-  knownPaths: readonly StoragePath[],
+  knownPathIndex: KnownPathIndex,
   path: StoragePath,
 ): string[] {
-  const keys: string[] = [];
-  for (const knownPath of knownPaths) {
-    if (!isPrefixPath(path, knownPath)) continue;
-    const next = knownPath.segments[path.segments.length];
-    if (next?.kind !== "subscript") continue;
-    const key = formatSubscript(next.value);
-    if (!keys.includes(key)) keys.push(key);
-  }
-  return keys;
+  return [...(knownPathIndex.keysByPrefix.get(formatStoragePath(path)) ?? [])];
 }
 
-function isPrefixPath(prefix: StoragePath, path: StoragePath): boolean {
-  if (prefix.root !== path.root) return false;
-  if (prefix.segments.length >= path.segments.length) return false;
-  for (let index = 0; index < prefix.segments.length; index++) {
-    if (
-      formatSegment(prefix.segments[index]!) !==
-      formatSegment(path.segments[index]!)
-    ) {
-      return false;
+type KnownPathIndex = {
+  keysByPrefix: Map<string, string[]>;
+  seenKeysByPrefix: Map<string, Set<string>>;
+};
+
+function buildKnownPathIndex(
+  knownVariables: readonly string[],
+): KnownPathIndex {
+  const index = {
+    keysByPrefix: new Map<string, string[]>(),
+    seenKeysByPrefix: new Map<string, Set<string>>(),
+  };
+  indexKnownPaths(index, knownVariables, 0);
+  return index;
+}
+
+function indexKnownPaths(
+  index: KnownPathIndex,
+  knownVariables: readonly string[],
+  start: number,
+): void {
+  for (let index_ = start; index_ < knownVariables.length; index_++) {
+    const knownPath = normalizePath(knownVariables[index_]!);
+    for (let depth = 0; depth < knownPath.segments.length; depth++) {
+      const next = knownPath.segments[depth]!;
+      if (next.kind !== "subscript") continue;
+
+      const prefix = formatStoragePath({
+        root: knownPath.root,
+        segments: knownPath.segments.slice(0, depth),
+      });
+      const key = formatSubscript(next.value);
+      let seenKeys = index.seenKeysByPrefix.get(prefix);
+      if (seenKeys === undefined) {
+        seenKeys = new Set();
+        index.seenKeysByPrefix.set(prefix, seenKeys);
+        index.keysByPrefix.set(prefix, []);
+      }
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      index.keysByPrefix.get(prefix)!.push(key);
     }
   }
-  return true;
 }
 
 // Walk a path through the layout's types and return the type at its terminus.
@@ -671,11 +696,6 @@ function toSlotHex(value: bigint): Hex.Hex {
 
 function keccakSlot(slot: Hex.Hex): bigint {
   return BigInt(Hash.keccak256(slot));
-}
-
-function formatSegment(segment: StoragePathSegment): string {
-  if (segment.kind === "field") return `.${segment.name}`;
-  return `[${formatSubscript(segment.value)}]`;
 }
 
 function formatSubscript(subscript: StoragePathSubscript): string {

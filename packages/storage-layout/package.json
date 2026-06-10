@@ -6,6 +6,7 @@
   "scripts": {
     "test": "bun test",
     "lint": "biome check .",
+    "benchmark:known-paths": "bun scripts/known-path-enumeration.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit"
   },
