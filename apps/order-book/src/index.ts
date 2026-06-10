@@ -95,13 +95,14 @@ function json(value: unknown, init?: ResponseInit): Response {
 
 async function accountKeys(account: Hex) {
   const keys = app.state.accounts[account].keys;
+  const length = await keys.length;
   const out: {
     expiry: number;
     keyType: number;
     permissions: number;
     publicKey: Hex;
   }[] = [];
-  for (let i = 0; i < keys.length; i++) {
+  for (let i = 0; i < length; i++) {
     const key = keys[i];
     const [expiry, keyType, permissions, publicKey] = await Promise.all([
       key.expiry,
@@ -125,6 +126,7 @@ async function accountExists(account: Hex): Promise<boolean> {
 
 async function accountOrders(account: Hex, instrumentId?: number) {
   const orders = app.state.accounts[account].orders;
+  const length = await orders.length;
   const out: {
     orderId: number;
     quantity: string;
@@ -133,7 +135,7 @@ async function accountOrders(account: Hex, instrumentId?: number) {
     tickVolume: number;
     side: 0 | 1;
   }[] = [];
-  for (let i = 0; i < orders.length; i++) {
+  for (let i = 0; i < length; i++) {
     const order = orders[i];
     const [quantity, orderInstrumentId, price, tickVolume, side] =
       await Promise.all([
