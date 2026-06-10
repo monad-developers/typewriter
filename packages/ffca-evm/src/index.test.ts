@@ -583,7 +583,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
         {
           "address": "0x0000000000000000000000000000000000000e20",
           "storageKeys": [
-            "0x961ec03a078fec1e350bb1ca3bff1afa4bae5fb83d9d8382550c2fd26a7d7527",
+            "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
             "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
           ],
         },

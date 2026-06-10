@@ -245,6 +245,7 @@ export function executeMutation(params: {
       resolution = params.mutation.resolution;
     } else {
       const mutation = params.mutation;
+      const resolveStartedAtMs = startTimer();
       resolution = yield* Effect.tryPromise({
         try: () => resolveMutation(mutation, params.state),
         catch: (cause) =>
@@ -253,6 +254,13 @@ export function executeMutation(params: {
             cause,
           }),
       });
+      yield* Effect.logDebug("resolved mutation").pipe(
+        Effect.annotateLogs({
+          id: mutation.id,
+          name: mutation.name,
+          duration: durationMs(resolveStartedAtMs),
+        }),
+      );
     }
 
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
@@ -648,10 +656,21 @@ export function createRuntimeEffect(
         );
 
         mutationsById.set(acceptedMutation.id, acceptedMutation);
+        let newKnownPathCount = 0;
         for (const path of mutationKnownPaths) {
           if (knownPathSet.has(path)) continue;
           knownPathSet.add(path);
           knownPaths.push(path);
+          newKnownPathCount += 1;
+        }
+        if (newKnownPathCount > 0) {
+          yield* Effect.logDebug("registered known paths").pipe(
+            Effect.annotateLogs({
+              id: acceptedMutation.id,
+              name: acceptedMutation.name,
+              totalKnownPathCount: knownPaths.length,
+            }),
+          );
         }
 
         emitMutation(mutationToEvent(acceptedMutation));
@@ -1155,6 +1174,7 @@ export function createRuntimeEffect(
         emitMutation(mutationToEvent(runtimeMutation));
 
         const deferred = yield* Deferred.make<AcceptedMutation, unknown>();
+        const acceptStartedAtMs = startTimer();
 
         yield* Queue.offer(receivedMutationQueue, {
           mutationId: runtimeMutation.id,
@@ -1179,6 +1199,7 @@ export function createRuntimeEffect(
             id: runtimeMutation.id,
             name: runtimeMutation.name,
             params: runtimeMutation.params,
+            duration: durationMs(acceptStartedAtMs),
           }),
         );
 

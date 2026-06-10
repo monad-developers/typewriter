@@ -114,13 +114,28 @@ struct JournalIdsParams {
 }
 
 #[derive(Serialize)]
-struct Response {
+struct OkResponse<T: Serialize> {
     id: u64,
     ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    result: T,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    id: u64,
+    ok: bool,
+    error: String,
+}
+
+#[derive(Serialize)]
+struct EmptyResult {}
+
+const EMPTY_RESULT: EmptyResult = EmptyResult {};
+
+const RESPONSE_SERIALIZE_ERROR: &str = r#"{"id":0,"ok":false,"error":"response serialize error"}"#;
+
+fn serialize_response<T: Serialize>(response: &T) -> String {
+    serde_json::to_string(response).unwrap_or_else(|_| RESPONSE_SERIALIZE_ERROR.into())
 }
 
 #[derive(Serialize)]
@@ -135,6 +150,8 @@ struct ExecuteOk {
     slot_writes: Vec<SlotWriteEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
+    #[serde(skip_serializing)]
+    tx_access_list: AccessList,
 }
 
 #[derive(Serialize)]
@@ -168,6 +185,7 @@ type Evm = monad_revm::api::builder::DefaultMonadEvm<
 struct Journal {
     accounts: HashMap<Address, (AccountInfo, AccountInfo)>,
     storage: HashMap<(Address, U256), (U256, U256)>,
+    access_list: AccessList,
 }
 
 pub struct EvmHarness {
@@ -284,7 +302,7 @@ impl EvmHarness {
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         self.ensure_initialized()?;
-        let mut result = match self.run_two_pass(params) {
+        let mut result = match self.run_two_pass(params, None) {
             Ok(result) => result,
             Err(error) => {
                 let _ = self.evm.finalize();
@@ -295,6 +313,7 @@ impl EvmHarness {
             result.slot_writes = collect_slot_writes(self.evm.0.ctx.journaled_state.evm_state());
             let mut journal = Journal::default();
             self.record_into_journal(&mut journal);
+            journal.access_list = result.tx_access_list.clone();
             // Commit the journaled state into the DB so future reads and
             // writes see the post-tx state.
             self.flush_journal_to_db();
@@ -325,7 +344,8 @@ impl EvmHarness {
             }
         }
 
-        let result = self.run_two_pass(&params.as_execute_params());
+        let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
+        let result = self.run_two_pass(&params.as_execute_params(), cached_access_list);
 
         // Drop pass 2's journal-state writes so they never reach the DB.
         let _ = self.evm.finalize();
@@ -417,7 +437,11 @@ impl EvmHarness {
     // pass 2 starts from the same DB state. The alternative —
     // checkpoint_revert — doesn't work because transact_one calls commit_tx
     // after success, which clears the revertable journal log.
-    fn run_two_pass(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
+    fn run_two_pass(
+        &mut self,
+        params: &ExecuteParams,
+        cached_access_list: Option<AccessList>,
+    ) -> Result<ExecuteOk, String> {
         let from = parse_address(&params.from)?;
         let to = parse_address(&params.to)?;
         let data = parse_bytes(&params.data)?;
@@ -441,32 +465,37 @@ impl EvmHarness {
                 .build_fill()
         };
 
-        // Pass 1 — discover the access list from touched accounts/slots.
-        let _ = self
-            .evm
-            .transact_one(build_tx(AccessList::default(), u64::MAX))
-            .map_err(|e| format!("transact (pass 1): {e:?}"))?;
-        let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
-        // Drain pass 1's journal state without committing it.
-        let _ = self.evm.finalize();
+        let tx_access_list = match cached_access_list {
+            Some(access_list) => access_list,
+            None => {
+                // Pass 1 — discover the access list from touched accounts/slots.
+                let _ = self
+                    .evm
+                    .transact_one(build_tx(AccessList::default(), u64::MAX))
+                    .map_err(|e| format!("transact (pass 1): {e:?}"))?;
+                let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
+                // Drain pass 1's journal state without committing it.
+                let _ = self.evm.finalize();
 
-        // Pass 2 — measure with pre-warmed access list.
-        //
-        // collect_access_list includes every account touched during execution.
-        // Keep address-only entries for cold callees, but drop addresses that
-        // are already warm at transaction start.
-        let tx_access_list = AccessList(
-            touched
-                .0
-                .iter()
-                .filter(|item| {
-                    !item.storage_keys.is_empty()
-                        || (!is_intrinsically_warm(item.address, from, to, coinbase)
-                            && !is_precompile(item.address))
-                })
-                .cloned()
-                .collect(),
-        );
+                // collect_access_list includes every account touched during execution.
+                // Keep address-only entries for cold callees, but drop addresses that
+                // are already warm at transaction start.
+                AccessList(
+                    touched
+                        .0
+                        .iter()
+                        .filter(|item| {
+                            !item.storage_keys.is_empty()
+                                || (!is_intrinsically_warm(item.address, from, to, coinbase)
+                                    && !is_precompile(item.address))
+                        })
+                        .cloned()
+                        .collect(),
+                )
+            }
+        };
+
+        // Measure with pre-warmed access list.
 
         let mut result = self
             .evm
@@ -526,7 +555,39 @@ impl EvmHarness {
             access_list: access_list_wire,
             slot_writes: Vec::new(),
             revert_data,
+            tx_access_list,
         })
+    }
+
+    fn merge_journal_access_lists(&self, journal_ids: &[u64]) -> Option<AccessList> {
+        if journal_ids.is_empty() {
+            return None;
+        }
+
+        let mut items: Vec<AccessListItem> = Vec::new();
+        for journal_id in journal_ids {
+            let journal = self
+                .journals
+                .get(journal_id)
+                .expect("journal ids validated above");
+            for item in &journal.access_list.0 {
+                match items
+                    .iter_mut()
+                    .find(|merged| merged.address == item.address)
+                {
+                    Some(merged) => {
+                        for key in &item.storage_keys {
+                            if !merged.storage_keys.contains(key) {
+                                merged.storage_keys.push(*key);
+                            }
+                        }
+                    }
+                    None => items.push(item.clone()),
+                }
+            }
+        }
+
+        Some(AccessList(items))
     }
 
     fn estimate_gas_limit(
@@ -747,69 +808,57 @@ fn parse_spec(s: &str) -> Option<MonadSpecId> {
 // calls; it never returns `Err` so the FFI boundary stays infallible and the
 // protocol (id-correlated ok/error envelopes) is owned entirely in Rust.
 pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
-    let response = match serde_json::from_str::<Request>(request_json) {
+    match serde_json::from_str::<Request>(request_json) {
         Ok(req) => dispatch(harness, req),
-        Err(e) => Response {
-            id: 0,
-            ok: false,
-            result: None,
-            error: Some(format!("parse error: {e}")),
-        },
-    };
-    // Our `Response` is a fixed shape of strings/numbers/JSON values, so
-    // serialization cannot realistically fail; fall back to a hand-built
-    // envelope rather than panicking at the FFI boundary if it ever does.
-    serde_json::to_string(&response)
-        .unwrap_or_else(|_| r#"{"id":0,"ok":false,"error":"response serialize error"}"#.into())
+        Err(e) => err(0, format!("parse error: {e}")),
+    }
 }
 
-fn dispatch(harness: &mut EvmHarness, req: Request) -> Response {
+fn dispatch(harness: &mut EvmHarness, req: Request) -> String {
     match req {
         Request::Init { id, params } => match harness.init(&params) {
-            Ok(()) => ok(id, serde_json::json!({})),
+            Ok(()) => ok(id, &EMPTY_RESULT),
             Err(e) => err(id, e),
         },
         Request::SetBlockContext { id, params } => match harness.set_block_context(&params) {
-            Ok(()) => ok(id, serde_json::json!({})),
+            Ok(()) => ok(id, &EMPTY_RESULT),
             Err(e) => err(id, e),
         },
         Request::Execute { id, params } => match harness.execute(&params) {
-            Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
+            Ok(r) => ok(id, &r),
             Err(e) => err(id, e),
         },
         Request::Simulate { id, params } => match harness.simulate(&params) {
-            Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
+            Ok(r) => ok(id, &r),
             Err(e) => err(id, e),
         },
         Request::ReadStorage { id, params } => match harness.read_storage(&params) {
-            Ok(r) => ok(id, serde_json::to_value(r).unwrap()),
+            Ok(r) => ok(id, &r),
             Err(e) => err(id, e),
         },
         Request::RevertJournals { id, params } => match harness.revert_journals(&params) {
-            Ok(()) => ok(id, serde_json::json!({})),
+            Ok(()) => ok(id, &EMPTY_RESULT),
             Err(e) => err(id, e),
         },
         Request::PruneJournals { id, params } => match harness.prune_journals(&params) {
-            Ok(()) => ok(id, serde_json::json!({})),
+            Ok(()) => ok(id, &EMPTY_RESULT),
             Err(e) => err(id, e),
         },
     }
 }
 
-fn ok(id: u64, result: serde_json::Value) -> Response {
-    Response {
+fn ok<T: Serialize>(id: u64, result: &T) -> String {
+    serialize_response(&OkResponse {
         id,
         ok: true,
-        result: Some(result),
-        error: None,
-    }
+        result,
+    })
 }
 
-fn err(id: u64, error: String) -> Response {
-    Response {
+fn err(id: u64, error: String) -> String {
+    serialize_response(&ErrorResponse {
         id,
         ok: false,
-        result: None,
-        error: Some(error),
-    }
+        error,
+    })
 }
