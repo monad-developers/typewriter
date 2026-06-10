@@ -28,15 +28,20 @@ function domain() {
 
 export function sign(
   privateKey: Hex.Hex,
-  primaryType: string,
-  message: Record<string, unknown>,
+  primaryType: keyof typeof EIP712_TYPES,
+  message: TypedData.MessageDefinition<
+    typeof EIP712_TYPES,
+    keyof typeof EIP712_TYPES
+  >["message"],
 ): Hex.Hex {
   const payload = TypedData.getSignPayload({
     domain: domain(),
     types: EIP712_TYPES,
-    primaryType: primaryType as keyof typeof EIP712_TYPES,
-    message: message as never,
-  });
+    primaryType,
+    message,
+    // getSignPayload can't model a runtime-chosen primaryType over a multi-type
+    // schema; the value above is a valid definition for the chosen type.
+  } as TypedData.Definition<typeof EIP712_TYPES, typeof primaryType>);
   const sig = Secp256k1.sign({ payload, privateKey });
   return Signature.toHex(sig);
 }

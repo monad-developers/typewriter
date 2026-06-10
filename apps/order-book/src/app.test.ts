@@ -178,7 +178,9 @@ async function signedMutation<const name extends string>(input: {
             input.name,
             input.params as Record<string, unknown>,
           ),
-        } as never);
+          // signTypedData can't model a runtime-chosen primaryType over a
+          // multi-type schema; the value above is valid for the chosen type.
+        } as Parameters<typeof signTypedData>[0]);
   return {
     name: input.name,
     params: input.params,

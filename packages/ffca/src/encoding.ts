@@ -1,6 +1,5 @@
 import { AbiParameters, type Hex } from "ox";
 import { type Abi, encodeFunctionData } from "viem";
-import type { FFCAMutationConfig } from "./config";
 import type { MutationWithResolution } from "./types";
 
 export const FFCA_ABI = [
@@ -92,7 +91,10 @@ export function encodeMutationCalldata(
 }
 
 export function decodeMutationCalldata(
-  mutationConfig: FFCAMutationConfig,
+  mutationConfig: {
+    params: readonly AbiParameters.Parameter[];
+    resolution?: readonly AbiParameters.Parameter[];
+  },
   calldata: Hex.Hex,
 ): { params: unknown; resolution?: unknown } {
   const params = mutationConfig.params;

@@ -2,10 +2,10 @@ import type { AbiParameter } from "abitype";
 import type { Hex } from "ox";
 import type {
   AbiParametersToValue,
-  FFCAMutationConfig,
   MutationConfig,
   SignatureConfig,
 } from "./config";
+import type { InternalMutation } from "./internal";
 
 type MutationParams<mutationConfig extends MutationConfig> =
   readonly AbiParameter[] extends mutationConfig["params"]
@@ -82,7 +82,7 @@ export type RuntimeMutation =
       name: string;
       params: unknown;
       signature: unknown;
-      config: FFCAMutationConfig;
+      config: InternalMutation;
     }
   | ({
       status: "enqueued";
@@ -90,7 +90,7 @@ export type RuntimeMutation =
       name: string;
       params: unknown;
       signature: unknown;
-      config: FFCAMutationConfig;
+      config: InternalMutation;
       resolution?: unknown;
     } & Extract<ForceInclusion, { isForceInclusion: true }>)
   | ({
@@ -101,7 +101,7 @@ export type RuntimeMutation =
       signature: unknown;
       journalId: number;
       isForceInclusion: boolean;
-      config: FFCAMutationConfig;
+      config: InternalMutation;
       executionIndex?: bigint;
       resolution?: unknown;
     } & ForceInclusion)
@@ -113,7 +113,7 @@ export type RuntimeMutation =
       signature: unknown;
       journalId: number;
       isForceInclusion: boolean;
-      config: FFCAMutationConfig;
+      config: InternalMutation;
       executionIndex?: bigint;
       resolution?: unknown;
     } & ForceInclusion)
@@ -124,7 +124,7 @@ export type RuntimeMutation =
       params: unknown;
       signature: unknown;
       isForceInclusion: boolean;
-      config: FFCAMutationConfig;
+      config: InternalMutation;
       error: unknown;
     } & ForceInclusion);
 

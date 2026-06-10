@@ -177,8 +177,8 @@ async function resolveMutation(
 ): Promise<unknown> {
   if (mutation.config.resolve !== undefined) {
     return mutation.config.resolve({
-      state: state as never,
-      params: mutation.params as never,
+      state,
+      params: mutation.params,
       signature: mutation.signature,
     });
   }
@@ -189,12 +189,7 @@ async function registerKnownPaths(
   mutation: AcceptedMutation,
 ): Promise<readonly string[]> {
   if (mutation.config.registerMappingKeys === undefined) return [];
-  const registerMappingKeys = mutation.config.registerMappingKeys as (params: {
-    params: unknown;
-    signature: unknown;
-    resolution?: unknown;
-  }) => readonly string[] | Promise<readonly string[]>;
-  return registerMappingKeys({
+  return mutation.config.registerMappingKeys({
     params: mutation.params,
     signature: mutation.signature,
     resolution: mutation.resolution,

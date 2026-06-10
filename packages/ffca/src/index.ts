@@ -88,7 +88,12 @@ export async function createFFCA<
 
   try {
     const ffca = await Effect.runPromise(
-      createFFCAEffect(config).pipe(Effect.provideService(Scope.Scope, scope)),
+      createFFCAEffect<
+        storageConfig,
+        mutationsConfig,
+        signatureConfig,
+        sequencingConfig
+      >(config).pipe(Effect.provideService(Scope.Scope, scope)),
     );
 
     const runtimeOn = ffca.on as unknown as (
@@ -104,7 +109,7 @@ export async function createFFCA<
 
     const execute = ((
       submitted: FFCAMutationInput<mutationsConfig, signatureConfig>,
-    ) => Effect.runPromise(ffca.execute(submitted as never))) as FFCA<
+    ) => Effect.runPromise(ffca.execute(submitted))) as FFCA<
       storageConfig,
       mutationsConfig,
       signatureConfig,

@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { createFFCA } from "ffca";
 import {
   type AccountStorage,
+  type ConcreteStorageVariable,
   decodeStorageVariable,
   getStorageSlot,
-  type StorageLayout,
   type StorageVariableToPrimitiveType,
 } from "storage-layout";
 import {
@@ -38,14 +38,15 @@ async function readAccount(params: {
   account: Address;
 }): Promise<{ nonce: bigint; balance: bigint }> {
   async function readStorage<
-    layout extends StorageLayout,
-    variable extends string,
+    variable extends ConcreteStorageVariable<typeof TOKEN_STORAGE_LAYOUT>,
   >(
-    layout: layout,
+    layout: typeof TOKEN_STORAGE_LAYOUT,
     address: Address,
     variable: variable,
-  ): Promise<StorageVariableToPrimitiveType<layout, variable>> {
-    const slots = getStorageSlot(layout, variable as never);
+  ): Promise<
+    StorageVariableToPrimitiveType<typeof TOKEN_STORAGE_LAYOUT, variable>
+  > {
+    const slots = getStorageSlot(layout, variable);
     const values = await Promise.all(
       slots.map((slot) => TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })),
     );
@@ -53,7 +54,7 @@ async function readAccount(params: {
       slots.map((slot, index) => [slot, values[index]!]),
     ) as AccountStorage;
 
-    return decodeStorageVariable(layout, variable as never, storage);
+    return decodeStorageVariable(layout, variable, storage);
   }
 
   return {

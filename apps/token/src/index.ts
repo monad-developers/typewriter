@@ -127,7 +127,7 @@ const server = Bun.serve({
           name: body.name,
           params: body.params,
           signature: body.signature,
-        } as never);
+        } as Parameters<typeof ffca.execute>[0]);
         return jsonResponse(mutation);
       },
     },

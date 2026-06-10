@@ -36,9 +36,9 @@ export type RuntimeFFCA<
 > = {
   readonly state: StorageProxy<storageConfig, true>;
   readonly schema: FFCASchema<mutationsConfig, signatureConfig>;
-  execute: <const name extends keyof mutationsConfig & string>(
-    submitted: FFCAMutationInput<mutationsConfig, signatureConfig, name>,
-  ) => Effect.Effect<FFCAMutationResult<mutationsConfig[name]>, unknown>;
+  execute: (
+    submitted: FFCAMutationInput<mutationsConfig, signatureConfig>,
+  ) => Effect.Effect<FFCAMutationResult, unknown>;
   program: Effect.Effect<unknown, unknown>;
 } & (sequencingConfig extends "fifo"
   ? {
