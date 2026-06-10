@@ -145,9 +145,15 @@ export function createStorageProxy<
   let indexedKnownPathCount = knownVariables.length;
   const knownPaths = () => {
     if (knownVariables.length < indexedKnownPathCount) {
+      // Shrink: rebuild from scratch, carrying the version forward so any proxy
+      // key memo built against the previous index recomputes instead of serving
+      // stale keys.
+      const nextVersion = knownPathIndex.version + 1;
       knownPathIndex = buildKnownPathIndex(knownVariables);
+      knownPathIndex.version = nextVersion;
     } else if (knownVariables.length > indexedKnownPathCount) {
       indexKnownPaths(knownPathIndex, knownVariables, indexedKnownPathCount);
+      knownPathIndex.version += 1;
     }
     indexedKnownPathCount = knownVariables.length;
     return knownPathIndex;
@@ -182,6 +188,25 @@ function buildProxy(
   knownPaths: () => KnownPathIndex,
   path: StoragePath | null,
 ): object {
+  // Memoize this path's enumerable keys (plus a membership Set) so that
+  // `Object.keys` / `for…in` / spread stay O(k) rather than O(k²). The engine
+  // calls `ownKeys` once and then `getOwnPropertyDescriptor` once per key;
+  // without this cache every descriptor probe would rebuild and rescan the full
+  // key list. The cache is keyed on the known-path index version, so it drops
+  // as soon as mapping children grow (or the index is rebuilt on shrink).
+  let memoVersion = -1;
+  let memoKeys: string[] = [];
+  let memoKeySet: Set<string> | null = null;
+  const enumerable = (): { keys: string[]; set: Set<string> } => {
+    const { version } = knownPaths();
+    if (memoKeySet === null || version !== memoVersion) {
+      memoKeys = enumerableKeys(layout, knownPaths, path);
+      memoKeySet = new Set(memoKeys);
+      memoVersion = version;
+    }
+    return { keys: memoKeys, set: memoKeySet };
+  };
+
   return new Proxy(Object.create(null), {
     get(_, prop) {
       // Symbol property access (Symbol.toPrimitive, util.inspect.custom,
@@ -219,18 +244,15 @@ function buildProxy(
 
     has(_, prop) {
       if (typeof prop !== "string" || JS_INTEROP_PROPS.has(prop)) return false;
-      return enumerableKeys(layout, knownPaths, path).includes(prop);
+      return enumerable().set.has(prop);
     },
 
     ownKeys() {
-      return enumerableKeys(layout, knownPaths, path);
+      return enumerable().keys;
     },
 
     getOwnPropertyDescriptor(_, prop) {
-      if (
-        typeof prop === "string" &&
-        enumerableKeys(layout, knownPaths, path).includes(prop)
-      ) {
+      if (typeof prop === "string" && enumerable().set.has(prop)) {
         return { configurable: true, enumerable: true };
       }
       return undefined;
@@ -279,14 +301,18 @@ function knownChildProperties(
 type KnownPathIndex = {
   keysByPrefix: Map<string, string[]>;
   seenKeysByPrefix: Map<string, Set<string>>;
+  // Monotonic counter bumped whenever the indexed known paths change. Proxy key
+  // memos compare against it to know when to recompute.
+  version: number;
 };
 
 function buildKnownPathIndex(
   knownVariables: readonly string[],
 ): KnownPathIndex {
-  const index = {
+  const index: KnownPathIndex = {
     keysByPrefix: new Map<string, string[]>(),
     seenKeysByPrefix: new Map<string, Set<string>>(),
+    version: 0,
   };
   indexKnownPaths(index, knownVariables, 0);
   return index;

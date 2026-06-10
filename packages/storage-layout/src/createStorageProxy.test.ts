@@ -542,6 +542,82 @@ test("mapping enumeration observes known paths added after proxy creation", () =
   expect(Object.values(state.balances)).toEqual([100n]);
 });
 
+test("retained sub-proxy reflects known-path growth (key memo invalidates)", () => {
+  const { get } = syncGetter({});
+  const knownPaths: string[] = [];
+  const state = createStorageProxy(layout, get, knownPaths);
+
+  // Hold the SAME sub-proxy across the growth so the fix's per-path key memo
+  // must invalidate on the version bump instead of serving a stale empty list.
+  const balances = state.balances;
+  expect(Object.keys(balances)).toEqual([]);
+  expect(OWNER in balances).toBe(false);
+
+  knownPaths.push(`balances[${OWNER}]`);
+
+  expect(Object.keys(balances)).toEqual([OWNER]);
+  expect(OWNER in balances).toBe(true);
+});
+
+test("retained sub-proxy reflects known-path shrink (index rebuild)", () => {
+  const { get } = syncGetter({});
+  const knownPaths: string[] = [`balances[${OWNER}]`, `balances[${SPENDER}]`];
+  const state = createStorageProxy(layout, get, knownPaths);
+
+  const balances = state.balances;
+  expect(Object.keys(balances)).toEqual([OWNER, SPENDER]);
+
+  // Shrinking triggers a full index rebuild; the retained proxy's memo must drop
+  // so it does not keep reporting the removed key.
+  knownPaths.length = 1;
+
+  expect(Object.keys(balances)).toEqual([OWNER]);
+  expect(SPENDER in balances).toBe(false);
+});
+
+test("ownKeys, descriptors, and 'in' stay consistent for mapping enumeration", () => {
+  const { get } = syncGetter({});
+  const state = createStorageProxy(layout, get, [
+    `balances[${OWNER}]`,
+    `balances[${SPENDER}]`,
+  ]);
+  const balances = state.balances;
+
+  const keys = Reflect.ownKeys(balances);
+  expect(keys).toEqual([OWNER, SPENDER]);
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(balances, key);
+    expect(descriptor?.enumerable).toBe(true);
+    expect(descriptor?.configurable).toBe(true);
+    expect(key in balances).toBe(true);
+  }
+});
+
+test("mapping enumeration scales linearly, not quadratically, with known keys", () => {
+  const address = (index: number): string =>
+    `0x${index.toString(16).padStart(40, "0")}`;
+  const timeRepeatedObjectKeys = (keyCount: number): number => {
+    const knownPaths = Array.from(
+      { length: keyCount },
+      (_, index) => `balances[${address(index + 1)}]`,
+    );
+    const state = createStorageProxy(layout, syncGetter({}).get, knownPaths);
+    const balances = state.balances;
+    Object.keys(balances); // warm up JIT + build the key memo once
+    const start = performance.now();
+    for (let i = 0; i < 50; i++) Object.keys(balances);
+    return performance.now() - start;
+  };
+
+  const small = timeRepeatedObjectKeys(1000);
+  const large = timeRepeatedObjectKeys(4000);
+
+  // 4x the keys. Linear enumeration ⇒ ~4x time; the previous O(k²) descriptor
+  // probe ⇒ ~16x. The 10x bound stays well clear of normal noise while still
+  // failing loudly if the quadratic path returns.
+  expect(large).toBeLessThan(small * 10);
+});
+
 test("does not enumerate dynamic array indices from known paths", () => {
   const slot0 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[0]"));
   const slot2 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[2]"));
