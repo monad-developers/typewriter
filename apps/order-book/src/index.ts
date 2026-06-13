@@ -1,4 +1,5 @@
 import { serve } from "bun";
+import { like } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
 import { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
@@ -58,6 +59,20 @@ const readerDb = drizzle({
 });
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 const TPS_WINDOW_MS = 10000;
+
+async function knownPathChildren(prefix: string): Promise<string[]> {
+  const rows = await readerDb
+    .select({ path: app.schema.known_paths.path })
+    .from(app.schema.known_paths)
+    .where(like(app.schema.known_paths.path, `${prefix}[%`));
+  const keys = new Set<string>();
+  for (const { path } of rows) {
+    const rest = path.slice(prefix.length);
+    const match = /^\[([^\]]+)\]/.exec(rest);
+    if (match !== null) keys.add(match[1]!);
+  }
+  return [...keys];
+}
 
 function eventStream(event: "batch" | "block"): Response {
   const textEncoder = new TextEncoder();
@@ -165,7 +180,9 @@ async function accountOrders(account: Hex, instrumentId?: number) {
 
 async function accountBalances(account: Hex): Promise<Record<string, string>> {
   const balanceProxy = app.state.accounts[account].balances;
-  const assets = Object.keys(balanceProxy) as Address[];
+  const assets = (await knownPathChildren(
+    `accounts[${account}].balances`,
+  )) as Address[];
   const amounts = await Promise.all(assets.map((asset) => balanceProxy[asset]));
   const balances: Record<string, string> = {};
   for (let i = 0; i < assets.length; i++) {
@@ -176,7 +193,7 @@ async function accountBalances(account: Hex): Promise<Record<string, string>> {
 
 async function accountNonces(account: Hex): Promise<Record<string, string>> {
   const nonceProxy = app.state.accounts[account].nonces;
-  const keys = Object.keys(nonceProxy);
+  const keys = await knownPathChildren(`accounts[${account}].nonces`);
   const values = await Promise.all(
     keys.map((key) => nonceProxy[key as `${number}`]),
   );
@@ -187,10 +204,13 @@ async function accountNonces(account: Hex): Promise<Record<string, string>> {
   return nonces;
 }
 
-function getPrices(instrumentId: number, side: "bids" | "asks"): number[] {
-  const ticks =
-    app.state.instruments[String(instrumentId) as `${number}`][side];
-  const prices = Object.keys(ticks).map(Number);
+async function getPrices(
+  instrumentId: number,
+  side: "bids" | "asks",
+): Promise<number[]> {
+  const prices = (
+    await knownPathChildren(`instruments[${instrumentId}].${side}`)
+  ).map(Number);
   return prices.sort((a, b) => (side === "asks" ? a - b : b - a));
 }
 
@@ -445,13 +465,9 @@ serve({
           );
         }
         const instrumentId = Number(instrumentIdParam);
-        return json(
-          await summarizePrice(
-            instrumentId,
-            getPrices(instrumentId, "bids"),
-            getPrices(instrumentId, "asks"),
-          ),
-        );
+        const bidPrices = await getPrices(instrumentId, "bids");
+        const askPrices = await getPrices(instrumentId, "asks");
+        return json(await summarizePrice(instrumentId, bidPrices, askPrices));
       },
     },
     "/api/depth": {
@@ -466,8 +482,8 @@ serve({
           );
         }
         const instrumentId = Number(instrumentIdParam);
-        const bidPrices = getPrices(instrumentId, "bids");
-        const askPrices = getPrices(instrumentId, "asks");
+        const bidPrices = await getPrices(instrumentId, "bids");
+        const askPrices = await getPrices(instrumentId, "asks");
         const summary = await summarizePrice(
           instrumentId,
           bidPrices,
@@ -548,7 +564,7 @@ serve({
           );
         }
         const parsedInstrumentId = Number(instrumentId);
-        const prices = getPrices(
+        const prices = await getPrices(
           parsedInstrumentId,
           side === "buy" ? "asks" : "bids",
         );
@@ -596,7 +612,7 @@ serve({
         }
         const parsedInstrumentId = Number(instrumentId);
         const limitPrice = Number(priceQ32);
-        const prices = getPrices(
+        const prices = await getPrices(
           parsedInstrumentId,
           side === "buy" ? "asks" : "bids",
         );

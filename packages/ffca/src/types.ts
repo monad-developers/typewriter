@@ -12,12 +12,6 @@ type MutationParams<mutationConfig extends MutationConfig> =
     ? unknown
     : AbiParametersToValue<mutationConfig["params"]>;
 
-type MutationResolution<
-  mutationConfig extends { resolution: readonly AbiParameter[] },
-> = readonly AbiParameter[] extends mutationConfig["resolution"]
-  ? unknown
-  : AbiParametersToValue<mutationConfig["resolution"]>;
-
 type SignatureValue<signatureConfig extends SignatureConfig> =
   readonly AbiParameter[] extends signatureConfig
     ? unknown
@@ -45,14 +39,7 @@ export type FFCAMutationInput<
   >;
 }[name];
 
-export type FFCAMutationResult<
-  mutationConfig extends MutationConfig = MutationConfig,
-> = mutationConfig extends { resolution: readonly AbiParameter[] }
-  ? {
-      id: number;
-      resolution: MutationResolution<mutationConfig>;
-    }
-  : { id: number };
+export type FFCAMutationResult = { id: number };
 
 export type MutationStatus =
   | "received"
@@ -91,7 +78,6 @@ export type RuntimeMutation =
       params: unknown;
       signature: unknown;
       config: InternalMutation;
-      resolution?: unknown;
     } & Extract<ForceInclusion, { isForceInclusion: true }>)
   | ({
       status: "accepted";
@@ -103,7 +89,6 @@ export type RuntimeMutation =
       isForceInclusion: boolean;
       config: InternalMutation;
       executionIndex?: bigint;
-      resolution?: unknown;
     } & ForceInclusion)
   | ({
       status: "included" | "safe" | "finalized";
@@ -115,7 +100,6 @@ export type RuntimeMutation =
       isForceInclusion: boolean;
       config: InternalMutation;
       executionIndex?: bigint;
-      resolution?: unknown;
     } & ForceInclusion)
   | ({
       status: "rejected";
@@ -135,7 +119,7 @@ export type SubmittedMutation = Extract<
   RuntimeMutation,
   { status: "included" | "safe" | "finalized" }
 >;
-export type MutationWithResolution = Extract<
+export type ExecutableMutation = Extract<
   RuntimeMutation,
   { status: "enqueued" | "accepted" | "included" | "safe" | "finalized" }
 >;
@@ -268,7 +252,6 @@ export type MutationEvent<
       name: name;
       params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
-      resolution?: unknown;
     }
   | {
       status: "accepted";
@@ -277,7 +260,6 @@ export type MutationEvent<
       params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
       isForceInclusion: boolean;
-      resolution?: unknown;
     }
   | {
       status: "included" | "safe" | "finalized";
@@ -286,7 +268,6 @@ export type MutationEvent<
       params: MutationParams<mutationConfig>;
       signature: SignatureValue<signatureConfig>;
       isForceInclusion: boolean;
-      resolution?: unknown;
     }
   | {
       status: "rejected";

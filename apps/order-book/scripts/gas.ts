@@ -76,7 +76,6 @@ type Mut =
       bidOrAsk: 0 | 1;
       nonce: bigint;
       deadline: bigint;
-      fills: { quantity: bigint; price: bigint }[];
     }
   | {
       type: MutationType.CloseOrder;
@@ -134,19 +133,6 @@ function encodeMutationData(m: Mut): Hex {
               { type: "uint256", name: "deadline" },
             ],
           },
-          {
-            type: "tuple",
-            components: [
-              {
-                type: "tuple[]",
-                name: "fills",
-                components: [
-                  { type: "uint64", name: "quantity" },
-                  { type: "uint64", name: "price" },
-                ],
-              },
-            ],
-          },
         ],
         [
           {
@@ -157,7 +143,6 @@ function encodeMutationData(m: Mut): Hex {
             nonce: m.nonce,
             deadline: m.deadline,
           },
-          { fills: m.fills },
         ],
       );
     case MutationType.CloseOrder:
@@ -415,7 +400,6 @@ console.log("");
 // Scenario 3: market order, no cross (all fills at one price)
 {
   const price = randomHumanPrice();
-  const q32 = priceToQ32(price, instrument);
   // Seed a large ask at `price` so many market buys drain from the same tick.
   const maker = await setupAccount(instrument, 1_000n, 0n);
   await limitOrder(maker, {
@@ -439,7 +423,6 @@ console.log("");
     bidOrAsk: 0,
     nonce: nonceFor(taker, BigInt(i)),
     deadline: FAR_DEADLINE,
-    fills: [{ quantity: 1n, price: q32 }],
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkMarket(i));
@@ -452,7 +435,6 @@ console.log("");
 {
   const p0 = randomHumanPrice();
   const prices = [p0, p0 + 1, p0 + 2];
-  const q32s = prices.map((p) => priceToQ32(p, instrument));
   const maker = await setupAccount(instrument, 3_000n, 0n);
   for (const p of prices) {
     await limitOrder(maker, {
@@ -477,11 +459,6 @@ console.log("");
     bidOrAsk: 0,
     nonce: nonceFor(taker, BigInt(i)),
     deadline: FAR_DEADLINE,
-    fills: [
-      { quantity: 1n, price: q32s[0]! },
-      { quantity: 1n, price: q32s[1]! },
-      { quantity: 1n, price: q32s[2]! },
-    ],
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkMarket(i));

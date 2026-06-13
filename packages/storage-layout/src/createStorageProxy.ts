@@ -188,19 +188,15 @@ function buildProxy(
   knownPaths: () => KnownPathIndex,
   path: StoragePath | null,
 ): object {
-  // Memoize this path's enumerable keys (plus a membership Set) so that
-  // `Object.keys` / `for…in` / spread stay O(k) rather than O(k²). The engine
-  // calls `ownKeys` once and then `getOwnPropertyDescriptor` once per key;
-  // without this cache every descriptor probe would rebuild and rescan the full
-  // key list. The cache is keyed on the known-path index version, so it drops
-  // as soon as mapping children grow (or the index is rebuilt on shrink).
+  // Memoize this path's enumerable keys (plus a membership Set) so the engine's
+  // `ownKeys` + descriptor probes do not repeatedly rebuild static key lists.
   let memoVersion = -1;
   let memoKeys: string[] = [];
   let memoKeySet: Set<string> | null = null;
   const enumerable = (): { keys: string[]; set: Set<string> } => {
     const { version } = knownPaths();
     if (memoKeySet === null || version !== memoVersion) {
-      memoKeys = enumerableKeys(layout, knownPaths, path);
+      memoKeys = enumerableKeys(layout, path);
       memoKeySet = new Set(memoKeys);
       memoVersion = version;
     }
@@ -273,7 +269,6 @@ function resolveOrSubProxy(
 
 function enumerableKeys(
   layout: StorageLayout,
-  knownPaths: () => KnownPathIndex,
   path: StoragePath | null,
 ): string[] {
   if (path === null) return layout.storage.map((item) => item.label);
@@ -281,21 +276,17 @@ function enumerableKeys(
   const type = typeAtPath(layout, path);
   if (type.members !== undefined)
     return type.members.map((member) => member.label);
-  if (type.base !== undefined && type.encoding === "inplace") {
-    return Array.from({ length: fixedArrayLength(type) }, (_, index) =>
-      String(index),
+  if (type.base !== undefined) {
+    throw new Error(
+      `cannot enumerate array storage path: ${formatStoragePath(path)}`,
     );
   }
-  if (type.base !== undefined) return [];
-  if (type.key !== undefined) return knownChildProperties(knownPaths(), path);
+  if (type.key !== undefined) {
+    throw new Error(
+      `cannot enumerate mapping storage path: ${formatStoragePath(path)}`,
+    );
+  }
   return [];
-}
-
-function knownChildProperties(
-  knownPathIndex: KnownPathIndex,
-  path: StoragePath,
-): string[] {
-  return [...(knownPathIndex.keysByPrefix.get(formatStoragePath(path)) ?? [])];
 }
 
 type KnownPathIndex = {

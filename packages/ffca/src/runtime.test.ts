@@ -293,7 +293,6 @@ test("execute() returns an accepted mutation", async () => {
   expect(mutationResult).toMatchInlineSnapshot(`
     {
       "id": 1,
-      "resolution": undefined,
     }
   `);
 });
@@ -366,15 +365,12 @@ test("execute() accepts multiple mutations in a batch", async () => {
     [
       {
         "id": 1,
-        "resolution": undefined,
       },
       {
         "id": 2,
-        "resolution": undefined,
       },
       {
         "id": 3,
-        "resolution": undefined,
       },
     ]
   `);
@@ -1045,7 +1041,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
   `);
 });
 
-test("runtime rejects a Harness mutation when resolution throws", async () => {
+test("runtime rejects a Harness mutation when onchain execution reverts", async () => {
   const address = await deployHarness();
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);

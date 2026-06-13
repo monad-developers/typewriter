@@ -15,7 +15,6 @@ import {
   decodeStorageVariable,
   getStorageSlot,
   type StorageLayout,
-  type StorageProxy,
   type StorageVariableToPrimitiveType,
 } from "storage-layout";
 import { type Address, encodeDeployData, type Hex } from "viem";
@@ -824,17 +823,9 @@ export function signCounter(params: {
 //   authorize  (1): adds a key to an existing account. Signed by an
 //                    existing key.
 //   credit     (2): adds amount to balance. Signed.
-//   debit      (3): resolve computes newBalance from revm-backed state; the
-//                    contract rejects the batch if the resolution doesn't
-//                    match its own pre-state. Signed.
+//   debit      (3): subtracts amount from balance onchain. Signed.
 //   assert     (4): read-only check; the contract reverts if balance !=
 //                    expected. Signed.
-type DebitArgs = {
-  account: Hex;
-  keyId: bigint;
-  amount: bigint;
-  nonce: bigint;
-};
 export const HARNESS_MUTATIONS = {
   initialize: {
     tag: 0,
@@ -857,28 +848,6 @@ export const HARNESS_MUTATIONS = {
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
-    resolution: parseAbiParameters("uint256 newBalance"),
-    resolve: async ({
-      state,
-      params,
-    }: {
-      state: unknown;
-      params: unknown;
-      signature: unknown;
-    }) => {
-      const harnessStorage = state as StorageProxy<
-        typeof HARNESS_STORAGE_LAYOUT,
-        true
-      >;
-      const debit = params as DebitArgs;
-      const balance = await harnessStorage.balances[debit.account];
-      if (balance === undefined) {
-        return { newBalance: -debit.amount };
-      }
-      return {
-        newBalance: balance - debit.amount,
-      };
-    },
   },
   assert: {
     tag: 4,

@@ -12,7 +12,7 @@ import {
   encodeMutationCalldata,
   encodeSignatureCalldata,
 } from "./encoding";
-import type { MutationWithResolution } from "./types";
+import type { ExecutableMutation } from "./types";
 
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
@@ -21,10 +21,9 @@ function calldataStructParams(
 }
 
 function acceptedMutation(
-  config: MutationWithResolution["config"],
+  config: ExecutableMutation["config"],
   params: unknown,
-  resolution?: unknown,
-): MutationWithResolution {
+): ExecutableMutation {
   return {
     id: 0,
     status: "accepted",
@@ -34,11 +33,10 @@ function acceptedMutation(
     journalId: 0,
     isForceInclusion: false,
     config,
-    resolution,
   };
 }
 
-test("encodeMutationCalldata without resolution", () => {
+test("encodeMutationCalldata wraps params as one struct", () => {
   const mutation = {
     tag: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
@@ -74,37 +72,7 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
   ).toEqual([params]);
 });
 
-test("encodeMutationCalldata with resolution", () => {
-  const mutation = {
-    tag: 1,
-    params: parseAbiParameters("uint256 size"),
-    resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-    resolve: () => ({ fills: [] }),
-  };
-  const params = { size: 10n };
-  const resolution = {
-    fills: [
-      { price: 100n, size: 6n },
-      { price: 99n, size: 4n },
-    ],
-  };
-
-  const encoded = encodeMutationCalldata(
-    acceptedMutation(mutation, params, resolution),
-  );
-
-  expect(
-    AbiParameters.decode(
-      [
-        ...calldataStructParams(mutation.params),
-        ...calldataStructParams(mutation.resolution),
-      ],
-      encoded,
-    ),
-  ).toEqual([params, resolution]);
-});
-
-test("decodeMutationCalldata round-trips without resolution", () => {
+test("decodeMutationCalldata round-trips params", () => {
   const mutation = {
     tag: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
@@ -119,31 +87,6 @@ test("decodeMutationCalldata round-trips without resolution", () => {
   const decoded = decodeMutationCalldata(mutation, encoded);
 
   expect(decoded.params).toEqual(params);
-  expect(decoded.resolution).toBeUndefined();
-});
-
-test("decodeMutationCalldata round-trips with resolution", () => {
-  const mutation = {
-    tag: 1,
-    params: parseAbiParameters("uint256 size"),
-    resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-    resolve: () => ({ fills: [] }),
-  };
-  const params = { size: 10n };
-  const resolution = {
-    fills: [
-      { price: 100n, size: 6n },
-      { price: 99n, size: 4n },
-    ],
-  };
-
-  const encoded = encodeMutationCalldata(
-    acceptedMutation(mutation, params, resolution),
-  );
-  const decoded = decodeMutationCalldata(mutation, encoded);
-
-  expect(decoded.params).toEqual(params);
-  expect(decoded.resolution).toEqual(resolution);
 });
 
 test("encodeSignatureCalldata encodes signatures as one Solidity struct", () => {
@@ -216,11 +159,9 @@ test("encodeBatchArg builds a structured batch value", () => {
   const market = {
     tag: 1,
     params: parseAbiParameters("uint256 size"),
-    resolution: parseAbiParameters("(uint256 price, uint256 size)[] fills"),
-    resolve: () => ({ fills: [] }),
   };
 
-  const transferResolved: MutationWithResolution = {
+  const transferResolved: ExecutableMutation = {
     id: 0,
     status: "accepted",
     name: "transfer",
@@ -239,7 +180,7 @@ test("encodeBatchArg builds a structured batch value", () => {
     isForceInclusion: false,
     config: transfer,
   };
-  const marketResolved: MutationWithResolution = {
+  const marketResolved: ExecutableMutation = {
     id: 1,
     status: "accepted",
     name: "market",
@@ -252,12 +193,6 @@ test("encodeBatchArg builds a structured batch value", () => {
     },
     journalId: 1,
     isForceInclusion: false,
-    resolution: {
-      fills: [
-        { price: 100n, size: 6n },
-        { price: 99n, size: 4n },
-      ],
-    },
     config: market,
   };
 
@@ -281,13 +216,9 @@ test("encodeBatchArg builds a structured batch value", () => {
   );
   expect(decodedTransfer).toEqual(transferResolved.params);
 
-  const [decodedMarket, decodedResolution] = AbiParameters.decode(
-    [
-      ...calldataStructParams(market.params),
-      ...calldataStructParams(market.resolution),
-    ],
+  const [decodedMarket] = AbiParameters.decode(
+    calldataStructParams(market.params),
     batch.mutationData[1]!,
   );
   expect(decodedMarket).toEqual(marketResolved.params);
-  expect(decodedResolution).toEqual(marketResolved.resolution);
 });

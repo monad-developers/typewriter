@@ -29,7 +29,7 @@ export type FFCA<
   readonly domain: TypedData.Domain;
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: FFCAMutationInput<mutationsConfig, signatureConfig, name>,
-  ) => Promise<FFCAMutationResult<mutationsConfig[name]>>;
+  ) => Promise<FFCAMutationResult>;
   close: () => Promise<void>;
   on(
     event: "mutation",

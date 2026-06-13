@@ -9,9 +9,10 @@ import {
     SlippageExceeded,
     InsufficientBalance,
     Signature,
-    State
+    State,
+    insertBookTick
 } from "src/Exchange.sol";
-import {Fill, MarketOrderMutation} from "src/MarketOrder.sol";
+import {MarketOrderMutation} from "src/MarketOrder.sol";
 
 contract MarketOrderTest is Test {
     State internal state;
@@ -30,39 +31,35 @@ contract MarketOrderTest is Test {
         state.accounts[ACCOUNT].balances[BASE] = 1000;
         state.accounts[ACCOUNT].balances[QUOTE] = 1000;
 
-        state.instruments[0].asks[10 * Q32].quantity = 100;
-        state.instruments[0].asks[10 * Q32].remainingQuantity = 100;
-
-        state.instruments[0].bids[10 * Q32].quantity = 100;
-        state.instruments[0].bids[10 * Q32].remainingQuantity = 100;
+        _addAsk(10 * Q32, 100);
+        _addBid(10 * Q32, 100);
     }
 
-    function _executeMarketOrder(
-        MarketOrderMutation.MarketOrder memory order,
-        MarketOrderMutation.MarketOrderResolution memory res,
-        bytes32 account
-    ) internal {
-        MarketOrderMutation.executeMarketOrder(
-            state, order, res, Signature({account: account, keyId: 0, rawSignature: ""})
-        );
+    function _addAsk(uint64 price, uint64 quantity) internal {
+        state.instruments[0].asks[price].quantity = quantity;
+        state.instruments[0].asks[price].remainingQuantity = quantity;
+        insertBookTick(state.instruments[0], 1, price);
     }
 
-    function callMarketOrder(
-        MarketOrderMutation.MarketOrder memory order,
-        MarketOrderMutation.MarketOrderResolution memory res,
-        bytes32 account
-    ) external {
-        _executeMarketOrder(order, res, account);
+    function _addBid(uint64 price, uint64 quantity) internal {
+        state.instruments[0].bids[price].quantity = quantity;
+        state.instruments[0].bids[price].remainingQuantity = quantity;
+        insertBookTick(state.instruments[0], 0, price);
+    }
+
+    function _executeMarketOrder(MarketOrderMutation.MarketOrder memory order, bytes32 account) internal {
+        MarketOrderMutation.executeMarketOrder(state, order, Signature({account: account, keyId: 0, rawSignature: ""}));
+    }
+
+    function callMarketOrder(MarketOrderMutation.MarketOrder memory order, bytes32 account) external {
+        _executeMarketOrder(order, account);
     }
 
     function test_MarketOrder_InvalidInstrument() external {
-        Fill[] memory fills = new Fill[](0);
-
         try this.callMarketOrder(
             MarketOrderMutation.MarketOrder({
                 quantity: 1, minReceivedQuantity: 0, instrumentId: 99, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -74,16 +71,12 @@ contract MarketOrderTest is Test {
     function test_MarketOrder_BuyFill() external {
         vm.pauseGasMetering();
 
-        Fill[] memory fills = new Fill[](1);
-        fills[0] = Fill({quantity: 10, price: 10 * Q32});
-
         vm.resumeGasMetering();
 
         _executeMarketOrder(
             MarketOrderMutation.MarketOrder({
                 quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 
@@ -100,16 +93,12 @@ contract MarketOrderTest is Test {
     function test_MarketOrder_SellFill() external {
         vm.pauseGasMetering();
 
-        Fill[] memory fills = new Fill[](1);
-        fills[0] = Fill({quantity: 10, price: 10 * Q32});
-
         vm.resumeGasMetering();
 
         _executeMarketOrder(
             MarketOrderMutation.MarketOrder({
                 quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 
@@ -126,12 +115,7 @@ contract MarketOrderTest is Test {
     function test_MarketOrder_MultipleFills() external {
         vm.pauseGasMetering();
 
-        state.instruments[0].asks[20 * Q32].quantity = 50;
-        state.instruments[0].asks[20 * Q32].remainingQuantity = 50;
-
-        Fill[] memory fills = new Fill[](2);
-        fills[0] = Fill({quantity: 10, price: 10 * Q32});
-        fills[1] = Fill({quantity: 5, price: 20 * Q32});
+        _addAsk(20 * Q32, 50);
 
         vm.resumeGasMetering();
 
@@ -139,27 +123,22 @@ contract MarketOrderTest is Test {
             MarketOrderMutation.MarketOrder({
                 quantity: 15, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 
         vm.pauseGasMetering();
 
         assertEq(state.accounts[ACCOUNT].balances[BASE], 1015);
-        assertEq(state.accounts[ACCOUNT].balances[QUOTE], 800);
+        assertEq(state.accounts[ACCOUNT].balances[QUOTE], 850);
 
         vm.resumeGasMetering();
     }
 
     function test_MarketOrder_NotFullyFilled() external {
-        Fill[] memory fills = new Fill[](1);
-        fills[0] = Fill({quantity: 5, price: 10 * Q32});
-
         try this.callMarketOrder(
             MarketOrderMutation.MarketOrder({
-                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
+                quantity: 101, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -169,14 +148,10 @@ contract MarketOrderTest is Test {
     }
 
     function test_MarketOrder_SlippageExceeded() external {
-        Fill[] memory fills = new Fill[](1);
-        fills[0] = Fill({quantity: 10, price: 10 * Q32});
-
         try this.callMarketOrder(
             MarketOrderMutation.MarketOrder({
                 quantity: 10, minReceivedQuantity: 999, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -190,16 +165,12 @@ contract MarketOrderTest is Test {
 
         state.accounts[ACCOUNT].balances[QUOTE] = 0;
 
-        Fill[] memory fills = new Fill[](1);
-        fills[0] = Fill({quantity: 10, price: 10 * Q32});
-
         vm.resumeGasMetering();
 
         try this.callMarketOrder(
             MarketOrderMutation.MarketOrder({
                 quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         ) {
             fail();
@@ -217,19 +188,12 @@ contract MarketOrderTest is Test {
         state.accounts[ACCOUNT].balances[BASE] = 0;
         state.accounts[ACCOUNT].balances[QUOTE] = 1000 << 6;
 
-        state.instruments[0].asks[10 * Q32].quantity = 100;
-        state.instruments[0].asks[10 * Q32].remainingQuantity = 100;
-
-        Fill[] memory fills = new Fill[](1);
-        fills[0] = Fill({quantity: 10, price: 10 * Q32});
-
         vm.resumeGasMetering();
 
         _executeMarketOrder(
             MarketOrderMutation.MarketOrder({
                 quantity: 10 << 18, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
             }),
-            MarketOrderMutation.MarketOrderResolution({fills: fills}),
             ACCOUNT
         );
 

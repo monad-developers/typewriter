@@ -1,6 +1,6 @@
 import { AbiParameters, type Hex } from "ox";
 import { type Abi, encodeFunctionData } from "viem";
-import type { MutationWithResolution } from "./types";
+import type { ExecutableMutation } from "./types";
 
 export const FFCA_ABI = [
   {
@@ -72,46 +72,20 @@ function calldataStructParams(
   return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
 }
 
-export function encodeMutationCalldata(
-  mutation: MutationWithResolution,
-): Hex.Hex {
-  const params = mutation.config.params;
-  if (mutation.config.resolution !== undefined) {
-    const resolutionParams = mutation.config.resolution;
-    return AbiParameters.encode(
-      [
-        ...calldataStructParams(params),
-        ...calldataStructParams(resolutionParams),
-      ],
-      [mutation.params, mutation.resolution],
-    );
-  }
-
-  return AbiParameters.encode(calldataStructParams(params), [mutation.params]);
+export function encodeMutationCalldata(mutation: ExecutableMutation): Hex.Hex {
+  return AbiParameters.encode(calldataStructParams(mutation.config.params), [
+    mutation.params,
+  ]);
 }
 
 export function decodeMutationCalldata(
   mutationConfig: {
     params: readonly AbiParameters.Parameter[];
-    resolution?: readonly AbiParameters.Parameter[];
   },
   calldata: Hex.Hex,
-): { params: unknown; resolution?: unknown } {
-  const params = mutationConfig.params;
-  if (mutationConfig.resolution !== undefined) {
-    const resolutionParams = mutationConfig.resolution;
-    const [decodedParams, resolution] = AbiParameters.decode(
-      [
-        ...calldataStructParams(params),
-        ...calldataStructParams(resolutionParams),
-      ],
-      calldata,
-    );
-    return { params: decodedParams, resolution };
-  }
-
+): { params: unknown } {
   const [decodedParams] = AbiParameters.decode(
-    calldataStructParams(params),
+    calldataStructParams(mutationConfig.params),
     calldata,
   );
   return { params: decodedParams };
@@ -156,7 +130,7 @@ export function encodeExecuteCalldata(
 
 export function encodeEnqueueCalldata(
   signatureParams: readonly AbiParameters.Parameter[],
-  mutation: MutationWithResolution,
+  mutation: ExecutableMutation,
 ): Hex.Hex {
   const signatureValue = encodeSignatureCalldata(
     signatureParams,
@@ -173,12 +147,12 @@ export function encodeEnqueueCalldata(
   });
 }
 
-// Build a structured Batch value from resolved mutations.
+// Build a structured Batch value from executable mutations.
 // Each signature is projected from a keyed record to a positional tuple
 // matching the ABI declaration order.
 export function encodeBatchArg(
   signatureParams: readonly AbiParameters.Parameter[],
-  mutations: MutationWithResolution[],
+  mutations: ExecutableMutation[],
 ): {
   mutations: readonly number[];
   mutationData: readonly Hex.Hex[];

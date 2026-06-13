@@ -1,24 +1,12 @@
-import type { Hex } from "ox";
-import { createStorageProxy, type StorageLayout } from "../src";
+import type { StorageLayout } from "../src";
 
 type HexString = `0x${string}`;
 type Side = "bids" | "asks";
 
-type OrderBookLikeState = {
-  readonly accounts: Record<
-    HexString,
-    {
-      readonly balances: Record<HexString, unknown>;
-      readonly nonces: Record<`${number}`, unknown>;
-    }
-  >;
-  readonly instruments: Record<
-    `${number}`,
-    {
-      readonly bids: Record<`${number}`, unknown>;
-      readonly asks: Record<`${number}`, unknown>;
-    }
-  >;
+type KnownPathIndex = {
+  readonly accountBalances: Map<HexString, Set<HexString>>;
+  readonly accountNonces: Map<HexString, Set<string>>;
+  readonly marketSides: Map<string, Set<number>>;
 };
 
 const layout = {
@@ -222,6 +210,7 @@ const layout = {
     },
   },
 } as const satisfies StorageLayout;
+void layout;
 
 const sides = ["bids", "asks"] as const;
 
@@ -241,45 +230,46 @@ const assets = Array.from({ length: assetCount }, (_, index) =>
   hex(index + 1, 20),
 );
 const knownPaths = buildKnownPaths();
-
-const state = createOrderBookLikeState(knownPaths);
+const knownPathIndex = buildKnownPathIndex(knownPaths);
 
 const stableResults = [
-  bench("market-side Object.keys + sort", iterations, (index) => {
+  bench("market-side explicit index + sort", iterations, (index) => {
     const instrumentId = (index % instrumentCount) + 1;
     const side = sides[index % sides.length]!;
-    return enumerateMarketSide(state, instrumentId, side);
+    return enumerateMarketSide(knownPathIndex, instrumentId, side);
   }),
-  bench("account balances Object.keys", iterations, (index) => {
+  bench("account balances explicit index", iterations, (index) => {
     const account = accounts[index % accounts.length]!;
-    return Object.keys(state.accounts[account]!.balances).length;
+    return knownPathIndex.accountBalances.get(account)?.size ?? 0;
   }),
-  bench("account nonces Object.keys", iterations, (index) => {
+  bench("account nonces explicit index", iterations, (index) => {
     const account = accounts[index % accounts.length]!;
-    return Object.keys(state.accounts[account]!.nonces).length;
+    return knownPathIndex.accountNonces.get(account)?.size ?? 0;
   }),
-  bench("mixed production enumeration", iterations, (index) => {
+  bench("mixed explicit index enumeration", iterations, (index) => {
     const account = accounts[index % accounts.length]!;
     const instrumentId = (index % instrumentCount) + 1;
     return (
-      enumerateMarketSide(state, instrumentId, "bids") +
-      enumerateMarketSide(state, instrumentId, "asks") +
-      Object.keys(state.accounts[account]!.balances).length +
-      Object.keys(state.accounts[account]!.nonces).length
+      enumerateMarketSide(knownPathIndex, instrumentId, "bids") +
+      enumerateMarketSide(knownPathIndex, instrumentId, "asks") +
+      (knownPathIndex.accountBalances.get(account)?.size ?? 0) +
+      (knownPathIndex.accountNonces.get(account)?.size ?? 0)
     );
   }),
 ];
 
 const growingKnownPaths = knownPaths.slice();
-const growingState = createOrderBookLikeState(growingKnownPaths);
+const growingKnownPathIndex = buildKnownPathIndex(growingKnownPaths);
 const growthResult = bench(
-  "market-side after knownPaths growth",
+  "market-side explicit index after growth",
   growthIterations,
   (index) => {
     const account = accounts[index % accounts.length]!;
     const nextNonceBucket = nonceBucketCount + index;
-    growingKnownPaths.push(`accounts[${account}].nonces[${nextNonceBucket}]`);
-    return enumerateMarketSide(growingState, 1, "asks");
+    const path = `accounts[${account}].nonces[${nextNonceBucket}]`;
+    growingKnownPaths.push(path);
+    addKnownPath(growingKnownPathIndex, path);
+    return enumerateMarketSide(growingKnownPathIndex, 1, "asks");
   },
 );
 
@@ -332,26 +322,68 @@ function buildKnownPaths(): string[] {
   return paths;
 }
 
-function createOrderBookLikeState(paths: string[]): OrderBookLikeState {
-  const get = (_slots: Hex.Hex[]): Record<Hex.Hex, Hex.Hex> => {
-    throw new Error("known-path enumeration benchmark should not read slots");
-  };
-  return createStorageProxy(
-    layout,
-    get,
-    paths,
-  ) as unknown as OrderBookLikeState;
-}
-
 function enumerateMarketSide(
-  state: OrderBookLikeState,
+  index: KnownPathIndex,
   instrumentId: number,
   side: Side,
 ): number {
-  const ticks = state.instruments[`${instrumentId}`]![side];
-  const prices = Object.keys(ticks).map(Number);
+  const prices = [
+    ...(index.marketSides.get(marketSideKey(instrumentId, side)) ?? []),
+  ];
   prices.sort((a, b) => (side === "asks" ? a - b : b - a));
   return prices.length + (prices[0] ?? 0) + (prices.at(-1) ?? 0);
+}
+
+function buildKnownPathIndex(paths: readonly string[]): KnownPathIndex {
+  const index: KnownPathIndex = {
+    accountBalances: new Map(),
+    accountNonces: new Map(),
+    marketSides: new Map(),
+  };
+  for (const path of paths) addKnownPath(index, path);
+  return index;
+}
+
+function addKnownPath(index: KnownPathIndex, path: string): void {
+  const balance = /^accounts\[(0x[0-9a-f]+)\]\.balances\[(0x[0-9a-f]+)\]$/.exec(
+    path,
+  );
+  if (balance !== null) {
+    addSetValue(
+      index.accountBalances,
+      balance[1] as HexString,
+      balance[2] as HexString,
+    );
+    return;
+  }
+
+  const nonce = /^accounts\[(0x[0-9a-f]+)\]\.nonces\[([0-9]+)\]$/.exec(path);
+  if (nonce !== null) {
+    addSetValue(index.accountNonces, nonce[1] as HexString, nonce[2]!);
+    return;
+  }
+
+  const tick = /^instruments\[([0-9]+)\]\.(bids|asks)\[([0-9]+)\]\./.exec(path);
+  if (tick !== null) {
+    addSetValue(
+      index.marketSides,
+      marketSideKey(Number(tick[1]), tick[2] as Side),
+      Number(tick[3]),
+    );
+  }
+}
+
+function addSetValue<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
+  let set = map.get(key);
+  if (set === undefined) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(value);
+}
+
+function marketSideKey(instrumentId: number, side: Side): string {
+  return `${instrumentId}:${side}`;
 }
 
 function bench(

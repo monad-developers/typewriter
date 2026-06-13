@@ -13,6 +13,8 @@ import {
     Tick,
     TickPartiallyFilled,
     Unauthorized,
+    getTicks,
+    removeBookTick,
     verifyMutationSignature
 } from "./Exchange.sol";
 
@@ -57,7 +59,7 @@ library ChangeOrderMutation {
         uint64 instrumentId = order.instrumentId;
         uint8 orderSide = order.side;
         Instrument storage instrument = state.instruments[instrumentId];
-        mapping(uint64 => Tick) storage ticks = orderSide == 0 ? instrument.bids : instrument.asks;
+        mapping(uint64 => Tick) storage ticks = getTicks(instrument, orderSide);
         Tick storage tick = ticks[orderPrice];
 
         if (tick.quantity < orderQuantity || tick.volume != order.tickVolume || tick.remainingQuantity != tick.quantity)
@@ -69,6 +71,7 @@ library ChangeOrderMutation {
             tick.quantity -= orderQuantity;
             tick.remainingQuantity -= orderQuantity;
         }
+        if (tick.quantity == 0) removeBookTick(instrument, orderSide, orderPrice);
 
         if (orderSide == 0) {
             account.balances[

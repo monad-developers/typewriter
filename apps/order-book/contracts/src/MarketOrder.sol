@@ -14,6 +14,7 @@ import {
     State,
     Tick,
     Unauthorized,
+    removeBookTick,
     toLots,
     verifyMutationSignature
 } from "./Exchange.sol";
@@ -31,10 +32,6 @@ library MarketOrderMutation {
         uint8 bidOrAsk;
         uint256 nonce;
         uint256 deadline;
-    }
-
-    struct MarketOrderResolution {
-        Fill[] fills;
     }
 
     bytes32 constant MARKET_ORDER_TYPEHASH = keccak256(
@@ -65,12 +62,7 @@ library MarketOrderMutation {
         if ((permissions & PERM_MARKET_ORDER) == 0) revert Unauthorized();
     }
 
-    function executeMarketOrder(
-        State storage state,
-        MarketOrder memory order,
-        MarketOrderResolution memory resolution,
-        Signature memory signature
-    ) internal {
+    function executeMarketOrder(State storage state, MarketOrder memory order, Signature memory signature) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         if (instrument.base == address(0)) revert InvalidInstrument();
 
@@ -78,65 +70,93 @@ library MarketOrderMutation {
         uint8 receivedLotExp = order.bidOrAsk == 0 ? instrument.baseLotExp : instrument.quoteLotExp;
         uint64 minReceivedLots = toLots(order.minReceivedQuantity, receivedLotExp);
 
-        uint256 totalFilled;
-        uint256 totalReceived;
-        for (uint256 i; i < resolution.fills.length;) {
-            Fill memory fill = resolution.fills[i];
-            settleFill(state, fill, instrument, order.bidOrAsk, signature.account);
+        uint256 totalReceived = order.bidOrAsk == 0
+            ? fillBuy(instrument, state.accounts[signature.account], quantityLots)
+            : fillSell(instrument, state.accounts[signature.account], quantityLots);
 
-            unchecked {
-                totalFilled += fill.quantity;
-                if (order.bidOrAsk == 0) {
-                    totalReceived += fill.quantity;
-                } else {
-                    totalReceived += (uint256(fill.quantity) * uint256(fill.price)) >> 32;
-                }
-                ++i;
-            }
-        }
-
-        if (totalFilled != quantityLots) revert InvalidMutation();
         if (totalReceived < minReceivedLots) revert SlippageExceeded();
     }
 
-    function settleFill(
-        State storage state,
-        Fill memory fill,
-        Instrument storage instrument,
-        uint8 takerSide,
-        bytes32 takerAccount
-    ) private {
-        mapping(uint64 => Tick) storage ticks = takerSide == 0 ? instrument.asks : instrument.bids;
-        Tick storage tick = ticks[fill.price];
+    function fillBuy(Instrument storage instrument, Account storage taker, uint64 quantityLots)
+        private
+        returns (uint256 totalReceived)
+    {
+        mapping(uint64 => Tick) storage ticks = instrument.asks;
+        uint64 remaining = quantityLots;
+        uint64 price = instrument.bestAsk;
+        while (remaining > 0) {
+            if (price == 0) revert InvalidMutation();
+            Tick storage tick = ticks[price];
+            uint64 available = tick.remainingQuantity;
+            uint64 next = tick.next;
+            if (available == 0) {
+                price = next;
+                continue;
+            }
+            uint64 fillQuantity = remaining < available ? remaining : available;
 
-        if (fill.quantity > tick.remainingQuantity) revert InvalidTick();
+            unchecked {
+                remaining -= fillQuantity;
+                consumeTick(tick, fillQuantity);
+                uint256 rawQuote = ((uint256(fillQuantity) * uint256(price)) >> 32) << instrument.quoteLotExp;
+                if (taker.balances[instrument.quote] < rawQuote) revert InsufficientBalance();
+                taker.balances[instrument.quote] -= rawQuote;
+                taker.balances[instrument.base] += uint256(fillQuantity) << instrument.baseLotExp;
+                totalReceived += fillQuantity;
+            }
+
+            if (tick.remainingQuantity == 0) removeBookTick(instrument, 1, price);
+            price = next;
+        }
+    }
+
+    function fillSell(Instrument storage instrument, Account storage taker, uint64 quantityLots)
+        private
+        returns (uint256 totalReceived)
+    {
+        mapping(uint64 => Tick) storage ticks = instrument.bids;
+        uint64 remaining = quantityLots;
+        uint64 price = instrument.bestBid;
+        while (remaining > 0) {
+            if (price == 0) revert InvalidMutation();
+            Tick storage tick = ticks[price];
+            uint64 available = tick.remainingQuantity;
+            uint64 next = tick.next;
+            if (available == 0) {
+                price = next;
+                continue;
+            }
+            uint64 fillQuantity = remaining < available ? remaining : available;
+
+            unchecked {
+                remaining -= fillQuantity;
+                consumeTick(tick, fillQuantity);
+                uint256 rawBase = uint256(fillQuantity) << instrument.baseLotExp;
+                if (taker.balances[instrument.base] < rawBase) revert InsufficientBalance();
+                taker.balances[instrument.base] -= rawBase;
+                uint256 quoteLots = (uint256(fillQuantity) * uint256(price)) >> 32;
+                taker.balances[instrument.quote] += quoteLots << instrument.quoteLotExp;
+                totalReceived += quoteLots;
+            }
+
+            if (tick.remainingQuantity == 0) removeBookTick(instrument, 0, price);
+            price = next;
+        }
+    }
+
+    function consumeTick(
+        Tick storage tick,
+        uint64 fillQuantity
+    ) private {
+        if (fillQuantity > tick.remainingQuantity) revert InvalidTick();
 
         unchecked {
-            tick.remainingQuantity -= fill.quantity;
+            tick.remainingQuantity -= fillQuantity;
         }
         if (tick.remainingQuantity == 0) {
             tick.volume++;
             tick.quantity = 0;
         }
-
-        address base = instrument.base;
-        address quote = instrument.quote;
-        uint256 rawBase = uint256(fill.quantity) << instrument.baseLotExp;
-        uint256 rawQuote = ((uint256(fill.quantity) * uint256(fill.price)) >> 32) << instrument.quoteLotExp;
-        Account storage taker = state.accounts[takerAccount];
-
-        if (takerSide == 0) {
-            if (taker.balances[quote] < rawQuote) revert InsufficientBalance();
-            unchecked {
-                taker.balances[quote] -= rawQuote;
-            }
-            taker.balances[base] += rawBase;
-        } else {
-            if (taker.balances[base] < rawBase) revert InsufficientBalance();
-            unchecked {
-                taker.balances[base] -= rawBase;
-            }
-            taker.balances[quote] += rawQuote;
-        }
     }
+
 }
