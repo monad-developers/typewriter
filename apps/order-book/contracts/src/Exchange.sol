@@ -35,6 +35,8 @@ struct Instrument {
     address quote;
     uint8 baseLotExp;
     uint8 quoteLotExp;
+    uint64 bestBid;
+    uint64 bestAsk;
     mapping(uint64 => Tick) bids;
     mapping(uint64 => Tick) asks;
 }
@@ -43,6 +45,8 @@ struct Tick {
     uint64 quantity;
     uint64 remainingQuantity;
     uint32 volume;
+    uint64 prev;
+    uint64 next;
 }
 
 struct Signature {
@@ -112,6 +116,84 @@ function toLots(uint256 fullAmount, uint8 lotExp) pure returns (uint64) {
     if (lots << lotExp != fullAmount) revert AmountNotLotMultiple();
     if (lots > type(uint64).max) revert AmountNotLotMultiple();
     return uint64(lots);
+}
+
+function getTicks(Instrument storage instrument, uint8 side) view returns (mapping(uint64 => Tick) storage ticks) {
+    if (side == 0) return instrument.bids;
+    if (side == 1) return instrument.asks;
+    revert InvalidMutation();
+}
+
+function bestTick(Instrument storage instrument, uint8 side) view returns (uint64) {
+    if (side == 0) return instrument.bestBid;
+    if (side == 1) return instrument.bestAsk;
+    revert InvalidMutation();
+}
+
+function setBestTick(Instrument storage instrument, uint8 side, uint64 price) {
+    if (side == 0) {
+        instrument.bestBid = price;
+        return;
+    }
+    if (side == 1) {
+        instrument.bestAsk = price;
+        return;
+    }
+    revert InvalidMutation();
+}
+
+function isBetterPrice(uint8 side, uint64 price, uint64 other) pure returns (bool) {
+    return side == 0 ? price > other : price < other;
+}
+
+function insertBookTick(Instrument storage instrument, uint8 side, uint64 price) {
+    if (price == 0) revert InvalidTick();
+
+    mapping(uint64 => Tick) storage ticks = getTicks(instrument, side);
+    uint64 best = bestTick(instrument, side);
+    Tick storage tick = ticks[price];
+
+    if (best == 0) {
+        setBestTick(instrument, side, price);
+        return;
+    }
+
+    if (isBetterPrice(side, price, best)) {
+        tick.next = best;
+        ticks[best].prev = price;
+        setBestTick(instrument, side, price);
+        return;
+    }
+
+    uint64 current = best;
+    while (true) {
+        uint64 next = ticks[current].next;
+        if (next == 0 || isBetterPrice(side, price, next)) {
+            tick.prev = current;
+            tick.next = next;
+            ticks[current].next = price;
+            if (next != 0) ticks[next].prev = price;
+            return;
+        }
+        current = next;
+    }
+}
+
+function removeBookTick(Instrument storage instrument, uint8 side, uint64 price) {
+    mapping(uint64 => Tick) storage ticks = getTicks(instrument, side);
+    Tick storage tick = ticks[price];
+    uint64 prev = tick.prev;
+    uint64 next = tick.next;
+
+    if (prev == 0) {
+        setBestTick(instrument, side, next);
+    } else {
+        ticks[prev].next = next;
+    }
+    if (next != 0) ticks[next].prev = prev;
+
+    tick.prev = 0;
+    tick.next = 0;
 }
 
 import {AddInstrumentMutation} from "./AddInstrument.sol";
@@ -205,16 +287,13 @@ contract Exchange is FFCA {
             LimitOrderMutation.verifyLimitOrderSignature(state, order, signature, digest);
             LimitOrderMutation.executeLimitOrder(state, order, signature);
         } else if (Mutation(mutation) == Mutation.MarketOrder) {
-            (
-                MarketOrderMutation.MarketOrder memory order,
-                MarketOrderMutation.MarketOrderResolution memory resolution
-            ) = abi.decode(mutationData, (MarketOrderMutation.MarketOrder, MarketOrderMutation.MarketOrderResolution));
+            MarketOrderMutation.MarketOrder memory order = abi.decode(mutationData, (MarketOrderMutation.MarketOrder));
             Signature memory signature = abi.decode(signatureData, (Signature));
             bytes32 digest =
                 keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, MarketOrderMutation.hashMarketOrder(order)));
 
             MarketOrderMutation.verifyMarketOrderSignature(state, order, signature, digest);
-            MarketOrderMutation.executeMarketOrder(state, order, resolution, signature);
+            MarketOrderMutation.executeMarketOrder(state, order, signature);
         } else if (Mutation(mutation) == Mutation.AddInstrument) {
             AddInstrumentMutation.AddInstrument memory instrument =
                 abi.decode(mutationData, (AddInstrumentMutation.AddInstrument));

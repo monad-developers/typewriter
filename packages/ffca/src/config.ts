@@ -1,10 +1,6 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { Address } from "ox";
-import type {
-  ConcreteStorageVariable,
-  StorageLayout,
-  StorageProxy,
-} from "storage-layout";
+import type { ConcreteStorageVariable, StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { InternalApp } from "./internal";
@@ -16,15 +12,9 @@ export type FFCADatabaseTransaction = Parameters<
 >[0];
 
 export type StorageConfig = StorageLayout;
-export type MutationConfig =
-  | {
-      params: readonly AbiParameter[];
-      resolution?: never;
-    }
-  | {
-      params: readonly AbiParameter[];
-      resolution: readonly AbiParameter[];
-    };
+export type MutationConfig = {
+  params: readonly AbiParameter[];
+};
 export type MutationsConfig = { [name: string]: MutationConfig };
 export type SignatureConfig = readonly AbiParameter[];
 export type SequencingConfig = "fifo" | "batch";
@@ -46,25 +36,10 @@ export type RegisterMappingKeys<
   signatureConfig extends SignatureConfig,
   ///
   storageVariables = ConcreteStorageVariable<storageConfig>,
-> = (
-  params: mutationConfig extends { resolution: readonly AbiParameter[] }
-    ? {
-        params: AbiParametersToValue<mutationConfig["params"]>;
-        signature: SignatureValue<signatureConfig>;
-        resolution: AbiParametersToValue<mutationConfig["resolution"]>;
-      }
-    : {
-        params: AbiParametersToValue<mutationConfig["params"]>;
-        signature: SignatureValue<signatureConfig>;
-        resolution?: never;
-      },
-) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
-
-type MutationResolution<
-  mutationConfig extends { resolution: readonly AbiParameter[] },
-> = readonly AbiParameter[] extends mutationConfig["resolution"]
-  ? unknown
-  : AbiParametersToValue<mutationConfig["resolution"]>;
+> = (params: {
+  params: AbiParametersToValue<mutationConfig["params"]>;
+  signature: SignatureValue<signatureConfig>;
+}) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
 
 type SignatureValue<signatureConfig extends SignatureConfig> =
   readonly AbiParameter[] extends signatureConfig
@@ -75,35 +50,15 @@ export type FFCAMutationConfig<
   storageConfig extends StorageConfig = StorageConfig,
   mutationConfig extends MutationConfig = MutationConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
-> = mutationConfig extends { resolution: readonly AbiParameter[] }
-  ? {
-      tag: number;
-      params: mutationConfig["params"];
-      resolution: mutationConfig["resolution"];
-      resolve: (params: {
-        state: StorageProxy<storageConfig, true>;
-        params: AbiParametersToValue<mutationConfig["params"]>;
-        signature: SignatureValue<signatureConfig>;
-      }) =>
-        | MutationResolution<mutationConfig>
-        | Promise<MutationResolution<mutationConfig>>;
-      registerMappingKeys?: RegisterMappingKeys<
-        storageConfig,
-        mutationConfig,
-        signatureConfig
-      >;
-    }
-  : {
-      tag: number;
-      params: mutationConfig["params"];
-      resolution?: never;
-      resolve?: never;
-      registerMappingKeys?: RegisterMappingKeys<
-        storageConfig,
-        mutationConfig,
-        signatureConfig
-      >;
-    };
+> = {
+  tag: number;
+  params: mutationConfig["params"];
+  registerMappingKeys?: RegisterMappingKeys<
+    storageConfig,
+    mutationConfig,
+    signatureConfig
+  >;
+};
 
 export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
   | {

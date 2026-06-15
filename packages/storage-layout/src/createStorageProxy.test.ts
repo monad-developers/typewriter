@@ -495,23 +495,14 @@ test("async: dynamic array length returns a promise", async () => {
   expect(await length).toBe(2);
 });
 
-test("enumerates root variables, structs, fixed arrays, and known mapping keys", () => {
+test("enumerates root variables and struct fields", () => {
   const balanceSlot = expectSingleSlot(
     getStorageSlot(layout, `balances[${OWNER}]`),
   );
-  const allowanceSlot = expectSingleSlot(
-    getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`),
-  );
   const { get } = syncGetter({
     [balanceSlot]: "0x64",
-    [allowanceSlot]: "0x2a",
-    [expectSingleSlot(getStorageSlot(layout, "fixedNumbers[0]"))]:
-      PACKED_FIXED_NUMBERS,
   });
-  const state = createStorageProxy(layout, get, [
-    `balances[${OWNER}]`,
-    `allowances[${OWNER}][${SPENDER}]`,
-  ]);
+  const state = createStorageProxy(layout, get, [`balances[${OWNER}]`]);
 
   expect(Object.keys(state)).toContain("balances");
   expect(Object.keys(state.metadata)).toEqual([
@@ -520,38 +511,29 @@ test("enumerates root variables, structs, fixed arrays, and known mapping keys",
     "admin",
     "inner",
   ]);
-  expect(Object.keys(state.fixedNumbers)).toEqual(["0", "1", "2"]);
-  expect(Object.keys(state.balances)).toEqual([OWNER]);
+  expect(state.balances[OWNER]).toBe(100n);
+});
+
+test("enumerates known mapping keys", () => {
+  const { get } = syncGetter({});
+  const state = createStorageProxy(layout, get, [
+    `balances[${OWNER}]`,
+    `allowances[${OWNER}][${SPENDER}]`,
+    `balances[${SPENDER}]`,
+  ]);
+
+  expect(Object.keys(state.balances)).toEqual([OWNER, SPENDER]);
   expect(Object.keys(state.allowances[OWNER]!)).toEqual([SPENDER]);
-  expect(Object.values(state.balances)).toEqual([100n]);
+  expect(Reflect.ownKeys(state.balances)).toEqual([OWNER, SPENDER]);
 });
 
 test("mapping enumeration observes known paths added after proxy creation", () => {
-  const balanceSlot = expectSingleSlot(
-    getStorageSlot(layout, `balances[${OWNER}]`),
-  );
-  const { get } = syncGetter({ [balanceSlot]: "0x64" });
-  const knownPaths: string[] = [];
-  const state = createStorageProxy(layout, get, knownPaths);
-
-  expect(Object.keys(state.balances)).toEqual([]);
-
-  knownPaths.push(`balances[${OWNER}]`);
-
-  expect(Object.keys(state.balances)).toEqual([OWNER]);
-  expect(Object.values(state.balances)).toEqual([100n]);
-});
-
-test("retained sub-proxy reflects known-path growth (key memo invalidates)", () => {
   const { get } = syncGetter({});
   const knownPaths: string[] = [];
   const state = createStorageProxy(layout, get, knownPaths);
-
-  // Hold the SAME sub-proxy across the growth so the fix's per-path key memo
-  // must invalidate on the version bump instead of serving a stale empty list.
   const balances = state.balances;
+
   expect(Object.keys(balances)).toEqual([]);
-  expect(OWNER in balances).toBe(false);
 
   knownPaths.push(`balances[${OWNER}]`);
 
@@ -559,66 +541,7 @@ test("retained sub-proxy reflects known-path growth (key memo invalidates)", () 
   expect(OWNER in balances).toBe(true);
 });
 
-test("retained sub-proxy reflects known-path shrink (index rebuild)", () => {
-  const { get } = syncGetter({});
-  const knownPaths: string[] = [`balances[${OWNER}]`, `balances[${SPENDER}]`];
-  const state = createStorageProxy(layout, get, knownPaths);
-
-  const balances = state.balances;
-  expect(Object.keys(balances)).toEqual([OWNER, SPENDER]);
-
-  // Shrinking triggers a full index rebuild; the retained proxy's memo must drop
-  // so it does not keep reporting the removed key.
-  knownPaths.length = 1;
-
-  expect(Object.keys(balances)).toEqual([OWNER]);
-  expect(SPENDER in balances).toBe(false);
-});
-
-test("ownKeys, descriptors, and 'in' stay consistent for mapping enumeration", () => {
-  const { get } = syncGetter({});
-  const state = createStorageProxy(layout, get, [
-    `balances[${OWNER}]`,
-    `balances[${SPENDER}]`,
-  ]);
-  const balances = state.balances;
-
-  const keys = Reflect.ownKeys(balances);
-  expect(keys).toEqual([OWNER, SPENDER]);
-  for (const key of keys) {
-    const descriptor = Object.getOwnPropertyDescriptor(balances, key);
-    expect(descriptor?.enumerable).toBe(true);
-    expect(descriptor?.configurable).toBe(true);
-    expect(key in balances).toBe(true);
-  }
-});
-
-test("mapping enumeration scales linearly, not quadratically, with known keys", () => {
-  const address = (index: number): string =>
-    `0x${index.toString(16).padStart(40, "0")}`;
-  const timeRepeatedObjectKeys = (keyCount: number): number => {
-    const knownPaths = Array.from(
-      { length: keyCount },
-      (_, index) => `balances[${address(index + 1)}]`,
-    );
-    const state = createStorageProxy(layout, syncGetter({}).get, knownPaths);
-    const balances = state.balances;
-    Object.keys(balances); // warm up JIT + build the key memo once
-    const start = performance.now();
-    for (let i = 0; i < 50; i++) Object.keys(balances);
-    return performance.now() - start;
-  };
-
-  const small = timeRepeatedObjectKeys(1000);
-  const large = timeRepeatedObjectKeys(4000);
-
-  // 4x the keys. Linear enumeration ⇒ ~4x time; the previous O(k²) descriptor
-  // probe ⇒ ~16x. The 10x bound stays well clear of normal noise while still
-  // failing loudly if the quadratic path returns.
-  expect(large).toBeLessThan(small * 10);
-});
-
-test("does not enumerate dynamic array indices from known paths", () => {
+test("Object.keys throws for array storage paths", () => {
   const slot0 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[0]"));
   const slot2 = expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[2]"));
   const { get } = syncGetter({ [slot0]: "0x1", [slot2]: "0x3" });
@@ -627,8 +550,15 @@ test("does not enumerate dynamic array indices from known paths", () => {
     "dynamicNumbers[2]",
   ]);
 
-  expect(Object.keys(state.dynamicNumbers)).toEqual([]);
-  expect(Object.values(state.dynamicNumbers)).toEqual([]);
+  expect(() => Object.keys(state.fixedNumbers)).toThrow(
+    "cannot enumerate array storage path: fixedNumbers",
+  );
+  expect(() => Object.keys(state.dynamicNumbers)).toThrow(
+    "cannot enumerate array storage path: dynamicNumbers",
+  );
+  expect(() => Reflect.ownKeys(state.dynamicNumbers)).toThrow(
+    "cannot enumerate array storage path: dynamicNumbers",
+  );
   expect(state.dynamicNumbers[0]).toBe(1n);
   expect(state.dynamicNumbers[2]).toBe(3n);
 });

@@ -84,14 +84,12 @@ export function updateMutationToAccepted(
   params: {
     journalId: number;
     isForceInclusion: boolean;
-    resolution?: unknown;
   },
 ): AcceptedMutation {
   const acceptedMutation = mutation as unknown as AcceptedMutation;
   acceptedMutation.status = "accepted";
   acceptedMutation.journalId = params.journalId;
   acceptedMutation.isForceInclusion = params.isForceInclusion;
-  acceptedMutation.resolution = params.resolution;
   return acceptedMutation;
 }
 
@@ -171,20 +169,6 @@ export function batchBlockToEvent(
   };
 }
 
-async function resolveMutation(
-  mutation: ReceivedMutation,
-  state: unknown,
-): Promise<unknown> {
-  if (mutation.config.resolve !== undefined) {
-    return mutation.config.resolve({
-      state,
-      params: mutation.params,
-      signature: mutation.signature,
-    });
-  }
-  return undefined;
-}
-
 async function registerKnownPaths(
   mutation: AcceptedMutation,
 ): Promise<readonly string[]> {
@@ -192,16 +176,8 @@ async function registerKnownPaths(
   return mutation.config.registerMappingKeys({
     params: mutation.params,
     signature: mutation.signature,
-    resolution: mutation.resolution,
   });
 }
-
-export class ResolveMutationError extends Data.TaggedError(
-  "ResolveMutationError",
-)<{
-  readonly mutation: ReceivedMutation | EnqueuedMutation;
-  readonly cause: unknown;
-}> {}
 
 export class RegisterKnownPathsError extends Data.TaggedError(
   "RegisterKnownPathsError",
@@ -219,7 +195,6 @@ export class EncodeMutationError extends Data.TaggedError(
 
 export function executeMutation(params: {
   app: InternalApp;
-  state: unknown;
   evm: EVM;
   mutation: ReceivedMutation | EnqueuedMutation;
 }): Effect.Effect<
@@ -228,40 +203,15 @@ export function executeMutation(params: {
     executeResult: ExecuteResult;
     knownPaths: readonly string[];
   },
-  | ResolveMutationError
   | RegisterKnownPathsError
   | EncodeMutationError
   | EvmError
   | ContractFunctionRevertedError
 > {
   return Effect.gen(function* () {
-    let resolution: unknown;
-    if (params.mutation.status === "enqueued") {
-      resolution = params.mutation.resolution;
-    } else {
-      const mutation = params.mutation;
-      const resolveStartedAtMs = startTimer();
-      resolution = yield* Effect.tryPromise({
-        try: () => resolveMutation(mutation, params.state),
-        catch: (cause) =>
-          new ResolveMutationError({
-            mutation,
-            cause,
-          }),
-      });
-      yield* Effect.logDebug("resolved mutation").pipe(
-        Effect.annotateLogs({
-          id: mutation.id,
-          name: mutation.name,
-          duration: durationMs(resolveStartedAtMs),
-        }),
-      );
-    }
-
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
       journalId: -1,
       isForceInclusion: params.mutation.status === "enqueued",
-      resolution,
     });
 
     const knownPaths = yield* Effect.tryPromise({
@@ -627,7 +577,6 @@ export function createRuntimeEffect(
           mutation: acceptedMutation,
         } = yield* executeMutation({
           app,
-          state,
           evm,
           mutation,
         }).pipe(
@@ -1200,7 +1149,6 @@ export function createRuntimeEffect(
 
         return {
           id: acceptedMutation.id,
-          resolution: acceptedMutation.resolution,
         };
       }).pipe(Effect.provide(loggerLayer));
     }

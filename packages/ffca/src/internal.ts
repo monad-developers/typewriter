@@ -7,19 +7,12 @@ import type { DatabaseOptions } from "./db";
 type InternalRegisterMappingKeys = (params: {
   params: unknown;
   signature: unknown;
-  resolution?: unknown;
 }) => readonly string[] | Promise<readonly string[]>;
 
 export type InternalMutation = {
   tag: number;
   params: readonly AbiParameter[];
   registerMappingKeys?: InternalRegisterMappingKeys;
-  resolution?: readonly AbiParameter[];
-  resolve?: (params: {
-    state: unknown;
-    params: unknown;
-    signature: unknown;
-  }) => unknown | Promise<unknown>;
 };
 
 type InternalConfirmations = {

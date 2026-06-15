@@ -140,10 +140,6 @@ library DebitMutation {
         uint256 nonce;
     }
 
-    struct DebitResolution {
-        uint256 newBalance;
-    }
-
     bytes32 constant DEBIT_TYPEHASH = keccak256("debit(bytes32 account,uint64 keyId,uint256 amount,uint256 nonce)");
 
     function hashDebit(Debit memory debit) internal pure returns (bytes32) {
@@ -156,14 +152,8 @@ library DebitMutation {
         verifyMutationSignature(state, signature, digest, debit.nonce);
     }
 
-    function executeDebit(
-        State storage state,
-        Debit memory debit,
-        DebitResolution memory resolution,
-        Signature memory signature
-    ) internal {
-        require(state.balances[signature.account] == resolution.newBalance + debit.amount, "debit: stale resolution");
-        state.balances[signature.account] = resolution.newBalance;
+    function executeDebit(State storage state, Debit memory debit, Signature memory signature) internal {
+        state.balances[signature.account] -= debit.amount;
     }
 }
 
@@ -211,9 +201,7 @@ library AssertMutation {
 ///   AUTHORIZE  (1): args = (account, keyId, keyType, publicKey, nonce).
 ///                    Signed by an existing key on `account`.
 ///   CREDIT     (2): args = (account, keyId, amount, nonce). Signed.
-///   DEBIT      (3): args = (account, keyId, amount, nonce); resolution =
-///                    (newBalance). Signed. Reverts if resolution doesn't
-///                    match pre-state.
+///   DEBIT      (3): args = (account, keyId, amount, nonce). Signed.
 ///   ASSERT     (4): args = (account, keyId, expected, nonce). Signed.
 ///                    Read-only — reverts if balance != expected.
 contract Harness is FFCA {
@@ -263,15 +251,14 @@ contract Harness is FFCA {
             CreditMutation.verifyCreditSignature(state, credit, signature, digest);
             CreditMutation.executeCredit(state, credit, signature);
         } else if (Mutation(mutation) == Mutation.Debit) {
-            (DebitMutation.Debit memory debit, DebitMutation.DebitResolution memory resolution) =
-                abi.decode(mutationData, (DebitMutation.Debit, DebitMutation.DebitResolution));
+            DebitMutation.Debit memory debit = abi.decode(mutationData, (DebitMutation.Debit));
             Signature memory signature = abi.decode(signatureData, (Signature));
 
             bytes32 structHash = DebitMutation.hashDebit(debit);
             bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
 
             DebitMutation.verifyDebitSignature(state, debit, signature, digest);
-            DebitMutation.executeDebit(state, debit, resolution, signature);
+            DebitMutation.executeDebit(state, debit, signature);
         } else if (Mutation(mutation) == Mutation.Assert) {
             AssertMutation.Assert memory assertion = abi.decode(mutationData, (AssertMutation.Assert));
             Signature memory signature = abi.decode(signatureData, (Signature));

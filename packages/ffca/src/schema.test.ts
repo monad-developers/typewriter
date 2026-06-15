@@ -47,8 +47,6 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
       Debit: {
         tag: 1,
         params: parseAbiParameters("bytes32 account, uint256 amount"),
-        resolution: parseAbiParameters("uint256 newBalance"),
-        resolve: () => ({ newBalance: 0n }),
       },
     },
   });
@@ -79,7 +77,7 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
   expect(sql).toContain('"signature_publicKey" text NOT NULL');
   expect(sql).toContain('"signature_rawSignature" text NOT NULL');
   expect(sql).toContain('CREATE TABLE "debit_mutations"');
-  expect(sql).toContain('"resolution_newBalance" numeric(78,0) NOT NULL');
+  expect(sql).not.toContain('"resolution_');
 });
 
 test("mutation table supports insert and lifecycle update queries", async () => {
@@ -170,8 +168,6 @@ test("createMutationSchema preserves generated column types", () => {
       Debit: {
         tag: 1,
         params: parseAbiParameters("bytes32 account, uint256 amount"),
-        resolution: parseAbiParameters("uint256 newBalance"),
-        resolve: () => ({ newBalance: 0n }),
       },
     },
   });
@@ -188,7 +184,6 @@ test("createMutationSchema preserves generated column types", () => {
   expectTypeOf<typeof schema.debit_mutations.$inferInsert>().toExtend<{
     account: `0x${string}`;
     amount: bigint;
-    resolution_newBalance: bigint;
   }>();
   expectTypeOf<typeof schema.slot_writes.$inferInsert>().toExtend<{
     mutationId: number;

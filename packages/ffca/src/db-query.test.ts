@@ -33,8 +33,6 @@ const transferConfig = {
 const debitConfig = {
   tag: 1,
   params: parseAbiParameters("bytes32 account, uint256 amount"),
-  resolution: parseAbiParameters("uint256 newBalance"),
-  resolve: () => ({ newBalance: 0n }),
 } satisfies FFCAMutationConfig;
 
 const testSignature = {
@@ -97,7 +95,6 @@ test("insertMutation inserts a mutation row", async () => {
     journalId: 1,
     isForceInclusion: false,
     config: debitConfig,
-    resolution: { newBalance: 100n },
   } satisfies Extract<
     RuntimeMutation,
     { status: "accepted" | "included" | "safe" | "finalized" }
@@ -124,7 +121,6 @@ test("insertMutation inserts a mutation row", async () => {
     signature_accountId: testSignature.accountId,
     signature_publicKey: testSignature.publicKey,
     signature_rawSignature: testSignature.rawSignature,
-    resolution_newBalance: 100n,
   });
 });
 
@@ -212,9 +208,9 @@ test("selectNextMutationId resumes after the max id across mutation tables", asy
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO debit_mutations
-      (id, status, account, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")}, ${TEST_DB_CONNECTION("resolution_newBalance")})
+      (id, status, account, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
     VALUES
-      (7, 'included', '0x1111111111111111111111111111111111111111111111111111111111111111', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x', 0)
+      (7, 'included', '0x1111111111111111111111111111111111111111111111111111111111111111', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
   `;
 
   const nextId = await runWithDatabase(selectNextMutationId(schema));

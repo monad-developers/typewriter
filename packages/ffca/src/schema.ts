@@ -101,21 +101,13 @@ type ColumnGroupFrom<Columns> = {
     string]: Columns[name] extends AnyPgColumnBuilder ? Columns[name] : never;
 };
 
-type ResolutionColumns<mutationConfig extends MutationsConfig[string]> =
-  mutationConfig extends {
-    resolution: infer resolution extends SignatureConfig;
-  }
-    ? PrefixColumnNames<AbiParametersToColumns<resolution>, "resolution_">
-    : Record<never, never>;
-
 type MutationTableColumns<
   mutationConfig extends MutationsConfig[string],
   signatureConfig extends SignatureConfig,
 > = ColumnGroupFrom<
   ReturnType<typeof mutationColumns> &
     AbiParametersToColumns<mutationConfig["params"]> &
-    PrefixColumnNames<AbiParametersToColumns<signatureConfig>, "signature_"> &
-    ResolutionColumns<mutationConfig>
+    PrefixColumnNames<AbiParametersToColumns<signatureConfig>, "signature_">
 >;
 
 type MutationTable<
@@ -147,21 +139,12 @@ export function createMutationSchema<
 
   for (const [name, mutation] of Object.entries(config.mutations)) {
     const tableName = mutationTableName(name);
-    const resolutionColumns =
-      mutation.resolution !== undefined
-        ? prefixColumnNames(
-            abiParametersToColumns(mutation.resolution) as ColumnGroup,
-            "resolution_",
-          )
-        : ({} as ColumnGroup);
-
     schema[tableName] = pgTable(
       tableName,
       mergeColumns(
         mutationColumns(),
         abiParametersToColumns(mutation.params),
         signatureColumns,
-        resolutionColumns,
       ),
     );
   }

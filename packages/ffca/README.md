@@ -44,33 +44,6 @@ function executeTransfer(State storage state, Transfer memory transfer) {
 }
 ```
 
-Some mutations can be executed directly from their submitted arguments, others need resolution with a more complete state view. For example, a transfer may only need `{ from, to, amount }`, but a matching engine may need to compute fills based on the current order book. That extra computed data is the mutation's resolution.
-
-```solidity
-struct MarketOrder {
-    uint256 quantity;
-    uint256 minReceivedQuantity;
-    uint64 instrumentId;
-    uint8 bidOrAsk;
-    uint256 nonce;
-}
-
-struct MarketOrderResolution {
-    Fill[] fills;
-}
-
-struct Fill {
-    uint256 quantity;
-    uint256 price;
-}
-
-function executeMarketOrder(State storage state, MarketOrder calldata marketOrder, MarketOrderResolution calldata resolution) {
-    // ...
-}
-```
-
-<!-- How are resolutions created? -->
-
 ### Accounts and Signatures
 
 Mutations are authorized with an EIP-712 typed-data signature, and the contract verifies it.
@@ -135,7 +108,7 @@ const ffca = await createFFCA({
   chainId,
   rpcUrl,
   database: { url: databaseUrl },
-  mutations, // per-mutation tag, params, and optional resolution
+  mutations, // per-mutation tag and params
   signature: { params: parseAbiParameters("bytes signature") },
   confirmations: {
     safeBlockDepth: 1,
@@ -301,8 +274,6 @@ library AddMutation {
     }
 }
 ```
-
-<!-- TODO(kyle) mention how mutations with resolutions affect the mutation definition. -->
 
 #### Signature
 
@@ -516,9 +487,7 @@ Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmati
 
 - `tag` — the `uint8` that matches the contract's `Mutation` enum ordinal.
 - `params` — ABI parameters for the mutation arguments. Their names and order are the EIP-712 message fields and must match the contract's `[MUTATION]_TYPEHASH` (see [Mutations](#mutations-1)).
-- `resolution?` — ABI parameters for data computed during acceptance (e.g. fills). Omit for mutations that execute directly from their arguments.
-- `resolve?` — required when `resolution` is set: `({ state, params, signature }) => resolution`. Computes the resolution against [`ffca.state`](#ffcastate) before the mutation executes.
-- `registerMappingKeys?` — `({ params, signature, resolution? }) => string[]`. Returns the storage paths the mutation touches, so the runtime can persist and reload the mapping and dynamic-array slots it modifies.
+- `registerMappingKeys?` — `({ params, signature }) => string[]`. Returns storage paths whose mapping/dynamic keys should be remembered for app read models.
 
 ```ts
 mutations: {
@@ -531,13 +500,10 @@ mutations: {
       `accounts[${params.to}].balance`,
     ],
   },
-  // a mutation with a computed resolution
   MarketOrder: {
     tag: 1,
     params: parseAbiParameters("uint256 quantity, uint8 bidOrAsk, uint256 nonce"),
-    resolution: parseAbiParameters("(uint64 quantity, uint64 price)[] fills"),
-    resolve: ({ state, params }) => resolveMarket(state, params),
-    registerMappingKeys: ({ params, resolution }) => [/* paths, including resolution-derived ones */],
+    registerMappingKeys: ({ params, signature }) => [/* paths touched by market-order execution */],
   },
 }
 ```
@@ -557,10 +523,10 @@ The resolved EIP-712 domain, derived from `config.domain` plus `chainId` and the
 #### `ffca.execute()`
 
 ```ts
-ffca.execute(input: { name, params, signature }): Promise<{ id } | { id, resolution }>;
+ffca.execute(input: { name, params, signature }): Promise<{ id }>;
 ```
 
-Submits a signed mutation. `name` is a key from `config.mutations`, `params` matches that mutation's `params`, and `signature` matches `config.signature.params`. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`, plus `resolution` for mutations that define one. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
+Submits a signed mutation. `name` is a key from `config.mutations`, `params` matches that mutation's `params`, and `signature` matches `config.signature.params`. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
 
 ```ts
 const accepted = await ffca.execute({ name: "Transfer", params, signature });
@@ -609,11 +575,10 @@ Every mutation table starts with the same **lifecycle columns**:
 | `safeAt` | `timestamp` | null until safe |
 | `finalizedAt` | `timestamp` | null until finalized |
 
-Then three groups of payload columns:
+Then two groups of payload columns:
 
 - **Param columns** — one per ABI parameter in the mutation's `params`, named after the parameter (an unnamed parameter becomes `arg<index>`).
 - **Signature columns** — one per ABI parameter in `config.signature.params`, each prefixed `signature_`.
-- **Resolution columns** — for mutations that declare a `resolution`, one per resolution parameter, each prefixed `resolution_`.
 
 Payload columns are typed from their ABI type:
 
@@ -659,12 +624,12 @@ Subscribes to runtime events; returns an unsubscribe function. There are three e
 | `status` | Additional fields |
 | --- | --- |
 | `"received"` | — |
-| `"enqueued"` | `resolution?` |
-| `"accepted"` | `isForceInclusion`, `resolution?` |
-| `"included"` / `"safe"` / `"finalized"` | `isForceInclusion`, `resolution?` |
+| `"enqueued"` | — |
+| `"accepted"` | `isForceInclusion` |
+| `"included"` / `"safe"` / `"finalized"` | `isForceInclusion` |
 | `"rejected"` | `isForceInclusion`, `error` |
 
-This status set is wider than the happy-path lifecycle in [Server runtime](#server-runtime): `enqueued` occurs for force-included mutations — those a user submits directly onchain via `enqueue()` (see [Force inclusion](#force-inclusion)) — once the runtime detects and reconciles them, and `rejected` (carrying the rejection `error`) when a mutation fails. `resolution` is present once a mutation with a resolution is accepted. `isForceInclusion` marks mutations that entered through the force-inclusion queue.
+This status set is wider than the happy-path lifecycle in [Server runtime](#server-runtime): `enqueued` occurs for force-included mutations — those a user submits directly onchain via `enqueue()` (see [Force inclusion](#force-inclusion)) — once the runtime detects and reconciles them, and `rejected` (carrying the rejection `error`) when a mutation fails. `isForceInclusion` marks mutations that entered through the force-inclusion queue.
 
 **`"batch"` → `BatchEvent`** — fires when a batch changes status; batch sequencing only. Fields:
 

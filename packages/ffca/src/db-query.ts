@@ -18,7 +18,7 @@ import type { AccountStorage } from "storage-layout";
 import type { FFCADatabaseTransaction } from "./config";
 import { Database, type DatabaseClient } from "./db";
 import type {
-  MutationWithResolution,
+  ExecutableMutation,
   RuntimeBlock,
   RuntimeMutation,
   SubmittedMutation,
@@ -39,7 +39,7 @@ function chunk<T>(array: readonly T[], size: number): T[][] {
 export function insertMutation(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
-  mutation: MutationWithResolution,
+  mutation: ExecutableMutation,
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
@@ -53,7 +53,7 @@ export function insertMutation(
 export function insertMutations(
   tx: FFCADatabaseTransaction,
   schema: Record<string, PgTable>,
-  mutations: readonly MutationWithResolution[],
+  mutations: readonly ExecutableMutation[],
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
     if (mutations.length === 0) return;
@@ -82,22 +82,13 @@ export function insertMutations(
   });
 }
 
-function mutationRow(
-  mutation: MutationWithResolution,
-): Record<string, unknown> {
+function mutationRow(mutation: ExecutableMutation): Record<string, unknown> {
   return {
     id: mutation.id,
     executionIndex: (mutation as { executionIndex: bigint }).executionIndex,
     status: "accepted",
     ...abiParameterValues(mutation.config.params, mutation.params),
     ...prefixedObjectValues("signature_", mutation.signature),
-    ...(mutation.config.resolution !== undefined
-      ? abiParameterValues(
-          mutation.config.resolution,
-          requiredValue(mutation.resolution),
-          "resolution_",
-        )
-      : {}),
   };
 }
 
@@ -444,10 +435,6 @@ function prefixedObjectValues(
 
 function recordValue(value: unknown, key: string): unknown {
   return (value as Record<string, unknown>)[key];
-}
-
-function requiredValue<T>(value: T | undefined): T {
-  return value as T;
 }
 
 function serializeAbiValue(type: string, value: unknown): unknown {

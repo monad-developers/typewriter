@@ -166,10 +166,9 @@ async function accountOrders(account: Hex, instrumentId?: number) {
 async function accountBalances(account: Hex): Promise<Record<string, string>> {
   const balanceProxy = app.state.accounts[account].balances;
   const assets = Object.keys(balanceProxy) as Address[];
-  const amounts = await Promise.all(assets.map((asset) => balanceProxy[asset]));
   const balances: Record<string, string> = {};
-  for (let i = 0; i < assets.length; i++) {
-    balances[assets[i] as string] = String(amounts[i]);
+  for (const asset of assets) {
+    balances[asset] = String(await balanceProxy[asset]);
   }
   return balances;
 }
@@ -177,21 +176,27 @@ async function accountBalances(account: Hex): Promise<Record<string, string>> {
 async function accountNonces(account: Hex): Promise<Record<string, string>> {
   const nonceProxy = app.state.accounts[account].nonces;
   const keys = Object.keys(nonceProxy);
-  const values = await Promise.all(
-    keys.map((key) => nonceProxy[key as `${number}`]),
-  );
   const nonces: Record<string, string> = {};
-  for (let i = 0; i < keys.length; i++) {
-    nonces[keys[i] as string] = String(values[i]);
+  for (const key of keys) {
+    nonces[key] = String(await nonceProxy[key as `${number}`]);
   }
   return nonces;
 }
 
-function getPrices(instrumentId: number, side: "bids" | "asks"): number[] {
-  const ticks =
-    app.state.instruments[String(instrumentId) as `${number}`][side];
-  const prices = Object.keys(ticks).map(Number);
-  return prices.sort((a, b) => (side === "asks" ? a - b : b - a));
+async function getPrices(
+  instrumentId: number,
+  side: "bids" | "asks",
+): Promise<number[]> {
+  const instrument = app.state.instruments[`${instrumentId}`];
+  const prices: number[] = [];
+  let price = Number(
+    await (side === "asks" ? instrument.bestAsk : instrument.bestBid),
+  );
+  while (price !== 0) {
+    prices.push(price);
+    price = Number(await instrument[side][`${price}`].next);
+  }
+  return prices;
 }
 
 async function summarizePrice(
@@ -445,13 +450,9 @@ serve({
           );
         }
         const instrumentId = Number(instrumentIdParam);
-        return json(
-          await summarizePrice(
-            instrumentId,
-            getPrices(instrumentId, "bids"),
-            getPrices(instrumentId, "asks"),
-          ),
-        );
+        const bidPrices = await getPrices(instrumentId, "bids");
+        const askPrices = await getPrices(instrumentId, "asks");
+        return json(await summarizePrice(instrumentId, bidPrices, askPrices));
       },
     },
     "/api/depth": {
@@ -466,8 +467,8 @@ serve({
           );
         }
         const instrumentId = Number(instrumentIdParam);
-        const bidPrices = getPrices(instrumentId, "bids");
-        const askPrices = getPrices(instrumentId, "asks");
+        const bidPrices = await getPrices(instrumentId, "bids");
+        const askPrices = await getPrices(instrumentId, "asks");
         const summary = await summarizePrice(
           instrumentId,
           bidPrices,
@@ -548,7 +549,7 @@ serve({
           );
         }
         const parsedInstrumentId = Number(instrumentId);
-        const prices = getPrices(
+        const prices = await getPrices(
           parsedInstrumentId,
           side === "buy" ? "asks" : "bids",
         );
@@ -596,7 +597,7 @@ serve({
         }
         const parsedInstrumentId = Number(instrumentId);
         const limitPrice = Number(priceQ32);
-        const prices = getPrices(
+        const prices = await getPrices(
           parsedInstrumentId,
           side === "buy" ? "asks" : "bids",
         );

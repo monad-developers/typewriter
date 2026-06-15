@@ -6,7 +6,6 @@ import {
   type InstrumentConfig,
   q32ToPrice,
   SPX,
-  TokenAmount,
   USD,
   WTIOIL,
 } from "order-book-sdk";
@@ -47,7 +46,6 @@ const PARAM_EXCLUDES = new Set([
   "signature_account",
   "signature_keyId",
   "signature_rawSignature",
-  "resolution_fills",
 ]);
 
 function assetSymbol(asset: Address) {
@@ -120,63 +118,5 @@ export function MutationParams({ mutation }: { mutation: ApiMutation }) {
         <Row key={key} label={key} value={formatParam(key, value, mutation)} />
       ))}
     </>
-  );
-}
-
-function isFill(
-  value: unknown,
-): value is { quantity: unknown; price: unknown } {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    "quantity" in value &&
-    "price" in value
-  );
-}
-
-export function MarketOrderFills({ mutation }: { mutation: ApiMutation }) {
-  const fills = Array.isArray(mutation.resolution_fills)
-    ? mutation.resolution_fills.filter(isFill)
-    : [];
-  if (fills.length === 0)
-    return <code className="text-muted-foreground">No fills</code>;
-
-  const instrumentId = Number(mutation.instrumentId);
-  const entry = instrumentEntry(instrumentId);
-
-  return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr className="border-b">
-          <th className="text-left py-2 pr-6">
-            <code>quantity</code>
-          </th>
-          <th className="text-left py-2 pr-6">
-            <code>price</code>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {fills.map((fill, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: fill position is the identity
-          <tr key={i} className="border-b last:border-0">
-            <td className="py-2 pr-6">
-              <code>
-                {entry
-                  ? `${TokenAmount.fromRaw(
-                      BigInt(formatValue(fill.quantity)) <<
-                        BigInt(entry.config.baseLotExp),
-                      entry.config.base,
-                    ).human.toFixed(2)} ${assetSymbol(entry.config.base)}`
-                  : formatValue(fill.quantity)}
-              </code>
-            </td>
-            <td className="py-2 pr-6">
-              <code>{formatPrice(formatValue(fill.price), instrumentId)}</code>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   );
 }

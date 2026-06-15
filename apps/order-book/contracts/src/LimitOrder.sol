@@ -13,6 +13,8 @@ import {
     Tick,
     TickPartiallyFilled,
     Unauthorized,
+    getTicks,
+    insertBookTick,
     toLots,
     verifyMutationSignature
 } from "./Exchange.sol";
@@ -63,7 +65,7 @@ library LimitOrderMutation {
         uint8 baseLotExp = instrument.baseLotExp;
         uint64 quantityLots = toLots(order.quantity, baseLotExp);
 
-        mapping(uint64 => Tick) storage ticks = order.bidOrAsk == 0 ? instrument.bids : instrument.asks;
+        mapping(uint64 => Tick) storage ticks = getTicks(instrument, order.bidOrAsk);
         Tick storage tick = ticks[order.price];
 
         uint64 currentQuantity = tick.quantity;
@@ -88,6 +90,7 @@ library LimitOrderMutation {
         uint64 newQuantity = currentQuantity + quantityLots;
         tick.quantity = newQuantity;
         tick.remainingQuantity = newQuantity;
+        if (currentQuantity == 0) insertBookTick(instrument, order.bidOrAsk, order.price);
 
         account.orders
             .push(

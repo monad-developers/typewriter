@@ -11,6 +11,8 @@ import {
     State,
     Tick,
     Unauthorized,
+    getTicks,
+    removeBookTick,
     verifyMutationSignature
 } from "./Exchange.sol";
 
@@ -46,7 +48,7 @@ library CloseOrderMutation {
         uint64 orderPrice = order.price;
         uint8 orderSide = order.side;
         Instrument storage instrument = state.instruments[order.instrumentId];
-        mapping(uint64 => Tick) storage ticks = orderSide == 0 ? instrument.bids : instrument.asks;
+        mapping(uint64 => Tick) storage ticks = getTicks(instrument, orderSide);
         Tick storage tick = ticks[orderPrice];
 
         uint64 filledQuantity;
@@ -66,6 +68,7 @@ library CloseOrderMutation {
                 tick.quantity -= unfilledQuantity;
                 tick.remainingQuantity -= unfilledQuantity;
             }
+            if (tick.quantity == 0) removeBookTick(instrument, orderSide, orderPrice);
         }
 
         if (orderSide == 0) {

@@ -2,7 +2,7 @@ import {
   MutationLifecycle,
   type StageTimestamps,
 } from "../components/MutationLifecycle";
-import { MarketOrderFills, MutationParams } from "../components/MutationParams";
+import { MutationParams } from "../components/MutationParams";
 import { useAccount } from "../hooks/useAccount";
 import { useMutation } from "../hooks/useMutation";
 import type { ApiMutation } from "../hooks/useMutations";
@@ -94,13 +94,6 @@ export function MutationPage() {
           <code>type: {mutationKind(mutation)}</code>
           {mutation ? <MutationParams mutation={mutation} /> : null}
         </section>
-
-        {Array.isArray(mutation?.resolution_fills) ? (
-          <section className="flex-1 min-w-0 p-4 flex flex-col gap-2 md:border-r border-b md:border-b-0">
-            <h2 className="text-2xl font-bold mb-2">Resolution</h2>
-            <MarketOrderFills mutation={mutation} />
-          </section>
-        ) : null}
 
         <section className="flex-1 min-w-0 p-4 flex flex-col gap-2">
           <h2 className="text-2xl font-bold mb-2">Signature</h2>

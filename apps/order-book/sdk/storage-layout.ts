@@ -130,7 +130,7 @@ export const EXCHANGE_STORAGE_LAYOUT = {
     "t_struct(Instrument)41434_storage": {
       encoding: "inplace",
       label: "struct Instrument",
-      numberOfBytes: "128",
+      numberOfBytes: "160",
       members: [
         {
           astId: 41417,
@@ -165,11 +165,27 @@ export const EXCHANGE_STORAGE_LAYOUT = {
           type: "t_uint8",
         },
         {
+          astId: 41424,
+          contract: "src/Exchange.sol:Exchange",
+          label: "bestBid",
+          offset: 22,
+          slot: "1",
+          type: "t_uint64",
+        },
+        {
+          astId: 41426,
+          contract: "src/Exchange.sol:Exchange",
+          label: "bestAsk",
+          offset: 0,
+          slot: "2",
+          type: "t_uint64",
+        },
+        {
           astId: 41428,
           contract: "src/Exchange.sol:Exchange",
           label: "bids",
           offset: 0,
-          slot: "2",
+          slot: "3",
           type: "t_mapping(t_uint64,t_struct(Tick)41441_storage)",
         },
         {
@@ -177,7 +193,7 @@ export const EXCHANGE_STORAGE_LAYOUT = {
           contract: "src/Exchange.sol:Exchange",
           label: "asks",
           offset: 0,
-          slot: "3",
+          slot: "4",
           type: "t_mapping(t_uint64,t_struct(Tick)41441_storage)",
         },
       ],
@@ -364,7 +380,7 @@ export const EXCHANGE_STORAGE_LAYOUT = {
     "t_struct(Tick)41441_storage": {
       encoding: "inplace",
       label: "struct Tick",
-      numberOfBytes: "32",
+      numberOfBytes: "64",
       members: [
         {
           astId: 41436,
@@ -389,6 +405,22 @@ export const EXCHANGE_STORAGE_LAYOUT = {
           offset: 16,
           slot: "0",
           type: "t_uint32",
+        },
+        {
+          astId: 41442,
+          contract: "src/Exchange.sol:Exchange",
+          label: "prev",
+          offset: 20,
+          slot: "0",
+          type: "t_uint64",
+        },
+        {
+          astId: 41444,
+          contract: "src/Exchange.sol:Exchange",
+          label: "next",
+          offset: 0,
+          slot: "1",
+          type: "t_uint64",
         },
       ],
     },
