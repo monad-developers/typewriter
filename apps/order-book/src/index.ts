@@ -1,5 +1,4 @@
 import { serve } from "bun";
-import { like } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
 import { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
@@ -59,20 +58,6 @@ const readerDb = drizzle({
 });
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 const TPS_WINDOW_MS = 10000;
-
-async function knownPathChildren(prefix: string): Promise<string[]> {
-  const rows = await readerDb
-    .select({ path: app.schema.known_paths.path })
-    .from(app.schema.known_paths)
-    .where(like(app.schema.known_paths.path, `${prefix}[%`));
-  const keys = new Set<string>();
-  for (const { path } of rows) {
-    const rest = path.slice(prefix.length);
-    const match = /^\[([^\]]+)\]/.exec(rest);
-    if (match !== null) keys.add(match[1]!);
-  }
-  return [...keys];
-}
 
 function eventStream(event: "batch" | "block"): Response {
   const textEncoder = new TextEncoder();
@@ -180,26 +165,20 @@ async function accountOrders(account: Hex, instrumentId?: number) {
 
 async function accountBalances(account: Hex): Promise<Record<string, string>> {
   const balanceProxy = app.state.accounts[account].balances;
-  const assets = (await knownPathChildren(
-    `accounts[${account}].balances`,
-  )) as Address[];
-  const amounts = await Promise.all(assets.map((asset) => balanceProxy[asset]));
+  const assets = Object.keys(balanceProxy) as Address[];
   const balances: Record<string, string> = {};
-  for (let i = 0; i < assets.length; i++) {
-    balances[assets[i] as string] = String(amounts[i]);
+  for (const asset of assets) {
+    balances[asset] = String(await balanceProxy[asset]);
   }
   return balances;
 }
 
 async function accountNonces(account: Hex): Promise<Record<string, string>> {
   const nonceProxy = app.state.accounts[account].nonces;
-  const keys = await knownPathChildren(`accounts[${account}].nonces`);
-  const values = await Promise.all(
-    keys.map((key) => nonceProxy[key as `${number}`]),
-  );
+  const keys = Object.keys(nonceProxy);
   const nonces: Record<string, string> = {};
-  for (let i = 0; i < keys.length; i++) {
-    nonces[keys[i] as string] = String(values[i]);
+  for (const key of keys) {
+    nonces[key] = String(await nonceProxy[key as `${number}`]);
   }
   return nonces;
 }
@@ -208,10 +187,16 @@ async function getPrices(
   instrumentId: number,
   side: "bids" | "asks",
 ): Promise<number[]> {
-  const prices = (
-    await knownPathChildren(`instruments[${instrumentId}].${side}`)
-  ).map(Number);
-  return prices.sort((a, b) => (side === "asks" ? a - b : b - a));
+  const instrument = app.state.instruments[`${instrumentId}`];
+  const prices: number[] = [];
+  let price = Number(
+    await (side === "asks" ? instrument.bestAsk : instrument.bestBid),
+  );
+  while (price !== 0) {
+    prices.push(price);
+    price = Number(await instrument[side][`${price}`].next);
+  }
+  return prices;
 }
 
 async function summarizePrice(

@@ -514,19 +514,31 @@ test("enumerates root variables and struct fields", () => {
   expect(state.balances[OWNER]).toBe(100n);
 });
 
-test("Object.keys throws for mapping storage paths", () => {
+test("enumerates known mapping keys", () => {
   const { get } = syncGetter({});
   const state = createStorageProxy(layout, get, [
     `balances[${OWNER}]`,
+    `allowances[${OWNER}][${SPENDER}]`,
     `balances[${SPENDER}]`,
   ]);
 
-  expect(() => Object.keys(state.balances)).toThrow(
-    "cannot enumerate mapping storage path: balances",
-  );
-  expect(() => Reflect.ownKeys(state.balances)).toThrow(
-    "cannot enumerate mapping storage path: balances",
-  );
+  expect(Object.keys(state.balances)).toEqual([OWNER, SPENDER]);
+  expect(Object.keys(state.allowances[OWNER]!)).toEqual([SPENDER]);
+  expect(Reflect.ownKeys(state.balances)).toEqual([OWNER, SPENDER]);
+});
+
+test("mapping enumeration observes known paths added after proxy creation", () => {
+  const { get } = syncGetter({});
+  const knownPaths: string[] = [];
+  const state = createStorageProxy(layout, get, knownPaths);
+  const balances = state.balances;
+
+  expect(Object.keys(balances)).toEqual([]);
+
+  knownPaths.push(`balances[${OWNER}]`);
+
+  expect(Object.keys(balances)).toEqual([OWNER]);
+  expect(OWNER in balances).toBe(true);
 });
 
 test("Object.keys throws for array storage paths", () => {
@@ -569,13 +581,11 @@ test("storage proxy supports 'in' operator for enumerable keys", () => {
   expect("missing" in state).toBe(false);
 });
 
-test("mapping enumeration throws without known paths", () => {
+test("mapping enumeration is empty without known paths", () => {
   const { get } = syncGetter({});
   const state = createStorageProxy(layout, get);
 
-  expect(() => Object.keys(state.balances)).toThrow(
-    "cannot enumerate mapping storage path: balances",
-  );
+  expect(Object.keys(state.balances)).toEqual([]);
 });
 
 test("get is called with the exact slots resolved by storage-layout", () => {

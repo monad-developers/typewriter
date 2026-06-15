@@ -196,7 +196,7 @@ function buildProxy(
   const enumerable = (): { keys: string[]; set: Set<string> } => {
     const { version } = knownPaths();
     if (memoKeySet === null || version !== memoVersion) {
-      memoKeys = enumerableKeys(layout, path);
+      memoKeys = enumerableKeys(layout, knownPaths, path);
       memoKeySet = new Set(memoKeys);
       memoVersion = version;
     }
@@ -269,6 +269,7 @@ function resolveOrSubProxy(
 
 function enumerableKeys(
   layout: StorageLayout,
+  knownPaths: () => KnownPathIndex,
   path: StoragePath | null,
 ): string[] {
   if (path === null) return layout.storage.map((item) => item.label);
@@ -281,12 +282,15 @@ function enumerableKeys(
       `cannot enumerate array storage path: ${formatStoragePath(path)}`,
     );
   }
-  if (type.key !== undefined) {
-    throw new Error(
-      `cannot enumerate mapping storage path: ${formatStoragePath(path)}`,
-    );
-  }
+  if (type.key !== undefined) return knownChildProperties(knownPaths(), path);
   return [];
+}
+
+function knownChildProperties(
+  knownPathIndex: KnownPathIndex,
+  path: StoragePath,
+): string[] {
+  return [...(knownPathIndex.keysByPrefix.get(formatStoragePath(path)) ?? [])];
 }
 
 type KnownPathIndex = {
