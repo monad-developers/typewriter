@@ -8,12 +8,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import index from "../frontend/index.html";
-import {
-  type MintParams,
-  TOKEN_DOMAIN,
-  TOKEN_SIGNATURE_PARAMS,
-  type TransferParams,
-} from "./app";
+import { TOKEN_DOMAIN, TOKEN_SIGNATURE_PARAMS } from "./app";
 import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
 
 function requireEnv(name: string): string {
@@ -63,24 +58,12 @@ const ffca = await createFFCA<
       params: parseAbiParameters(
         "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      registerMappingKeys: ({ params }) => {
-        const transfer = params as TransferParams;
-        return [
-          `accounts[${transfer.from}].nonce`,
-          `accounts[${transfer.from}].balance`,
-          `accounts[${transfer.to}].balance`,
-        ];
-      },
     },
     Mint: {
       tag: 1,
       params: parseAbiParameters(
         "address to, uint256 amount, uint256 nonce, uint256 deadline",
       ),
-      registerMappingKeys: ({ params }) => {
-        const mint = params as MintParams;
-        return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
-      },
     },
   },
 });

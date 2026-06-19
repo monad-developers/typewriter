@@ -4,15 +4,9 @@ import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseOptions } from "./db";
 
-type InternalRegisterMappingKeys = (params: {
-  params: unknown;
-  signature: unknown;
-}) => readonly string[] | Promise<readonly string[]>;
-
 export type InternalMutation = {
   tag: number;
   params: readonly AbiParameter[];
-  registerMappingKeys?: InternalRegisterMappingKeys;
 };
 
 type InternalConfirmations = {

@@ -17,7 +17,11 @@ import {
   type ExecuteResult,
 } from "ffca-evm";
 import { Hex } from "ox";
-import { createStorageProxy, type StorageProxy } from "storage-layout";
+import {
+  createStorageProxy,
+  recoverStoragePaths,
+  type StorageProxy,
+} from "storage-layout";
 import {
   ContractFunctionRevertedError,
   decodeEventLog,
@@ -169,18 +173,52 @@ export function batchBlockToEvent(
   };
 }
 
-async function registerKnownPaths(
-  mutation: AcceptedMutation,
-): Promise<readonly string[]> {
-  if (mutation.config.registerMappingKeys === undefined) return [];
-  return mutation.config.registerMappingKeys({
-    params: mutation.params,
-    signature: mutation.signature,
-  });
+function recoverKnownPaths(params: {
+  app: InternalApp;
+  executeResult: ExecuteResult;
+}): readonly string[] {
+  const touchedSlots =
+    params.executeResult.access_list.find(
+      (entry) =>
+        entry.address.toLowerCase() === params.app.address.toLowerCase(),
+    )?.storageKeys ?? [];
+  if (touchedSlots.length === 0) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  for (const slot of touchedSlots) {
+    try {
+      paths.push(
+        ...recoverStoragePaths(
+          params.app.storageLayout,
+          [slot],
+          params.executeResult.keccak_preimages,
+        ),
+      );
+    } catch (cause) {
+      if (hasKeccakPreimageForSlot(params.executeResult, slot)) {
+        throw cause;
+      }
+    }
+  }
+
+  return paths.filter((path) => path.includes("["));
 }
 
-export class RegisterKnownPathsError extends Data.TaggedError(
-  "RegisterKnownPathsError",
+function hasKeccakPreimageForSlot(
+  executeResult: ExecuteResult,
+  slot: Hex.Hex,
+): boolean {
+  const normalizedSlot = Hex.fromNumber(BigInt(slot), { size: 32 });
+  return executeResult.keccak_preimages.some(
+    (entry) =>
+      Hex.fromNumber(BigInt(entry.hash), { size: 32 }) === normalizedSlot,
+  );
+}
+
+export class RecoverKnownPathsError extends Data.TaggedError(
+  "RecoverKnownPathsError",
 )<{
   readonly mutation: ReceivedMutation | EnqueuedMutation;
   readonly cause: unknown;
@@ -203,7 +241,7 @@ export function executeMutation(params: {
     executeResult: ExecuteResult;
     knownPaths: readonly string[];
   },
-  | RegisterKnownPathsError
+  | RecoverKnownPathsError
   | EncodeMutationError
   | EvmError
   | ContractFunctionRevertedError
@@ -212,15 +250,6 @@ export function executeMutation(params: {
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
       journalId: -1,
       isForceInclusion: params.mutation.status === "enqueued",
-    });
-
-    const knownPaths = yield* Effect.tryPromise({
-      try: () => registerKnownPaths(acceptedMutation),
-      catch: (cause) =>
-        new RegisterKnownPathsError({
-          mutation: params.mutation,
-          cause,
-        }),
     });
 
     const mutationCalldata = yield* Effect.try({
@@ -242,6 +271,29 @@ export function executeMutation(params: {
       data: mutationCalldata,
     });
 
+    if (executeResult.success === false) {
+      return yield* Effect.fail(
+        createRevmRevertError(executeResult.revert_data),
+      );
+    }
+
+    acceptedMutation.journalId = executeResult.journal_id!;
+
+    const knownPaths = yield* Effect.try({
+      try: () => recoverKnownPaths({ app: params.app, executeResult }),
+      catch: (cause) =>
+        new RecoverKnownPathsError({
+          mutation: params.mutation,
+          cause,
+        }),
+    }).pipe(
+      Effect.tapError(() =>
+        params.evm.revertJournals({
+          journal_ids: [acceptedMutation.journalId],
+        }),
+      ),
+    );
+
     yield* Effect.logDebug("executed mutation").pipe(
       Effect.annotateLogs({
         id: acceptedMutation.id,
@@ -252,14 +304,6 @@ export function executeMutation(params: {
         duration: durationMs(executeStartedAtMs),
       }),
     );
-
-    if (executeResult.success === false) {
-      return yield* Effect.fail(
-        createRevmRevertError(executeResult.revert_data),
-      );
-    }
-
-    acceptedMutation.journalId = executeResult.journal_id!;
 
     return {
       mutation: acceptedMutation,

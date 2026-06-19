@@ -1,6 +1,6 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { Address } from "ox";
-import type { ConcreteStorageVariable, StorageLayout } from "storage-layout";
+import type { StorageLayout } from "storage-layout";
 import type { AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { InternalApp } from "./internal";
@@ -30,34 +30,11 @@ export type AbiParametersToValue<params extends readonly AbiParameter[]> =
         AbiParametersToValue<tail>
     : object;
 
-export type RegisterMappingKeys<
-  storageConfig extends StorageConfig,
-  mutationConfig extends MutationConfig,
-  signatureConfig extends SignatureConfig,
-  ///
-  storageVariables = ConcreteStorageVariable<storageConfig>,
-> = (params: {
-  params: AbiParametersToValue<mutationConfig["params"]>;
-  signature: SignatureValue<signatureConfig>;
-}) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
-
-type SignatureValue<signatureConfig extends SignatureConfig> =
-  readonly AbiParameter[] extends signatureConfig
-    ? unknown
-    : AbiParametersToValue<signatureConfig>;
-
 export type FFCAMutationConfig<
-  storageConfig extends StorageConfig = StorageConfig,
   mutationConfig extends MutationConfig = MutationConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
 > = {
   tag: number;
   params: mutationConfig["params"];
-  registerMappingKeys?: RegisterMappingKeys<
-    storageConfig,
-    mutationConfig,
-    signatureConfig
-  >;
 };
 
 export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
@@ -207,7 +184,6 @@ export function buildInternalApp(config: FFCAConfig): InternalApp {
     chainId: config.chainId,
     rpcUrls,
     database: config.database,
-    // @ts-expect-error
     mutations: config.mutations,
     schema: createMutationSchema(config),
     blockPollingIntervalMs:

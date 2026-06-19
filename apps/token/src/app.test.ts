@@ -23,13 +23,11 @@ import {
   USER_ACCOUNT,
 } from "../test/setup";
 import {
-  type MintParams,
   signMint,
   signTransfer,
   TOKEN_DOMAIN,
   TOKEN_SIGNATURE_PARAMS,
   type TokenFFCAConfig,
-  type TransferParams,
 } from "./app";
 import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
 
@@ -89,24 +87,12 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
         params: parseAbiParameters(
           "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
         ),
-        registerMappingKeys: ({ params }) => {
-          const transfer = params as TransferParams;
-          return [
-            `accounts[${transfer.from}].nonce`,
-            `accounts[${transfer.from}].balance`,
-            `accounts[${transfer.to}].balance`,
-          ];
-        },
       },
       Mint: {
         tag: 1,
         params: parseAbiParameters(
           "address to, uint256 amount, uint256 nonce, uint256 deadline",
         ),
-        registerMappingKeys: ({ params }) => {
-          const mint = params as MintParams;
-          return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
-        },
       },
     },
   } as const satisfies TokenFFCAConfig;
