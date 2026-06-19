@@ -1,10 +1,13 @@
 import { Hash, Hex } from "ox";
+import { normalizeSlot } from "./solidity-encoding";
 import {
   type ResolvedStorageItem,
   resolveStoragePath,
   type StorageLayout,
 } from "./storage-layout";
 import { formatStoragePath, type StoragePath } from "./storage-path";
+
+export { normalizeSlot };
 
 export type ParsedValueType =
   | { kind: "uint"; bits: number }
@@ -29,10 +32,6 @@ export function assertConcreteLeafPath(
     );
   }
   return path;
-}
-
-export function normalizeSlot(slot: Hex.Hex): Hex.Hex {
-  return Hex.fromNumber(BigInt(slot), { size: 32 });
 }
 
 export function normalizeSlotValue(value: Hex.Hex): Hex.Hex {

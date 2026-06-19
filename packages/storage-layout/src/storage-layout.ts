@@ -1,6 +1,12 @@
 import type { AbiParameterToPrimitiveType, AbiType } from "abitype";
 import { Hash, Hex } from "ox";
 import {
+  arrayElementLocation,
+  fixedArrayLength,
+  integerBits,
+  isValueType,
+} from "./solidity-encoding";
+import {
   formatStoragePath,
   type ParsedStoragePath,
   type ParsedStoragePathSegment,
@@ -506,25 +512,6 @@ function fixedArrayElementLocation(
   return { slot: Number(location.slot), offset: location.offset };
 }
 
-function arrayElementLocation(
-  type: StorageType,
-  index: bigint,
-): { slot: bigint; offset: number } {
-  const numberOfBytes = Number(type.numberOfBytes);
-  if (isValueType(type)) {
-    const valuesPerSlot = Math.floor(32 / numberOfBytes);
-    const valuesPerSlotBigInt = BigInt(valuesPerSlot);
-    return {
-      slot: index / valuesPerSlotBigInt,
-      offset: Number(index % valuesPerSlotBigInt) * numberOfBytes,
-    };
-  }
-  return {
-    slot: index * BigInt(Math.ceil(numberOfBytes / 32)),
-    offset: 0,
-  };
-}
-
 function dynamicArrayDataBaseSlot(slot: bigint): bigint {
   return BigInt(Hash.keccak256(Hex.fromNumber(slot, { size: 32 })));
 }
@@ -630,15 +617,6 @@ function encodeMappingIntegerKey(
   });
 }
 
-function integerBits(label: string, prefix: "uint" | "int"): number {
-  const suffix = label.slice(prefix.length);
-  const bits = suffix === "" ? 256 : Number(suffix);
-  if (!Number.isInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0) {
-    throw new Error(`invalid Solidity integer type: ${label}`);
-  }
-  return bits;
-}
-
 function formatSubscript(
   segment: Extract<StoragePathSegment, { kind: "subscript" }>,
 ): string {
@@ -703,14 +681,6 @@ function dynamicArrayIndex(
   return segment.value.value;
 }
 
-export function fixedArrayLength(type: StorageType): number {
-  const match = /\[([0-9]+)\]$/.exec(type.label);
-  if (match === null) {
-    throw new Error(`fixed array type '${type.label}' is missing length`);
-  }
-  return Number(match[1]);
-}
-
 function findStorageItem(layout: StorageLayout, label: string): StorageItem {
   const item = layout.storage.find((candidate) => candidate.label === label);
   if (item === undefined) {
@@ -728,19 +698,6 @@ export function findStorageType(
     throw new Error(`storage type not found: ${typeId}`);
   }
   return type;
-}
-
-function isValueType(type: StorageType): boolean {
-  if (type.encoding !== "inplace" || type.members !== undefined) {
-    return false;
-  }
-  return (
-    /^u?int[0-9]*$/.test(type.label) ||
-    type.label === "address" ||
-    type.label === "bool" ||
-    /^bytes([1-9]|[12][0-9]|3[0-2])$/.test(type.label) ||
-    type.label.startsWith("enum ")
-  );
 }
 
 function isStructType(

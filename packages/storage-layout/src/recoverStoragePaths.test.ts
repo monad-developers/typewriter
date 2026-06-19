@@ -144,6 +144,35 @@ test("recoverStoragePaths resolves dynamic bytes data slots to the bytes field",
   `);
 });
 
+test("recoverStoragePaths surfaces a recovery gap for a captured hashed slot", () => {
+  // `balances[OWNER]` is a single-slot uint256, so an offset past its hashed
+  // value slot has no field to map to. Because the slot still derives from a
+  // captured preimage, recovery reports it as a gap rather than dropping it.
+  const entry = addressMappingPreimage(OWNER, 7n);
+  const gapSlot = Hex.fromNumber(BigInt(entry.hash) + 1n, { size: 32 });
+
+  expect(() => recoverStoragePaths(layout, [gapSlot], [entry])).toThrow(
+    "could not recover storage path",
+  );
+});
+
+test("recoverStoragePaths skips slots no captured preimage produced", () => {
+  // A dynamic (string) mapping key hashes a variable-length preimage the
+  // harness never records (only 32/64-byte preimages are captured), so the
+  // touched slot derives from no captured preimage and is skipped instead of
+  // aborting recovery of the other slots.
+  const dynamicKeyPreimage = Hex.concat(Hex.fromString("foo"), word(7n));
+  const slot = Hash.keccak256(dynamicKeyPreimage);
+
+  expect(
+    recoverStoragePaths(
+      layout,
+      [slot],
+      [{ hash: slot, preimage: dynamicKeyPreimage }],
+    ),
+  ).toEqual([]);
+});
+
 test("recoverStoragePaths validates preimage hashes", () => {
   const slot = expectSingleSlot(getStorageSlot(layout, `balances[${OWNER}]`));
 

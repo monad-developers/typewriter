@@ -1,7 +1,7 @@
 import { Hex } from "ox";
+import { fixedArrayLength, normalizeSlot } from "./solidity-encoding";
 import {
   findStorageType,
-  fixedArrayLength,
   type ResolvedStorageItem,
   resolveStoragePath,
   type StorageLayout,
@@ -157,10 +157,6 @@ function collectReversiblePaths(
 
 function mappingPathError(path: ParsedStoragePath): string {
   return `cannot infer storage variable for mapping '${formatStoragePath(path)}' from raw slot: Solidity hashes mapping keys into slot addresses, so mapping slots are not reversible from a slot alone; pass knownVariables to match keyed mappings`;
-}
-
-function normalizeSlot(slot: Hex.Hex): Hex.Hex {
-  return Hex.fromNumber(BigInt(slot), { size: 32 });
 }
 
 function storageSlot(resolved: ResolvedStorageItem): Hex.Hex {

@@ -186,35 +186,17 @@ function recoverKnownPaths(params: {
     return [];
   }
 
-  const paths: string[] = [];
-  for (const slot of touchedSlots) {
-    try {
-      paths.push(
-        ...recoverStoragePaths(
-          params.app.storageLayout,
-          [slot],
-          params.executeResult.keccak_preimages,
-        ),
-      );
-    } catch (cause) {
-      if (hasKeccakPreimageForSlot(params.executeResult, slot)) {
-        throw cause;
-      }
-    }
-  }
-
-  return paths.filter((path) => path.includes("["));
-}
-
-function hasKeccakPreimageForSlot(
-  executeResult: ExecuteResult,
-  slot: Hex.Hex,
-): boolean {
-  const normalizedSlot = Hex.fromNumber(BigInt(slot), { size: 32 });
-  return executeResult.keccak_preimages.some(
-    (entry) =>
-      Hex.fromNumber(BigInt(entry.hash), { size: 32 }) === normalizedSlot,
-  );
+  // Recover every touched slot in one pass so the keccak preimages are
+  // normalized once rather than per slot. `recoverStoragePaths` skips slots
+  // that no captured preimage produced (e.g. dynamic-key mappings) and throws
+  // only on a genuine recovery gap; that throw — and any unexpected error —
+  // propagates to fail and roll back the mutation instead of silently dropping
+  // a keyed path.
+  return recoverStoragePaths(
+    params.app.storageLayout,
+    touchedSlots,
+    params.executeResult.keccak_preimages,
+  ).filter((path) => path.includes("["));
 }
 
 export class RecoverKnownPathsError extends Data.TaggedError(

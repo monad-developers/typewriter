@@ -2,6 +2,13 @@ import { Hash, Hex } from "ox";
 import { getStorageSlot } from "./getStorageSlot";
 import { getStorageVariable } from "./getStorageVariable";
 import {
+  arrayElementLocation,
+  fixedArrayLength,
+  integerBits,
+  isValueType,
+  normalizeSlot,
+} from "./solidity-encoding";
+import {
   findStorageType,
   resolveStoragePath,
   type StorageLayout,
@@ -38,9 +45,18 @@ export function recoverStoragePaths<const layout extends StorageLayout>(
     const slot = normalizeSlot(touchedSlot);
     const candidates = recoverTouchedSlot(layout, slot, normalizedPreimages);
     if (candidates.length === 0) {
-      throw new Error(
-        `could not recover storage path for touched slot ${slot}`,
-      );
+      // A slot with no candidates is only a recovery gap worth surfacing when
+      // it was produced by a captured keccak preimage (a mapping/array/bytes
+      // structure we should have been able to walk). Slots unrelated to any
+      // captured preimage — e.g. dynamic (string/bytes) mapping keys, whose
+      // variable-length preimages the harness never records — are skipped so a
+      // single unsupported key doesn't abort recovery of the other slots.
+      if (slotDerivesFromPreimage(BigInt(slot), normalizedPreimages)) {
+        throw new Error(
+          `could not recover storage path for touched slot ${slot}`,
+        );
+      }
+      continue;
     }
 
     for (const candidate of candidates) {
@@ -138,7 +154,7 @@ function collectRecoveredPaths(
   if (type.encoding === "inplace" && type.base !== undefined) {
     const baseType = findStorageType(layout, type.base);
     for (let index = 0; index < fixedArrayLength(type); index++) {
-      const elementSlot = arrayElementSlot(baseType, BigInt(index));
+      const elementSlot = arrayElementLocation(baseType, BigInt(index)).slot;
       collectRecoveredPaths(
         layout,
         baseType,
@@ -237,7 +253,7 @@ function collectDynamicArrayPaths(
         collectRecoveredPaths(
           layout,
           baseType,
-          entry.hashSlot + arrayElementSlot(baseType, index),
+          entry.hashSlot + arrayElementLocation(baseType, index).slot,
           {
             root: path.root,
             segments: [
@@ -268,7 +284,7 @@ function dynamicArrayCandidateDeltas(
     if (
       parentSlot !== undefined &&
       parentSlot >= dataBaseSlot &&
-      isCurrentSlotHashChain(entry.hashSlot, target)
+      slotDerivesFromHash(entry.hashSlot, target)
     ) {
       deltas.add(parentSlot - dataBaseSlot);
     }
@@ -276,9 +292,28 @@ function dynamicArrayCandidateDeltas(
   return [...deltas];
 }
 
-function isCurrentSlotHashChain(hashSlot: bigint, target: bigint): boolean {
+// Upper bound on how far past a keccak output a slot can sit while still being
+// treated as derived from it (struct field offsets, packed array elements,
+// dynamic-bytes chunks). Hashed slots are uniformly spread across 2^256, so a
+// span this small never collides two unrelated structures in practice.
+const SLOT_HASH_CHAIN_SPAN = 4096n;
+
+/**
+ * Whether `target` was produced by one of the captured keccak preimages, either
+ * as the hash output itself or as a bounded offset from it. A failed recovery
+ * for such a slot is a real gap; a slot unrelated to any preimage is not.
+ */
+function slotDerivesFromPreimage(
+  target: bigint,
+  preimages: readonly Preimage[],
+): boolean {
+  return preimages.some((entry) => slotDerivesFromHash(entry.hashSlot, target));
+}
+
+function slotDerivesFromHash(hashSlot: bigint, target: bigint): boolean {
   return (
-    hashSlot === target || (target > hashSlot && target - hashSlot < 4096n)
+    hashSlot === target ||
+    (target > hashSlot && target - hashSlot < SLOT_HASH_CHAIN_SPAN)
   );
 }
 
@@ -418,48 +453,6 @@ function isDynamicDataSlot(
   );
 }
 
-function arrayElementSlot(type: StorageType, index: bigint): bigint {
-  const bytes = Number(type.numberOfBytes);
-  if (isValueType(type)) {
-    return index / BigInt(Math.floor(32 / bytes));
-  }
-  return index * slotSpan(type);
-}
-
 function slotSpan(type: StorageType): bigint {
   return BigInt(Math.max(1, Math.ceil(Number(type.numberOfBytes) / 32)));
-}
-
-function fixedArrayLength(type: StorageType): number {
-  const match = /\[([0-9]+)\]$/.exec(type.label);
-  if (match === null) {
-    throw new Error(`fixed array type '${type.label}' is missing length`);
-  }
-  return Number(match[1]);
-}
-
-function integerBits(label: string, prefix: "uint" | "int"): number {
-  const suffix = label.slice(prefix.length);
-  const bits = suffix === "" ? 256 : Number(suffix);
-  if (!Number.isInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0) {
-    throw new Error(`invalid Solidity integer type: ${label}`);
-  }
-  return bits;
-}
-
-function isValueType(type: StorageType): boolean {
-  if (type.encoding !== "inplace" || type.members !== undefined) {
-    return false;
-  }
-  return (
-    /^u?int[0-9]*$/.test(type.label) ||
-    type.label === "address" ||
-    type.label === "bool" ||
-    /^bytes([1-9]|[12][0-9]|3[0-2])$/.test(type.label) ||
-    type.label.startsWith("enum ")
-  );
-}
-
-function normalizeSlot(slot: Hex.Hex): Hex.Hex {
-  return Hex.fromNumber(BigInt(slot), { size: 32 });
 }
