@@ -75,10 +75,7 @@ async function dropDatabase(databaseName: string): Promise<void> {
   );
 }
 
-export async function deployToken(): Promise<{
-  address: Address;
-  abi: unknown;
-}> {
+export async function deployToken(): Promise<{ address: Address }> {
   const artifact = await Bun.file(
     `${import.meta.dir}/../contracts/out/Token.sol/Token.json`,
   ).json();
@@ -100,7 +97,7 @@ export async function deployToken(): Promise<{
   ) {
     throw new Error("Token deploy missing contract address");
   }
-  return { address: receipt.contractAddress, abi: artifact.abi };
+  return { address: receipt.contractAddress };
 }
 
 beforeAll(async () => {

@@ -9,6 +9,8 @@ import {
   toEventSelector,
 } from "viem";
 import { anvil } from "viem/chains";
+import Counter from "../test/contracts/src/Counter.sol";
+import Harness from "../test/contracts/src/Harness.sol";
 import {
   ALICE_ACCOUNT,
   ALICE_PRIVATE_KEY,
@@ -22,17 +24,11 @@ import {
 } from "../test/setup";
 import {
   COUNTER_DOMAIN,
-  COUNTER_MUTATIONS,
-  COUNTER_SIGNATURE_PARAMS,
-  COUNTER_STORAGE_LAYOUT,
   counterNewAccountMutation,
   deployCounter,
   deployHarness,
   encodeHarnessSignature,
   HARNESS_DOMAIN,
-  HARNESS_MUTATIONS,
-  HARNESS_SIGNATURE_PARAMS,
-  HARNESS_STORAGE_LAYOUT,
   harnessAccountId,
   p256PublicKey,
   readContractStorage,
@@ -40,7 +36,6 @@ import {
   signCounter,
   signHarness,
 } from "../test/utils";
-import { buildInternalApp, type FFCAConfig } from "./config";
 import { layerDatabaseLive } from "./db";
 import {
   encodeMutationCalldata,
@@ -48,10 +43,11 @@ import {
   FFCA_ABI,
 } from "./encoding";
 import type { InternalRuntimeFFCA } from "./ffca";
+import type { InternalApp } from "./internal";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { layerRpcLive } from "./rpc";
 import { createRuntimeEffect as createRuntimeBatchEffectInternal } from "./runtime";
-import { createMutationSchema } from "./schema";
+import { loadSolidityFFCAApp } from "./sol-parse";
 import { layerWatchLive } from "./watch";
 
 function layerRuntimeServices(address: Address) {
@@ -77,11 +73,11 @@ function layerRuntimeServices(address: Address) {
 }
 
 function createRuntimeBatchEffect(
-  config: FFCAConfig,
-  schema: ReturnType<typeof createMutationSchema>,
+  app: InternalApp,
+  schema: InternalApp["schema"] = app.schema,
 ) {
   return createRuntimeBatchEffectInternal({
-    ...buildInternalApp(config),
+    ...app,
     schema,
   });
 }
@@ -133,31 +129,29 @@ function signHarnessMutation(params: {
 test("createRuntimeBatchEffect", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  } as const satisfies FFCAConfig;
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -173,20 +167,18 @@ test("createRuntimeBatchEffect", async () => {
 test("runtime loads persisted slot state before returning", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  } as const satisfies FFCAConfig;
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
   const schemaName = deploymentSchemaName(anvil.id, address);
 
@@ -194,7 +186,7 @@ test("runtime loads persisted slot state before returning", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
@@ -215,7 +207,7 @@ test("runtime loads persisted slot state before returning", async () => {
     `,
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -236,31 +228,29 @@ test("runtime loads persisted slot state before returning", async () => {
 test("execute() returns an accepted mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -300,31 +290,29 @@ test("execute() returns an accepted mutation", async () => {
 test("execute() accepts multiple mutations in a batch", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -379,20 +367,18 @@ test("execute() accepts multiple mutations in a batch", async () => {
 test("runtime emits mutation, batch, and block events", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
   const events: unknown[] = [];
 
@@ -400,11 +386,11 @@ test("runtime emits mutation, batch, and block events", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -561,20 +547,18 @@ test("runtime emits mutation, batch, and block events", async () => {
 test("runtime persists mutations to database", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  } as const satisfies FFCAConfig;
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
   const db = drizzle({ client: TEST_DB_CONNECTION });
   const addMutations = requiredTable(schema, "add_mutations");
@@ -583,11 +567,11 @@ test("runtime persists mutations to database", async () => {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -622,7 +606,7 @@ test("runtime persists mutations to database", async () => {
 
   await Effect.runPromise(program);
 
-  const addMutationRows = (await db.select().from(addMutations)) as {
+  const addMutationRows = (await db.select().from(addMutations)) as unknown as {
     id: number;
     status: string;
     amount: bigint;
@@ -702,31 +686,29 @@ test("runtime persists mutations to database", async () => {
 test("runtime submits a mutation onchain", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -761,39 +743,37 @@ test("runtime submits a mutation onchain", async () => {
 
   await Effect.runPromise(program);
 
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
-  ).toBe(7n);
+  expect(await readContractStorage(app.storageLayout, address, "total")).toBe(
+    7n,
+  );
 });
 
 test("runtime finalizes a mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -834,11 +814,9 @@ test("runtime reorders Harness mutations by batch order", async () => {
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Harness, {
     address,
     domain: HARNESS_DOMAIN,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
-    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -848,24 +826,26 @@ test("runtime reorders Harness mutations by batch order", async () => {
     },
     database: { url: TEST_DB_URL, maxConnections: 1 },
     mutations: {
-      initialize: HARNESS_MUTATIONS.initialize,
-      credit: HARNESS_MUTATIONS.credit,
-      debit: HARNESS_MUTATIONS.debit,
+      initialize: {},
+      authorize: {},
+      credit: {},
+      debit: {},
+      assert: {},
     },
-  };
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -931,35 +911,35 @@ test("fifo runtime preserves submission order without batch reordering", async (
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Harness, {
     address,
     domain: HARNESS_DOMAIN,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
-    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "fifo", submitIntervalMs: 3_600_000 },
     database: { url: TEST_DB_URL, maxConnections: 1 },
     mutations: {
-      initialize: HARNESS_MUTATIONS.initialize,
-      credit: HARNESS_MUTATIONS.credit,
-      debit: HARNESS_MUTATIONS.debit,
+      initialize: {},
+      authorize: {},
+      credit: {},
+      debit: {},
+      assert: {},
     },
-  };
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -1046,34 +1026,35 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Harness, {
     address,
     domain: HARNESS_DOMAIN,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
-    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["initialize", "debit"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
     mutations: {
-      initialize: HARNESS_MUTATIONS.initialize,
-      debit: HARNESS_MUTATIONS.debit,
+      initialize: {},
+      authorize: {},
+      credit: {},
+      debit: {},
+      assert: {},
     },
-  };
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -1120,11 +1101,9 @@ test("runtime handles Harness account management with multiple signature types",
   const p256Pk = p256PublicKey(P256_PRIVATE_KEY);
   const account = harnessAccountId(rootPublicKey);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Harness, {
     address,
     domain: HARNESS_DOMAIN,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
-    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1134,24 +1113,26 @@ test("runtime handles Harness account management with multiple signature types",
     },
     database: { url: TEST_DB_URL, maxConnections: 1 },
     mutations: {
-      initialize: HARNESS_MUTATIONS.initialize,
-      authorize: HARNESS_MUTATIONS.authorize,
-      credit: HARNESS_MUTATIONS.credit,
+      initialize: {},
+      authorize: {},
+      credit: {},
+      debit: {},
+      assert: {},
     },
-  };
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -1271,6 +1252,22 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     address,
     chainId: anvil.id,
   });
+
+  const app = await loadSolidityFFCAApp(Counter, {
+    address,
+    domain: COUNTER_DOMAIN,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    database: { url: TEST_DB_URL, maxConnections: 1 },
+    mutations: { newAccount: {}, add: {} },
+  });
+  const { add: addMutation } = app.mutations;
+  if (addMutation === undefined) {
+    throw new Error("Counter app missing add mutation");
+  }
+
   const mutationData = encodeMutationCalldata({
     id: 0,
     status: "accepted",
@@ -1279,7 +1276,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     signature,
     journalId: 0,
     isForceInclusion: false,
-    config: COUNTER_MUTATIONS.add,
+    config: addMutation,
   });
   const userWalletClient = createWalletClient({
     account: USER_ACCOUNT,
@@ -1287,31 +1284,18 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     transport: http(TEST_RPC_URL),
   });
 
-  const config: FFCAConfig = {
-    address,
-    domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
-    account: SCHEDULER_ACCOUNT,
-    chainId: anvil.id,
-    rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
-    database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
-
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -1344,9 +1328,9 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
         abi: FFCA_ABI,
         functionName: "enqueue",
         args: [
-          COUNTER_MUTATIONS.add.tag,
+          addMutation.tag,
           mutationData,
-          encodeSignatureCalldata(COUNTER_SIGNATURE_PARAMS, signature),
+          encodeSignatureCalldata(app.signature.params, signature),
         ],
       }),
     );
@@ -1356,39 +1340,37 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
 
   await Effect.runPromise(program);
 
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
-  ).toBe(amount);
+  expect(await readContractStorage(app.storageLayout, address, "total")).toBe(
+    amount,
+  );
 });
 
 test("runtime handles failing mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );
@@ -1417,39 +1399,37 @@ test("runtime handles failing mutation", async () => {
   const exit = await Effect.runPromise(program);
 
   expect(Exit.isFailure(exit)).toBe(true);
-  expect(
-    await readContractStorage(COUNTER_STORAGE_LAYOUT, address, "total"),
-  ).toBe(0n);
+  expect(await readContractStorage(app.storageLayout, address, "total")).toBe(
+    0n,
+  );
 });
 
 test("runtime program handles interrupt", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const config: FFCAConfig = {
+  const app = await loadSolidityFFCAApp(Counter, {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: COUNTER_MUTATIONS,
-  };
+    mutations: { newAccount: {}, add: {} },
+  });
 
-  const schema = createMutationSchema(config);
+  const schema = app.schema;
   const services = layerRuntimeServices(address);
 
   const program = Effect.gen(function* () {
     const scope = yield* Scope.make();
     const scopedServices = yield* Layer.buildWithScope(services, scope);
 
-    yield* migrate(schema, config.chainId, config.address, 0n).pipe(
+    yield* migrate(schema, app.chainId, app.address, 0n).pipe(
       Effect.provide(scopedServices),
     );
 
-    const runtime = yield* createRuntimeBatchEffect(config, schema).pipe(
+    const runtime = yield* createRuntimeBatchEffect(app, schema).pipe(
       Effect.provide(scopedServices),
       Effect.provideService(Scope.Scope, scope),
     );

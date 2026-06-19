@@ -1,7 +1,7 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { Address } from "ox";
-import type { StorageLayout } from "storage-layout";
-import type { AbiParameter, PrivateKeyAccount } from "viem";
+import type { ConcreteStorageVariable, StorageLayout } from "storage-layout";
+import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { InternalApp } from "./internal";
 import { createMutationSchema } from "./schema";
@@ -30,11 +30,45 @@ export type AbiParametersToValue<params extends readonly AbiParameter[]> =
         AbiParametersToValue<tail>
     : object;
 
+export type RegisterMappingKeys<
+  storageConfig extends StorageConfig,
+  mutationConfig extends MutationConfig,
+  signatureConfig extends SignatureConfig,
+  ///
+  storageVariables = ConcreteStorageVariable<storageConfig>,
+> = (params: {
+  params: AbiParametersToValue<mutationConfig["params"]>;
+  signature: SignatureValue<signatureConfig>;
+}) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
+
+type SignatureValue<signatureConfig extends SignatureConfig> =
+  readonly AbiParameter[] extends signatureConfig
+    ? unknown
+    : AbiParametersToValue<signatureConfig>;
+
 export type FFCAMutationConfig<
+  storageConfig extends StorageConfig = StorageConfig,
   mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
 > = {
+  registerMappingKeys?: RegisterMappingKeys<
+    storageConfig,
+    mutationConfig,
+    signatureConfig
+  >;
+};
+
+export type ResolvedFFCAMutationConfig<
+  storageConfig extends StorageConfig = StorageConfig,
+  mutationConfig extends MutationConfig = MutationConfig,
+  signatureConfig extends SignatureConfig = SignatureConfig,
+> = mutationConfig & {
   tag: number;
-  params: mutationConfig["params"];
+  registerMappingKeys?: RegisterMappingKeys<
+    storageConfig,
+    mutationConfig,
+    signatureConfig
+  >;
 };
 
 export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
@@ -54,13 +88,11 @@ export type FFCAConfig<
 > = {
   address: Address.Address;
   domain: { name: string; version: string };
-  storageLayout: StorageConfig;
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
-  mutations: { [name: string]: FFCAMutationConfig };
-  signature: { params: SignatureConfig };
+  mutations?: { [name: string]: FFCAMutationConfig };
   blockPollingIntervalMs?: number;
   confirmations?: {
     safeBlockDepth?: number;
@@ -130,9 +162,13 @@ export function validateConfig(config: FFCAConfig): void {
       "config.sequencing.batchOrder is only valid for batch ordering",
     );
   }
+}
 
+function validateMutationDefinitions(mutations: {
+  readonly [name: string]: ResolvedFFCAMutationConfig;
+}): void {
   const mutationTags = new Set<number>();
-  for (const mutation of Object.values(config.mutations)) {
+  for (const mutation of Object.values(mutations)) {
     if (mutationTags.has(mutation.tag)) {
       throw new Error(`duplicate mutation tag: ${mutation.tag}`);
     }
@@ -140,8 +176,16 @@ export function validateConfig(config: FFCAConfig): void {
   }
 }
 
-export function buildInternalApp(config: FFCAConfig): InternalApp {
+export function buildInternalApp(params: {
+  config: FFCAConfig;
+  abi: Abi;
+  storageLayout: StorageConfig;
+  signature: { params: SignatureConfig };
+  mutations: { [name: string]: ResolvedFFCAMutationConfig };
+}): InternalApp {
+  const { abi, config, mutations, signature, storageLayout } = params;
   validateConfig(config);
+  validateMutationDefinitions(mutations);
 
   const rpcUrls = Array.isArray(config.rpcUrl)
     ? config.rpcUrl
@@ -172,20 +216,21 @@ export function buildInternalApp(config: FFCAConfig): InternalApp {
 
   return {
     address: config.address,
+    abi,
     domain: {
       name: config.domain.name,
       version: config.domain.version,
       chainId: config.chainId,
       verifyingContract: config.address,
     },
-    signature: config.signature,
-    storageLayout: config.storageLayout,
+    signature,
+    storageLayout,
     account: config.account,
     chainId: config.chainId,
     rpcUrls,
     database: config.database,
-    mutations: config.mutations,
-    schema: createMutationSchema(config),
+    mutations: mutations as InternalApp["mutations"],
+    schema: createMutationSchema({ signature, mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     confirmations,

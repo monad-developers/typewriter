@@ -1,4 +1,3 @@
-import type { FFCAConfig } from "ffca";
 import {
   type Address,
   encodeAbiParameters,
@@ -9,9 +8,6 @@ import {
 import type { PrivateKeyAccount } from "viem/accounts";
 
 export const TOKEN_DOMAIN = { name: "Token", version: "1" } as const;
-export const TOKEN_SIGNATURE_PARAMS = parseAbiParameters(
-  "uint8 keyType, bytes rawSignature",
-);
 
 export type TokenSignature = {
   keyType: number;
@@ -32,8 +28,6 @@ export type TransferParams = {
   nonce: bigint;
   deadline: bigint;
 };
-
-export type TokenFFCAConfig = FFCAConfig<"fifo">;
 
 const TRANSFER_TYPES = {
   Transfer: [

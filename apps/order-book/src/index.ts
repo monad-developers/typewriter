@@ -1,16 +1,15 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
-import { EXCHANGE_STORAGE_LAYOUT } from "order-book-sdk";
 import superjson from "superjson";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import Exchange from "../contracts/src/Exchange.sol";
 import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
-  ORDER_BOOK_SIGNATURE_PARAMS,
   type OrderBookSignature,
 } from "./app";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
@@ -29,16 +28,9 @@ if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
-const app = await createFFCA<
-  typeof EXCHANGE_STORAGE_LAYOUT,
-  typeof ORDER_BOOK_MUTATIONS,
-  typeof ORDER_BOOK_SIGNATURE_PARAMS,
-  "batch"
->({
+const app = (await createFFCA(Exchange, {
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
-  signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
-  storageLayout: EXCHANGE_STORAGE_LAYOUT,
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
@@ -48,7 +40,8 @@ const app = await createFFCA<
     batchOrder: ORDER_BOOK_BATCH_ORDER,
   },
   mutations: ORDER_BOOK_MUTATIONS,
-});
+  // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
+})) as any;
 
 const readerDb = drizzle({
   client: new Bun.SQL({

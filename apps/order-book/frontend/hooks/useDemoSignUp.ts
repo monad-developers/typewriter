@@ -40,7 +40,7 @@ export function useDemoSignUp() {
             keyId: 0n,
             rawSignature: "0x",
           },
-        } satisfies Extract<SubmittedOrderBookMutation, { name: "Initialize" }>,
+        } satisfies SubmittedOrderBookMutation<"Initialize">,
       });
 
       await setAccount({ accountId, keyId: 1, sessionKey });

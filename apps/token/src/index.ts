@@ -1,15 +1,10 @@
 import { createFFCA, type MutationEvent, type MutationStatus } from "ffca";
 import superjson from "superjson";
-import {
-  type Address,
-  type Hex,
-  type ParseAbiParameters,
-  parseAbiParameters,
-} from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
 import index from "../frontend/index.html";
-import { TOKEN_DOMAIN, TOKEN_SIGNATURE_PARAMS } from "./app";
-import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
+import { type MintParams, TOKEN_DOMAIN, type TransferParams } from "./app";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -31,21 +26,8 @@ const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
 const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
 const mutations = new Map<number, MutationEvent>();
 
-const ffca = await createFFCA<
-  typeof TOKEN_STORAGE_LAYOUT,
-  {
-    Transfer: {
-      params: ParseAbiParameters<"address from, address to, uint256 amount, uint256 nonce, uint256 deadline">;
-    };
-    Mint: {
-      params: ParseAbiParameters<"address to, uint256 amount, uint256 nonce, uint256 deadline">;
-    };
-  },
-  typeof TOKEN_SIGNATURE_PARAMS
->({
+const ffca = (await createFFCA(Token, {
   address: tokenAddress,
-  signature: { params: TOKEN_SIGNATURE_PARAMS },
-  storageLayout: TOKEN_STORAGE_LAYOUT,
   account: scheduler,
   chainId,
   rpcUrl,
@@ -54,21 +36,26 @@ const ffca = await createFFCA<
   sequencing: { order: "fifo" },
   mutations: {
     Transfer: {
-      tag: 0,
-      params: parseAbiParameters(
-        "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
-      ),
+      registerMappingKeys: ({ params }: { params: unknown }) => {
+        const transfer = params as TransferParams;
+        return [
+          `accounts[${transfer.from}].nonce`,
+          `accounts[${transfer.from}].balance`,
+          `accounts[${transfer.to}].balance`,
+        ];
+      },
     },
     Mint: {
-      tag: 1,
-      params: parseAbiParameters(
-        "address to, uint256 amount, uint256 nonce, uint256 deadline",
-      ),
+      registerMappingKeys: ({ params }: { params: unknown }) => {
+        const mint = params as MintParams;
+        return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
+      },
     },
   },
-});
+  // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
+})) as any;
 
-ffca.on("mutation", (mutation) => {
+ffca.on("mutation", (mutation: MutationEvent) => {
   mutations.set(mutation.id, mutation);
 });
 

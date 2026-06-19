@@ -17,12 +17,9 @@ import {
   type ExecuteResult,
 } from "ffca-evm";
 import { Hex } from "ox";
+import { createStorageProxy, type StorageProxy } from "storage-layout";
 import {
-  createStorageProxy,
-  recoverStoragePaths,
-  type StorageProxy,
-} from "storage-layout";
-import {
+  type Abi,
   ContractFunctionRevertedError,
   decodeEventLog,
   formatTransactionReceipt,
@@ -45,7 +42,7 @@ import {
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
-  FFCA_ABI,
+  type FFCA_ABI,
 } from "./encoding";
 import type {
   BatchListener,
@@ -173,34 +170,18 @@ export function batchBlockToEvent(
   };
 }
 
-function recoverKnownPaths(params: {
-  app: InternalApp;
-  executeResult: ExecuteResult;
-}): readonly string[] {
-  const touchedSlots =
-    params.executeResult.access_list.find(
-      (entry) =>
-        entry.address.toLowerCase() === params.app.address.toLowerCase(),
-    )?.storageKeys ?? [];
-  if (touchedSlots.length === 0) {
-    return [];
-  }
-
-  // Recover every touched slot in one pass so the keccak preimages are
-  // normalized once rather than per slot. `recoverStoragePaths` skips slots
-  // that no captured preimage produced (e.g. dynamic-key mappings) and throws
-  // only on a genuine recovery gap; that throw — and any unexpected error —
-  // propagates to fail and roll back the mutation instead of silently dropping
-  // a keyed path.
-  return recoverStoragePaths(
-    params.app.storageLayout,
-    touchedSlots,
-    params.executeResult.keccak_preimages,
-  ).filter((path) => path.includes("["));
+async function registerKnownPaths(
+  mutation: AcceptedMutation,
+): Promise<readonly string[]> {
+  if (mutation.config.registerMappingKeys === undefined) return [];
+  return mutation.config.registerMappingKeys({
+    params: mutation.params,
+    signature: mutation.signature,
+  });
 }
 
-export class RecoverKnownPathsError extends Data.TaggedError(
-  "RecoverKnownPathsError",
+export class RegisterKnownPathsError extends Data.TaggedError(
+  "RegisterKnownPathsError",
 )<{
   readonly mutation: ReceivedMutation | EnqueuedMutation;
   readonly cause: unknown;
@@ -223,7 +204,7 @@ export function executeMutation(params: {
     executeResult: ExecuteResult;
     knownPaths: readonly string[];
   },
-  | RecoverKnownPathsError
+  | RegisterKnownPathsError
   | EncodeMutationError
   | EvmError
   | ContractFunctionRevertedError
@@ -232,6 +213,15 @@ export function executeMutation(params: {
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
       journalId: -1,
       isForceInclusion: params.mutation.status === "enqueued",
+    });
+
+    const knownPaths = yield* Effect.tryPromise({
+      try: () => registerKnownPaths(acceptedMutation),
+      catch: (cause) =>
+        new RegisterKnownPathsError({
+          mutation: params.mutation,
+          cause,
+        }),
     });
 
     const mutationCalldata = yield* Effect.try({
@@ -253,29 +243,6 @@ export function executeMutation(params: {
       data: mutationCalldata,
     });
 
-    if (executeResult.success === false) {
-      return yield* Effect.fail(
-        createRevmRevertError(executeResult.revert_data),
-      );
-    }
-
-    acceptedMutation.journalId = executeResult.journal_id!;
-
-    const knownPaths = yield* Effect.try({
-      try: () => recoverKnownPaths({ app: params.app, executeResult }),
-      catch: (cause) =>
-        new RecoverKnownPathsError({
-          mutation: params.mutation,
-          cause,
-        }),
-    }).pipe(
-      Effect.tapError(() =>
-        params.evm.revertJournals({
-          journal_ids: [acceptedMutation.journalId],
-        }),
-      ),
-    );
-
     yield* Effect.logDebug("executed mutation").pipe(
       Effect.annotateLogs({
         id: acceptedMutation.id,
@@ -286,6 +253,14 @@ export function executeMutation(params: {
         duration: durationMs(executeStartedAtMs),
       }),
     );
+
+    if (executeResult.success === false) {
+      return yield* Effect.fail(
+        createRevmRevertError(params.app.abi, executeResult.revert_data),
+      );
+    }
+
+    acceptedMutation.journalId = executeResult.journal_id!;
 
     return {
       mutation: acceptedMutation,
@@ -323,7 +298,7 @@ export function decodeEnqueuedMutation(params: {
   id: number;
 }): EnqueuedMutation {
   const forceInclusionLog = decodeEventLog({
-    abi: FFCA_ABI,
+    abi: params.app.abi as typeof FFCA_ABI,
     eventName: "ForceInclusionQueued",
     // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,
@@ -353,11 +328,12 @@ export function decodeEnqueuedMutation(params: {
 }
 
 export function createRevmRevertError(
+  abi: Abi,
   data: Hex.Hex | undefined,
   message = "revm execute reverted",
 ): ContractFunctionRevertedError {
   return new ContractFunctionRevertedError({
-    abi: FFCA_ABI,
+    abi,
     data,
     functionName: "execute",
     message,
@@ -834,6 +810,7 @@ export function createRuntimeEffect(
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
+                app.abi,
                 simulateResult.revert_data,
                 "revm simulate reverted",
               ),
@@ -910,6 +887,7 @@ export function createRuntimeEffect(
       if (receipt.status === "reverted") {
         return yield* Effect.fail(
           createRevmRevertError(
+            app.abi,
             undefined,
             `settlement transaction reverted onchain: ${receipt.transactionHash}`,
           ),

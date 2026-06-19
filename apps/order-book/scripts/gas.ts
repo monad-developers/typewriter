@@ -1,12 +1,11 @@
 import {
-  EXCHANGE_ABI,
   fromLots,
   INSTRUMENTS,
   type InstrumentConfig,
   priceToQ32,
   TokenAmount,
 } from "order-book-sdk";
-import type { Hex } from "viem";
+import type { Abi, Hex } from "viem";
 import {
   createPublicClient,
   encodeAbiParameters,
@@ -15,6 +14,7 @@ import {
   parseSignature,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import Exchange from "../contracts/src/Exchange.sol";
 import { CHAIN_ID, EXCHANGE_ADDRESS, requiredEnv } from "./src/constants";
 import {
   type Account,
@@ -45,6 +45,13 @@ enum MutationType {
 }
 
 const publicClient = createPublicClient({ transport: http(RPC_URL) });
+const exchangeArtifactPath = Exchange.replace(
+  /src\/Exchange\.sol$/,
+  "out/Exchange.sol/Exchange.json",
+);
+const exchangeArtifact = (await Bun.file(exchangeArtifactPath).json()) as {
+  abi: Abi;
+};
 
 // Pick a small integer human price, small enough that tests won't need
 // huge deposits and unlikely to collide with live orderbook activity.
@@ -271,7 +278,7 @@ function buildBatch(account: Account, muts: Mut[]): BatchArg {
 
 async function estimate(batch: BatchArg): Promise<bigint> {
   const data = encodeFunctionData({
-    abi: EXCHANGE_ABI,
+    abi: exchangeArtifact.abi,
     functionName: "execute",
     args: [[batch], []],
   });

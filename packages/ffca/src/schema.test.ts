@@ -8,7 +8,6 @@ import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { TEST_DB_CONNECTION } from "../test/setup";
 import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
-import type { FFCAConfig } from "./config";
 import { updateSchema } from "./migrate";
 import { createMutationSchema, mutationStatusEnum } from "./schema";
 
@@ -149,7 +148,7 @@ test("createMutationSchema exposes table names from config keys", () => {
         params: parseAbiParameters("bytes32 account"),
       },
     },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
 
   const keys = ["transfer_mutations", "cancelorder_mutations"] satisfies Array<
     keyof typeof schema

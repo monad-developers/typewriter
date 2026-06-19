@@ -10,7 +10,7 @@ import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
-import type { FFCAConfig, FFCAMutationConfig } from "./config";
+import type { ResolvedFFCAMutationConfig } from "./config";
 import { Database, layerDatabaseLive } from "./db";
 import {
   insertKnownPaths,
@@ -28,12 +28,12 @@ import type { RuntimeBlock, RuntimeMutation } from "./types";
 const transferConfig = {
   tag: 0,
   params: parseAbiParameters("address to, uint256 amount"),
-} satisfies FFCAMutationConfig;
+} satisfies ResolvedFFCAMutationConfig;
 
 const debitConfig = {
   tag: 1,
   params: parseAbiParameters("bytes32 account, uint256 amount"),
-} satisfies FFCAMutationConfig;
+} satisfies ResolvedFFCAMutationConfig;
 
 const testSignature = {
   accountId:
@@ -79,7 +79,7 @@ test("insertMutation inserts a mutation row", async () => {
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Debit: debitConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
 
   const mutation = {
@@ -128,7 +128,7 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
 
   const mutation = {
@@ -197,7 +197,7 @@ test("selectNextMutationId resumes after the max id across mutation tables", asy
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Debit: debitConfig, Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
 
   await TEST_DB_CONNECTION`
@@ -222,7 +222,7 @@ test("insertSlotWrites records raw slot writes", async () => {
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
 
   await runWithDatabase(
@@ -275,7 +275,7 @@ test("selectAccountStorage replays latest slot writes", async () => {
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
   const slot =
     "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -321,7 +321,7 @@ test("selectAccountStorage uses slot writes after redeploy migration cleanup", a
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   const chainId = 31341;
   const address =
     "0x000000000000000000000000000000000000ffca" as Address.Address;
@@ -368,7 +368,7 @@ test("insertKnownPaths upserts known paths", async () => {
   const schema = createMutationSchema({
     signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
-  } satisfies Pick<FFCAConfig, "signature" | "mutations">);
+  });
   await applyGeneratedMigration(schema);
 
   const paths = await runWithDatabase(

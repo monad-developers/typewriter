@@ -3,16 +3,15 @@ import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import { getAbiItem, toEventSelector } from "viem";
 import type {
-  FFCAConfig,
   MutationsConfig,
   SequencingConfig,
   SignatureConfig,
   StorageConfig,
 } from "./config";
-import { buildInternalApp } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
-import { FFCA_ABI } from "./encoding";
+import type { FFCA_ABI } from "./encoding";
+import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
@@ -106,7 +105,7 @@ export function createFFCAEffect<
   const signatureConfig extends SignatureConfig,
   const sequencingConfig extends SequencingConfig,
 >(
-  config: FFCAConfig<sequencingConfig>,
+  app: InternalApp,
 ): Effect.Effect<
   RuntimeFFCAWithDomain<
     storageConfig,
@@ -121,11 +120,6 @@ export function createFFCAEffect<
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) validate the fixed FFCA entrypoints
 
-    const app = yield* Effect.try({
-      try: () => buildInternalApp(config),
-      catch: (cause) => cause,
-    });
-
     const rpcLayer = layerRpc.pipe(
       Layer.provide(Layer.succeed(RpcConfig)({ rpcUrls: app.rpcUrls })),
     );
@@ -135,7 +129,7 @@ export function createFFCAEffect<
     );
 
     const forceInclusionEvent = getAbiItem({
-      abi: FFCA_ABI,
+      abi: app.abi as typeof FFCA_ABI,
       name: "ForceInclusionQueued",
     });
 

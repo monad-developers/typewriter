@@ -11,13 +11,16 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_ABI,
   COUNTER_MUTATIONS,
   COUNTER_SIGNATURE_PARAMS,
   deployCounter,
   signCounter,
 } from "../test/utils";
-import { encodeMutationCalldata, encodeSignatureCalldata } from "./encoding";
+import {
+  encodeMutationCalldata,
+  encodeSignatureCalldata,
+  FFCA_ABI,
+} from "./encoding";
 import { layerRpcLive } from "./rpc";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
 
@@ -175,7 +178,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           account: TEST_WALLET_CLIENT.account!,
           chain: anvil,
           address: counterAddress,
-          abi: COUNTER_ABI,
+          abi: FFCA_ABI,
           functionName: "enqueue",
           args: [COUNTER_MUTATIONS.add.tag, mutationData, signatureData],
         }),

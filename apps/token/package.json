@@ -19,7 +19,6 @@
     "ox": "catalog:",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "storage-layout": "workspace:*",
     "superjson": "catalog:",
     "viem": "catalog:"
   },

@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
 import type { FFCAConfig, FFCAMutation } from "../src";
+import Harness from "./contracts/src/Harness.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
@@ -12,9 +13,8 @@ import {
   deployHarness,
   encodeHarnessSignature,
   HARNESS_DOMAIN,
-  HARNESS_MUTATIONS,
-  HARNESS_SIGNATURE_PARAMS,
-  HARNESS_STORAGE_LAYOUT,
+  type HARNESS_MUTATIONS,
+  type HARNESS_SIGNATURE_PARAMS,
   harnessAccountId,
   secp256k1PublicKey,
   signHarness,
@@ -112,14 +112,12 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   const { createFFCA } = await import("../src");
   const address = await deployHarness();
   const configMutations = {
-    initialize: HARNESS_MUTATIONS.initialize,
-    credit: HARNESS_MUTATIONS.credit,
-  } as const satisfies FFCAConfig["mutations"];
+    initialize: {},
+    credit: {},
+  } as const satisfies NonNullable<FFCAConfig["mutations"]>;
   const config = {
     address,
     domain: HARNESS_DOMAIN,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
-    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -134,11 +132,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     mutations: configMutations,
   } as const satisfies FFCAConfig;
 
-  const ffca = await createFFCA<
-    typeof HARNESS_STORAGE_LAYOUT,
-    typeof configMutations,
-    typeof HARNESS_SIGNATURE_PARAMS
-  >(config);
+  const ffca = await createFFCA(Harness, config);
 
   const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
@@ -156,7 +150,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
         keyType: 2,
         rawSignature: "0x",
       }),
-    }),
+    } as Parameters<typeof ffca.execute>[0]),
   );
 
   const mutations = Array.from({ length: MUTATION_COUNT }, (_, index) =>
@@ -174,7 +168,9 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   await withoutConsoleOutput(async () => {
     const promises = mutations.map(async (mutation, index) => {
       const mutationStart = performance.now();
-      await ffca.execute(mutation);
+      await ffca.execute(
+        mutation as unknown as Parameters<typeof ffca.execute>[0],
+      );
       mutationDurationsMs[index] = performance.now() - mutationStart;
     });
 

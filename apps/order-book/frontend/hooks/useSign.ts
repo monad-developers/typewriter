@@ -14,10 +14,7 @@ import { EIP712_TYPES, MAX_DEADLINE } from "../lib/eip712";
 const P256_N =
   0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
-type SignedMutation<name extends SubmittedOrderBookMutation["name"]> = Extract<
-  SubmittedOrderBookMutation,
-  { name: name }
->;
+type SignedMutation<name extends string> = SubmittedOrderBookMutation<name>;
 
 async function signP256(sessionKey: CryptoKeyPair, hash: Hex): Promise<Hex> {
   const sig = await crypto.subtle.sign(

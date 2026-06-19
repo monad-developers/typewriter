@@ -1,14 +1,11 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import { createFFCA } from "ffca";
-import {
-  ALL_PERMISSIONS,
-  EIP712_TYPES,
-  EXCHANGE_STORAGE_LAYOUT,
-} from "order-book-sdk";
+import { ALL_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
+import Exchange from "../contracts/src/Exchange.sol";
 import {
   deployExchange,
   MAKER_ACCOUNT,
@@ -22,7 +19,6 @@ import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
   ORDER_BOOK_MUTATIONS,
-  ORDER_BOOK_SIGNATURE_PARAMS,
   type SubmittedOrderBookMutation,
 } from "./app";
 import {
@@ -42,15 +38,9 @@ async function createOrderBookFFCA(
   address: Hex,
   options: { submitIntervalMs?: number } = {},
 ) {
-  return createFFCA<
-    typeof EXCHANGE_STORAGE_LAYOUT,
-    typeof ORDER_BOOK_MUTATIONS,
-    typeof ORDER_BOOK_SIGNATURE_PARAMS
-  >({
+  return (await createFFCA(Exchange, {
     address,
     domain: { name: "Exchange", version: "1" },
-    signature: { params: ORDER_BOOK_SIGNATURE_PARAMS },
-    storageLayout: EXCHANGE_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -61,7 +51,8 @@ async function createOrderBookFFCA(
       submitIntervalMs: options.submitIntervalMs ?? 60_000,
     },
     mutations: ORDER_BOOK_MUTATIONS,
-  });
+    // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
+  })) as any;
 }
 
 function secp256k1PublicKey(address: Address): Hex {
@@ -155,12 +146,12 @@ function messageFor(name: string, params: Record<string, unknown>) {
 
 async function signedMutation<const name extends string>(input: {
   name: name;
-  params: Extract<SubmittedOrderBookMutation, { name: name }>["params"];
+  params: SubmittedOrderBookMutation<name>["params"];
   signerKeyId: bigint;
   privateKey: Hex;
   address: Address;
   account: Hex;
-}): Promise<Extract<SubmittedOrderBookMutation, { name: name }>> {
+}): Promise<SubmittedOrderBookMutation<name>> {
   const rawSignature =
     input.name === "Initialize"
       ? "0x"
@@ -189,7 +180,7 @@ async function signedMutation<const name extends string>(input: {
       keyId: input.signerKeyId,
       rawSignature,
     },
-  } as Extract<SubmittedOrderBookMutation, { name: name }>;
+  };
 }
 
 async function setupAccount(params: {

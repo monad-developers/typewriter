@@ -3,17 +3,16 @@ import type { StorageProxy } from "storage-layout";
 import type { Hex } from "viem";
 import {
   COUNTER_MUTATIONS,
-  COUNTER_SIGNATURE_PARAMS,
-  COUNTER_STORAGE_LAYOUT,
-  EMPTY_STORAGE_LAYOUT,
+  type COUNTER_SIGNATURE_PARAMS,
+  type EMPTY_STORAGE_LAYOUT,
   HARNESS_MUTATIONS,
-  HARNESS_SIGNATURE_PARAMS,
-  HARNESS_STORAGE_LAYOUT,
+  type HARNESS_SIGNATURE_PARAMS,
 } from "../test/utils";
 import type {
   AbiParametersToValue,
   FFCAConfig,
   MutationsConfig,
+  ResolvedFFCAMutationConfig,
   SequencingConfig,
   SignatureConfig,
   StorageConfig,
@@ -25,10 +24,7 @@ function createFFCATest<
   mutationsConfig extends MutationsConfig = MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
->(
-  config: FFCAConfig<sequencingConfig>,
-): FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig> {
-  void config;
+>(): FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig> {
   return {
     state: {},
     schema: {},
@@ -43,76 +39,60 @@ function createFFCATest<
   >;
 }
 
-type CounterStorageConfig = typeof COUNTER_STORAGE_LAYOUT;
+type TestStorageConfig = typeof EMPTY_STORAGE_LAYOUT;
 type CounterMutationsConfig = typeof COUNTER_MUTATIONS;
 type CounterSignatureConfig = typeof COUNTER_SIGNATURE_PARAMS;
-type HarnessStorageConfig = typeof HARNESS_STORAGE_LAYOUT;
 type HarnessMutationsConfig = typeof HARNESS_MUTATIONS;
 type HarnessSignatureConfig = typeof HARNESS_SIGNATURE_PARAMS;
 
-const baseConfig = {
+const publicConfig = {
   address: "0x0000000000000000000000000000000000000000",
-  signature: { params: COUNTER_SIGNATURE_PARAMS },
   // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
   account: {} as any,
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
-  storageLayout: EMPTY_STORAGE_LAYOUT,
   domain: { name: "", version: "1" },
-} as const;
-
-const counterConfig = {
-  ...baseConfig,
-  storageLayout: COUNTER_STORAGE_LAYOUT,
-  signature: { params: COUNTER_SIGNATURE_PARAMS },
-  mutations: COUNTER_MUTATIONS,
 } as const satisfies FFCAConfig;
 
-const harnessConfig = {
-  ...baseConfig,
-  storageLayout: HARNESS_STORAGE_LAYOUT,
-  signature: { params: HARNESS_SIGNATURE_PARAMS },
-  mutations: HARNESS_MUTATIONS,
-} as const satisfies FFCAConfig;
-
-test("FFCAConfig accepts Counter config", () => {
-  createFFCATest<
-    CounterStorageConfig,
-    CounterMutationsConfig,
-    CounterSignatureConfig
-  >({
-    ...counterConfig,
-    confirmations: { safeBlockDepth: 2, finalizedBlockDepth: 8 },
-  });
+test("FFCAConfig accepts app-owned runtime config only", () => {
+  void publicConfig;
 });
 
-test("FFCAConfig accepts Harness config", () => {
-  createFFCATest<
-    HarnessStorageConfig,
-    HarnessMutationsConfig,
-    HarnessSignatureConfig
-  >(harnessConfig);
+test("ResolvedFFCAMutationConfig accepts Counter mutation definitions", () => {
+  const mutations = COUNTER_MUTATIONS satisfies Record<
+    string,
+    ResolvedFFCAMutationConfig
+  >;
+  void mutations;
 });
 
-test("FFCA state is typed from manually supplied Counter storage config", () => {
+test("ResolvedFFCAMutationConfig accepts Harness mutation definitions", () => {
+  const mutations = HARNESS_MUTATIONS satisfies Record<
+    string,
+    ResolvedFFCAMutationConfig
+  >;
+  void mutations;
+});
+
+test("FFCA state is typed from supplied storage config", () => {
   const app = createFFCATest<
-    CounterStorageConfig,
+    TestStorageConfig,
     CounterMutationsConfig,
     CounterSignatureConfig
-  >(counterConfig);
+  >();
 
   expectTypeOf(app.state).toEqualTypeOf<
-    StorageProxy<CounterStorageConfig, true>
+    StorageProxy<TestStorageConfig, true>
   >();
 });
 
 test("FFCA execute input uses manually supplied Counter mutation and signature configs", () => {
   const app = createFFCATest<
-    CounterStorageConfig,
+    TestStorageConfig,
     CounterMutationsConfig,
     CounterSignatureConfig
-  >(counterConfig);
+  >();
 
   type Input = Parameters<typeof app.execute>[0];
 
@@ -165,10 +145,10 @@ test("FFCA execute input uses manually supplied Counter mutation and signature c
 
 test("FFCA execute input uses manually supplied Harness mutation and signature configs", () => {
   const app = createFFCATest<
-    HarnessStorageConfig,
+    TestStorageConfig,
     HarnessMutationsConfig,
     HarnessSignatureConfig
-  >(harnessConfig);
+  >();
 
   type Input = Parameters<typeof app.execute>[0];
 
@@ -210,20 +190,17 @@ test("FFCA execute input uses manually supplied Harness mutation and signature c
   });
 });
 
-test("FFCA sequencing type is still inferred from config", () => {
+test("FFCA sequencing type is represented in the app type", () => {
   const app = createFFCATest<
-    CounterStorageConfig,
+    TestStorageConfig,
     CounterMutationsConfig,
     CounterSignatureConfig,
     "batch"
-  >({
-    ...counterConfig,
-    sequencing: { order: "batch", batchOrder: ["add"] },
-  });
+  >();
 
   expectTypeOf(app).toEqualTypeOf<
     FFCA<
-      CounterStorageConfig,
+      TestStorageConfig,
       CounterMutationsConfig,
       CounterSignatureConfig,
       "batch"
