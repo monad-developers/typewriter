@@ -12,7 +12,7 @@ export { getStorageVariable } from "./getStorageVariable";
 export {
   type KeccakPreimage,
   recoverStoragePaths,
-} from "./recover-storage-paths";
+} from "./recoverStoragePaths";
 export type {
   StorageSlotDiff,
   StorageSlotWriteDiff,
