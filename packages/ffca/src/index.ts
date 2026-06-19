@@ -47,11 +47,7 @@ export type FFCA<
   ): () => void;
 };
 
-export type {
-  FFCAConfig,
-  FFCAMutationConfig,
-  ResolvedFFCAMutationConfig,
-} from "./config";
+export type { FFCAConfig, ResolvedFFCAMutationConfig } from "./config";
 export type {
   FFCAMutationSchema,
   FFCASchema,

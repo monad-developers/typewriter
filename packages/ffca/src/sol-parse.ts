@@ -561,39 +561,17 @@ function lowerFirst(value: string): string {
   return `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`;
 }
 
-function selectMutationName(
-  mutation: ParsedMutation,
-  configuredNames: ReadonlySet<string>,
-): string {
-  if (configuredNames.has(mutation.enumName)) return mutation.enumName;
-  const lower = lowerFirst(mutation.enumName);
-  if (configuredNames.has(lower)) return lower;
-  return mutation.enumName;
-}
-
 function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
   baseConfig: FFCAConfig<sequencingConfig>,
   metadata: ParsedSolidityMetadata,
 ): InternalApp {
-  const configuredMutations = baseConfig.mutations ?? {};
-  const configuredNames = new Set(Object.keys(configuredMutations));
   const mutations: Record<string, ResolvedFFCAMutationConfig> = {};
 
   for (const mutation of metadata.mutations) {
-    const name = selectMutationName(mutation, configuredNames);
-    const hookConfig = configuredMutations[name];
-    mutations[name] = {
+    mutations[lowerFirst(mutation.enumName)] = {
       tag: mutation.tag,
       params: mutation.params,
-      registerMappingKeys: hookConfig?.registerMappingKeys,
     };
-    configuredNames.delete(name);
-  }
-
-  if (configuredNames.size > 0) {
-    throw new Error(
-      `unknown mutation hook config: ${[...configuredNames].join(", ")}`,
-    );
   }
 
   return buildInternalApp({

@@ -111,10 +111,6 @@ async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
 test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
   const { createFFCA } = await import("../src");
   const address = await deployHarness();
-  const configMutations = {
-    initialize: {},
-    credit: {},
-  } as const satisfies NonNullable<FFCAConfig["mutations"]>;
   const config = {
     address,
     domain: HARNESS_DOMAIN,
@@ -129,7 +125,6 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-    mutations: configMutations,
   } as const satisfies FFCAConfig;
 
   const ffca = await createFFCA(Harness, config);

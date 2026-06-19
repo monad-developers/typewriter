@@ -7,10 +7,6 @@ import type { FFCASchema } from "./schema";
 export type InternalMutation = {
   tag: number;
   params: readonly AbiParameter[];
-  registerMappingKeys?: (params: {
-    params: unknown;
-    signature: unknown;
-  }) => readonly string[] | Promise<readonly string[]>;
 };
 
 type InternalConfirmations = {

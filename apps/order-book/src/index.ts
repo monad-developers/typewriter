@@ -9,7 +9,6 @@ import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
-  ORDER_BOOK_MUTATIONS,
   type OrderBookSignature,
 } from "./app";
 import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
@@ -28,7 +27,7 @@ if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
-const app = (await createFFCA(Exchange, {
+const app = await createFFCA(Exchange, {
   address: EXCHANGE_ADDRESS,
   domain: { name: "Exchange", version: "1" },
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
@@ -39,9 +38,7 @@ const app = (await createFFCA(Exchange, {
     order: "batch",
     batchOrder: ORDER_BOOK_BATCH_ORDER,
   },
-  mutations: ORDER_BOOK_MUTATIONS,
-  // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
-})) as any;
+});
 
 const readerDb = drizzle({
   client: new Bun.SQL({

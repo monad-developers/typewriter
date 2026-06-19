@@ -68,7 +68,6 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
     sequencing: { order: "fifo", submitIntervalMs: 3_600_000 },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-    mutations: { newAccount: {}, add: {} },
   } as const satisfies FFCAConfig;
 
   const ffca = await createFFCA(Counter, config);

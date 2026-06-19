@@ -137,7 +137,6 @@ test("createRuntimeBatchEffect", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -175,7 +174,6 @@ test("runtime loads persisted slot state before returning", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -236,7 +234,6 @@ test("execute() returns an accepted mutation", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -298,7 +295,6 @@ test("execute() accepts multiple mutations in a batch", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -375,7 +371,6 @@ test("runtime emits mutation, batch, and block events", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -555,7 +550,6 @@ test("runtime persists mutations to database", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -694,7 +688,6 @@ test("runtime submits a mutation onchain", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -759,7 +752,6 @@ test("runtime finalizes a mutation", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -825,13 +817,6 @@ test("runtime reorders Harness mutations by batch order", async () => {
       batchOrder: ["initialize", "credit", "debit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: {
-      initialize: {},
-      authorize: {},
-      credit: {},
-      debit: {},
-      assert: {},
-    },
   });
 
   const schema = app.schema;
@@ -919,13 +904,6 @@ test("fifo runtime preserves submission order without batch reordering", async (
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "fifo", submitIntervalMs: 3_600_000 },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: {
-      initialize: {},
-      authorize: {},
-      credit: {},
-      debit: {},
-      assert: {},
-    },
   });
 
   const schema = app.schema;
@@ -1034,13 +1012,6 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["initialize", "debit"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: {
-      initialize: {},
-      authorize: {},
-      credit: {},
-      debit: {},
-      assert: {},
-    },
   });
 
   const schema = app.schema;
@@ -1112,13 +1083,6 @@ test("runtime handles Harness account management with multiple signature types",
       batchOrder: ["initialize", "authorize", "credit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: {
-      initialize: {},
-      authorize: {},
-      credit: {},
-      debit: {},
-      assert: {},
-    },
   });
 
   const schema = app.schema;
@@ -1261,7 +1225,6 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
   const { add: addMutation } = app.mutations;
   if (addMutation === undefined) {
@@ -1356,7 +1319,6 @@ test("runtime handles failing mutation", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;
@@ -1415,7 +1377,6 @@ test("runtime program handles interrupt", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "batch", batchOrder: ["add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
-    mutations: { newAccount: {}, add: {} },
   });
 
   const schema = app.schema;

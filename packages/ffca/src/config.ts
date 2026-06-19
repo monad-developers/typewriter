@@ -1,6 +1,6 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { Address } from "ox";
-import type { ConcreteStorageVariable, StorageLayout } from "storage-layout";
+import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { InternalApp } from "./internal";
@@ -30,45 +30,8 @@ export type AbiParametersToValue<params extends readonly AbiParameter[]> =
         AbiParametersToValue<tail>
     : object;
 
-export type RegisterMappingKeys<
-  storageConfig extends StorageConfig,
-  mutationConfig extends MutationConfig,
-  signatureConfig extends SignatureConfig,
-  ///
-  storageVariables = ConcreteStorageVariable<storageConfig>,
-> = (params: {
-  params: AbiParametersToValue<mutationConfig["params"]>;
-  signature: SignatureValue<signatureConfig>;
-}) => readonly storageVariables[] | Promise<readonly storageVariables[]>;
-
-type SignatureValue<signatureConfig extends SignatureConfig> =
-  readonly AbiParameter[] extends signatureConfig
-    ? unknown
-    : AbiParametersToValue<signatureConfig>;
-
-export type FFCAMutationConfig<
-  storageConfig extends StorageConfig = StorageConfig,
-  mutationConfig extends MutationConfig = MutationConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
-> = {
-  registerMappingKeys?: RegisterMappingKeys<
-    storageConfig,
-    mutationConfig,
-    signatureConfig
-  >;
-};
-
-export type ResolvedFFCAMutationConfig<
-  storageConfig extends StorageConfig = StorageConfig,
-  mutationConfig extends MutationConfig = MutationConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
-> = mutationConfig & {
+export type ResolvedFFCAMutationConfig = MutationConfig & {
   tag: number;
-  registerMappingKeys?: RegisterMappingKeys<
-    storageConfig,
-    mutationConfig,
-    signatureConfig
-  >;
 };
 
 export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
@@ -92,7 +55,6 @@ export type FFCAConfig<
   chainId: number;
   rpcUrl: string | string[];
   database: DatabaseOptions;
-  mutations?: { [name: string]: FFCAMutationConfig };
   blockPollingIntervalMs?: number;
   confirmations?: {
     safeBlockDepth?: number;

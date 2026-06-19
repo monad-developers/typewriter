@@ -14,7 +14,6 @@ test("ffca.domain is derived from config", async () => {
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 2 },
     domain: { name: "my-app", version: "2" },
-    mutations: { newAccount: {}, add: {} },
   });
 
   try {

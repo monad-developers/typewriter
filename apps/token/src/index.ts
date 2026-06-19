@@ -4,7 +4,7 @@ import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 import index from "../frontend/index.html";
-import { type MintParams, TOKEN_DOMAIN, type TransferParams } from "./app";
+import { TOKEN_DOMAIN } from "./app";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -26,7 +26,7 @@ const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
 const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
 const mutations = new Map<number, MutationEvent>();
 
-const ffca = (await createFFCA(Token, {
+const ffca = await createFFCA(Token, {
   address: tokenAddress,
   account: scheduler,
   chainId,
@@ -34,26 +34,7 @@ const ffca = (await createFFCA(Token, {
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   domain: TOKEN_DOMAIN,
   sequencing: { order: "fifo" },
-  mutations: {
-    Transfer: {
-      registerMappingKeys: ({ params }: { params: unknown }) => {
-        const transfer = params as TransferParams;
-        return [
-          `accounts[${transfer.from}].nonce`,
-          `accounts[${transfer.from}].balance`,
-          `accounts[${transfer.to}].balance`,
-        ];
-      },
-    },
-    Mint: {
-      registerMappingKeys: ({ params }: { params: unknown }) => {
-        const mint = params as MintParams;
-        return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
-      },
-    },
-  },
-  // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
-})) as any;
+});
 
 ffca.on("mutation", (mutation: MutationEvent) => {
   mutations.set(mutation.id, mutation);

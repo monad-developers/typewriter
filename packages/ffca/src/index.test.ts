@@ -146,7 +146,6 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
     onFatalError: (error) => {
       fatalErrors.push(error);
     },
-    mutations: { newAccount: {}, add: {} },
   } as const satisfies FFCAConfig;
 
   const ffca = await createFFCA(Counter, config);
@@ -243,7 +242,6 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 50,
     onFatalError: fatalError.resolve,
-    mutations: { newAccount: {}, add: {} },
   } as const satisfies FFCAConfig;
 
   const ffca = await createFFCA(Counter, config);

@@ -18,7 +18,6 @@ import {
 import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
-  ORDER_BOOK_MUTATIONS,
   type SubmittedOrderBookMutation,
 } from "./app";
 import {
@@ -50,7 +49,6 @@ async function createOrderBookFFCA(
       batchOrder: ORDER_BOOK_BATCH_ORDER,
       submitIntervalMs: options.submitIntervalMs ?? 60_000,
     },
-    mutations: ORDER_BOOK_MUTATIONS,
     // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
   })) as any;
 }

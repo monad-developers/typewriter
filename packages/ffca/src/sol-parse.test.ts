@@ -510,10 +510,6 @@ test("createFFCA accepts an imported Solidity entrypoint", async () => {
       batchIntervalMs: 50,
       submitIntervalMs: 25,
     },
-    mutations: {
-      newAccount: {},
-      add: {},
-    },
   } satisfies FFCAConfig<"batch">);
 
   try {

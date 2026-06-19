@@ -10,13 +10,7 @@ import {
   TEST_RPC_URL,
   USER_ACCOUNT,
 } from "../test/setup";
-import {
-  type MintParams,
-  signMint,
-  signTransfer,
-  TOKEN_DOMAIN,
-  type TransferParams,
-} from "./app";
+import { signMint, signTransfer, TOKEN_DOMAIN } from "./app";
 
 test("smoke: FIFO token mint and transfer settle onchain", async () => {
   const { address } = await deployToken();
@@ -28,24 +22,6 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     database: { url: TEST_DB_URL, maxConnections: 4 },
     domain: TOKEN_DOMAIN,
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
-    mutations: {
-      Transfer: {
-        registerMappingKeys: ({ params }: { params: unknown }) => {
-          const transfer = params as TransferParams;
-          return [
-            `accounts[${transfer.from}].nonce`,
-            `accounts[${transfer.from}].balance`,
-            `accounts[${transfer.to}].balance`,
-          ];
-        },
-      },
-      Mint: {
-        registerMappingKeys: ({ params }: { params: unknown }) => {
-          const mint = params as MintParams;
-          return [`accounts[${mint.to}].nonce`, `accounts[${mint.to}].balance`];
-        },
-      },
-    },
   } as const;
   // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
   const ffca = (await createFFCA(Token, config)) as any;
