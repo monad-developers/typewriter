@@ -53,6 +53,7 @@ export type ExecuteResult = {
     prev_value: Hex.Hex;
     new_value: Hex.Hex;
   }[];
+  keccak_preimages: { hash: Hex.Hex; preimage: Hex.Hex }[];
   revert_data?: Hex.Hex;
 };
 

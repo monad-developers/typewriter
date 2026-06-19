@@ -9,6 +9,10 @@ export { encodeStorageDiff } from "./encodeStorageDiff";
 export { encodeStorageVariable } from "./encodeStorageVariable";
 export { getStorageSlot } from "./getStorageSlot";
 export { getStorageVariable } from "./getStorageVariable";
+export {
+  type KeccakPreimage,
+  recoverStoragePaths,
+} from "./recoverStoragePaths";
 export type {
   StorageSlotDiff,
   StorageSlotWriteDiff,

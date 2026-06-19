@@ -32,8 +32,8 @@
 
 import { Hash, type Hex } from "ox";
 import { decodeStorageVariable } from "./decodeStorageVariable";
+import { fixedArrayLength, isValueType } from "./solidity-encoding";
 import {
-  fixedArrayLength,
   resolveStoragePath,
   type StorageItem,
   type StorageLayout,
@@ -408,17 +408,6 @@ function findType(layout: StorageLayout, typeId: string): StorageType {
 
 function isLeafType(type: StorageType): boolean {
   return isValueType(type) || isBytesType(type);
-}
-
-function isValueType(type: StorageType): boolean {
-  if (type.encoding !== "inplace" || type.members !== undefined) return false;
-  return (
-    /^u?int[0-9]*$/.test(type.label) ||
-    type.label === "address" ||
-    type.label === "bool" ||
-    /^bytes([1-9]|[12][0-9]|3[0-2])$/.test(type.label) ||
-    type.label.startsWith("enum ")
-  );
 }
 
 function isBytesType(type: StorageType): boolean {

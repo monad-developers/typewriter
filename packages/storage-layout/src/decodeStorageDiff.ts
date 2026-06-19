@@ -1,9 +1,9 @@
 import { Hash, Hex } from "ox";
 import { decodeStorageVariable } from "./decodeStorageVariable";
+import { fixedArrayLength } from "./solidity-encoding";
 import type { StorageSlotDiff, StorageVariableDiff } from "./storage-diff";
 import {
   findStorageType,
-  fixedArrayLength,
   resolveStoragePath,
   type StorageLayout,
   type StorageType,

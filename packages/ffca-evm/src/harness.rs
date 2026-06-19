@@ -28,10 +28,15 @@ use revm::{
         JournalTr,
     },
     database::InMemoryDB,
-    inspector::JournalExt,
+    inspector::{InspectEvm, JournalExt},
+    interpreter::{
+        interpreter::EthInterpreter,
+        interpreter_types::{Jumps, MemoryTr},
+        Interpreter,
+    },
     primitives::{Address, Bytes, TxKind, B256, U256},
     state::{AccountInfo, Bytecode},
-    DatabaseRef, ExecuteCommitEvm, ExecuteEvm,
+    DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
 use serde::{Deserialize, Serialize};
 
@@ -148,6 +153,7 @@ struct ExecuteOk {
     output: String,
     access_list: Vec<AccessListEntry>,
     slot_writes: Vec<SlotWriteEntry>,
+    keccak_preimages: Vec<KeccakPreimageEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
     #[serde(skip_serializing)]
@@ -169,12 +175,90 @@ struct SlotWriteEntry {
     new_value: String,
 }
 
+#[derive(Serialize)]
+struct KeccakPreimageEntry {
+    hash: String,
+    preimage: String,
+}
+
 // -----------------------------------------------------------------------------
 // Harness
 
 type Evm = monad_revm::api::builder::DefaultMonadEvm<
     monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
+    MappingRecoveryInspector,
 >;
+
+#[derive(Default)]
+struct MappingRecoveryInspector {
+    keccak_preimages: Vec<RawKeccakPreimage>,
+}
+
+struct RawKeccakPreimage {
+    hash: B256,
+    preimage: Vec<u8>,
+}
+
+impl MappingRecoveryInspector {
+    fn clear(&mut self) {
+        self.keccak_preimages.clear();
+    }
+
+    fn wire_preimages(&self) -> Vec<KeccakPreimageEntry> {
+        self.keccak_preimages
+            .iter()
+            .map(|entry| KeccakPreimageEntry {
+                hash: format!("0x{}", hex::encode(entry.hash.as_slice())),
+                preimage: format!("0x{}", hex::encode(&entry.preimage)),
+            })
+            .collect()
+    }
+}
+
+impl Inspector<monad_revm::api::default_ctx::MonadContext<InMemoryDB>>
+    for MappingRecoveryInspector
+{
+    fn step(
+        &mut self,
+        interp: &mut Interpreter<EthInterpreter>,
+        _context: &mut monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
+    ) {
+        if interp.bytecode.opcode() != 0x20 {
+            return;
+        }
+
+        let stack = interp.stack.data();
+        if stack.len() < 2 {
+            return;
+        }
+        let offset = stack[stack.len() - 1];
+        let len = stack[stack.len() - 2];
+        if len != U256::from(32) && len != U256::from(64) {
+            return;
+        }
+
+        let offset = match usize::try_from(offset) {
+            Ok(offset) => offset,
+            Err(_) => return,
+        };
+        let len = usize::try_from(len).expect("len checked above");
+        let Some(end) = offset.checked_add(len) else {
+            return;
+        };
+
+        let mut preimage = vec![0; len];
+        let memory_size = interp.memory.size();
+        if offset < memory_size {
+            let copied = memory_size.min(end) - offset;
+            preimage[..copied].copy_from_slice(&interp.memory.slice_len(offset, copied));
+        }
+
+        self.keccak_preimages.push(RawKeccakPreimage {
+            hash: revm::primitives::keccak256(&preimage),
+            preimage,
+        });
+    }
+}
 
 // Per-journal pre/post-image record. revm 34's `transact_one` clears its
 // internal journal log on success, so cross-tx isolation has to live in
@@ -199,7 +283,7 @@ impl EvmHarness {
     pub fn new() -> Self {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
-        let evm = ctx.build_monad();
+        let evm = ctx.build_monad_with_inspector(MappingRecoveryInspector::default());
         Self {
             evm,
             journals: HashMap::new(),
@@ -469,11 +553,13 @@ impl EvmHarness {
             Some(access_list) => access_list,
             None => {
                 // Pass 1 — discover the access list from touched accounts/slots.
+                self.evm.0.inspector.clear();
                 let _ = self
                     .evm
-                    .transact_one(build_tx(AccessList::default(), u64::MAX))
+                    .inspect_one_tx(build_tx(AccessList::default(), u64::MAX))
                     .map_err(|e| format!("transact (pass 1): {e:?}"))?;
                 let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
+                self.evm.0.inspector.clear();
                 // Drain pass 1's journal state without committing it.
                 let _ = self.evm.finalize();
 
@@ -497,22 +583,25 @@ impl EvmHarness {
 
         // Measure with pre-warmed access list.
 
+        self.evm.0.inspector.clear();
         let mut result = self
             .evm
-            .transact_one(build_tx(tx_access_list.clone(), u64::MAX))
+            .inspect_one_tx(build_tx(tx_access_list.clone(), u64::MAX))
             .map_err(|e| format!("transact (pass 2): {e:?}"))?;
 
         let gas_limit = match &result {
             ExecutionResult::Success { gas_used, .. } => {
+                self.evm.0.inspector.clear();
                 let _ = self.evm.finalize();
                 let gas_limit =
                     self.estimate_gas_limit(params, tx_access_list.clone(), *gas_used)?;
 
                 // The estimate attempts finalize their own state, so rerun the
                 // successful pass and leave its journal state live for execute().
+                self.evm.0.inspector.clear();
                 result = self
                     .evm
-                    .transact_one(build_tx(tx_access_list.clone(), gas_limit))
+                    .inspect_one_tx(build_tx(tx_access_list.clone(), gas_limit))
                     .map_err(|e| format!("transact (final pass): {e:?}"))?;
                 gas_limit
             }
@@ -545,6 +634,7 @@ impl EvmHarness {
         };
 
         let access_list_wire = encode_access_list(&tx_access_list);
+        let keccak_preimages = self.evm.0.inspector.wire_preimages();
 
         Ok(ExecuteOk {
             success,
@@ -554,6 +644,7 @@ impl EvmHarness {
             output,
             access_list: access_list_wire,
             slot_writes: Vec::new(),
+            keccak_preimages,
             revert_data,
             tx_access_list,
         })
@@ -642,12 +733,14 @@ impl EvmHarness {
             .access_list(access_list)
             .build_fill();
 
+        self.evm.0.inspector.clear();
         let result = self
             .evm
-            .transact_one(tx)
+            .inspect_one_tx(tx)
             .map_err(|e| format!("transact (estimate): {e:?}"))?;
         let success = matches!(result, ExecutionResult::Success { .. });
         let _ = self.evm.finalize();
+        self.evm.0.inspector.clear();
         Ok(success)
     }
 }

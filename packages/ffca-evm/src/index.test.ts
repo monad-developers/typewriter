@@ -13,6 +13,7 @@ const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 
 import { expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
+import { Hex } from "ox";
 import { createStorageProxy } from "storage-layout";
 import { TEST_PUBLIC_CLIENT } from "../test/setup";
 import {
@@ -480,6 +481,39 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
       "success": true,
     }
   `);
+});
+
+test("execute reports mapping keccak preimages for touched slots", async () => {
+  const artifact = await loadTestToken();
+  const { params, schedulerBalanceSlot } = tokenInit(artifact);
+  const userBalanceSlot = mappingSlot(USER_ADDR, BALANCE_OF_SLOT);
+
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(params);
+    return yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: TOKEN_ADDR,
+      data: transferData(USER_ADDR, TRANSFER_AMOUNT),
+    });
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+
+  expect(exec.keccak_preimages).toContainEqual({
+    hash: schedulerBalanceSlot,
+    preimage: Hex.concat(
+      Hex.padLeft(SCHEDULER_ADDR, 32),
+      Hex.fromNumber(BALANCE_OF_SLOT, { size: 32 }),
+    ).toLowerCase() as Hex.Hex,
+  });
+  expect(exec.keccak_preimages).toContainEqual({
+    hash: userBalanceSlot,
+    preimage: Hex.concat(
+      Hex.padLeft(USER_ADDR, 32),
+      Hex.fromNumber(BALANCE_OF_SLOT, { size: 32 }),
+    ).toLowerCase() as Hex.Hex,
+  });
 });
 
 test("readStorage decodes committed token state through storage proxy", async () => {
