@@ -6,6 +6,7 @@ import Counter from "../test/contracts/src/Counter.sol";
 import Harness from "../test/contracts/src/Harness.sol";
 import InvalidEntrypoint from "../test/contracts/src/InvalidEntrypoint.sol";
 import MultipleEntrypoints from "../test/contracts/src/MultipleEntrypoints.sol";
+import NestedParam from "../test/contracts/src/NestedParam.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
@@ -505,6 +506,31 @@ test("parseSolidityMetadata errors when the entrypoint file does not exist", asy
   await expect(
     parseSolidityMetadata("/tmp/does-not-exist/Missing.sol" as typeof Counter),
   ).rejects.toThrow("FFCA entrypoint file does not exist");
+});
+
+// Known limitation: mutation params are restricted to elementary types, enums,
+// and arrays of those. A struct member that is itself a struct currently throws
+// `unsupported Solidity type` instead of being parsed into a tuple ABI param.
+// This test documents the desired behavior and is expected to fail until nested
+// struct params are supported; once they are, `test.failing` flags it so it can
+// be promoted to a regular `test`.
+test.failing("parseSolidityMetadata parses nested struct mutation params as tuples", async () => {
+  const metadata = await parseSolidityMetadata(NestedParam);
+  const update = metadata.mutations.find(
+    (mutation) => mutation.enumName === "Update",
+  );
+
+  expect(update?.params).toEqual([
+    {
+      name: "inner",
+      type: "tuple",
+      components: [
+        { name: "a", type: "uint256" },
+        { name: "b", type: "uint256" },
+      ],
+    },
+    { name: "nonce", type: "uint256" },
+  ]);
 });
 
 test("createFFCA accepts an imported Solidity entrypoint", async () => {
