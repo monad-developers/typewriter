@@ -1,3 +1,4 @@
+import { $ } from "bun";
 import {
   fromLots,
   INSTRUMENTS,
@@ -45,10 +46,14 @@ enum MutationType {
 }
 
 const publicClient = createPublicClient({ transport: http(RPC_URL) });
-const exchangeArtifactPath = Exchange.replace(
-  /src\/Exchange\.sol$/,
-  "out/Exchange.sol/Exchange.json",
-);
+
+// `Exchange` resolves to the absolute path of `contracts/src/Exchange.sol`.
+// Build the project first so the artifact reflects the current source and
+// exists, then read its ABI; without this the read throws an opaque JSON error
+// when the project hasn't been compiled.
+const contractsRoot = Exchange.replace(/\/src\/Exchange\.sol$/, "");
+await $`forge build`.cwd(contractsRoot).quiet();
+const exchangeArtifactPath = `${contractsRoot}/out/Exchange.sol/Exchange.json`;
 const exchangeArtifact = (await Bun.file(exchangeArtifactPath).json()) as {
   abi: Abi;
 };
