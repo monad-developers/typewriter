@@ -495,6 +495,18 @@ test("parseSolidityMetadata errors when multiple contracts inherit FFCA", async 
   );
 });
 
+test("parseSolidityMetadata errors when the entrypoint is not a string", async () => {
+  await expect(
+    parseSolidityMetadata(42 as unknown as typeof Counter),
+  ).rejects.toThrow("FFCA entrypoint must be a Solidity file path string");
+});
+
+test("parseSolidityMetadata errors when the entrypoint file does not exist", async () => {
+  await expect(
+    parseSolidityMetadata("/tmp/does-not-exist/Missing.sol" as typeof Counter),
+  ).rejects.toThrow("FFCA entrypoint file does not exist");
+});
+
 test("createFFCA accepts an imported Solidity entrypoint", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const ffca = await createFFCA(Counter, {

@@ -609,9 +609,29 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
   });
 }
 
-export async function parseSolidityMetadata(
+async function requireEntrypointPath(
   entrypoint: FFCASolidityEntrypoint,
+): Promise<string> {
+  // `entrypoint` is typed as a string, but apps reach this with `as any` casts
+  // around the Solidity import, so the type guarantee can be gone at runtime.
+  const value = entrypoint as unknown;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(
+      "FFCA entrypoint must be a Solidity file path string; import the contract's .sol file and pass it as the first argument",
+    );
+  }
+  if (!(await fileExists(value))) {
+    throw new Error(
+      `FFCA entrypoint file does not exist: ${displayPath(value)}`,
+    );
+  }
+  return value;
+}
+
+export async function parseSolidityMetadata(
+  rawEntrypoint: FFCASolidityEntrypoint,
 ): Promise<ParsedSolidityMetadata> {
+  const entrypoint = await requireEntrypointPath(rawEntrypoint);
   const project = await findFoundryProject(entrypoint);
   await buildFoundryProject(project);
   const entrypointAst = await readEntrypointAst(project, entrypoint);
