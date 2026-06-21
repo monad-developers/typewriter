@@ -126,14 +126,40 @@ async function fileExists(path: string): Promise<boolean> {
   return await Bun.file(path).exists();
 }
 
+function outForProfile(contents: string, profile: string): string | undefined {
+  let inProfile = false;
+  for (const rawLine of contents.split("\n")) {
+    const sectionMatch = rawLine.match(/^\s*\[([^\]]+)\]/);
+    if (sectionMatch !== null) {
+      inProfile = sectionMatch[1]?.trim() === `profile.${profile}`;
+      continue;
+    }
+    if (!inProfile) continue;
+    const outMatch = rawLine.match(/^\s*out\s*=\s*"([^"]+)"\s*$/);
+    if (outMatch !== null) return outMatch[1];
+  }
+  return undefined;
+}
+
+function foundryOutDir(contents: string): string {
+  // Foundry resolves config from the active profile, falling back to the
+  // default profile and finally Foundry's built-in `out`. Match that order so
+  // a non-default profile declaring `out` first in the file isn't picked up.
+  const activeProfile = process.env["FOUNDRY_PROFILE"] ?? "default";
+  return (
+    outForProfile(contents, activeProfile) ??
+    outForProfile(contents, "default") ??
+    "out"
+  );
+}
+
 async function findFoundryProject(entrypoint: string): Promise<FoundryProject> {
   let current = dirname(entrypoint);
   while (true) {
     const configPath = joinPath(current, "foundry.toml");
     if (await fileExists(configPath)) {
       const contents = await Bun.file(configPath).text();
-      const outMatch = contents.match(/^\s*out\s*=\s*"([^"]+)"\s*$/m);
-      return { root: current, out: outMatch?.[1] ?? "out" };
+      return { root: current, out: foundryOutDir(contents) };
     }
 
     const next = dirname(current);
