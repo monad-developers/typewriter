@@ -551,6 +551,7 @@ export function createRuntimeEffect(
       Semaphore.makeUnsafe(1),
       1,
     );
+    const withSubmitLock = Semaphore.withPermits(Semaphore.makeUnsafe(1), 1);
 
     const batchOrder =
       app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
@@ -1115,7 +1116,7 @@ export function createRuntimeEffect(
     const submitProgram = Effect.sleep(Duration.millis(submitIntervalMs)).pipe(
       Effect.andThen(
         Effect.repeat(
-          submit,
+          withSubmitLock(submit),
           Schedule.fixed(Duration.millis(submitIntervalMs)),
         ),
       ),
