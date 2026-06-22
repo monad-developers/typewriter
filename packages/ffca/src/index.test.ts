@@ -109,6 +109,62 @@ function startRpcProxy(options: {
   };
 }
 
+function startSubmitOverlapProxy(options: { readonly sendDelayMs: number }) {
+  const port = getFreePort();
+  const firstSendStarted = Promise.withResolvers<void>();
+  let sendInFlight = false;
+  let fillDuringSend = false;
+  let sawFirstSend = false;
+
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    async fetch(request) {
+      const body = (await request.json()) as {
+        readonly id?: number | string | null;
+        readonly jsonrpc?: string;
+        readonly method?: string;
+      };
+
+      if (body.method === "eth_fillTransaction" && sendInFlight) {
+        fillDuringSend = true;
+      }
+
+      if (body.method !== "eth_sendRawTransactionSync") {
+        return fetch(TEST_RPC_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
+      sendInFlight = true;
+      if (sawFirstSend === false) {
+        sawFirstSend = true;
+        firstSendStarted.resolve();
+      }
+
+      try {
+        await sleep(options.sendDelayMs);
+        return await fetch(TEST_RPC_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } finally {
+        sendInFlight = false;
+      }
+    },
+  });
+
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => server.stop(true),
+    firstSendStarted: firstSendStarted.promise,
+    getFillDuringSend: () => fillDuringSend,
+  };
+}
+
 async function observeSettlement<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -219,6 +275,93 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
     await ffca.close();
   }
 }, 10_000);
+
+test("createFFCA serializes submit attempts", async () => {
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const proxy = startSubmitOverlapProxy({ sendDelayMs: 250 });
+  const config = {
+    address,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: proxy.url,
+    sequencing: {
+      order: "batch",
+      batchOrder: ["NewAccount", "Add"],
+      batchIntervalMs: 100,
+      submitIntervalMs: 25,
+    },
+    database: { url: TEST_DB_URL, maxConnections: 2 },
+    blockPollingIntervalMs: 50,
+  } as const satisfies FFCAConfig;
+
+  const ffca = await createFFCA(Counter, config);
+
+  try {
+    const setupIncluded = Promise.withResolvers<void>();
+    const unsubscribeSetup = ffca.on("mutation", (event) => {
+      if (event.name === "NewAccount" && event.status === "included") {
+        setupIncluded.resolve();
+      }
+    });
+
+    await ffca.execute(
+      counterNewAccountMutation({
+        address: USER_ACCOUNT.address,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
+    await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
+    unsubscribeSetup();
+
+    const firstAddAccepted = Promise.withResolvers<void>();
+    const unsubscribeFirstAdd = ffca.on("mutation", (event) => {
+      if (
+        event.name === "Add" &&
+        event.status === "accepted" &&
+        event.params.amount === 7n
+      ) {
+        firstAddAccepted.resolve();
+      }
+    });
+
+    await ffca.execute(
+      counterAddMutation({
+        address,
+        amount: 7n,
+        nonce: 0n,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
+    await timeout(firstAddAccepted.promise, 5_000, "first add timed out");
+    unsubscribeFirstAdd();
+
+    await timeout(proxy.firstSendStarted, 5_000, "first submit did not start");
+
+    const secondAddIncluded = Promise.withResolvers<void>();
+    const unsubscribeSecondAdd = ffca.on("mutation", (event) => {
+      if (
+        event.name === "Add" &&
+        event.status === "included" &&
+        event.params.amount === 8n
+      ) {
+        secondAddIncluded.resolve();
+      }
+    });
+
+    await ffca.execute(
+      counterAddMutation({
+        address,
+        amount: 8n,
+        nonce: 1n,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
+    await timeout(secondAddIncluded.promise, 5_000, "second add timed out");
+    unsubscribeSecondAdd();
+
+    expect(proxy.getFillDuringSend()).toBe(false);
+  } finally {
+    await ffca.close();
+    proxy.close();
+  }
+}, 15_000);
 
 test("createFFCA stops accepting mutations after fatal submit failure", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
