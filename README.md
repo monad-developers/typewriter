@@ -109,7 +109,7 @@ The lifecycle of a mutation is as follows:
 
 `createFFCA` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createFFCA` takes a Solidity entrypoint and runtime config. `FFCAConfig` requires `address`, `domain`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
+`createFFCA` takes a Solidity entrypoint and runtime config. `FFCAConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
 ```ts
 import { createFFCA } from "ffca";
@@ -118,7 +118,6 @@ import Token from "../contracts/src/Token.sol";
 
 const ffca = await createFFCA(Token, {
   address, // the deployed FFCA contract
-  domain: { name: "Token", version: "1" },
   account: privateKeyToAccount(privateKey), // the transaction submitter
   chainId,
   rpcUrl,
@@ -485,8 +484,6 @@ Starts the runtime and resolves to the `FFCA` handle (see the [Server runtime](#
 **`FFCAConfig`.** Required fields:
 
 - `address` — the deployed FFCA contract.
-- `domain` — `{ name, version }`; combined with `chainId` and `address` to form the EIP-712 domain exposed as [`ffca.domain`](#ffcadomain).
-- `storageLayout` — the contract's storage layout, an opt-in `solc` output generated with `extra_output = ["storageLayout"]` in `foundry.toml` (or `forge build --extra-output storageLayout`). Types [`ffca.state`](#ffcastate).
 - `account` — the scheduler `PrivateKeyAccount`; signs and submits the onchain `execute` transactions.
 - `chainId` — number.
 - `rpcUrl` — `string | string[]`.
@@ -502,7 +499,7 @@ The Solidity entrypoint must be importable by Bun. At startup, ffca runs `forge 
 ffca.domain: TypedData.Domain; // { name, version, chainId, verifyingContract }
 ```
 
-The resolved EIP-712 domain, derived from `config.domain` plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
+The resolved EIP-712 domain, derived from FFCA's fixed domain plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
 
 ```ts
 "/api/domain": () => jsonResponse(ffca.domain),
