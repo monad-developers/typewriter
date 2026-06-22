@@ -36,7 +36,7 @@ const ffca = await createFFCA(Token, {
   sequencing: { order: "fifo" },
 });
 
-ffca.on("mutation", (mutation: MutationEvent) => {
+ffca.on("mutation", (mutation) => {
   mutations.set(mutation.id, mutation);
 });
 
