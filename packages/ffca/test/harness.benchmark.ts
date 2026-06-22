@@ -39,8 +39,8 @@ function harnessCreditMutation(params: {
   readonly amount: bigint;
   readonly nonce: bigint;
 }): FFCAMutation<
-  "credit",
-  typeof HARNESS_MUTATIONS.credit,
+  "Credit",
+  typeof HARNESS_MUTATIONS.Credit,
   typeof HARNESS_SIGNATURE_PARAMS
 > {
   const mutationParams = {
@@ -51,7 +51,7 @@ function harnessCreditMutation(params: {
   };
 
   return {
-    name: "credit",
+    name: "Credit",
     params: mutationParams,
     signature: harnessSignature({
       account: params.account,
@@ -60,7 +60,7 @@ function harnessCreditMutation(params: {
       rawSignature: signHarness({
         keyType: 2,
         privateKey: USER_PRIVATE_KEY,
-        mutation: "credit",
+        mutation: "Credit",
         params: mutationParams,
         address: params.address,
         chainId: anvil.id,
@@ -121,7 +121,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
       order: "batch",
       batchIntervalMs: 10,
       submitIntervalMs: 3_600_000,
-      batchOrder: ["initialize", "credit"],
+      batchOrder: ["Initialize", "Credit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
@@ -134,7 +134,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
 
   await withoutConsoleOutput(() =>
     ffca.execute({
-      name: "initialize",
+      name: "Initialize",
       params: {
         rootKeyType: 2,
         rootPublicKey,

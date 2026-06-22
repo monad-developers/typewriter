@@ -84,15 +84,9 @@ type RuntimeExecuteInput = {
   signature: unknown;
 };
 
-function lowerFirst(value: string): string {
-  return `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`;
-}
-
 function resolveMutationConfig(app: InternalApp, name: string) {
-  const canonicalName =
-    app.mutations[name] === undefined ? lowerFirst(name) : name;
-  const config = app.mutations[canonicalName];
-  return config === undefined ? undefined : { name: canonicalName, config };
+  const config = app.mutations[name];
+  return config === undefined ? undefined : { name, config };
 }
 
 export function updateMutationToAccepted(
@@ -559,9 +553,7 @@ export function createRuntimeEffect(
     );
 
     const batchOrder =
-      app.sequencing.order === "batch"
-        ? app.sequencing.batchOrder.map(lowerFirst)
-        : [];
+      app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
 
     let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
     const mutationListeners = new Set<MutationListener>();

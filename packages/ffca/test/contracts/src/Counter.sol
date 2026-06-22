@@ -49,7 +49,7 @@ library AddMutation {
         state.total += add.amount;
     }
 
-    bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
+    bytes32 constant ADD_TYPEHASH = keccak256("Add(uint256 amount,uint256 nonce)");
 
     function hashAdd(Add memory add) internal pure returns (bytes32) {
         return keccak256(abi.encode(AddMutation.ADD_TYPEHASH, add.amount, add.nonce));
@@ -68,7 +68,7 @@ library AddMutation {
     }
 }
 
-/// Single-signer secp256k1 fixture for ffca's submit path. `add` mutations
+/// Single-signer secp256k1 fixture for ffca's submit path. `Add` mutations
 /// must be EIP-712-signed by the address set at construction time. ffca's
 /// local `apply` mirrors the addition; the contract enforces the signature
 /// and the nonce.

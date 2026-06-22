@@ -544,7 +544,7 @@ test("createFFCA accepts an imported Solidity entrypoint", async () => {
     database: { url: TEST_DB_URL, maxConnections: 2 },
     sequencing: {
       order: "batch",
-      batchOrder: ["newAccount", "add"],
+      batchOrder: ["NewAccount", "Add"],
       batchIntervalMs: 50,
       submitIntervalMs: 25,
     },
@@ -557,7 +557,7 @@ test("createFFCA accepts an imported Solidity entrypoint", async () => {
       }) as unknown as Parameters<typeof ffca.execute>[0],
     );
     await ffca.execute({
-      name: "add",
+      name: "Add",
       params: { amount: 3n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,

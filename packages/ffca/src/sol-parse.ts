@@ -583,10 +583,6 @@ function parseMutations(params: {
   });
 }
 
-function lowerFirst(value: string): string {
-  return `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`;
-}
-
 function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
   baseConfig: FFCAConfig<sequencingConfig>,
   metadata: ParsedSolidityMetadata,
@@ -594,7 +590,7 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
   const mutations: Record<string, ResolvedFFCAMutationConfig> = {};
 
   for (const mutation of metadata.mutations) {
-    mutations[lowerFirst(mutation.enumName)] = {
+    mutations[mutation.enumName] = {
       tag: mutation.tag,
       params: mutation.params,
     };

@@ -111,34 +111,34 @@ test("FFCA execute input uses manually supplied Counter mutation and signature c
     rawSignature: "0x" as Hex,
   } satisfies CounterSignature;
   const newAccountInput = {
-    name: "newAccount",
+    name: "NewAccount",
     params: { keyType: 2, publicKey: "0x" as Hex },
     signature,
   } satisfies Input;
   const addInput = {
-    name: "add",
+    name: "Add",
     params: { amount: 1n, nonce: 0n },
     signature,
   } satisfies Input;
 
   expectTypeOf(newAccountInput).toMatchTypeOf<
-    Extract<Input, { name: "newAccount" }>
+    Extract<Input, { name: "NewAccount" }>
   >();
-  expectTypeOf(addInput).toMatchTypeOf<Extract<Input, { name: "add" }>>();
+  expectTypeOf(addInput).toMatchTypeOf<Extract<Input, { name: "Add" }>>();
 
   const acceptInput = (_input: Input) => {};
 
   acceptInput({
-    name: "add",
-    // @ts-expect-error `add` must use the `add` ABI params, not `newAccount` params.
+    name: "Add",
+    // @ts-expect-error `Add` must use the `Add` ABI params, not `NewAccount` params.
     params: { keyType: 2, publicKey: "0x" as Hex },
     signature,
   });
 
   acceptInput({
-    name: "newAccount",
+    name: "NewAccount",
     params: { keyType: 2, publicKey: "0x" as Hex },
-    // @ts-expect-error `newAccount` must use Counter's configured signature shape.
+    // @ts-expect-error `NewAccount` must use Counter's configured signature shape.
     signature: { rawSignature: "0x" as Hex },
   });
 });
@@ -168,7 +168,7 @@ test("FFCA execute input uses manually supplied Harness mutation and signature c
     rawSignature: "0x" as Hex,
   } satisfies HarnessSignature;
   const debitInput = {
-    name: "debit",
+    name: "Debit",
     params: {
       account: "0x" as Hex,
       keyId: 0n,
@@ -178,13 +178,13 @@ test("FFCA execute input uses manually supplied Harness mutation and signature c
     signature,
   } satisfies Input;
 
-  expectTypeOf(debitInput).toMatchTypeOf<Extract<Input, { name: "debit" }>>();
+  expectTypeOf(debitInput).toMatchTypeOf<Extract<Input, { name: "Debit" }>>();
 
   const acceptInput = (_input: Input) => {};
 
   acceptInput({
-    name: "debit",
-    // @ts-expect-error `debit` requires the Harness debit ABI params.
+    name: "Debit",
+    // @ts-expect-error `Debit` requires the Harness debit ABI params.
     params: { rootKeyType: 2, rootPublicKey: "0x" as Hex },
     signature,
   });

@@ -108,7 +108,7 @@ function signHarnessMutation(params: {
   readonly keyId: bigint;
   readonly keyType: number;
   readonly privateKey: `0x${string}`;
-  readonly mutation: "authorize" | "credit" | "debit" | "assert";
+  readonly mutation: "Authorize" | "Credit" | "Debit" | "Assert";
   readonly params: Record<string, unknown>;
 }) {
   return harnessSignature({
@@ -135,7 +135,7 @@ test("createRuntimeBatchEffect", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -172,7 +172,7 @@ test("runtime loads persisted slot state before returning", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -232,7 +232,7 @@ test("execute() returns an accepted mutation", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -259,7 +259,7 @@ test("execute() returns an accepted mutation", async () => {
     );
 
     const mutationResult = yield* runtime.execute({
-      name: "add",
+      name: "Add",
       params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
@@ -293,7 +293,7 @@ test("execute() accepts multiple mutations in a batch", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -327,7 +327,7 @@ test("execute() accepts multiple mutations in a batch", async () => {
     ]) {
       mutationResults.push(
         yield* runtime.execute({
-          name: "add",
+          name: "Add",
           params: { amount, nonce },
           signature: signCounter({
             privateKey: USER_PRIVATE_KEY,
@@ -369,7 +369,7 @@ test("runtime emits mutation, batch, and block events", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -401,7 +401,7 @@ test("runtime emits mutation, batch, and block events", async () => {
         isForceInclusion:
           "isForceInclusion" in event ? event.isForceInclusion : undefined,
       });
-      if (event.status === "included" && event.name === "add") {
+      if (event.status === "included" && event.name === "Add") {
         included.resolve();
       }
     });
@@ -435,7 +435,7 @@ test("runtime emits mutation, batch, and block events", async () => {
     );
 
     yield* runtime.execute({
-      name: "add",
+      name: "Add",
       params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
@@ -457,14 +457,14 @@ test("runtime emits mutation, batch, and block events", async () => {
         "event": "mutation",
         "id": 0,
         "isForceInclusion": undefined,
-        "name": "newAccount",
+        "name": "NewAccount",
         "status": "received",
       },
       {
         "event": "mutation",
         "id": 0,
         "isForceInclusion": false,
-        "name": "newAccount",
+        "name": "NewAccount",
         "status": "accepted",
       },
       {
@@ -479,14 +479,14 @@ test("runtime emits mutation, batch, and block events", async () => {
         "event": "mutation",
         "id": 1,
         "isForceInclusion": undefined,
-        "name": "add",
+        "name": "Add",
         "status": "received",
       },
       {
         "event": "mutation",
         "id": 1,
         "isForceInclusion": false,
-        "name": "add",
+        "name": "Add",
         "status": "accepted",
       },
       {
@@ -517,7 +517,7 @@ test("runtime emits mutation, batch, and block events", async () => {
         "event": "mutation",
         "id": 0,
         "isForceInclusion": false,
-        "name": "newAccount",
+        "name": "NewAccount",
         "status": "included",
       },
       {
@@ -532,7 +532,7 @@ test("runtime emits mutation, batch, and block events", async () => {
         "event": "mutation",
         "id": 1,
         "isForceInclusion": false,
-        "name": "add",
+        "name": "Add",
         "status": "included",
       },
     ]
@@ -548,7 +548,7 @@ test("runtime persists mutations to database", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -577,7 +577,7 @@ test("runtime persists mutations to database", async () => {
     );
 
     yield* runtime.execute({
-      name: "add",
+      name: "Add",
       params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
@@ -686,7 +686,7 @@ test("runtime submits a mutation onchain", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -709,7 +709,7 @@ test("runtime submits a mutation onchain", async () => {
     const pwr = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
-      if (event.status === "included" && event.name === "add") pwr.resolve();
+      if (event.status === "included" && event.name === "Add") pwr.resolve();
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe));
 
@@ -720,7 +720,7 @@ test("runtime submits a mutation onchain", async () => {
     );
 
     yield* runtime.execute({
-      name: "add",
+      name: "Add",
       params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
@@ -750,7 +750,7 @@ test("runtime finalizes a mutation", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -773,7 +773,7 @@ test("runtime finalizes a mutation", async () => {
     const pwr = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
-      if (event.status === "finalized" && event.name === "add") pwr.resolve();
+      if (event.status === "finalized" && event.name === "Add") pwr.resolve();
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe));
 
@@ -784,7 +784,7 @@ test("runtime finalizes a mutation", async () => {
     );
 
     yield* runtime.execute({
-      name: "add",
+      name: "Add",
       params: { amount: 7n, nonce: 0n },
       signature: signCounter({
         privateKey: USER_PRIVATE_KEY,
@@ -814,7 +814,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["initialize", "credit", "debit"],
+      batchOrder: ["Initialize", "Credit", "Debit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
@@ -838,7 +838,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
     yield* Effect.forkChild(runtime.program);
 
     yield* runtime.execute({
-      name: "initialize",
+      name: "Initialize",
       params: { rootKeyType: 2, rootPublicKey },
       signature: harnessSignature({
         account,
@@ -853,7 +853,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
     yield* Effect.all(
       [
         runtime.execute({
-          name: "debit",
+          name: "Debit",
           params: debitArgs,
           signature: signHarnessMutation({
             address,
@@ -861,12 +861,12 @@ test("runtime reorders Harness mutations by batch order", async () => {
             keyId: 0n,
             keyType: 2,
             privateKey: ALICE_PRIVATE_KEY,
-            mutation: "debit",
+            mutation: "Debit",
             params: debitArgs,
           }),
         }),
         runtime.execute({
-          name: "credit",
+          name: "Credit",
           params: creditArgs,
           signature: signHarnessMutation({
             address,
@@ -874,7 +874,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
             keyId: 0n,
             keyType: 2,
             privateKey: ALICE_PRIVATE_KEY,
-            mutation: "credit",
+            mutation: "Credit",
             params: creditArgs,
           }),
         }),
@@ -924,7 +924,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
 
     const initializeFiber = yield* Effect.forkChild(
       runtime.execute({
-        name: "initialize",
+        name: "Initialize",
         params: { rootKeyType: 2, rootPublicKey },
         signature: harnessSignature({
           account,
@@ -939,7 +939,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
     const debitArgs = { account, keyId: 0n, amount: 30n, nonce: 1n };
     const debitFiber = yield* Effect.forkChild(
       runtime.execute({
-        name: "debit",
+        name: "Debit",
         params: debitArgs,
         signature: signHarnessMutation({
           address,
@@ -947,7 +947,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
           keyId: 0n,
           keyType: 2,
           privateKey: ALICE_PRIVATE_KEY,
-          mutation: "debit",
+          mutation: "Debit",
           params: debitArgs,
         }),
       }),
@@ -957,7 +957,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
     const creditArgs = { account, keyId: 0n, amount: 100n, nonce: 0n };
     const creditFiber = yield* Effect.forkChild(
       runtime.execute({
-        name: "credit",
+        name: "Credit",
         params: creditArgs,
         signature: signHarnessMutation({
           address,
@@ -965,7 +965,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
           keyId: 0n,
           keyType: 2,
           privateKey: ALICE_PRIVATE_KEY,
-          mutation: "credit",
+          mutation: "Credit",
           params: creditArgs,
         }),
       }),
@@ -1010,7 +1010,7 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["initialize", "debit"] },
+    sequencing: { order: "batch", batchOrder: ["Initialize", "Debit"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -1033,7 +1033,7 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
     yield* Effect.forkChild(runtime.program);
 
     yield* runtime.execute({
-      name: "initialize",
+      name: "Initialize",
       params: { rootKeyType: 2, rootPublicKey },
       signature: harnessSignature({
         account,
@@ -1046,7 +1046,7 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
     const debitArgs = { account, keyId: 0n, amount: 30n, nonce: 0n };
     return yield* Effect.exit(
       runtime.execute({
-        name: "debit",
+        name: "Debit",
         params: debitArgs,
         signature: signHarnessMutation({
           address,
@@ -1054,7 +1054,7 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
           keyId: 0n,
           keyType: 2,
           privateKey: ALICE_PRIVATE_KEY,
-          mutation: "debit",
+          mutation: "Debit",
           params: debitArgs,
         }),
       }),
@@ -1080,7 +1080,7 @@ test("runtime handles Harness account management with multiple signature types",
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["initialize", "authorize", "credit"],
+      batchOrder: ["Initialize", "Authorize", "Credit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
@@ -1104,7 +1104,7 @@ test("runtime handles Harness account management with multiple signature types",
     yield* Effect.forkChild(runtime.program);
 
     yield* runtime.execute({
-      name: "initialize",
+      name: "Initialize",
       params: { rootKeyType: 2, rootPublicKey },
       signature: harnessSignature({
         account,
@@ -1122,7 +1122,7 @@ test("runtime handles Harness account management with multiple signature types",
       nonce: 0n,
     };
     yield* runtime.execute({
-      name: "authorize",
+      name: "Authorize",
       params: authorizeP256Args,
       signature: signHarnessMutation({
         address,
@@ -1130,7 +1130,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyId: 0n,
         keyType: 2,
         privateKey: ALICE_PRIVATE_KEY,
-        mutation: "authorize",
+        mutation: "Authorize",
         params: authorizeP256Args,
       }),
     });
@@ -1142,7 +1142,7 @@ test("runtime handles Harness account management with multiple signature types",
       nonce: 1n,
     };
     yield* runtime.execute({
-      name: "credit",
+      name: "Credit",
       params: p256CreditArgs,
       signature: signHarnessMutation({
         address,
@@ -1150,7 +1150,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyId: 1n,
         keyType: 0,
         privateKey: P256_PRIVATE_KEY,
-        mutation: "credit",
+        mutation: "Credit",
         params: p256CreditArgs,
       }),
     });
@@ -1163,7 +1163,7 @@ test("runtime handles Harness account management with multiple signature types",
       nonce: 2n,
     };
     yield* runtime.execute({
-      name: "authorize",
+      name: "Authorize",
       params: authorizeWebAuthnArgs,
       signature: signHarnessMutation({
         address,
@@ -1171,7 +1171,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyId: 1n,
         keyType: 0,
         privateKey: P256_PRIVATE_KEY,
-        mutation: "authorize",
+        mutation: "Authorize",
         params: authorizeWebAuthnArgs,
       }),
     });
@@ -1183,7 +1183,7 @@ test("runtime handles Harness account management with multiple signature types",
       nonce: 3n,
     };
     yield* runtime.execute({
-      name: "credit",
+      name: "Credit",
       params: webAuthnCreditArgs,
       signature: signHarnessMutation({
         address,
@@ -1191,7 +1191,7 @@ test("runtime handles Harness account management with multiple signature types",
         keyId: 2n,
         keyType: 1,
         privateKey: P256_PRIVATE_KEY,
-        mutation: "credit",
+        mutation: "Credit",
         params: webAuthnCreditArgs,
       }),
     });
@@ -1223,18 +1223,18 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
-  const { add: addMutation } = app.mutations;
+  const { Add: addMutation } = app.mutations;
   if (addMutation === undefined) {
-    throw new Error("Counter app missing add mutation");
+    throw new Error("Counter app missing Add mutation");
   }
 
   const mutationData = encodeMutationCalldata({
     id: 0,
     status: "accepted",
-    name: "add",
+    name: "Add",
     params: { amount, nonce },
     signature,
     journalId: 0,
@@ -1267,7 +1267,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     const pwr = Promise.withResolvers<void>();
 
     const unsubscribe = yield* runtime.on("mutation", (event) => {
-      if (event.status === "included" && event.name === "newAccount") {
+      if (event.status === "included" && event.name === "NewAccount") {
         setupIncluded.resolve();
       }
       if (event.status === "included" && event.isForceInclusion) {
@@ -1317,7 +1317,7 @@ test("runtime handles failing mutation", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["newAccount", "add"] },
+    sequencing: { order: "batch", batchOrder: ["NewAccount", "Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 
@@ -1345,7 +1345,7 @@ test("runtime handles failing mutation", async () => {
 
     return yield* Effect.exit(
       runtime.execute({
-        name: "add",
+        name: "Add",
         params: { amount: 7n, nonce: 1n },
         signature: signCounter({
           privateKey: USER_PRIVATE_KEY,
@@ -1375,7 +1375,7 @@ test("runtime program handles interrupt", async () => {
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: { order: "batch", batchOrder: ["add"] },
+    sequencing: { order: "batch", batchOrder: ["Add"] },
     database: { url: TEST_DB_URL, maxConnections: 1 },
   });
 

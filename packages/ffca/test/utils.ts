@@ -185,17 +185,17 @@ export async function readContractStorage<
 // Mutation definitions for the Counter test fixture. The contract/revm owns
 // acceptance and state transitions; this config only describes encoding.
 export const COUNTER_MUTATIONS = {
-  newAccount: {
+  NewAccount: {
     tag: 0,
     params: parseAbiParameters("uint8 keyType, bytes publicKey"),
   },
-  add: {
+  Add: {
     tag: 1,
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
   },
 } as const satisfies {
-  newAccount: ResolvedFFCAMutationConfig;
-  add: ResolvedFFCAMutationConfig;
+  NewAccount: ResolvedFFCAMutationConfig;
+  Add: ResolvedFFCAMutationConfig;
 };
 
 export function counterAccountId(publicKey: Hex): Hex {
@@ -205,13 +205,13 @@ export function counterAccountId(publicKey: Hex): Hex {
 export function counterNewAccountMutation(params: {
   address: Address;
 }): FFCAMutation<
-  "newAccount",
-  typeof COUNTER_MUTATIONS.newAccount,
+  "NewAccount",
+  typeof COUNTER_MUTATIONS.NewAccount,
   typeof COUNTER_SIGNATURE_PARAMS
 > {
   const publicKey = secp256k1PublicKey(params.address);
   return {
-    name: "newAccount",
+    name: "NewAccount",
     params: { keyType: 2, publicKey },
     signature: {
       accountId: counterAccountId(publicKey),
@@ -241,8 +241,8 @@ export function signCounter(params: {
     verifyingContract: params.address,
   };
   const digest = hashMutationEip712(
-    COUNTER_MUTATIONS.add,
-    "add",
+    COUNTER_MUTATIONS.Add,
+    "Add",
     { amount: params.amount, nonce: params.nonce },
     domain,
   );
@@ -262,40 +262,40 @@ export function signCounter(params: {
 //   assert     (4): read-only check; the contract reverts if balance !=
 //                    expected. Signed.
 export const HARNESS_MUTATIONS = {
-  initialize: {
+  Initialize: {
     tag: 0,
     params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
   },
-  authorize: {
+  Authorize: {
     tag: 1,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
     ),
   },
-  credit: {
+  Credit: {
     tag: 2,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
   },
-  debit: {
+  Debit: {
     tag: 3,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
     ),
   },
-  assert: {
+  Assert: {
     tag: 4,
     params: parseAbiParameters(
       "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
     ),
   },
 } as const satisfies {
-  initialize: ResolvedFFCAMutationConfig;
-  authorize: ResolvedFFCAMutationConfig;
-  credit: ResolvedFFCAMutationConfig;
-  debit: ResolvedFFCAMutationConfig;
-  assert: ResolvedFFCAMutationConfig;
+  Initialize: ResolvedFFCAMutationConfig;
+  Authorize: ResolvedFFCAMutationConfig;
+  Credit: ResolvedFFCAMutationConfig;
+  Debit: ResolvedFFCAMutationConfig;
+  Assert: ResolvedFFCAMutationConfig;
 };
 
 // Derive the bytes32 account id from a public key (matches Harness.sol's
@@ -372,7 +372,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
 export function signHarness(params: {
   keyType: number;
   privateKey: Hex;
-  mutation: "authorize" | "credit" | "debit" | "assert";
+  mutation: "Authorize" | "Credit" | "Debit" | "Assert";
   params: Record<string, unknown>;
   address: Address;
   chainId: number;
@@ -428,7 +428,7 @@ export async function setupHarnessAccount(
 ): Promise<Hex> {
   const account = harnessAccountId(params.rootPublicKey);
   await ffca.execute({
-    name: "initialize",
+    name: "Initialize",
     params: {
       rootKeyType: params.rootKeyType,
       rootPublicKey: params.rootPublicKey,

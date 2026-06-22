@@ -160,12 +160,12 @@ test("attaches matching force inclusion enqueue logs", async () => {
   const mutationData = encodeMutationCalldata({
     id: 0,
     status: "accepted",
-    name: "add",
+    name: "Add",
     params: { amount, nonce },
     signature,
     journalId: 0,
     isForceInclusion: false,
-    config: COUNTER_MUTATIONS.add,
+    config: COUNTER_MUTATIONS.Add,
   });
 
   const program = Effect.scoped(
@@ -180,7 +180,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           address: counterAddress,
           abi: FFCA_ABI,
           functionName: "enqueue",
-          args: [COUNTER_MUTATIONS.add.tag, mutationData, signatureData],
+          args: [COUNTER_MUTATIONS.Add.tag, mutationData, signatureData],
         }),
       );
       return { messages: yield* collect(watch.messages, 1), transactionHash };

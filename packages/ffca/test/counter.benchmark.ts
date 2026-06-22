@@ -27,12 +27,12 @@ function counterAddMutation(params: {
   readonly amount: bigint;
   readonly nonce: bigint;
 }): FFCAMutation<
-  "add",
-  typeof COUNTER_MUTATIONS.add,
+  "Add",
+  typeof COUNTER_MUTATIONS.Add,
   typeof COUNTER_SIGNATURE_PARAMS
 > {
   return {
-    name: "add",
+    name: "Add",
     params: { amount: params.amount, nonce: params.nonce },
     signature: signCounter({
       privateKey: USER_PRIVATE_KEY,

@@ -25,12 +25,12 @@ function counterAddMutation(params: {
   readonly amount: bigint;
   readonly nonce: bigint;
 }): FFCAMutation<
-  "add",
-  typeof COUNTER_MUTATIONS.add,
+  "Add",
+  typeof COUNTER_MUTATIONS.Add,
   typeof COUNTER_SIGNATURE_PARAMS
 > {
   return {
-    name: "add",
+    name: "Add",
     params: { amount: params.amount, nonce: params.nonce },
     signature: signCounter({
       privateKey: USER_PRIVATE_KEY,
@@ -137,7 +137,7 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["newAccount", "add"],
+      batchOrder: ["NewAccount", "Add"],
       batchIntervalMs: 250,
       submitIntervalMs: 25,
     },
@@ -153,7 +153,7 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribe = ffca.on("mutation", (event) => {
-      if (event.name === "newAccount" && event.status === "included") {
+      if (event.name === "NewAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
@@ -235,7 +235,7 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
     rpcUrl: proxy.url,
     sequencing: {
       order: "batch",
-      batchOrder: ["newAccount", "add"],
+      batchOrder: ["NewAccount", "Add"],
       batchIntervalMs: 100,
       submitIntervalMs: 25,
     },
@@ -249,7 +249,7 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribeSetup = ffca.on("mutation", (event) => {
-      if (event.name === "newAccount" && event.status === "included") {
+      if (event.name === "NewAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
@@ -263,7 +263,7 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
 
     const accepted = Promise.withResolvers<void>();
     const unsubscribeAccepted = ffca.on("mutation", (event) => {
-      if (event.name === "add" && event.status === "accepted") {
+      if (event.name === "Add" && event.status === "accepted") {
         accepted.resolve();
       }
     });
