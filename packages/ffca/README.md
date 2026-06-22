@@ -9,7 +9,7 @@ Full stack framework for building crypto apps.
 - **Local first**. Build rapidly with a powerful local development loop.
 
 > [!WARNING]
-> ⚠️ **This project is under active development. Not ready for production use.**
+> **This project is under active development. Not ready for production use.**
 
 ## Concepts
 
