@@ -57,7 +57,13 @@ test("createStorageProxy follows sync and async getter shapes", () => {
 
 test("createStorageProxy gracefully falls back for loose layouts", () => {
   const syncGetter = (_slots: Hex.Hex[]): TestSlotMap => ({});
+  const asyncGetter = async (_slots: Hex.Hex[]): Promise<TestSlotMap> => ({});
   const looseState = createStorageProxy({} as StorageLayout, syncGetter);
+  const looseAsyncState = createStorageProxy({} as StorageLayout, asyncGetter);
+  const accountsKey = "accounts";
+  const balanceKey = "balance";
 
-  expectTypeOf(looseState).toEqualTypeOf<Readonly<Record<string, unknown>>>();
+  expectTypeOf(looseState[accountsKey]).toBeAny();
+  expectTypeOf(looseAsyncState[accountsKey]).toBeAny();
+  expectTypeOf(looseAsyncState[accountsKey]["0xabcd"][balanceKey]).toBeAny();
 });
