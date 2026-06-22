@@ -32,12 +32,6 @@ High-level signals for whether ffca is on the right track. None are precisely me
 - **Developer experience.** Deployment, environment setup, and modularity should feel simple and composable — small pieces that snap together, with the developer ultimately in control.
 - **Performance.** Transaction latency and gas costs. The ceiling ffca raises is partly a performance ceiling — slow or expensive paths cap what apps can be.
 
-## Status
-
-Implemented and tested end-to-end against anvil. The runtime drains a mutation queue, orders each batch (`config.sequencing.batchOrder` in batch mode, FIFO otherwise), executes each mutation in revm from submitted params/signature only, and rejects on revert. Accepted mutations persist to ffca-owned generated mutation tables, raw slot diffs to `slot_writes`, and mapping/dynamic-path hints to `known_paths` — there is no `.apply()`, app-owned persistence hook, `state.schema`, `state.load`, `resolve`, or app-level mutation resolution. Submit re-simulates the final calldata in revm, takes the gas limit and access list from that simulation (no RPC `createAccessList`/`estimateGas`), signs, and broadcasts via `eth_sendRawTransactionSync`; a watch loop then advances included mutations through safe/finalized. Mutation signing requires EIP-712, with native verification for P-256, WebAuthn-P256, and secp256k1 — ffca owns those primitives but leaves account/key/nonce authorization to the app. Calldata is `(uint8[] tags, bytes[] mutationData, bytes[] signatures)[]`, each `signatures[i]` ABI-encoded against `FFCAConfig.signature.params`. Events fan out via `on(event, cb) → unsubscribe` for mutation/batch/block. Force inclusion (`enqueue` / `forceExecute` / scheduler-assisted settlement) is implemented; its production-policy forks live under Open decisions.
-
-Restart is partial. `createFFCA()`/`migrate()` compute a per-deployment schema, materialize generated tables, hydrate revm from the latest slot write per slot, resume the next mutation id from the tables, and read the execution index from the chain. But existing schemas drop unsettled mutations and their slot writes on startup: queued, accepted-but-unsubmitted, and in-flight batches are not recovered, and schema compatibility is not yet tracked before reuse.
-
 ## Tests
 
 `bunfig.toml` preloads `test/setup.ts`, which compiles the test contracts (`test/contracts/`), boots anvil via `prool` on a free random port, creates an isolated Postgres database per test from `DATABASE_URL`, and registers a global `beforeEach` that snapshot-reverts chain state between tests. Each test deploys its own contracts via `deployCounter` / `deployHarness` from `test/utils.ts` — there's no shared deployment to remember.
@@ -53,6 +47,12 @@ If broad test runs fail during setup, run `DATABASE_URL=postgres://postgres@loca
 
 The frame: every change is purpose-built for making it easier to build apps with ffca, or for making the apps built better. Apps come first; the framework follows them. The goal is to keep the consuming apps (`apps/order-book`, and the minimal `apps/token`) demo-grade while extracting reusable framework seams into ffca.
 
+### Next Step
+
+Add more testing around Solidity parsing. The current implementation can import an existing Solidity entrypoint, run Forge, read artifacts/ASTs, and derive runtime metadata that used to be copied into TypeScript by hand. Before expanding the surface, tighten coverage around the supported contract shape and the failure modes developers will actually hit: invalid/missing `Mutation` enums, unsupported `dispatch`/`abi.decode` forms, nested struct params, signature struct extraction, storage-layout flattening, multiple candidate contracts, and developer-facing parser errors.
+
+The larger follow-on items are server-managed deployment and Solidity codegen. Deployment should bind runtime startup to a persisted artifact/deployed-bytecode match instead of copied addresses. Codegen should remove the remaining hand-authored protocol boilerplate (`execute`, `enqueue`, `forceExecute`, dispatch, scheduler access control, force-inclusion queue/events) once the parsed contract conventions are proven by tests.
+
 ### Lanes
 
 The work catalog. Non-sequenced — items in different lanes can run in parallel.
@@ -64,21 +64,15 @@ The work catalog. Non-sequenced — items in different lanes can run in parallel
 
 **2. Production readiness.** Hardening for running real apps.
 - Shutdown testing (deterministic drain)
-- Nonce recovery on conflict
 - Scheduler KMS / better account system
 
 **3. Developer experience.** Usability — make the framework feel small and composable.
 - State sync (granular slot subscriptions; falls out of revm)
-- Type inference from contracts (extract mutation and state types from Solidity)
-- AST parsing for conformance + runtime values (validate contract shape, extract EIP-712 domain automatically)
+- More Solidity parsing test coverage and clearer convention-focused parser errors
+- AST parsing for additional conformance/runtime values, including EIP-712 domain extraction
 - Zod schemas for HTTP endpoint enforcement
 - Automatic deployment management (no copying addresses into env vars)
 - CLI scaffolding (`ffca dev` with anvil + fixture contract)
-
-**4. Documentation.** Someone should be able to read the docs and form a clear picture of how ffca works. Today it's almost empty.
-- Architecture diagram (mutation → batch → submit → watch + the four loops)
-- "What ffca prescribes vs. what the app owns" matrix
-- Migration / port playbook (evergreen output of the order-book port)
 
 ### Initiatives
 
@@ -86,7 +80,9 @@ Multi-week projects that span lanes. Each has its own internal sequence.
 
 **Account/signature boundary.** ffca requires EIP-712 and supports three signature algorithms: P-256, WebAuthn-P256, and secp256k1. It does not prescribe account/key/nonce state. Users implement the account registry, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions in their app and contract.
 
-**AST + storage-layout codegen.** A lot of what the backend currently hand-authors could be read from the contract instead — batch tuple shape, mutation tag enum, per-mutation param ABI, EIP-712 domain, state shape, event ABI, error selectors. Mechanics are `forge build`'s AST and `forge inspect storageLayout`. TS can't read those at type-check time, so typed access requires codegen as a derived artifact. Runtime behavior (encoding, tag mapping, layout reads) can come straight from the contract without codegen.
+**Server-managed deployment.** Runtime startup should eventually deploy or load the matching compiled artifact, persist deployment metadata, and verify deployed bytecode against the artifact before starting. This removes copied contract addresses from app env/config and prevents the server from running against stale generated artifacts or stale deployed bytecode.
+
+**Solidity codegen.** Once Solidity parsing is well-tested, generate the ffca-owned protocol shell instead of requiring apps to hand-author it. The first target is removing dispatch boilerplate: derive mutation tags and params from the parsed contract, generate the `dispatch` branch/`abi.decode` wiring, and keep app contracts focused on business logic. Larger codegen can then absorb `execute`, `enqueue`, `forceExecute`, scheduler access control, force-inclusion queue/events, and server-consumable artifacts.
 
 **Scheduler key management.** Today `FFCAConfig.account: PrivateKeyAccount` is in-process key material — fine for dev, a footgun for production. Three pieces share the same seam (the framework's signing identity): KMS / remote signer support, nonce recovery on conflict, and user-shaped signing on-contract (scheduler key in the same registry as user keys, with rotation/expiry/scopes).
 
@@ -94,29 +90,17 @@ Multi-week projects that span lanes. Each has its own internal sequence.
 
 **Runtime failure policy.** Today submit/watch failures can still kill the runtime fiber after mutations have already been accepted. Define the lifecycle for accepted-but-not-submitted batches: retry forever, mark failed, dead-letter, or emit a recoverable status. Clients need a clear way to observe the outcome.
 
-**Persistence/restart policy.** ffca owns generated mutation persistence, lifecycle updates, raw slot diffs, and known paths. Startup can hydrate revm from persisted slots, but the runtime still needs a clear policy for queued, accepted-but-unsubmitted, and in-flight batches; how to surface or retry submit-fiber failures after optimistic acceptance; whether and how recovered state is compared against onchain state; and how generated schema metadata is tracked and compared before schema reuse.
-
 ### Open decisions
 
 Forks that gate sequencing. Listed so they don't get rediscovered every session.
 
 - **Execute-time signature validation.** Should ffca validate signatures during `execute()` admission, or leave validation to on-chain execution? Execute-time validation gives faster rejection and avoids queueing obviously invalid mutations, but it requires a state-side key lookup seam or a user-supplied validator. Batch/settlement-time validation keeps the framework boundary smaller and user-owned, but invalid signatures can enter the queue and only fail later.
-- **Persistence/read-model shape.** How should apps serve decoded state/read-model queries: direct `ffca.state` storage reads driven by app-owned indexes, storage-diff-derived projections, event/index-based projections, or a hybrid? Generic mapping enumeration is not viable; mapping keys must come from calldata/events/indexes/path declarations.
-- **Offchain derived indexes.** `known_paths` (mapping-key sets) is the first and most degenerate instance of a recurring need: derived indexes over offchain state — ordered/live subsets, secondary lookups, aggregates — consumed by read/API handlers and, eventually, execution-witness tooling. Two sub-problems hide inside it: *key discovery* (slot-irreversible; must come from calldata/events/declarations/witnesses) vs *projection* (ordering/aggregation/filtering over known keys). Index lifecycle must track revm's speculative → confirmed → reverted rollback, coupling it to the reorg and persistence/restart decisions. Hold any projection/reducer engine until 2+ concrete indexes demand it. Sharpens "Persistence/read-model shape," which frames only the read side.
-- **Execution witness shape.** App-level mutation resolutions have been removed; the open question is what lower-level execution witness, if any, should accompany settled transactions in protocol or out of protocol.
-- **Force-inclusion queue enforcement.** Production contracts should make it hard for the scheduler to leave old force-inclusion entries pending forever. Current contracts carry explicit queue indexes and do not enforce mandatory draining of all entries older than `FORCE_INCLUSION_DELAY`. Stronger FIFO/draining guarantees likely want a queue-head invariant plus an immutable age threshold.
-- **Force-inclusion delay semantics.** Should scheduler-assisted execution of queued mutations inside `execute` obey the same delay as public `forceExecute`, or may the scheduler include queued mutations immediately?
-- **Invalid force-inclusion queue heads.** If an enqueued mutation becomes invalid or expired, does it block the queue, get skipped/marked failed, or should enqueue validate/reserve enough state to prevent invalid heads?
-- **Force-inclusion observability.** Which events/views are required for clients and watchers to discover queued mutations, see whether the scheduler included them, and detect old pending entries?
 - **Equivocation receipt observability.** Should settled mutation hashes be exposed through events, storage commitments, decoded calldata, or app-owned HTTP routes? This determines how clients/watchers compare accepted receipts to chain reality.
 - **Equivocation proof scope.** Should ffca stop at client-side/social proof helpers, or add optional onchain proof storage/events for receipt-vs-settlement conflicts?
 - **Server receipt identity.** What key signs accepted receipts, how is that key advertised, rotated, and scoped to an app/deployment?
-- **revm initial state source.** Today runtime pulls bytecode from chain and seeds storage from persisted slot diffs. Long term, should runtime hydrate deployed storage from chain at boot or replay the deployment transaction locally, treating the database as a rebuildable cache rather than the source of truth?
 - **Onchain-only recovery.** Can ffca recover entirely from chain data plus contract storage/account roots, treating the database as a rebuildable cache rather than a required recovery source?
 - **revm block context.** Before broadcast, what `block.number` and `block.timestamp` does revm execute against: latest+1, wall-clock values, or scheduler-controlled block context?
 - **revm divergence detection.** Can revm detect onchain/offchain divergence by comparing account roots, or does ffca need another settlement/reconciliation signal?
-- **Accepted-but-not-submitted batches.** If submission fails after optimistic acceptance, are batches retried indefinitely, marked failed, dead-lettered for manual intervention, or surfaced through a distinct lifecycle state?
-- **Restart semantics.** Which runtime states survive process restart: queued mutations, accepted-but-unsubmitted batches, proposed-but-unverified batches, local nonce cache, and deployment locks?
 
 ## Working in this package
 

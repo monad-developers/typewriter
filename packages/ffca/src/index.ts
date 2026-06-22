@@ -3,6 +3,7 @@ import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import type {
   FFCAConfig,
+  MutationConfig,
   MutationsConfig,
   SequencingConfig,
   SignatureConfig,
@@ -10,6 +11,7 @@ import type {
 } from "./config";
 import { createFFCAEffect } from "./ffca";
 import type { FFCASchema } from "./schema";
+import { type FFCASolidityEntrypoint, loadSolidityFFCAApp } from "./sol-parse";
 import type {
   BatchListener,
   BlockListener,
@@ -45,16 +47,14 @@ export type FFCA<
   ): () => void;
 };
 
-export type {
-  FFCAConfig,
-  FFCAMutationConfig,
-} from "./config";
+export type { FFCAConfig, ResolvedFFCAMutationConfig } from "./config";
 export type {
   FFCAMutationSchema,
   FFCASchema,
   FFCAStateSchema,
 } from "./schema";
 export type { KeyType } from "./signature";
+export type { FFCASolidityEntrypoint } from "./sol-parse";
 export type {
   BatchEvent,
   BatchStatus,
@@ -67,16 +67,61 @@ export type {
   MutationStatus,
 } from "./types";
 
+type EntrypointMetadata<entrypoint> =
+  entrypoint extends FFCASolidityEntrypoint<infer metadata>
+    ? metadata
+    : unknown;
+
+type EntrypointStorageConfig<entrypoint> =
+  EntrypointMetadata<entrypoint> extends {
+    readonly storageLayout: infer storage extends StorageConfig;
+  }
+    ? storage
+    : StorageConfig;
+
+type EntrypointMutationsConfig<entrypoint> =
+  EntrypointMetadata<entrypoint> extends {
+    readonly mutations: infer mutations extends Record<string, MutationConfig>;
+  }
+    ? mutations
+    : MutationsConfig;
+
+type EntrypointSignatureConfig<entrypoint> =
+  EntrypointMetadata<entrypoint> extends {
+    readonly signature: infer signature extends SignatureConfig;
+  }
+    ? signature
+    : SignatureConfig;
+
 export async function createFFCA<
-  const storageConfig extends StorageConfig = StorageConfig,
-  const mutationsConfig extends MutationsConfig = MutationsConfig,
-  const signatureConfig extends SignatureConfig = SignatureConfig,
+  const entrypoint extends FFCASolidityEntrypoint,
   const sequencingConfig extends SequencingConfig = SequencingConfig,
 >(
+  entrypoint: entrypoint,
   config: FFCAConfig<sequencingConfig>,
 ): Promise<
-  FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig>
+  FFCA<
+    EntrypointStorageConfig<entrypoint>,
+    EntrypointMutationsConfig<entrypoint>,
+    EntrypointSignatureConfig<entrypoint>,
+    sequencingConfig
+  >
+>;
+export async function createFFCA<
+  const entrypoint extends FFCASolidityEntrypoint,
+  const sequencingConfig extends SequencingConfig = SequencingConfig,
+>(
+  entrypoint: entrypoint,
+  publicConfig: FFCAConfig<sequencingConfig>,
+): Promise<
+  FFCA<
+    EntrypointStorageConfig<entrypoint>,
+    EntrypointMutationsConfig<entrypoint>,
+    EntrypointSignatureConfig<entrypoint>,
+    sequencingConfig
+  >
 > {
+  const app = await loadSolidityFFCAApp(entrypoint, publicConfig);
   const scope = Effect.runSync(Scope.make());
   let closed = false;
 
@@ -89,11 +134,11 @@ export async function createFFCA<
   try {
     const ffca = await Effect.runPromise(
       createFFCAEffect<
-        storageConfig,
-        mutationsConfig,
-        signatureConfig,
+        EntrypointStorageConfig<entrypoint>,
+        EntrypointMutationsConfig<entrypoint>,
+        EntrypointSignatureConfig<entrypoint>,
         sequencingConfig
-      >(config).pipe(Effect.provideService(Scope.Scope, scope)),
+      >(app).pipe(Effect.provideService(Scope.Scope, scope)),
     );
 
     const runtimeOn = ffca.on as unknown as (
@@ -101,26 +146,32 @@ export async function createFFCA<
       cb: unknown,
     ) => Effect.Effect<() => void>;
     const on = ((event, cb) => Effect.runSync(runtimeOn(event, cb))) as FFCA<
-      storageConfig,
-      mutationsConfig,
-      signatureConfig,
+      EntrypointStorageConfig<entrypoint>,
+      EntrypointMutationsConfig<entrypoint>,
+      EntrypointSignatureConfig<entrypoint>,
       sequencingConfig
     >["on"];
 
     const execute = ((
-      submitted: FFCAMutationInput<mutationsConfig, signatureConfig>,
+      submitted: FFCAMutationInput<
+        EntrypointMutationsConfig<entrypoint>,
+        EntrypointSignatureConfig<entrypoint>
+      >,
     ) => Effect.runPromise(ffca.execute(submitted))) as FFCA<
-      storageConfig,
-      mutationsConfig,
-      signatureConfig,
+      EntrypointStorageConfig<entrypoint>,
+      EntrypointMutationsConfig<entrypoint>,
+      EntrypointSignatureConfig<entrypoint>,
       sequencingConfig
     >["execute"];
 
     return {
-      state: ffca.state as StorageProxy<storageConfig, true>,
+      state: ffca.state as StorageProxy<
+        EntrypointStorageConfig<entrypoint>,
+        true
+      >,
       schema: ffca.schema as unknown as FFCASchema<
-        mutationsConfig,
-        signatureConfig
+        EntrypointMutationsConfig<entrypoint>,
+        EntrypointSignatureConfig<entrypoint>
       >,
       domain: ffca.domain,
       execute,

@@ -1,8 +1,8 @@
-import type { PgTable } from "drizzle-orm/pg-core";
 import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
-import type { AbiParameter, PrivateKeyAccount } from "viem";
+import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseOptions } from "./db";
+import type { FFCASchema } from "./schema";
 
 export type InternalMutation = {
   tag: number;
@@ -37,6 +37,7 @@ type InternalSequencing = InternalFIFOSequencing | InternalBatchSequencing;
 
 export type InternalApp = {
   address: Address.Address;
+  abi: Abi;
   domain: InternalDomain;
   signature: { params: readonly AbiParameter[] };
   storageLayout: StorageLayout;
@@ -45,7 +46,7 @@ export type InternalApp = {
   rpcUrls: string[];
   database: DatabaseOptions;
   mutations: { [name: string]: InternalMutation };
-  schema: Record<string, PgTable>;
+  schema: FFCASchema;
   blockPollingIntervalMs: number;
   confirmations: InternalConfirmations;
   onFatalError: ((error: unknown) => void) | undefined;

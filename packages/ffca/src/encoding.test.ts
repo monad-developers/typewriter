@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
 import { encodeFunctionData } from "viem";
-import { COUNTER_ABI, COUNTER_SIGNATURE_PARAMS } from "../test/utils";
+import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import {
   decodeMutationCalldata,
   decodeSignatureCalldata,
@@ -11,6 +11,7 @@ import {
   encodeExecuteCalldata,
   encodeMutationCalldata,
   encodeSignatureCalldata,
+  FFCA_ABI,
 } from "./encoding";
 import type { ExecutableMutation } from "./types";
 
@@ -116,7 +117,7 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
     signatureData: ["0xaa" as `0x${string}`],
   };
   const expected = encodeFunctionData({
-    abi: COUNTER_ABI,
+    abi: FFCA_ABI,
     functionName: "execute",
     args: [[batch], []],
   });
@@ -143,7 +144,7 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
     signature,
   );
   const expected = encodeFunctionData({
-    abi: COUNTER_ABI,
+    abi: FFCA_ABI,
     functionName: "enqueue",
     args: [0, mutationData, signatureData],
   });

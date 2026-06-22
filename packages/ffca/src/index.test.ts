@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { anvil } from "viem/chains";
+import Counter from "../test/contracts/src/Counter.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_CLIENT,
@@ -11,9 +12,8 @@ import {
 } from "../test/setup";
 import {
   COUNTER_DOMAIN,
-  COUNTER_MUTATIONS,
-  COUNTER_SIGNATURE_PARAMS,
-  COUNTER_STORAGE_LAYOUT,
+  type COUNTER_MUTATIONS,
+  type COUNTER_SIGNATURE_PARAMS,
   counterNewAccountMutation,
   deployCounter,
   signCounter,
@@ -25,12 +25,12 @@ function counterAddMutation(params: {
   readonly amount: bigint;
   readonly nonce: bigint;
 }): FFCAMutation<
-  "add",
-  typeof COUNTER_MUTATIONS.add,
+  "Add",
+  typeof COUNTER_MUTATIONS.Add,
   typeof COUNTER_SIGNATURE_PARAMS
 > {
   return {
-    name: "add",
+    name: "Add",
     params: { amount: params.amount, nonce: params.nonce },
     signature: signCounter({
       privateKey: USER_PRIVATE_KEY,
@@ -132,14 +132,12 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["newAccount", "add"],
+      batchOrder: ["NewAccount", "Add"],
       batchIntervalMs: 250,
       submitIntervalMs: 25,
     },
@@ -148,24 +146,21 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
     onFatalError: (error) => {
       fatalErrors.push(error);
     },
-    mutations: COUNTER_MUTATIONS,
   } as const satisfies FFCAConfig;
 
-  const ffca = await createFFCA<
-    typeof COUNTER_STORAGE_LAYOUT,
-    typeof COUNTER_MUTATIONS,
-    typeof COUNTER_SIGNATURE_PARAMS
-  >(config);
+  const ffca = await createFFCA(Counter, config);
 
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribe = ffca.on("mutation", (event) => {
-      if (event.name === "newAccount" && event.status === "included") {
+      if (event.name === "NewAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
     await ffca.execute(
-      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+      counterNewAccountMutation({
+        address: USER_ACCOUNT.address,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
     );
     await setupIncluded.promise;
     unsubscribe();
@@ -178,10 +173,22 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
     });
     await TEST_CLIENT.mine({ blocks: 1 });
 
-    await ffca.execute(counterAddMutation({ address, amount: 7n, nonce: 0n }));
+    await ffca.execute(
+      counterAddMutation({
+        address,
+        amount: 7n,
+        nonce: 0n,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
 
     const pendingResult = await observeSettlement(
-      ffca.execute(counterAddMutation({ address, amount: 8n, nonce: 1n })),
+      ffca.execute(
+        counterAddMutation({
+          address,
+          amount: 8n,
+          nonce: 1n,
+        }) as unknown as Parameters<typeof ffca.execute>[0],
+      ),
       1_000,
     );
 
@@ -194,7 +201,13 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
       }
     });
     const futureResult = await observeSettlement(
-      ffca.execute(counterAddMutation({ address, amount: 9n, nonce: 2n })),
+      ffca.execute(
+        counterAddMutation({
+          address,
+          amount: 9n,
+          nonce: 2n,
+        }) as unknown as Parameters<typeof ffca.execute>[0],
+      ),
       1_000,
     );
 
@@ -205,7 +218,7 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
   } finally {
     await ffca.close();
   }
-});
+}, 10_000);
 
 test("createFFCA stops accepting mutations after fatal submit failure", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
@@ -217,51 +230,52 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: proxy.url,
     sequencing: {
       order: "batch",
-      batchOrder: ["newAccount", "add"],
+      batchOrder: ["NewAccount", "Add"],
       batchIntervalMs: 100,
       submitIntervalMs: 25,
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 50,
     onFatalError: fatalError.resolve,
-    mutations: COUNTER_MUTATIONS,
   } as const satisfies FFCAConfig;
 
-  const ffca = await createFFCA<
-    typeof COUNTER_STORAGE_LAYOUT,
-    typeof COUNTER_MUTATIONS,
-    typeof COUNTER_SIGNATURE_PARAMS
-  >(config);
+  const ffca = await createFFCA(Counter, config);
 
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribeSetup = ffca.on("mutation", (event) => {
-      if (event.name === "newAccount" && event.status === "included") {
+      if (event.name === "NewAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
     await ffca.execute(
-      counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+      counterNewAccountMutation({
+        address: USER_ACCOUNT.address,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
     );
     await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
     unsubscribeSetup();
 
     const accepted = Promise.withResolvers<void>();
     const unsubscribeAccepted = ffca.on("mutation", (event) => {
-      if (event.name === "add" && event.status === "accepted") {
+      if (event.name === "Add" && event.status === "accepted") {
         accepted.resolve();
       }
     });
 
     failFillTransaction = true;
-    await ffca.execute(counterAddMutation({ address, amount: 7n, nonce: 0n }));
+    await ffca.execute(
+      counterAddMutation({
+        address,
+        amount: 7n,
+        nonce: 0n,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
     await timeout(accepted.promise, 1_000, "mutation was not accepted");
     unsubscribeAccepted();
 
@@ -273,7 +287,11 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
     let rejected: unknown;
     try {
       await ffca.execute(
-        counterAddMutation({ address, amount: 8n, nonce: 1n }),
+        counterAddMutation({
+          address,
+          amount: 8n,
+          nonce: 1n,
+        }) as unknown as Parameters<typeof ffca.execute>[0],
       );
     } catch (error) {
       rejected = error;

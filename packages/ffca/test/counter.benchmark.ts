@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
 import type { FFCAConfig, FFCAMutation } from "../src";
+import Counter from "./contracts/src/Counter.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
@@ -10,9 +11,8 @@ import {
 } from "./setup";
 import {
   COUNTER_DOMAIN,
-  COUNTER_MUTATIONS,
-  COUNTER_SIGNATURE_PARAMS,
-  COUNTER_STORAGE_LAYOUT,
+  type COUNTER_MUTATIONS,
+  type COUNTER_SIGNATURE_PARAMS,
   counterNewAccountMutation,
   deployCounter,
   signCounter,
@@ -27,12 +27,12 @@ function counterAddMutation(params: {
   readonly amount: bigint;
   readonly nonce: bigint;
 }): FFCAMutation<
-  "add",
-  typeof COUNTER_MUTATIONS.add,
+  "Add",
+  typeof COUNTER_MUTATIONS.Add,
   typeof COUNTER_SIGNATURE_PARAMS
 > {
   return {
-    name: "add",
+    name: "Add",
     params: { amount: params.amount, nonce: params.nonce },
     signature: signCounter({
       privateKey: USER_PRIVATE_KEY,
@@ -62,25 +62,20 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
   const config = {
     address,
     domain: COUNTER_DOMAIN,
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
-    storageLayout: COUNTER_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     sequencing: { order: "fifo", submitIntervalMs: 3_600_000 },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-    mutations: COUNTER_MUTATIONS,
   } as const satisfies FFCAConfig;
 
-  const ffca = await createFFCA<
-    typeof COUNTER_STORAGE_LAYOUT,
-    typeof COUNTER_MUTATIONS,
-    typeof COUNTER_SIGNATURE_PARAMS
-  >(config);
+  const ffca = await createFFCA(Counter, config);
 
   await ffca.execute(
-    counterNewAccountMutation({ address: USER_ACCOUNT.address }),
+    counterNewAccountMutation({
+      address: USER_ACCOUNT.address,
+    }) as unknown as Parameters<typeof ffca.execute>[0],
   );
 
   const mutations = Array.from({ length: MUTATION_COUNT }, (_, index) =>
@@ -96,7 +91,9 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
 
   for (const mutation of mutations) {
     const mutationStart = performance.now();
-    await ffca.execute(mutation);
+    await ffca.execute(
+      mutation as unknown as Parameters<typeof ffca.execute>[0],
+    );
     mutationDurationsMs.push(performance.now() - mutationStart);
   }
 

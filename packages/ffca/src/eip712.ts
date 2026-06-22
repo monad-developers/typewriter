@@ -1,9 +1,9 @@
 import type { AbiParameter } from "abitype";
 import { type Hex, TypedData } from "ox";
-import type { FFCAMutationConfig } from "./config";
+import type { MutationConfig } from "./config";
 
 export function hashMutationEip712(
-  mutation: FFCAMutationConfig,
+  mutation: MutationConfig,
   name: string,
   params: unknown,
   domain: TypedData.Domain,
@@ -17,7 +17,7 @@ export function hashMutationEip712(
 }
 
 export function buildEip712Types(
-  mutation: FFCAMutationConfig,
+  mutation: MutationConfig,
   name: string,
 ): Record<string, { name: string; type: string }[]> {
   const types: Record<string, { name: string; type: string }[]> = {};

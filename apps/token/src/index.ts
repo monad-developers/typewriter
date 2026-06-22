@@ -1,15 +1,10 @@
 import { createFFCA, type MutationEvent, type MutationStatus } from "ffca";
 import superjson from "superjson";
-import {
-  type Address,
-  type Hex,
-  type ParseAbiParameters,
-  parseAbiParameters,
-} from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
 import index from "../frontend/index.html";
-import { TOKEN_DOMAIN, TOKEN_SIGNATURE_PARAMS } from "./app";
-import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
+import { TOKEN_DOMAIN } from "./app";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -31,41 +26,14 @@ const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
 const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
 const mutations = new Map<number, MutationEvent>();
 
-const ffca = await createFFCA<
-  typeof TOKEN_STORAGE_LAYOUT,
-  {
-    Transfer: {
-      params: ParseAbiParameters<"address from, address to, uint256 amount, uint256 nonce, uint256 deadline">;
-    };
-    Mint: {
-      params: ParseAbiParameters<"address to, uint256 amount, uint256 nonce, uint256 deadline">;
-    };
-  },
-  typeof TOKEN_SIGNATURE_PARAMS
->({
+const ffca = await createFFCA(Token, {
   address: tokenAddress,
-  signature: { params: TOKEN_SIGNATURE_PARAMS },
-  storageLayout: TOKEN_STORAGE_LAYOUT,
   account: scheduler,
   chainId,
   rpcUrl,
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   domain: TOKEN_DOMAIN,
   sequencing: { order: "fifo" },
-  mutations: {
-    Transfer: {
-      tag: 0,
-      params: parseAbiParameters(
-        "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
-      ),
-    },
-    Mint: {
-      tag: 1,
-      params: parseAbiParameters(
-        "address to, uint256 amount, uint256 nonce, uint256 deadline",
-      ),
-    },
-  },
 });
 
 ffca.on("mutation", (mutation) => {

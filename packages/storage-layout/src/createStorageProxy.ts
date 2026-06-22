@@ -82,6 +82,13 @@ type DynamicArrayProxy<Element, isAsync extends boolean> = {
   readonly length: isAsync extends true ? Promise<number> : number;
 };
 
+type UntypedStorageProxy = {
+  // biome-ignore lint/suspicious/noExplicitAny: broad layouts are an intentional escape hatch until generated types exist.
+  readonly [key: string]: any;
+  // biome-ignore lint/suspicious/noExplicitAny: broad layouts are an intentional escape hatch until generated types exist.
+  readonly [index: number]: any;
+};
+
 /**
  * Inferred shape of the proxy returned by {@link createStorageProxy}. The
  * structural shape mirrors {@link StorageLayoutToPrimitiveType}; when the
@@ -93,7 +100,9 @@ type DynamicArrayProxy<Element, isAsync extends boolean> = {
 export type StorageProxy<
   L extends StorageLayout,
   isAsync extends boolean,
-> = StorageProxyValue<StorageLayoutToPrimitiveType<L>, isAsync>;
+> = string extends L["storage"][number]["label"]
+  ? UntypedStorageProxy
+  : StorageProxyValue<StorageLayoutToPrimitiveType<L>, isAsync>;
 
 const decodeStorageVariableRuntime = decodeStorageVariable as (
   layout: StorageLayout,

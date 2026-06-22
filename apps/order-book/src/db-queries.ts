@@ -1,13 +1,9 @@
 import { count, desc, eq, gte } from "drizzle-orm";
 import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
-import type { FFCASchema } from "ffca";
 import type { Hex } from "viem";
-import type { ORDER_BOOK_MUTATIONS, ORDER_BOOK_SIGNATURE_PARAMS } from "./app";
 
-type OrderBookSchema = FFCASchema<
-  typeof ORDER_BOOK_MUTATIONS,
-  typeof ORDER_BOOK_SIGNATURE_PARAMS
->;
+// biome-ignore lint/suspicious/noExplicitAny: generated Solidity schema types will replace this temporary dynamic schema access
+type OrderBookSchema = any;
 type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
 
 const mutationTableNames = [

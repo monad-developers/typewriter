@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
 import type { FFCAConfig, FFCAMutation } from "../src";
+import Harness from "./contracts/src/Harness.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
@@ -12,9 +13,8 @@ import {
   deployHarness,
   encodeHarnessSignature,
   HARNESS_DOMAIN,
-  HARNESS_MUTATIONS,
-  HARNESS_SIGNATURE_PARAMS,
-  HARNESS_STORAGE_LAYOUT,
+  type HARNESS_MUTATIONS,
+  type HARNESS_SIGNATURE_PARAMS,
   harnessAccountId,
   secp256k1PublicKey,
   signHarness,
@@ -39,8 +39,8 @@ function harnessCreditMutation(params: {
   readonly amount: bigint;
   readonly nonce: bigint;
 }): FFCAMutation<
-  "credit",
-  typeof HARNESS_MUTATIONS.credit,
+  "Credit",
+  typeof HARNESS_MUTATIONS.Credit,
   typeof HARNESS_SIGNATURE_PARAMS
 > {
   const mutationParams = {
@@ -51,7 +51,7 @@ function harnessCreditMutation(params: {
   };
 
   return {
-    name: "credit",
+    name: "Credit",
     params: mutationParams,
     signature: harnessSignature({
       account: params.account,
@@ -60,7 +60,7 @@ function harnessCreditMutation(params: {
       rawSignature: signHarness({
         keyType: 2,
         privateKey: USER_PRIVATE_KEY,
-        mutation: "credit",
+        mutation: "Credit",
         params: mutationParams,
         address: params.address,
         chainId: anvil.id,
@@ -111,15 +111,9 @@ async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
 test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
   const { createFFCA } = await import("../src");
   const address = await deployHarness();
-  const configMutations = {
-    initialize: HARNESS_MUTATIONS.initialize,
-    credit: HARNESS_MUTATIONS.credit,
-  } as const satisfies FFCAConfig["mutations"];
   const config = {
     address,
     domain: HARNESS_DOMAIN,
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
-    storageLayout: HARNESS_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -127,25 +121,20 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
       order: "batch",
       batchIntervalMs: 10,
       submitIntervalMs: 3_600_000,
-      batchOrder: ["initialize", "credit"],
+      batchOrder: ["Initialize", "Credit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-    mutations: configMutations,
   } as const satisfies FFCAConfig;
 
-  const ffca = await createFFCA<
-    typeof HARNESS_STORAGE_LAYOUT,
-    typeof configMutations,
-    typeof HARNESS_SIGNATURE_PARAMS
-  >(config);
+  const ffca = await createFFCA(Harness, config);
 
   const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
   await withoutConsoleOutput(() =>
     ffca.execute({
-      name: "initialize",
+      name: "Initialize",
       params: {
         rootKeyType: 2,
         rootPublicKey,
@@ -156,7 +145,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
         keyType: 2,
         rawSignature: "0x",
       }),
-    }),
+    } as Parameters<typeof ffca.execute>[0]),
   );
 
   const mutations = Array.from({ length: MUTATION_COUNT }, (_, index) =>
@@ -174,7 +163,9 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   await withoutConsoleOutput(async () => {
     const promises = mutations.map(async (mutation, index) => {
       const mutationStart = performance.now();
-      await ffca.execute(mutation);
+      await ffca.execute(
+        mutation as unknown as Parameters<typeof ffca.execute>[0],
+      );
       mutationDurationsMs[index] = performance.now() - mutationStart;
     });
 

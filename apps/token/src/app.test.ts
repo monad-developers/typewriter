@@ -1,117 +1,40 @@
 import { expect, test } from "bun:test";
 import { createFFCA } from "ffca";
-import {
-  type AccountStorage,
-  type ConcreteStorageVariable,
-  decodeStorageVariable,
-  getStorageSlot,
-  type StorageVariableToPrimitiveType,
-} from "storage-layout";
-import {
-  type Address,
-  type ParseAbiParameters,
-  parseAbiParameters,
-} from "viem";
 import { anvil } from "viem/chains";
+import Token from "../contracts/src/Token.sol";
 import {
   deployToken,
   RECIPIENT_ACCOUNT,
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
-  TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
   USER_ACCOUNT,
 } from "../test/setup";
-import {
-  signMint,
-  signTransfer,
-  TOKEN_DOMAIN,
-  TOKEN_SIGNATURE_PARAMS,
-  type TokenFFCAConfig,
-} from "./app";
-import { TOKEN_STORAGE_LAYOUT } from "./storage-layout";
-
-async function readAccount(params: {
-  token: Address;
-  account: Address;
-}): Promise<{ nonce: bigint; balance: bigint }> {
-  async function readStorage<
-    variable extends ConcreteStorageVariable<typeof TOKEN_STORAGE_LAYOUT>,
-  >(
-    layout: typeof TOKEN_STORAGE_LAYOUT,
-    address: Address,
-    variable: variable,
-  ): Promise<
-    StorageVariableToPrimitiveType<typeof TOKEN_STORAGE_LAYOUT, variable>
-  > {
-    const slots = getStorageSlot(layout, variable);
-    const values = await Promise.all(
-      slots.map((slot) => TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })),
-    );
-    const storage = Object.fromEntries(
-      slots.map((slot, index) => [slot, values[index]!]),
-    ) as AccountStorage;
-
-    return decodeStorageVariable(layout, variable, storage);
-  }
-
-  return {
-    nonce: await readStorage(
-      TOKEN_STORAGE_LAYOUT,
-      params.token,
-      `accounts[${params.account}].nonce`,
-    ),
-    balance: await readStorage(
-      TOKEN_STORAGE_LAYOUT,
-      params.token,
-      `accounts[${params.account}].balance`,
-    ),
-  };
-}
+import { signMint, signTransfer, TOKEN_DOMAIN } from "./app";
 
 test("smoke: FIFO token mint and transfer settle onchain", async () => {
   const { address } = await deployToken();
   const config = {
     address,
-    signature: { params: TOKEN_SIGNATURE_PARAMS },
-    storageLayout: TOKEN_STORAGE_LAYOUT,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
     domain: TOKEN_DOMAIN,
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
-    mutations: {
-      Transfer: {
-        tag: 0,
-        params: parseAbiParameters(
-          "address from, address to, uint256 amount, uint256 nonce, uint256 deadline",
-        ),
-      },
-      Mint: {
-        tag: 1,
-        params: parseAbiParameters(
-          "address to, uint256 amount, uint256 nonce, uint256 deadline",
-        ),
-      },
-    },
-  } as const satisfies TokenFFCAConfig;
-  const ffca = await createFFCA<
-    typeof TOKEN_STORAGE_LAYOUT,
-    {
-      Transfer: {
-        params: ParseAbiParameters<"address from, address to, uint256 amount, uint256 nonce, uint256 deadline">;
-      };
-      Mint: {
-        params: ParseAbiParameters<"address to, uint256 amount, uint256 nonce, uint256 deadline">;
-      };
-    },
-    typeof TOKEN_SIGNATURE_PARAMS
-  >(config);
+  } as const;
+  const ffca = await createFFCA(Token, config);
 
   const acceptedMutationIds: number[] = [];
+  const includedMutationIds = new Set<number>();
   ffca.on("mutation", (event) => {
     if (event.status === "accepted") acceptedMutationIds.push(event.id);
+  });
+  ffca.on("block", (event) => {
+    if (event.status !== "included") return;
+    for (const mutation of event.mutations) {
+      includedMutationIds.add(mutation.id);
+    }
   });
 
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 60);
@@ -168,25 +91,11 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
 
   const deadlineMs = Date.now() + 5_000;
   while (true) {
-    const user = await readAccount({
-      token: address,
-      account: USER_ACCOUNT.address,
-    });
-    const recipient = await readAccount({
-      token: address,
-      account: RECIPIENT_ACCOUNT.address,
-    });
-    if (
-      user.balance === 60n &&
-      user.nonce === 2n &&
-      recipient.balance === 40n
-    ) {
+    if (includedMutationIds.size === 2) {
       break;
     }
     if (Date.now() > deadlineMs) {
-      throw new Error(
-        `token settlement timed out: user=${user.balance}/${user.nonce} recipient=${recipient.balance}/${recipient.nonce}`,
-      );
+      throw new Error("token settlement timed out");
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

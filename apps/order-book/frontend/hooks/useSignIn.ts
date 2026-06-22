@@ -59,7 +59,7 @@ export function useSignIn() {
           name: "Authorize",
           params: message,
           signature: { account: accountId, keyId: 0n, rawSignature },
-        } satisfies Extract<SubmittedOrderBookMutation, { name: "Authorize" }>,
+        } satisfies SubmittedOrderBookMutation<"Authorize">,
       });
 
       await setAccount({ accountId, keyId: keys.length, sessionKey });

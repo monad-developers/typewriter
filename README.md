@@ -109,23 +109,20 @@ The lifecycle of a mutation is as follows:
 
 `createFFCA` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`FFCAConfig` requires `address`, `domain`, `storageLayout`, `account`, `chainId`, `rpcUrl`, `database`, `mutations`, and `signature`. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
+`createFFCA` takes a Solidity entrypoint and runtime config. `FFCAConfig` requires `address`, `domain`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
 ```ts
 import { createFFCA } from "ffca";
-import { parseAbiParameters } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
 
-const ffca = await createFFCA({
+const ffca = await createFFCA(Token, {
   address, // the deployed FFCA contract
-  storageLayout,
   domain: { name: "Token", version: "1" },
   account: privateKeyToAccount(privateKey), // the transaction submitter
   chainId,
   rpcUrl,
   database: { url: databaseUrl },
-  mutations, // per-mutation tag and params
-  signature: { params: parseAbiParameters("bytes signature") },
   confirmations: {
     safeBlockDepth: 1,
     finalizedBlockDepth: 5,
@@ -140,7 +137,7 @@ const ffca = await createFFCA({
 // ... setup web server
 
 // submit a signed mutation; resolves once accepted
-const accepted = await ffca.execute({ name: "Transfer", params, signature });
+const accepted = await ffca.execute({ name: "transfer", params, signature });
 ```
 
 > Onchain submission is gated to a single scheduler address that the server controls (see [Contract structure](#contract-structure)). Because no one else can submit transactions, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
@@ -154,7 +151,7 @@ Sequencing controls the order mutations are accepted by the server and included 
 ```ts
 import { createFFCA } from "ffca";
 
-const app = createFFCA({
+const app = await createFFCA(Token, {
   // ... more config
   sequencing: {
     order: "fifo",
@@ -172,13 +169,13 @@ Onchain inclusion order matches the order mutations were executed with `ffca.exe
 ```ts
 import { createFFCA } from "ffca";
 
-const app = createFFCA({
+const app = await createFFCA(Token, {
   // ... more config
   sequencing: {
     order: "batch",
     batchIntervalMs: 50,
     submitIntervalMs: 400,
-    batchOrder: ["CancelOrder", "LimitOrder", "MarketOrder"],
+    batchOrder: ["cancelOrder", "limitOrder", "marketOrder"],
   }
 });
 ```
@@ -255,14 +252,14 @@ struct State {
 }
 ```
 
-> All Solidity data types are supported, but `mappings` usage must be annotated with `registerMappingKeys()`.
+> All Solidity data types are supported. Mapping and dynamic keys touched during accepted execution are recovered from the local EVM trace and persisted for read models when their storage slot preimages are available.
 
 #### Mutations
 
 Each mutation is a Solidity library with:
-- **`struct [Mutation]` definition**. The mutation's arguments. The app's `dispatch` function ABI-decodes the mutation's `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and order must match the `FFCAMutationConfig.params` registered with the runtime.
+- **`struct [Mutation]` definition**. The mutation's arguments. The app's `dispatch` function ABI-decodes the mutation's `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and order define the mutation params the runtime extracts from Solidity.
 - **`execute[Mutation]` function**. Applies the mutation to the state. Called by `dispatch` after the signature has verified — no auth checks here, just the state transition.
-- **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name must match the mutation's registered name (the key in the runtime's `mutations` config, which the client signs as the `primaryType`), and whose parameter names and declaration order must match the mutation's `params` (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). The type name is independent of the Solidity struct name — e.g. an `Add` struct registered under the name `add` uses `keccak256("add(uint256 amount,uint256 nonce)")`. `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
+- **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name must match the Solidity `Mutation` enum member with the first letter lowercased (the client signs this as the `primaryType`), and whose parameter names and declaration order must match the decoded mutation struct (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). The type name is independent of the Solidity struct name — e.g. `Mutation.Add` with an `Add` struct uses `keccak256("add(uint256 amount,uint256 nonce)")`. `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
 - **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `ffca/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
 
 ```solidity
@@ -494,35 +491,10 @@ Starts the runtime and resolves to the `FFCA` handle (see the [Server runtime](#
 - `chainId` — number.
 - `rpcUrl` — `string | string[]`.
 - `database` — `{ url, maxConnections? }` (Postgres).
-- `mutations` — a record of mutation name → `FFCAMutationConfig` (below).
-- `signature` — `{ params }`, the ABI parameters each mutation's signature decodes to.
 
 Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ safeBlockDepth?, finalizedBlockDepth? }`, defaults `1` / `5`), `onFatalError` (`(error) => void`; without it a fatal runtime error is rethrown), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
-**`FFCAMutationConfig`.** Each entry in `mutations` describes one mutation:
-
-- `tag` — the `uint8` that matches the contract's `Mutation` enum ordinal.
-- `params` — ABI parameters for the mutation arguments. Their names and order are the EIP-712 message fields and must match the contract's `[MUTATION]_TYPEHASH` (see [Mutations](#mutations-1)).
-- `registerMappingKeys?` — `({ params, signature }) => string[]`. Returns storage paths whose mapping/dynamic keys should be remembered for app read models.
-
-```ts
-mutations: {
-  Transfer: {
-    tag: 0,
-    params: parseAbiParameters("address from, address to, uint256 amount, uint256 nonce"),
-    registerMappingKeys: ({ params }) => [
-      `accounts[${params.from}].nonce`,
-      `accounts[${params.from}].balance`,
-      `accounts[${params.to}].balance`,
-    ],
-  },
-  MarketOrder: {
-    tag: 1,
-    params: parseAbiParameters("uint256 quantity, uint8 bidOrAsk, uint256 nonce"),
-    registerMappingKeys: ({ params, signature }) => [/* paths touched by market-order execution */],
-  },
-}
-```
+The Solidity entrypoint must be importable by Bun. At startup, ffca runs `forge build`, reads the compiled ABI/storage layout/AST, and derives mutation tags, params, signature params, and typed storage from the contract.
 
 #### `ffca.domain`
 
@@ -542,10 +514,10 @@ The resolved EIP-712 domain, derived from `config.domain` plus `chainId` and the
 ffca.execute(input: { name, params, signature }): Promise<{ id }>;
 ```
 
-Submits a signed mutation. `name` is a key from `config.mutations`, `params` matches that mutation's `params`, and `signature` matches `config.signature.params`. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
+Submits a signed mutation. `name` is a Solidity `Mutation` enum member with the first letter lowercased, `params` matches the mutation struct decoded in `dispatch`, and `signature` matches the contract's `Signature` struct. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
 
 ```ts
-const accepted = await ffca.execute({ name: "Transfer", params, signature });
+const accepted = await ffca.execute({ name: "transfer", params, signature });
 // accepted.id
 ```
 
@@ -573,7 +545,7 @@ ffca.schema: FFCASchema;
 
 The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. ffca owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
 
-One table per entry in `config.mutations`, named `<name>_mutations` with the mutation name lowercased — a mutation registered as `Transfer` becomes `ffca.schema.transfer_mutations`, `MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
+One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `ffca.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
 
 Every mutation table starts with the same **lifecycle columns**:
 
@@ -593,8 +565,8 @@ Every mutation table starts with the same **lifecycle columns**:
 
 Then two groups of payload columns:
 
-- **Param columns** — one per ABI parameter in the mutation's `params`, named after the parameter (an unnamed parameter becomes `arg<index>`).
-- **Signature columns** — one per ABI parameter in `config.signature.params`, each prefixed `signature_`.
+- **Param columns** — one per ABI parameter in the mutation struct decoded by `dispatch`, named after the parameter (an unnamed parameter becomes `arg<index>`).
+- **Signature columns** — one per ABI parameter in the contract's `Signature` struct, each prefixed `signature_`.
 
 Payload columns are typed from their ABI type:
 

@@ -23,6 +23,7 @@ import {
   type StorageProxy,
 } from "storage-layout";
 import {
+  type Abi,
   ContractFunctionRevertedError,
   decodeEventLog,
   formatTransactionReceipt,
@@ -45,7 +46,7 @@ import {
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
-  FFCA_ABI,
+  type FFCA_ABI,
 } from "./encoding";
 import type {
   BatchListener,
@@ -82,6 +83,11 @@ type RuntimeExecuteInput = {
   params: unknown;
   signature: unknown;
 };
+
+function resolveMutationConfig(app: InternalApp, name: string) {
+  const config = app.mutations[name];
+  return config === undefined ? undefined : { name, config };
+}
 
 export function updateMutationToAccepted(
   mutation: ReceivedMutation | EnqueuedMutation,
@@ -255,7 +261,7 @@ export function executeMutation(params: {
 
     if (executeResult.success === false) {
       return yield* Effect.fail(
-        createRevmRevertError(executeResult.revert_data),
+        createRevmRevertError(params.app.abi, executeResult.revert_data),
       );
     }
 
@@ -323,7 +329,7 @@ export function decodeEnqueuedMutation(params: {
   id: number;
 }): EnqueuedMutation {
   const forceInclusionLog = decodeEventLog({
-    abi: FFCA_ABI,
+    abi: params.app.abi as typeof FFCA_ABI,
     eventName: "ForceInclusionQueued",
     // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,
@@ -353,11 +359,12 @@ export function decodeEnqueuedMutation(params: {
 }
 
 export function createRevmRevertError(
+  abi: Abi,
   data: Hex.Hex | undefined,
   message = "revm execute reverted",
 ): ContractFunctionRevertedError {
   return new ContractFunctionRevertedError({
-    abi: FFCA_ABI,
+    abi,
     data,
     functionName: "execute",
     message,
@@ -546,7 +553,7 @@ export function createRuntimeEffect(
     );
 
     const batchOrder =
-      app.sequencing.order === "batch" ? app.sequencing.batchOrder : [];
+      app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
 
     let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
     const mutationListeners = new Set<MutationListener>();
@@ -834,6 +841,7 @@ export function createRuntimeEffect(
           if (simulateResult.success === false) {
             return yield* Effect.fail(
               createRevmRevertError(
+                app.abi,
                 simulateResult.revert_data,
                 "revm simulate reverted",
               ),
@@ -910,6 +918,7 @@ export function createRuntimeEffect(
       if (receipt.status === "reverted") {
         return yield* Effect.fail(
           createRevmRevertError(
+            app.abi,
             undefined,
             `settlement transaction reverted onchain: ${receipt.transactionHash}`,
           ),
@@ -1120,15 +1129,20 @@ export function createRuntimeEffect(
       mutation: RuntimeExecuteInput,
     ): Effect.Effect<FFCAMutationResult, unknown> {
       return Effect.gen(function* () {
-        const mutationConfig = app.mutations[mutation.name]!;
+        const resolvedMutation = resolveMutationConfig(app, mutation.name);
+        if (resolvedMutation === undefined) {
+          return yield* Effect.fail(
+            new Error(`unknown mutation: ${mutation.name}`),
+          );
+        }
 
         const runtimeMutation = {
-          name: mutation.name,
+          name: resolvedMutation.name,
           params: mutation.params,
           signature: mutation.signature,
           id: mutationId++,
           status: "received",
-          config: mutationConfig,
+          config: resolvedMutation.config,
         } as const satisfies ReceivedMutation;
 
         yield* Effect.logDebug("received mutation").pipe(
