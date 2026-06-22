@@ -36,6 +36,11 @@ Run all three checks at the repo root before saying a task is done — not just 
 - `bun run typecheck` — `tsc --noEmit` per workspace
 - `bun run test` — per-workspace test scripts
 
+For type-only changes (`.d.ts`, type tests, or purely compile-time inference
+work), `bun run test` is not required when `bun run lint` and
+`bun run typecheck` pass. Say explicitly that tests were skipped because the
+change is type-only.
+
 `bun run typecheck` alone is not sufficient: Biome catches things TS doesn't (formatting, unused imports under different rules), and TS catches things Biome doesn't (`noUnusedLocals`, type narrowing). Pre-existing failures unrelated to your changes are fine to flag and skip past, but don't introduce new ones.
 
 ## Bun-first conventions

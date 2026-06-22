@@ -37,7 +37,7 @@ async function createOrderBookFFCA(
   address: Hex,
   options: { submitIntervalMs?: number } = {},
 ) {
-  return (await createFFCA(Exchange, {
+  return await createFFCA(Exchange, {
     address,
     domain: { name: "Exchange", version: "1" },
     account: SCHEDULER_ACCOUNT,
@@ -49,8 +49,7 @@ async function createOrderBookFFCA(
       batchOrder: ORDER_BOOK_BATCH_ORDER,
       submitIntervalMs: options.submitIntervalMs ?? 60_000,
     },
-    // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
-  })) as any;
+  });
 }
 
 function secp256k1PublicKey(address: Address): Hex {

@@ -1,4 +1,4 @@
 declare module "*.sol" {
-  const entrypoint: import("./src/sol-parse").FFCASolidityEntrypoint;
+  const entrypoint: import("ffca").FFCASolidityEntrypoint;
   export default entrypoint;
 }

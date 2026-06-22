@@ -538,6 +538,88 @@ The exact `createFFCA` shape is not settled. The important direction is that the
 artifact replaces hand-copied ABI, storage layout, mutation tags, and mutation
 parameter declarations.
 
+## Current PR Status
+
+PR 44 implements a narrow first step: ffca can import an existing Solidity
+entrypoint, run `forge build`, read Forge artifacts/ASTs, and derive runtime
+metadata that previously had to be copied into TypeScript by hand.
+
+Implemented in the current branch:
+
+- locate a Foundry project for an imported `.sol` entrypoint
+- run `forge build --ast --extra-output storageLayout`
+- select the single contract in the entrypoint that inherits `FFCA`
+- derive ABI and flattened `State state` storage layout from the compiled
+  artifact
+- derive `Signature` ABI params from a source-level `Signature` struct
+- derive mutation tags from the `Mutation` enum
+- derive mutation params from `dispatch` branches that decode `mutationData`
+- feed derived ABI, storage layout, signature params, and mutation config into
+  `createFFCA`
+- remove copied ABI/storage/mutation/signature metadata from the token and
+  order-book apps
+- use Solidity `Mutation` enum member names as the public runtime mutation names
+- commit app-specific `.d.ts` declarations for the token and order-book Solidity
+  entrypoints so `createFFCA` infers state, mutation, and signature types
+
+This is runtime metadata extraction for today's FFCA-shaped contracts. It is not
+yet the wrapper-generation compiler described in this plan.
+
+Known acceptable limitations for this PR:
+
+- Solidity AST parsing errors are functional but not yet consistently
+  developer-friendly. Several failures still report low-level AST/source-offset
+  details instead of convention-focused messages.
+- Edge-case handling is intentionally narrow. The parser recognizes the current
+  `Mutation` enum plus `dispatch`/`abi.decode` shape rather than arbitrary
+  semantically equivalent Solidity.
+- Mutation params currently support elementary types, enums, and arrays of those.
+  Nested struct params should become tuple ABI params later; this is documented
+  by a failing test.
+- Resolution structs/functions from the future wrapper-generation model are not
+  implemented.
+- Determinism analysis is not implemented.
+- The generated wrapper/source/artifact pipeline is not implemented.
+
+Resolved PR follow-ups:
+
+- Public mutation names are the Solidity `Mutation` enum member names. Runtime
+  submission, events, batch ordering, schemas, and the generated TypeScript
+  surface all use those names directly.
+- App-specific `.d.ts` declarations now type Solidity imports for the token and
+  order-book entrypoints. This removes the temporary app-state casts from the
+  tests and lets `createFFCA` infer storage, mutations, and signature params from
+  the imported `.sol` value.
+
+Deployment work that remains out of scope for this PR:
+
+- Deployment metadata and artifact-hash persistence means storing a durable row
+  that binds an app/deployment to the exact source hash, generated source hash,
+  compiler settings, bytecode hash, deployed bytecode hash, and artifact hash the
+  runtime expects.
+- The deploy/load module means `createFFCA` can either deploy a compiled artifact
+  or load an existing deployment, then read deployed bytecode from the chain and
+  verify it matches the artifact before runtime startup.
+- Those deployment items matter once ffca owns generated wrappers and deployment.
+  They are not blockers for the current metadata-extraction PR, which still takes
+  an explicit contract address and parses the already-authored contract.
+
+Remaining larger plan work:
+
+- deployment metadata and artifact-hash persistence
+- deployment/load module with deployed-bytecode validation
+- generated TS artifact output instead of runtime-only metadata extraction
+- wrapper source generation for convention-following logic contracts
+- generated protocol functions: `execute`, `enqueue`, `forceExecute`, scheduler
+  access control, force-inclusion queue, protocol events, and dispatch
+- port `Harness` from hand-written protocol contract to logic contract plus
+  generated wrapper
+- port `Counter` through the same generated path
+- evaluate order-book migration after the fixture-generated path is proven
+- settle the open protocol decisions below, especially account/signature
+  boundary, force-inclusion queue policy, mutation tag stability, import/type
+  output shape, and determinism checks
+
 ## Implementation Plan
 
 ### 1. Write The Target Example

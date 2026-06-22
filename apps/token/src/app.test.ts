@@ -23,15 +23,14 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     domain: TOKEN_DOMAIN,
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
   } as const;
-  // biome-ignore lint/suspicious/noExplicitAny: generated Solidity types will replace this temporary app-state escape hatch
-  const ffca = (await createFFCA(Token, config)) as any;
+  const ffca = await createFFCA(Token, config);
 
   const acceptedMutationIds: number[] = [];
   const includedMutationIds = new Set<number>();
-  ffca.on("mutation", (event: { id: number; status: string }) => {
+  ffca.on("mutation", (event) => {
     if (event.status === "accepted") acceptedMutationIds.push(event.id);
   });
-  ffca.on("block", (event: { status: string; mutations: { id: number }[] }) => {
+  ffca.on("block", (event) => {
     if (event.status !== "included") return;
     for (const mutation of event.mutations) {
       includedMutationIds.add(mutation.id);

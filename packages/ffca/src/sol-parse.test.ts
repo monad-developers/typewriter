@@ -21,7 +21,7 @@ import {
   signCounter,
 } from "../test/utils";
 import { createFFCA, type FFCAConfig } from "./index";
-import { parseSolidityMetadata } from "./sol-parse";
+import { formatSolidityDeclaration, parseSolidityMetadata } from "./sol-parse";
 
 test("parseSolidityMetadata extracts Counter runtime metadata", async () => {
   const metadata = await parseSolidityMetadata(Counter);
@@ -333,6 +333,18 @@ test("parseSolidityMetadata extracts Token runtime metadata", async () => {
     `);
 }, 20_000);
 
+test("generated Token Solidity declaration matches committed artifact", async () => {
+  const metadata = await parseSolidityMetadata(Token);
+  const declaration = await Bun.file(
+    new URL(
+      "../../../apps/token/contracts/src/Token.sol.d.ts",
+      import.meta.url,
+    ),
+  ).text();
+
+  expect(formatSolidityDeclaration(metadata)).toBe(declaration);
+}, 20_000);
+
 test("parseSolidityMetadata extracts Exchange runtime metadata", async () => {
   const metadata = await parseSolidityMetadata(Exchange);
 
@@ -482,6 +494,18 @@ test("parseSolidityMetadata extracts Exchange runtime metadata", async () => {
       ],
     }
     `);
+}, 20_000);
+
+test("generated Exchange Solidity declaration matches committed artifact", async () => {
+  const metadata = await parseSolidityMetadata(Exchange);
+  const declaration = await Bun.file(
+    new URL(
+      "../../../apps/order-book/contracts/src/Exchange.sol.d.ts",
+      import.meta.url,
+    ),
+  ).text();
+
+  expect(formatSolidityDeclaration(metadata)).toBe(declaration);
 }, 20_000);
 
 test("parseSolidityMetadata errors when no contract inherits FFCA", async () => {

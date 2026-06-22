@@ -23,6 +23,5 @@
       "ffca-evm": ["../../packages/ffca-evm/src/index.ts"],
       "storage-layout": ["../../packages/storage-layout/src/index.ts"]
     }
-  },
-  "include": ["src", "test", "frontend"]
+  }
 }
