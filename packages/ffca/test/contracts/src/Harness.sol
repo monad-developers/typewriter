@@ -217,11 +217,6 @@ contract Harness is FFCA {
 
     constructor() {
         SCHEDULER = msg.sender;
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Harness")), keccak256(bytes("1")), block.chainid, address(this)
-            )
-        );
         // .0001 downtime / month / (.4 s / block) * 2,629,800 s / month
         FORCE_INCLUSION_DELAY = 658;
     }

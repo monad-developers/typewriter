@@ -10,7 +10,7 @@ import {
   TEST_RPC_URL,
   USER_ACCOUNT,
 } from "../test/setup";
-import { signMint, signTransfer, TOKEN_DOMAIN } from "./app";
+import { signMint, signTransfer } from "./app";
 
 test("smoke: FIFO token mint and transfer settle onchain", async () => {
   const { address } = await deployToken();
@@ -20,7 +20,6 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 4 },
-    domain: TOKEN_DOMAIN,
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
   } as const;
   const ffca = await createFFCA(Token, config);

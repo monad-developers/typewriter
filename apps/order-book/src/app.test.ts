@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { createFFCA } from "ffca";
+import { createFFCA, FFCA_DOMAIN } from "ffca";
 import { ALL_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
@@ -39,7 +39,6 @@ async function createOrderBookFFCA(
 ) {
   return await createFFCA(Exchange, {
     address,
-    domain: { name: "Exchange", version: "1" },
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -155,8 +154,7 @@ async function signedMutation<const name extends string>(input: {
       : await signTypedData({
           privateKey: input.privateKey,
           domain: {
-            name: "Exchange",
-            version: "1",
+            ...FFCA_DOMAIN,
             chainId: anvil.id,
             verifyingContract: input.address,
           },

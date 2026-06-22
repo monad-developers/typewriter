@@ -3,6 +3,7 @@ import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
+import { FFCA_DOMAIN } from "./eip712";
 import type { InternalApp } from "./internal";
 import { createMutationSchema } from "./schema";
 
@@ -50,7 +51,6 @@ export type FFCAConfig<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   address: Address.Address;
-  domain: { name: string; version: string };
   account: PrivateKeyAccount;
   chainId: number;
   rpcUrl: string | string[];
@@ -180,8 +180,7 @@ export function buildInternalApp(params: {
     address: config.address,
     abi,
     domain: {
-      name: config.domain.name,
-      version: config.domain.version,
+      ...FFCA_DOMAIN,
       chainId: config.chainId,
       verifyingContract: config.address,
     },

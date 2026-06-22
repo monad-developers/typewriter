@@ -29,7 +29,6 @@ if (process.env.DATABASE_URL === undefined) {
 
 const app = await createFFCA(Exchange, {
   address: EXCHANGE_ADDRESS,
-  domain: { name: "Exchange", version: "1" },
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,

@@ -17,7 +17,7 @@ contract TokenTest is Test {
     function setUp() public {
         domainSeparator = keccak256(
             abi.encode(
-                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Token")), keccak256(bytes("1")), block.chainid, address(this)
+                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("FFCA")), keccak256(bytes("1")), block.chainid, address(this)
             )
         );
     }

@@ -7,9 +7,10 @@ import {
   toHex,
 } from "viem";
 
+const FFCA_DOMAIN_NAME = "FFCA";
+const FFCA_DOMAIN_VERSION = "1";
+
 export type AppDomain = {
-  name: string;
-  version: string;
   chainId: number;
   verifyingContract: Address;
 };
@@ -24,8 +25,8 @@ export function domainHash(domain: AppDomain): Hex {
             "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
           ),
         ),
-        keccak256(toHex(domain.name)),
-        keccak256(toHex(domain.version)),
+        keccak256(toHex(FFCA_DOMAIN_NAME)),
+        keccak256(toHex(FFCA_DOMAIN_VERSION)),
         BigInt(domain.chainId),
         domain.verifyingContract,
       ],

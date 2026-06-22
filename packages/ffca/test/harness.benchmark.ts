@@ -12,7 +12,6 @@ import {
 import {
   deployHarness,
   encodeHarnessSignature,
-  HARNESS_DOMAIN,
   type HARNESS_MUTATIONS,
   type HARNESS_SIGNATURE_PARAMS,
   harnessAccountId,
@@ -113,7 +112,6 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   const address = await deployHarness();
   const config = {
     address,
-    domain: HARNESS_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,

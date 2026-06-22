@@ -40,15 +40,6 @@ contract NestedParam is FFCA {
 
     constructor() {
         SCHEDULER = msg.sender;
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("NestedParam")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
-        );
         FORCE_INCLUSION_DELAY = 658;
     }
 

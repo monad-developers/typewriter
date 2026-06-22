@@ -1,3 +1,4 @@
+import { FFCA_DOMAIN } from "ffca";
 import {
   type Address,
   encodeAbiParameters,
@@ -7,7 +8,7 @@ import {
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 
-export const TOKEN_DOMAIN = { name: "Token", version: "1" } as const;
+const TOKEN_DOMAIN = FFCA_DOMAIN;
 
 export type TokenSignature = {
   keyType: number;

@@ -3,9 +3,9 @@ import { anvil } from "viem/chains";
 import Counter from "../test/contracts/src/Counter.sol";
 import { SCHEDULER_ACCOUNT, TEST_DB_URL, TEST_RPC_URL } from "../test/setup";
 import { deployCounter } from "../test/utils";
-import { createFFCA } from "./index";
+import { createFFCA, FFCA_DOMAIN } from "./index";
 
-test("ffca.domain is derived from config", async () => {
+test("ffca.domain is fixed", async () => {
   const address = await deployCounter(SCHEDULER_ACCOUNT.address);
   const ffca = await createFFCA(Counter, {
     address,
@@ -13,15 +13,13 @@ test("ffca.domain is derived from config", async () => {
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
     database: { url: TEST_DB_URL, maxConnections: 2 },
-    domain: { name: "my-app", version: "2" },
   });
 
   try {
     expect(ffca.domain).toEqual({
+      ...FFCA_DOMAIN,
       chainId: anvil.id,
-      name: "my-app",
       verifyingContract: address,
-      version: "2",
     });
   } finally {
     await ffca.close();

@@ -4,7 +4,6 @@ import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 import index from "../frontend/index.html";
-import { TOKEN_DOMAIN } from "./app";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -20,21 +19,18 @@ function jsonResponse(data: unknown): Response {
   });
 }
 
-const rpcUrl = requireEnv("RPC_URL");
-const chainId = Number(requireEnv("CHAIN_ID"));
-const tokenAddress = requireEnv("TOKEN_ADDRESS") as Address;
 const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
-const mutations = new Map<number, MutationEvent>();
 
 const ffca = await createFFCA(Token, {
-  address: tokenAddress,
+  address: requireEnv("TOKEN_ADDRESS") as Address,
   account: scheduler,
-  chainId,
-  rpcUrl,
+  chainId: Number(requireEnv("CHAIN_ID")),
+  rpcUrl: requireEnv("RPC_URL"),
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
-  domain: TOKEN_DOMAIN,
   sequencing: { order: "fifo" },
 });
+
+const mutations = new Map<number, MutationEvent>();
 
 ffca.on("mutation", (mutation) => {
   mutations.set(mutation.id, mutation);
@@ -57,28 +53,13 @@ const server = Bun.serve({
       });
     },
     "/api/addresses": () =>
-      jsonResponse([
-        ...new Set([...Object.keys(ffca.state.accounts), scheduler.address]),
-      ]),
+      jsonResponse([...Object.keys(ffca.state.accounts), scheduler.address]),
     "/api": {
       POST: async (req) => {
-        const body = superjson.parse(await req.text()) as {
-          name: string;
-          params: unknown;
-          signature: unknown;
-        };
-        if (
-          typeof body.name !== "string" ||
-          body.params === undefined ||
-          body.signature === undefined
-        ) {
-          return new Response("Bad Request", { status: 400 });
-        }
-        const mutation = await ffca.execute({
-          name: body.name,
-          params: body.params,
-          signature: body.signature,
-        } as Parameters<typeof ffca.execute>[0]);
+        const body = superjson.parse(await req.text());
+        const mutation = await ffca.execute(
+          body as Parameters<typeof ffca.execute>[0],
+        );
         return jsonResponse(mutation);
       },
     },

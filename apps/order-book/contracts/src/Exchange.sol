@@ -225,15 +225,6 @@ contract Exchange is FFCA {
 
     constructor(address _scheduler) {
         SCHEDULER = _scheduler;
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("Exchange")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
-        );
         FORCE_INCLUSION_DELAY = 658;
     }
 

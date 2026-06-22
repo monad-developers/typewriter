@@ -4,7 +4,7 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
   readonly storageLayout: {
     readonly storage: readonly [
       {
-        readonly astId: 41533;
+        readonly astId: 41570;
         readonly contract: "src/Token.sol:Token";
         readonly label: "totalSupply";
         readonly offset: 0;
@@ -12,12 +12,12 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
         readonly type: "t_uint256";
       },
       {
-        readonly astId: 41538;
+        readonly astId: 41575;
         readonly contract: "src/Token.sol:Token";
         readonly label: "accounts";
         readonly offset: 0;
         readonly slot: "3";
-        readonly type: "t_mapping(t_address,t_struct(Account)41531_storage)";
+        readonly type: "t_mapping(t_address,t_struct(Account)41568_storage)";
       },
     ];
     readonly types: {
@@ -26,31 +26,31 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
         readonly label: "address";
         readonly numberOfBytes: "20";
       };
-      readonly "t_array(t_struct(QueuedMutation)532_storage)dyn_storage": {
+      readonly "t_array(t_struct(QueuedMutation)538_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
         readonly label: "struct FFCA.QueuedMutation[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(QueuedMutation)532_storage";
+        readonly base: "t_struct(QueuedMutation)538_storage";
       };
       readonly t_bytes_storage: {
         readonly encoding: "bytes";
         readonly label: "bytes";
         readonly numberOfBytes: "32";
       };
-      readonly "t_mapping(t_address,t_struct(Account)41531_storage)": {
+      readonly "t_mapping(t_address,t_struct(Account)41568_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_address";
         readonly label: "mapping(address => struct Account)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Account)41531_storage";
+        readonly value: "t_struct(Account)41568_storage";
       };
-      readonly "t_struct(Account)41531_storage": {
+      readonly "t_struct(Account)41568_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Account";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 41528;
+            readonly astId: 41565;
             readonly contract: "src/Token.sol:Token";
             readonly label: "nonce";
             readonly offset: 0;
@@ -58,7 +58,7 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
             readonly type: "t_uint256";
           },
           {
-            readonly astId: 41530;
+            readonly astId: 41567;
             readonly contract: "src/Token.sol:Token";
             readonly label: "balance";
             readonly offset: 0;
@@ -67,13 +67,13 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(QueuedMutation)532_storage": {
+      readonly "t_struct(QueuedMutation)538_storage": {
         readonly encoding: "inplace";
         readonly label: "struct FFCA.QueuedMutation";
         readonly numberOfBytes: "128";
         readonly members: readonly [
           {
-            readonly astId: 525;
+            readonly astId: 531;
             readonly contract: "src/Token.sol:Token";
             readonly label: "mutation";
             readonly offset: 0;
@@ -81,7 +81,7 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
             readonly type: "t_uint8";
           },
           {
-            readonly astId: 527;
+            readonly astId: 533;
             readonly contract: "src/Token.sol:Token";
             readonly label: "mutationData";
             readonly offset: 0;
@@ -89,7 +89,7 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 529;
+            readonly astId: 535;
             readonly contract: "src/Token.sol:Token";
             readonly label: "signatureData";
             readonly offset: 0;
@@ -97,7 +97,7 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 531;
+            readonly astId: 537;
             readonly contract: "src/Token.sol:Token";
             readonly label: "enqueuedBlock";
             readonly offset: 0;
@@ -106,13 +106,13 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(State)41539_storage": {
+      readonly "t_struct(State)41576_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 41533;
+            readonly astId: 41570;
             readonly contract: "src/Token.sol:Token";
             readonly label: "totalSupply";
             readonly offset: 0;
@@ -120,12 +120,12 @@ declare const entrypoint: import("ffca").FFCASolidityEntrypoint<{
             readonly type: "t_uint256";
           },
           {
-            readonly astId: 41538;
+            readonly astId: 41575;
             readonly contract: "src/Token.sol:Token";
             readonly label: "accounts";
             readonly offset: 0;
             readonly slot: "1";
-            readonly type: "t_mapping(t_address,t_struct(Account)41531_storage)";
+            readonly type: "t_mapping(t_address,t_struct(Account)41568_storage)";
           },
         ];
       };

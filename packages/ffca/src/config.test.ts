@@ -17,6 +17,7 @@ import type {
   SignatureConfig,
   StorageConfig,
 } from "./config";
+import { FFCA_DOMAIN } from "./eip712";
 import type { FFCA, FFCAMutationInput } from "./index";
 
 function createFFCATest<
@@ -28,7 +29,11 @@ function createFFCATest<
   return {
     state: {},
     schema: {},
-    domain: {},
+    domain: {
+      ...FFCA_DOMAIN,
+      chainId: 1,
+      verifyingContract: "0x0000000000000000000000000000000000000000",
+    },
     execute: async () => ({ id: 0 }),
     on: () => () => {},
   } as unknown as FFCA<
@@ -52,7 +57,6 @@ const publicConfig = {
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
-  domain: { name: "", version: "1" },
 } as const satisfies FFCAConfig;
 
 test("FFCAConfig accepts app-owned runtime config only", () => {

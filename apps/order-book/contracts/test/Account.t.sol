@@ -43,7 +43,7 @@ contract AccountTest is Test {
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("Exchange")),
+                keccak256(bytes("FFCA")),
                 keccak256(bytes("1")),
                 block.chainid,
                 address(this)

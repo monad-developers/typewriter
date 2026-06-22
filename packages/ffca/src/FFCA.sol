@@ -9,6 +9,8 @@ enum KeyType {
 
 bytes32 constant EIP712_DOMAIN_TYPEHASH =
     keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+string constant FFCA_DOMAIN_NAME = "FFCA";
+string constant FFCA_DOMAIN_VERSION = "1";
 address constant P256_VERIFIER = address(0x100);
 
 error UnknownMutation(uint8 mutation);
@@ -105,6 +107,18 @@ abstract contract FFCA {
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
     uint256 internal immutable FORCE_INCLUSION_DELAY;
+
+    constructor() {
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes(FFCA_DOMAIN_NAME)),
+                keccak256(bytes(FFCA_DOMAIN_VERSION)),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
 
     QueuedMutation[] internal queue;
     uint256 public executionIndex;

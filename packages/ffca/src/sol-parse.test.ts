@@ -15,7 +15,6 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_DOMAIN,
   counterNewAccountMutation,
   deployCounter,
   signCounter,
@@ -561,7 +560,6 @@ test("createFFCA accepts an imported Solidity entrypoint", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const ffca = await createFFCA(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,

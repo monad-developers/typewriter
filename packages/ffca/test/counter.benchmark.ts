@@ -10,7 +10,6 @@ import {
   USER_PRIVATE_KEY,
 } from "./setup";
 import {
-  COUNTER_DOMAIN,
   type COUNTER_MUTATIONS,
   type COUNTER_SIGNATURE_PARAMS,
   counterNewAccountMutation,
@@ -61,7 +60,6 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
   const address = await deployCounter(USER_ACCOUNT.address);
   const config = {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,

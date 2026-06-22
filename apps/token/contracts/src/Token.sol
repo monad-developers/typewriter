@@ -58,11 +58,6 @@ contract Token is FFCA {
     constructor(address _scheduler) {
         if (_scheduler == address(0)) revert InvalidScheduler();
         SCHEDULER = _scheduler;
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Token")), keccak256(bytes("1")), block.chainid, address(this)
-            )
-        );
         FORCE_INCLUSION_DELAY = 658;
     }
 

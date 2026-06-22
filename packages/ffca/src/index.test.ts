@@ -11,7 +11,6 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_DOMAIN,
   type COUNTER_MUTATIONS,
   type COUNTER_SIGNATURE_PARAMS,
   counterNewAccountMutation,
@@ -187,7 +186,6 @@ test("createFFCA keeps accepting mutations after external submitter transaction"
   const fatalErrors: unknown[] = [];
   const config = {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -363,6 +361,99 @@ test("createFFCA serializes submit attempts", async () => {
   }
 }, 15_000);
 
+test("createFFCA waits for the next block before submitting again", async () => {
+  const address = await deployCounter(USER_ACCOUNT.address);
+  const config = {
+    address,
+    account: SCHEDULER_ACCOUNT,
+    chainId: anvil.id,
+    rpcUrl: TEST_RPC_URL,
+    sequencing: {
+      order: "batch",
+      batchOrder: ["NewAccount", "Add"],
+      batchIntervalMs: 100,
+      submitIntervalMs: 25,
+    },
+    database: { url: TEST_DB_URL, maxConnections: 2 },
+    blockPollingIntervalMs: 50,
+  } as const satisfies FFCAConfig;
+
+  const ffca = await createFFCA(Counter, config);
+
+  try {
+    const setupIncluded = Promise.withResolvers<void>();
+    const unsubscribeSetup = ffca.on("mutation", (event) => {
+      if (event.name === "NewAccount" && event.status === "included") {
+        setupIncluded.resolve();
+      }
+    });
+
+    await ffca.execute(
+      counterNewAccountMutation({
+        address: USER_ACCOUNT.address,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
+    await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
+    unsubscribeSetup();
+
+    const firstAddIncluded = Promise.withResolvers<void>();
+    const unsubscribeFirstAdd = ffca.on("mutation", (event) => {
+      if (
+        event.name === "Add" &&
+        event.status === "included" &&
+        event.params.amount === 7n
+      ) {
+        firstAddIncluded.resolve();
+      }
+    });
+
+    await ffca.execute(
+      counterAddMutation({
+        address,
+        amount: 7n,
+        nonce: 0n,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
+    await timeout(firstAddIncluded.promise, 5_000, "first add timed out");
+    unsubscribeFirstAdd();
+
+    const secondAddIncluded = Promise.withResolvers<void>();
+    const unsubscribeSecondAdd = ffca.on("mutation", (event) => {
+      if (
+        event.name === "Add" &&
+        event.status === "included" &&
+        event.params.amount === 8n
+      ) {
+        secondAddIncluded.resolve();
+      }
+    });
+
+    await ffca.execute(
+      counterAddMutation({
+        address,
+        amount: 8n,
+        nonce: 1n,
+      }) as unknown as Parameters<typeof ffca.execute>[0],
+    );
+
+    const beforeMine = await observeSettlement(
+      secondAddIncluded.promise,
+      1_000,
+    );
+    expect(beforeMine.status).toBe("timed-out");
+
+    await TEST_CLIENT.mine({ blocks: 1 });
+    await timeout(
+      secondAddIncluded.promise,
+      5_000,
+      "second add timed out after next block",
+    );
+    unsubscribeSecondAdd();
+  } finally {
+    await ffca.close();
+  }
+}, 15_000);
+
 test("createFFCA stops accepting mutations after fatal submit failure", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   let failFillTransaction = false;
@@ -372,7 +463,6 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
   });
   const config = {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: proxy.url,

@@ -22,6 +22,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
 import type { FFCAMutation } from "../src";
+import { FFCA_DOMAIN } from "../src";
 import type { ResolvedFFCAMutationConfig } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
 import {
@@ -30,10 +31,6 @@ import {
   TEST_WALLET_CLIENT,
 } from "./setup";
 
-// Counter's EIP-712 domain. Matches the constructor args used in
-// deployCounter() so client-side digests align with the on-chain
-// domainSeparator.
-export const COUNTER_DOMAIN = { name: "Counter", version: "1" } as const;
 export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
   "bytes32 accountId, bytes publicKey, bytes rawSignature",
 );
@@ -115,8 +112,6 @@ export const STUB_FFCA_ABI = [
     anonymous: false,
   },
 ] as const satisfies Abi.Abi;
-
-export const HARNESS_DOMAIN = { name: "Harness", version: "1" } as const;
 
 // Deploy a forge-built contract by name. Reads the artifact from the
 // contracts workspace, broadcasts via the test wallet, waits for the
@@ -235,8 +230,7 @@ export function signCounter(params: {
   readonly rawSignature: Hex;
 } {
   const domain: TypedData.Domain = {
-    name: COUNTER_DOMAIN.name,
-    version: COUNTER_DOMAIN.version,
+    ...FFCA_DOMAIN,
     chainId: params.chainId,
     verifyingContract: params.address,
   };
@@ -378,8 +372,7 @@ export function signHarness(params: {
   chainId: number;
 }): Hex {
   const domain: TypedData.Domain = {
-    name: HARNESS_DOMAIN.name,
-    version: HARNESS_DOMAIN.version,
+    ...FFCA_DOMAIN,
     chainId: params.chainId,
     verifyingContract: params.address,
   };

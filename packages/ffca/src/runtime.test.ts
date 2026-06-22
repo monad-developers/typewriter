@@ -23,12 +23,10 @@ import {
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  COUNTER_DOMAIN,
   counterNewAccountMutation,
   deployCounter,
   deployHarness,
   encodeHarnessSignature,
-  HARNESS_DOMAIN,
   harnessAccountId,
   p256PublicKey,
   readContractStorage,
@@ -131,7 +129,6 @@ test("createRuntimeBatchEffect", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -168,7 +165,6 @@ test("runtime loads persisted slot state before returning", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -228,7 +224,6 @@ test("execute() returns an accepted mutation", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -289,7 +284,6 @@ test("execute() accepts multiple mutations in a batch", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -365,7 +359,6 @@ test("runtime emits mutation, batch, and block events", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -544,7 +537,6 @@ test("runtime persists mutations to database", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -682,7 +674,6 @@ test("runtime submits a mutation onchain", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -746,7 +737,6 @@ test("runtime finalizes a mutation", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -808,7 +798,6 @@ test("runtime reorders Harness mutations by batch order", async () => {
 
   const app = await loadSolidityFFCAApp(Harness, {
     address,
-    domain: HARNESS_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -898,7 +887,6 @@ test("fifo runtime preserves submission order without batch reordering", async (
 
   const app = await loadSolidityFFCAApp(Harness, {
     address,
-    domain: HARNESS_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1006,7 +994,6 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
 
   const app = await loadSolidityFFCAApp(Harness, {
     address,
-    domain: HARNESS_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1074,7 +1061,6 @@ test("runtime handles Harness account management with multiple signature types",
 
   const app = await loadSolidityFFCAApp(Harness, {
     address,
-    domain: HARNESS_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1219,7 +1205,6 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1313,7 +1298,6 @@ test("runtime handles failing mutation", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
@@ -1371,7 +1355,6 @@ test("runtime program handles interrupt", async () => {
 
   const app = await loadSolidityFFCAApp(Counter, {
     address,
-    domain: COUNTER_DOMAIN,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,

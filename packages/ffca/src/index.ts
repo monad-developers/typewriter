@@ -10,6 +10,9 @@ import type {
   StorageConfig,
 } from "./config";
 import { createFFCAEffect } from "./ffca";
+
+export { FFCA_DOMAIN } from "./eip712";
+
 import type { FFCASchema } from "./schema";
 import { type FFCASolidityEntrypoint, loadSolidityFFCAApp } from "./sol-parse";
 import type {

@@ -1,3 +1,4 @@
+import { FFCA_DOMAIN } from "ffca";
 import { DEFAULT_NON_ROOT_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
 import * as Address from "ox/Address";
 import * as Hash from "ox/Hash";
@@ -19,8 +20,7 @@ const FETCH_TIMEOUT_MS = 30_000;
 
 function domain() {
   return {
-    name: "Exchange" as const,
-    version: "1" as const,
+    ...FFCA_DOMAIN,
     chainId: CHAIN_ID,
     verifyingContract: EXCHANGE_ADDRESS,
   };
