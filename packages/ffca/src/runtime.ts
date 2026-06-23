@@ -928,10 +928,24 @@ export function createRuntimeEffect(
       // `eth_fillTransaction` returns an already-signed `raw`; strip its
       // signature fields so the account re-signs over the correct payload.
       const transaction = parseTransaction(filled.raw);
+      // The RPC backing `eth_fillTransaction` can be out of sync with the one
+      // backing the send, so the nonce it fills may be stale and override our
+      // clamp. Force our locally reconciled nonce onto the transaction so the
+      // broadcast nonce is exactly the value we tracked, independent of fill's
+      // view of the pending pool.
+      const filledNonce = transaction.nonce;
+      transaction.nonce = Number(transactionNonce);
       delete transaction.r;
       delete transaction.s;
       delete transaction.v;
       delete transaction.yParity;
+      yield* Effect.logDebug("reconciled settlement nonce").pipe(
+        Effect.annotateLogs({
+          pendingNonce,
+          computedNonce: transactionNonce,
+          filledNonce,
+        }),
+      );
       const signed = yield* Effect.tryPromise({
         try: () => app.account.signTransaction(transaction),
         catch: (error) => error as Error,
