@@ -77,7 +77,6 @@ import type { LocalLog } from "./watch";
 import { Watch } from "./watch";
 
 const FIFO_BATCH_INTERVAL_MS = 4;
-const RECEIPT_POLL_INTERVAL = Duration.millis(200);
 const SUBMIT_RETRY_TIMES = 5;
 
 type RuntimeExecuteInput = {
@@ -558,6 +557,15 @@ export function createRuntimeEffect(
     const batchOrder =
       app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
 
+    const requestPendingTransactionNonce = Effect.gen(function* () {
+      const nonce = yield* rpc.request({
+        method: "eth_getTransactionCount",
+        params: [app.account.address, "pending"],
+      });
+      return Hex.toBigInt(nonce);
+    });
+    let nextTransactionNonce = yield* requestPendingTransactionNonce;
+
     let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
     const mutationListeners = new Set<MutationListener>();
     const batchListeners = new Set<BatchListener>();
@@ -878,84 +886,54 @@ export function createRuntimeEffect(
         simulateResult,
       } = simulation;
 
+      const transactionNonce = nextTransactionNonce++;
       const transactionStartedAtMs = startTimer();
 
-      let hash: Hex.Hex | undefined;
-
-      const broadcastTransaction = Effect.gen(function* () {
-        // Fees and nonce come from `eth_fillTransaction` (round-robined); gas and
-        // access list come from the local simulation. The node returns the fully-
-        // filled transaction as `raw`, which we parse straight back into a
-        // signable transaction (instead of rebuilding it field by field), sign
-        // locally, and broadcast via the multiplexed `eth_sendRawTransactionSync`
-        // so the fastest non-erroring provider wins.
-        const filled = yield* rpc.request({
-          method: "eth_fillTransaction",
-          params: [
-            {
-              from: app.account.address,
-              to: app.address,
-              data: calldata,
-              gas: Hex.fromNumber(simulateResult.gas_limit),
-              accessList: simulateResult.access_list,
-            },
-          ],
-        });
-
-        // `eth_fillTransaction` returns an already-signed `raw`; strip its
-        // signature fields so the account re-signs over the correct payload.
-        const transaction = parseTransaction(filled.raw);
-        delete transaction.r;
-        delete transaction.s;
-        delete transaction.v;
-        delete transaction.yParity;
-        const signed = yield* Effect.tryPromise({
-          try: () => app.account.signTransaction(transaction),
-          catch: (error) => error as Error,
-        });
-        hash = Hash.keccak256(signed as Hex.Hex);
-
-        return formatTransactionReceipt(
-          yield* rpc.requestMultiplexed({
-            method: "eth_sendRawTransactionSync",
-            params: [signed],
-          }),
-        );
+      const filled = yield* rpc.request({
+        method: "eth_fillTransaction",
+        params: [
+          {
+            from: app.account.address,
+            to: app.address,
+            data: calldata,
+            gas: Hex.fromNumber(simulateResult.gas_limit),
+            nonce: Hex.fromNumber(transactionNonce),
+            accessList: simulateResult.access_list,
+          },
+        ],
       });
 
-      const waitForTransactionReceipt = Effect.gen(function* () {
-        if (hash === undefined) {
-          return yield* Effect.fail(new Error("transaction hash unavailable"));
-        }
-
-        const receipt = yield* rpc.request({
-          method: "eth_getTransactionReceipt",
-          params: [hash],
-        });
-        if (receipt === null) {
-          return yield* Effect.fail(
-            new Error(`transaction receipt not found: ${hash}`),
-          );
-        }
-
-        return formatTransactionReceipt(receipt);
+      // `eth_fillTransaction` returns an already-signed `raw`; strip its
+      // signature fields so the account re-signs over the correct payload.
+      const transaction = parseTransaction(filled.raw);
+      delete transaction.r;
+      delete transaction.s;
+      delete transaction.v;
+      delete transaction.yParity;
+      const signed = yield* Effect.tryPromise({
+        try: () => app.account.signTransaction(transaction),
+        catch: (error) => error as Error,
       });
+      const hash = Hash.keccak256(signed as Hex.Hex);
 
-      const receipt = yield* broadcastTransaction.pipe(
-        Effect.raceFirst(
-          waitForTransactionReceipt.pipe(
-            Effect.retry({
-              times: SUBMIT_RETRY_TIMES,
-              schedule: Schedule.spaced(RECEIPT_POLL_INTERVAL),
-            }),
-            Effect.catch(() => Effect.never),
-          ),
-        ),
-        Effect.retry({
-          times: SUBMIT_RETRY_TIMES,
-          schedule: Schedule.spaced(RECEIPT_POLL_INTERVAL),
-          while: () => hash !== undefined,
-        }),
+      let broadcastAttempted = false;
+      const receipt = yield* Effect.gen(function* () {
+        if (broadcastAttempted) {
+          const receipt = yield* rpc.request({
+            method: "eth_getTransactionReceipt",
+            params: [hash],
+          });
+          if (receipt !== null) return receipt;
+        }
+
+        broadcastAttempted = true;
+        return yield* rpc.requestMultiplexed({
+          method: "eth_sendRawTransactionSync",
+          params: [signed],
+        });
+      }).pipe(
+        Effect.retry({ times: SUBMIT_RETRY_TIMES }),
+        Effect.map(formatTransactionReceipt),
       );
 
       if (receipt.status === "reverted") {
