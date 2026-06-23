@@ -557,14 +557,27 @@ export function createRuntimeEffect(
     const batchOrder =
       app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
 
+    // Local high-water mark for the scheduler nonce. The chain's `pending`
+    // count is refetched each submit, but endpoints disagree and lag, so a
+    // stale read can report a nonce we have already broadcast. Clamping the
+    // refetched value against this counter keeps allocation monotonic and stops
+    // us from reusing a nonce, which a node still holding the previous pending
+    // transaction rejects as a lower-priority replacement ("an existing
+    // transaction had higher priority").
+    let lastSubmittedNonce: bigint | undefined;
+
+    // Reads the scheduler's pending nonce from every configured endpoint and
+    // keeps the furthest-ahead answer, so a single lagging node cannot drag the
+    // nonce backward.
     const requestPendingTransactionNonce = Effect.gen(function* () {
-      const nonce = yield* rpc.request({
+      const nonces = yield* rpc.requestAll({
         method: "eth_getTransactionCount",
         params: [app.account.address, "pending"],
       });
-      return Hex.toBigInt(nonce);
+      return nonces
+        .map((nonce) => Hex.toBigInt(nonce))
+        .reduce((max, nonce) => (nonce > max ? nonce : max));
     });
-    let nextTransactionNonce = yield* requestPendingTransactionNonce;
 
     let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
     const mutationListeners = new Set<MutationListener>();
@@ -886,7 +899,16 @@ export function createRuntimeEffect(
         simulateResult,
       } = simulation;
 
-      const transactionNonce = nextTransactionNonce++;
+      const pendingNonce = yield* requestPendingTransactionNonce;
+      // Clamp the refetched pending nonce against the last nonce we broadcast.
+      // `max(pending, lastSubmittedNonce + 1)` ignores a stale low read while
+      // still following the chain when it legitimately moves ahead (e.g. after
+      // a restart, or another submitter advancing the account).
+      const transactionNonce =
+        lastSubmittedNonce === undefined ||
+        pendingNonce > lastSubmittedNonce + 1n
+          ? pendingNonce
+          : lastSubmittedNonce + 1n;
       const transactionStartedAtMs = startTimer();
 
       const filled = yield* rpc.request({
@@ -915,6 +937,11 @@ export function createRuntimeEffect(
         catch: (error) => error as Error,
       });
       const hash = Hash.keccak256(signed as Hex.Hex);
+
+      // This nonce is now spoken for. Advance the high-water mark before
+      // broadcasting so the next submit cannot reuse it even if this send
+      // errors while the transaction is actually pending in a mempool.
+      lastSubmittedNonce = transactionNonce;
 
       let broadcastAttempted = false;
       const receipt = yield* Effect.gen(function* () {
