@@ -38,32 +38,10 @@ export type EffectEip1193RequestFn<
   request: parameters,
 ) => Effect.Effect<returnType, RpcRequestError>;
 
-export type EffectEip1193RequestAllFn<
-  rpcSchema extends RpcSchema | undefined = undefined,
-> = <
-  rpcSchemaOverride extends RpcSchemaOverride | undefined = undefined,
-  parameters extends EIP1193Parameters<
-    DerivedRpcSchema<rpcSchema, rpcSchemaOverride>
-  > = EIP1193Parameters<DerivedRpcSchema<rpcSchema, rpcSchemaOverride>>,
-  returnType = DerivedRpcSchema<rpcSchema, rpcSchemaOverride> extends RpcSchema
-    ? Extract<
-        DerivedRpcSchema<rpcSchema, rpcSchemaOverride>[number],
-        { Method: parameters["method"] }
-      >["ReturnType"]
-    : unknown,
->(
-  request: parameters,
-) => Effect.Effect<readonly returnType[], RpcRequestError>;
-
 type RawRequest = (request: {
   method: string;
   params?: unknown;
 }) => Effect.Effect<unknown, RpcRequestError>;
-
-type RawRequestAll = (request: {
-  method: string;
-  params?: unknown;
-}) => Effect.Effect<readonly unknown[], RpcRequestError>;
 
 type JsonRpcBody = {
   readonly jsonrpc: "2.0";
@@ -123,15 +101,6 @@ export class Rpc extends Context.Service<
      * provider's error is returned. Does not retry.
      */
     readonly requestMultiplexed: EffectEip1193RequestFn<EIP1474Methods>;
-    /**
-     * Fans a request out to every configured provider concurrently and returns
-     * every successful response. Individual provider errors are dropped; if
-     * every provider errors, the first provider's error is returned. Does not
-     * retry. Used for reads that must reconcile across endpoints (e.g. taking
-     * the furthest-ahead pending nonce) where a single lagging node's answer
-     * cannot be trusted.
-     */
-    readonly requestAll: EffectEip1193RequestAllFn<EIP1474Methods>;
   }
 >()("ffca/Rpc") {}
 
@@ -211,7 +180,6 @@ function makeRawHttpRequest(rpcUrl: string): RawRequest {
 function makeRpc(rpcUrls: readonly string[]): {
   request: EffectEip1193RequestFn<EIP1474Methods>;
   requestMultiplexed: EffectEip1193RequestFn<EIP1474Methods>;
-  requestAll: EffectEip1193RequestAllFn<EIP1474Methods>;
 } {
   const providers = rpcUrls.map(makeRawHttpRequest);
 
@@ -272,35 +240,10 @@ function makeRpc(rpcUrls: readonly string[]): {
       );
     });
 
-  const requestAll: RawRequestAll = (rpcRequest) =>
-    Effect.gen(function* () {
-      const attempts = providers.map((provider) =>
-        withTimeout(provider(rpcRequest), rpcRequest.method).pipe(
-          Effect.map((value) => ({ ok: true as const, value })),
-          Effect.catch((error) =>
-            Effect.succeed({ ok: false as const, error }),
-          ),
-        ),
-      );
-      const results = yield* Effect.all(attempts, { concurrency: "unbounded" });
-      const successes = results.flatMap((result) =>
-        result.ok ? [result.value] : [],
-      );
-      if (successes.length === 0) {
-        // Every provider errored; surface the first provider's error to match
-        // `requestMultiplexed`.
-        return yield* Effect.fail(
-          (results[0] as { ok: false; error: RpcRequestError }).error,
-        );
-      }
-      return successes;
-    });
-
   return {
     request: request as EffectEip1193RequestFn<EIP1474Methods>,
     requestMultiplexed:
       requestMultiplexed as EffectEip1193RequestFn<EIP1474Methods>,
-    requestAll: requestAll as EffectEip1193RequestAllFn<EIP1474Methods>,
   };
 }
 
@@ -309,7 +252,7 @@ export const layerRpc: Layer.Layer<Rpc, RpcConfigError, RpcConfig> =
     Rpc,
     Effect.gen(function* () {
       const config = yield* RpcConfig;
-      const { request, requestMultiplexed, requestAll } = yield* Effect.try({
+      const { request, requestMultiplexed } = yield* Effect.try({
         try: () => {
           if (config.rpcUrls.length === 0) {
             throw new Error("at least one rpc url is required");
@@ -322,7 +265,7 @@ export const layerRpc: Layer.Layer<Rpc, RpcConfigError, RpcConfig> =
             cause,
           }),
       });
-      return Rpc.of({ request, requestMultiplexed, requestAll });
+      return Rpc.of({ request, requestMultiplexed });
     }),
   );
 

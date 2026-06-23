@@ -557,27 +557,12 @@ export function createRuntimeEffect(
     const batchOrder =
       app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
 
-    // Local high-water mark for the scheduler nonce. The chain's `pending`
-    // count is refetched each submit, but endpoints disagree and lag, so a
-    // stale read can report a nonce we have already broadcast. Clamping the
-    // refetched value against this counter keeps allocation monotonic and stops
-    // us from reusing a nonce, which a node still holding the previous pending
-    // transaction rejects as a lower-priority replacement ("an existing
-    // transaction had higher priority").
-    let lastSubmittedNonce: bigint | undefined;
-
-    // Reads the scheduler's pending nonce from every configured endpoint and
-    // keeps the furthest-ahead answer, so a single lagging node cannot drag the
-    // nonce backward.
-    const requestPendingTransactionNonce = Effect.gen(function* () {
-      const nonces = yield* rpc.requestAll({
+    let nonce = yield* rpc
+      .request({
         method: "eth_getTransactionCount",
-        params: [app.account.address, "pending"],
-      });
-      return nonces
-        .map((nonce) => Hex.toBigInt(nonce))
-        .reduce((max, nonce) => (nonce > max ? nonce : max));
-    });
+        params: [app.account.address, "latest"],
+      })
+      .pipe(Effect.map(Hex.toNumber));
 
     let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
     const mutationListeners = new Set<MutationListener>();
@@ -899,16 +884,6 @@ export function createRuntimeEffect(
         simulateResult,
       } = simulation;
 
-      const pendingNonce = yield* requestPendingTransactionNonce;
-      // Clamp the refetched pending nonce against the last nonce we broadcast.
-      // `max(pending, lastSubmittedNonce + 1)` ignores a stale low read while
-      // still following the chain when it legitimately moves ahead (e.g. after
-      // a restart, or another submitter advancing the account).
-      const transactionNonce =
-        lastSubmittedNonce === undefined ||
-        pendingNonce > lastSubmittedNonce + 1n
-          ? pendingNonce
-          : lastSubmittedNonce + 1n;
       const transactionStartedAtMs = startTimer();
 
       const filled = yield* rpc.request({
@@ -919,7 +894,7 @@ export function createRuntimeEffect(
             to: app.address,
             data: calldata,
             gas: Hex.fromNumber(simulateResult.gas_limit),
-            nonce: Hex.fromNumber(transactionNonce),
+            nonce: Hex.fromNumber(nonce),
             accessList: simulateResult.access_list,
           },
         ],
@@ -933,29 +908,15 @@ export function createRuntimeEffect(
       // clamp. Force our locally reconciled nonce onto the transaction so the
       // broadcast nonce is exactly the value we tracked, independent of fill's
       // view of the pending pool.
-      const filledNonce = transaction.nonce;
-      transaction.nonce = Number(transactionNonce);
       delete transaction.r;
       delete transaction.s;
       delete transaction.v;
       delete transaction.yParity;
-      yield* Effect.logDebug("reconciled settlement nonce").pipe(
-        Effect.annotateLogs({
-          pendingNonce,
-          computedNonce: transactionNonce,
-          filledNonce,
-        }),
-      );
       const signed = yield* Effect.tryPromise({
         try: () => app.account.signTransaction(transaction),
         catch: (error) => error as Error,
       });
       const hash = Hash.keccak256(signed as Hex.Hex);
-
-      // This nonce is now spoken for. Advance the high-water mark before
-      // broadcasting so the next submit cannot reuse it even if this send
-      // errors while the transaction is actually pending in a mempool.
-      lastSubmittedNonce = transactionNonce;
 
       let broadcastAttempted = false;
       const receipt = yield* Effect.gen(function* () {
@@ -976,6 +937,8 @@ export function createRuntimeEffect(
         Effect.retry({ times: SUBMIT_RETRY_TIMES }),
         Effect.map(formatTransactionReceipt),
       );
+
+      nonce += 1;
 
       if (receipt.status === "reverted") {
         return yield* Effect.fail(
