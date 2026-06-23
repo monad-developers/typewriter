@@ -27,7 +27,7 @@ const ffca = await createFFCA(Token, {
   chainId: Number(requireEnv("CHAIN_ID")),
   rpcUrl: requireEnv("RPC_URL"),
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
-  sequencing: { order: "fifo" },
+  sequencing: { order: "batch", batchOrder: ["Mint", "Transfer"] },
 });
 
 const mutations = new Map<number, MutationEvent>();
@@ -41,19 +41,8 @@ function sse(value: unknown): string {
 }
 
 const server = Bun.serve({
-  port: Number(process.env.PORT ?? "3000"),
   routes: {
     "/": index,
-    "/api/domain": () => jsonResponse(ffca.domain),
-    "/api/account/:address": async (req) => {
-      const account = ffca.state.accounts[req.params.address as Address];
-      return jsonResponse({
-        balance: await account.balance,
-        nonce: await account.nonce,
-      });
-    },
-    "/api/addresses": () =>
-      jsonResponse([...Object.keys(ffca.state.accounts), scheduler.address]),
     "/api": {
       POST: async (req) => {
         const body = superjson.parse(await req.text());
@@ -62,6 +51,16 @@ const server = Bun.serve({
         );
         return jsonResponse(mutation);
       },
+    },
+    "/api/domain": () => jsonResponse(ffca.domain),
+    "/api/addresses": () =>
+      jsonResponse([...Object.keys(ffca.state.accounts), scheduler.address]),
+    "/api/account/:address": async (req) => {
+      const account = ffca.state.accounts[req.params.address as Address];
+      return jsonResponse({
+        balance: await account.balance,
+        nonce: await account.nonce,
+      });
     },
     "/api/mutation/:id/status": {
       GET: (req) => {
@@ -95,7 +94,6 @@ const server = Bun.serve({
         });
       },
     },
-    "/*": index,
   },
 });
 
