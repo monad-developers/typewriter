@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { createFFCA, FFCA_DOMAIN } from "ffca";
 import { ALL_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
+import { createTypewriter, TYPEWRITER_DOMAIN } from "typewriter";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
@@ -31,13 +31,15 @@ const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
 const Q32 = 1n << 32n;
 const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86_400);
-type OrderBookFFCA = Awaited<ReturnType<typeof createOrderBookFFCA>>;
+type OrderBookTypewriter = Awaited<
+  ReturnType<typeof createOrderBookTypewriter>
+>;
 
-async function createOrderBookFFCA(
+async function createOrderBookTypewriter(
   address: Hex,
   options: { submitIntervalMs?: number } = {},
 ) {
-  return await createFFCA(Exchange, {
+  return await createTypewriter(Exchange, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -154,7 +156,7 @@ async function signedMutation<const name extends string>(input: {
       : await signTypedData({
           privateKey: input.privateKey,
           domain: {
-            ...FFCA_DOMAIN,
+            ...TYPEWRITER_DOMAIN,
             chainId: anvil.id,
             verifyingContract: input.address,
           },
@@ -179,7 +181,7 @@ async function signedMutation<const name extends string>(input: {
 }
 
 async function setupAccount(params: {
-  app: OrderBookFFCA;
+  app: OrderBookTypewriter;
   account: Address;
   privateKey: Hex;
   contract: Address;
@@ -209,13 +211,13 @@ async function setupAccount(params: {
 }
 
 function executeOrderBookMutation(
-  app: OrderBookFFCA,
+  app: OrderBookTypewriter,
   submitted: SubmittedOrderBookMutation,
 ) {
   return app.execute({
     ...submitted,
     signature: normalizeSignatureForContract(submitted.signature),
-  } as Parameters<OrderBookFFCA["execute"]>[0]);
+  } as Parameters<OrderBookTypewriter["execute"]>[0]);
 }
 
 async function waitForIncluded(
@@ -234,9 +236,9 @@ async function waitForIncluded(
   throw new Error(`${label} never reached included`);
 }
 
-test("ffca order book rejects invalid signatures before applying", async () => {
+test("typewriter order book rejects invalid signatures before applying", async () => {
   const address = await deployExchange();
-  const app = await createOrderBookFFCA(address);
+  const app = await createOrderBookTypewriter(address);
 
   const maker = await setupAccount({
     app,
@@ -271,9 +273,9 @@ test("ffca order book rejects invalid signatures before applying", async () => {
   ).rejects.toThrow(/reverted/);
 });
 
-test("ffca order book changes an unfilled order to a new price", async () => {
+test("typewriter order book changes an unfilled order to a new price", async () => {
   const address = await deployExchange();
-  const app = await createOrderBookFFCA(address);
+  const app = await createOrderBookTypewriter(address);
 
   const maker = await setupAccount({
     app,
@@ -356,7 +358,9 @@ test("ffca order book changes an unfilled order to a new price", async () => {
 
 test("db-queries fan out across per-mutation tables", async () => {
   const address = await deployExchange();
-  const app = await createOrderBookFFCA(address, { submitIntervalMs: 400 });
+  const app = await createOrderBookTypewriter(address, {
+    submitIntervalMs: 400,
+  });
   const schema = app.schema;
   const db = drizzle({
     client: TEST_DB_CONNECTION,
@@ -411,7 +415,7 @@ test("db-queries fan out across per-mutation tables", async () => {
     .from(schema.deposit_mutations)
     .limit(1);
   expect(depositRowRaw).toBeDefined();
-  // FFCA returns numeric(78,0) columns as bigint (block number, block
+  // Typewriter returns numeric(78,0) columns as bigint (block number, block
   // timestamp, etc.); the API layer stringifies them at the wire boundary.
   const depositRow = depositRowRaw as unknown as {
     id: number;

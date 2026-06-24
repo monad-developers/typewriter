@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {KeyType} from "ffca/FFCA.sol";
+import {KeyType} from "typewriter/Typewriter.sol";
 import {Key, PERM_AUTHORIZE, Signature, State, Unauthorized, verifyMutationSignature} from "./Exchange.sol";
 
 library AuthorizeMutation {

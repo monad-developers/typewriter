@@ -1,3 +1,3 @@
 forge-std/=../node_modules/forge-std/src/
-ffca/=../../../packages/ffca/src/
+typewriter/=../../../packages/typewriter/src/
 src/=src/

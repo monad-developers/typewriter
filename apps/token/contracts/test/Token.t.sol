@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {EIP712_DOMAIN_TYPEHASH} from "ffca/FFCA.sol";
+import {EIP712_DOMAIN_TYPEHASH} from "typewriter/Typewriter.sol";
 import {MintMutation} from "../src/Mint.sol";
 import {InvalidNonce, InvalidSignatureType, Signature, SignatureExpired, State} from "../src/Token.sol";
 import {TransferMutation} from "../src/Transfer.sol";
@@ -16,9 +16,7 @@ contract TokenTest is Test {
 
     function setUp() public {
         domainSeparator = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("FFCA")), keccak256(bytes("1")), block.chainid, address(this)
-            )
+                abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Typewriter")), keccak256(bytes("1")), block.chainid, address(this))
         );
     }
 

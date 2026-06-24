@@ -1,6 +1,6 @@
 # AGENTS.md - order-book
 
-Order book implementation using `ffca` as the runtime. The app owns order-book domain logic, persistence hooks, HTTP routes, frontend serving, scripts, SDK helpers, and signature/account verification. Do not change `packages/ffca` from this workspace.
+Order book implementation using `typewriter` as the runtime. The app owns order-book domain logic, persistence hooks, HTTP routes, frontend serving, scripts, SDK helpers, and signature/account verification. Do not change `packages/typewriter` from this workspace.
 
 ## Layout
 
@@ -8,8 +8,8 @@ Order book implementation using `ffca` as the runtime. The app owns order-book d
 - `frontend/` — React UI served by `src/index.ts` with Bun HTML imports.
 - `sdk/` — shared order-book constants, EIP-712 types, ABI, and math helpers. It is folded into this package; the `order-book-sdk` import is a TS path alias.
 - `scripts/` — participant scripts that drive the app HTTP API.
-- `contracts/` — FFCA-backed `Exchange.sol`, deploy script, contract docs, and active Foundry tests.
-- `docs/` — migration notes and app-specific context not covered by `packages/ffca` docs.
+- `contracts/` — Typewriter-backed `Exchange.sol`, deploy script, contract docs, and active Foundry tests.
+- `docs/` — migration notes and app-specific context not covered by `packages/typewriter` docs.
 
 ## Dev Loop
 
@@ -21,7 +21,7 @@ cd apps/order-book && cp .env.example.local .env && bun run deploy
 cd apps/order-book && cp .env.example.local .env && bun dev
 ```
 
-Open <http://localhost:3000>. The same process serves the API, frontend, and FFCA runtime.
+Open <http://localhost:3000>. The same process serves the API, frontend, and Typewriter runtime.
 
 ## Tests
 
@@ -51,6 +51,6 @@ Frontend uses `Bun.serve` + HTML imports, no Vite. Entry is `frontend/index.html
 
 ## Gotchas
 
-- A new mutation type touches `contracts/src/Exchange.sol`, EIP-712 types in `sdk/index.ts`, mutation config in `src/app.ts` (`order_book_mutations`), HTTP/read model wiring in `src/index.ts`, and frontend builders/renderers. FFCA generates the per-mutation persistence schema from `order_book_mutations`; the app accesses it through `app.schema`.
+- A new mutation type touches `contracts/src/Exchange.sol`, EIP-712 types in `sdk/index.ts`, mutation config in `src/app.ts` (`order_book_mutations`), HTTP/read model wiring in `src/index.ts`, and frontend builders/renderers. Typewriter generates the per-mutation persistence schema from `order_book_mutations`; the app accesses it through `app.schema`.
 - Keep contract changes in `contracts/src` source-compatible with active tests in `contracts/test` where possible.
-- Do not reintroduce app-specific code into `packages/ffca`.
+- Do not reintroduce app-specific code into `packages/typewriter`.

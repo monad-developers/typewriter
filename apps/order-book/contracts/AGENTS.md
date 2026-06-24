@@ -1,6 +1,6 @@
 # AGENTS.md — order-book/contracts
 
-Solidity (Foundry). FFCA-backed `Exchange.sol` plus account primitives imported from `packages/ffca`. Batched execution via a privileged scheduler, EIP-712 signed mutations, P-256/WebAuthn/secp256k1 keys with permission masks, parallel-nonce account model, and a force-exit queue so users can bypass the scheduler.
+Solidity (Foundry). Typewriter-backed `Exchange.sol` plus account primitives imported from `packages/typewriter`. Batched execution via a privileged scheduler, EIP-712 signed mutations, P-256/WebAuthn/secp256k1 keys with permission masks, parallel-nonce account model, and a force-exit queue so users can bypass the scheduler.
 
 ## Foundry nightly required
 
@@ -16,4 +16,4 @@ forge test -vvv                                   # traces on failure
 
 Run package scripts from `apps/order-book`: `bun run contracts:build`, `bun run contracts:lint`, and `bun run deploy`.
 
-The pre-FFCA contract tests have been reconciled into `test/`; keep new contract behavior covered there.
+The pre-Typewriter contract tests have been reconciled into `test/`; keep new contract behavior covered there.

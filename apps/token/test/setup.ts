@@ -131,7 +131,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  testDatabaseName = `token_ffca_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  testDatabaseName = `token_typewriter_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   await dropDatabase(testDatabaseName);
   await adminConnection.unsafe(
     `CREATE DATABASE ${quoteIdentifier(testDatabaseName)}`,

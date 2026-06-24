@@ -26,4 +26,4 @@ bun run contracts:build
 bun run deploy      # from apps/order-book, deploy to the RPC in .env
 ```
 
-The pre-FFCA Foundry tests have been reconciled into `test/` and run against the FFCA-backed contract surface.
+The pre-Typewriter Foundry tests have been reconciled into `test/` and run against the Typewriter-backed contract surface.

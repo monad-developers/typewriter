@@ -4,11 +4,11 @@ Repo-wide guidance. Per-app specifics live in each workspace's own `AGENTS.md` /
 
 ## Layout
 
-A Bun monorepo. Apps live under `apps/*`; reusable framework code lives under `packages/*`. The current state is one app (`order-book-*`) plus a framework package (`ffca`) being extracted from it.
+A Bun monorepo. Apps live under `apps/*`; reusable framework code lives under `packages/*`. The current state is one app (`order-book-*`) plus a framework package (`typewriter`) being extracted from it.
 
 ## Docs
 
-`README.md` and `packages/ffca/README.md` are copies of each other. Keep them in sync when editing either file.
+`README.md` and `packages/typewriter/README.md` are copies of each other. Keep them in sync when editing either file.
 
 ## Common commands
 
@@ -77,7 +77,7 @@ Pin exact versions for security — no `^` or `~` ranges. `bun add` defaults to 
 Run workspace-local test suites from that workspace's directory, or through the
 workspace script (`bun run --filter <workspace> test`). Do **not** run tests from
 the repo root by passing a workspace path (for example, avoid
-`bun test packages/ffca`): Bun may skip the workspace's local `bunfig.toml`, so
+`bun test packages/typewriter`): Bun may skip the workspace's local `bunfig.toml`, so
 preloaded setup hooks can run with the wrong lifecycle.
 
 For the whole repo, run `bun run test` from the root, not raw `bun test`. The

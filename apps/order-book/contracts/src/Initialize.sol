@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {KeyType} from "ffca/FFCA.sol";
+import {KeyType} from "typewriter/Typewriter.sol";
 import {Account, AlreadyInitialized, InvalidAccount, Key, Signature, State} from "./Exchange.sol";
 
 library InitializeMutation {

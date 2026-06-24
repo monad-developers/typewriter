@@ -1,0 +1,5 @@
+[profile.default]
+src = "src"
+out = "out"
+remappings = ["typewriter/=../../src/"]
+extra_output = ["storageLayout"]
