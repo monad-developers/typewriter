@@ -1,4 +1,4 @@
-import { FFCA_DOMAIN } from "ffca";
+import { FFCA_DOMAIN } from "typewriter";
 import {
   type Address,
   encodeAbiParameters,

@@ -27,7 +27,7 @@ import {InitializeMutation} from "src/Initialize.sol";
 import {RevokeMutation} from "src/Revoke.sol";
 import {WithdrawalMutation} from "src/Withdrawal.sol";
 
-import {EIP712_DOMAIN_TYPEHASH, KeyType} from "ffca/FFCA.sol";
+import {EIP712_DOMAIN_TYPEHASH, KeyType} from "typewriter/FFCA.sol";
 
 contract AccountTest is Test {
     State internal state;

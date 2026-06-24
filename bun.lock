@@ -18,13 +18,13 @@
         "clsx": "2.1.1",
         "drizzle-orm": "1.0.0-rc.1",
         "effect": "catalog:",
-        "ffca": "workspace:*",
         "ox": "catalog:",
         "react": "19.2.4",
         "react-dom": "19.2.4",
         "shiki": "4.0.2",
         "superjson": "catalog:",
         "tailwind-merge": "3.5.0",
+        "typewriter": "workspace:*",
         "viem": "catalog:",
         "webauthx": "0.1.0",
       },
@@ -43,11 +43,11 @@
       "version": "0.1.0",
       "dependencies": {
         "@tanstack/react-query": "catalog:",
-        "ffca": "workspace:*",
         "ox": "catalog:",
         "react": "19.2.4",
         "react-dom": "19.2.4",
         "superjson": "catalog:",
+        "typewriter": "workspace:*",
         "viem": "catalog:",
       },
       "devDependencies": {
@@ -74,8 +74,18 @@
         "typescript": "catalog:",
       },
     },
-    "packages/ffca": {
-      "name": "ffca",
+    "packages/storage-layout": {
+      "name": "storage-layout",
+      "dependencies": {
+        "abitype": "catalog:",
+        "ox": "catalog:",
+      },
+      "peerDependencies": {
+        "typescript": "catalog:",
+      },
+    },
+    "packages/typewriter": {
+      "name": "typewriter",
       "dependencies": {
         "@effect/sql-pg": "4.0.0-beta.58",
         "abipg": "workspace:*",
@@ -83,10 +93,10 @@
         "drizzle-kit": "catalog:",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
-        "ffca-evm": "workspace:*",
         "ox": "catalog:",
         "pg": "8.16.3",
         "storage-layout": "workspace:*",
+        "typewriter-evm": "workspace:*",
         "viem": "catalog:",
       },
       "devDependencies": {
@@ -98,8 +108,8 @@
         "typescript": "catalog:",
       },
     },
-    "packages/ffca-evm": {
-      "name": "ffca-evm",
+    "packages/typewriter-evm": {
+      "name": "typewriter-evm",
       "dependencies": {
         "effect": "catalog:",
         "ox": "catalog:",
@@ -111,16 +121,6 @@
         "solmate": "github:transmissions11/solmate",
         "storage-layout": "workspace:*",
         "viem": "catalog:",
-      },
-      "peerDependencies": {
-        "typescript": "catalog:",
-      },
-    },
-    "packages/storage-layout": {
-      "name": "storage-layout",
-      "dependencies": {
-        "abitype": "catalog:",
-        "ox": "catalog:",
       },
       "peerDependencies": {
         "typescript": "catalog:",
@@ -563,10 +563,6 @@
 
     "fast-wrap-ansi": ["fast-wrap-ansi@0.2.2", "", { "dependencies": { "fast-string-width": "^3.0.2" } }, "sha512-7F2Fl+TjRSenLqlU3UjSH0iyqopqoZIu7eZVpEirP2g1GtWa2G/ecEmBdgz31+Mxr+ELclgg6sokpSFIQiZ02Q=="],
 
-    "ffca": ["ffca@workspace:packages/ffca"],
-
-    "ffca-evm": ["ffca-evm@workspace:packages/ffca-evm"],
-
     "figures": ["figures@6.1.0", "", { "dependencies": { "is-unicode-supported": "^2.0.0" } }, "sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg=="],
 
     "find-my-way-ts": ["find-my-way-ts@0.1.6", "", {}, "sha512-a85L9ZoXtNAey3Y6Z+eBWW658kO/MwR7zIafkIUPUMf3isZG0NCs2pjW2wtjxAKuJPxMAsHUIP4ZPGv0o5gyTA=="],
@@ -764,6 +760,10 @@
     "typanion": ["typanion@3.14.0", "", {}, "sha512-ZW/lVMRabETuYCd9O9ZvMhAh8GslSqaUjxmK/JLPCh6l73CvLBiuXswj/+7LdnWOgYsQ130FqLzFz5aGT4I3Ug=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "typewriter": ["typewriter@workspace:packages/typewriter"],
+
+    "typewriter-evm": ["typewriter-evm@workspace:packages/typewriter-evm"],
 
     "undici-types": ["undici-types@7.19.2", "", {}, "sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg=="],
 

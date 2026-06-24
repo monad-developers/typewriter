@@ -1,5 +1,9 @@
-import { createFFCA, type MutationEvent, type MutationStatus } from "ffca";
 import superjson from "superjson";
+import {
+  createFFCA,
+  type MutationEvent,
+  type MutationStatus,
+} from "typewriter";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
@@ -21,7 +25,7 @@ function jsonResponse(data: unknown): Response {
 
 const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
 
-const ffca = await createFFCA(Token, {
+const typewriter = await createFFCA(Token, {
   address: requireEnv("TOKEN_ADDRESS") as Address,
   account: scheduler,
   chainId: Number(requireEnv("CHAIN_ID")),
@@ -32,7 +36,7 @@ const ffca = await createFFCA(Token, {
 
 const mutations = new Map<number, MutationEvent>();
 
-ffca.on("mutation", (mutation) => {
+typewriter.on("mutation", (mutation) => {
   mutations.set(mutation.id, mutation);
 });
 
@@ -46,17 +50,20 @@ const server = Bun.serve({
     "/api": {
       POST: async (req) => {
         const body = superjson.parse(await req.text());
-        const mutation = await ffca.execute(
-          body as Parameters<typeof ffca.execute>[0],
+        const mutation = await typewriter.execute(
+          body as Parameters<typeof typewriter.execute>[0],
         );
         return jsonResponse(mutation);
       },
     },
-    "/api/domain": () => jsonResponse(ffca.domain),
+    "/api/domain": () => jsonResponse(typewriter.domain),
     "/api/addresses": () =>
-      jsonResponse([...Object.keys(ffca.state.accounts), scheduler.address]),
+      jsonResponse([
+        ...Object.keys(typewriter.state.accounts),
+        scheduler.address,
+      ]),
     "/api/account/:address": async (req) => {
-      const account = ffca.state.accounts[req.params.address as Address];
+      const account = typewriter.state.accounts[req.params.address as Address];
       return jsonResponse({
         balance: await account.balance,
         nonce: await account.nonce,

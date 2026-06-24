@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {EIP712_DOMAIN_TYPEHASH} from "ffca/FFCA.sol";
+import {EIP712_DOMAIN_TYPEHASH} from "typewriter/FFCA.sol";
 import {MintMutation} from "../src/Mint.sol";
 import {InvalidNonce, InvalidSignatureType, Signature, SignatureExpired, State} from "../src/Token.sol";
 import {TransferMutation} from "../src/Transfer.sol";

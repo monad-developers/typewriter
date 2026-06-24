@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createFFCA } from "ffca";
+import { createFFCA } from "typewriter";
 import { anvil } from "viem/chains";
 import Token from "../contracts/src/Token.sol";
 import {
@@ -22,14 +22,14 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     database: { url: TEST_DB_URL, maxConnections: 4 },
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
   } as const;
-  const ffca = await createFFCA(Token, config);
+  const typewriter = await createFFCA(Token, config);
 
   const acceptedMutationIds: number[] = [];
   const includedMutationIds = new Set<number>();
-  ffca.on("mutation", (event) => {
+  typewriter.on("mutation", (event) => {
     if (event.status === "accepted") acceptedMutationIds.push(event.id);
   });
-  ffca.on("block", (event) => {
+  typewriter.on("block", (event) => {
     if (event.status !== "included") return;
     for (const mutation of event.mutations) {
       includedMutationIds.add(mutation.id);
@@ -43,7 +43,7 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     nonce: 0n,
     deadline,
   };
-  await ffca.execute({
+  await typewriter.execute({
     name: "Mint",
     params: mint,
     signature: await signMint({
@@ -61,7 +61,7 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     nonce: 1n,
     deadline,
   };
-  await ffca.execute({
+  await typewriter.execute({
     name: "Transfer",
     params: transfer,
     signature: await signTransfer({
@@ -74,9 +74,9 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
 
   expect(acceptedMutationIds).toHaveLength(2);
 
-  const userState = ffca.state.accounts[USER_ACCOUNT.address];
-  const recipientState = ffca.state.accounts[RECIPIENT_ACCOUNT.address];
-  expect(await ffca.state.totalSupply).toBe(100n);
+  const userState = typewriter.state.accounts[USER_ACCOUNT.address];
+  const recipientState = typewriter.state.accounts[RECIPIENT_ACCOUNT.address];
+  expect(await typewriter.state.totalSupply).toBe(100n);
   expect(await userState.balance).toBe(60n);
   expect(await userState.nonce).toBe(2n);
   expect(await recipientState.balance).toBe(40n);

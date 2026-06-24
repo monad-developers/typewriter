@@ -1,6 +1,6 @@
 # Token
 
-Minimal token app built on `ffca` with FIFO sequencing.
+Minimal token app built on `typewriter` with FIFO sequencing.
 
 ## Getting Started
 
@@ -53,7 +53,7 @@ The example `.env` values are set up for that local node. Use `anvil --monad`, n
 | Variable | Used by | Description |
 |---|---|---|
 | `RPC_URL` | App runtime, deploy script | RPC endpoint for the token app and deployment command |
-| `DATABASE_URL` | App runtime, tests | Postgres connection string used by FFCA |
+| `DATABASE_URL` | App runtime, tests | Postgres connection string used by Typewriter |
 | `CHAIN_ID` | App runtime | Chain ID used for typed-data signing |
 | `TOKEN_ADDRESS` | App runtime | Deployed token contract address |
 | `PRIVATE_KEY` | App runtime, deploy script | Private key used by the scheduler account and Foundry broadcast |

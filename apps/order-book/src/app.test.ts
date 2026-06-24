@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { createFFCA, FFCA_DOMAIN } from "ffca";
 import { ALL_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
+import { createFFCA, FFCA_DOMAIN } from "typewriter";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
@@ -234,7 +234,7 @@ async function waitForIncluded(
   throw new Error(`${label} never reached included`);
 }
 
-test("ffca order book rejects invalid signatures before applying", async () => {
+test("typewriter order book rejects invalid signatures before applying", async () => {
   const address = await deployExchange();
   const app = await createOrderBookFFCA(address);
 
@@ -271,7 +271,7 @@ test("ffca order book rejects invalid signatures before applying", async () => {
   ).rejects.toThrow(/reverted/);
 });
 
-test("ffca order book changes an unfilled order to a new price", async () => {
+test("typewriter order book changes an unfilled order to a new price", async () => {
   const address = await deployExchange();
   const app = await createOrderBookFFCA(address);
 

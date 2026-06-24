@@ -1,6 +1,6 @@
 # Order Book
 
-Order-book is a single Bun workspace that contains the backend, React frontend, participant scripts, SDK helpers, and Foundry contracts for the demo exchange. The app owns the order-book domain logic and uses `ffca` from `packages/ffca` as the runtime.
+Order-book is a single Bun workspace that contains the backend, React frontend, participant scripts, SDK helpers, and Foundry contracts for the demo exchange. The app owns the order-book domain logic and uses `typewriter` from `packages/typewriter` as the runtime.
 
 ## Workspace Shape
 
@@ -67,7 +67,7 @@ cd apps/order-book && cp .env.example.local .env && bun run deploy
 cd apps/order-book && bun dev
 ```
 
-Open <http://localhost:3000>. The same process serves the API, frontend, and FFCA runtime.
+Open <http://localhost:3000>. The same process serves the API, frontend, and Typewriter runtime.
 
 ## Checks
 

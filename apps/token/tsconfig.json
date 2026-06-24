@@ -19,8 +19,8 @@
     "baseUrl": ".",
     "paths": {
       "abipg": ["../../packages/abipg/src/index.ts"],
-      "ffca": ["../../packages/ffca/src/index.ts"],
-      "ffca-evm": ["../../packages/ffca-evm/src/index.ts"],
+      "typewriter": ["../../packages/typewriter/src/index.ts"],
+      "typewriter-evm": ["../../packages/typewriter-evm/src/index.ts"],
       "storage-layout": ["../../packages/storage-layout/src/index.ts"]
     }
   }

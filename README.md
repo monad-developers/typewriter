@@ -1,4 +1,4 @@
-# FFCA
+# Typewriter
 
 Full stack framework for building crypto apps.
 
@@ -64,7 +64,7 @@ function executeMarketOrder(State storage state, MarketOrder calldata marketOrde
 
 Mutations are authorized with an EIP-712 typed-data signature, and the contract verifies it.
 
-FFCA supports three signature algorithms:
+Typewriter supports three signature algorithms:
 
 - P-256
 - WebAuthn-P256
@@ -72,12 +72,12 @@ FFCA supports three signature algorithms:
 
 It exports the primitives that go with them — the `KeyType` enum, a `verifySignature` helper, and the EIP-712 domain typehash. The `Signature` struct itself is app-defined; the contract decides what fields it needs to authenticate the user and authorize the mutation.
 
-Accounts are entirely app-defined. The account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions all live in the app's contract and state. FFCA does not impose an `Account` struct or any specific authorization rule.
+Accounts are entirely app-defined. The account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions all live in the app's contract and state. Typewriter does not impose an `Account` struct or any specific authorization rule.
 
 ```solidity
-import {KeyType, verifySignature} from "ffca/FFCA.sol";
+import {KeyType, verifySignature} from "typewriter/FFCA.sol";
 
-// App-defined — FFCA imposes no Account or Signature shape.
+// App-defined — Typewriter imposes no Account or Signature shape.
 struct Account {
     KeyType keyType;
     bytes publicKey;
@@ -89,7 +89,7 @@ struct Signature {
     bytes rawSignature;
 }
 
-// The FFCA primitive checks a raw signature against a digest. A mutation's
+// The Typewriter primitive checks a raw signature against a digest. A mutation's
 // verifier calls it after resolving the account and applying replay protection.
 verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
 ```
@@ -112,12 +112,12 @@ The lifecycle of a mutation is as follows:
 `createFFCA` takes a Solidity entrypoint and runtime config. `FFCAConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
 ```ts
-import { createFFCA } from "ffca";
+import { createFFCA } from "typewriter";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 
-const ffca = await createFFCA(Token, {
-  address, // the deployed FFCA contract
+const typewriter = await createFFCA(Token, {
+  address, // the deployed Typewriter contract
   account: privateKeyToAccount(privateKey), // the transaction submitter
   chainId,
   rpcUrl,
@@ -136,19 +136,19 @@ const ffca = await createFFCA(Token, {
 // ... setup web server
 
 // submit a signed mutation; resolves once accepted
-const accepted = await ffca.execute({ name: "transfer", params, signature });
+const accepted = await typewriter.execute({ name: "transfer", params, signature });
 ```
 
 > Onchain submission is gated to a single scheduler address that the server controls (see [Contract structure](#contract-structure)). Because no one else can submit transactions, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
 
 #### Sequencing
 
-Sequencing controls the order mutations are accepted by the server and included onchain. FFCA ships two sequencing modes: FIFO and batch. FIFO is the default when `sequencing.order` is omitted.
+Sequencing controls the order mutations are accepted by the server and included onchain. Typewriter ships two sequencing modes: FIFO and batch. FIFO is the default when `sequencing.order` is omitted.
 
 ##### FIFO
 
 ```ts
-import { createFFCA } from "ffca";
+import { createFFCA } from "typewriter";
 
 const app = await createFFCA(Token, {
   // ... more config
@@ -159,14 +159,14 @@ const app = await createFFCA(Token, {
 });
 ```
 
-Each call to `ffca.execute()` immediately executes the mutation against local state and returns the accepted mutation, or throws an error if the mutation is rejected. Every `submitIntervalMs`, all accepted mutations are submitted with a single onchain transaction.
+Each call to `typewriter.execute()` immediately executes the mutation against local state and returns the accepted mutation, or throws an error if the mutation is rejected. Every `submitIntervalMs`, all accepted mutations are submitted with a single onchain transaction.
 
-Onchain inclusion order matches the order mutations were executed with `ffca.execute()`.
+Onchain inclusion order matches the order mutations were executed with `typewriter.execute()`.
 
 ##### Batch
 
 ```ts
-import { createFFCA } from "ffca";
+import { createFFCA } from "typewriter";
 
 const app = await createFFCA(Token, {
   // ... more config
@@ -179,13 +179,13 @@ const app = await createFFCA(Token, {
 });
 ```
 
-Each call to `ffca.execute()` enqueues the mutation and returns the accepted mutation once the next batch is processed, or throws an error if the mutation is rejected. Every `batchIntervalMs`, all enqueued mutations are gathered into a batch, ordered according to `batchOrder`, and accepted or rejected. Every `submitIntervalMs`, all batches are submitted with a single onchain transaction.
+Each call to `typewriter.execute()` enqueues the mutation and returns the accepted mutation once the next batch is processed, or throws an error if the mutation is rejected. Every `batchIntervalMs`, all enqueued mutations are gathered into a batch, ordered according to `batchOrder`, and accepted or rejected. Every `submitIntervalMs`, all batches are submitted with a single onchain transaction.
 
 Within a batch, mutations execute in `batchOrder`; across batches, batches are submitted in the order they were accepted.
 
 ## Examples
 
-- [`token`](../../apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical FFCA app shape.
+- [`token`](../../apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical Typewriter app shape.
 - [`order-book`](../../apps/order-book) is a full exchange application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
 ## Failure modes
@@ -232,7 +232,7 @@ Mutations that were accepted before the crash but had not yet reached `finalized
 
 ### Contract requirements
 
-In order to be FFCA-compliant, a smart contract must be written with Solidity and implement certain data structures and methods.
+In order to be Typewriter-compliant, a smart contract must be written with Solidity and implement certain data structures and methods.
 
 #### State
 
@@ -259,7 +259,7 @@ Each mutation is a Solidity library with:
 - **`struct [Mutation]` definition**. The mutation's arguments. The app's `dispatch` function ABI-decodes the mutation's `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and order define the mutation params the runtime extracts from Solidity.
 - **`execute[Mutation]` function**. Applies the mutation to the state. Called by `dispatch` after the signature has verified — no auth checks here, just the state transition.
 - **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name must match the Solidity `Mutation` enum member with the first letter lowercased (the client signs this as the `primaryType`), and whose parameter names and declaration order must match the decoded mutation struct (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). The type name is independent of the Solidity struct name — e.g. `Mutation.Add` with an `Add` struct uses `keccak256("add(uint256 amount,uint256 nonce)")`. `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
-- **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `ffca/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
+- **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `typewriter/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
 
 ```solidity
 library AddMutation {
@@ -323,11 +323,11 @@ Per-mutation verification gives each mutation full control over its
 authorization rules, including whether a signature is required at all —
 bootstrap mutations may not need one.
 
-**Verification helpers.** `ffca/FFCA.sol` exports the `KeyType` enum and
+**Verification helpers.** `typewriter/FFCA.sol` exports the `KeyType` enum and
 a `verifySignature` helper for verifying a raw signature:
 
 ```solidity
-import {KeyType, verifySignature} from "ffca/FFCA.sol";
+import {KeyType, verifySignature} from "typewriter/FFCA.sol";
 
 verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
 ```
@@ -351,10 +351,10 @@ hash (see [`hash[Mutation]`](#mutations)) and the contract's `DOMAIN_SEPARATOR`.
 
 #### Contract structure
 
-The contract inherits from `ffca/FFCA.sol`, which supplies the `SCHEDULER`, `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `execute`, `enqueue`, and `forceExecute` entry points, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), a constructor that assigns the inherited immutables, and a single `dispatch` function (see [`dispatch`](#dispatch)). `FFCA` uses the app's `dispatch` to build the external-facing `execute`, `enqueue`, and `forceExecute` methods, routing every mutation — whether batched by the scheduler or force-included — through it.
+The contract inherits from `typewriter/FFCA.sol`, which supplies the `SCHEDULER`, `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `execute`, `enqueue`, and `forceExecute` entry points, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), a constructor that assigns the inherited immutables, and a single `dispatch` function (see [`dispatch`](#dispatch)). `FFCA` uses the app's `dispatch` to build the external-facing `execute`, `enqueue`, and `forceExecute` methods, routing every mutation — whether batched by the scheduler or force-included — through it.
 
 ```solidity
-import {EIP712_DOMAIN_TYPEHASH, FFCA} from "ffca/FFCA.sol";
+import {EIP712_DOMAIN_TYPEHASH, FFCA} from "typewriter/FFCA.sol";
 
 contract Token is FFCA {
     State private state;
@@ -471,7 +471,7 @@ Calls to external contracts are not allowed. The server executes mutations again
 
 ### Server runtime
 
-The JavaScript surface exported from `ffca`: the `createFFCA` entry point and the `FFCA` handle it returns (`state`, `schema`, `domain`, `execute`, `on`, `close`).
+The JavaScript surface exported from `typewriter`: the `createFFCA` entry point and the `FFCA` handle it returns (`state`, `schema`, `domain`, `execute`, `on`, `close`).
 
 #### `createFFCA()`
 
@@ -491,64 +491,64 @@ Starts the runtime and resolves to the `FFCA` handle (see the [Server runtime](#
 
 Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ safeBlockDepth?, finalizedBlockDepth? }`, defaults `1` / `5`), `onFatalError` (`(error) => void`; without it a fatal runtime error is rethrown), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
-The Solidity entrypoint must be importable by Bun. At startup, ffca runs `forge build`, reads the compiled ABI/storage layout/AST, and derives mutation tags, params, signature params, and typed storage from the contract.
+The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives mutation tags, params, signature params, and typed storage from the contract.
 
-#### `ffca.domain`
+#### `typewriter.domain`
 
 ```ts
-ffca.domain: TypedData.Domain; // { name, version, chainId, verifyingContract }
+typewriter.domain: TypedData.Domain; // { name, version, chainId, verifyingContract }
 ```
 
 The resolved EIP-712 domain, derived from FFCA's fixed domain plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
 
 ```ts
-"/api/domain": () => jsonResponse(ffca.domain),
+"/api/domain": () => jsonResponse(typewriter.domain),
 ```
 
-#### `ffca.execute()`
+#### `typewriter.execute()`
 
 ```ts
-ffca.execute(input: { name, params, signature }): Promise<{ id }>;
+typewriter.execute(input: { name, params, signature }): Promise<{ id }>;
 ```
 
 Submits a signed mutation. `name` is a Solidity `Mutation` enum member with the first letter lowercased, `params` matches the mutation struct decoded in `dispatch`, and `signature` matches the contract's `Signature` struct. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
 
 ```ts
-const accepted = await ffca.execute({ name: "transfer", params, signature });
+const accepted = await typewriter.execute({ name: "transfer", params, signature });
 // accepted.id
 ```
 
-#### `ffca.state`
+#### `typewriter.state`
 
 ```ts
-ffca.state: StorageProxy<storageLayout>;
+typewriter.state: StorageProxy<storageLayout>;
 ```
 
-`ffca.state` is how an app reads the contract's onchain state. It replaces the public getters and `view` functions you would normally read over `eth_call`: state is read directly from storage slots (typed by `storageLayout`), so the contract needs no public accessors and Solidity visibility doesn't matter. Reads resolve against the runtime's local, revm-backed mirror of that storage rather than issuing an `eth_call` per read; field accesses return promises, and mappings are indexed by key.
+`typewriter.state` is how an app reads the contract's onchain state. It replaces the public getters and `view` functions you would normally read over `eth_call`: state is read directly from storage slots (typed by `storageLayout`), so the contract needs no public accessors and Solidity visibility doesn't matter. Reads resolve against the runtime's local, revm-backed mirror of that storage rather than issuing an `eth_call` per read; field accesses return promises, and mappings are indexed by key.
 
 ```ts
-const account = ffca.state.accounts[address];
+const account = typewriter.state.accounts[address];
 const balance = await account.balance; // bigint
 const nonce = await account.nonce;
 ```
 
-`ffca.state` reflects locally accepted state, which can be ahead of what is `included` or `finalized` onchain.
+`typewriter.state` reflects locally accepted state, which can be ahead of what is `included` or `finalized` onchain.
 
-#### `ffca.schema`
+#### `typewriter.schema`
 
 ```ts
-ffca.schema: FFCASchema;
+typewriter.schema: FFCASchema;
 ```
 
-The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. ffca owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
+The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. typewriter owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
 
-One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `ffca.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
+One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
 
 Every mutation table starts with the same **lifecycle columns**:
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `integer`, primary key | mutation id; matches the `ffca.execute()` result and event `id` |
+| `id` | `integer`, primary key | mutation id; matches the `typewriter.execute()` result and event `id` |
 | `status` | `mutation_status` enum | one of `accepted`, `included`, `safe`, `finalized` |
 | `executionIndex` | `numeric(78,0)` bigint | onchain execution index; set once included |
 | `blockNumber` | `numeric(78,0)` bigint | inclusion block; null until included |
@@ -591,15 +591,15 @@ import { desc } from "drizzle-orm";
 
 const recent = await db
   .select()
-  .from(ffca.schema.transfer_mutations)
-  .orderBy(desc(ffca.schema.transfer_mutations.id))
+  .from(typewriter.schema.transfer_mutations)
+  .orderBy(desc(typewriter.schema.transfer_mutations.id))
   .limit(20);
 ```
 
-#### `ffca.on()`
+#### `typewriter.on()`
 
 ```ts
-ffca.on(event, callback): () => void;
+typewriter.on(event, callback): () => void;
 ```
 
 Subscribes to runtime events; returns an unsubscribe function. There are three events, each with its own payload type.
@@ -638,7 +638,7 @@ The remaining fields depend on sequencing:
 - batch — `batches`: the block's `BatchEvent`s (excluding `accepted`); and `forceIncludedMutations`.
 
 ```ts
-const unsubscribe = ffca.on("mutation", (mutation) => {
+const unsubscribe = typewriter.on("mutation", (mutation) => {
   console.log(mutation.id, mutation.status);
 });
 ```

@@ -1,4 +1,3 @@
-import { FFCA_DOMAIN } from "ffca";
 import { DEFAULT_NON_ROOT_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
 import * as Address from "ox/Address";
 import * as Hash from "ox/Hash";
@@ -7,6 +6,7 @@ import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
 import * as TypedData from "ox/TypedData";
 import superjson from "superjson";
+import { FFCA_DOMAIN } from "typewriter";
 import { API_URL, CHAIN_ID, EXCHANGE_ADDRESS } from "./constants";
 
 console.log(
