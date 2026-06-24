@@ -1,5 +1,5 @@
 {
-  "name": "exchange-demo",
+  "name": "order-book",
   "module": "index.ts",
   "type": "module",
   "private": true,

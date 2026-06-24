@@ -7,10 +7,10 @@ import * as Signature from "ox/Signature";
 import * as TypedData from "ox/TypedData";
 import superjson from "superjson";
 import { TYPEWRITER_DOMAIN } from "typewriter";
-import { API_URL, CHAIN_ID, EXCHANGE_ADDRESS } from "./constants";
+import { API_URL, CHAIN_ID, ORDER_BOOK_ADDRESS } from "./constants";
 
 console.log(
-  `Using API_URL=${API_URL}, CHAIN_ID=${CHAIN_ID}, EXCHANGE_ADDRESS=${EXCHANGE_ADDRESS}`,
+  `Using API_URL=${API_URL}, CHAIN_ID=${CHAIN_ID}, ORDER_BOOK_ADDRESS=${ORDER_BOOK_ADDRESS}`,
 );
 
 function farDeadline(): bigint {
@@ -22,7 +22,7 @@ function domain() {
   return {
     ...TYPEWRITER_DOMAIN,
     chainId: CHAIN_ID,
-    verifyingContract: EXCHANGE_ADDRESS,
+    verifyingContract: ORDER_BOOK_ADDRESS,
   };
 }
 

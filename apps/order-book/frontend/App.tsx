@@ -2,9 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { USD } from "order-book-sdk";
 import { useState } from "react";
 import { Deposit } from "./components/Deposit";
-import { Exchange } from "./components/Exchange";
 import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
+import { OrderBook } from "./components/OrderBook";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
 import { DomainProvider } from "./contexts/DomainContext";
 import { useBalances } from "./hooks/useBalances";
@@ -52,7 +52,7 @@ function Auth() {
   );
 }
 
-function ExchangeRoute() {
+function OrderBookRoute() {
   const { account, loading } = useAccountContext();
   const balances = useBalances(account?.accountId);
 
@@ -77,7 +77,7 @@ function ExchangeRoute() {
   return (
     <Shell>
       <main className="flex-1 pt-6">
-        <Exchange />
+        <OrderBook />
         <LiveBlocks />
       </main>
     </Shell>
@@ -122,7 +122,7 @@ function Routes() {
         <AccountPage />
       </Shell>
     );
-  if (path === "/exchange") return <ExchangeRoute />;
+  if (path === "/order-book") return <OrderBookRoute />;
   if (path === "/about") return <AboutOrderBook />;
   return <AboutOrderBook />;
 }

@@ -14,7 +14,7 @@ import {
     getTicks,
     removeBookTick,
     verifyMutationSignature
-} from "./Exchange.sol";
+} from "./OrderBook.sol";
 
 library CloseOrderMutation {
     struct CloseOrder {

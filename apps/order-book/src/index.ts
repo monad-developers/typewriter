@@ -4,14 +4,14 @@ import superjson from "superjson";
 import { createTypewriter } from "typewriter";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import Exchange from "../contracts/src/Exchange.sol";
+import OrderBook from "../contracts/src/OrderBook.sol";
 import index from "../frontend/index.html";
 import {
   normalizeSignatureForContract,
   ORDER_BOOK_BATCH_ORDER,
   type OrderBookSignature,
 } from "./app";
-import { CHAIN, EXCHANGE_ADDRESS, RPC_URLS } from "./constants";
+import { CHAIN, ORDER_BOOK_ADDRESS, RPC_URLS } from "./constants";
 import {
   selectBlock,
   selectMutationById,
@@ -27,8 +27,8 @@ if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
-const app = await createTypewriter(Exchange, {
-  address: EXCHANGE_ADDRESS,
+const app = await createTypewriter(OrderBook, {
+  address: ORDER_BOOK_ADDRESS,
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,

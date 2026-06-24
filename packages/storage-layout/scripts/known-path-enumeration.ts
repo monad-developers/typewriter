@@ -13,7 +13,7 @@ const layout = {
   storage: [
     {
       astId: 1,
-      contract: "contracts/Exchange.sol:Exchange",
+      contract: "contracts/OrderBook.sol:OrderBook",
       label: "accounts",
       offset: 0,
       slot: "0",
@@ -21,7 +21,7 @@ const layout = {
     },
     {
       astId: 2,
-      contract: "contracts/Exchange.sol:Exchange",
+      contract: "contracts/OrderBook.sol:OrderBook",
       label: "instruments",
       offset: 0,
       slot: "1",
@@ -105,7 +105,7 @@ const layout = {
       members: [
         {
           astId: 3,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "nonces",
           offset: 0,
           slot: "0",
@@ -113,7 +113,7 @@ const layout = {
         },
         {
           astId: 4,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "balances",
           offset: 0,
           slot: "1",
@@ -128,7 +128,7 @@ const layout = {
       members: [
         {
           astId: 5,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "base",
           offset: 0,
           slot: "0",
@@ -136,7 +136,7 @@ const layout = {
         },
         {
           astId: 6,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "quote",
           offset: 0,
           slot: "1",
@@ -144,7 +144,7 @@ const layout = {
         },
         {
           astId: 7,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "baseLotExp",
           offset: 20,
           slot: "1",
@@ -152,7 +152,7 @@ const layout = {
         },
         {
           astId: 8,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "quoteLotExp",
           offset: 21,
           slot: "1",
@@ -160,7 +160,7 @@ const layout = {
         },
         {
           astId: 9,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "bids",
           offset: 0,
           slot: "2",
@@ -168,7 +168,7 @@ const layout = {
         },
         {
           astId: 10,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "asks",
           offset: 0,
           slot: "3",
@@ -183,7 +183,7 @@ const layout = {
       members: [
         {
           astId: 11,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "quantity",
           offset: 0,
           slot: "0",
@@ -191,7 +191,7 @@ const layout = {
         },
         {
           astId: 12,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "remainingQuantity",
           offset: 8,
           slot: "0",
@@ -199,7 +199,7 @@ const layout = {
         },
         {
           astId: 13,
-          contract: "contracts/Exchange.sol:Exchange",
+          contract: "contracts/OrderBook.sol:OrderBook",
           label: "volume",
           offset: 16,
           slot: "0",

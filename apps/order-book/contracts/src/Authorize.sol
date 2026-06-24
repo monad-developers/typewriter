@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {KeyType} from "typewriter/Typewriter.sol";
-import {Key, PERM_AUTHORIZE, Signature, State, Unauthorized, verifyMutationSignature} from "./Exchange.sol";
+import {Key, PERM_AUTHORIZE, Signature, State, Unauthorized, verifyMutationSignature} from "./OrderBook.sol";
 
 library AuthorizeMutation {
     struct Authorize {

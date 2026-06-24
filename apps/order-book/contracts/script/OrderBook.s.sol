@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
-import {Exchange} from "../src/Exchange.sol";
+import {OrderBook} from "../src/OrderBook.sol";
 
 contract OrderBookScript is Script {
     function run() external {
@@ -10,7 +10,7 @@ contract OrderBookScript is Script {
         address scheduler = vm.addr(privateKey);
 
         vm.startBroadcast();
-        new Exchange(scheduler);
+        new OrderBook(scheduler);
         vm.stopBroadcast();
     }
 }

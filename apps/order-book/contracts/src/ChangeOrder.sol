@@ -16,7 +16,7 @@ import {
     getTicks,
     removeBookTick,
     verifyMutationSignature
-} from "./Exchange.sol";
+} from "./OrderBook.sol";
 
 library ChangeOrderMutation {
     struct ChangeOrder {

@@ -16,7 +16,7 @@ if (Number.isNaN(CHAIN_ID)) {
   throw new Error("CHAIN_ID must be a number");
 }
 
-export const EXCHANGE_ADDRESS = requiredEnv(
-  "EXCHANGE_ADDRESS",
-  process.env.EXCHANGE_ADDRESS,
+export const ORDER_BOOK_ADDRESS = requiredEnv(
+  "ORDER_BOOK_ADDRESS",
+  process.env.ORDER_BOOK_ADDRESS,
 ) as Address;

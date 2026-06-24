@@ -10,7 +10,7 @@ import {
     State,
     Unauthorized,
     verifyMutationSignature
-} from "./Exchange.sol";
+} from "./OrderBook.sol";
 
 library AddInstrumentMutation {
     struct AddInstrument {

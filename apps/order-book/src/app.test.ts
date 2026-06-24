@@ -5,9 +5,9 @@ import { createTypewriter, TYPEWRITER_DOMAIN } from "typewriter";
 import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
 import { signTypedData } from "viem/accounts";
 import { anvil } from "viem/chains";
-import Exchange from "../contracts/src/Exchange.sol";
+import OrderBook from "../contracts/src/OrderBook.sol";
 import {
-  deployExchange,
+  deployOrderBook,
   MAKER_ACCOUNT,
   MAKER_PRIVATE_KEY,
   SCHEDULER_ACCOUNT,
@@ -39,7 +39,7 @@ async function createOrderBookTypewriter(
   address: Hex,
   options: { submitIntervalMs?: number } = {},
 ) {
-  return await createTypewriter(Exchange, {
+  return await createTypewriter(OrderBook, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -237,7 +237,7 @@ async function waitForIncluded(
 }
 
 test("typewriter order book rejects invalid signatures before applying", async () => {
-  const address = await deployExchange();
+  const address = await deployOrderBook();
   const app = await createOrderBookTypewriter(address);
 
   const maker = await setupAccount({
@@ -274,7 +274,7 @@ test("typewriter order book rejects invalid signatures before applying", async (
 });
 
 test("typewriter order book changes an unfilled order to a new price", async () => {
-  const address = await deployExchange();
+  const address = await deployOrderBook();
   const app = await createOrderBookTypewriter(address);
 
   const maker = await setupAccount({
@@ -357,7 +357,7 @@ test("typewriter order book changes an unfilled order to a new price", async () 
 });
 
 test("db-queries fan out across per-mutation tables", async () => {
-  const address = await deployExchange();
+  const address = await deployOrderBook();
   const app = await createOrderBookTypewriter(address, {
     submitIntervalMs: 400,
   });

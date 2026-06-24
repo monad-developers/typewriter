@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 
-import {Order, OrderNotFound, Signature, State} from "src/Exchange.sol";
+import {Order, OrderNotFound, Signature, State} from "src/OrderBook.sol";
 import {CloseOrderMutation} from "src/CloseOrder.sol";
 
 contract CloseOrderTest is Test {

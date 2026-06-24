@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { anvil } from "viem/chains";
-import Exchange from "../../../apps/order-book/contracts/src/Exchange.sol";
+import OrderBook from "../../../apps/order-book/contracts/src/OrderBook.sol";
 import Token from "../../../apps/token/contracts/src/Token.sol";
 import Counter from "../test/contracts/src/Counter.sol";
 import Harness from "../test/contracts/src/Harness.sol";
@@ -344,8 +344,8 @@ test("generated Token Solidity declaration matches committed artifact", async ()
   expect(formatSolidityDeclaration(metadata)).toBe(declaration);
 }, 20_000);
 
-test("parseSolidityMetadata extracts Exchange runtime metadata", async () => {
-  const metadata = await parseSolidityMetadata(Exchange);
+test("parseSolidityMetadata extracts OrderBook runtime metadata", async () => {
+  const metadata = await parseSolidityMetadata(OrderBook);
 
   expect({
     contractName: metadata.contractName,
@@ -358,7 +358,7 @@ test("parseSolidityMetadata extracts Exchange runtime metadata", async () => {
     })),
   }).toMatchInlineSnapshot(`
     {
-      "contractName": "Exchange",
+      "contractName": "OrderBook",
       "mutations": [
         {
           "name": "Initialize",
@@ -495,11 +495,11 @@ test("parseSolidityMetadata extracts Exchange runtime metadata", async () => {
     `);
 }, 20_000);
 
-test("generated Exchange Solidity declaration matches committed artifact", async () => {
-  const metadata = await parseSolidityMetadata(Exchange);
+test("generated OrderBook Solidity declaration matches committed artifact", async () => {
+  const metadata = await parseSolidityMetadata(OrderBook);
   const declaration = await Bun.file(
     new URL(
-      "../../../apps/order-book/contracts/src/Exchange.sol.d.ts",
+      "../../../apps/order-book/contracts/src/OrderBook.sol.d.ts",
       import.meta.url,
     ),
   ).text();

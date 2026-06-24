@@ -32,7 +32,7 @@ const instruments = Object.entries(INSTRUMENTS) as [
   (typeof INSTRUMENTS)[keyof typeof INSTRUMENTS],
 ][];
 
-export function Exchange() {
+export function OrderBook() {
   const { account } = useAccountContext();
   const { data: balancesData } = useBalances(account?.accountId);
 

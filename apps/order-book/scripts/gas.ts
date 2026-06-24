@@ -15,8 +15,8 @@ import {
   parseSignature,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import Exchange from "../contracts/src/Exchange.sol";
-import { CHAIN_ID, EXCHANGE_ADDRESS, requiredEnv } from "./src/constants";
+import OrderBook from "../contracts/src/OrderBook.sol";
+import { CHAIN_ID, ORDER_BOOK_ADDRESS, requiredEnv } from "./src/constants";
 import {
   type Account,
   createAccount,
@@ -47,19 +47,19 @@ enum MutationType {
 
 const publicClient = createPublicClient({ transport: http(RPC_URL) });
 
-// `Exchange` resolves to the absolute path of `contracts/src/Exchange.sol`.
+// `OrderBook` resolves to the absolute path of `contracts/src/OrderBook.sol`.
 // Build the project first so the artifact reflects the current source and
 // exists, then read its ABI; without this the read throws an opaque JSON error
 // when the project hasn't been compiled.
-const contractsRoot = Exchange.replace(/\/src\/Exchange\.sol$/, "");
+const contractsRoot = OrderBook.replace(/\/src\/OrderBook\.sol$/, "");
 await $`forge build`.cwd(contractsRoot).quiet();
-const exchangeArtifactPath = `${contractsRoot}/out/Exchange.sol/Exchange.json`;
-const exchangeArtifact = (await Bun.file(exchangeArtifactPath).json()) as {
+const orderBookArtifactPath = `${contractsRoot}/out/OrderBook.sol/OrderBook.json`;
+const orderBookArtifact = (await Bun.file(orderBookArtifactPath).json()) as {
   abi: Abi;
 };
 
 // Pick a small integer human price, small enough that tests won't need
-// huge deposits and unlikely to collide with live orderbook activity.
+// huge deposits and unlikely to collide with live order book activity.
 function randomHumanPrice(): number {
   return 1 + Math.floor(Math.random() * 1_000_000);
 }
@@ -283,18 +283,18 @@ function buildBatch(account: Account, muts: Mut[]): BatchArg {
 
 async function estimate(batch: BatchArg): Promise<bigint> {
   const data = encodeFunctionData({
-    abi: exchangeArtifact.abi,
+    abi: orderBookArtifact.abi,
     functionName: "execute",
     args: [[batch], []],
   });
   const { accessList } = await publicClient.createAccessList({
     account: SCHEDULER_ADDRESS,
-    to: EXCHANGE_ADDRESS,
+    to: ORDER_BOOK_ADDRESS,
     data,
   });
   return publicClient.estimateGas({
     account: SCHEDULER_ADDRESS,
-    to: EXCHANGE_ADDRESS,
+    to: ORDER_BOOK_ADDRESS,
     data,
     accessList,
   });
@@ -347,7 +347,7 @@ async function sleep(ms: number) {
 const instrument = INSTRUMENTS["GOLD/USD"];
 
 console.log(
-  `measuring marginal gas costs against ${EXCHANGE_ADDRESS} on chain ${CHAIN_ID}`,
+  `measuring marginal gas costs against ${ORDER_BOOK_ADDRESS} on chain ${CHAIN_ID}`,
 );
 console.log(`rpc: ${RPC_URL}`);
 console.log(`scheduler (from private key): ${SCHEDULER_ADDRESS}`);

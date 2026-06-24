@@ -10,7 +10,7 @@ import {
     AmountNotLotMultiple,
     Signature,
     State
-} from "src/Exchange.sol";
+} from "src/OrderBook.sol";
 import {LimitOrderMutation} from "src/LimitOrder.sol";
 
 contract LimitOrderTest is Test {

@@ -20,6 +20,6 @@ if (RPC_URLS.length === 0)
   throw new Error("RPC_URL must contain at least one URL");
 export const RPC_URL = RPC_URLS[0]!;
 
-if (!process.env.EXCHANGE_ADDRESS)
-  throw new Error("EXCHANGE_ADDRESS env var is required");
-export const EXCHANGE_ADDRESS = process.env.EXCHANGE_ADDRESS as Address;
+if (!process.env.ORDER_BOOK_ADDRESS)
+  throw new Error("ORDER_BOOK_ADDRESS env var is required");
+export const ORDER_BOOK_ADDRESS = process.env.ORDER_BOOK_ADDRESS as Address;

@@ -3,7 +3,7 @@ import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
 import { useDomainContext } from "../contexts/DomainContext";
-import exchangeScreenshot from "../image.png";
+import orderBookScreenshot from "../image.png";
 import { Link } from "../lib/router";
 import orderSequencingScreenshot from "../order-sequencing.png";
 
@@ -25,8 +25,8 @@ export function AboutOrderBook() {
       <main className="max-w-3xl mx-auto px-6 py-10 flex flex-col gap-10 font-mono">
         {/* What is this */}
         <section>
-          <h2 id="exchange" className="text-2xl font-bold mb-4 scroll-mt-24">
-            Exchange (demo)
+          <h2 id="overview" className="text-2xl font-bold mb-4 scroll-mt-24">
+            Order Book
           </h2>
           <p className="leading-relaxed mb-4">
             An experimental order book on Monad testnet.
@@ -74,18 +74,20 @@ export function AboutOrderBook() {
         {/* CTA */}
         <section>
           <Link
-            to="/exchange"
+            to="/order-book"
             className="group block border rounded-lg overflow-hidden hover:border-black hover:shadow-md transition-all"
           >
             <div className="bg-background p-4">
               <img
-                src={exchangeScreenshot}
-                alt="Exchange UI preview"
+                src={orderBookScreenshot}
+                alt="Order Book UI preview"
                 className="w-full block"
               />
             </div>
             <div className="px-4 py-3 bg-blue-500 text-white flex items-center justify-between">
-              <span className="text-base font-semibold">Open the exchange</span>
+              <span className="text-base font-semibold">
+                Open the order book
+              </span>
               <span className="text-base font-semibold transition-transform group-hover:translate-x-1">
                 →
               </span>
@@ -99,7 +101,7 @@ export function AboutOrderBook() {
             Accounts
           </h2>
           <p className="leading-relaxed mb-4">
-            The exchange ships a modern account system natively: passkey
+            The order book ships a modern account system natively: passkey
             authentication, scoped session keys, and concurrent transactions.
           </p>
 
@@ -150,8 +152,8 @@ struct Key {
             permissions.
           </p>
           <Info title="info">
-            <Link to="/exchange" className="hover:underline text-blue-500">
-              /exchange
+            <Link to="/order-book" className="hover:underline text-blue-500">
+              /order-book
             </Link>{" "}
             uses a session key: a non-extractable P-256{" "}
             <InlineCode>CryptoKeyPair</InlineCode> generated via{" "}
@@ -175,8 +177,8 @@ struct Key {
             transaction concurrency is limited.
           </p>
           <p className="leading-relaxed mb-4">
-            This exchange allows multiple parallel transactions by splitting the
-            256 bit nonce into a 192 bit key and 64 bit sequence, like{" "}
+            This order book allows multiple parallel transactions by splitting
+            the 256 bit nonce into a 192 bit key and 64 bit sequence, like{" "}
             <a
               href="https://eips.ethereum.org/EIPS/eip-4337"
               target="_blank"
@@ -190,7 +192,7 @@ struct Key {
             different nonce keys.
           </p>
           <CodeBlock
-            title="Exchange.sol"
+            title="OrderBook.sol"
             lang="solidity"
             code={`struct Account {
     mapping(uint192 => uint64) nonces; // nonce key => sequence
@@ -235,7 +237,7 @@ struct Key {
             sequence: cancels first, then limits, then markets.
           </p>
           <Link
-            to="/exchange"
+            to="/order-book"
             className="block border rounded-lg overflow-hidden hover:border-black transition-colors my-4"
           >
             <img
@@ -245,7 +247,7 @@ struct Key {
             />
             <div className="px-4 py-3 border-t flex items-center justify-between">
               <span className="text-sm font-semibold">See a live batch</span>
-              <span className="text-sm text-blue-500">/exchange →</span>
+              <span className="text-sm text-blue-500">/order-book →</span>
             </div>
           </Link>
 
@@ -399,7 +401,7 @@ struct Key {
             simulate a mutation without submitting it onchain.
           </p>
           <CodeBlock
-            title="Exchange.sol"
+            title="OrderBook.sol"
             lang="solidity"
             code={`address internal immutable SCHEDULER;
 
@@ -446,7 +448,7 @@ function execute(Batch[] calldata batches) external {
             identical rules as a server-submitted one.
           </p>
           <CodeBlock
-            title="Exchange.sol"
+            title="OrderBook.sol"
             lang="solidity"
             code={`uint256 constant FORCE_EXIT_DELAY = 3;
 
@@ -486,7 +488,7 @@ function forceExecute(uint256 index) external {
                 </td>
               </tr>
               <tr className="border-b border-black">
-                <td className="px-3 py-2 font-semibold">Exchange</td>
+                <td className="px-3 py-2 font-semibold">Order Book</td>
                 <td className="px-3 py-2 break-all">
                   <a
                     href={`https://testnet.monadscan.com/address/${domain?.verifyingContract ?? "0x0000000000000000000000000000000000000000"}`}
@@ -536,8 +538,8 @@ function forceExecute(uint256 index) external {
           </h3>
           <p className="leading-relaxed mb-4">
             Instrument creation is permissionless;{" "}
-            <Link to="/exchange" className="hover:underline text-blue-500">
-              /exchange
+            <Link to="/order-book" className="hover:underline text-blue-500">
+              /order-book
             </Link>{" "}
             displays a curated subset.
           </p>

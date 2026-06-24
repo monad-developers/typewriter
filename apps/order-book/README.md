@@ -1,10 +1,10 @@
 # Order Book
 
-Order-book is a single Bun workspace that contains the backend, React frontend, participant scripts, SDK helpers, and Foundry contracts for the demo exchange. The app owns the order-book domain logic and uses `typewriter` from `packages/typewriter` as the runtime.
+Order-book is a single Bun workspace that contains the backend, React frontend, participant scripts, SDK helpers, and Foundry contracts for the demo order book. The app owns the order-book domain logic and uses `typewriter` from `packages/typewriter` as the runtime.
 
 ## Workspace Shape
 
-Keep this as one workspace for now. The backend, frontend, scripts, SDK alias, and contracts are coupled to the same deployed `Exchange` address, chain ID, scheduler, and typed-data definitions, so splitting `contracts/` or `sdk/` into another workspace would add package boundaries without reducing configuration complexity.
+Keep this as one workspace for now. The backend, frontend, scripts, SDK alias, and contracts are coupled to the same deployed `OrderBook` address, chain ID, scheduler, and typed-data definitions, so splitting `contracts/` or `sdk/` into another workspace would add package boundaries without reducing configuration complexity.
 
 Reconsider a split only if one of these becomes true:
 
@@ -34,7 +34,7 @@ cp .env.example.testnet .env
 |---|---|---|
 | `PRIVATE_KEY` | `bun dev`, `bun start`, `bun run deploy` | Funded deployer/backend wallet private key |
 | `DATABASE_URL` | `bun dev`, `bun start`, tests with Postgres | Postgres connection string |
-| `EXCHANGE_ADDRESS` | Backend, scripts | Deployed `Exchange` contract address |
+| `ORDER_BOOK_ADDRESS` | Backend, scripts | Deployed `OrderBook` contract address |
 | `RPC_URL` | Backend, scripts, deploy | RPC endpoint. The backend accepts comma-separated failover URLs |
 | `CHAIN_ID` | Backend, scripts | Chain ID, for example `31337` for Anvil or `10143` for Monad testnet |
 | `BUN_PUBLIC_RP_ID` | Frontend | WebAuthn relying party ID, usually the hostname |
@@ -45,14 +45,14 @@ cp .env.example.testnet .env
 
 ### Script Overrides
 
-Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL` and read `CHAIN_ID`, `EXCHANGE_ADDRESS`, and `RPC_URL` from `.env`.
+Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL` and read `CHAIN_ID`, `ORDER_BOOK_ADDRESS`, and `RPC_URL` from `.env`.
 
 Set these only for one-off overrides:
 
 | Variable | Description |
 |---|---|
 | `CHAIN_ID` | One-off override for scripts |
-| `EXCHANGE_ADDRESS` | One-off override for scripts |
+| `ORDER_BOOK_ADDRESS` | One-off override for scripts |
 | `RPC_URL` | One-off override for scripts |
 
 Order-entry scripts also take command-specific variables such as `INSTRUMENT`, `SIDE`, `QUANTITY`, `PRICE`, and `INTERVAL`; see `scripts/README.md`.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {PERM_REVOKE, Signature, State, Unauthorized, verifyMutationSignature} from "./Exchange.sol";
+import {PERM_REVOKE, Signature, State, Unauthorized, verifyMutationSignature} from "./OrderBook.sol";
 
 library RevokeMutation {
     struct Revoke {

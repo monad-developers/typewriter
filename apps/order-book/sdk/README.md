@@ -1,6 +1,6 @@
 # Order Book SDK
 
-Shared constants, types, and math utilities for the order book exchange. Used by the backend, frontend, and scripts inside `apps/order-book`.
+Shared constants, types, and math utilities for the order book. Used by the backend, frontend, and scripts inside `apps/order-book`.
 
 ## Install
 
@@ -97,6 +97,5 @@ usd.human // ~2400
 ### Other exports
 
 - `ASSETS` — `[USD, GOLD, WTIOIL, EUR, SPX, BTC]`
-- `EIP712_TYPES` — EIP-712 type definitions for all exchange mutations
-- `EXCHANGE_ABI` — Solidity ABI for the Exchange contract
+- `EIP712_TYPES` — EIP-712 type definitions for all order-book mutations
 - `InstrumentConfig` — TypeScript type for instrument configuration

@@ -1,12 +1,12 @@
 # Order Book Contracts
 
-The on-chain exchange and account contracts. Batch execution via a privileged scheduler, EIP-712 signed mutations, P256/WebAuthn/secp256k1 keys with permission masks, parallel-nonce account model, and a force-exit queue so users can bypass the scheduler. See the in-app `/about` page for the architectural walkthrough.
+The on-chain order book and account contracts. Batch execution via a privileged scheduler, EIP-712 signed mutations, P256/WebAuthn/secp256k1 keys with permission masks, parallel-nonce account model, and a force-exit queue so users can bypass the scheduler. See the in-app `/about` page for the architectural walkthrough.
 
 Within each batch, mutations are sequenced cancel → limit → market and market orders clear at a uniform price.
 
 ## Prerequisites
 
-[Foundry **nightly**](https://book.getfoundry.sh/getting-started/installation) — `foundryup --install nightly`. The Exchange contract uses the P256 precompile at `address(0x100)` (RIP-7212), which stable Foundry does not include. Required for both `forge test` and `anvil`.
+[Foundry **nightly**](https://book.getfoundry.sh/getting-started/installation) — `foundryup --install nightly`. The OrderBook contract uses the P256 precompile at `address(0x100)` (RIP-7212), which stable Foundry does not include. Required for both `forge test` and `anvil`.
 
 ## Environment Variables
 

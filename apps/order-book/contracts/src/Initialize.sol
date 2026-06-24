@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {KeyType} from "typewriter/Typewriter.sol";
-import {Account, AlreadyInitialized, InvalidAccount, Key, Signature, State} from "./Exchange.sol";
+import {Account, AlreadyInitialized, InvalidAccount, Key, Signature, State} from "./OrderBook.sol";
 
 library InitializeMutation {
     struct Initialize {

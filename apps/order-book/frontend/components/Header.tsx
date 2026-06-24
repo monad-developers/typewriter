@@ -7,8 +7,8 @@ import { Link } from "../lib/router";
 export function Header({ compact = false }: { compact?: boolean }) {
   return (
     <header className="w-full px-6 h-12 flex items-center gap-6 text-sm">
-      <Link to="/exchange" className="text-blue-500 hover:underline">
-        /exchange
+      <Link to="/order-book" className="text-blue-500 hover:underline">
+        /order-book
       </Link>
       <Link to="/about" className="text-blue-500 hover:underline">
         /about
@@ -50,8 +50,8 @@ function HeaderAccountControls() {
           </button>
         </>
       ) : (
-        <Link to="/exchange" className="text-blue-500 hover:underline">
-          /exchange →
+        <Link to="/order-book" className="text-blue-500 hover:underline">
+          /order-book →
         </Link>
       )}
     </>

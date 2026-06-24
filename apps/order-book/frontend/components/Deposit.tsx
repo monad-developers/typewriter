@@ -63,7 +63,7 @@ export function Deposit() {
           <span className="w-3 h-3 rounded-full border border-black bg-black shrink-0" />
           <span className="flex-1">
             <span className="block text-sm font-semibold">
-              Exchange demo treasury
+              Order Book treasury
             </span>
             <span className="block text-xs text-zinc-500">
               Test funds minted on your behalf

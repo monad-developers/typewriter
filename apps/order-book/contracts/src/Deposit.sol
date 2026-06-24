@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {PERM_DEPOSIT, Signature, State, Unauthorized, verifyMutationSignature} from "./Exchange.sol";
+import {PERM_DEPOSIT, Signature, State, Unauthorized, verifyMutationSignature} from "./OrderBook.sol";
 
 library DepositMutation {
     struct Deposit {

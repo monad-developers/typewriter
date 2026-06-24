@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {EIP712_DOMAIN_TYPEHASH, Typewriter, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
+import {Typewriter, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
 
 struct Key {
     uint40 expiry;
@@ -207,7 +207,7 @@ import {MarketOrderMutation} from "./MarketOrder.sol";
 import {RevokeMutation} from "./Revoke.sol";
 import {WithdrawalMutation} from "./Withdrawal.sol";
 
-contract Exchange is Typewriter {
+contract OrderBook is Typewriter {
     enum Mutation {
         Initialize,
         Authorize,

@@ -1,6 +1,6 @@
 # Order Book Scripts
 
-Scripts for interacting with the order book exchange. Each script emulates a specific market participant.
+Scripts for interacting with the order book. Each script emulates a specific market participant.
 
 ## Setup
 
@@ -14,13 +14,13 @@ Order-book uses one root `.env` file. Start from the app-level example:
 cp .env.example.local .env
 ```
 
-Scripts require `API_URL`. They read `CHAIN_ID`, `EXCHANGE_ADDRESS`, and `RPC_URL` from `.env`; set those only for one-off overrides.
+Scripts require `API_URL`. They read `CHAIN_ID`, `ORDER_BOOK_ADDRESS`, and `RPC_URL` from `.env`; set those only for one-off overrides.
 
 ## Scripts
 
 ### add-instrument
 
-Registers instruments on the exchange. Run this first.
+Registers instruments on the order book. Run this first.
 
 ```bash
 bun scripts/add-instrument.ts

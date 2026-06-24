@@ -76,9 +76,9 @@ async function dropDatabase(databaseName: string): Promise<void> {
   );
 }
 
-export async function deployExchange(): Promise<Address> {
+export async function deployOrderBook(): Promise<Address> {
   const artifact = await Bun.file(
-    `${import.meta.dir}/../contracts/out/Exchange.sol/Exchange.json`,
+    `${import.meta.dir}/../contracts/out/OrderBook.sol/OrderBook.json`,
   ).json();
   const hash = await TEST_WALLET_CLIENT.deployContract({
     abi: artifact.abi,
@@ -92,7 +92,7 @@ export async function deployExchange(): Promise<Address> {
     receipt.contractAddress === null ||
     receipt.contractAddress === undefined
   ) {
-    throw new Error("Exchange deploy missing contract address");
+    throw new Error("OrderBook deploy missing contract address");
   }
   return receipt.contractAddress;
 }

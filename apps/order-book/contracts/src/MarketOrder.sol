@@ -17,7 +17,7 @@ import {
     removeBookTick,
     toLots,
     verifyMutationSignature
-} from "./Exchange.sol";
+} from "./OrderBook.sol";
 
 struct Fill {
     uint64 quantity;
@@ -144,10 +144,7 @@ library MarketOrderMutation {
         }
     }
 
-    function consumeTick(
-        Tick storage tick,
-        uint64 fillQuantity
-    ) private {
+    function consumeTick(Tick storage tick, uint64 fillQuantity) private {
         if (fillQuantity > tick.remainingQuantity) revert InvalidTick();
 
         unchecked {
@@ -158,5 +155,4 @@ library MarketOrderMutation {
             tick.quantity = 0;
         }
     }
-
 }
