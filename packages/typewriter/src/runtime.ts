@@ -887,8 +887,6 @@ export function createRuntimeEffect(
 
       const transactionStartedAtMs = startTimer();
 
-      console.log("before eth_fillTransaction");
-
       const filled = yield* rpc.request({
         method: "eth_fillTransaction",
         params: [
@@ -902,8 +900,6 @@ export function createRuntimeEffect(
           },
         ],
       });
-
-      console.log("after eth_fillTransaction");
 
       // `eth_fillTransaction` returns an already-signed `raw`; strip its
       // signature fields so the account re-signs over the correct payload.
@@ -926,17 +922,12 @@ export function createRuntimeEffect(
       let broadcastAttempted = false;
       const receipt = yield* Effect.gen(function* () {
         if (broadcastAttempted) {
-          console.log("before eth_getTransactionReceipt");
           const receipt = yield* rpc.request({
             method: "eth_getTransactionReceipt",
             params: [hash],
           });
           if (receipt !== null) return receipt;
-
-          console.log("after eth_getTransactionReceipt");
         }
-
-        console.log("before eth_sendRawTransactionSync");
 
         broadcastAttempted = true;
         return yield* rpc.requestMultiplexed({
