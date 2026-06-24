@@ -10,34 +10,34 @@ import type {
 } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
-import type { FFCA_ABI } from "./encoding";
+import type { TYPEWRITER_ABI } from "./encoding";
 import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
 import { layerRpc, RpcConfig } from "./rpc";
 import { requestExecutionIndex } from "./rpc-request";
 import { createRuntimeEffect } from "./runtime";
-import type { FFCASchema } from "./schema";
+import type { TypewriterSchema } from "./schema";
 import type {
   BatchListener,
   BlockListener,
-  FFCAMutationInput,
-  FFCAMutationResult,
   MutationListener,
+  TypewriterMutationInput,
+  TypewriterMutationResult,
 } from "./types";
 import { layerWatchLive } from "./watch";
 
-export type RuntimeFFCA<
+export type RuntimeTypewriter<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   readonly state: StorageProxy<storageConfig, true>;
-  readonly schema: FFCASchema<mutationsConfig, signatureConfig>;
+  readonly schema: TypewriterSchema<mutationsConfig, signatureConfig>;
   execute: (
-    submitted: FFCAMutationInput<mutationsConfig, signatureConfig>,
-  ) => Effect.Effect<FFCAMutationResult, unknown>;
+    submitted: TypewriterMutationInput<mutationsConfig, signatureConfig>,
+  ) => Effect.Effect<TypewriterMutationResult, unknown>;
   program: Effect.Effect<unknown, unknown>;
 } & (sequencingConfig extends "fifo"
   ? {
@@ -65,12 +65,12 @@ export type RuntimeFFCA<
       ): Effect.Effect<() => void>;
     });
 
-export type RuntimeFFCAWithDomain<
+export type RuntimeTypewriterWithDomain<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
-> = RuntimeFFCA<
+> = RuntimeTypewriter<
   storageConfig,
   mutationsConfig,
   signatureConfig,
@@ -79,10 +79,10 @@ export type RuntimeFFCAWithDomain<
   readonly domain: TypedData.Domain;
 };
 
-export type InternalRuntimeFFCA<
+export type InternalRuntimeTypewriter<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = Omit<
-  RuntimeFFCA<
+  RuntimeTypewriter<
     StorageConfig,
     MutationsConfig,
     SignatureConfig,
@@ -94,12 +94,12 @@ export type InternalRuntimeFFCA<
     name: string;
     params: unknown;
     signature: unknown;
-  }): Effect.Effect<FFCAMutationResult, unknown>;
+  }): Effect.Effect<TypewriterMutationResult, unknown>;
 };
 
 export type { BatchListener, BlockListener, MutationListener } from "./types";
 
-export function createFFCAEffect<
+export function createTypewriterEffect<
   const storageConfig extends StorageConfig,
   const mutationsConfig extends MutationsConfig,
   const signatureConfig extends SignatureConfig,
@@ -107,7 +107,7 @@ export function createFFCAEffect<
 >(
   app: InternalApp,
 ): Effect.Effect<
-  RuntimeFFCAWithDomain<
+  RuntimeTypewriterWithDomain<
     storageConfig,
     mutationsConfig,
     signatureConfig,
@@ -118,7 +118,7 @@ export function createFFCAEffect<
 > {
   return Effect.gen(function* () {
     // TODO(kyle) check mutation names against sequencing order if applicable
-    // TODO(kyle) validate the fixed FFCA entrypoints
+    // TODO(kyle) validate the fixed Typewriter entrypoints
 
     const rpcLayer = layerRpc.pipe(
       Layer.provide(Layer.succeed(RpcConfig)({ rpcUrls: app.rpcUrls })),
@@ -129,7 +129,7 @@ export function createFFCAEffect<
     );
 
     const forceInclusionEvent = getAbiItem({
-      abi: app.abi as typeof FFCA_ABI,
+      abi: app.abi as typeof TYPEWRITER_ABI,
       name: "ForceInclusionQueued",
     });
 
@@ -182,7 +182,7 @@ export function createFFCAEffect<
       return {
         ...runtime,
         execute: (
-          mutation: FFCAMutationInput<mutationsConfig, signatureConfig>,
+          mutation: TypewriterMutationInput<mutationsConfig, signatureConfig>,
         ) =>
           fatalError === undefined
             ? runtime
@@ -194,7 +194,7 @@ export function createFFCAEffect<
                 .pipe(Effect.raceFirst(Deferred.await(fatalSignal)))
             : Effect.fail(fatalError.error),
         domain: app.domain,
-      } as unknown as RuntimeFFCAWithDomain<
+      } as unknown as RuntimeTypewriterWithDomain<
         storageConfig,
         mutationsConfig,
         signatureConfig,
@@ -205,7 +205,7 @@ export function createFFCAEffect<
     Effect.tapError((error) => Effect.logError(error)),
     Effect.provide(loggerLayer),
   ) as Effect.Effect<
-    RuntimeFFCAWithDomain<
+    RuntimeTypewriterWithDomain<
       storageConfig,
       mutationsConfig,
       signatureConfig,

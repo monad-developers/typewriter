@@ -3,11 +3,11 @@ import { anvil } from "viem/chains";
 import Counter from "../test/contracts/src/Counter.sol";
 import { SCHEDULER_ACCOUNT, TEST_DB_URL, TEST_RPC_URL } from "../test/setup";
 import { deployCounter } from "../test/utils";
-import { createFFCA, FFCA_DOMAIN } from "./index";
+import { createTypewriter, TYPEWRITER_DOMAIN } from "./index";
 
 test("typewriter.domain is fixed", async () => {
   const address = await deployCounter(SCHEDULER_ACCOUNT.address);
-  const typewriter = await createFFCA(Counter, {
+  const typewriter = await createTypewriter(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -17,7 +17,7 @@ test("typewriter.domain is fixed", async () => {
 
   try {
     expect(typewriter.domain).toEqual({
-      ...FFCA_DOMAIN,
+      ...TYPEWRITER_DOMAIN,
       chainId: anvil.id,
       verifyingContract: address,
     });

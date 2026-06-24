@@ -19,7 +19,7 @@ import {
 import {
   encodeMutationCalldata,
   encodeSignatureCalldata,
-  FFCA_ABI,
+  TYPEWRITER_ABI,
 } from "./encoding";
 import { layerRpcLive } from "./rpc";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
@@ -178,7 +178,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           account: TEST_WALLET_CLIENT.account!,
           chain: anvil,
           address: counterAddress,
-          abi: FFCA_ABI,
+          abi: TYPEWRITER_ABI,
           functionName: "enqueue",
           args: [COUNTER_MUTATIONS.Add.tag, mutationData, signatureData],
         }),

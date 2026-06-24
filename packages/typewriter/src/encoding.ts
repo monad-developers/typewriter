@@ -2,7 +2,7 @@ import { AbiParameters, type Hex } from "ox";
 import { type Abi, encodeFunctionData } from "viem";
 import type { ExecutableMutation } from "./types";
 
-export const FFCA_ABI = [
+export const TYPEWRITER_ABI = [
   {
     type: "function",
     name: "execute",
@@ -60,9 +60,9 @@ export const FFCA_ABI = [
   },
 ] as const satisfies Abi;
 
-export type FFCAAbi = typeof FFCA_ABI;
+export type TypewriterAbi = typeof TYPEWRITER_ABI;
 
-// FFCA mutation params are the flat semantic fields used for EIP-712. Contract
+// Typewriter mutation params are the flat semantic fields used for EIP-712. Contract
 // calldata encodes those fields as one top-level Solidity struct. This assumes
 // each mutation's calldata shape is exactly one struct whose components are
 // `mutation.params`.
@@ -122,7 +122,7 @@ export function encodeExecuteCalldata(
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
   return encodeFunctionData({
-    abi: FFCA_ABI,
+    abi: TYPEWRITER_ABI,
     functionName: "execute",
     args: [batches, forceExecuteIndexes],
   });
@@ -137,7 +137,7 @@ export function encodeEnqueueCalldata(
     mutation.signature,
   );
   return encodeFunctionData({
-    abi: FFCA_ABI,
+    abi: TYPEWRITER_ABI,
     functionName: "enqueue",
     args: [
       mutation.config.tag,

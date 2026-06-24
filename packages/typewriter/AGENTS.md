@@ -84,7 +84,7 @@ Multi-week projects that span lanes. Each has its own internal sequence.
 
 **Solidity codegen.** Once Solidity parsing is well-tested, generate the typewriter-owned protocol shell instead of requiring apps to hand-author it. The first target is removing dispatch boilerplate: derive mutation tags and params from the parsed contract, generate the `dispatch` branch/`abi.decode` wiring, and keep app contracts focused on business logic. Larger codegen can then absorb `execute`, `enqueue`, `forceExecute`, scheduler access control, force-inclusion queue/events, and server-consumable artifacts.
 
-**Scheduler key management.** Today `FFCAConfig.account: PrivateKeyAccount` is in-process key material — fine for dev, a footgun for production. Three pieces share the same seam (the framework's signing identity): KMS / remote signer support, nonce recovery on conflict, and user-shaped signing on-contract (scheduler key in the same registry as user keys, with rotation/expiry/scopes).
+**Scheduler key management.** Today `TypewriterConfig.account: PrivateKeyAccount` is in-process key material — fine for dev, a footgun for production. Three pieces share the same seam (the framework's signing identity): KMS / remote signer support, nonce recovery on conflict, and user-shaped signing on-contract (scheduler key in the same registry as user keys, with rotation/expiry/scopes).
 
 **Equivocation receipts.** Unbuilt. The goal is settled — signed accepted receipts let users prove the scheduler accepted one mutation and settled another — but receipt shape/hashing, observability, proof scope, and signing identity are open (see Open decisions and `PLAN_equivocation.md`).
 

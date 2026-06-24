@@ -9,8 +9,8 @@ enum KeyType {
 
 bytes32 constant EIP712_DOMAIN_TYPEHASH =
     keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-string constant FFCA_DOMAIN_NAME = "FFCA";
-string constant FFCA_DOMAIN_VERSION = "1";
+string constant TYPEWRITER_DOMAIN_NAME = "Typewriter";
+string constant TYPEWRITER_DOMAIN_VERSION = "1";
 address constant P256_VERIFIER = address(0x100);
 
 error UnknownMutation(uint8 mutation);
@@ -81,7 +81,7 @@ function verifyChallenge(bytes memory clientDataJSON, uint256 offset, bytes32 di
     }
 }
 
-abstract contract FFCA {
+abstract contract Typewriter {
     struct Batch {
         uint8[] mutations;
         bytes[] mutationData;
@@ -112,8 +112,8 @@ abstract contract FFCA {
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes(FFCA_DOMAIN_NAME)),
-                keccak256(bytes(FFCA_DOMAIN_VERSION)),
+                keccak256(bytes(TYPEWRITER_DOMAIN_NAME)),
+                keccak256(bytes(TYPEWRITER_DOMAIN_VERSION)),
                 block.chainid,
                 address(this)
             )

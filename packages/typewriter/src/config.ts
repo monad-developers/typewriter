@@ -3,12 +3,12 @@ import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
-import { FFCA_DOMAIN } from "./eip712";
+import { TYPEWRITER_DOMAIN } from "./eip712";
 import type { InternalApp } from "./internal";
 import { createMutationSchema } from "./schema";
 
-export type FFCADatabase = DatabaseClient;
-export type FFCADatabaseTransaction = Parameters<
+export type TypewriterDatabase = DatabaseClient;
+export type TypewriterDatabaseTransaction = Parameters<
   Parameters<DatabaseClient["transaction"]>[0]
 >[0];
 
@@ -31,11 +31,13 @@ export type AbiParametersToValue<params extends readonly AbiParameter[]> =
         AbiParametersToValue<tail>
     : object;
 
-export type ResolvedFFCAMutationConfig = MutationConfig & {
+export type ResolvedTypewriterMutationConfig = MutationConfig & {
   tag: number;
 };
 
-export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
+export type TypewriterSequencingConfig<
+  sequencingConfig extends SequencingConfig,
+> =
   | {
       order: sequencingConfig extends "fifo" ? sequencingConfig : never;
       submitIntervalMs?: number;
@@ -47,7 +49,7 @@ export type FFCASequencingConfig<sequencingConfig extends SequencingConfig> =
       batchOrder: readonly string[];
     };
 
-export type FFCAConfig<
+export type TypewriterConfig<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   address: Address.Address;
@@ -61,7 +63,7 @@ export type FFCAConfig<
     finalizedBlockDepth?: number;
   };
   onFatalError?: (error: unknown) => void;
-  sequencing?: FFCASequencingConfig<sequencingConfig>;
+  sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
 const DEFAULT_SAFE_BLOCK_DEPTH = 1;
@@ -80,7 +82,7 @@ function assertSafeNonNegativeInteger(
   }
 }
 
-export function validateConfig(config: FFCAConfig): void {
+export function validateConfig(config: TypewriterConfig): void {
   if (Array.isArray(config.rpcUrl) && config.rpcUrl.length === 0) {
     throw new Error("At least one RPC URL is required");
   }
@@ -127,7 +129,7 @@ export function validateConfig(config: FFCAConfig): void {
 }
 
 function validateMutationDefinitions(mutations: {
-  readonly [name: string]: ResolvedFFCAMutationConfig;
+  readonly [name: string]: ResolvedTypewriterMutationConfig;
 }): void {
   const mutationTags = new Set<number>();
   for (const mutation of Object.values(mutations)) {
@@ -139,11 +141,11 @@ function validateMutationDefinitions(mutations: {
 }
 
 export function buildInternalApp(params: {
-  config: FFCAConfig;
+  config: TypewriterConfig;
   abi: Abi;
   storageLayout: StorageConfig;
   signature: { params: SignatureConfig };
-  mutations: { [name: string]: ResolvedFFCAMutationConfig };
+  mutations: { [name: string]: ResolvedTypewriterMutationConfig };
 }): InternalApp {
   const { abi, config, mutations, signature, storageLayout } = params;
   validateConfig(config);
@@ -180,7 +182,7 @@ export function buildInternalApp(params: {
     address: config.address,
     abi,
     domain: {
-      ...FFCA_DOMAIN,
+      ...TYPEWRITER_DOMAIN,
       chainId: config.chainId,
       verifyingContract: config.address,
     },

@@ -1,4 +1,4 @@
-import { FFCA_DOMAIN } from "typewriter";
+import { TYPEWRITER_DOMAIN } from "typewriter";
 import {
   type Address,
   encodeAbiParameters,
@@ -8,7 +8,7 @@ import {
 } from "viem";
 import type { PrivateKeyAccount } from "viem/accounts";
 
-const TOKEN_DOMAIN = FFCA_DOMAIN;
+const TOKEN_DOMAIN = TYPEWRITER_DOMAIN;
 
 export type TokenSignature = {
   keyType: number;

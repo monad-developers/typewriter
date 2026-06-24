@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {EIP712_DOMAIN_TYPEHASH, FFCA, KeyType, UnknownMutation, verifySignature} from "typewriter/FFCA.sol";
+import {Typewriter, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
 
 struct Signature {
     uint8 keyType;
@@ -47,7 +47,7 @@ function verifyTokenSignature(
 import {MintMutation} from "./Mint.sol";
 import {TransferMutation} from "./Transfer.sol";
 
-contract Token is FFCA {
+contract Token is Typewriter {
     State internal state;
 
     enum Mutation {

@@ -19,7 +19,7 @@ import {
   deployCounter,
   signCounter,
 } from "../test/utils";
-import { createFFCA, type FFCAConfig } from "./index";
+import { createTypewriter, type TypewriterConfig } from "./index";
 import { formatSolidityDeclaration, parseSolidityMetadata } from "./sol-parse";
 
 test("parseSolidityMetadata extracts Counter runtime metadata", async () => {
@@ -507,28 +507,30 @@ test("generated Exchange Solidity declaration matches committed artifact", async
   expect(formatSolidityDeclaration(metadata)).toBe(declaration);
 }, 20_000);
 
-test("parseSolidityMetadata errors when no contract inherits FFCA", async () => {
+test("parseSolidityMetadata errors when no contract inherits Typewriter", async () => {
   await expect(parseSolidityMetadata(InvalidEntrypoint)).rejects.toThrow(
-    "InvalidEntrypoint.sol does not contain a contract inheriting FFCA",
+    "InvalidEntrypoint.sol does not contain a contract inheriting Typewriter",
   );
 });
 
-test("parseSolidityMetadata errors when multiple contracts inherit FFCA", async () => {
+test("parseSolidityMetadata errors when multiple contracts inherit Typewriter", async () => {
   await expect(parseSolidityMetadata(MultipleEntrypoints)).rejects.toThrow(
-    "MultipleEntrypoints.sol contains multiple contracts inheriting FFCA: FirstEntrypoint, SecondEntrypoint",
+    "MultipleEntrypoints.sol contains multiple contracts inheriting Typewriter: FirstEntrypoint, SecondEntrypoint",
   );
 });
 
 test("parseSolidityMetadata errors when the entrypoint is not a string", async () => {
   await expect(
     parseSolidityMetadata(42 as unknown as typeof Counter),
-  ).rejects.toThrow("FFCA entrypoint must be a Solidity file path string");
+  ).rejects.toThrow(
+    "Typewriter entrypoint must be a Solidity file path string",
+  );
 });
 
 test("parseSolidityMetadata errors when the entrypoint file does not exist", async () => {
   await expect(
     parseSolidityMetadata("/tmp/does-not-exist/Missing.sol" as typeof Counter),
-  ).rejects.toThrow("FFCA entrypoint file does not exist");
+  ).rejects.toThrow("Typewriter entrypoint file does not exist");
 });
 
 // Known limitation: mutation params are restricted to elementary types, enums,
@@ -556,9 +558,9 @@ test.failing("parseSolidityMetadata parses nested struct mutation params as tupl
   ]);
 });
 
-test("createFFCA accepts an imported Solidity entrypoint", async () => {
+test("createTypewriter accepts an imported Solidity entrypoint", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
-  const typewriter = await createFFCA(Counter, {
+  const typewriter = await createTypewriter(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -570,7 +572,7 @@ test("createFFCA accepts an imported Solidity entrypoint", async () => {
       batchIntervalMs: 50,
       submitIntervalMs: 25,
     },
-  } satisfies FFCAConfig<"batch">);
+  } satisfies TypewriterConfig<"batch">);
 
   try {
     await typewriter.execute(

@@ -75,7 +75,7 @@ function acquireAdvisoryLock(
       Effect.mapError(
         (cause) =>
           new DeploymentLockAcquireError({
-            message: `failed to set FFCA deployment lock timeout: key=${key} timeoutMs=${timeoutMs}`,
+            message: `failed to set Typewriter deployment lock timeout: key=${key} timeoutMs=${timeoutMs}`,
             cause,
           }),
       ),
@@ -90,7 +90,7 @@ function acquireAdvisoryLock(
       Effect.mapError(
         (cause) =>
           new DeploymentLockAcquireError({
-            message: `failed to acquire FFCA deployment lock: key=${key} timeoutMs=${timeoutMs}`,
+            message: `failed to acquire Typewriter deployment lock: key=${key} timeoutMs=${timeoutMs}`,
             cause,
           }),
       ),
@@ -119,7 +119,7 @@ export function acquireDeploymentLock(
       Effect.mapError(
         (cause) =>
           new DeploymentLockAcquireError({
-            message: `failed to reserve FFCA deployment lock connection: key=${key} timeoutMs=${timeoutMs}`,
+            message: `failed to reserve Typewriter deployment lock connection: key=${key} timeoutMs=${timeoutMs}`,
             cause,
           }),
       ),
@@ -154,7 +154,7 @@ export function releaseDeploymentLock(
         Effect.mapError(
           (cause) =>
             new DeploymentLockReleaseError({
-              message: `failed to release FFCA deployment lock: key=${lock.key}`,
+              message: `failed to release Typewriter deployment lock: key=${lock.key}`,
               cause,
             }),
         ),
@@ -164,7 +164,7 @@ export function releaseDeploymentLock(
     }[];
     if (released === false) {
       return yield* new DeploymentLockReleaseError({
-        message: `FFCA deployment lock was not held: key=${lock.key}`,
+        message: `Typewriter deployment lock was not held: key=${lock.key}`,
       });
     }
   }).pipe(Effect.ensuring(releaseConnectionFinalizer(lock.scope)));

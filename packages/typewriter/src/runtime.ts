@@ -46,7 +46,7 @@ import {
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
-  type FFCA_ABI,
+  type TYPEWRITER_ABI,
 } from "./encoding";
 import type { InternalApp } from "./internal";
 import { durationMs, loggerLayer, startTimer } from "./logger";
@@ -57,7 +57,6 @@ import type {
   BatchEvent,
   BlockEvent,
   EnqueuedMutation,
-  FFCAMutationResult,
   MutationEvent,
   ReceivedMutation,
   RejectedMutation,
@@ -65,11 +64,12 @@ import type {
   RuntimeBlock,
   RuntimeMutation,
   SubmittedMutation,
+  TypewriterMutationResult,
 } from "./types";
 import type {
   BatchListener,
   BlockListener,
-  InternalRuntimeFFCA,
+  InternalRuntimeTypewriter,
   MutationListener,
 } from "./typewriter";
 import { dedupe } from "./utils";
@@ -330,7 +330,7 @@ export function decodeEnqueuedMutation(params: {
   id: number;
 }): EnqueuedMutation {
   const forceInclusionLog = decodeEventLog({
-    abi: params.app.abi as typeof FFCA_ABI,
+    abi: params.app.abi as typeof TYPEWRITER_ABI,
     eventName: "ForceInclusionQueued",
     // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,
@@ -495,28 +495,28 @@ function batchBlockToFifoBlock(
 export function createRuntimeEffect(
   app: InternalApp & { sequencing: { order: "fifo" } },
 ): Effect.Effect<
-  InternalRuntimeFFCA<"fifo">,
+  InternalRuntimeTypewriter<"fifo">,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 >;
 export function createRuntimeEffect(
   app: InternalApp & { sequencing: { order: "batch" } },
 ): Effect.Effect<
-  InternalRuntimeFFCA<"batch">,
+  InternalRuntimeTypewriter<"batch">,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 >;
 export function createRuntimeEffect(
   app: InternalApp,
 ): Effect.Effect<
-  InternalRuntimeFFCA<"fifo" | "batch">,
+  InternalRuntimeTypewriter<"fifo" | "batch">,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 >;
 export function createRuntimeEffect(
   app: InternalApp,
 ): Effect.Effect<
-  InternalRuntimeFFCA<"fifo" | "batch">,
+  InternalRuntimeTypewriter<"fifo" | "batch">,
   unknown,
   Database | Rpc | Watch | Scope.Scope
 > {
@@ -1153,7 +1153,7 @@ export function createRuntimeEffect(
 
     function execute(
       mutation: RuntimeExecuteInput,
-    ): Effect.Effect<FFCAMutationResult, unknown> {
+    ): Effect.Effect<TypewriterMutationResult, unknown> {
       return Effect.gen(function* () {
         const resolvedMutation = resolveMutationConfig(app, mutation.name);
         if (resolvedMutation === undefined) {
@@ -1256,7 +1256,7 @@ export function createRuntimeEffect(
       execute,
       program,
       on,
-    } as InternalRuntimeFFCA<"fifo" | "batch">;
+    } as InternalRuntimeTypewriter<"fifo" | "batch">;
   });
 }
 

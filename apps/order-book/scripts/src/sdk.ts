@@ -6,7 +6,7 @@ import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
 import * as TypedData from "ox/TypedData";
 import superjson from "superjson";
-import { FFCA_DOMAIN } from "typewriter";
+import { TYPEWRITER_DOMAIN } from "typewriter";
 import { API_URL, CHAIN_ID, EXCHANGE_ADDRESS } from "./constants";
 
 console.log(
@@ -20,7 +20,7 @@ const FETCH_TIMEOUT_MS = 30_000;
 
 function domain() {
   return {
-    ...FFCA_DOMAIN,
+    ...TYPEWRITER_DOMAIN,
     chainId: CHAIN_ID,
     verifyingContract: EXCHANGE_ADDRESS,
   };

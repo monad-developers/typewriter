@@ -1,6 +1,6 @@
 import superjson from "superjson";
 import {
-  createFFCA,
+  createTypewriter,
   type MutationEvent,
   type MutationStatus,
 } from "typewriter";
@@ -25,7 +25,7 @@ function jsonResponse(data: unknown): Response {
 
 const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
 
-const typewriter = await createFFCA(Token, {
+const typewriter = await createTypewriter(Token, {
   address: requireEnv("TOKEN_ADDRESS") as Address,
   account: scheduler,
   chainId: Number(requireEnv("CHAIN_ID")),

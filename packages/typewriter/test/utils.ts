@@ -21,9 +21,9 @@ import { type Address, encodeDeployData, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
-import type { FFCAMutation } from "../src";
-import { FFCA_DOMAIN } from "../src";
-import type { ResolvedFFCAMutationConfig } from "../src/config";
+import type { TypewriterMutation } from "../src";
+import { TYPEWRITER_DOMAIN } from "../src";
+import type { ResolvedTypewriterMutationConfig } from "../src/config";
 import { hashMutationEip712 } from "../src/eip712";
 import {
   SCHEDULER_ACCOUNT,
@@ -43,10 +43,10 @@ export const EMPTY_STORAGE_LAYOUT = {
   types: {},
 } as const satisfies StorageLayout;
 
-// Minimal ABI for tests that createFFCA without a real contract. Contains the
+// Minimal ABI for tests that createTypewriter without a real contract. Contains the
 // execute function and ForceInclusionQueued event so the runtime and watch
 // layer have the shapes they expect.
-export const STUB_FFCA_ABI = [
+export const STUB_TYPEWRITER_ABI = [
   {
     type: "function",
     name: "execute",
@@ -189,8 +189,8 @@ export const COUNTER_MUTATIONS = {
     params: parseAbiParameters("uint256 amount, uint256 nonce"),
   },
 } as const satisfies {
-  NewAccount: ResolvedFFCAMutationConfig;
-  Add: ResolvedFFCAMutationConfig;
+  NewAccount: ResolvedTypewriterMutationConfig;
+  Add: ResolvedTypewriterMutationConfig;
 };
 
 export function counterAccountId(publicKey: Hex): Hex {
@@ -199,7 +199,7 @@ export function counterAccountId(publicKey: Hex): Hex {
 
 export function counterNewAccountMutation(params: {
   address: Address;
-}): FFCAMutation<
+}): TypewriterMutation<
   "NewAccount",
   typeof COUNTER_MUTATIONS.NewAccount,
   typeof COUNTER_SIGNATURE_PARAMS
@@ -217,7 +217,7 @@ export function counterNewAccountMutation(params: {
 }
 
 // Sign Counter's `add` mutation. The runtime ABI-encodes this record against
-// COUNTER_SIGNATURE_PARAMS before passing it through FFCA's signatureData channel.
+// COUNTER_SIGNATURE_PARAMS before passing it through Typewriter's signatureData channel.
 export function signCounter(params: {
   privateKey: Hex;
   amount: bigint;
@@ -230,7 +230,7 @@ export function signCounter(params: {
   readonly rawSignature: Hex;
 } {
   const domain: TypedData.Domain = {
-    ...FFCA_DOMAIN,
+    ...TYPEWRITER_DOMAIN,
     chainId: params.chainId,
     verifyingContract: params.address,
   };
@@ -285,11 +285,11 @@ export const HARNESS_MUTATIONS = {
     ),
   },
 } as const satisfies {
-  Initialize: ResolvedFFCAMutationConfig;
-  Authorize: ResolvedFFCAMutationConfig;
-  Credit: ResolvedFFCAMutationConfig;
-  Debit: ResolvedFFCAMutationConfig;
-  Assert: ResolvedFFCAMutationConfig;
+  Initialize: ResolvedTypewriterMutationConfig;
+  Authorize: ResolvedTypewriterMutationConfig;
+  Credit: ResolvedTypewriterMutationConfig;
+  Debit: ResolvedTypewriterMutationConfig;
+  Assert: ResolvedTypewriterMutationConfig;
 };
 
 // Derive the bytes32 account id from a public key (matches Harness.sol's
@@ -299,13 +299,13 @@ export function harnessAccountId(publicKey: Hex): Hex {
 }
 
 // secp256k1 public key for an EOA, in the abi.encode(address) form
-// FFCA.sol's verifySecp256k1 expects.
+// Typewriter.sol's verifySecp256k1 expects.
 export function secp256k1PublicKey(address: Address): Hex {
   return AbiParameters.encode(parseAbiParameters("address"), [address]);
 }
 
 // P-256 public key for a private key, in the abi.encode(uint256 x, uint256 y)
-// form FFCA.sol's verifyP256 / decodeP256PublicKey accepts.
+// form Typewriter.sol's verifyP256 / decodeP256PublicKey accepts.
 export function p256PublicKey(privateKey: Hex): Hex {
   const pk = P256.getPublicKey({ privateKey });
   return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
@@ -327,9 +327,9 @@ export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
 
 // Sign a digest as a WebAuthn-P256 challenge. Returns rawSignature in the
 // abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset,
-// uint256 r, uint256 s) form FFCA.sol's verifyWebAuthnP256 expects.
+// uint256 r, uint256 s) form Typewriter.sol's verifyWebAuthnP256 expects.
 //
-// rpId/origin are fixed to empty strings — FFCA.sol doesn't inspect
+// rpId/origin are fixed to empty strings — Typewriter.sol doesn't inspect
 // either, so their values don't affect on-chain verification. Real apps
 // that care about origin enforcement would do that check off-chain
 // (browser refuses to sign for the wrong RP ID anyway).
@@ -341,7 +341,7 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
     userVerification: "required",
   });
   const sig = P256.sign({ payload, privateKey, hash: true });
-  // FFCA.sol's verifyChallenge expects the byte offset at which the
+  // Typewriter.sol's verifyChallenge expects the byte offset at which the
   // base64url-encoded challenge VALUE starts inside clientDataJSON. ox's
   // `challengeIndex` points at the JSON key (`"challenge":"`), so add 13
   // to land on the first byte of the value.
@@ -372,7 +372,7 @@ export function signHarness(params: {
   chainId: number;
 }): Hex {
   const domain: TypedData.Domain = {
-    ...FFCA_DOMAIN,
+    ...TYPEWRITER_DOMAIN,
     chainId: params.chainId,
     verifyingContract: params.address,
   };

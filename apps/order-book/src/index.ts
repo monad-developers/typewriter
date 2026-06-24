@@ -1,7 +1,7 @@
 import { serve } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import superjson from "superjson";
-import { createFFCA } from "typewriter";
+import { createTypewriter } from "typewriter";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import Exchange from "../contracts/src/Exchange.sol";
@@ -27,7 +27,7 @@ if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
-const app = await createFFCA(Exchange, {
+const app = await createTypewriter(Exchange, {
   address: EXCHANGE_ADDRESS,
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
   chainId: CHAIN.id,

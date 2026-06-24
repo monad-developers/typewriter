@@ -61,18 +61,19 @@ const stateTables = () => ({
   }),
 });
 
-export type FFCAStateSchema = {
+export type TypewriterStateSchema = {
   readonly [Name in keyof ReturnType<typeof stateTables>]: ReturnType<
     typeof stateTables
   >[Name];
 };
 
-export type FFCASchema<
+export type TypewriterSchema<
   mutationsConfig extends MutationsConfig = MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
-> = FFCAStateSchema & FFCAMutationSchema<mutationsConfig, signatureConfig>;
+> = TypewriterStateSchema &
+  TypewriterMutationSchema<mutationsConfig, signatureConfig>;
 
-export type FFCAMutationSchema<
+export type TypewriterMutationSchema<
   mutationsConfig extends MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
 > = {
@@ -130,7 +131,7 @@ export function createMutationSchema<
 >(config: {
   readonly signature: { readonly params: signatureConfig };
   readonly mutations: mutationsConfig;
-}): FFCASchema<mutationsConfig, signatureConfig> {
+}): TypewriterSchema<mutationsConfig, signatureConfig> {
   const signatureColumns = prefixColumnNames(
     abiParametersToColumns(config.signature.params) as ColumnGroup,
     "signature_",
@@ -149,7 +150,7 @@ export function createMutationSchema<
     );
   }
 
-  return schema as FFCASchema<mutationsConfig, signatureConfig>;
+  return schema as TypewriterSchema<mutationsConfig, signatureConfig>;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {

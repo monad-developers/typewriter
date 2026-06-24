@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
-import type { FFCAConfig, FFCAMutation } from "../src";
+import type { TypewriterConfig, TypewriterMutation } from "../src";
 import Counter from "./contracts/src/Counter.sol";
 import {
   SCHEDULER_ACCOUNT,
@@ -25,7 +25,7 @@ function counterAddMutation(params: {
   readonly address: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): FFCAMutation<
+}): TypewriterMutation<
   "Add",
   typeof COUNTER_MUTATIONS.Add,
   typeof COUNTER_SIGNATURE_PARAMS
@@ -56,7 +56,7 @@ function formatMs(durationMs: number): string {
 }
 
 test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
-  const { createFFCA } = await import("../src");
+  const { createTypewriter } = await import("../src");
   const address = await deployCounter(USER_ACCOUNT.address);
   const config = {
     address,
@@ -66,9 +66,9 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
     sequencing: { order: "fifo", submitIntervalMs: 3_600_000 },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-  } as const satisfies FFCAConfig;
+  } as const satisfies TypewriterConfig;
 
-  const typewriter = await createFFCA(Counter, config);
+  const typewriter = await createTypewriter(Counter, config);
 
   await typewriter.execute(
     counterNewAccountMutation({

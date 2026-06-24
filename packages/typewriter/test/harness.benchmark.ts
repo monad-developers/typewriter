@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
-import type { FFCAConfig, FFCAMutation } from "../src";
+import type { TypewriterConfig, TypewriterMutation } from "../src";
 import Harness from "./contracts/src/Harness.sol";
 import {
   SCHEDULER_ACCOUNT,
@@ -37,7 +37,7 @@ function harnessCreditMutation(params: {
   readonly account: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): FFCAMutation<
+}): TypewriterMutation<
   "Credit",
   typeof HARNESS_MUTATIONS.Credit,
   typeof HARNESS_SIGNATURE_PARAMS
@@ -108,7 +108,7 @@ async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
 }
 
 test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
-  const { createFFCA } = await import("../src");
+  const { createTypewriter } = await import("../src");
   const address = await deployHarness();
   const config = {
     address,
@@ -123,9 +123,9 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
-  } as const satisfies FFCAConfig;
+  } as const satisfies TypewriterConfig;
 
-  const typewriter = await createFFCA(Harness, config);
+  const typewriter = await createTypewriter(Harness, config);
 
   const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);

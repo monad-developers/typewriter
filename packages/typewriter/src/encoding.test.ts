@@ -11,7 +11,7 @@ import {
   encodeExecuteCalldata,
   encodeMutationCalldata,
   encodeSignatureCalldata,
-  FFCA_ABI,
+  TYPEWRITER_ABI,
 } from "./encoding";
 import type { ExecutableMutation } from "./types";
 
@@ -117,7 +117,7 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
     signatureData: ["0xaa" as `0x${string}`],
   };
   const expected = encodeFunctionData({
-    abi: FFCA_ABI,
+    abi: TYPEWRITER_ABI,
     functionName: "execute",
     args: [[batch], []],
   });
@@ -144,7 +144,7 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
     signature,
   );
   const expected = encodeFunctionData({
-    abi: FFCA_ABI,
+    abi: TYPEWRITER_ABI,
     functionName: "enqueue",
     args: [0, mutationData, signatureData],
   });

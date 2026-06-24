@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {FFCA, EIP712_DOMAIN_TYPEHASH, UnknownMutation} from "typewriter/FFCA.sol";
+import {Typewriter, EIP712_DOMAIN_TYPEHASH, UnknownMutation} from "typewriter/Typewriter.sol";
 
 struct Inner {
     uint256 a;
@@ -31,7 +31,7 @@ library UpdateMutation {
 /// Fixture whose single mutation decodes a struct that itself contains a nested
 /// struct member (`Inner`). Exercises the parser's handling of non-elementary
 /// mutation params.
-contract NestedParam is FFCA {
+contract NestedParam is Typewriter {
     State internal state;
 
     enum Mutation {

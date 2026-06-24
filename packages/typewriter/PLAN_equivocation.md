@@ -162,7 +162,7 @@ the settled mutation hash for a bundle slot.
 Preferred contract event:
 
 ```solidity
-event FFCAMutationSettled(
+event TypewriterMutationSettled(
     uint256 indexed bundleId,
     uint256 indexed bundlePosition,
     bytes32 mutationHash

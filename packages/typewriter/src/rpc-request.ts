@@ -8,7 +8,7 @@ import {
   formatBlock,
   type Hash,
 } from "viem";
-import { FFCA_ABI } from "./encoding";
+import { TYPEWRITER_ABI } from "./encoding";
 import { Rpc } from "./rpc";
 
 export type BlockIdentifier = number | bigint | Hash;
@@ -65,7 +65,7 @@ export function requestExecutionIndex(
         {
           to: address,
           data: encodeFunctionData({
-            abi: FFCA_ABI,
+            abi: TYPEWRITER_ABI,
             functionName: "executionIndex",
           }),
         },

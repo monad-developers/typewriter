@@ -38,25 +38,25 @@ import { layerDatabaseLive } from "./db";
 import {
   encodeMutationCalldata,
   encodeSignatureCalldata,
-  FFCA_ABI,
+  TYPEWRITER_ABI,
 } from "./encoding";
 import type { InternalApp } from "./internal";
 import { deploymentSchemaName, migrate } from "./migrate";
 import { layerRpcLive } from "./rpc";
 import { createRuntimeEffect as createRuntimeBatchEffectInternal } from "./runtime";
-import { loadSolidityFFCAApp } from "./sol-parse";
-import type { InternalRuntimeFFCA } from "./typewriter";
+import { loadSolidityTypewriterApp } from "./sol-parse";
+import type { InternalRuntimeTypewriter } from "./typewriter";
 import { layerWatchLive } from "./watch";
 
 function layerRuntimeServices(address: Address) {
   const rpcLayer = layerRpcLive({ rpcUrls: [TEST_RPC_URL] });
   const dbLayer = layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 });
   const forceInclusionEvent = getAbiItem({
-    abi: FFCA_ABI,
+    abi: TYPEWRITER_ABI,
     name: "ForceInclusionQueued",
   });
   if (forceInclusionEvent === undefined) {
-    throw new Error("missing FFCA ForceInclusionQueued event");
+    throw new Error("missing Typewriter ForceInclusionQueued event");
   }
   const watchLayer = layerWatchLive({
     pollIntervalMs: 200,
@@ -127,7 +127,7 @@ function signHarnessMutation(params: {
 test("createRuntimeBatchEffect", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -163,7 +163,7 @@ test("createRuntimeBatchEffect", async () => {
 test("runtime loads persisted slot state before returning", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -222,7 +222,7 @@ test("runtime loads persisted slot state before returning", async () => {
 test("execute() returns an accepted mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -282,7 +282,7 @@ test("execute() returns an accepted mutation", async () => {
 test("execute() accepts multiple mutations in a batch", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -357,7 +357,7 @@ test("execute() accepts multiple mutations in a batch", async () => {
 test("runtime emits mutation, batch, and block events", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -400,7 +400,7 @@ test("runtime emits mutation, batch, and block events", async () => {
     });
     yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeMutation));
 
-    const batchRuntime = runtime as InternalRuntimeFFCA<"batch">;
+    const batchRuntime = runtime as InternalRuntimeTypewriter<"batch">;
 
     const unsubscribeBatch = yield* batchRuntime.on("batch", (event) => {
       events.push({
@@ -535,7 +535,7 @@ test("runtime emits mutation, batch, and block events", async () => {
 test("runtime persists mutations to database", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -672,7 +672,7 @@ test("runtime persists mutations to database", async () => {
 test("runtime submits a mutation onchain", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -735,7 +735,7 @@ test("runtime submits a mutation onchain", async () => {
 test("runtime finalizes a mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -796,7 +796,7 @@ test("runtime reorders Harness mutations by batch order", async () => {
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
-  const app = await loadSolidityFFCAApp(Harness, {
+  const app = await loadSolidityTypewriterApp(Harness, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -885,7 +885,7 @@ test("fifo runtime preserves submission order without batch reordering", async (
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
-  const app = await loadSolidityFFCAApp(Harness, {
+  const app = await loadSolidityTypewriterApp(Harness, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -992,7 +992,7 @@ test("runtime rejects a Harness mutation when onchain execution reverts", async 
   const rootPublicKey = secp256k1PublicKey(ALICE_ACCOUNT.address);
   const account = harnessAccountId(rootPublicKey);
 
-  const app = await loadSolidityFFCAApp(Harness, {
+  const app = await loadSolidityTypewriterApp(Harness, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1059,7 +1059,7 @@ test("runtime handles Harness account management with multiple signature types",
   const p256Pk = p256PublicKey(P256_PRIVATE_KEY);
   const account = harnessAccountId(rootPublicKey);
 
-  const app = await loadSolidityFFCAApp(Harness, {
+  const app = await loadSolidityTypewriterApp(Harness, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1203,7 +1203,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
     chainId: anvil.id,
   });
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1273,7 +1273,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
         account: USER_ACCOUNT,
         chain: anvil,
         address,
-        abi: FFCA_ABI,
+        abi: TYPEWRITER_ABI,
         functionName: "enqueue",
         args: [
           addMutation.tag,
@@ -1296,7 +1296,7 @@ test("runtime includes an onchain force-inclusion enqueue", async () => {
 test("runtime handles failing mutation", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
@@ -1353,7 +1353,7 @@ test("runtime handles failing mutation", async () => {
 test("runtime program handles interrupt", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
 
-  const app = await loadSolidityFFCAApp(Counter, {
+  const app = await loadSolidityTypewriterApp(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,

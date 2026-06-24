@@ -10,33 +10,38 @@ import {
 } from "../test/utils";
 import type {
   AbiParametersToValue,
-  FFCAConfig,
   MutationsConfig,
-  ResolvedFFCAMutationConfig,
+  ResolvedTypewriterMutationConfig,
   SequencingConfig,
   SignatureConfig,
   StorageConfig,
+  TypewriterConfig,
 } from "./config";
-import { FFCA_DOMAIN } from "./eip712";
-import type { FFCA, FFCAMutationInput } from "./index";
+import { TYPEWRITER_DOMAIN } from "./eip712";
+import type { Typewriter, TypewriterMutationInput } from "./index";
 
-function createFFCATest<
+function createTypewriterTest<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
->(): FFCA<storageConfig, mutationsConfig, signatureConfig, sequencingConfig> {
+>(): Typewriter<
+  storageConfig,
+  mutationsConfig,
+  signatureConfig,
+  sequencingConfig
+> {
   return {
     state: {},
     schema: {},
     domain: {
-      ...FFCA_DOMAIN,
+      ...TYPEWRITER_DOMAIN,
       chainId: 1,
       verifyingContract: "0x0000000000000000000000000000000000000000",
     },
     execute: async () => ({ id: 0 }),
     on: () => () => {},
-  } as unknown as FFCA<
+  } as unknown as Typewriter<
     storageConfig,
     mutationsConfig,
     signatureConfig,
@@ -57,30 +62,30 @@ const publicConfig = {
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
-} as const satisfies FFCAConfig;
+} as const satisfies TypewriterConfig;
 
-test("FFCAConfig accepts app-owned runtime config only", () => {
+test("TypewriterConfig accepts app-owned runtime config only", () => {
   void publicConfig;
 });
 
-test("ResolvedFFCAMutationConfig accepts Counter mutation definitions", () => {
+test("ResolvedTypewriterMutationConfig accepts Counter mutation definitions", () => {
   const mutations = COUNTER_MUTATIONS satisfies Record<
     string,
-    ResolvedFFCAMutationConfig
+    ResolvedTypewriterMutationConfig
   >;
   void mutations;
 });
 
-test("ResolvedFFCAMutationConfig accepts Harness mutation definitions", () => {
+test("ResolvedTypewriterMutationConfig accepts Harness mutation definitions", () => {
   const mutations = HARNESS_MUTATIONS satisfies Record<
     string,
-    ResolvedFFCAMutationConfig
+    ResolvedTypewriterMutationConfig
   >;
   void mutations;
 });
 
-test("FFCA state is typed from supplied storage config", () => {
-  const app = createFFCATest<
+test("Typewriter state is typed from supplied storage config", () => {
+  const app = createTypewriterTest<
     TestStorageConfig,
     CounterMutationsConfig,
     CounterSignatureConfig
@@ -91,8 +96,8 @@ test("FFCA state is typed from supplied storage config", () => {
   >();
 });
 
-test("FFCA execute input uses manually supplied Counter mutation and signature configs", () => {
-  const app = createFFCATest<
+test("Typewriter execute input uses manually supplied Counter mutation and signature configs", () => {
+  const app = createTypewriterTest<
     TestStorageConfig,
     CounterMutationsConfig,
     CounterSignatureConfig
@@ -101,7 +106,7 @@ test("FFCA execute input uses manually supplied Counter mutation and signature c
   type Input = Parameters<typeof app.execute>[0];
 
   expectTypeOf<Input>().toEqualTypeOf<
-    FFCAMutationInput<CounterMutationsConfig, CounterSignatureConfig>
+    TypewriterMutationInput<CounterMutationsConfig, CounterSignatureConfig>
   >();
 
   type CounterSignature = AbiParametersToValue<CounterSignatureConfig>;
@@ -147,8 +152,8 @@ test("FFCA execute input uses manually supplied Counter mutation and signature c
   });
 });
 
-test("FFCA execute input uses manually supplied Harness mutation and signature configs", () => {
-  const app = createFFCATest<
+test("Typewriter execute input uses manually supplied Harness mutation and signature configs", () => {
+  const app = createTypewriterTest<
     TestStorageConfig,
     HarnessMutationsConfig,
     HarnessSignatureConfig
@@ -157,7 +162,7 @@ test("FFCA execute input uses manually supplied Harness mutation and signature c
   type Input = Parameters<typeof app.execute>[0];
 
   expectTypeOf<Input>().toEqualTypeOf<
-    FFCAMutationInput<HarnessMutationsConfig, HarnessSignatureConfig>
+    TypewriterMutationInput<HarnessMutationsConfig, HarnessSignatureConfig>
   >();
 
   type HarnessSignature = AbiParametersToValue<HarnessSignatureConfig>;
@@ -194,8 +199,8 @@ test("FFCA execute input uses manually supplied Harness mutation and signature c
   });
 });
 
-test("FFCA sequencing type is represented in the app type", () => {
-  const app = createFFCATest<
+test("Typewriter sequencing type is represented in the app type", () => {
+  const app = createTypewriterTest<
     TestStorageConfig,
     CounterMutationsConfig,
     CounterSignatureConfig,
@@ -203,7 +208,7 @@ test("FFCA sequencing type is represented in the app type", () => {
   >();
 
   expectTypeOf(app).toEqualTypeOf<
-    FFCA<
+    Typewriter<
       TestStorageConfig,
       CounterMutationsConfig,
       CounterSignatureConfig,

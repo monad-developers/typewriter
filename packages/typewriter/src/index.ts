@@ -2,39 +2,42 @@ import { Effect, Exit, Scope } from "effect";
 import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import type {
-  FFCAConfig,
   MutationConfig,
   MutationsConfig,
   SequencingConfig,
   SignatureConfig,
   StorageConfig,
+  TypewriterConfig,
 } from "./config";
-import { createFFCAEffect } from "./typewriter";
+import { createTypewriterEffect } from "./typewriter";
 
-export { FFCA_DOMAIN } from "./eip712";
+export { TYPEWRITER_DOMAIN } from "./eip712";
 
-import type { FFCASchema } from "./schema";
-import { type FFCASolidityEntrypoint, loadSolidityFFCAApp } from "./sol-parse";
+import type { TypewriterSchema } from "./schema";
+import {
+  loadSolidityTypewriterApp,
+  type TypewriterSolidityEntrypoint,
+} from "./sol-parse";
 import type {
   BatchListener,
   BlockListener,
-  FFCAMutationInput,
-  FFCAMutationResult,
   MutationListener,
+  TypewriterMutationInput,
+  TypewriterMutationResult,
 } from "./types";
 
-export type FFCA<
+export type Typewriter<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
   readonly state: StorageProxy<storageConfig, true>;
-  readonly schema: FFCASchema<mutationsConfig, signatureConfig>;
+  readonly schema: TypewriterSchema<mutationsConfig, signatureConfig>;
   readonly domain: TypedData.Domain;
   execute: <const name extends keyof mutationsConfig & string>(
-    submitted: FFCAMutationInput<mutationsConfig, signatureConfig, name>,
-  ) => Promise<FFCAMutationResult>;
+    submitted: TypewriterMutationInput<mutationsConfig, signatureConfig, name>,
+  ) => Promise<TypewriterMutationResult>;
   close: () => Promise<void>;
   on(
     event: "mutation",
@@ -50,28 +53,31 @@ export type FFCA<
   ): () => void;
 };
 
-export type { FFCAConfig, ResolvedFFCAMutationConfig } from "./config";
 export type {
-  FFCAMutationSchema,
-  FFCASchema,
-  FFCAStateSchema,
+  ResolvedTypewriterMutationConfig,
+  TypewriterConfig,
+} from "./config";
+export type {
+  TypewriterMutationSchema,
+  TypewriterSchema,
+  TypewriterStateSchema,
 } from "./schema";
 export type { KeyType } from "./signature";
-export type { FFCASolidityEntrypoint } from "./sol-parse";
+export type { TypewriterSolidityEntrypoint } from "./sol-parse";
 export type {
   BatchEvent,
   BatchStatus,
   BlockEvent,
   BlockStatus,
-  FFCAMutation,
-  FFCAMutationInput,
-  FFCAMutationResult,
   MutationEvent,
   MutationStatus,
+  TypewriterMutation,
+  TypewriterMutationInput,
+  TypewriterMutationResult,
 } from "./types";
 
 type EntrypointMetadata<entrypoint> =
-  entrypoint extends FFCASolidityEntrypoint<infer metadata>
+  entrypoint extends TypewriterSolidityEntrypoint<infer metadata>
     ? metadata
     : unknown;
 
@@ -96,35 +102,35 @@ type EntrypointSignatureConfig<entrypoint> =
     ? signature
     : SignatureConfig;
 
-export async function createFFCA<
-  const entrypoint extends FFCASolidityEntrypoint,
+export async function createTypewriter<
+  const entrypoint extends TypewriterSolidityEntrypoint,
   const sequencingConfig extends SequencingConfig = SequencingConfig,
 >(
   entrypoint: entrypoint,
-  config: FFCAConfig<sequencingConfig>,
+  config: TypewriterConfig<sequencingConfig>,
 ): Promise<
-  FFCA<
+  Typewriter<
     EntrypointStorageConfig<entrypoint>,
     EntrypointMutationsConfig<entrypoint>,
     EntrypointSignatureConfig<entrypoint>,
     sequencingConfig
   >
 >;
-export async function createFFCA<
-  const entrypoint extends FFCASolidityEntrypoint,
+export async function createTypewriter<
+  const entrypoint extends TypewriterSolidityEntrypoint,
   const sequencingConfig extends SequencingConfig = SequencingConfig,
 >(
   entrypoint: entrypoint,
-  publicConfig: FFCAConfig<sequencingConfig>,
+  publicConfig: TypewriterConfig<sequencingConfig>,
 ): Promise<
-  FFCA<
+  Typewriter<
     EntrypointStorageConfig<entrypoint>,
     EntrypointMutationsConfig<entrypoint>,
     EntrypointSignatureConfig<entrypoint>,
     sequencingConfig
   >
 > {
-  const app = await loadSolidityFFCAApp(entrypoint, publicConfig);
+  const app = await loadSolidityTypewriterApp(entrypoint, publicConfig);
   const scope = Effect.runSync(Scope.make());
   let closed = false;
 
@@ -136,7 +142,7 @@ export async function createFFCA<
 
   try {
     const typewriter = await Effect.runPromise(
-      createFFCAEffect<
+      createTypewriterEffect<
         EntrypointStorageConfig<entrypoint>,
         EntrypointMutationsConfig<entrypoint>,
         EntrypointSignatureConfig<entrypoint>,
@@ -148,7 +154,8 @@ export async function createFFCA<
       event: "mutation" | "batch" | "block",
       cb: unknown,
     ) => Effect.Effect<() => void>;
-    const on = ((event, cb) => Effect.runSync(runtimeOn(event, cb))) as FFCA<
+    const on = ((event, cb) =>
+      Effect.runSync(runtimeOn(event, cb))) as Typewriter<
       EntrypointStorageConfig<entrypoint>,
       EntrypointMutationsConfig<entrypoint>,
       EntrypointSignatureConfig<entrypoint>,
@@ -156,11 +163,11 @@ export async function createFFCA<
     >["on"];
 
     const execute = ((
-      submitted: FFCAMutationInput<
+      submitted: TypewriterMutationInput<
         EntrypointMutationsConfig<entrypoint>,
         EntrypointSignatureConfig<entrypoint>
       >,
-    ) => Effect.runPromise(typewriter.execute(submitted))) as FFCA<
+    ) => Effect.runPromise(typewriter.execute(submitted))) as Typewriter<
       EntrypointStorageConfig<entrypoint>,
       EntrypointMutationsConfig<entrypoint>,
       EntrypointSignatureConfig<entrypoint>,
@@ -172,7 +179,7 @@ export async function createFFCA<
         EntrypointStorageConfig<entrypoint>,
         true
       >,
-      schema: typewriter.schema as unknown as FFCASchema<
+      schema: typewriter.schema as unknown as TypewriterSchema<
         EntrypointMutationsConfig<entrypoint>,
         EntrypointSignatureConfig<entrypoint>
       >,

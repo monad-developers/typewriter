@@ -10,7 +10,7 @@ import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
-import type { ResolvedFFCAMutationConfig } from "./config";
+import type { ResolvedTypewriterMutationConfig } from "./config";
 import { Database, layerDatabaseLive } from "./db";
 import {
   insertKnownPaths,
@@ -28,12 +28,12 @@ import type { RuntimeBlock, RuntimeMutation } from "./types";
 const transferConfig = {
   tag: 0,
   params: parseAbiParameters("address to, uint256 amount"),
-} satisfies ResolvedFFCAMutationConfig;
+} satisfies ResolvedTypewriterMutationConfig;
 
 const debitConfig = {
   tag: 1,
   params: parseAbiParameters("bytes32 account, uint256 amount"),
-} satisfies ResolvedFFCAMutationConfig;
+} satisfies ResolvedTypewriterMutationConfig;
 
 const testSignature = {
   accountId:

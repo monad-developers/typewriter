@@ -15,13 +15,17 @@ import {
   deployCounter,
   signCounter,
 } from "../test/utils";
-import { createFFCA, type FFCAConfig, type FFCAMutation } from "./index";
+import {
+  createTypewriter,
+  type TypewriterConfig,
+  type TypewriterMutation,
+} from "./index";
 
 function counterAddMutation(params: {
   readonly address: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): FFCAMutation<
+}): TypewriterMutation<
   "Add",
   typeof COUNTER_MUTATIONS.Add,
   typeof COUNTER_SIGNATURE_PARAMS
@@ -162,7 +166,7 @@ function startSubmitOverlapProxy(options: { readonly sendDelayMs: number }) {
   };
 }
 
-test("createFFCA serializes submit attempts", async () => {
+test("createTypewriter serializes submit attempts", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const proxy = startSubmitOverlapProxy({ sendDelayMs: 250 });
   const config = {
@@ -178,9 +182,9 @@ test("createFFCA serializes submit attempts", async () => {
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 50,
-  } as const satisfies FFCAConfig;
+  } as const satisfies TypewriterConfig;
 
-  const typewriter = await createFFCA(Counter, config);
+  const typewriter = await createTypewriter(Counter, config);
 
   try {
     const setupIncluded = Promise.withResolvers<void>();
@@ -249,7 +253,7 @@ test("createFFCA serializes submit attempts", async () => {
   }
 }, 15_000);
 
-test("createFFCA checks the receipt before retrying a failed submit", async () => {
+test("createTypewriter checks the receipt before retrying a failed submit", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const port = getFreePort();
   const fillNonces: unknown[] = [];
@@ -322,9 +326,9 @@ test("createFFCA checks the receipt before retrying a failed submit", async () =
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 50,
-  } as const satisfies FFCAConfig;
+  } as const satisfies TypewriterConfig;
 
-  const typewriter = await createFFCA(Counter, config);
+  const typewriter = await createTypewriter(Counter, config);
 
   try {
     const setupIncluded = Promise.withResolvers<void>();
@@ -351,7 +355,7 @@ test("createFFCA checks the receipt before retrying a failed submit", async () =
   }
 }, 10_000);
 
-test("createFFCA waits for the next block before submitting again", async () => {
+test("createTypewriter waits for the next block before submitting again", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   const config = {
     address,
@@ -366,9 +370,9 @@ test("createFFCA waits for the next block before submitting again", async () => 
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 50,
-  } as const satisfies FFCAConfig;
+  } as const satisfies TypewriterConfig;
 
-  const typewriter = await createFFCA(Counter, config);
+  const typewriter = await createTypewriter(Counter, config);
 
   try {
     const setupIncluded = Promise.withResolvers<void>();
@@ -438,7 +442,7 @@ test("createFFCA waits for the next block before submitting again", async () => 
   }
 }, 15_000);
 
-test("createFFCA stops accepting mutations after fatal submit failure", async () => {
+test("createTypewriter stops accepting mutations after fatal submit failure", async () => {
   const address = await deployCounter(USER_ACCOUNT.address);
   let failFillTransaction = false;
   const fatalError = Promise.withResolvers<unknown>();
@@ -459,9 +463,9 @@ test("createFFCA stops accepting mutations after fatal submit failure", async ()
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 50,
     onFatalError: fatalError.resolve,
-  } as const satisfies FFCAConfig;
+  } as const satisfies TypewriterConfig;
 
-  const typewriter = await createFFCA(Counter, config);
+  const typewriter = await createTypewriter(Counter, config);
 
   try {
     const setupIncluded = Promise.withResolvers<void>();

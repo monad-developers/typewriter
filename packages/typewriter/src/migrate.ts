@@ -114,7 +114,7 @@ export function migrate(
       try: () => deploymentSchemaName(chainId, address),
       catch: (cause) =>
         new MigrationError({
-          message: "Invalid FFCA deployment schema config",
+          message: "Invalid Typewriter deployment schema config",
           cause,
         }),
     });

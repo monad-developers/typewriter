@@ -112,8 +112,8 @@ stable wire/onchain representation.
 The native typewriter digest can be a fixed-schema ABI hash:
 
 ```solidity
-bytes32 constant FFCA_MUTATION_TYPEHASH = keccak256(
-    "FFCAMutation(uint256 chainId,address verifyingContract,bytes32 account,uint64 keyId,uint64 nonce,uint64 deadline,uint8 mutation,bytes32 mutationDataHash)"
+bytes32 constant Typewriter_MUTATION_TYPEHASH = keccak256(
+    "TypewriterMutation(uint256 chainId,address verifyingContract,bytes32 account,uint64 keyId,uint64 nonce,uint64 deadline,uint8 mutation,bytes32 mutationDataHash)"
 );
 
 function hashMutationAuth(
@@ -126,7 +126,7 @@ function hashMutationAuth(
 ) internal view returns (bytes32) {
     return keccak256(
         abi.encode(
-            FFCA_MUTATION_TYPEHASH,
+            Typewriter_MUTATION_TYPEHASH,
             block.chainid,
             address(this),
             account,
@@ -248,7 +248,7 @@ The app would only decode `mutationData` and apply business logic.
 
 ## Near-Term Incremental Options
 
-### 1. FFCA EIP-712 Helper
+### 1. Typewriter EIP-712 Helper
 
 Add a framework helper that derives EIP-712 types from parsed mutation metadata
 and packs signatures. This removes duplicated `MINT_TYPES`, `TRANSFER_TYPES`,

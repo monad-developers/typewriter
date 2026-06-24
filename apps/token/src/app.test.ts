@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createFFCA } from "typewriter";
+import { createTypewriter } from "typewriter";
 import { anvil } from "viem/chains";
 import Token from "../contracts/src/Token.sol";
 import {
@@ -22,7 +22,7 @@ test("smoke: FIFO token mint and transfer settle onchain", async () => {
     database: { url: TEST_DB_URL, maxConnections: 4 },
     sequencing: { order: "fifo", submitIntervalMs: 1_000 },
   } as const;
-  const typewriter = await createFFCA(Token, config);
+  const typewriter = await createTypewriter(Token, config);
 
   const acceptedMutationIds: number[] = [];
   const includedMutationIds = new Set<number>();

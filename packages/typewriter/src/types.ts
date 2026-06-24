@@ -17,7 +17,7 @@ type SignatureValue<signatureConfig extends SignatureConfig> =
     ? unknown
     : AbiParametersToValue<signatureConfig>;
 
-export type FFCAMutation<
+export type TypewriterMutation<
   name extends string = string,
   mutationConfig extends MutationConfig = MutationConfig,
   signatureConfig extends SignatureConfig = SignatureConfig,
@@ -27,19 +27,19 @@ export type FFCAMutation<
   signature: SignatureValue<signatureConfig>;
 };
 
-export type FFCAMutationInput<
+export type TypewriterMutationInput<
   mutationsConfig extends Record<string, MutationConfig>,
   signatureConfig extends SignatureConfig,
   name extends keyof mutationsConfig & string = keyof mutationsConfig & string,
 > = {
-  [name in keyof mutationsConfig & string]: FFCAMutation<
+  [name in keyof mutationsConfig & string]: TypewriterMutation<
     name,
     mutationsConfig[name],
     signatureConfig
   >;
 }[name];
 
-export type FFCAMutationResult = { id: number };
+export type TypewriterMutationResult = { id: number };
 
 export type MutationStatus =
   | "received"

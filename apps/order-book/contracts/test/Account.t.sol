@@ -27,7 +27,7 @@ import {InitializeMutation} from "src/Initialize.sol";
 import {RevokeMutation} from "src/Revoke.sol";
 import {WithdrawalMutation} from "src/Withdrawal.sol";
 
-import {EIP712_DOMAIN_TYPEHASH, KeyType} from "typewriter/FFCA.sol";
+import {EIP712_DOMAIN_TYPEHASH, KeyType} from "typewriter/Typewriter.sol";
 
 contract AccountTest is Test {
     State internal state;
@@ -43,7 +43,7 @@ contract AccountTest is Test {
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("FFCA")),
+                keccak256(bytes("Typewriter")),
                 keccak256(bytes("1")),
                 block.chainid,
                 address(this)

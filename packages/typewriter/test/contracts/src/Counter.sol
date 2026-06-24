@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {FFCA, EIP712_DOMAIN_TYPEHASH, KeyType, UnknownMutation, verifySignature} from "typewriter/FFCA.sol";
+import {Typewriter, EIP712_DOMAIN_TYPEHASH, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
 
 struct Account {
     KeyType keyType;
@@ -72,7 +72,7 @@ library AddMutation {
 /// must be EIP-712-signed by the address set at construction time. typewriter's
 /// local `apply` mirrors the addition; the contract enforces the signature
 /// and the nonce.
-contract Counter is FFCA {
+contract Counter is Typewriter {
     State internal state;
 
     enum Mutation {

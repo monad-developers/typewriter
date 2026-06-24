@@ -59,7 +59,7 @@ It exports the primitives that go with them — the `KeyType` enum, a `verifySig
 Accounts are entirely app-defined. The account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions all live in the app's contract and state. Typewriter does not impose an `Account` struct or any specific authorization rule.
 
 ```solidity
-import {KeyType, verifySignature} from "typewriter/FFCA.sol";
+import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
 
 // App-defined — Typewriter imposes no Account or Signature shape.
 struct Account {
@@ -91,16 +91,16 @@ The lifecycle of a mutation is as follows:
 - **safe**. The block that contains the mutation has been marked "safe" by consensus. (See JSON-RPC "safe" tag).
 - **finalized**. The block that contains the mutation has been marked "finalized" by consensus. (See JSON-RPC "finalized" tag).
 
-`createFFCA` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
+`createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createFFCA` takes a Solidity entrypoint and runtime config. `FFCAConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
+`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
 ```ts
-import { createFFCA } from "typewriter";
+import { createTypewriter } from "typewriter";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 
-const typewriter = await createFFCA(Token, {
+const typewriter = await createTypewriter(Token, {
   address, // the deployed Typewriter contract
   account: privateKeyToAccount(privateKey), // the transaction submitter
   chainId,
@@ -132,9 +132,9 @@ Sequencing controls the order mutations are accepted by the server and included 
 ##### FIFO
 
 ```ts
-import { createFFCA } from "typewriter";
+import { createTypewriter } from "typewriter";
 
-const app = await createFFCA(Token, {
+const app = await createTypewriter(Token, {
   // ... more config
   sequencing: {
     order: "fifo",
@@ -150,9 +150,9 @@ Onchain inclusion order matches the order mutations were executed with `typewrit
 ##### Batch
 
 ```ts
-import { createFFCA } from "typewriter";
+import { createTypewriter } from "typewriter";
 
-const app = await createFFCA(Token, {
+const app = await createTypewriter(Token, {
   // ... more config
   sequencing: {
     order: "batch",
@@ -243,7 +243,7 @@ Each mutation is a Solidity library with:
 - **`struct [Mutation]` definition**. The mutation's arguments. The app's `dispatch` function ABI-decodes the mutation's `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and order define the mutation params the runtime extracts from Solidity.
 - **`execute[Mutation]` function**. Applies the mutation to the state. Called by `dispatch` after the signature has verified — no auth checks here, just the state transition.
 - **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name must match the Solidity `Mutation` enum member with the first letter lowercased (the client signs this as the `primaryType`), and whose parameter names and declaration order must match the decoded mutation struct (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). The type name is independent of the Solidity struct name — e.g. `Mutation.Add` with an `Add` struct uses `keccak256("add(uint256 amount,uint256 nonce)")`. `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
-- **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `typewriter/FFCA.sol` to check the raw signature against the digest (see [Signature](#signature)).
+- **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `typewriter/Typewriter.sol` to check the raw signature against the digest (see [Signature](#signature)).
 
 ```solidity
 library AddMutation {
@@ -307,11 +307,11 @@ Per-mutation verification gives each mutation full control over its
 authorization rules, including whether a signature is required at all —
 bootstrap mutations may not need one.
 
-**Verification helpers.** `typewriter/FFCA.sol` exports the `KeyType` enum and
+**Verification helpers.** `typewriter/Typewriter.sol` exports the `KeyType` enum and
 a `verifySignature` helper for verifying a raw signature:
 
 ```solidity
-import {KeyType, verifySignature} from "typewriter/FFCA.sol";
+import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
 
 verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
 ```
@@ -335,12 +335,12 @@ hash (see [`hash[Mutation]`](#mutations)) and the contract's `DOMAIN_SEPARATOR`.
 
 #### Contract structure
 
-The contract inherits from `typewriter/FFCA.sol`, which supplies the `SCHEDULER`, `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `execute`, `enqueue`, and `forceExecute` entry points, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), a constructor that assigns the inherited immutables, and a single `dispatch` function (see [`dispatch`](#dispatch)). `FFCA` uses the app's `dispatch` to build the external-facing `execute`, `enqueue`, and `forceExecute` methods, routing every mutation — whether batched by the scheduler or force-included — through it.
+The contract inherits from `typewriter/Typewriter.sol`, which supplies the `SCHEDULER`, `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `execute`, `enqueue`, and `forceExecute` entry points, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), a constructor that assigns the inherited immutables, and a single `dispatch` function (see [`dispatch`](#dispatch)). `Typewriter` uses the app's `dispatch` to build the external-facing `execute`, `enqueue`, and `forceExecute` methods, routing every mutation — whether batched by the scheduler or force-included — through it.
 
 ```solidity
-import {EIP712_DOMAIN_TYPEHASH, FFCA} from "typewriter/FFCA.sol";
+import {EIP712_DOMAIN_TYPEHASH, Typewriter} from "typewriter/Typewriter.sol";
 
-contract Token is FFCA {
+contract Token is Typewriter {
     State private state;
 
     enum Mutation {
@@ -370,13 +370,13 @@ contract Token is FFCA {
 
 **`Mutation` enum.** Designates the valid mutations for the contract.
 
-**`SCHEDULER`.** The privileged address for submitting mutations. Declared in `FFCA` as `address internal immutable` — the inheriting contract must assign it in the constructor.
+**`SCHEDULER`.** The privileged address for submitting mutations. Declared in `Typewriter` as `address internal immutable` — the inheriting contract must assign it in the constructor.
 
-**`DOMAIN_SEPARATOR`.** The EIP-712 domain separator from the [Signature](#signature) section. Declared in `FFCA` as `bytes32 internal immutable` — the inheriting contract must assign it in the constructor.
+**`DOMAIN_SEPARATOR`.** The EIP-712 domain separator from the [Signature](#signature) section. Declared in `Typewriter` as `bytes32 internal immutable` — the inheriting contract must assign it in the constructor.
 
-**`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `FFCA` as `uint256 internal immutable` — `FFCA` does not impose a value, so the inheriting contract must assign it in the constructor. All examples in this repo use `658` blocks (≈4.4 minutes at 0.4 s/block).
+**`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal immutable` — `Typewriter` does not impose a value, so the inheriting contract must assign it in the constructor. All examples in this repo use `658` blocks (≈4.4 minutes at 0.4 s/block).
 
-**Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `FFCA` (no app code), but they define the contract's external surface that the runtime and clients depend on:
+**Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `Typewriter` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 
 ```solidity
 // Scheduler-gated settlement. `forceExecuteIndexes` settles queued
@@ -410,7 +410,7 @@ event ForceInclusionQueued(
 function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override;
 ```
 
-The single function an app must implement. `FFCA` calls `dispatch` once per mutation — for every mutation in every `Batch` passed to `execute`, for every queue entry settled through `execute`'s `forceExecuteIndexes`, and for every public `forceExecute`. The app never iterates batches or touches the queue itself; it only describes how to turn one `(mutation, mutationData, signatureData)` tuple into a state transition.
+The single function an app must implement. `Typewriter` calls `dispatch` once per mutation — for every mutation in every `Batch` passed to `execute`, for every queue entry settled through `execute`'s `forceExecuteIndexes`, and for every public `forceExecute`. The app never iterates batches or touches the queue itself; it only describes how to turn one `(mutation, mutationData, signatureData)` tuple into a state transition.
 
 For each mutation, branch on the `uint8` tag (matched against the `Mutation` enum), decode `mutationData` and `signatureData` into the mutation's structured types, compute the EIP-712 digest, call `verify[Mutation]Signature`, then call `execute[Mutation]` (see [Mutations](#mutations)). Revert with `UnknownMutation(mutation)` on an unrecognized tag.
 
@@ -435,11 +435,11 @@ function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signat
 }
 ```
 
-`dispatch` sees one mutation at a time and is intentionally order-agnostic. `FFCA` is responsible for invoking it in the order mutations were accepted server-side: across batches in submission order, and within a batch in array order.
+`dispatch` sees one mutation at a time and is intentionally order-agnostic. `Typewriter` is responsible for invoking it in the order mutations were accepted server-side: across batches in submission order, and within a batch in array order.
 
 #### Determinism
 
-Opcodes whose values can't be reproduced offchain produce divergence between offchain and onchain state, so they are incompatible with FFCA:
+Opcodes whose values can't be reproduced offchain produce divergence between offchain and onchain state, so they are incompatible with Typewriter:
 
 - `block.coinbase` (`COINBASE`) — the miner of the block containing the transaction is not known until inclusion.
 - `block.difficulty` / `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
@@ -451,23 +451,23 @@ Opcodes whose values can't be reproduced offchain produce divergence between off
 
 `tx.origin` and `msg.sender` are stable. Both resolve to the scheduler in normal `execute` flow, and to the caller in `forceExecute`.
 
-Calls to external contracts are not allowed. The server executes mutations against its own local state, which only covers the FFCA contract — it has no view of other contracts' storage, so any external call (or the state it depends on) cannot be reproduced offchain and will diverge.
+Calls to external contracts are not allowed. The server executes mutations against its own local state, which only covers the Typewriter contract — it has no view of other contracts' storage, so any external call (or the state it depends on) cannot be reproduced offchain and will diverge.
 
 ### Server runtime
 
-The JavaScript surface exported from `typewriter`: the `createFFCA` entry point and the `FFCA` handle it returns (`state`, `schema`, `domain`, `execute`, `on`, `close`).
+The JavaScript surface exported from `typewriter`: the `createTypewriter` entry point and the `Typewriter` handle it returns (`state`, `schema`, `domain`, `execute`, `on`, `close`).
 
-#### `createFFCA()`
+#### `createTypewriter()`
 
 ```ts
-function createFFCA(config: FFCAConfig): Promise<FFCA>;
+function createTypewriter(config: TypewriterConfig): Promise<Typewriter>;
 ```
 
-Starts the runtime and resolves to the `FFCA` handle (see the [Server runtime](#server-runtime) example for a full call). On startup it connects to the chain and database, runs migrations, and hydrates local revm state from persisted slot writes; from there it accepts mutations and submits them onchain.
+Starts the runtime and resolves to the `Typewriter` handle (see the [Server runtime](#server-runtime) example for a full call). On startup it connects to the chain and database, runs migrations, and hydrates local revm state from persisted slot writes; from there it accepts mutations and submits them onchain.
 
-**`FFCAConfig`.** Required fields:
+**`TypewriterConfig`.** Required fields:
 
-- `address` — the deployed FFCA contract.
+- `address` — the deployed Typewriter contract.
 - `account` — the scheduler `PrivateKeyAccount`; signs and submits the onchain `execute` transactions.
 - `chainId` — number.
 - `rpcUrl` — `string | string[]`.
@@ -483,7 +483,7 @@ The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `
 typewriter.domain: TypedData.Domain; // { name, version, chainId, verifyingContract }
 ```
 
-The resolved EIP-712 domain, derived from FFCA's fixed domain plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
+The resolved EIP-712 domain, derived from Typewriter's fixed domain plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
 
 ```ts
 "/api/domain": () => jsonResponse(typewriter.domain),
@@ -521,7 +521,7 @@ const nonce = await account.nonce;
 #### `typewriter.schema`
 
 ```ts
-typewriter.schema: FFCASchema;
+typewriter.schema: TypewriterSchema;
 ```
 
 The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. typewriter owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).

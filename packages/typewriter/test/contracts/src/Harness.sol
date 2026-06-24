@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {FFCA, EIP712_DOMAIN_TYPEHASH, KeyType, UnknownMutation, verifySignature} from "typewriter/FFCA.sol";
+import {Typewriter, EIP712_DOMAIN_TYPEHASH, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
 
 struct Signature {
     bytes32 account;
@@ -189,7 +189,7 @@ library AssertMutation {
 }
 
 /// Multi-key fixture for typewriter's submit path. Accounts are 32-byte ids; each
-/// holds a list of keys (any of the three KeyTypes from FFCA.sol).
+/// holds a list of keys (any of the three KeyTypes from Typewriter.sol).
 /// Signatures carry (account, keyId, keyType, rawSignature). All mutations
 /// except `Initialize` are signed; their EIP-712 digest binds (account,
 /// keyId, nonce, …) so a stale or replayed signature can't land.
@@ -204,7 +204,7 @@ library AssertMutation {
 ///   DEBIT      (3): args = (account, keyId, amount, nonce). Signed.
 ///   ASSERT     (4): args = (account, keyId, expected, nonce). Signed.
 ///                    Read-only — reverts if balance != expected.
-contract Harness is FFCA {
+contract Harness is Typewriter {
     State internal state;
 
     enum Mutation {

@@ -2,7 +2,7 @@ import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseOptions } from "./db";
-import type { FFCASchema } from "./schema";
+import type { TypewriterSchema } from "./schema";
 
 export type InternalMutation = {
   tag: number;
@@ -46,7 +46,7 @@ export type InternalApp = {
   rpcUrls: string[];
   database: DatabaseOptions;
   mutations: { [name: string]: InternalMutation };
-  schema: FFCASchema;
+  schema: TypewriterSchema;
   blockPollingIntervalMs: number;
   confirmations: InternalConfirmations;
   onFatalError: ((error: unknown) => void) | undefined;

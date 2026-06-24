@@ -2,8 +2,8 @@ import type { AbiParameter } from "abitype";
 import { type Hex, TypedData } from "ox";
 import type { MutationConfig } from "./config";
 
-export const FFCA_DOMAIN = {
-  name: "FFCA",
+export const TYPEWRITER_DOMAIN = {
+  name: "Typewriter",
   version: "1",
 } as const;
 

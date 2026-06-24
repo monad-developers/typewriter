@@ -15,7 +15,7 @@ import { Effect } from "effect";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { ExecuteResult } from "typewriter-evm";
-import type { FFCADatabaseTransaction } from "./config";
+import type { TypewriterDatabaseTransaction } from "./config";
 import { Database, type DatabaseClient } from "./db";
 import type {
   ExecutableMutation,
@@ -37,7 +37,7 @@ function chunk<T>(array: readonly T[], size: number): T[][] {
 }
 
 export function insertMutation(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutation: ExecutableMutation,
 ): Effect.Effect<void, unknown> {
@@ -51,7 +51,7 @@ export function insertMutation(
 // generated table (one per mutation name) so each table receives a single
 // multi-row insert instead of one statement per mutation.
 export function insertMutations(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutations: readonly ExecutableMutation[],
 ): Effect.Effect<void, unknown> {
@@ -119,7 +119,7 @@ export function selectNextMutationId(
 }
 
 export function updateMutationLifecycle(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutation: SubmittedMutation,
   block: RuntimeBlock<"fifo" | "batch">,
@@ -141,7 +141,7 @@ export function updateMutationLifecycle(
 // the shared block — so each group becomes a single `UPDATE ... WHERE id IN
 // (...)` instead of one statement per mutation.
 export function updateMutationsLifecycle(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutations: readonly SubmittedMutation[],
   block: RuntimeBlock<"fifo" | "batch">,
@@ -275,7 +275,7 @@ function lifecycleSet(
 }
 
 export function insertSlotWrites(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutation: Pick<RuntimeMutation, "id">,
   slotWrites: ExecuteResult["slot_writes"],
@@ -299,7 +299,7 @@ export function insertSlotWrites(
 // id monotonic in application order so `selectAccountStorage` still resolves
 // the latest value per slot correctly.
 export function insertSlotWritesMany(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutationsWithResults: readonly {
     mutation: Pick<RuntimeMutation, "id">;
@@ -324,7 +324,7 @@ export function insertSlotWritesMany(
 }
 
 export function insertKnownPaths(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   paths: readonly string[],
 ): Effect.Effect<void, unknown> {
@@ -342,7 +342,7 @@ export function insertKnownPaths(
 }
 
 export function selectKnownPaths(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
 ): Effect.Effect<string[], unknown> {
   return Effect.gen(function* () {
@@ -359,7 +359,7 @@ export function selectKnownPaths(
 }
 
 export function selectAccountStorage(
-  tx: FFCADatabaseTransaction,
+  tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
 ): Effect.Effect<AccountStorage, unknown> {
   return Effect.gen(function* () {
