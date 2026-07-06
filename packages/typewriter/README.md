@@ -1,11 +1,16 @@
 # Typewriter
 
-Full stack framework for building crypto apps.
+Typewriter is a full-stack framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.
+
+You write Solidity state and mutations. Then, Typewriter runs a server that orders user-signed mutations, executes them locally for acceptance in roughly 50ms, and submits them onchain.
+
+The server is trusted for day-to-day ordering and availability, but it does not control user funds. Users can bypass the server and submit valid mutations directly onchain through force inclusion.
 
 - **Custom sequencing**. Applications define their transaction ordering (fifo or batch).
-- **Sub-block confirmations**. Applications can issue responses in milliseconds, before transactions finalize onchain.
+- **Fast confirmations**. Applications can accept mutations in roughly 50ms, before transactions finalize onchain.
+- **Gas sponsorship**. Users sign application mutations while the server pays for settlement transactions.
 - **Modern signature primitives**. EIP-712 plus native P-256, WebAuthn-P256, and secp256k1 verification; apps define their own account policy.
-- **Minimal dependencies**. No external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over what users experience.
+- **Direct control**. No external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over what users experience.
 - **Local first**. Build rapidly with a powerful local development loop.
 
 > [!WARNING]
