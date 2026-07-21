@@ -1,8 +1,8 @@
 # Typewriter
 
-Typewriter is a full-stack framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.
+Typewriter is a framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.
 
-You write Solidity state and mutations. Then, Typewriter runs a server that orders user-signed mutations, executes them locally for acceptance immediately, and submits them onchain.
+You write Solidity state and mutations. Then, Typewriter runs a server that orders user-signed mutations, executes them locally for acceptance in roughly 50ms, and submits them onchain.
 
 The server is trusted for day-to-day ordering and availability, but it does not control user funds. Users can bypass the server and submit valid mutations directly onchain through force inclusion.
 
@@ -15,6 +15,7 @@ The server is trusted for day-to-day ordering and availability, but it does not 
 
 > [!WARNING]
 > **This project is under active development. Not ready for production use.**
+> It is provided for educational purposes and has not been audited. Do not use it in connection with real funds on mainnet without an independent audit.
 
 ## Concepts
 
@@ -174,8 +175,8 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 
 ## Examples
 
-- [`token`](../../apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical Typewriter app shape.
-- [`order-book`](../../apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
+- [`token`](https://github.com/monad-exp/order-book/tree/main/apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical Typewriter app shape.
+- [`order-book`](https://github.com/monad-exp/order-book/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
 ## Failure modes
 
@@ -631,3 +632,7 @@ const unsubscribe = typewriter.on("mutation", (mutation) => {
   console.log(mutation.id, mutation.status);
 });
 ```
+
+## License
+
+[MIT](./LICENSE)
