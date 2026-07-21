@@ -331,17 +331,17 @@ struct Key {
               {
                 state: "accepted",
                 trigger: "included in a batch, executed on the server via REVM",
-                toNext: "<400 ms",
+                toNext: "<300 ms",
               },
               {
                 state: "included",
                 trigger: "included in a block, executed onchain",
-                toNext: "~400 ms",
+                toNext: "~300 ms",
               },
               {
                 state: "safe",
                 trigger: "configured safe block depth",
-                toNext: "~1600 ms",
+                toNext: "~300 ms",
               },
               {
                 state: "finalized",
