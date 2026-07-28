@@ -433,24 +433,22 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       });
     }
 
-    let slotCache: RawSlotMap = {};
+    const slotCache = new Map<Hex.Hex, Hex.Hex>();
     const invalidateStorageCache = (slots?: readonly Hex.Hex[]) => {
       if (slots === undefined) {
-        slotCache = {};
+        slotCache.clear();
         return;
       }
 
       for (const slot of slots) {
-        delete slotCache[slot];
+        slotCache.delete(slot);
       }
     };
 
     const state = createStorageProxy(
       app.storageLayout,
       async (slots) => {
-        const missingSlots = slots.filter(
-          (slot) => slotCache[slot] === undefined,
-        );
+        const missingSlots = slots.filter((slot) => !slotCache.has(slot));
         if (missingSlots.length > 0) {
           const fetched = await Effect.runPromise(
             evm.readStorage({ address: app.address, slots: missingSlots }),
@@ -459,17 +457,17 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
             Hex.Hex,
             Hex.Hex,
           ][]) {
-            slotCache[slot] = value;
+            slotCache.set(slot, value);
           }
 
-          while (Object.keys(slotCache).length > SLOT_CACHE_MAX_ENTRIES) {
-            const oldestSlot = Object.keys(slotCache).values().next().value;
-            delete slotCache[oldestSlot as Hex.Hex];
+          while (slotCache.size > SLOT_CACHE_MAX_ENTRIES) {
+            const oldestSlot = slotCache.keys().next().value;
+            slotCache.delete(oldestSlot!);
           }
         }
 
         return Object.fromEntries(
-          slots.map((slot) => [slot, slotCache[slot]!]),
+          slots.map((slot) => [slot, slotCache.get(slot)!]),
         ) as RawSlotMap;
       },
       knownPaths,
