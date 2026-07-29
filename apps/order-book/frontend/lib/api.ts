@@ -3,6 +3,7 @@ import superjson from "superjson";
 type RequestParams = {
   method?: "GET" | "POST";
   body?: unknown;
+  cache?: RequestCache;
 };
 
 export class ApiError extends Error {
@@ -21,6 +22,7 @@ export async function request<T>(
   const method = params.method ?? "GET";
   const res = await fetch(path, {
     method,
+    cache: params.cache,
     headers:
       params.body === undefined
         ? undefined
