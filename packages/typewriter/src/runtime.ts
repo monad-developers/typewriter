@@ -78,8 +78,6 @@ import { Watch } from "./watch";
 
 const FIFO_BATCH_INTERVAL_MS = 4;
 const SUBMIT_RETRY_TIMES = 5;
-const SLOW_STORAGE_REQUEST_THRESHOLD_MS = 25;
-const EVENT_LOOP_HEARTBEAT_INTERVAL_MS = 1_000;
 
 type RuntimeExecuteInput = {
   name: string;
@@ -450,51 +448,27 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
     const state = createStorageProxy(
       app.storageLayout,
       async (slots) => {
-        const requestStartedAtMs = startTimer();
         const missingSlots = slots.filter((slot) => !slotCache.has(slot));
-        let readStorageDuration = 0;
-
-        try {
-          if (missingSlots.length > 0) {
-            const readStorageStartedAtMs = startTimer();
-            const fetched = await Effect.runPromise(
-              evm.readStorage({ address: app.address, slots: missingSlots }),
-            ).finally(() => {
-              readStorageDuration = durationMs(readStorageStartedAtMs);
-            });
-            for (const [slot, value] of Object.entries(fetched) as [
-              Hex.Hex,
-              Hex.Hex,
-            ][]) {
-              slotCache.set(slot, value);
-            }
-
-            while (slotCache.size > SLOT_CACHE_MAX_ENTRIES) {
-              const oldestSlot = slotCache.keys().next().value;
-              slotCache.delete(oldestSlot!);
-            }
+        if (missingSlots.length > 0) {
+          const fetched = await Effect.runPromise(
+            evm.readStorage({ address: app.address, slots: missingSlots }),
+          );
+          for (const [slot, value] of Object.entries(fetched) as [
+            Hex.Hex,
+            Hex.Hex,
+          ][]) {
+            slotCache.set(slot, value);
           }
 
-          return Object.fromEntries(
-            slots.map((slot) => [slot, slotCache.get(slot)!]),
-          ) as RawSlotMap;
-        } finally {
-          const duration = durationMs(requestStartedAtMs);
-          if (duration > SLOW_STORAGE_REQUEST_THRESHOLD_MS) {
-            await Effect.runPromise(
-              Effect.logDebug("slow storage request").pipe(
-                Effect.annotateLogs({
-                  duration,
-                  requestedSlotCount: slots.length,
-                  cacheHitCount: slots.length - missingSlots.length,
-                  cacheMissCount: missingSlots.length,
-                  readStorageDuration,
-                }),
-                Effect.provide(loggerLayer),
-              ),
-            );
+          while (slotCache.size > SLOT_CACHE_MAX_ENTRIES) {
+            const oldestSlot = slotCache.keys().next().value;
+            slotCache.delete(oldestSlot!);
           }
         }
+
+        return Object.fromEntries(
+          slots.map((slot) => [slot, slotCache.get(slot)!]),
+        ) as RawSlotMap;
       },
       knownPaths,
     );
@@ -1171,29 +1145,9 @@ export function createRuntimeEffect(
       ),
     );
 
-    const eventLoopHeartbeat = Effect.gen(function* () {
-      const startedAtMs = startTimer();
-      yield* Effect.sleep(Duration.millis(EVENT_LOOP_HEARTBEAT_INTERVAL_MS));
-      const duration = durationMs(startedAtMs);
-      yield* Effect.logDebug("event loop heartbeat").pipe(
-        Effect.annotateLogs({
-          interval: EVENT_LOOP_HEARTBEAT_INTERVAL_MS,
-          eventLoopDelay: Math.max(
-            0,
-            duration - EVENT_LOOP_HEARTBEAT_INTERVAL_MS,
-          ),
-        }),
-      );
+    const program = Effect.all([batchProgram, submitProgram, watchProgram], {
+      concurrency: "unbounded",
     });
-    const eventLoopHeartbeatProgram = Effect.repeat(
-      eventLoopHeartbeat,
-      Schedule.spaced(Duration.millis(0)),
-    );
-
-    const program = Effect.all(
-      [batchProgram, submitProgram, watchProgram, eventLoopHeartbeatProgram],
-      { concurrency: "unbounded" },
-    );
 
     function execute(
       mutation: RuntimeExecuteInput,
