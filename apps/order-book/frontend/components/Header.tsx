@@ -34,7 +34,7 @@ function Ping() {
 
   return (
     <span
-      className={`text-xs tabular-nums ${ping.isError ? "text-red-600" : "text-zinc-500"}`}
+      className={ping.isError ? "tabular-nums text-red-600" : "tabular-nums"}
       title="Browser-to-server round-trip time, including response download and parsing"
     >
       ping: {value}
