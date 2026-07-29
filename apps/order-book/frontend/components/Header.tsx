@@ -2,6 +2,7 @@ import { TokenAmount, USD } from "order-book-sdk";
 import { useAccountContext } from "../contexts/AccountContext";
 import { useAccount } from "../hooks/useAccount";
 import { useBalances } from "../hooks/useBalances";
+import { usePing } from "../hooks/usePing";
 import { Link } from "../lib/router";
 
 export function Header({ compact = false }: { compact?: boolean }) {
@@ -13,8 +14,31 @@ export function Header({ compact = false }: { compact?: boolean }) {
       <Link to="/about" className="text-blue-500 hover:underline">
         /about
       </Link>
+      <Ping />
       {compact ? null : <HeaderAccountControls />}
     </header>
+  );
+}
+
+function Ping() {
+  const ping = usePing();
+  const latency = ping.data;
+  const value =
+    ping.isError || latency === undefined
+      ? ping.isError
+        ? "offline"
+        : "..."
+      : latency < 1
+        ? "<1 ms"
+        : `${Math.round(latency)} ms`;
+
+  return (
+    <span
+      className={`text-xs tabular-nums ${ping.isError ? "text-red-600" : "text-zinc-500"}`}
+      title="Browser-to-server round-trip time, including response download and parsing"
+    >
+      ping: {value}
+    </span>
   );
 }
 

@@ -260,6 +260,8 @@ serve({
   idleTimeout: 0,
   routes: {
     "/api/domain": () => json(app.domain),
+    "/api/ping": () =>
+      json({ pong: true }, { headers: { "Cache-Control": "no-store" } }),
     "/api": {
       POST: async (req) => {
         const parsedBody = superjson.parse(await req.text());
