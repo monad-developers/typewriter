@@ -1,0 +1,37 @@
+{
+  "name": "pixel-war",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/index.ts",
+    "start": "NODE_ENV=production bun src/index.ts",
+    "test": "bun test --timeout 60000",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "contracts:build": "forge build --root contracts",
+    "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
+    "contracts:test": "forge test --root contracts",
+    "bot": "bun scripts/bot.ts",
+    "force-paint": "bun scripts/force-paint.ts",
+    "deploy": ". .env && forge build --root contracts && forge script --root contracts ./contracts/script/PixelWar.s.sol:PixelWarScript --broadcast --fork-url $RPC_URL --private-key $PRIVATE_KEY"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "catalog:",
+    "drizzle-orm": "catalog:",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "superjson": "catalog:",
+    "typewriter": "workspace:*",
+    "viem": "catalog:",
+    "webauthx": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "bun-plugin-tailwind": "0.1.2",
+    "forge-std": "github:foundry-rs/forge-std#620536f",
+    "prool": "catalog:",
+    "tailwindcss": "4.2.2"
+  }
+}

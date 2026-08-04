@@ -1,0 +1,3 @@
+forge-std/=../node_modules/forge-std/src/
+typewriter/=../../../packages/typewriter/src/
+src/=src/

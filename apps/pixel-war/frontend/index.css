@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #0b0b0f;
+  --color-panel: #14141b;
+  --color-edge: #26263a;
+  --color-ink: #e8e8f0;
+  --color-dim: #8b8ba7;
+}
+
+@layer base {
+  :root {
+    @apply font-mono;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-w-[320px] min-h-screen m-0 bg-canvas text-ink antialiased;
+  }
+
+  a {
+    color: inherit;
+  }
+}
+
+/* The canvas is 128x128 real pixels blown up; never smooth it. */
+.pixelated {
+  image-rendering: pixelated;
+}

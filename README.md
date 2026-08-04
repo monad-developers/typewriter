@@ -177,6 +177,7 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 
 - [`token`](https://github.com/monad-exp/order-book/tree/main/apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical Typewriter app shape.
 - [`order-book`](https://github.com/monad-exp/order-book/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
+- [`pixel-war`](https://github.com/monad-exp/order-book/tree/main/apps/pixel-war) is a team pixel-canvas game whose batch order is its rulebook — within a batch every `Shield` resolves before every `Paint` and every `Paint` before every `Bomb` — plus passkey sign-up, gas-sponsored play, and a force-inclusion escape hatch.
 
 ## Failure modes
 
