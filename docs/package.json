@@ -6,15 +6,21 @@
   "scripts": {
     "dev": "vocs dev",
     "build": "vocs build",
-    "preview": "vocs preview"
+    "preview": "vocs preview",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "vocs": "1.4.1"
+    "vocs": "2.8.5",
+    "waku": "1.0.0-beta.9"
   },
   "devDependencies": {
-    "@vercel/edge": "1.3.3",
-    "jose": "6.2.9"
+    "@types/node": "22.18.10",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.5",
+    "typescript": "catalog:",
+    "vite": "8.2.1"
   }
 }

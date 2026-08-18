@@ -1,10 +1,6 @@
-import { defineConfig } from "vocs";
+import { defineConfig } from "vocs/config";
 
 export default defineConfig({
-  // The docs project lives in the repo's top-level `docs/` directory, so keep
-  // the Vocs content root flat (pages/ at this directory) rather than the
-  // default nested `docs/` to avoid a `docs/docs/pages` layout.
-  rootDir: ".",
   title: "Typewriter",
   description:
     "A framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.",
