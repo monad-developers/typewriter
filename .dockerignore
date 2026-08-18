@@ -31,6 +31,9 @@
 !**/.env.example
 !**/.env.example.*
 
+# Docs site (standalone Vocs project, deployed separately to Vercel)
+docs
+
 # Docker itself
 Dockerfile
 .dockerignore

@@ -1,0 +1,20 @@
+{
+  "name": "typewriter-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vocs dev",
+    "build": "vocs build",
+    "preview": "vocs preview"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "vocs": "1.4.1"
+  },
+  "devDependencies": {
+    "@vercel/edge": "1.3.3",
+    "jose": "6.2.9"
+  }
+}

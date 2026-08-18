@@ -13,7 +13,8 @@
       "!**/cache",
       "!**/dist",
       "!**/drizzle",
-      "!**/out"
+      "!**/out",
+      "!docs"
     ]
   },
   "formatter": {
