@@ -1,0 +1,23 @@
+---
+title: Define your state and mutations
+description: Write your app's onchain state, its mutation libraries, and the dispatch function.
+---
+
+# Define your state and mutations
+
+Define the onchain state your app owns and the mutations that transition it.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- Declaring a single `struct State`
+- Writing a mutation library: the `struct`, `execute`, `hash`, and `verify`
+  functions
+- Implementing `dispatch` to route each mutation tag to its verifier and
+  executor
+- Wiring the contract: inheriting `Typewriter`, the `Mutation` enum, and the
+  constructor immutables

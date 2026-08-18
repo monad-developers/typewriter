@@ -1,0 +1,27 @@
+---
+title: Concepts
+description: The core ideas behind Typewriter — state, mutations, accounts, sequencing, and the guarantees the runtime provides.
+---
+
+# Concepts
+
+The core ideas you need to build on Typewriter, gathered in one place.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- **State** — application state lives onchain in a single `struct State`
+- **Mutations** — app-defined state transitions, authorized with EIP-712
+  signatures
+- **Accounts and signatures** — app-defined account policy, with P-256,
+  WebAuthn-P256, and secp256k1 verification
+- **Sequencing** — how the server orders mutations (FIFO and batch)
+- **The mutation lifecycle** — received, accepted, included, safe, finalized
+- **Force inclusion** — the escape hatch for bypassing the server
+- **Determinism** — which EVM behaviors are safe to rely on offchain
+- **Reliability** — how reorgs, offchain/onchain divergence, and crash recovery
+  are handled

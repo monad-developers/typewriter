@@ -1,0 +1,23 @@
+---
+title: How it works
+description: The architecture behind Typewriter and the lifecycle a mutation moves through.
+---
+
+# How it works
+
+A mutation is the Typewriter equivalent of a transaction. Users sign mutations
+and submit them to the application server, which orders and executes them
+locally in an embedded EVM before settling them onchain.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- Architecture overview: the client, the server runtime, and the onchain
+  contract (reuse the `order-book` architecture and sequencing diagrams)
+- The mutation lifecycle: received → accepted → included → safe → finalized
+- Why scheduler-gated settlement lets the server accept a mutation before a
+  block is produced

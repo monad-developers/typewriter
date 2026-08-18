@@ -6,9 +6,22 @@ description: A framework for crypto apps that need custom transaction sequencing
 # What is Typewriter?
 
 Typewriter is a framework for crypto apps that need custom transaction
-sequencing, fast confirmations, and built-in gas sponsorship.
+sequencing, fast confirmations, and built-in gas sponsorship. You write Solidity
+state and mutations; Typewriter runs a server that orders user-signed mutations,
+executes them locally for acceptance in roughly 50ms, and settles them onchain.
+
+The server is trusted for day-to-day ordering and availability, but it never
+controls user funds — users can bypass it and submit valid mutations directly
+onchain through force inclusion.
 
 :::warning
 Documentation is under construction — this is a placeholder page. Content will
 be filled in over the coming iterations.
 :::
+
+## Planned contents
+
+- What Typewriter is and the problems it solves: custom sequencing, ~50ms
+  confirmations, gas sponsorship, and modern signature primitives
+- The trust model — trusted for ordering and availability, never for funds
+- The "not ready for production" warning

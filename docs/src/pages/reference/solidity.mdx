@@ -1,0 +1,24 @@
+---
+title: Solidity
+description: The full Solidity API surface exported from typewriter/Typewriter.sol.
+---
+
+# Solidity reference
+
+The complete Solidity surface an app builds against.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- The `Typewriter` base contract and its immutables: `SCHEDULER`,
+  `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY`
+- Entry points: `execute`, `enqueue`, and `forceExecute`
+- The `dispatch` function each app implements
+- `KeyType` and the `verifySignature` helpers
+- Signature byte layouts per key type
+- Unsupported opcodes and the determinism rules
+- The required app shape: `State`, the `Mutation` enum, and mutation libraries
