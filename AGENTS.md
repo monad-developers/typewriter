@@ -10,6 +10,16 @@ A Bun monorepo. Apps live under `apps/*`; reusable framework code lives under `p
 
 `README.md` and `packages/typewriter/README.md` are copies of each other. Keep them in sync when editing either file.
 
+## Website
+
+`docs/` is the Typewriter documentation site: [Vocs](https://vocs.dev) 2.x, which is a [Waku](https://waku.gg) (React Server Components) app, not a static export. It deploys to its own Vercel project (`typewriter-docs`, Root Directory `docs`) at `typewriter-docs.monadinternal.com`, gated by Cloudflare Access plus Vercel Deployment Protection. `docs/README.md` has the deployment detail.
+
+- It's a real Bun workspace (listed in the root `workspaces`), so root `bun install`, `bun run lint`, `bun run typecheck`, and `bun run build` all cover it. Treat a docs failure like any other workspace failure.
+- Pages are MDX under `docs/src/pages/` with file-based routing; site and sidebar config is `docs/vocs.config.ts`. A new page needs both the file and a `sidebar` entry.
+- Local: `cd docs && bun run dev` (also `build` / `preview`). Vocs regenerates `docs/src/pages.gen.ts` — gitignored and tsconfig-excluded; don't edit or commit it.
+- **Keep `waku` pinned at `1.0.0-beta.8`.** beta.9 dropped the router API Vocs uses; the page renders and then goes blank after hydration. Don't bump it alongside a Vocs upgrade without checking Vocs supports it.
+- `react`/`react-dom` are pinned at `19.2.8` here vs `19.2.4` in the app workspaces (Waku's `react-server-dom-webpack` constraint). The divergence is intentional — that's why they're not in the root catalog.
+
 ## Common commands
 
 Run from the repo root:

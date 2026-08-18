@@ -5,7 +5,8 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "docs"
   ],
   "catalog": {
     "@tanstack/react-query": "5.96.1",
@@ -22,7 +23,7 @@
   },
   "scripts": {
     "lint": "biome check . && bun run --filter '*' lint",
-    "typecheck": "bun run --filter abipg typecheck && bun run --filter storage-layout typecheck && bun run --filter typewriter-evm typecheck && bun run --filter typewriter typecheck && bun run --filter order-book typecheck && bun run --filter token typecheck",
+    "typecheck": "bun run --filter abipg typecheck && bun run --filter storage-layout typecheck && bun run --filter typewriter-evm typecheck && bun run --filter typewriter typecheck && bun run --filter order-book typecheck && bun run --filter token typecheck && bun run --filter typewriter-docs typecheck",
     "test": "bun run --filter abipg test && bun run --filter storage-layout test && bun run --filter typewriter-evm test && bun run --filter typewriter test && bun run --filter order-book test && bun run --filter token test",
     "build": "bun run --filter '*' build"
   },
