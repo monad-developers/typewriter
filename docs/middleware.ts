@@ -23,8 +23,10 @@ export const config = {
   matcher: "/:path*",
 };
 
-const TEAM_DOMAIN = process.env.CF_ACCESS_TEAM_DOMAIN;
-const AUD = process.env.CF_ACCESS_AUD;
+// Bracket access: the docs subproject inherits the repo-root tsconfig, which
+// enables `noPropertyAccessFromIndexSignature`, so `process.env` is read by key.
+const TEAM_DOMAIN = process.env["CF_ACCESS_TEAM_DOMAIN"];
+const AUD = process.env["CF_ACCESS_AUD"];
 const JWKS = TEAM_DOMAIN
   ? createRemoteJWKSet(new URL(`https://${TEAM_DOMAIN}/cdn-cgi/access/certs`))
   : null;
@@ -36,7 +38,7 @@ export default async function middleware(request: Request): Promise<Response> {
     return next();
   }
 
-  const isPreview = process.env.VERCEL_ENV === "preview";
+  const isPreview = process.env["VERCEL_ENV"] === "preview";
 
   // Primary check: a valid CF Access JWT proves the request went through
   // Cloudflare Access, regardless of which host it arrived on. This holds even
@@ -62,7 +64,7 @@ export default async function middleware(request: Request): Promise<Response> {
   const wantsHtml =
     request.method === "GET" &&
     (request.headers.get("accept")?.includes("text/html") ?? false);
-  const canonicalHost = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  const canonicalHost = process.env["VERCEL_PROJECT_PRODUCTION_URL"];
   const url = new URL(request.url);
 
   if (
