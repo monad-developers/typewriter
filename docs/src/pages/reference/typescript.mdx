@@ -1,22 +1,463 @@
 ---
 title: TypeScript
-description: The full TypeScript API surface exported from the typewriter runtime.
+description: API reference for the runtime surface exported from the typewriter package.
 ---
 
-# TypeScript reference
+# TypeScript
 
-The complete runtime surface exported from `typewriter`.
+This page documents the runtime surface exported from the `typewriter` package: the `createTypewriter` entry point, the `TypewriterConfig` options it takes, the `Typewriter` handle it returns, the runtime event types, the generated Drizzle schema, and the low-level constants and packages the runtime builds on.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+A mutation is the framework equivalent of a transaction. Users sign mutations. The runtime orders them, executes each one against a local revm-backed mirror of contract state, responds `accepted` once it knows the mutation will succeed onchain, and later settles the mutation onchain by submitting a transaction from the scheduler account.
 
-## Planned contents
+## Entry point
 
-- `createTypewriter` and `TypewriterConfig`, including `confirmations`,
-  `sequencing`, and `blockPollingIntervalMs`
-- The `Typewriter` handle: `domain`, `execute`, `state`, `schema`, `on`, `close`
-- Event payloads: `MutationEvent`, `BatchEvent`, and `BlockEvent`
-- The generated Drizzle schema and its column types
-- Low-level exports: `storage-layout` and `abipg`
+### `createTypewriter`
+
+* **Type:**
+
+```ts
+function createTypewriter(
+  entrypoint: TypewriterSolidityEntrypoint,
+  config: TypewriterConfig,
+): Promise<Typewriter>;
+```
+
+Starts the runtime and resolves to a `Typewriter` handle. `entrypoint` is the default import of the app's `.sol` file; the runtime derives contract metadata (`storageLayout`, mutation tags and params, and signature params) from it.
+
+On startup, `createTypewriter` connects to the chain and database, runs migrations, and hydrates the local revm state from the persisted slot writes. After startup it accepts mutations and settles them onchain. If startup fails, the runtime releases the resources it acquired and rethrows the error.
+
+```ts
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address,
+  account: privateKeyToAccount(privateKey),
+  chainId,
+  rpcUrl,
+  database: { url: databaseUrl },
+});
+```
+
+### `TypewriterConfig`
+
+* **Type:**
+
+```ts
+type TypewriterConfig = {
+  address: Address.Address;
+  account: PrivateKeyAccount;
+  chainId: number;
+  rpcUrl: string | string[];
+  database: DatabaseOptions;
+  blockPollingIntervalMs?: number;
+  confirmations?: {
+    safeBlockDepth?: number;
+    finalizedBlockDepth?: number;
+  };
+  onFatalError?: (error: unknown) => void;
+  sequencing?: TypewriterSequencingConfig;
+};
+```
+
+The runtime configuration passed to `createTypewriter`. The required fields are `address`, `account`, `chainId`, `rpcUrl`, and `database`. The other fields are optional and take the defaults listed below.
+
+### `address`
+
+* **Type:** `Address.Address`
+
+The address of the deployed Typewriter contract.
+
+### `account`
+
+* **Type:** `PrivateKeyAccount`
+
+The scheduler account, a viem `PrivateKeyAccount`. It signs and submits the onchain `execute` transactions that settle mutations. Onchain submission is gated to this single scheduler address, so the runtime can execute a mutation locally and rely on the result holding onchain.
+
+### `chainId`
+
+* **Type:** `number`
+
+The chain ID the contract is deployed to. It is used to resolve the EIP-712 domain (see [`domain`](#domain)).
+
+### `rpcUrl`
+
+* **Type:** `string | string[]`
+
+One or more JSON-RPC endpoint URLs. When you pass an array, it must contain at least one URL.
+
+### `database`
+
+* **Type:**
+
+```ts
+type DatabaseOptions = {
+  url: string;
+  maxConnections?: number;
+};
+```
+
+Postgres connection options. `url` is the connection string. `maxConnections` sets the connection pool size.
+
+### `blockPollingIntervalMs`
+
+* **Type:** `number`
+* **Default:** `200`
+
+The interval, in milliseconds, at which the runtime polls for new blocks.
+
+### `confirmations.safeBlockDepth`
+
+* **Type:** `number`
+* **Default:** `1`
+
+The number of blocks behind the chain tip at which a block is treated as `safe`. It must be less than or equal to `confirmations.finalizedBlockDepth`.
+
+### `confirmations.finalizedBlockDepth`
+
+* **Type:** `number`
+* **Default:** `5`
+
+The number of blocks behind the chain tip at which a block is treated as `finalized`. It must be greater than or equal to `confirmations.safeBlockDepth`.
+
+### `onFatalError`
+
+* **Type:** `(error: unknown) => void`
+
+A callback invoked when the runtime encounters a fatal error. Without it, a fatal runtime error is rethrown.
+
+### `sequencing`
+
+* **Type:**
+
+```ts
+type TypewriterSequencingConfig =
+  | {
+      order: "fifo";
+      submitIntervalMs?: number;
+    }
+  | {
+      order: "batch";
+      batchIntervalMs?: number;
+      submitIntervalMs?: number;
+      batchOrder: readonly string[];
+    };
+```
+
+* **Default:** FIFO
+
+Controls the order in which mutations are accepted by the runtime and included onchain. There are two modes: `fifo` and `batch`. When `sequencing` is omitted, the runtime uses FIFO.
+
+In FIFO mode, each call to [`execute`](#execute) runs the mutation against local state right away and returns the accepted mutation. Every `submitIntervalMs`, all accepted mutations are submitted in a single onchain transaction. Onchain inclusion order matches the order the mutations were executed.
+
+In batch mode, each call to [`execute`](#execute) enqueues the mutation and returns once the next batch is processed. Every `batchIntervalMs`, the enqueued mutations are gathered into a batch and ordered according to `batchOrder`. Every `submitIntervalMs`, the batches are submitted in a single onchain transaction. `batchOrder` is required for batch mode; it is rejected for FIFO mode.
+
+### `sequencing.submitIntervalMs`
+
+* **Type:** `number`
+* **Default:** `400`
+
+The interval, in milliseconds, at which accepted mutations or batches are submitted onchain. Applies to both FIFO and batch mode.
+
+### `sequencing.batchIntervalMs`
+
+* **Type:** `number`
+* **Default:** `50`
+
+Batch mode only. The interval, in milliseconds, at which enqueued mutations are gathered into a batch.
+
+### `sequencing.batchOrder`
+
+* **Type:** `readonly string[]`
+
+Batch mode only, and required in batch mode. The list of mutation names that sets the order in which mutations are sorted within a batch.
+
+## The `Typewriter` handle
+
+`createTypewriter` resolves to a `Typewriter` handle with the following members.
+
+### `domain`
+
+* **Type:** `TypedData.Domain`
+
+The resolved EIP-712 domain. It is derived from the fixed [`TYPEWRITER_DOMAIN`](#typewriter_domain) plus `chainId` and the contract `address`, so it has the shape `{ name, version, chainId, verifyingContract }`. Clients build the typed-data payload they sign from this domain and the mutation params.
+
+```ts
+"/api/domain": () => jsonResponse(typewriter.domain),
+```
+
+### `execute`
+
+* **Type:**
+
+```ts
+execute(
+  input: { name: string; params: unknown; signature: unknown },
+): Promise<{ id: number }>;
+```
+
+Submits a signed mutation. `name` is a `Mutation` enum member name, as declared in the contract (for example, `"Transfer"`). `params` matches the mutation struct decoded in the contract's `dispatch`. `signature` matches the contract's `Signature` struct. The parameter shapes of `params` and `signature` are inferred from the entrypoint metadata.
+
+`execute` resolves with the mutation `id` once the mutation is `accepted`, and rejects if the mutation is rejected. Acceptance timing follows [`sequencing`](#sequencing): immediate for FIFO, at the next batch interval for batch.
+
+```ts
+const accepted = await typewriter.execute({ name: "transfer", params, signature });
+// accepted.id
+```
+
+### `state`
+
+* **Type:** `StorageProxy<storageConfig, true>`
+
+A typed proxy for reading contract state. State is read directly from storage slots, typed by the contract's storage layout, so the contract needs no public accessors. Reads resolve against the runtime's local revm-backed mirror rather than issuing an `eth_call` per read. Field accesses return promises, and mappings are indexed by key.
+
+```ts
+const account = typewriter.state.accounts[address];
+const balance = await account.balance; // bigint
+const nonce = await account.nonce;
+```
+
+`state` reflects locally accepted state, which can be ahead of what is `included` or `finalized` onchain.
+
+### `schema`
+
+* **Type:** `TypewriterSchema`
+
+The Drizzle tables the runtime generates and migrates for this deployment. See [Generated schema](#generated-schema). The runtime owns these tables; apps read from them to build read models.
+
+### `on`
+
+* **Type:**
+
+```ts
+on(event: "mutation", cb: MutationListener): () => void;
+on(event: "batch", cb: BatchListener): () => void;
+on(event: "block", cb: BlockListener): () => void;
+```
+
+Subscribes to a runtime event and returns an unsubscribe function. There are three events, each with its own payload type: `"mutation"` delivers a [`MutationEvent`](#mutationevent), `"batch"` delivers a [`BatchEvent`](#batchevent), and `"block"` delivers a [`BlockEvent`](#blockevent).
+
+```ts
+const unsubscribe = typewriter.on("mutation", (mutation) => {
+  console.log(mutation.id, mutation.status);
+});
+```
+
+### `close`
+
+* **Type:** `() => Promise<void>`
+
+Shuts down the runtime and releases the resources it acquired at startup. Calling it more than once is a no-op after the first call.
+
+## Events
+
+### `MutationStatus`
+
+* **Type:**
+
+```ts
+type MutationStatus =
+  | "received"
+  | "enqueued"
+  | "accepted"
+  | "rejected"
+  | "included"
+  | "safe"
+  | "finalized";
+```
+
+The lifecycle status of a mutation. `received` means the runtime has received the mutation. `enqueued` occurs for force-included mutations, which a user submits directly onchain, once the runtime detects and reconciles them. `accepted` means the runtime has ordered and executed the mutation against local state. `rejected` means the mutation failed. `included` means the mutation was included in a block. `safe` and `finalized` mean the block containing the mutation reached the corresponding confirmation depth.
+
+### `BatchStatus`
+
+* **Type:** `"accepted" | "included" | "safe" | "finalized"`
+
+The lifecycle status of a batch.
+
+### `BlockStatus`
+
+* **Type:** `"included" | "safe" | "finalized"`
+
+The confirmation status of a submitted block. Block events never fire for `accepted`, which is a pre-block state.
+
+### `MutationEvent`
+
+* **Type:**
+
+```ts
+type MutationEvent =
+  | {
+      status: "received";
+      id: number;
+      name: string;
+      params: unknown;
+      signature: unknown;
+    }
+  | {
+      status: "enqueued";
+      id: number;
+      name: string;
+      params: unknown;
+      signature: unknown;
+    }
+  | {
+      status: "accepted";
+      id: number;
+      name: string;
+      params: unknown;
+      signature: unknown;
+      isForceInclusion: boolean;
+    }
+  | {
+      status: "included" | "safe" | "finalized";
+      id: number;
+      name: string;
+      params: unknown;
+      signature: unknown;
+      isForceInclusion: boolean;
+    }
+  | {
+      status: "rejected";
+      id: number;
+      name: string;
+      params: unknown;
+      signature: unknown;
+      isForceInclusion: boolean;
+      error: unknown;
+    };
+```
+
+The payload of a `"mutation"` event. It fires each time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `id`, `name`, `params`, and `signature`. The `accepted`, `included`, `safe`, `finalized`, and `rejected` variants add `isForceInclusion`, which marks mutations that entered through the force-inclusion queue. The `rejected` variant also carries `error`.
+
+### `BatchEvent`
+
+* **Type:**
+
+```ts
+type BatchEvent = {
+  status: "accepted" | "included" | "safe" | "finalized";
+  id: number;
+  position: number;
+  mutations: MutationEvent[];
+  forceIncludedMutations?: MutationEvent[];
+};
+```
+
+The payload of a `"batch"` event, fired only in batch sequencing when a batch changes status. `position` is the batch's position in submission order. `mutations` are the batch's mutation events; they never include the `received`, `enqueued`, or `rejected` states. `forceIncludedMutations` are force-included mutations settled alongside the batch.
+
+### `BlockEvent`
+
+* **Type:**
+
+```ts
+// FIFO sequencing
+type BlockEvent = {
+  status: BlockStatus;
+  number: bigint;
+  hash: Hex.Hex;
+  timestamp: bigint;
+  transactionHash: Hex.Hex;
+  mutations: MutationEvent[];
+};
+
+// batch sequencing
+type BlockEvent = {
+  status: BlockStatus;
+  number: bigint;
+  hash: Hex.Hex;
+  timestamp: bigint;
+  transactionHash: Hex.Hex;
+  batches: BatchEvent[];
+  forceIncludedMutations: MutationEvent[];
+};
+```
+
+The payload of a `"block"` event, fired when a submitted block reaches a confirmation depth. The common fields are `status`, `number` (block number), `hash`, `timestamp`, and `transactionHash` (the settlement transaction). The remaining fields depend on sequencing: FIFO adds `mutations`, the block's mutation events; batch adds `batches`, the block's batch events excluding the `accepted` state, and `forceIncludedMutations`.
+
+## Generated schema
+
+### `TypewriterSchema`
+
+* **Type:** `TypewriterStateSchema & TypewriterMutationSchema`
+
+The Drizzle schema the runtime generates and migrates for a deployment, returned as [`schema`](#schema) on the handle. It combines internal state tables (`slot_writes` and `known_paths`) with one mutation table per Solidity `Mutation` enum member.
+
+Each mutation table is named `<name>_mutations`, with the mutation name lowercased. `Mutation.Transfer` becomes `transfer_mutations`, and `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
+
+```ts
+import { desc } from "drizzle-orm";
+
+const recent = await db
+  .select()
+  .from(typewriter.schema.transfer_mutations)
+  .orderBy(desc(typewriter.schema.transfer_mutations.id))
+  .limit(20);
+```
+
+Every mutation table starts with the same lifecycle columns:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `integer`, primary key | mutation id; matches the `execute` result and event `id` |
+| `status` | `mutation_status` enum | one of `accepted`, `included`, `safe`, `finalized` |
+| `executionIndex` | `numeric(78,0)` bigint | onchain execution index; set once included |
+| `blockNumber` | `numeric(78,0)` bigint | inclusion block; null until included |
+| `blockHash` | `char(66)` hex | null until included |
+| `blockTimestamp` | `numeric(78,0)` bigint | null until included |
+| `transactionHash` | `char(66)` hex | the settlement transaction; null until included |
+| `acceptedAt` | `timestamp`, defaults to now | |
+| `includedAt` | `timestamp` | null until included |
+| `safeAt` | `timestamp` | null until safe |
+| `finalizedAt` | `timestamp` | null until finalized |
+
+After the lifecycle columns come two groups of payload columns:
+
+* Param columns, one per ABI parameter in the mutation struct decoded by `dispatch`, named after the parameter. An unnamed parameter becomes `arg<index>`.
+* Signature columns, one per ABI parameter in the contract's `Signature` struct, each prefixed with `signature_`.
+
+Payload columns are typed from their ABI type:
+
+| ABI type | Postgres column |
+| --- | --- |
+| `bool` | `boolean` |
+| `address` | `char(42)` hex |
+| `bytes1`–`bytes32` | `char(2 + 2·N)` hex — for example `bytes32` is `char(66)` |
+| `bytes` | `text` hex |
+| `string` | `text` |
+| arrays and tuples | `jsonb` |
+
+Integer types map by bit width:
+
+| Postgres column | Unsigned (`uintN`) | Signed (`intN`) |
+| --- | --- | --- |
+| `smallint` | `uint8` | `int8`, `int16` |
+| `integer` | `uint16`, `uint24` | `int24`, `int32` |
+| `bigint` | `uint32`–`uint56` | `int40`–`int64` |
+| `numeric(78,0)` bigint | `uint64`–`uint256` | `int72`–`int256` |
+
+## Constants and low-level exports
+
+### `TYPEWRITER_DOMAIN`
+
+* **Type:** `{ readonly name: "Typewriter"; readonly version: "1" }`
+
+The fixed part of the EIP-712 domain. The runtime combines it with `chainId` and the contract `address` to build the resolved [`domain`](#domain).
+
+### `KeyType`
+
+* **Type:** `0 | 1 | 2`
+
+The signature-algorithm tag. `0` is P-256, `1` is WebAuthn-P256, and `2` is secp256k1.
+
+### `storage-layout`
+
+* **Type:** package
+
+The `storage-layout` package reads and decodes contract state from raw storage slots. It exports `createStorageProxy` and the `StorageProxy` type used by [`state`](#state), along with helpers to encode and decode storage diffs and variables, resolve storage slots, and recover storage paths. The runtime uses it to type contract state and read it directly from storage slots.
+
+### `abipg`
+
+* **Type:** package
+
+The `abipg` package generates Postgres columns from ABI parameters. It exports `abiParametersToColumns` and the `AbiParametersToColumns` type. The runtime uses it to build the payload columns of the [generated schema](#generated-schema) from the mutation and signature ABI parameters.

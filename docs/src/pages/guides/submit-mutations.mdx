@@ -1,27 +1,226 @@
 ---
 title: Submit mutations
-description: Sign mutations on the client, submit them with typewriter.execute, and track their lifecycle status.
+description: Build and sign the EIP-712 typed data on the client, submit it with typewriter.execute, and track the mutation lifecycle.
 ---
 
 # Submit mutations
 
-How a mutation gets from a user's key to the runtime — signing typed data on
-the client, submitting it to the server, and following it through the lifecycle.
+A mutation is the unit of state change in a Typewriter app. The user signs the
+mutation as EIP-712 typed data on the client. The client posts the signed
+mutation to the server. The server verifies and orders it, executes it locally,
+and responds `accepted` — usually within milliseconds, before a block is
+produced. The server then submits the mutation onchain.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+This page covers the minimum your app needs to sign, submit, and track a
+mutation.
 
-## Planned contents
+## How the domain is constructed
 
-- App-defined accounts and key lookup
-- Supported key types: secp256k1, P-256, and WebAuthn-P256
-- Building and signing the EIP-712 typed data on the client against
-  `typewriter.domain`
-- Replay protection: nonces, deadlines, and scope
-- Session keys and bootstrap mutations
-- Submitting a signed mutation with `typewriter.execute`
-- Reading `TypewriterMutationResult` and handling rejected mutations
-- Following status with `typewriter.on("mutation")`: received → accepted →
-  included → safe → finalized
+Every EIP-712 signature is scoped to a domain. Typewriter sets the domain's
+`name` to `"Typewriter"` and `version` to `"1"`. It adds `chainId` and
+`verifyingContract` (the deployed contract address) at runtime, giving you a
+domain of the form:
+
+```ts
+{
+  name: "Typewriter",
+  version: "1",
+  chainId: 10143,
+  verifyingContract: "0x...",
+}
+```
+
+The server exposes `typewriter.domain` with these four fields populated. Fetch
+it once and reuse it for every signature:
+
+```ts
+// Server route — apps/token/src/index.ts
+"/api/domain": () => jsonResponse(typewriter.domain),
+```
+
+```ts
+// Client fetch
+const domain = await fetch("/api/domain").then((r) => r.json());
+```
+
+## Building the EIP-712 types
+
+Each mutation maps to an EIP-712 primary type. The primary type name is the
+`Mutation` enum member name as declared in the contract. For
+`Mutation.Transfer`, the primary type is `"Transfer"`. The fields of the type
+match the mutation's Solidity struct in name and declaration order, using
+canonical ABI type names (for example, `uint256`, not `uint`).
+
+For the token app's `Transfer` mutation:
+
+```ts
+const TRANSFER_TYPES = {
+  Transfer: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "amount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
+```
+
+## Signing a mutation
+
+The client signs typed data using `signTypedData`. The token app uses secp256k1
+keys (Ethereum private keys). Typewriter also supports P-256 and WebAuthn-P256.
+For details on all three key types, see [Concepts](/concepts).
+
+After calling `signTypedData`, parse the compact signature into `v`, `r`, `s`
+and ABI-encode them into a `rawSignature` byte string. Set `keyType` to `2` for
+secp256k1.
+
+```ts
+import {
+  encodeAbiParameters,
+  parseAbiParameters,
+  parseSignature,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+
+const signer = privateKeyToAccount(privateKey);
+
+// Build the message matching the mutation struct field for field.
+const transfer = {
+  from: account.address,
+  to: recipientAddress,
+  amount: 100n,
+  nonce: currentNonce,   // fetch from /api/account/:address
+  deadline: BigInt(Math.floor(Date.now() / 1000) + 60),
+};
+
+const sig = await signer.signTypedData({
+  domain,
+  types: TRANSFER_TYPES,
+  primaryType: "Transfer",
+  message: transfer,
+});
+
+const { v, r, s } = parseSignature(sig);
+const rawSignature = encodeAbiParameters(
+  parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
+  [Number(v), r, s],
+);
+
+const signature = { keyType: 2, rawSignature };
+```
+
+The `nonce` field is included in the signed message to prevent replay attacks.
+The contract increments the account's nonce after each accepted mutation, so
+each signature is valid for exactly one execution.
+
+## Submitting the mutation
+
+Post the mutation name, params, and signature to the server. The server calls
+`typewriter.execute`, which accepts `{ name, params, signature }`:
+
+```ts
+// Server — apps/token/src/index.ts
+const result = await typewriter.execute(body);
+// result: { id: number }
+```
+
+```ts
+// Client
+const result = await fetch("/api", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Transfer", params: transfer, signature }),
+}).then((r) => r.json());
+
+// result.id is the mutation id for lifecycle tracking
+```
+
+`typewriter.execute` resolves once the mutation reaches `accepted` — the server
+has ordered it and executed it against local state. If the mutation reverts
+(for example, insufficient balance or an invalid nonce), `execute` rejects with
+an error.
+
+The resolved value is `TypewriterMutationResult`, which carries the mutation
+`id`:
+
+```ts
+type TypewriterMutationResult = { id: number };
+```
+
+## Tracking lifecycle status
+
+Use `typewriter.on("mutation", callback)` on the server to subscribe to
+lifecycle changes. The callback receives a `MutationEvent`, which is a
+discriminated union on `status`:
+
+| Status | Meaning |
+| --- | --- |
+| `received` | Server has received the mutation. |
+| `accepted` | Server has ordered and executed the mutation locally. |
+| `included` | Mutation is in a block onchain. |
+| `safe` | The containing block is marked safe by consensus. |
+| `finalized` | The containing block is finalized by consensus. |
+| `rejected` | Mutation reverted; the `error` field carries the reason. |
+
+Every variant carries `id`, `name`, `params`, and `signature`. The `rejected`
+variant additionally carries an `error` field.
+
+```ts
+// Server — apps/token/src/index.ts
+const mutations = new Map<number, MutationEvent>();
+
+typewriter.on("mutation", (mutation) => {
+  mutations.set(mutation.id, mutation);
+});
+```
+
+The token app streams status updates to the client using server-sent events,
+polling the in-memory map by mutation id:
+
+```ts
+// Server — simplified from apps/token/src/index.ts
+"/api/mutation/:id/status": {
+  GET: (req) => {
+    const id = Number(req.params.id);
+    const stream = new ReadableStream({
+      async start(controller) {
+        while (true) {
+          const mutation = mutations.get(id);
+          if (mutation) {
+            controller.enqueue(`data: ${JSON.stringify({ status: mutation.status })}\n\n`);
+          }
+          if (mutation?.status === "finalized" || mutation?.status === "rejected") break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  },
+},
+```
+
+```ts
+// Client — apps/token/frontend/App.tsx
+function watchStatus(id: number) {
+  const events = new EventSource(`/api/mutation/${id}/status`);
+  events.onmessage = (event) => {
+    const { status } = JSON.parse(event.data);
+    // update local state with the new status
+    if (status === "finalized" || status === "rejected") events.close();
+  };
+}
+```
+
+`typewriter.on` returns an unsubscribe function. Call it when the subscription
+is no longer needed.
+
+---
+
+For the full account and signature model — including how the contract resolves
+keys and authorizes mutations — see [Concepts](/concepts). For the Solidity
+`verifySignature` helper and key byte layouts, see the
+[Solidity reference](/reference/solidity).

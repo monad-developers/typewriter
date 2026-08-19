@@ -1,23 +1,221 @@
 ---
 title: Define state and mutations
-description: Write your app's onchain state, its mutation libraries, and the dispatch function.
+description: Declare your app's onchain state struct, write mutation libraries, and implement the dispatch function.
 ---
 
 # Define state and mutations
 
-Define the onchain state your app owns and the mutations that transition it.
+A Typewriter app is built from three Solidity pieces: a `State` struct that holds all onchain data, one library per mutation that defines the state transition and its authorization, and a `dispatch` function that routes an incoming mutation to the right library. This guide walks through each piece using the token app as a concrete example.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+## Declare state
 
-## Planned contents
+All application state lives in a single `struct State`. The token app stores a total supply and a per-address account map:
 
-- Declaring a single `struct State`
-- Writing a mutation library: the `struct`, `execute`, `hash`, and `verify`
-  functions
-- Implementing `dispatch` to route each mutation tag to its verifier and
-  executor
-- Wiring the contract: inheriting `Typewriter`, the `Mutation` enum, and the
-  constructor immutables
+```solidity
+struct Account {
+    uint256 nonce;
+    uint256 balance;
+}
+
+struct State {
+    uint256 totalSupply;
+    mapping(address => Account) accounts;
+}
+```
+
+Place `State` at file scope, not inside the contract. The contract declares one `internal` storage variable of this type:
+
+```solidity
+contract Token is Typewriter {
+    State internal state;
+    // ...
+}
+```
+
+All Solidity data types are supported, including mappings. The runtime reads storage slots directly, so Solidity visibility on the variable does not affect framework reads.
+
+## Write a mutation library
+
+Each mutation is a Solidity `library` that exports four things: a struct, a hash function, a verify function, and an execute function. The token app has two mutations — `Transfer` and `Mint`. The `Transfer` library is shown below as the primary example.
+
+### The mutation struct
+
+The struct holds the mutation's arguments. These same fields form the EIP-712 message body, and the runtime uses their names and order to decode params from the client:
+
+```solidity
+library TransferMutation {
+    struct Transfer {
+        address from;
+        address to;
+        uint256 amount;
+        uint256 nonce;
+        uint256 deadline;
+    }
+    // ...
+}
+```
+
+### The hash function
+
+The hash function returns the EIP-712 struct hash: `keccak256(abi.encode(TYPEHASH, field1, field2, ...))`. The type string's primary type name must match the `Mutation` enum member name as declared — so `Mutation.Transfer` requires a primary type named `"Transfer"`. Field names and their declaration order in the type string must match the struct:
+
+```solidity
+bytes32 constant TRANSFER_TYPEHASH =
+    keccak256("Transfer(address from,address to,uint256 amount,uint256 nonce,uint256 deadline)");
+
+function hashTransfer(Transfer memory transfer) internal pure returns (bytes32) {
+    return keccak256(
+        abi.encode(
+            TRANSFER_TYPEHASH,
+            transfer.from,
+            transfer.to,
+            transfer.amount,
+            transfer.nonce,
+            transfer.deadline
+        )
+    );
+}
+```
+
+Use canonical ABI type names in the type string (`uint256`, not `uint`).
+
+### The verify function
+
+The verify function authorizes the mutation. It resolves the signer, enforces replay protection, and calls `verifySignature` from `typewriter/Typewriter.sol` to check the raw signature against the EIP-712 digest. Auth checks belong here, not in the execute function.
+
+The token app shares a common verifier across mutations. `TransferMutation.verifyTransferSignature` delegates to it:
+
+```solidity
+function verifyTransferSignature(
+    State storage state,
+    Transfer memory transfer,
+    Signature memory signature,
+    bytes32 digest
+) internal {
+    verifyTokenSignature(state, signature, digest, transfer.from, transfer.nonce, transfer.deadline);
+}
+```
+
+The shared `verifyTokenSignature` helper checks the deadline, confirms the nonce matches the account's stored nonce, calls `verifySignature`, then increments the nonce to enforce replay protection:
+
+```solidity
+function verifyTokenSignature(
+    State storage state,
+    Signature memory signature,
+    bytes32 digest,
+    address signer,
+    uint256 nonce,
+    uint256 deadline
+) {
+    if (deadline < block.timestamp) revert SignatureExpired();
+    if (KeyType(signature.keyType) != KeyType.Secp256k1) revert InvalidSignatureType();
+
+    Account storage account = state.accounts[signer];
+    if (nonce != account.nonce) revert InvalidNonce();
+
+    verifySignature(KeyType(signature.keyType), digest, abi.encode(signer), signature.rawSignature);
+
+    unchecked {
+        account.nonce++;
+    }
+}
+```
+
+`verifySignature` is imported from `typewriter/Typewriter.sol`. It accepts a `KeyType` (`P256`, `WebAuthnP256`, or `Secp256k1`), the digest, the public key bytes, and the raw signature bytes. It reverts with `InvalidSignature(KeyType)` on failure. For `Secp256k1`, `publicKey` is `abi.encode(address)` and `rawSignature` is `abi.encode(uint8 v, bytes32 r, bytes32 s)`.
+
+The `Signature` struct is app-defined — Typewriter does not prescribe its fields. The token app's `Signature` carries the key type and the raw signature bytes:
+
+```solidity
+struct Signature {
+    uint8 keyType;
+    bytes rawSignature;
+}
+```
+
+### The execute function
+
+The execute function applies the state transition. It receives state and the decoded mutation struct. It must not perform auth checks — verification is done before this function is called:
+
+```solidity
+function executeTransfer(State storage state, Transfer memory transfer) internal {
+    state.accounts[transfer.from].balance -= transfer.amount;
+    unchecked {
+        state.accounts[transfer.to].balance += transfer.amount;
+    }
+}
+```
+
+The `Mint` library follows the same pattern. Its struct adds a `to` field in place of `from`, and its execute function increments `totalSupply` as well as the recipient's balance. See `/apps/token/contracts/src/Mint.sol` for the full source.
+
+## Implement dispatch
+
+`dispatch` is the single function your contract must implement. Typewriter calls it once per mutation — whether the mutation arrives in a scheduler batch or through force inclusion. The app never iterates batches; it only handles one `(mutation, mutationData, signatureData)` tuple at a time.
+
+Branch on the `uint8` tag, ABI-decode `mutationData` and `signatureData`, compute the EIP-712 digest, verify the signature, then execute the state transition. Revert with `UnknownMutation(mutation)` for any unrecognized tag:
+
+```solidity
+function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+    if (mutation == uint8(Mutation.Transfer)) {
+        TransferMutation.Transfer memory transfer = abi.decode(mutationData, (TransferMutation.Transfer));
+        Signature memory signature = abi.decode(signatureData, (Signature));
+        bytes32 digest =
+            keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, TransferMutation.hashTransfer(transfer)));
+
+        TransferMutation.verifyTransferSignature(state, transfer, signature, digest);
+        TransferMutation.executeTransfer(state, transfer);
+    } else if (mutation == uint8(Mutation.Mint)) {
+        MintMutation.Mint memory mint = abi.decode(mutationData, (MintMutation.Mint));
+        Signature memory signature = abi.decode(signatureData, (Signature));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, MintMutation.hashMint(mint)));
+
+        MintMutation.verifyMintSignature(state, mint, signature, digest);
+        MintMutation.executeMint(state, mint);
+    } else {
+        revert UnknownMutation(mutation);
+    }
+}
+```
+
+The digest uses the EIP-191 prefix `\x19\x01` followed by `DOMAIN_SEPARATOR` and the mutation's struct hash. `DOMAIN_SEPARATOR` is an immutable that the `Typewriter` base contract sets for you (see the next section).
+
+## Wire the contract
+
+Inherit from `Typewriter`, declare the `Mutation` enum, and assign the two immutables the base contract leaves to your app: `SCHEDULER` and `FORCE_INCLUSION_DELAY`.
+
+```solidity
+import {Typewriter, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
+
+contract Token is Typewriter {
+    State internal state;
+
+    enum Mutation {
+        Transfer,
+        Mint
+    }
+
+    constructor(address _scheduler) {
+        if (_scheduler == address(0)) revert InvalidScheduler();
+        SCHEDULER = _scheduler;
+        FORCE_INCLUSION_DELAY = 658;
+    }
+
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+        // ... see above
+    }
+}
+```
+
+**`SCHEDULER`** is the only address permitted to submit batches. Assign it to the deployer-supplied scheduler address.
+
+**`FORCE_INCLUSION_DELAY`** is the number of blocks that must pass after a mutation is enqueued before any caller may invoke `forceExecute` without the scheduler. The token app uses `658` blocks, which is approximately 4.4 minutes at 0.4 seconds per block.
+
+**`DOMAIN_SEPARATOR`** is set by the `Typewriter` base constructor, not by your app. The base contract computes it from the fixed domain name `"Typewriter"`, version `"1"`, `block.chainid`, and the contract address. Your `dispatch` reads it when building each digest, and the runtime exposes the matching domain to clients through `typewriter.domain`.
+
+The `Mutation` enum maps `uint8` tags to mutation names. The tag values are implicitly zero-indexed in declaration order — `Transfer` is `0`, `Mint` is `1` — and they must match the tag values the runtime sends.
+
+Once the contract is wired, `Typewriter` supplies the external `execute`, `enqueue`, and `forceExecute` entry points automatically. Your app only implements `dispatch`.
+
+## Next steps
+
+- To submit mutations from a client, see [Submit mutations](/guides/submit-mutations).
+- For the full `verifySignature` byte layouts and `KeyType` reference, see the [Solidity reference](/reference/solidity).

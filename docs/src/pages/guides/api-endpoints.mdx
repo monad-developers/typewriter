@@ -1,25 +1,141 @@
 ---
 title: Add API endpoints
-description: Build the HTTP surface your frontend talks to on top of the Typewriter handle.
+description: Wire the HTTP routes your frontend calls around the handle returned by createTypewriter.
 ---
 
 # Add API endpoints
 
-Wrap the Typewriter handle in the HTTP routes your frontend calls: a submit
-endpoint, the signing domain, reads, and a status stream.
+`createTypewriter` returns a handle with five properties your HTTP layer uses directly: `domain`, `execute`, `state`, `schema`, and `on`. This guide shows how to expose those properties as routes in a `Bun.serve` server.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+For the client side of each request, see [Submit mutations](/guides/submit-mutations) and [Read state](/guides/read-state). For the full handle API, see the [TypeScript reference](/reference/typescript).
 
-## Planned contents
+## Set up the server
 
-- Wiring routes around the handle returned by `createTypewriter`
-- A submit endpoint: decoding a signed mutation and calling
-  `typewriter.execute`
-- Exposing the EIP-712 domain for clients to sign against
-- Read endpoints backed by `typewriter.state` and `typewriter.schema`
-- Streaming lifecycle status to clients over SSE or WebSocket with
-  `typewriter.on`
-- Validation, error shapes, and rate limiting at the edge
+Call `createTypewriter` before you start the server. `createTypewriter` is async — it connects to the chain and database, runs migrations, and hydrates local state. Await it before passing the handle to your routes.
+
+```ts
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address: process.env.TOKEN_ADDRESS,
+  account: privateKeyToAccount(process.env.PRIVATE_KEY),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: process.env.RPC_URL,
+  database: { url: process.env.DATABASE_URL },
+});
+
+const server = Bun.serve({
+  routes: {
+    // routes defined below
+  },
+});
+```
+
+## Expose the EIP-712 domain
+
+Clients need the EIP-712 domain to construct the typed-data payload they sign. Return `typewriter.domain` from a dedicated endpoint.
+
+```ts
+"/api/domain": () =>
+  new Response(JSON.stringify(typewriter.domain), {
+    headers: { "Content-Type": "application/json" },
+  }),
+```
+
+`typewriter.domain` has the shape `{ name, version, chainId, verifyingContract }`. The `verifyingContract` field is the deployed contract address. Clients pass this object as the `domain` argument to `signTypedData`.
+
+## Submit mutations
+
+Clients POST a signed mutation as a JSON body containing `name`, `params`, and `signature`. Parse the body and pass it directly to `typewriter.execute`. `typewriter.execute` resolves once the mutation is accepted, which is usually within milliseconds.
+
+```ts
+"/api": {
+  POST: async (req) => {
+    const body = JSON.parse(await req.text());
+    const mutation = await typewriter.execute(
+      body as Parameters<typeof typewriter.execute>[0],
+    );
+    return new Response(JSON.stringify(mutation), {
+      headers: { "Content-Type": "application/json" },
+    });
+  },
+},
+```
+
+`typewriter.execute` rejects with an error if the mutation is rejected. Catch the error and return an appropriate error response — for example, a `400` with the error message.
+
+The resolved value includes `id`, a number that identifies the mutation. Return it to the client so it can poll or stream the mutation's lifecycle status.
+
+## Read state
+
+`typewriter.state` is a typed proxy over the contract's storage. Field accesses return promises; mapping entries are indexed by key. Read state directly in your route handlers.
+
+```ts
+"/api/account/:address": async (req) => {
+  const account = typewriter.state.accounts[req.params.address];
+  const [balance, nonce] = await Promise.all([
+    account.balance,
+    account.nonce,
+  ]);
+  return new Response(JSON.stringify({ balance: String(balance), nonce: String(nonce) }), {
+    headers: { "Content-Type": "application/json" },
+  });
+},
+```
+
+`typewriter.state` reflects locally accepted state, which can be ahead of what is included or finalized onchain. Use `typewriter.schema` with a Drizzle client to query finalized mutation history from the database.
+
+## Stream mutation status over SSE
+
+Use `typewriter.on("mutation", callback)` to subscribe to lifecycle events. The callback fires every time a mutation changes status — from `received` through `accepted`, `included`, `safe`, and `finalized`, or `rejected` on failure.
+
+A minimal pattern is to keep a `Map` of recent mutations and serve each mutation's status as a server-sent event (SSE) stream:
+
+```ts
+import type { MutationEvent, MutationStatus } from "typewriter";
+
+const mutations = new Map<number, MutationEvent>();
+
+typewriter.on("mutation", (mutation) => {
+  mutations.set(mutation.id, mutation);
+});
+
+// In your route handler:
+"/api/mutation/:id/status": {
+  GET: (req) => {
+    const id = Number(req.params.id);
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        let last: MutationStatus | undefined;
+        while (true) {
+          const mutation = mutations.get(id);
+          if (mutation !== undefined && mutation.status !== last) {
+            last = mutation.status;
+            controller.enqueue(
+              `data: ${JSON.stringify({ status: mutation.status })}\n\n`,
+            );
+          }
+          if (last === "finalized" || last === "rejected") break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  },
+},
+```
+
+The client opens the SSE stream after it receives the mutation `id` from the submit endpoint. The stream closes once the mutation reaches `finalized` or `rejected`.
+
+`typewriter.on` returns an unsubscribe function. Call it when you no longer need the subscription — for example, in a `cancel` handler on the `ReadableStream`.

@@ -5,23 +5,34 @@ description: A framework for crypto apps that need custom transaction sequencing
 
 # What is Typewriter?
 
-Typewriter is a framework for crypto apps that need custom transaction
-sequencing, fast confirmations, and built-in gas sponsorship. You write Solidity
-state and mutations; Typewriter runs a server that orders user-signed mutations,
-executes them locally for acceptance in roughly 50ms, and settles them onchain.
+Typewriter is a framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.
 
-The server is trusted for day-to-day ordering and availability, but it never
-controls user funds — users can bypass it and submit valid mutations directly
-onchain through force inclusion.
+You write Solidity state and mutations. Typewriter runs a Bun server that orders user-signed mutations, executes them locally in an embedded EVM for acceptance in roughly 50ms, and submits them onchain for settlement.
+
+## What problems it solves
+
+**Custom sequencing.** Applications define their own transaction ordering — for example, first-in-first-out or batched — rather than relying on external sequencers or builder auctions.
+
+**Fast confirmations.** The server accepts mutations in roughly 50ms, well before transactions finalize onchain. This gives applications a low-latency confirmation path without sacrificing onchain settlement.
+
+**Gas sponsorship.** Users sign application mutations. The server pays for the settlement transactions. Users do not need ETH or gas tokens to interact with the application.
+
+**Modern signature primitives.** Mutations are authorized with EIP-712 typed-data signatures. Typewriter supports P-256, WebAuthn-P256, and secp256k1 verification. Applications define their own account policy — Typewriter does not impose an account shape or authorization rule.
+
+**Direct control.** There are no external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over the user experience.
+
+## Trust model
+
+The server is trusted for day-to-day ordering and availability. It does not control user funds. Users can bypass the server at any time by submitting valid mutations directly onchain through force inclusion.
+
+## Status
 
 :::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
+This project is under active development and is not ready for production use. It has not been audited. Do not use it with real funds on mainnet without an independent audit.
 :::
 
-## Planned contents
+## Next steps
 
-- What Typewriter is and the problems it solves: custom sequencing, ~50ms
-  confirmations, gas sponsorship, and modern signature primitives
-- The trust model — trusted for ordering and availability, never for funds
-- The "not ready for production" warning
+- [How it works](/how-it-works) — the sequencing and settlement flow in detail
+- [Concepts](/concepts) — state, mutations, accounts, and signatures
+- [Get started](/guides/get-started) — set up a project and run your first mutation

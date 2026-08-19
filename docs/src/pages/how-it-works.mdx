@@ -9,15 +9,67 @@ A mutation is the Typewriter equivalent of a transaction. Users sign mutations
 and submit them to the application server, which orders and executes them
 locally in an embedded EVM before settling them onchain.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+## Architecture overview
 
-## Planned contents
+Typewriter has three parts that work together to move a mutation from a user's
+device to the chain.
 
-- Architecture overview: the client, the server runtime, and the onchain
-  contract (reuse the `order-book` architecture and sequencing diagrams)
-- The mutation lifecycle: received → accepted → included → safe → finalized
-- Why scheduler-gated settlement lets the server accept a mutation before a
-  block is produced
+**The client** signs mutations with EIP-712 typed-data signatures and submits
+them to the application server over HTTP. The client never submits transactions
+directly to the chain during normal operation. Gas sponsorship is built in:
+the server pays for all onchain settlement transactions.
+
+**The server runtime** is a Bun process started with `createTypewriter`. It
+receives signed mutations, orders them according to the configured sequencing
+mode (FIFO or batch), executes each one locally inside an embedded EVM
+([revm](https://github.com/bluealloy/revm)) against a server-side copy of the
+contract state, and responds `accepted` — typically within milliseconds, before
+any block is produced. Periodically, the server collects all accepted mutations
+into a batch and submits a single onchain `execute` transaction to settle them.
+
+**The onchain Typewriter contract** is a Solidity contract that the app
+inherits from. It stores the canonical application state, verifies every
+mutation's EIP-712 signature, and exposes the `execute`, `enqueue`, and
+`forceExecute` entry points. The contract defines a `SCHEDULER` immutable —
+the address of the server's signing account — and only that address may call
+`execute` to settle batches.
+
+## The mutation lifecycle
+
+Each mutation moves through the following stages:
+
+- **received** — the server has received the mutation from the client.
+- **accepted** — the server has ordered and executed the mutation locally
+  against its embedded EVM state.
+- **included** — the server submitted the mutation onchain and it has been
+  included in a block.
+- **safe** — the block containing the mutation has been marked `safe` by
+  consensus (see the JSON-RPC `safe` tag).
+- **finalized** — the block containing the mutation has been marked `finalized`
+  by consensus (see the JSON-RPC `finalized` tag).
+
+Mutations can also move backwards through this sequence. A chain reorganization
+or an onchain revert can move a mutation from `included` back to `accepted` or
+`received`; the runtime reconciles the mutation against the new canonical chain
+and re-emits it with its updated status.
+
+## Scheduler-gated settlement
+
+The server can respond `accepted` before a block is produced because onchain
+submission is gated to a single address: the `SCHEDULER` immutable set in the
+contract's constructor. No other address can call the contract's `execute`
+function to settle mutations.
+
+Because the server controls the only key that can submit a settlement
+transaction, it can simulate a mutation locally in revm and trust that the
+result will hold onchain — no other party can submit a conflicting batch ahead
+of it. This guarantee is what makes sub-block acceptance safe: the server
+orders mutations, executes them against its local state, and knows the onchain
+outcome before any block is mined.
+
+The server is trusted only for ordering and availability. It does not hold or
+control user funds. If the server goes offline or withholds a valid mutation,
+users can bypass it entirely through force inclusion: a user calls `enqueue()`
+onchain to register the mutation, and after the `FORCE_INCLUSION_DELAY` block
+window elapses, anyone may call `forceExecute()` to settle it without the
+server's involvement.

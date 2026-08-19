@@ -1,27 +1,110 @@
 ---
 title: Configure the server
-description: Point the runtime at your contract, chain, and database, and choose how it sequences and confirms mutations.
+description: Set the required fields and tune sequencing and confirmation behavior for the Typewriter runtime.
 ---
 
 # Configure the server
 
-Everything `createTypewriter` needs: where your app lives onchain, how it
-reaches the chain and the database, and how it orders and confirms mutations.
+`createTypewriter` accepts a Solidity entrypoint and a `TypewriterConfig` object. This page covers every field you need to start the runtime and the options you can tune from there.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+For a description of what each lifecycle stage means and how sequencing works conceptually, see [Concepts](/concepts). For the full TypeScript type signatures, see the [TypeScript reference](/reference/typescript).
 
-## Planned contents
+## Required fields
 
-- Required config: `address`, `account`, `chainId`, `rpcUrl`, and `database`
-- Sequencing with `sequencing.order`:
-  - FIFO and `submitIntervalMs`
-  - batch, `batchIntervalMs`, and the `batchOrder` list
-  - how acceptance timing differs between the two modes, and choosing a
-    strategy for your app
-- Confirmation depths: `confirmations.safeBlockDepth` and
-  `confirmations.finalizedBlockDepth`
-- Tuning `blockPollingIntervalMs`
-- Handling `onFatalError` and shutting down with `close`
+The following five fields are required in every `TypewriterConfig`.
+
+**`address`** — the onchain address of the deployed Typewriter contract.
+
+**`account`** — a `PrivateKeyAccount` (from viem) that the runtime uses to sign and submit the onchain `execute` transactions. This account is the scheduler: the contract gates submission to this address, which lets the server simulate mutations locally and trust the result will hold onchain.
+
+**`chainId`** — the chain ID as a number.
+
+**`rpcUrl`** — a JSON-RPC endpoint, as `string | string[]`. Pass an array to configure multiple fallback endpoints.
+
+**`database`** — a `{ url }` object pointing to a Postgres database. The runtime runs migrations and persists every accepted mutation and raw storage-slot write here.
+
+## Sequencing
+
+Sequencing controls the order in which the server accepts mutations and groups them for onchain submission. Set it with the `sequencing` field. When `sequencing` is omitted, the runtime defaults to FIFO.
+
+### FIFO
+
+```ts
+sequencing: {
+  order: "fifo",
+  submitIntervalMs: 400, // default
+}
+```
+
+Each call to `typewriter.execute()` immediately executes the mutation against local state and returns once the mutation is accepted — or throws if the mutation is rejected. Every `submitIntervalMs` milliseconds (default `400`), all accepted mutations are submitted with a single onchain transaction. Onchain inclusion order matches the order mutations were passed to `execute`.
+
+### Batch
+
+```ts
+sequencing: {
+  order: "batch",
+  batchIntervalMs: 50,   // default
+  submitIntervalMs: 400, // default
+  batchOrder: ["CloseOrder", "LimitOrder", "MarketOrder"],
+}
+```
+
+Each call to `typewriter.execute()` enqueues the mutation and returns once the next batch is processed. Every `batchIntervalMs` milliseconds (default `50`), all enqueued mutations are gathered into a batch and ordered according to `batchOrder`, then accepted or rejected together. Every `submitIntervalMs` milliseconds (default `400`), all accepted batches are submitted with a single onchain transaction.
+
+`batchOrder` is required when `order` is `"batch"`. It is an array of mutation names — each the `Mutation` enum member name as declared in the contract — that determines the ordering within each batch. Within a batch, mutations run in `batchOrder` order; across batches, batches submit in acceptance order.
+
+**Acceptance timing difference.** In FIFO mode, `execute` resolves as soon as the mutation succeeds locally — there is no waiting period. In batch mode, `execute` resolves at the next batch interval, so callers wait up to `batchIntervalMs` milliseconds before getting a response.
+
+## Confirmation depths
+
+The runtime tracks two confirmation thresholds, both configurable under `confirmations`.
+
+**`safeBlockDepth`** (default `1`) — the number of blocks that must build on top of an inclusion block before the mutation advances to `safe`. This maps to the JSON-RPC `safe` tag.
+
+**`finalizedBlockDepth`** (default `5`) — the number of blocks that must build on top of an inclusion block before the mutation advances to `finalized`. This maps to the JSON-RPC `finalized` tag. `finalizedBlockDepth` must be greater than or equal to `safeBlockDepth`.
+
+```ts
+confirmations: {
+  safeBlockDepth: 1,      // default
+  finalizedBlockDepth: 5, // default
+}
+```
+
+## Block polling
+
+**`blockPollingIntervalMs`** (default `200`) — how often the runtime polls for new blocks, in milliseconds. Lower values reduce latency to `included`, `safe`, and `finalized` status updates at the cost of more RPC calls.
+
+## Fatal error handling
+
+**`onFatalError`** — an optional `(error: unknown) => void` callback. The runtime calls it when an unrecoverable error occurs. Without this callback, the runtime rethrows the error. Use this hook to trigger a graceful shutdown.
+
+To shut down the runtime intentionally, call `typewriter.close()`. This stops block polling, flushes pending work, and closes the database connection.
+
+## Complete example
+
+```ts
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address: "0xYourDeployedContractAddress",
+  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as `0x${string}`),
+  chainId: 1,
+  rpcUrl: ["https://rpc-primary.example.com", "https://rpc-fallback.example.com"],
+  database: { url: process.env.DATABASE_URL },
+  blockPollingIntervalMs: 200,
+  confirmations: {
+    safeBlockDepth: 1,
+    finalizedBlockDepth: 5,
+  },
+  sequencing: {
+    order: "fifo",
+    submitIntervalMs: 400,
+  },
+  onFatalError: (error) => {
+    console.error("Fatal runtime error:", error);
+    process.exit(1);
+  },
+});
+```

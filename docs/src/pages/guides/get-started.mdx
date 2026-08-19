@@ -1,22 +1,139 @@
 ---
 title: Get started
-description: Install Typewriter and build your first app end-to-end, from contract to server to frontend.
+description: Install Typewriter and run a minimal app locally, from contract to server to frontend.
 ---
 
 # Get started
 
-Install Typewriter and stand up a first application end-to-end — a Solidity
-contract, the server runtime, and a frontend — then run the whole thing against
-a local chain.
+This guide walks you through running a Typewriter app on a local chain. By the end, you will have a local chain running, a contract deployed, and a server accepting mutations.
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+The [`apps/token`](https://github.com/monad-exp/typewriter/tree/main/apps/token) app is the minimal reference. All commands below come from that app.
 
-## Planned contents
+## Prerequisites
 
-- Prerequisites: Bun, the Monad build of Foundry, Postgres, and an RPC endpoint
-- Installing Typewriter into a project
-- Building a minimal app end-to-end: contract → deploy → server → frontend
-- Running it locally: `anvil --monad`, deploy, and `bun dev`
+Install the following before you begin:
+
+- **[Bun](https://bun.sh)** — the server runtime and package manager Typewriter uses.
+- **Monad build of Foundry** — required for Monad gas rules and the P-256 precompile at address `0x100`, which Typewriter uses for P-256 and WebAuthn signature verification. Use the Monad version rather than upstream Foundry for all `forge` and `anvil` commands.
+- **[Postgres](https://www.postgresql.org)** — the server persists every mutation and storage slot write here so it can recover from restarts.
+- **An RPC endpoint** — for local development, the Monad build of Anvil provides one at `http://127.0.0.1:8545`.
+
+## Install Typewriter
+
+In the monorepo, `typewriter` is a workspace package referenced as `"typewriter": "workspace:*"` in `apps/token/package.json`. Install all dependencies from the repo root:
+
+```bash
+bun install
+```
+
+## Configure environment variables
+
+Copy the example env file and fill in your values:
+
+```bash
+cp apps/token/.env.example apps/token/.env
+```
+
+The required variables are:
+
+| Variable | Description |
+|---|---|
+| `RPC_URL` | RPC endpoint for the app and deploy script |
+| `DATABASE_URL` | Postgres connection string |
+| `CHAIN_ID` | Chain ID used for EIP-712 typed-data signing |
+| `TOKEN_ADDRESS` | Deployed contract address (set after deploying) |
+| `PRIVATE_KEY` | Scheduler account private key, also used by Foundry |
+
+The example file ships with values that work against a local Anvil node.
+
+## Build a minimal app
+
+A Typewriter app has four parts. Each is covered in a dedicated guide; this section gives you the shape of each.
+
+### 1. Define contract state and mutations
+
+Write a Solidity contract that inherits from `Typewriter`, declares a `State` struct, a `Mutation` enum, and a `dispatch` function. Each mutation is a Solidity library with an execute function and a signature verifier.
+
+See [State and mutations](/guides/state-and-mutations) for the full contract structure.
+
+### 2. Deploy the contract
+
+Build the contract artifacts, then run the deploy script:
+
+```bash
+bun run contracts:build
+bun run deploy
+```
+
+`contracts:build` runs `forge build` against the `contracts/` directory. `deploy` sources `.env`, rebuilds, and broadcasts the deploy script via Foundry.
+
+After deploying to a chain other than the default Anvil instance, update `TOKEN_ADDRESS` in `.env` with the new contract address.
+
+### 3. Start the server with `createTypewriter`
+
+Import your compiled Solidity entrypoint and pass it to `createTypewriter` along with your runtime config:
+
+```ts
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address: process.env.TOKEN_ADDRESS,
+  account: privateKeyToAccount(process.env.PRIVATE_KEY),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: process.env.RPC_URL,
+  database: { url: process.env.DATABASE_URL },
+  sequencing: { order: "fifo", submitIntervalMs: 400 },
+});
+```
+
+`createTypewriter` connects to the chain and database, runs schema migrations, hydrates local state, and starts accepting mutations. It returns a handle with `execute`, `state`, `schema`, `on`, and `domain`.
+
+See [Configuration](/guides/configuration) for all `TypewriterConfig` options.
+
+### 4. Connect a frontend
+
+Expose the EIP-712 domain and a mutation submission endpoint so the frontend can sign and submit mutations:
+
+```ts
+"/api/domain": () => jsonResponse(typewriter.domain),
+"/api": {
+  POST: async (req) => {
+    const body = await req.json();
+    const mutation = await typewriter.execute(body);
+    return jsonResponse(mutation);
+  },
+},
+```
+
+The frontend fetches the domain, builds the EIP-712 typed-data payload, signs it, and POSTs the result to `/api`. `typewriter.execute` returns once the mutation is `accepted` — typically within 50ms.
+
+See [API endpoints](/guides/api-endpoints) and [Submit mutations](/guides/submit-mutations) for the full request and response shapes.
+
+## Run locally
+
+### Start a local chain
+
+In a separate terminal, start the Monad build of Anvil:
+
+```bash
+anvil --monad --block-time 0.4
+```
+
+Use `anvil --monad`, not the upstream Anvil binary. The `--block-time 0.4` flag matches Monad's 400ms block cadence.
+
+### Build and deploy
+
+```bash
+bun run contracts:build
+bun run deploy
+```
+
+### Start the dev server
+
+```bash
+bun run dev
+```
+
+This runs `bun --hot src/index.ts`. The server starts and prints its URL; open it in a browser to use the frontend.

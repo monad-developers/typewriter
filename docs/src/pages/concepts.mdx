@@ -1,27 +1,153 @@
 ---
 title: Concepts
-description: The core ideas behind Typewriter — state, mutations, accounts, sequencing, and the guarantees the runtime provides.
+description: Core concepts in Typewriter — state, mutations, accounts, sequencing, the mutation lifecycle, force inclusion, determinism, and reliability.
 ---
 
 # Concepts
 
-The core ideas you need to build on Typewriter, gathered in one place.
+## State
 
-:::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
-:::
+Application state lives onchain. The Solidity `struct State` is the ground truth for all application data. Every field you put in `State` — including mappings and dynamic arrays — is stored in the contract's onchain storage slots.
 
-## Planned contents
+```solidity
+struct State {
+    uint256 totalSupply;
+    mapping(bytes32 => Account) accounts;
+}
+```
 
-- **State** — application state lives onchain in a single `struct State`
-- **Mutations** — app-defined state transitions, authorized with EIP-712
-  signatures
-- **Accounts and signatures** — app-defined account policy, with P-256,
-  WebAuthn-P256, and secp256k1 verification
-- **Sequencing** — how the server orders mutations (FIFO and batch)
-- **The mutation lifecycle** — received, accepted, included, safe, finalized
-- **Force inclusion** — the escape hatch for bypassing the server
-- **Determinism** — which EVM behaviors are safe to rely on offchain
-- **Reliability** — how reorgs, offchain/onchain divergence, and crash recovery
-  are handled
+All Solidity data types are supported. The runtime reads state directly from storage slots using the compiled storage layout, so the contract does not need public getters. See [Solidity reference](/reference/solidity) for the full contract requirements.
+
+## Mutations
+
+A mutation is an app-defined state transition. Where an Ethereum application would use a transaction submitted directly by a user, a Typewriter application uses a mutation submitted to the server. The server orders mutations, executes them locally, and then submits them onchain.
+
+Each mutation is a Solidity library that defines:
+
+- A struct holding the mutation's arguments (for example, `Transfer` with fields `from`, `to`, `amount`, and `nonce`).
+- An `execute[Mutation]` function that applies the transition to `State`. This function performs the state change only — signature verification is handled separately.
+- A `hash[Mutation]` function that returns the EIP-712 struct hash of the mutation arguments.
+- A `verify[Mutation]Signature` function that resolves the signer, enforces replay protection, and calls `verifySignature`.
+
+```solidity
+struct Transfer {
+    bytes32 from;
+    bytes32 to;
+    uint256 amount;
+    uint256 nonce;
+}
+
+function executeTransfer(State storage state, Transfer memory transfer) {
+    state.accounts[transfer.from].balance -= transfer.amount;
+    unchecked {
+        state.accounts[transfer.to].balance += transfer.amount;
+    }
+}
+```
+
+See [Solidity reference](/reference/solidity) for the full mutation shape, including `hash[Mutation]` and `verify[Mutation]Signature`.
+
+## Accounts and signatures
+
+Mutations are authorized with EIP-712 typed-data signatures. Because the server — not the user — submits the onchain transaction, `msg.sender` cannot identify a user. Instead, each mutation carries a signature that the contract verifies.
+
+Typewriter supports three key types:
+
+- **P-256** — standard NIST P-256 (also called secp256r1).
+- **WebAuthn-P256** — P-256 wrapped in the WebAuthn authenticator assertion format, for passkey-based accounts.
+- **secp256k1** — the same curve used by Ethereum externally owned accounts.
+
+`typewriter/Typewriter.sol` exports the `KeyType` enum (`{ P256, WebAuthnP256, Secp256k1 }`) and a `verifySignature` helper:
+
+```solidity
+import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
+
+verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
+```
+
+`verifySignature` reverts with `InvalidSignature(KeyType)` when the check fails.
+
+Accounts are entirely app-defined. Typewriter does not impose an `Account` struct or any specific authorization rule. The account registry shape, key lookup, nonce policy, expiry checks, and permissions all live in the app's contract. A typical app-defined account looks like this:
+
+```solidity
+struct Account {
+    KeyType keyType;
+    bytes publicKey;
+    uint256 nonce;
+}
+```
+
+The `Signature` struct is also app-defined — it holds whatever fields the contract needs to look up the account and authorize the mutation. Per-mutation verification gives each mutation full control over its authorization rules, including whether a signature is required at all (for example, bootstrap mutations that create an account for the first time may not need one).
+
+See [Solidity reference](/reference/solidity) for byte layouts for each key type.
+
+## Sequencing
+
+Sequencing controls the order in which mutations are accepted by the server and included onchain. Typewriter ships two sequencing modes.
+
+**FIFO** (the default) processes each call to `typewriter.execute()` immediately. Every `submitIntervalMs`, all accepted mutations are submitted in a single onchain transaction in the order they were executed.
+
+**Batch** collects mutations over a `batchIntervalMs` window, then orders them within the batch according to a `batchOrder` list (for example, `["cancelOrder", "limitOrder", "marketOrder"]`). Every `submitIntervalMs`, all completed batches are submitted onchain in the order they were accepted. Batch mode is useful when the application needs to apply a custom priority ordering within a time window rather than strict arrival order.
+
+For configuration details and full option reference, see [Configuration](/guides/configuration).
+
+## The mutation lifecycle
+
+A mutation moves through the following lifecycle stages. For a detailed walkthrough of how the server and chain produce each transition, see [How it works](/how-it-works).
+
+- **Received.** The server has received the mutation but has not yet ordered or executed it.
+- **Accepted.** The server has ordered the mutation and executed it successfully against local state. The server responds to the caller at this stage — typically within 50 ms.
+- **Included.** The server submitted the mutation onchain and it has been included in a block.
+- **Safe.** The block containing the mutation has been marked `safe` by consensus (see the JSON-RPC `safe` tag).
+- **Finalized.** The block containing the mutation has been marked `finalized` by consensus (see the JSON-RPC `finalized` tag).
+
+Mutations can move backwards in the lifecycle when a reorg is detected or when an onchain transaction reverts. See [Reliability](#reliability) below.
+
+## Force inclusion
+
+Force inclusion is an escape hatch that lets users bypass the server and submit mutations directly onchain. It exists so that a valid mutation cannot be censored indefinitely. It is not intended to replace server-based mutation processing during normal operation.
+
+Force inclusion is a two-stage process:
+
+1. The user calls `enqueue(mutation, mutationData, signatureData)` on the contract. This registers the mutation onchain and emits a `ForceInclusionQueued` event.
+2. When the server detects the queued mutation, it reconciles it with local state and includes it onchain.
+
+If the server is completely offline, the user can call `forceExecute(index)` directly after `FORCE_INCLUSION_DELAY` blocks have elapsed since the mutation was enqueued. The `FORCE_INCLUSION_DELAY` is set in the contract constructor; all examples in this repository use `658` blocks (approximately 4.4 minutes at 0.4 s/block).
+
+`forceExecute` is callable by anyone, not just the original submitter, once the delay has elapsed.
+
+## Determinism
+
+The server executes mutations locally in an embedded EVM before submitting them onchain. For the local result to match the onchain result, mutation code must be deterministic — it must produce the same state change regardless of which block it settles in.
+
+The following EVM opcodes are incompatible with Typewriter because their values cannot be reproduced offchain:
+
+- `block.coinbase` (`COINBASE`) — the miner of the settling block is not known until inclusion.
+- `block.difficulty` / `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
+- `blockhash(n)` (`BLOCKHASH`) for blocks the server has not yet seen.
+- `blobhash(i)` (`BLOBHASH`) and `block.blobbasefee` (`BLOBBASEFEE`) — blob context belongs to the submitting transaction, not the mutation.
+- `gasleft()` (`GAS`) — gas accounting in the embedded EVM does not match the live EVM, so any branch on remaining gas can diverge.
+
+`block.number` and `block.timestamp` are approximations. The server executes accepted mutations against the last known block's values, so what a mutation sees lags the settling block by at least one block. These values are safe for coarse-grained checks such as expiry windows, but not for tight timing windows, sub-block logic, or branching on the exact block of inclusion.
+
+`tx.origin` and `msg.sender` are stable. Both resolve to the scheduler address in normal `execute` flow, and to the caller in `forceExecute`.
+
+Calls to external contracts are not allowed. The server's local state covers only the Typewriter contract. Any external call depends on state the server cannot reproduce, which will cause divergence between offchain and onchain execution.
+
+## Reliability
+
+### Reorg handling
+
+A mutation included in a block can be removed by a chain reorganization. Reorgs affect only mutations that have not yet reached the `finalized` state.
+
+The server detects reorgs by polling new blocks over JSON-RPC and reconciling them into its local view of the chain. When a reorg is detected, affected mutations move backwards in the lifecycle (for example, from `safe` back to `accepted`). The runtime re-processes them against the new canonical chain and re-emits them with updated lifecycle status.
+
+### Offchain/onchain divergence
+
+Divergence occurs when the server's local execution accepts a mutation, but the same mutation behaves differently — and reverts — when executed onchain. This can happen when mutation code depends on EVM environment opcodes whose values differ between the server's execution context and the mined block (see [Determinism](#determinism)), or on state the server cannot reproduce locally.
+
+When a server-submitted transaction reverts, the affected mutations move backwards in the lifecycle to `received`. The runtime re-processes them against the current canonical chain state and re-emits them with updated status. From the user's perspective, this is handled the same way as a chain reorganization.
+
+### Crash recovery
+
+The server can be restarted at any time without losing accepted state. Every mutation and raw storage slot write is persisted to Postgres as it happens. On startup, the runtime rehydrates its local execution environment from the persisted slot writes. Mutations that were accepted before the crash but had not yet reached `finalized` are reconciled with the underlying chain on restart.
