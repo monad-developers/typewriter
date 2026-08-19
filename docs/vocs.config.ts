@@ -19,15 +19,13 @@ export default defineConfig({
         { text: "Get started", link: "/guides/get-started" },
         { text: "Project structure", link: "/guides/project-structure" },
         {
-          text: "Define your state and mutations",
+          text: "Define state and mutations",
           link: "/guides/state-and-mutations",
         },
-        { text: "Authorize mutations", link: "/guides/authorize-mutations" },
-        {
-          text: "Sequence transactions",
-          link: "/guides/sequence-transactions",
-        },
-        { text: "Write API endpoints", link: "/guides/api-endpoints" },
+        { text: "Configure the server", link: "/guides/configuration" },
+        { text: "Add API endpoints", link: "/guides/api-endpoints" },
+        { text: "Submit mutations", link: "/guides/submit-mutations" },
+        { text: "Read application state", link: "/guides/read-state" },
       ],
     },
     {

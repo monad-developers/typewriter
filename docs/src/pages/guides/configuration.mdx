@@ -1,0 +1,27 @@
+---
+title: Configure the server
+description: Point the runtime at your contract, chain, and database, and choose how it sequences and confirms mutations.
+---
+
+# Configure the server
+
+Everything `createTypewriter` needs: where your app lives onchain, how it
+reaches the chain and the database, and how it orders and confirms mutations.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- Required config: `address`, `account`, `chainId`, `rpcUrl`, and `database`
+- Sequencing with `sequencing.order`:
+  - FIFO and `submitIntervalMs`
+  - batch, `batchIntervalMs`, and the `batchOrder` list
+  - how acceptance timing differs between the two modes, and choosing a
+    strategy for your app
+- Confirmation depths: `confirmations.safeBlockDepth` and
+  `confirmations.finalizedBlockDepth`
+- Tuning `blockPollingIntervalMs`
+- Handling `onFatalError` and shutting down with `close`

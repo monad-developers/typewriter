@@ -1,12 +1,12 @@
 ---
-title: Write API endpoints
-description: Build the server that submits mutations, serves reads, and streams lifecycle status.
+title: Add API endpoints
+description: Build the HTTP surface your frontend talks to on top of the Typewriter handle.
 ---
 
-# Write API endpoints
+# Add API endpoints
 
-Build the HTTP surface your frontend talks to: submit mutations, expose the
-signing domain, serve reads, and stream lifecycle updates.
+Wrap the Typewriter handle in the HTTP routes your frontend calls: a submit
+endpoint, the signing domain, reads, and a status stream.
 
 :::warning
 Documentation is under construction — this is a placeholder page. Content will
@@ -15,8 +15,11 @@ be filled in over the coming iterations.
 
 ## Planned contents
 
-- Submitting signed mutations with `typewriter.execute`
+- Wiring routes around the handle returned by `createTypewriter`
+- A submit endpoint: decoding a signed mutation and calling
+  `typewriter.execute`
 - Exposing the EIP-712 domain for clients to sign against
-- Serving current state with `typewriter.state`
-- Building read models and history from the generated `typewriter.schema` tables
-- Streaming lifecycle status with `typewriter.on`
+- Read endpoints backed by `typewriter.state` and `typewriter.schema`
+- Streaming lifecycle status to clients over SSE or WebSocket with
+  `typewriter.on`
+- Validation, error shapes, and rate limiting at the edge

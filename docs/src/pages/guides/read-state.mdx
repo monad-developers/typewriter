@@ -1,0 +1,24 @@
+---
+title: Read application state
+description: Read current onchain state, query the generated mutation tables, and stream updates as blocks land.
+---
+
+# Read application state
+
+Three ways to read a Typewriter app: the live state proxy, the generated
+mutation history tables, and the event stream.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- Reading current state through the typed `typewriter.state` proxy
+- How the proxy maps your `struct State` onto storage slots
+- Querying history from the generated `typewriter.schema` Drizzle tables
+- Building read models: order books, balances, and activity feeds
+- Streaming updates with `typewriter.on("block")` and
+  `typewriter.on("batch")`
+- Which reads are safe at each lifecycle stage

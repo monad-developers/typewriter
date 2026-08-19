@@ -1,0 +1,27 @@
+---
+title: Submit mutations
+description: Sign mutations on the client, submit them with typewriter.execute, and track their lifecycle status.
+---
+
+# Submit mutations
+
+How a mutation gets from a user's key to the runtime — signing typed data on
+the client, submitting it to the server, and following it through the lifecycle.
+
+:::warning
+Documentation is under construction — this is a placeholder page. Content will
+be filled in over the coming iterations.
+:::
+
+## Planned contents
+
+- App-defined accounts and key lookup
+- Supported key types: secp256k1, P-256, and WebAuthn-P256
+- Building and signing the EIP-712 typed data on the client against
+  `typewriter.domain`
+- Replay protection: nonces, deadlines, and scope
+- Session keys and bootstrap mutations
+- Submitting a signed mutation with `typewriter.execute`
+- Reading `TypewriterMutationResult` and handling rejected mutations
+- Following status with `typewriter.on("mutation")`: received → accepted →
+  included → safe → finalized
