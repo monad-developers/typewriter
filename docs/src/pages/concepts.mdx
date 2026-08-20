@@ -1,0 +1,176 @@
+---
+title: Concepts
+description: The terms Typewriter uses — state, mutations, accounts, sequencing, force inclusion, and determinism.
+---
+
+# Concepts
+
+This page defines the terms used throughout the documentation. For how these
+pieces interact at runtime, see [How it works](/how-it-works).
+
+## State
+
+All application state lives in one Solidity struct named `State`, held in one
+storage variable named `state`. The contract's storage is the only copy that
+matters; the server keeps a mirror of it to execute mutations against.
+
+```solidity
+struct State {
+    uint256 totalSupply;
+    mapping(address => Account) accounts;
+}
+```
+
+The server reads state directly from storage slots using the compiled storage
+layout, so your contract needs no `public` getters or `view` functions. On the
+server, [`typewriter.state`](/reference/typescript#state) projects those slots
+back into a typed object.
+
+Mappings, dynamic arrays, nested structs, and strings are all supported in
+`State`. Mapping keys must be `address`, `bool`, `uintN`, `intN`, or `bytesN`,
+because the server derives the storage slot for a key when you read it.
+
+## Mutations
+
+A mutation is a state transition that a user requests and the contract applies.
+Mutations are the only way application state changes.
+
+Each mutation is a Solidity library that defines four things:
+
+- A struct holding the mutation's arguments. These arguments are also the EIP-712
+  message the user signs.
+- `hash[Mutation]`, which returns the EIP-712 struct hash of those arguments.
+- `verify[Mutation]Signature`, which authorizes the mutation: it resolves the
+  signer, enforces replay protection, and checks the signature.
+- `execute[Mutation]`, which applies the change to `State` and contains no
+  authorization logic.
+
+The contract lists its mutations in a `Mutation` enum and routes each one in
+`dispatch`. See [Define state and mutations](/guides/state-and-mutations).
+
+```solidity
+library TransferMutation {
+    struct Transfer {
+        address from;
+        address to;
+        uint256 amount;
+        uint256 nonce;
+    }
+
+    function executeTransfer(State storage state, Transfer memory transfer) internal {
+        state.accounts[transfer.from].balance -= transfer.amount;
+        unchecked {
+            state.accounts[transfer.to].balance += transfer.amount;
+        }
+    }
+}
+```
+
+Mutation arguments can be elementary Solidity types, enums, and arrays of those.
+A mutation struct cannot contain another struct.
+
+## Accounts and signatures
+
+The server sends the transaction that settles a mutation, so `msg.sender` is the
+server rather than the user and cannot identify who requested the mutation. Each
+mutation instead carries an EIP-712 typed-data signature that the contract
+verifies.
+
+Typewriter supports three key types, exposed as the `KeyType` enum:
+
+| `KeyType` | Curve | Typical use |
+| --- | --- | --- |
+| `Secp256k1` | secp256k1 | Ethereum keys and wallets |
+| `P256` | secp256r1 | Session keys generated in the browser |
+| `WebAuthnP256` | secp256r1, WebAuthn assertion format | Passkeys |
+
+`typewriter/Typewriter.sol` exports a `verifySignature` helper that checks a raw
+signature against a digest and reverts with `InvalidSignature(KeyType)` if the
+check fails:
+
+```solidity
+import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
+
+verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
+```
+
+Everything else about accounts is yours to define. Typewriter does not impose an
+`Account` struct, a key registry, a nonce scheme, or an expiry rule. It also does
+not define the `Signature` struct — your contract declares a struct named
+`Signature` holding whatever the verifier needs, and the runtime reads its fields
+from your source.
+
+Because each mutation has its own verifier, each mutation sets its own rules,
+including whether it needs a signature at all. A mutation that creates an account
+often does not.
+
+For the signature byte layouts each `KeyType` expects, see the
+[Solidity reference](/reference/solidity#byte-layouts).
+
+## Sequencing
+
+Sequencing is the rule the server uses to order mutations. It is set once, in
+[`sequencing`](/reference/typescript#sequencing), and it determines both the
+order mutations are accepted in and the order they settle onchain.
+
+**First-in-first-out** accepts each mutation as it arrives. This is the default.
+
+**Batch** collects mutations over a fixed interval, then orders them within the
+batch by mutation type, following a `batchOrder` list you supply. Use it when the
+relative order of two mutation types matters more than arrival time — for
+example, applying every cancellation in a window before any new order.
+
+Both modes settle the same way: on a fixed interval, everything accepted so far
+goes onchain in a single transaction, in acceptance order. See
+[Configure the server](/guides/configuration#choose-a-sequencing-mode).
+
+## Force inclusion
+
+Force inclusion lets a user send a mutation directly to the contract, bypassing
+the server. It exists so the server cannot censor a valid mutation indefinitely.
+It is not a second write path for normal operation: it costs the user gas, and it
+does not get the fast acceptance the server provides.
+
+It works in two stages:
+
+1. The user calls `enqueue(mutation, mutationData, signatureData)` on the
+   contract, which stores the mutation and emits `ForceInclusionQueued`.
+2. The server sees that event, reconciles the queued mutation with local state,
+   and settles it in its next transaction.
+
+If the server never settles it, anyone can call `forceExecute(index)` once
+`FORCE_INCLUSION_DELAY` blocks have passed since the mutation was enqueued. Your
+contract sets that delay in its constructor; the examples in this documentation
+use 658 blocks, about 4.4 minutes at 0.4 seconds per block.
+
+A force-included mutation goes through the same `dispatch`, and therefore the same
+signature check, as a mutation the server settles. Bypassing the server does not
+bypass authorization.
+
+## Determinism
+
+The server executes a mutation before the chain does, and both executions must
+produce the same result. Anything a mutation reads that the server cannot reproduce
+breaks that. The settlement transaction may revert, in which case the mutations in
+it are re-executed against current state; if it does not revert, the server's state
+and the contract's state diverge with no error reported.
+
+These are unavailable to mutation code:
+
+| Not usable | Why |
+| --- | --- |
+| `block.coinbase` | The proposer of the settling block is unknown until inclusion. |
+| `block.prevrandao`, `block.difficulty` | Set by the block proposer. |
+| `blockhash(n)` for unseen blocks | The server has no value for a block that does not exist yet. |
+| `blobhash(i)`, `block.blobbasefee` | Blob context belongs to the settlement transaction, not the mutation. |
+| `gasleft()` | Gas accounting in the local EVM does not match the live EVM. |
+| Calls to other contracts | The server's local state holds only your contract's storage, so it cannot reproduce another contract's behavior. |
+
+`block.number` and `block.timestamp` are usable but approximate. The server
+executes against the last block it has seen, so a mutation sees values at least
+one block behind the block it settles in. They are safe for coarse checks such as
+signature deadlines, and unsafe for anything that depends on landing in a
+specific block.
+
+`tx.origin` and `msg.sender` are stable. Both are the scheduler address during
+normal settlement, and the caller during `forceExecute`.

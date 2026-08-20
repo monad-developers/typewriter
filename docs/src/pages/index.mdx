@@ -8,7 +8,69 @@ description: A framework for crypto apps that need custom transaction sequencing
 Typewriter is a framework for crypto apps that need custom transaction
 sequencing, fast confirmations, and built-in gas sponsorship.
 
+You write your application as a Solidity contract that holds all of its state in
+one struct and changes that state through *mutations*. Typewriter runs a server
+that receives user-signed mutations, orders them, executes them against a local
+copy of your contract's state, and settles them onchain.
+
+A mutation is the Typewriter equivalent of a transaction, with two differences.
+Users sign mutations instead of sending transactions, and the server pays for and
+sends the transactions that settle them.
+
+## What you get
+
+**Application-defined ordering.** Your application decides the order mutations
+are accepted in. Typewriter ships two sequencing modes: first-in-first-out, and
+batches ordered by mutation type. No external sequencer, relayer, or builder
+auction sits between your users and your application.
+
+**Fast acceptance.** The server executes each mutation in an embedded EVM before
+a block is produced, so it accepts or rejects a mutation in roughly 50 ms
+instead of waiting for a block.
+
+**Gas sponsorship.** Users sign mutations, and the server sends the settlement
+transactions. Users need no gas token and no wallet balance.
+
+**A choice of signature algorithms.** Mutations are authorized with EIP-712
+typed-data signatures over secp256k1, P-256, or WebAuthn-P256 keys. Your
+contract defines its own account model, so you can build on passkeys or session
+keys without an account abstraction stack.
+
+## What the server controls
+
+The server is trusted for ordering and availability. It decides which mutation
+comes first, and if it stops running, your application stops accepting
+mutations.
+
+The server does not control user funds. It can only settle mutations that your
+contract accepts, and your contract verifies every signature onchain. If the
+server censors a valid mutation, the user can send it directly to the contract
+through [force inclusion](/concepts#force-inclusion).
+
+## What you need
+
+- **[Bun](https://bun.sh)**. Typewriter uses Bun APIs and does not run on
+  Node.js.
+- **[Foundry](https://getfoundry.sh)**. The server compiles your contract at
+  startup, so `forge` must be installed wherever the server runs. Use the Monad
+  build: it applies Monad's gas rules, and its Anvil provides the P-256
+  precompile that local development needs.
+- **[Postgres](https://www.postgresql.org)**. The server persists mutations and
+  state changes so it can restart without losing accepted state.
+- **An EVM chain and RPC endpoint.** P-256 and WebAuthn-P256 verification calls
+  the [RIP-7212](https://github.com/ethereum/RIPs/blob/master/RIPS/rip-7212.md)
+  precompile at address `0x100`, so those key types need a chain that provides
+  it.
+
 :::warning
-Documentation is under construction — this is a placeholder page. Content will
-be filled in over the coming iterations.
+Typewriter is under active development and is not ready for production use. It
+has not been audited. Do not use it with real funds on mainnet without an
+independent audit.
 :::
+
+## Next steps
+
+- [How it works](/how-it-works) explains what happens between a signed mutation
+  and a settled transaction.
+- [Concepts](/concepts) defines the terms the rest of the documentation uses.
+- [Get started](/guides/get-started) builds and runs a working application.

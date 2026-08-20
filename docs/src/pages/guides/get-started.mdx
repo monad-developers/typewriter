@@ -1,0 +1,391 @@
+---
+title: Get started
+description: Build and run a working Typewriter application on a local chain.
+---
+
+# Get started
+
+This guide builds a complete Typewriter application from an empty directory. The
+application is a shared counter: any user can sign an `Add` mutation that
+increases a total, and the contract rejects a mutation whose signature or nonce is
+wrong.
+
+By the end you will have a contract deployed to a local chain, a server that
+accepts mutations, and a script that signs and submits one.
+
+## Before you begin
+
+Install these first:
+
+- **[Bun](https://bun.sh)** 1.3 or later. Typewriter uses Bun APIs and does not
+  run on Node.js.
+- **The Monad build of [Foundry](https://getfoundry.sh)**. The server runs
+  `forge build` at startup, so `forge` must be on the `PATH`. Use the Monad build
+  rather than upstream Foundry: it provides Monad's gas rules and the P-256
+  precompile at address `0x100`.
+- **[Postgres](https://www.postgresql.org)** 14 or later, with a database you can
+  connect to.
+
+Create a database for the application:
+
+```bash
+createdb counter
+```
+
+## Create the project
+
+```bash
+mkdir counter && cd counter
+bun init -y
+bun add typewriter viem superjson
+mkdir -p contracts/src src
+```
+
+`typewriter` provides the server runtime and the Solidity base contract. `viem`
+signs typed data and provides the account type the runtime submits transactions
+with. `superjson` serializes the `bigint` values in mutation arguments over HTTP,
+which plain JSON cannot represent.
+
+`bun init` leaves an `index.ts` in the project root that this guide does not use.
+Delete it if you like; the server lives in `src/index.ts`.
+
+## Configure Foundry
+
+Contracts live in their own Foundry project under `contracts/`.
+
+```toml [contracts/foundry.toml]
+[profile.default]
+src = "src"
+out = "out"
+libs = ["../node_modules"]
+remappings = ["typewriter/=../node_modules/typewriter/src/"]
+extra_output = ["storageLayout"]
+```
+
+The remapping resolves `typewriter/Typewriter.sol` to the copy installed in
+`node_modules`, and is required. `libs` lets other Solidity packages installed
+from npm resolve the same way. `extra_output` emits the storage layout when you
+run `forge build` yourself; the runtime passes that flag on its own builds.
+
+## Write the contract
+
+The contract holds all application state in a struct named `State` and a storage
+variable named `state`. Both names are required: the runtime looks for them by
+name.
+
+```solidity [contracts/src/Counter.sol]
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {KeyType, Typewriter, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
+
+struct State {
+    uint256 total;
+    mapping(address signer => uint256 nonce) nonces;
+}
+
+struct Signature {
+    bytes rawSignature;
+}
+
+error InvalidNonce(uint256 expected, uint256 received);
+
+library AddMutation {
+    struct Add {
+        address signer;
+        uint256 amount;
+        uint256 nonce;
+    }
+
+    bytes32 constant ADD_TYPEHASH = keccak256("Add(address signer,uint256 amount,uint256 nonce)");
+
+    function hashAdd(Add memory add) internal pure returns (bytes32) {
+        return keccak256(abi.encode(ADD_TYPEHASH, add.signer, add.amount, add.nonce));
+    }
+
+    function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest)
+        internal
+    {
+        uint256 nonce = state.nonces[add.signer];
+        if (nonce != add.nonce) revert InvalidNonce(nonce, add.nonce);
+        verifySignature(KeyType.Secp256k1, digest, abi.encode(add.signer), signature.rawSignature);
+        state.nonces[add.signer] = nonce + 1;
+    }
+
+    function executeAdd(State storage state, Add memory add) internal {
+        state.total += add.amount;
+    }
+}
+
+contract Counter is Typewriter {
+    State internal state;
+
+    enum Mutation {
+        Add
+    }
+
+    constructor(address scheduler) {
+        SCHEDULER = scheduler;
+        FORCE_INCLUSION_DELAY = 658;
+    }
+
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+        if (Mutation(mutation) == Mutation.Add) {
+            AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
+            Signature memory signature = abi.decode(signatureData, (Signature));
+            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, AddMutation.hashAdd(add)));
+
+            AddMutation.verifyAddSignature(state, add, signature, digest);
+            AddMutation.executeAdd(state, add);
+        } else {
+            revert UnknownMutation(mutation);
+        }
+    }
+}
+```
+
+Four things are doing the work here:
+
+- **`State` and `Signature`** are file-scope structs. `Signature` carries whatever
+  the verifier needs; here that is the 65-byte secp256k1 signature.
+- **`AddMutation`** defines the mutation's arguments, its EIP-712 struct hash, its
+  authorization rule, and its state transition.
+- **The `Mutation` enum** lists the mutations. Each member's position is the tag
+  that identifies it on the wire, so `Add` is `0`.
+- **`dispatch`** is the only function the contract must implement. `Typewriter`
+  calls it once per mutation and provides the `execute`, `enqueue`, and
+  `forceExecute` entry points around it.
+
+[Define state and mutations](/guides/state-and-mutations) covers each piece in
+detail, including the rules the runtime enforces on `dispatch`.
+
+## Declare the Solidity import
+
+The server imports the contract file directly. Declare the `.sol` module type once
+so TypeScript understands that import:
+
+```ts [src/typewriter.d.ts]
+declare module "*.sol" {
+  const entrypoint: import("typewriter").TypewriterSolidityEntrypoint;
+  export default entrypoint;
+}
+```
+
+With this file in place, the runtime also writes a
+`contracts/src/Counter.sol.d.ts` beside the contract on startup, giving the
+import concrete types for your mutations and storage layout. Do not edit that
+generated file; commit it or ignore it, as you prefer.
+
+## Start a local chain
+
+Run the Monad build of Anvil in a second terminal, with a block time that matches
+Monad's:
+
+```bash
+anvil --monad --block-time 0.4
+```
+
+Leave it running. It prints ten funded accounts; this guide uses the first as the
+server's account and the second as a user.
+
+## Deploy the contract
+
+The constructor takes the scheduler address — the address of the account the
+server submits transactions from. Only that address can settle mutations.
+
+```bash
+forge create --root contracts src/Counter.sol:Counter \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --broadcast \
+  --constructor-args 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+```
+
+Pass `--constructor-args` last: it accepts a list of values and consumes any
+arguments that follow it. Note the address the command prints as `Deployed to`.
+
+## Configure the server
+
+Bun loads `.env` automatically.
+
+```ini [.env]
+RPC_URL=http://127.0.0.1:8545
+CHAIN_ID=31337
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/counter
+CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3
+SCHEDULER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+
+Set `CONTRACT_ADDRESS` to the address from the deploy step. Anvil deploys to the
+address above from a clean state, so the two usually match.
+
+## Start the server
+
+`createTypewriter` takes the contract and a configuration object, and returns a
+handle. The rest of the server is an ordinary `Bun.serve` HTTP server built around
+that handle.
+
+```ts [src/index.ts]
+import superjson from "superjson";
+import { createTypewriter } from "typewriter";
+import type { Address, Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import Counter from "../contracts/src/Counter.sol";
+
+const typewriter = await createTypewriter(Counter, {
+  address: process.env.CONTRACT_ADDRESS as Address,
+  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as Hex),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: process.env.RPC_URL as string,
+  database: { url: process.env.DATABASE_URL as string },
+  sequencing: { order: "fifo", submitIntervalMs: 400 },
+});
+
+function json(data: unknown): Response {
+  return new Response(superjson.stringify(data), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+const server = Bun.serve({
+  routes: {
+    "/api/domain": () => json(typewriter.domain),
+    "/api/total": async () => json({ total: await typewriter.state.total }),
+    "/api/nonce/:signer": async (req) =>
+      json({ nonce: await typewriter.state.nonces[req.params.signer as Address] }),
+    "/api/mutations": {
+      POST: async (req) => {
+        const body = superjson.parse(await req.text());
+        try {
+          const accepted = await typewriter.execute(
+            body as Parameters<typeof typewriter.execute>[0],
+          );
+          return json(accepted);
+        } catch (error) {
+          return new Response(superjson.stringify({ error: String(error) }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      },
+    },
+  },
+});
+
+console.log(`listening on ${server.url}`);
+```
+
+Start it:
+
+```bash
+bun src/index.ts
+```
+
+The first start takes a few seconds. `createTypewriter` compiles the contract,
+connects to the chain and the database, creates its tables, loads any state it had
+persisted, and then begins accepting mutations. It prints `listening on
+http://localhost:3000/` when it is ready.
+
+Read the counter to confirm:
+
+```bash
+curl http://localhost:3000/api/total
+```
+
+## Submit a mutation
+
+The client fetches the EIP-712 domain and the signer's current nonce, signs the
+mutation, and posts it. The typed data must match the type string in the
+contract's `ADD_TYPEHASH` exactly — same primary type name, same field names, same
+order.
+
+```ts [src/submit.ts]
+import superjson from "superjson";
+import {
+  encodeAbiParameters,
+  type Hex,
+  parseAbiParameters,
+  parseSignature,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+
+const API_URL = "http://localhost:3000";
+
+const ADD_TYPES = {
+  Add: [
+    { name: "signer", type: "address" },
+    { name: "amount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+  ],
+} as const;
+
+async function get<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`);
+  return superjson.parse(await response.text()) as T;
+}
+
+const signer = privateKeyToAccount(process.env.USER_PRIVATE_KEY as Hex);
+
+const domain = await get<{
+  name: string;
+  version: string;
+  chainId: number;
+  verifyingContract: Hex;
+}>("/api/domain");
+const { nonce } = await get<{ nonce: bigint }>(`/api/nonce/${signer.address}`);
+
+const params = { signer: signer.address, amount: 5n, nonce };
+
+const signature = await signer.signTypedData({
+  domain,
+  types: ADD_TYPES,
+  primaryType: "Add",
+  message: params,
+});
+const { v, r, s } = parseSignature(signature);
+const rawSignature = encodeAbiParameters(
+  parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
+  [Number(v), r, s],
+);
+
+const response = await fetch(`${API_URL}/api/mutations`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: superjson.stringify({
+    name: "Add",
+    params,
+    signature: { rawSignature },
+  }),
+});
+
+console.log(superjson.parse(await response.text()));
+console.log(await get("/api/total"));
+```
+
+Run it with the second Anvil account:
+
+```bash
+USER_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d bun src/submit.ts
+```
+
+The output is the accepted mutation's ID and the new total:
+
+```txt
+{ id: 0 }
+{ total: 5n }
+```
+
+The response arrives before any block contains the mutation. Within a second or
+two the server settles it onchain; run the script again and the nonce advances,
+because the contract incremented it.
+
+## What to read next
+
+- [Project structure](/guides/project-structure) explains how the contract,
+  server, and generated files fit together.
+- [Define state and mutations](/guides/state-and-mutations) covers writing
+  mutations, including the rules the runtime enforces.
+- [Configure the server](/guides/configuration) covers the configuration fields
+  and choosing a sequencing mode.
+- [Submit mutations](/guides/submit-mutations) covers signing from a browser and
+  tracking a mutation to `finalized`.

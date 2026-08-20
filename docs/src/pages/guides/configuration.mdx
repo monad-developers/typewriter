@@ -1,0 +1,131 @@
+---
+title: Configure the server
+description: Start the runtime with createTypewriter and choose a sequencing mode.
+---
+
+# Configure the server
+
+`createTypewriter` takes your contract and a configuration object, and returns the
+handle your application uses to submit mutations and read state. This page covers
+the fields you need to start a working server. The
+[TypeScript reference](/reference/typescript#configuration) documents every field
+and its default.
+
+```ts [src/index.ts]
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address: process.env.CONTRACT_ADDRESS as `0x${string}`,
+  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as `0x${string}`),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: process.env.RPC_URL as string,
+  database: { url: process.env.DATABASE_URL as string },
+});
+```
+
+## Required fields
+
+Five fields are required.
+
+**`address`** is the deployed contract's address.
+
+**`account`** is the scheduler: a viem `PrivateKeyAccount` that signs and sends
+the transactions that settle mutations. Its address must be the `SCHEDULER` the
+contract was deployed with, or every settlement transaction reverts with
+`UnauthorizedExecute`. The account needs a gas balance, because it pays for all
+settlement.
+
+**`chainId`** is the chain the contract is deployed to. The runtime puts it in the
+EIP-712 domain it hands to clients, so a wrong value produces signatures the
+contract rejects.
+
+**`rpcUrl`** is a JSON-RPC endpoint, or an array of endpoints to fall back
+through.
+
+**`database`** is `{ url }` for a Postgres database. The runtime creates one
+schema per deployment and owns it.
+
+## Choose a sequencing mode
+
+`sequencing` sets the order the server accepts mutations in. It defaults to
+first-in-first-out, so you can leave it out until the order matters.
+
+### First-in-first-out
+
+```ts
+sequencing: {
+  order: "fifo",
+  submitIntervalMs: 400,
+},
+```
+
+Each call to `typewriter.execute` runs immediately and returns as soon as the
+mutation is accepted or rejected. Mutations settle onchain in the order they were
+executed.
+
+Use this unless two mutation types need a guaranteed relative order.
+
+### Batch
+
+```ts
+sequencing: {
+  order: "batch",
+  batchIntervalMs: 50,
+  submitIntervalMs: 400,
+  batchOrder: ["Mint", "Transfer"],
+},
+```
+
+Each call to `typewriter.execute` waits for the next batch. Every
+`batchIntervalMs`, the server gathers everything enqueued since the last batch,
+sorts it by mutation type according to `batchOrder`, and executes the batch in
+that order.
+
+`batchOrder` lists mutation names — the `Mutation` enum member names from your
+contract. It is required in batch mode and rejected in first-in-first-out mode.
+The token example uses `["Mint", "Transfer"]` so a mint and a transfer submitted
+in the same window always apply in that order, letting a new account mint and
+spend within one batch.
+
+The tradeoff is latency: `execute` resolves at the next batch boundary, so callers
+wait up to `batchIntervalMs`.
+
+Batch order applies within a batch only. Batches settle in the order they were
+accepted.
+
+## What happens at startup
+
+`createTypewriter` is asynchronous and does real work before it resolves:
+
+1. Runs `forge build` on the contract and reads the compiled output.
+2. Connects to the RPC endpoint and to Postgres.
+3. Takes a Postgres advisory lock for this chain ID and contract address, so only
+   one server runs per deployment.
+4. Creates or reuses the deployment's schema and tables.
+5. Rebuilds local EVM state from the storage writes it previously persisted.
+
+Only after that does the handle accept mutations. Await it before you start
+serving requests — that is the point of `await createTypewriter(...)` at the top
+level of your server file.
+
+Errors from any of these steps reject the promise, so a misconfigured server fails
+at startup rather than at the first request.
+
+## Shutting down
+
+Call `typewriter.close()` to stop the runtime and release its database
+connections, including the deployment lock. A process that exits without closing
+releases the lock when its Postgres connection drops.
+
+To handle unrecoverable runtime errors — a permanently unreachable RPC endpoint,
+for example — pass an `onFatalError` callback. Without one, the runtime rethrows
+the error. See
+[`onFatalError`](/reference/typescript#onfatalerror).
+
+## Next steps
+
+- [Add API endpoints](/guides/api-endpoints) serves the handle over HTTP.
+- The [TypeScript reference](/reference/typescript#configuration) lists every
+  configuration field, including confirmation depths and block polling.

@@ -1,0 +1,146 @@
+---
+title: Token
+description: A minimal Typewriter application — two mutations, batch sequencing, and a browser client that signs with a locally generated key.
+---
+
+# Token
+
+The token example is the smallest complete Typewriter application: a token with
+balances, two mutations, a server, and a browser client. It is the reference to
+copy when starting something new.
+
+Source: [apps/token](https://github.com/monad-exp/typewriter/tree/main/apps/token).
+
+## What it shows
+
+- A `State` struct with a total supply and a mapping of accounts.
+- Two mutation libraries, `MintMutation` and `TransferMutation`, sharing one
+  signature verifier.
+- secp256k1 signatures with a per-account nonce and a deadline.
+- Batch sequencing with an explicit mutation order.
+- A server-sent event stream that reports a mutation from `accepted` through
+  `finalized`.
+- A React client that generates its own key, signs typed data, and submits
+  mutations over HTTP.
+
+## The contract
+
+`contracts/src/Token.sol` holds the state, the signature struct, and the shared
+verifier:
+
+```solidity
+struct Account {
+    uint256 nonce;
+    uint256 balance;
+}
+
+struct State {
+    uint256 totalSupply;
+    mapping(address => Account) accounts;
+}
+
+struct Signature {
+    uint8 keyType;
+    bytes rawSignature;
+}
+```
+
+The `Token` contract declares `enum Mutation { Transfer, Mint }` and routes both in
+`dispatch`. Each mutation lives in its own library:
+
+| Mutation | File | Effect |
+| --- | --- | --- |
+| `Transfer` | `contracts/src/Transfer.sol` | Moves a balance from `from` to `to`. The signer must be `from`. |
+| `Mint` | `contracts/src/Mint.sol` | Increases `totalSupply` and the balance of `to`. The signer must be `to`. |
+
+Both verifiers call one `verifyTokenSignature` helper, which checks the deadline,
+requires a secp256k1 key, checks the account's nonce, verifies the signature, then
+increments the nonce. Anyone can mint to themselves — the example has no supply
+policy, which keeps the authorization rule to one function.
+
+[Define state and mutations](/guides/state-and-mutations) walks through this
+contract piece by piece.
+
+## The server
+
+`src/index.ts` starts the runtime with batch sequencing:
+
+```ts
+const typewriter = await createTypewriter(Token, {
+  address: requireEnv("TOKEN_ADDRESS") as Address,
+  account: scheduler,
+  chainId: Number(requireEnv("CHAIN_ID")),
+  rpcUrl: requireEnv("RPC_URL"),
+  database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
+  sequencing: { order: "batch", batchOrder: ["Mint", "Transfer"] },
+});
+```
+
+`batchOrder` puts every `Mint` in a batch before every `Transfer`, so a new account
+can mint and spend within one batch window. Under first-in-first-out sequencing the
+transfer would fail if it arrived first.
+
+The routes are:
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/` | GET | The frontend |
+| `/api` | POST | Submits a signed mutation, returns its ID |
+| `/api/domain` | GET | The EIP-712 domain to sign against |
+| `/api/addresses` | GET | Known account addresses, for the transfer form |
+| `/api/account/:address` | GET | An account's balance and nonce |
+| `/api/mutation/:id/status` | GET | Server-sent event stream of one mutation's status |
+
+`/api/addresses` reads `Object.keys(typewriter.state.accounts)`, which returns the
+mapping keys the runtime has seen written — a convenience that works for a demo,
+not a general account index.
+
+Requests and responses are encoded with superjson, because mutation arguments
+contain `bigint` values.
+
+## The frontend
+
+`frontend/App.tsx` runs in the browser and holds no wallet. Signing in generates a
+fresh private key, stores it in `localStorage`, and mints 1,000 tokens to the new
+address. After that the user can transfer to any address the server knows.
+
+For each mutation the client fetches the domain and the account's nonce, signs the
+typed data with viem, posts it to `/api`, then opens the status stream with the
+returned ID and updates the row as the mutation advances.
+
+## Run it
+
+```bash
+git clone https://github.com/monad-exp/typewriter
+cd typewriter
+bun install
+cd apps/token
+cp .env.example .env
+```
+
+The example `.env` values match a local Anvil node and a Postgres instance on
+`localhost`. Start the chain in a second terminal:
+
+```bash
+anvil --monad --block-time 0.4
+```
+
+Then deploy and run:
+
+```bash
+bun run deploy
+bun run dev
+```
+
+Open `http://localhost:3000`. `bun run deploy` prints the deployed address; if it
+differs from `TOKEN_ADDRESS` in `.env`, update it before starting the server.
+
+### Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `RPC_URL` | RPC endpoint for the server and the deploy script |
+| `CHAIN_ID` | Chain ID used in the EIP-712 domain |
+| `DATABASE_URL` | Postgres connection string |
+| `TOKEN_ADDRESS` | Deployed contract address |
+| `PRIVATE_KEY` | Scheduler key, also used to broadcast the deployment |

@@ -1,0 +1,320 @@
+---
+title: Define state and mutations
+description: Write the State struct, the mutation libraries, and the dispatch function your contract must provide.
+---
+
+# Define state and mutations
+
+Your contract provides three things: a `State` struct holding all application
+data, one library per mutation, and a `dispatch` function that routes an incoming
+mutation to the right library. `Typewriter` provides everything else, including
+the external entry points and the force-inclusion queue.
+
+The examples on this page come from the [token example](/examples/token), which
+tracks balances and supports two mutations, `Transfer` and `Mint`.
+
+## What the runtime requires
+
+The runtime reads your contract's source at startup to learn its mutations, so
+several names and shapes are fixed. If any of these is wrong, `createTypewriter`
+fails with an error naming the problem.
+
+| Requirement | Detail |
+| --- | --- |
+| One entrypoint contract | The imported `.sol` file declares exactly one contract inheriting `Typewriter`. |
+| One `State` struct | Declared at file scope in the entrypoint or a file it imports. |
+| One storage variable named `state` | Of type `State`, declared in the contract. |
+| One `Signature` struct | Declared at file scope, with fields you choose. |
+| One `Mutation` enum | Declared in the contract, listing every mutation. |
+| One `dispatch` function | Declared in the contract, with a branch for every enum member. |
+
+## Declare state
+
+`State` is a plain struct at file scope. The contract holds exactly one variable
+of that type, named `state`.
+
+```solidity [contracts/src/Token.sol]
+struct Account {
+    uint256 nonce;
+    uint256 balance;
+}
+
+struct State {
+    uint256 totalSupply;
+    mapping(address => Account) accounts;
+}
+```
+
+```solidity [contracts/src/Token.sol]
+contract Token is Typewriter {
+    State internal state;
+    // ...
+}
+```
+
+The variable's visibility does not matter. The runtime reads storage slots
+directly using the compiled storage layout, so your contract needs no `public`
+getters and no `view` functions for the server to read state.
+
+`State` can hold any Solidity type, including nested structs, mappings, dynamic
+arrays, and strings. One constraint applies to reads: a mapping key must be
+`address`, `bool`, `uintN`, `intN`, or `bytesN` for the server to read that
+mapping. Avoid `string` and `bytes` keys.
+
+## Declare the signature struct
+
+Every signed mutation carries a `Signature`. Typewriter does not define its
+fields — your verifier does. The token app needs a key type and the signature
+bytes:
+
+```solidity [contracts/src/Token.sol]
+struct Signature {
+    uint8 keyType;
+    bytes rawSignature;
+}
+```
+
+Clients send an object with these fields, and the runtime stores one column per
+field. Keep it small. Anything the verifier can look up in state does not need to
+be sent with every mutation.
+
+## Write a mutation library
+
+Each mutation is a library exporting four members. `Transfer` is shown here in
+full.
+
+### The arguments struct
+
+The struct is both the calldata your contract decodes and the EIP-712 message the
+user signs. Field names and order define the parameters clients send.
+
+```solidity [contracts/src/Transfer.sol]
+library TransferMutation {
+    struct Transfer {
+        address from;
+        address to;
+        uint256 amount;
+        uint256 nonce;
+        uint256 deadline;
+    }
+```
+
+Fields can be elementary types, enums, and arrays of those. A mutation struct
+cannot contain another struct — the runtime cannot yet derive parameters for a
+nested struct and fails at startup with `unsupported Solidity type`.
+
+### The hash function
+
+The hash function returns the EIP-712 struct hash of the arguments. Declare the
+type hash as a constant so the type string lives in one place.
+
+```solidity [contracts/src/Transfer.sol]
+    bytes32 constant TRANSFER_TYPEHASH =
+        keccak256("Transfer(address from,address to,uint256 amount,uint256 nonce,uint256 deadline)");
+
+    function hashTransfer(Transfer memory transfer) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                TRANSFER_TYPEHASH, transfer.from, transfer.to, transfer.amount, transfer.nonce, transfer.deadline
+            )
+        );
+    }
+```
+
+The type string is what the client has to reproduce. The client builds typed data
+from the same primary type name, field names, and order, and signs it. If the two
+differ by one character, the digests differ and verification fails. Use canonical
+ABI type names: `uint256`, not `uint`.
+
+Naming the primary type after the `Mutation` enum member, as `Transfer` does here,
+keeps the two sides easy to match. Nothing in the runtime enforces it.
+
+### The verify function
+
+The verify function decides whether the mutation is authorized. It resolves the
+signer, enforces replay protection, and calls `verifySignature`. Every check that
+can reject a request belongs here.
+
+```solidity [contracts/src/Transfer.sol]
+    function verifyTransferSignature(
+        State storage state,
+        Transfer memory transfer,
+        Signature memory signature,
+        bytes32 digest
+    ) internal {
+        verifyTokenSignature(state, signature, digest, transfer.from, transfer.nonce, transfer.deadline);
+    }
+```
+
+Both token mutations share one helper, because both authorize the same way:
+
+```solidity [contracts/src/Token.sol]
+function verifyTokenSignature(
+    State storage state,
+    Signature memory signature,
+    bytes32 digest,
+    address signer,
+    uint256 nonce,
+    uint256 deadline
+) {
+    if (deadline < block.timestamp) revert SignatureExpired();
+    if (KeyType(signature.keyType) != KeyType.Secp256k1) revert InvalidSignatureType();
+
+    Account storage account = state.accounts[signer];
+    if (nonce != account.nonce) revert InvalidNonce();
+
+    verifySignature(KeyType(signature.keyType), digest, abi.encode(signer), signature.rawSignature);
+
+    unchecked {
+        account.nonce++;
+    }
+}
+```
+
+Three things are happening:
+
+- **The deadline** bounds how long a signature is valid. `block.timestamp` on the
+  server is the last block's timestamp, so keep deadlines coarse — seconds, not
+  milliseconds.
+- **The nonce** makes each signature usable once. The check reads the account's
+  stored nonce, and the increment commits it. Without both, the same signed
+  mutation can be replayed.
+- **`verifySignature`** checks the signature bytes against the digest and reverts
+  with `InvalidSignature(KeyType)` if it fails. For `Secp256k1`, the public key
+  argument is `abi.encode(address)`. See the
+  [byte layouts](/reference/solidity#byte-layouts) for the other key types.
+
+Because verification is per mutation, each mutation sets its own rules. A mutation
+that creates an account may take no signature at all, as long as it is safe for
+anyone to call.
+
+### The execute function
+
+The execute function applies the state transition and nothing else. By the time it
+runs, the signature has been verified.
+
+```solidity [contracts/src/Transfer.sol]
+    function executeTransfer(State storage state, Transfer memory transfer) internal {
+        state.accounts[transfer.from].balance -= transfer.amount;
+        unchecked {
+            state.accounts[transfer.to].balance += transfer.amount;
+        }
+    }
+}
+```
+
+A revert here rejects the mutation, so ordinary Solidity checks — the subtraction
+above underflowing on an overdraft, for example — are how a mutation fails.
+
+## Implement dispatch
+
+`dispatch` is the only function your contract must implement. `Typewriter` calls
+it once per mutation, whether the mutation arrives in a batch from the server or
+through force inclusion. Your contract never iterates batches or touches the
+queue.
+
+```solidity [contracts/src/Token.sol]
+function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+    if (mutation == uint8(Mutation.Transfer)) {
+        TransferMutation.Transfer memory transfer = abi.decode(mutationData, (TransferMutation.Transfer));
+        Signature memory signature = abi.decode(signatureData, (Signature));
+        bytes32 digest =
+            keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, TransferMutation.hashTransfer(transfer)));
+
+        TransferMutation.verifyTransferSignature(state, transfer, signature, digest);
+        TransferMutation.executeTransfer(state, transfer);
+    } else if (mutation == uint8(Mutation.Mint)) {
+        MintMutation.Mint memory mint = abi.decode(mutationData, (MintMutation.Mint));
+        Signature memory signature = abi.decode(signatureData, (Signature));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, MintMutation.hashMint(mint)));
+
+        MintMutation.verifyMintSignature(state, mint, signature, digest);
+        MintMutation.executeMint(state, mint);
+    } else {
+        revert UnknownMutation(mutation);
+    }
+}
+```
+
+Each branch does the same four steps: decode the arguments, decode the signature,
+build the digest, then verify and execute.
+
+The digest is the standard EIP-712 digest: the `\x19\x01` prefix, the
+`DOMAIN_SEPARATOR` that `Typewriter` computed at deployment, and the mutation's
+struct hash.
+
+The runtime parses this function to learn each mutation's parameters, so its shape
+is constrained:
+
+- The `if`/`else if` chain must be the first statement in the function body.
+- Each condition compares the tag to one enum member, written either as
+  `mutation == uint8(Mutation.Transfer)` or `Mutation(mutation) == Mutation.Transfer`.
+- Every member of the `Mutation` enum needs a branch.
+- Each branch decodes `mutationData` exactly once, into that mutation's struct.
+- Any decode of `signatureData` must target the `Signature` struct.
+
+Revert with `UnknownMutation(mutation)` in the final `else`. A tag outside the enum
+can only come from a force-included call, since the runtime sends only tags it read
+from your enum.
+
+## Wire the contract
+
+The contract inherits `Typewriter`, lists its mutations, and assigns the two
+immutables the base contract leaves to you.
+
+```solidity [contracts/src/Token.sol]
+import {Typewriter, KeyType, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
+
+contract Token is Typewriter {
+    State internal state;
+
+    enum Mutation {
+        Transfer,
+        Mint
+    }
+
+    constructor(address _scheduler) {
+        if (_scheduler == address(0)) revert InvalidScheduler();
+        SCHEDULER = _scheduler;
+        FORCE_INCLUSION_DELAY = 658;
+    }
+
+    // dispatch, as above
+}
+```
+
+**`Mutation`** maps names to tags by position: `Transfer` is `0` and `Mint` is `1`.
+Adding a member at the end is safe. Reordering or removing one changes the tags of
+the mutations that follow it, which invalidates any queued force-inclusion entry
+and any client that hardcodes a tag.
+
+**`SCHEDULER`** is the only address allowed to settle mutations. Set it to the
+address of the account your server signs with. A contract deployed with the wrong
+scheduler cannot be used by that server, so pass it as a constructor argument
+rather than hardcoding it.
+
+**`FORCE_INCLUSION_DELAY`** is how many blocks must pass after a user enqueues a
+mutation before anyone can execute it without the server. The examples use `658`
+blocks, about 4.4 minutes at 0.4 seconds per block. Shorter delays weaken the
+server's ability to order mutations; longer delays leave users waiting when the
+server is down.
+
+**`DOMAIN_SEPARATOR`** is set for you by the `Typewriter` constructor, from the
+fixed domain name `Typewriter`, version `1`, the chain ID, and the contract
+address. Do not assign it. The runtime exposes the matching domain to clients as
+[`typewriter.domain`](/reference/typescript#domain).
+
+## Rules for mutation code
+
+A mutation runs twice: once on the server, before it is accepted, and once onchain,
+when it settles. Both runs must produce the same result, which rules out anything
+the server cannot reproduce — other contracts' state, block randomness, remaining
+gas. See [Determinism](/concepts#determinism) for the full list before you write
+anything unusual.
+
+## Next steps
+
+- [Configure the server](/guides/configuration) starts the runtime against your
+  deployed contract.
+- The [Solidity reference](/reference/solidity) documents every export of
+  `typewriter/Typewriter.sol`.

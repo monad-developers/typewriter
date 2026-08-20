@@ -1,0 +1,661 @@
+---
+title: TypeScript
+description: Reference for everything exported from the typewriter package.
+---
+
+# TypeScript
+
+Reference for the exports of the `typewriter` package: `createTypewriter`, the
+configuration it takes, the handle it returns, the event payloads, and the
+generated database schema.
+
+```ts
+import { createTypewriter, TYPEWRITER_DOMAIN } from "typewriter";
+```
+
+`createTypewriter` and `TYPEWRITER_DOMAIN` are the only runtime values the package
+exports. Everything else is a type.
+
+Types on the handle are derived from your contract. The generated declaration
+beside your `.sol` file carries your storage layout, mutation names and parameters,
+and `Signature` fields, so `execute`, `state`, and `schema` are typed against your
+application rather than the generic shapes shown here. See
+[Generated declarations](/guides/project-structure#generated-declarations).
+
+## Entry point
+
+### `createTypewriter`
+
+* **Type:**
+
+```ts
+function createTypewriter(
+  entrypoint: TypewriterSolidityEntrypoint,
+  config: TypewriterConfig,
+): Promise<Typewriter>
+```
+
+Starts the runtime and resolves to a [`Typewriter`](#typewriter) handle.
+`entrypoint` is the default export of your contract's `.sol` file.
+
+Before resolving, it compiles the contract with
+`forge build --ast --extra-output storageLayout --force`, reads the compiled
+output, connects to the chain and to Postgres, takes a Postgres advisory lock for
+this chain ID and contract address, creates or reuses the deployment's schema, and
+rebuilds local EVM state from persisted storage writes. If any step fails, it
+releases what it acquired and rejects.
+
+Only one runtime may run per deployment. A second process pointed at the same chain
+ID and contract address waits for the lock and rejects if it does not get it.
+
+```ts
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address: process.env.CONTRACT_ADDRESS as `0x${string}`,
+  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as `0x${string}`),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: process.env.RPC_URL as string,
+  database: { url: process.env.DATABASE_URL as string },
+});
+```
+
+## Configuration
+
+### `TypewriterConfig`
+
+* **Type:**
+
+```ts
+type TypewriterConfig = {
+  address: Address.Address
+  account: PrivateKeyAccount
+  chainId: number
+  rpcUrl: string | string[]
+  database: { url: string; maxConnections?: number }
+  blockPollingIntervalMs?: number
+  confirmations?: {
+    safeBlockDepth?: number
+    finalizedBlockDepth?: number
+  }
+  onFatalError?: (error: unknown) => void
+  sequencing?: TypewriterSequencingConfig
+}
+```
+
+The second argument to [`createTypewriter`](#createtypewriter). `address`,
+`account`, `chainId`, `rpcUrl`, and `database` are required; the rest take the
+defaults documented below.
+
+Configuration is validated before the runtime starts, so an invalid combination —
+`batchOrder` without batch sequencing, a `finalizedBlockDepth` below
+`safeBlockDepth`, an empty `rpcUrl` array — throws rather than misbehaving later.
+
+### `address`
+
+* **Type:** `Address.Address`
+
+The deployed contract's address. It also identifies the deployment: the Postgres
+schema and advisory lock are keyed on this address and
+[`chainId`](#chainid).
+
+### `account`
+
+* **Type:** `PrivateKeyAccount`
+
+The scheduler account, a viem `PrivateKeyAccount`. The runtime signs and sends the
+transactions that settle mutations with it, and it pays their gas.
+
+Its address must match the `SCHEDULER` immutable the contract was deployed with, or
+every settlement transaction reverts with
+[`UnauthorizedExecute`](/reference/solidity#unauthorizedexecute).
+
+### `chainId`
+
+* **Type:** `number`
+
+The chain the contract is deployed to. It becomes the `chainId` of the EIP-712
+[`domain`](#domain) clients sign against, so a wrong value produces signatures the
+contract rejects.
+
+### `rpcUrl`
+
+* **Type:** `string | string[]`
+
+One or more JSON-RPC endpoints. An array must contain at least one URL, and the
+runtime falls back through the list.
+
+### `database`
+
+* **Type:** `{ url: string; maxConnections?: number }`
+
+Postgres connection options. `url` is the connection string; `maxConnections` sets
+the pool size.
+
+The runtime creates one schema per deployment, named
+`typewriter_<chainId>_<address>`, and owns the tables in it. Two deployments can
+share a database.
+
+### `sequencing`
+
+* **Type:**
+
+```ts
+type TypewriterSequencingConfig =
+  | {
+      order: "fifo"
+      submitIntervalMs?: number
+    }
+  | {
+      order: "batch"
+      batchIntervalMs?: number
+      submitIntervalMs?: number
+      batchOrder: readonly string[]
+    }
+```
+
+* **Default:** `{ order: "fifo" }`
+
+The order the runtime accepts mutations in. See
+[Choose a sequencing mode](/guides/configuration#choose-a-sequencing-mode).
+
+With `"fifo"`, [`execute`](#execute) runs the mutation immediately and resolves as
+soon as it is accepted. With `"batch"`, `execute` enqueues the mutation and resolves
+when the next batch is processed.
+
+### `sequencing.submitIntervalMs`
+
+* **Type:** `number`
+* **Default:** `400`
+
+How often accepted mutations are settled onchain, in milliseconds. Everything
+accepted since the last transaction goes into one transaction. Applies to both
+sequencing modes.
+
+### `sequencing.batchIntervalMs`
+
+* **Type:** `number`
+* **Default:** `50`
+
+Batch mode only. How often enqueued mutations are gathered into a batch, in
+milliseconds. It bounds how long [`execute`](#execute) waits before resolving.
+
+### `sequencing.batchOrder`
+
+* **Type:** `readonly string[]`
+
+Batch mode only, and required there. The mutation names — `Mutation` enum member
+names — in the order mutations are executed within a batch. Passing it with
+`order: "fifo"` throws.
+
+```ts
+sequencing: {
+  order: "batch",
+  batchOrder: ["Mint", "Transfer"],
+},
+```
+
+### `confirmations.safeBlockDepth`
+
+* **Type:** `number`
+* **Default:** `1`
+
+How many blocks behind the chain tip a block must be before its mutations report
+`safe`. Must be less than or equal to
+[`finalizedBlockDepth`](#confirmationsfinalizedblockdepth).
+
+### `confirmations.finalizedBlockDepth`
+
+* **Type:** `number`
+* **Default:** `5`
+
+How many blocks behind the chain tip a block must be before its mutations report
+`finalized`. Must be greater than or equal to
+[`safeBlockDepth`](#confirmationssafeblockdepth). It also bounds how far back the
+runtime tracks the chain for reorgs.
+
+### `blockPollingIntervalMs`
+
+* **Type:** `number`
+* **Default:** `200`
+
+How often the runtime polls for new blocks, in milliseconds. Lower values shorten
+the delay before `included`, `safe`, and `finalized` updates, at the cost of more
+RPC requests.
+
+### `onFatalError`
+
+* **Type:** `(error: unknown) => void`
+
+Called when the runtime hits an error it cannot recover from. Without it, the error
+is rethrown, which in Bun means an uncaught exception.
+
+After a fatal error the runtime stops accepting mutations, and
+[`execute`](#execute) rejects with that error. Use this callback to shut down or
+restart the process.
+
+```ts
+onFatalError: (error) => {
+  console.error(error);
+  process.exit(1);
+},
+```
+
+## Handle
+
+### `Typewriter`
+
+* **Type:**
+
+```ts
+type Typewriter = {
+  readonly state: StorageProxy
+  readonly schema: TypewriterSchema
+  readonly domain: TypedData.Domain
+  execute: (input: TypewriterMutationInput) => Promise<TypewriterMutationResult>
+  close: () => Promise<void>
+  on(event: "mutation", cb: (event: MutationEvent) => void): () => void
+  on(event: "batch", cb: (event: BatchEvent) => void): () => void
+  on(event: "block", cb: (event: BlockEvent) => void): () => void
+}
+```
+
+What [`createTypewriter`](#createtypewriter) resolves to. The handle is the whole
+runtime API: there is no separate client, and no other way to submit a mutation or
+read state.
+
+### `state`
+
+* **Type:** `StorageProxy<storageLayout, true>`
+
+A read-only projection of the contract's storage, shaped like your `State` struct.
+Field access on a composite type returns a sub-proxy synchronously; reading a leaf
+field performs a slot read and returns a promise. Mappings are indexed by key, and
+a dynamic array's `length` is itself a read.
+
+```ts
+const total = await typewriter.state.totalSupply;
+const account = typewriter.state.accounts["0x70997970C51812dc3A010C7d01b50e0d17dc79C8"];
+const [balance, nonce] = await Promise.all([account.balance, account.nonce]);
+```
+
+Reads resolve against the runtime's local EVM state, not `eth_call`, so they
+include every accepted mutation — including ones that have not settled onchain.
+
+Mapping key types are limited to `address`, `bool`, `uintN`, `intN`, and `bytesN`.
+Enumerating a mapping with `Object.keys` returns only the keys the runtime has seen
+written. Assigning to the proxy throws.
+
+See [Read application state](/guides/read-state).
+
+### `schema`
+
+* **Type:** [`TypewriterSchema`](#typewriterschema)
+
+The Drizzle table definitions for this deployment: one table per mutation, plus the
+runtime's own state tables. The runtime owns and migrates them; your application
+reads from them with its own database client.
+
+### `domain`
+
+* **Type:** `TypedData.Domain`
+
+The resolved EIP-712 domain: [`TYPEWRITER_DOMAIN`](#typewriter_domain) plus
+[`chainId`](#chainid) and [`address`](#address).
+
+```ts
+{
+  name: "Typewriter",
+  version: "1",
+  chainId: 31337,
+  verifyingContract: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+}
+```
+
+Serve it to clients rather than hardcoding it, so the values come from one place.
+
+### `execute`
+
+* **Type:**
+
+```ts
+execute(input: {
+  name: string
+  params: unknown
+  signature: unknown
+}): Promise<{ id: number }>
+```
+
+Submits a signed mutation and resolves once it is accepted — ordered and executed
+successfully against local state. Rejects if the mutation reverts, with the revert
+error.
+
+- `name` is a `Mutation` enum member name, exactly as declared in the contract, for
+  example `"Transfer"`.
+- `params` is an object with every field of that mutation's struct. Integer fields
+  of 56 bits or more are `bigint`; narrower ones are `number`.
+- `signature` is an object with every field of the contract's `Signature` struct.
+
+Both `params` and `signature` are typed from the contract, so a missing field or a
+wrong mutation name is a type error.
+
+When resolution happens depends on [`sequencing`](#sequencing): immediately for
+first-in-first-out, at the next batch interval for batch. Either way it resolves
+before the mutation is onchain — use [`on`](#on) to follow it further.
+
+```ts
+const { id } = await typewriter.execute({ name: "Transfer", params, signature });
+```
+
+### `on`
+
+* **Type:**
+
+```ts
+on(event: "mutation", cb: (event: MutationEvent) => void): () => void
+on(event: "batch", cb: (event: BatchEvent) => void): () => void
+on(event: "block", cb: (event: BlockEvent) => void): () => void
+```
+
+Subscribes to a runtime event and returns an unsubscribe function. Callbacks
+receive [`MutationEvent`](#mutationevent), [`BatchEvent`](#batchevent), or
+[`BlockEvent`](#blockevent).
+
+The `batch` event only fires under batch sequencing.
+
+```ts
+const unsubscribe = typewriter.on("mutation", (mutation) => {
+  console.log(mutation.id, mutation.status);
+});
+```
+
+### `close`
+
+* **Type:** `() => Promise<void>`
+
+Stops the runtime and releases everything it acquired at startup, including the
+database connections and the deployment lock. Calling it again is a no-op.
+
+## Events
+
+### `MutationStatus`
+
+* **Type:**
+
+```ts
+type MutationStatus =
+  | "received"
+  | "enqueued"
+  | "accepted"
+  | "rejected"
+  | "included"
+  | "safe"
+  | "finalized"
+```
+
+The status of a mutation. `enqueued` applies only to force-included mutations,
+which a user sends directly to the contract. See the
+[mutation lifecycle](/how-it-works#mutation-lifecycle).
+
+### `MutationEvent`
+
+* **Type:**
+
+```ts
+type MutationEvent =
+  | {
+      status: "received" | "enqueued"
+      id: number
+      name: string
+      params: unknown
+      signature: unknown
+    }
+  | {
+      status: "accepted" | "included" | "safe" | "finalized"
+      id: number
+      name: string
+      params: unknown
+      signature: unknown
+      isForceInclusion: boolean
+    }
+  | {
+      status: "rejected"
+      id: number
+      name: string
+      params: unknown
+      signature: unknown
+      isForceInclusion: boolean
+      error: unknown
+    }
+```
+
+The payload of a `mutation` event, fired every time a mutation changes status. It is
+a discriminated union on `status`, and `params` and `signature` are typed from the
+mutation named by `name`.
+
+`id` matches the ID [`execute`](#execute) resolves with and the `id` column in the
+mutation's table. Statuses are not strictly increasing: a reorg or a reverted
+settlement can move a mutation backwards.
+
+### `BatchStatus`
+
+* **Type:** `"accepted" | "included" | "safe" | "finalized"`
+
+The status of a batch.
+
+### `BatchEvent`
+
+* **Type:**
+
+```ts
+type BatchEvent = {
+  status: BatchStatus
+  id: number
+  position: number
+  mutations: MutationEvent[]
+  forceIncludedMutations?: MutationEvent[]
+}
+```
+
+The payload of a `batch` event, fired under batch sequencing when a batch changes
+status. `position` is the batch's place in submission order. `mutations` holds the
+batch's mutations at `accepted` or later, and `forceIncludedMutations` holds any
+force-included mutations settled alongside it.
+
+### `BlockStatus`
+
+* **Type:** `"included" | "safe" | "finalized"`
+
+The confirmation status of a block the runtime submitted to. There is no `accepted`
+block status: acceptance happens before a block exists.
+
+### `BlockEvent`
+
+* **Type:**
+
+```ts
+// BlockEvent<"fifo">
+type BlockEvent = {
+  status: BlockStatus
+  number: bigint
+  hash: Hex.Hex
+  timestamp: bigint
+  transactionHash: Hex.Hex
+  mutations: MutationEvent[]
+}
+
+// BlockEvent<"batch">
+type BlockEvent = {
+  status: BlockStatus
+  number: bigint
+  hash: Hex.Hex
+  timestamp: bigint
+  transactionHash: Hex.Hex
+  batches: BatchEvent[]
+  forceIncludedMutations: MutationEvent[]
+}
+```
+
+The payload of a `block` event, fired when a block holding one of the runtime's
+settlement transactions reaches a confirmation depth. `transactionHash` is that
+transaction.
+
+The last fields depend on sequencing, so the exported type takes the mode as a type
+parameter: write `BlockEvent<"fifo">` or `BlockEvent<"batch">` when you annotate a
+callback by hand.
+
+## Generated schema
+
+### `TypewriterSchema`
+
+* **Type:** [`TypewriterStateSchema`](#typewriterstateschema) `&` [`TypewriterMutationSchema`](#typewritermutationschema)
+
+The type of [`schema`](#schema) on the handle: the runtime's state tables plus one
+table per mutation. Tables live in the deployment's Postgres schema, and the table
+objects carry that schema name, so queries need no explicit schema.
+
+The runtime writes these tables. Your application reads them with its own Drizzle
+client:
+
+```ts
+import { desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
+
+const db = drizzle({ client: new Bun.SQL({ url: process.env.DATABASE_URL }) });
+
+const recent = await db
+  .select()
+  .from(typewriter.schema.transfer_mutations)
+  .orderBy(desc(typewriter.schema.transfer_mutations.id))
+  .limit(20);
+```
+
+### `TypewriterMutationSchema`
+
+* **Type:** one `<name>_mutations` table per `Mutation` enum member
+
+The mutation tables, named after the mutation, lowercased: `Mutation.Transfer`
+becomes `transfer_mutations` and `Mutation.MarketOrder` becomes
+`marketorder_mutations`.
+
+A row is written when a mutation is accepted, and updated as it advances. Mutations
+that were received but never accepted, and rejected mutations, are not written.
+
+Every table starts with the same lifecycle columns:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `integer`, primary key | Matches the `execute` result and event `id` |
+| `status` | `mutation_status` enum | `accepted`, `included`, `safe`, or `finalized` |
+| `executionIndex` | `numeric(78,0)` | Onchain settlement index; set once included |
+| `blockNumber` | `numeric(78,0)` | Null until included |
+| `blockHash` | `char(66)` | Null until included |
+| `blockTimestamp` | `numeric(78,0)` | Null until included |
+| `transactionHash` | `char(66)` | The settlement transaction; null until included |
+| `acceptedAt` | `timestamp` | Defaults to now |
+| `includedAt` | `timestamp` | Null until included |
+| `safeAt` | `timestamp` | Null until safe |
+| `finalizedAt` | `timestamp` | Null until finalized |
+
+Then one column per mutation argument, named after the argument, and one column per
+`Signature` field, prefixed `signature_`. Both are typed from their ABI type:
+
+| ABI type | Postgres column |
+| --- | --- |
+| `bool` | `boolean` |
+| `address` | `char(42)` |
+| `bytes1`–`bytes32` | `char(2 + 2N)`, so `bytes32` is `char(66)` |
+| `bytes`, `string` | `text` |
+| arrays and tuples | `jsonb` |
+
+Integers map by width:
+
+| Postgres column | Unsigned | Signed |
+| --- | --- | --- |
+| `smallint` | `uint8` | `int8`, `int16` |
+| `integer` | `uint16`, `uint24` | `int24`, `int32` |
+| `bigint` | `uint32`–`uint56` | `int40`–`int64` |
+| `numeric(78,0)` | `uint64`–`uint256` | `int72`–`int256` |
+
+### `TypewriterStateSchema`
+
+* **Type:** `{ slot_writes, known_paths }`
+
+The runtime's own tables. `slot_writes` records every storage slot an accepted
+mutation wrote, which is what local state is rebuilt from on startup.
+`known_paths` records the mapping and array keys the runtime has seen, which is
+what makes mapping enumeration on [`state`](#state) possible.
+
+Treat both as internal. Reading them is harmless; writing to them corrupts the
+runtime's view of state.
+
+## Types and constants
+
+### `TYPEWRITER_DOMAIN`
+
+* **Type:** `{ readonly name: "Typewriter"; readonly version: "1" }`
+
+The fixed part of the EIP-712 domain, exported as a value. The runtime combines it
+with the chain ID and contract address to build [`domain`](#domain). A client that
+builds the domain itself can use it instead of repeating the strings.
+
+### `KeyType`
+
+* **Type:** `0 | 1 | 2`
+
+The numeric form of the Solidity [`KeyType`](/reference/solidity#keytype) enum: `0`
+is P-256, `1` is WebAuthn-P256, `2` is secp256k1. Exported as a type only —
+Typewriter does not prescribe how your `Signature` struct carries the key type, or
+whether it carries one at all.
+
+### `TypewriterSolidityEntrypoint`
+
+* **Type:** `string & { readonly __typewriterSolidityEntrypoint?: metadata }`
+
+The type of a `.sol` default import: the file's path, branded with the contract
+metadata the runtime derived from it. The brand is what gives
+[`createTypewriter`](#createtypewriter) the types for `execute`, `state`, and
+`schema`.
+
+Declare the module type once per project, as shown in
+[Project structure](/guides/project-structure#src).
+
+### `TypewriterMutationInput`
+
+* **Type:**
+
+```ts
+type TypewriterMutationInput = {
+  name: string
+  params: unknown
+  signature: unknown
+}
+```
+
+The argument to [`execute`](#execute). Against a real contract it is a union over
+the contract's mutations, so `params` narrows to the struct fields of the mutation
+named by `name`.
+
+### `TypewriterMutationResult`
+
+* **Type:** `{ id: number }`
+
+What [`execute`](#execute) resolves with. The `id` identifies the mutation in
+events and in the mutation tables.
+
+### `TypewriterMutation`
+
+* **Type:** `{ name: string; params: unknown; signature: unknown }`
+
+One mutation's name, arguments, and signature, parameterized by the mutation's
+configuration. `TypewriterMutationInput` is the union of these over a contract's
+mutations.
+
+### `ResolvedTypewriterMutationConfig`
+
+* **Type:** `{ tag: number; params: readonly AbiParameter[] }`
+
+The runtime's view of one mutation after reading the contract: its `uint8` tag and
+its ABI parameters.

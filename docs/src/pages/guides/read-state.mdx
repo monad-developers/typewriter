@@ -1,0 +1,120 @@
+---
+title: Read application state
+description: Read current state with the typed state proxy, and read mutation history from the generated Postgres tables.
+---
+
+# Read application state
+
+Your contract has no getters, and clients never call `eth_call`. Reads go through
+the server, which has two sources: `typewriter.state` for current state, and the
+generated Postgres tables for the history of accepted mutations.
+
+## Read current state
+
+`typewriter.state` projects your `State` struct onto the contract's storage slots.
+Field access returns a promise, mappings are indexed by key, and nothing needs a
+`public` getter in Solidity.
+
+```ts [src/index.ts]
+const total = await typewriter.state.totalSupply;                  // bigint
+
+const account = typewriter.state.accounts["0x70997970C51812dc3A010C7d01b50e0d17dc79C8"];
+const [balance, nonce] = await Promise.all([account.balance, account.nonce]);
+```
+
+Intermediate access is synchronous and cheap: `typewriter.state.accounts[address]`
+does no work, it just narrows the path. Only reading a leaf field performs a slot
+read. Read several fields with `Promise.all`, as above, rather than awaiting each
+one in sequence.
+
+Nested structs, arrays, and mappings all work. A dynamic array's `length` is also a
+slot read, so it is a promise too:
+
+```ts [src/index.ts]
+const count = await typewriter.state.orders.length;  // number
+const first = await typewriter.state.orders[0].price;
+```
+
+Three limits are worth knowing:
+
+- **Mapping keys** must be `address`, `bool`, `uintN`, `intN`, or `bytesN`. The
+  proxy derives the slot from the key, and it cannot do that for `string` or
+  `bytes` keys.
+- **Enumerating a mapping** with `Object.keys` returns only the keys the runtime
+  has seen written. It recovers them from execution and persists them, so they
+  survive a restart, but a mapping is not a complete index of its keys.
+- **State is read-only.** Assigning to it throws. Mutations are the only way to
+  change state.
+
+### What these reads see
+
+`typewriter.state` reflects locally accepted state. It includes every mutation the
+server has accepted, including ones that have not settled onchain yet, which is
+what makes it useful for the response to a mutation the user just submitted.
+
+That also means it can move backwards, in the rare cases described in
+[When mutations move backwards](/how-it-works#when-mutations-move-backwards).
+Reads are always self-consistent, but a balance you read now may not be final.
+
+## Read mutation history
+
+`typewriter.state` answers "what is true now". For "what happened", the runtime
+writes one Postgres table per mutation and keeps each row updated as the mutation
+advances through its lifecycle.
+
+`typewriter.schema` holds those tables as [Drizzle](https://orm.drizzle.team)
+definitions, named after the mutation, lowercased: `Mutation.Transfer` becomes
+`typewriter.schema.transfer_mutations`. Every table has the same lifecycle columns
+— `id`, `status`, `blockNumber`, `transactionHash`, timestamps — followed by one
+column per mutation argument and one `signature_`-prefixed column per `Signature`
+field. The [TypeScript reference](/reference/typescript#typewriterschema) lists
+them.
+
+The runtime owns these tables but does not expose a query client, so bring your
+own connection to the same database:
+
+```ts [src/index.ts]
+import { desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sql/postgres";
+
+const db = drizzle({ client: new Bun.SQL({ url: process.env.DATABASE_URL }) });
+
+const transfers = typewriter.schema.transfer_mutations;
+
+const recent = await db
+  .select()
+  .from(transfers)
+  .orderBy(desc(transfers.id))
+  .limit(20);
+```
+
+The table objects already carry the deployment's schema name, so queries resolve to
+the right tables without naming the schema. Add `drizzle-orm` to your dependencies
+to use them.
+
+Argument columns store what the client submitted, so an `address` column holds the
+hex string in whatever case it was sent. Normalize case on both sides before
+filtering on one.
+
+A row appears when a mutation is accepted, and its `status`, block fields, and
+timestamps are filled in as it is included, becomes safe, and finalizes. Rejected
+mutations are never written. These tables record accepted mutations, not attempts.
+
+Treat the tables as read-only. Writing to them puts the runtime's view and the
+database out of agreement.
+
+## React to changes
+
+To update something when a mutation or block advances, subscribe with
+`typewriter.on` instead of polling:
+
+```ts [src/index.ts]
+const unsubscribe = typewriter.on("block", (block) => {
+  console.log(block.status, block.number, block.transactionHash);
+});
+```
+
+There are three events — `mutation`, `batch`, and `block` — and each returns an
+unsubscribe function. [Add API endpoints](/guides/api-endpoints#stream-status-updates)
+uses the `mutation` event to stream status to a client, and the
+[TypeScript reference](/reference/typescript#events) documents every payload.

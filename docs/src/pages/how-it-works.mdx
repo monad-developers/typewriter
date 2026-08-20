@@ -1,0 +1,115 @@
+---
+title: How it works
+description: What happens between a user signing a mutation and the transaction that settles it onchain.
+---
+
+# How it works
+
+A Typewriter application has three parts: a client that signs mutations, a
+server that orders and executes them, and a contract that settles them onchain.
+This page follows one mutation through all three.
+
+## The parts
+
+**The client** builds a mutation, signs it as EIP-712 typed data, and sends it to
+the server over HTTP. In normal operation it sends no transactions to the chain and
+needs no gas.
+
+**The server** is a Bun process you start with `createTypewriter`. It orders
+incoming mutations, executes each one in an embedded EVM
+([revm](https://github.com/bluealloy/revm)) against its own copy of the
+contract's storage, and answers the client as soon as it knows the result. On a
+timer, it collects everything it has accepted into a single transaction and sends
+it to the chain.
+
+**The contract** inherits `Typewriter` and implements one function, `dispatch`,
+which decodes a mutation, verifies its signature, and applies it to state. The
+contract holds the canonical state. The server's copy is a mirror of it.
+
+## The path of a mutation
+
+1. The client reads the EIP-712 domain from the server, and the signer's current
+   nonce from application state.
+2. The client signs the mutation and posts it to the server.
+3. The server assigns the mutation a position in the sequence. Under
+   first-in-first-out sequencing that is the arrival order; under batch
+   sequencing the mutation waits for the next batch interval and is ordered by
+   mutation type. See [Sequencing](/concepts#sequencing).
+4. The server executes the mutation in revm by calling the contract's own
+   bytecode, so the signature check, nonce check, and state transition are the
+   same code that will run onchain. If execution reverts, the mutation is
+   rejected and the client gets the revert reason.
+5. If execution succeeds, the mutation is `accepted`. The server records the
+   storage slots the mutation wrote, writes them to Postgres, and returns the
+   mutation ID to the client. This usually takes a few milliseconds.
+6. Every `submitIntervalMs` — 400 ms by default — the server sends one
+   transaction containing every mutation accepted since the last one.
+7. The server polls for new blocks. When it sees the transaction, the mutations
+   in it become `included`, then `safe`, then `finalized` as the chain builds on
+   top of that block.
+
+## Mutation lifecycle
+
+Every mutation reports one of these statuses, which you can subscribe to with
+[`typewriter.on`](/reference/typescript#on).
+
+| Status | Meaning |
+| --- | --- |
+| `received` | The server has the mutation but has not ordered or executed it yet. |
+| `accepted` | The server ordered the mutation and executed it successfully against local state. |
+| `included` | The transaction that settles the mutation is in a block. |
+| `safe` | The block holding the mutation is `safeBlockDepth` blocks behind the chain tip. |
+| `finalized` | The block holding the mutation is `finalizedBlockDepth` blocks behind the chain tip. |
+| `rejected` | Execution reverted. The mutation is not applied. |
+| `enqueued` | The server detected a mutation that a user sent directly to the contract. See [Force inclusion](/concepts#force-inclusion). |
+
+## Why the server can answer before a block
+
+The contract's `execute` function only accepts calls from one address: the
+`SCHEDULER` immutable, which you set to the server's account address when you
+deploy. No one else can settle a mutation.
+
+Because no other transaction can change the contract's state between the server's
+local execution and the server's own transaction, local execution produces the
+result the chain will produce. Acceptance therefore reports what happened, not a
+prediction.
+
+The tradeoff is that the server is the only party that can order and settle
+mutations. If it stops, mutations stop, apart from
+[force inclusion](/concepts#force-inclusion).
+
+## When mutations move backwards
+
+A mutation that has not reached `finalized` can lose its place in the chain, in
+which case it moves back to an earlier status and is re-emitted with the new one.
+The runtime tracks the chain back as far as `finalizedBlockDepth` blocks, so a
+mutation stops moving once it is that deep. Two things cause a mutation to move
+backwards.
+
+**Reorgs.** The server reconciles every new block against its view of the chain.
+When a block it had counted is no longer canonical, the mutations in it move back
+to `accepted`, and the server settles them again on the new canonical chain.
+
+**Reverted settlement.** If a mutation succeeds locally but reverts onchain, the
+mutations in that transaction move back to `received` and are re-executed against
+current state. This should not happen for a contract that follows the
+[determinism rules](/concepts#determinism); it means local execution and onchain
+execution disagreed.
+
+Clients that display anything a user could act on should decide which status they
+trust. `accepted` arrives in milliseconds and can be reversed; `finalized` is the
+strongest signal the runtime reports, and how strong that is depends on the
+`finalizedBlockDepth` you configure and on the chain.
+
+## Restarts
+
+The server writes every accepted mutation and every storage slot it changes to
+Postgres as it happens. On startup it rebuilds its local EVM state from those
+slot writes, then reconciles any mutation that had not reached `finalized`
+against the chain. You can restart the process at any point without losing
+accepted state.
+
+One server runs per deployment. Startup takes a Postgres advisory lock keyed on
+the chain ID and contract address. A second process pointed at the same chain and
+contract waits for that lock and fails to start if it does not get it, so two
+runtimes cannot compete over the scheduler address.

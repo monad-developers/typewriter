@@ -1,0 +1,190 @@
+---
+title: Submit mutations
+description: Sign a mutation as EIP-712 typed data on the client, submit it, and follow it to settlement.
+---
+
+# Submit mutations
+
+A client submits a mutation in four steps: read the domain and the signer's nonce,
+build and sign the typed data, post it, then follow the mutation's status. This
+page shows each step with secp256k1 keys, using the
+[token example](/examples/token).
+
+Nothing here requires a browser. The same code runs in a script, a test, or
+another server.
+
+## Read the domain
+
+Every signature is scoped to an EIP-712 domain. Typewriter fixes the name to
+`Typewriter` and the version to `1`, and fills in the chain ID and contract
+address at runtime:
+
+```ts
+{
+  name: "Typewriter",
+  version: "1",
+  chainId: 31337,
+  verifyingContract: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+}
+```
+
+Fetch it once from the server endpoint that serves `typewriter.domain` and reuse
+it for every signature. Do not hardcode it: if the chain ID or address is wrong,
+the contract computes a different digest and every signature fails verification.
+
+```ts [frontend/App.tsx]
+const domain = superjson.parse(await (await fetch("/api/domain")).text());
+```
+
+## Build the typed data
+
+The types must match the type string the contract hashes against. For the token
+example's `Transfer`:
+
+```solidity
+keccak256("Transfer(address from,address to,uint256 amount,uint256 nonce,uint256 deadline)")
+```
+
+the client's types are:
+
+```ts [frontend/App.tsx]
+const TRANSFER_TYPES = {
+  Transfer: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "amount", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
+```
+
+The primary type name, the field names, the field types, and their order all
+appear in the digest. Any difference produces a valid signature over the wrong
+message, which the contract rejects with `InvalidSignature`.
+
+## Read the nonce
+
+The token contract stores one nonce per account and increments it on every
+accepted mutation, so a signature is valid for exactly one execution. Read the
+current value before signing:
+
+```ts [frontend/App.tsx]
+const { nonce } = await getJson<{ nonce: bigint }>(`/api/accounts/${address}`);
+```
+
+Read the nonce from the server, not from a local counter. The server's state
+includes every mutation it has accepted, including ones that have not settled yet.
+
+Keep one mutation per key in flight at a time, or track the nonce yourself and
+increment it locally for each signature. Two mutations signed with the same nonce
+cannot both succeed: the first one accepted advances the nonce, and the second is
+rejected.
+
+## Sign
+
+`signTypedData` produces a 65-byte secp256k1 signature. The contract expects the
+signature bytes in the layout its verifier decodes — for `Secp256k1`, that is
+`abi.encode(uint8 v, bytes32 r, bytes32 s)`:
+
+```ts [frontend/App.tsx]
+import {
+  encodeAbiParameters,
+  parseAbiParameters,
+  parseSignature,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+
+const signer = privateKeyToAccount(privateKey);
+
+const params = {
+  from: signer.address,
+  to: recipient,
+  amount: 100n,
+  nonce,
+  deadline: BigInt(Math.floor(Date.now() / 1000) + 60),
+};
+
+const signed = await signer.signTypedData({
+  domain,
+  types: TRANSFER_TYPES,
+  primaryType: "Transfer",
+  message: params,
+});
+
+const { v, r, s } = parseSignature(signed);
+const rawSignature = encodeAbiParameters(
+  parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
+  [Number(v), r, s],
+);
+```
+
+The value you send as `signature` is an object matching your contract's
+`Signature` struct, with every field present. The token example's struct has two
+fields, so:
+
+```ts [frontend/App.tsx]
+const signature = { keyType: 2, rawSignature };
+```
+
+`keyType` is `2` for secp256k1, `0` for P-256, and `1` for WebAuthn-P256. For the
+byte layout each one expects, see the
+[Solidity reference](/reference/solidity#byte-layouts). P-256 signing uses
+`crypto.subtle.sign`, and WebAuthn signing uses the credential assertion returned
+by `navigator.credentials.get`; the [order book example](/examples/order-book)
+does both.
+
+## Post the mutation
+
+Send the mutation name, its arguments, and the signature:
+
+```ts [frontend/App.tsx]
+const response = await fetch("/api/mutations", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: superjson.stringify({ name: "Transfer", params, signature }),
+});
+
+const { id } = superjson.parse(await response.text());
+```
+
+`name` is the `Mutation` enum member name as declared in the contract —
+`"Transfer"`, not `"transfer"`. `params` must contain every field of the mutation
+struct, with `uint256` values as `bigint`. Use superjson or another
+`bigint`-preserving encoding, as described in
+[Add API endpoints](/guides/api-endpoints#serialize-mutation-arguments-with-superjson).
+
+The response arrives when the mutation is accepted, usually in a few
+milliseconds, and before any block contains it. A non-2xx response means the
+contract rejected the mutation, and the body carries the revert reason.
+
+## Follow the mutation
+
+Acceptance is not settlement. An accepted mutation can still move backwards if the
+chain reorganizes, so anything with real consequences should wait for a later
+status. Open the status stream with the ID from the response:
+
+```ts [frontend/App.tsx]
+function watch(id: number, onStatus: (status: string) => void) {
+  const events = new EventSource(`/api/mutations/${id}/status`);
+  events.onmessage = (event) => {
+    const { status } = JSON.parse(event.data);
+    onStatus(status);
+    if (status === "finalized" || status === "rejected") events.close();
+  };
+  return () => events.close();
+}
+```
+
+The stream reports the statuses in the
+[mutation lifecycle](/how-it-works#mutation-lifecycle): `accepted`, then
+`included`, `safe`, and `finalized`. How much to show the user at each stage is an
+application decision — the token example shows the mutation immediately at
+`accepted` and marks it confirmed at `finalized`.
+
+## Next steps
+
+- [Read application state](/guides/read-state) covers reading balances, nonces,
+  and mutation history.
+- The [Solidity reference](/reference/solidity#signature-verification) documents
+  the verification helpers and their byte layouts.

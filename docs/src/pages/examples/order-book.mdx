@@ -1,0 +1,139 @@
+---
+title: Order Book
+description: A complete Typewriter application — ten mutations, custom batch ordering, passkey accounts, session keys, and onchain settlement of ERC-20 balances.
+---
+
+# Order Book
+
+The order book example is a full application: a central limit order book with
+passkey sign-up, session keys, ERC-20 deposits and withdrawals, and a trading UI.
+Read it for how the framework's pieces fit together in a complete application.
+
+Source: [apps/order-book](https://github.com/monad-exp/typewriter/tree/main/apps/order-book).
+
+## What it shows
+
+- Ten mutations in one contract, ordered within each batch by type.
+- An account model with a root key, additional keys, per-key permissions, and key
+  expiry — all defined by the application, not the framework.
+- WebAuthn passkeys as root keys and P-256 session keys for everything after
+  sign-up.
+- Two-dimensional nonces, so one account can have several mutations in flight.
+- ERC-20 deposits and withdrawals against balances tracked in contract state.
+- Read models built from the generated mutation tables, and event streams for
+  batches and blocks.
+
+## Layout
+
+| Directory | Contents |
+| --- | --- |
+| `contracts/src/` | The `OrderBook` contract and one library per mutation |
+| `src/` | The Bun server: runtime setup, HTTP routes, database queries |
+| `frontend/` | The React UI, served by the same Bun process |
+| `sdk/` | Typed data, ABI, and constants shared by the frontend and scripts |
+| `scripts/` | Command-line participants that trade against the HTTP API |
+
+## Mutations
+
+| Mutation | Effect |
+| --- | --- |
+| `Initialize` | Creates an account, sets its root key, and registers a session key |
+| `Authorize` | Adds a key to an account |
+| `Revoke` | Removes a key from an account |
+| `AddInstrument` | Registers a trading pair with its lot sizes |
+| `Deposit` | Credits an ERC-20 balance to an account |
+| `Withdrawal` | Debits a balance and sends the tokens back to the user |
+| `LimitOrder` | Places a resting order at a price |
+| `MarketOrder` | Fills against the best resting orders |
+| `ChangeOrder` | Reprices a resting order |
+| `CloseOrder` | Cancels a resting order and releases the funds it locked |
+
+## Batch ordering
+
+The server runs batch sequencing with the order exported from `src/app.ts`:
+
+```ts
+export const ORDER_BOOK_BATCH_ORDER = [
+  "Initialize",
+  "Authorize",
+  "Revoke",
+  "CloseOrder",
+  "ChangeOrder",
+  "LimitOrder",
+  "MarketOrder",
+  "AddInstrument",
+  "Deposit",
+  "Withdrawal",
+] as const;
+```
+
+The order encodes the application's rules about what happens first when several
+things arrive in the same 50 ms window. Account changes come first, so a key
+authorized in the window can sign in it. Cancellations and repricings come before
+new orders, so a trader who cancels and replaces never has both orders resting at
+once. Market orders come after limit orders, so they fill against the batch's new
+liquidity.
+
+No general rule would produce this order, which is why sequencing is left to the
+application.
+
+## Accounts
+
+An account is a `bytes32` ID with a list of keys. Each key has a type
+(`Secp256k1`, `P256`, or `WebAuthnP256`), a permissions bitmask, and an optional
+expiry.
+
+**Sign-up** registers a WebAuthn passkey and derives the account ID from the
+credential public key. The `Initialize` mutation carries the passkey as the root
+key and a freshly generated P-256 key as key 1. It is the one mutation with no
+signature verifier: instead, the contract requires that the account ID equal the
+hash of the root public key and that the account hold no keys yet.
+
+**After sign-up**, the browser signs with the session key stored in IndexedDB, using
+`crypto.subtle.sign`. Users see a passkey prompt at sign-up, not on every order.
+The example also has a demo path that uses a local secp256k1 key instead of a
+passkey, for testing without a WebAuthn-capable device.
+
+**Nonces** are two-dimensional. The top 192 bits of the `nonce` argument select an
+independent lane and the low 64 bits are the sequence in that lane, so a client can
+keep several mutations in flight by using a different lane for each.
+
+## Run it
+
+```bash
+git clone https://github.com/monad-exp/typewriter
+cd typewriter
+bun install
+cd apps/order-book
+cp .env.example.local .env
+```
+
+Start the chain in a second terminal. Use the Monad build of Anvil: the app's P-256
+and WebAuthn keys need the precompile at address `0x100`.
+
+```bash
+anvil --monad --block-time 0.4
+```
+
+Then deploy and run:
+
+```bash
+bun run deploy
+bun dev
+```
+
+Open `http://localhost:3000`. One Bun process serves the API, the frontend, and the
+Typewriter runtime. For Monad testnet, start from `.env.example.testnet` instead.
+
+### Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `RPC_URL` | RPC endpoint; accepts comma-separated failover URLs |
+| `CHAIN_ID` | `31337` for Anvil, `10143` for Monad testnet |
+| `DATABASE_URL` | Postgres connection string |
+| `ORDER_BOOK_ADDRESS` | Deployed `OrderBook` address |
+| `PRIVATE_KEY` | Scheduler key, also used to broadcast the deployment |
+| `BUN_PUBLIC_RP_ID` | WebAuthn relying party ID, usually the hostname |
+| `BUN_PUBLIC_ORIGIN` | Expected WebAuthn origin |
+| `API_URL` | Backend URL, used by the participant scripts |
