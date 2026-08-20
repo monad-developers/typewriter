@@ -1,141 +1,208 @@
 ---
 title: Add API endpoints
-description: Wire the HTTP routes your frontend calls around the handle returned by createTypewriter.
+description: Serve the Typewriter handle over HTTP — the domain, mutation submission, state reads, and status updates.
 ---
 
 # Add API endpoints
 
-`createTypewriter` returns a handle with five properties your HTTP layer uses directly: `domain`, `execute`, `state`, `schema`, and `on`. This guide shows how to expose those properties as routes in a `Bun.serve` server.
+The handle returned by `createTypewriter` is not a server. You expose the parts
+your client needs over HTTP. A client needs four things: the EIP-712 domain to
+sign against, a way to submit a signed mutation, a way to read state, and a way to
+follow a mutation after it is accepted.
 
-For the client side of each request, see [Submit mutations](/guides/submit-mutations) and [Read state](/guides/read-state). For the full handle API, see the [TypeScript reference](/reference/typescript).
+The examples on this page use `Bun.serve` and come from the
+[token example](/examples/token).
 
-## Set up the server
+## Serialize mutation arguments with superjson
 
-Call `createTypewriter` before you start the server. `createTypewriter` is async — it connects to the chain and database, runs migrations, and hydrates local state. Await it before passing the handle to your routes.
+Mutation arguments are typed from Solidity, so `uint256` fields are `bigint` in
+JavaScript. `JSON.stringify` throws on a `bigint`, and state reads return them, so
+plain JSON does not work in either direction.
 
-```ts
+[superjson](https://github.com/flightcontrolhq/superjson) serializes `bigint`
+losslessly and is what both example apps use on the server and the client:
+
+```ts [src/index.ts]
+import superjson from "superjson";
+
+function json(data: unknown): Response {
+  return new Response(superjson.stringify(data), {
+    headers: { "Content-Type": "application/json" },
+  });
+}
+```
+
+Encoding the values as strings by hand also works, as long as the server converts
+them back to `bigint` before calling `typewriter.execute`, which is typed against
+the mutation's Solidity types.
+
+## Start the runtime, then serve
+
+`createTypewriter` is asynchronous. Await it at the top level of your server file
+so the handle exists before the first request arrives.
+
+```ts [src/index.ts]
 import { createTypewriter } from "typewriter";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 
 const typewriter = await createTypewriter(Token, {
-  address: process.env.TOKEN_ADDRESS,
-  account: privateKeyToAccount(process.env.PRIVATE_KEY),
+  address: process.env.CONTRACT_ADDRESS as `0x${string}`,
+  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as `0x${string}`),
   chainId: Number(process.env.CHAIN_ID),
-  rpcUrl: process.env.RPC_URL,
-  database: { url: process.env.DATABASE_URL },
+  rpcUrl: process.env.RPC_URL as string,
+  database: { url: process.env.DATABASE_URL as string },
 });
 
 const server = Bun.serve({
   routes: {
-    // routes defined below
+    // routes go here
   },
 });
+
+console.log(`listening on ${server.url}`);
 ```
 
-## Expose the EIP-712 domain
+## Serve the EIP-712 domain
 
-Clients need the EIP-712 domain to construct the typed-data payload they sign. Return `typewriter.domain` from a dedicated endpoint.
+Clients need the domain to build the typed data they sign. Serve
+`typewriter.domain` rather than hardcoding it in the client, so the chain ID and
+contract address come from one place.
 
-```ts
-"/api/domain": () =>
-  new Response(JSON.stringify(typewriter.domain), {
-    headers: { "Content-Type": "application/json" },
-  }),
+```ts [src/index.ts]
+"/api/domain": () => json(typewriter.domain),
 ```
 
-`typewriter.domain` has the shape `{ name, version, chainId, verifyingContract }`. The `verifyingContract` field is the deployed contract address. Clients pass this object as the `domain` argument to `signTypedData`.
+The response has the shape
+`{ name: "Typewriter", version: "1", chainId, verifyingContract }`.
 
-## Submit mutations
+## Accept mutations
 
-Clients POST a signed mutation as a JSON body containing `name`, `params`, and `signature`. Parse the body and pass it directly to `typewriter.execute`. `typewriter.execute` resolves once the mutation is accepted, which is usually within milliseconds.
+A client posts `{ name, params, signature }`. Pass it to `typewriter.execute`,
+which resolves once the mutation is accepted and rejects if it is not.
 
-```ts
-"/api": {
+```ts [src/index.ts]
+"/api/mutations": {
   POST: async (req) => {
-    const body = JSON.parse(await req.text());
-    const mutation = await typewriter.execute(
-      body as Parameters<typeof typewriter.execute>[0],
-    );
-    return new Response(JSON.stringify(mutation), {
-      headers: { "Content-Type": "application/json" },
-    });
+    const body = superjson.parse(await req.text());
+    try {
+      const accepted = await typewriter.execute(
+        body as Parameters<typeof typewriter.execute>[0],
+      );
+      return json(accepted);
+    } catch (error) {
+      return new Response(superjson.stringify({ error: String(error) }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   },
 },
 ```
 
-`typewriter.execute` rejects with an error if the mutation is rejected. Catch the error and return an appropriate error response — for example, a `400` with the error message.
+The resolved value is `{ id }`, the mutation's ID. Return it: the client needs it
+to follow the mutation's status.
 
-The resolved value includes `id`, a number that identifies the mutation. Return it to the client so it can poll or stream the mutation's lifecycle status.
+A rejection means the contract reverted — a bad signature, a stale nonce, an
+insufficient balance. It is a client error, so `400` is the right status. Nothing
+is written to state and the mutation never settles.
+
+This endpoint accepts arbitrary input from the network, so validate the body
+before trusting it. `typewriter.execute` is typed but does not sanitize; treat
+`params` and `signature` as untrusted, exactly as your contract does.
 
 ## Read state
 
-`typewriter.state` is a typed proxy over the contract's storage. Field accesses return promises; mapping entries are indexed by key. Read state directly in your route handlers.
+`typewriter.state` reads the contract's storage. Field access returns a promise
+and mappings are indexed by key, so a route handler can read state directly:
 
-```ts
-"/api/account/:address": async (req) => {
-  const account = typewriter.state.accounts[req.params.address];
-  const [balance, nonce] = await Promise.all([
-    account.balance,
-    account.nonce,
-  ]);
-  return new Response(JSON.stringify({ balance: String(balance), nonce: String(nonce) }), {
-    headers: { "Content-Type": "application/json" },
+```ts [src/index.ts]
+"/api/accounts/:address": async (req) => {
+  const account = typewriter.state.accounts[req.params.address as `0x${string}`];
+  const [balance, nonce] = await Promise.all([account.balance, account.nonce]);
+  return json({ balance, nonce });
+},
+```
+
+Clients that sign mutations need a nonce endpoint like this one. See
+[Read application state](/guides/read-state) for what these reads do and do not
+see.
+
+## Stream status updates
+
+`typewriter.on("mutation", callback)` fires every time any mutation changes
+status. Subscribe once at startup and keep the latest event per mutation, so a
+client that connects after acceptance still gets the current status:
+
+```ts [src/index.ts]
+import type { MutationEvent } from "typewriter";
+
+const latest = new Map<number, MutationEvent>();
+
+typewriter.on("mutation", (mutation) => {
+  latest.set(mutation.id, mutation);
+});
+```
+
+Then serve one mutation's status as a server-sent event stream:
+
+```ts [src/index.ts]
+"/api/mutations/:id/status": (req) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return new Response("Bad Request", { status: 400 });
+
+  let unsubscribe = () => {};
+
+  const stream = new ReadableStream({
+    start(controller) {
+      let last: string | undefined;
+      let done = false;
+
+      const send = (mutation: MutationEvent) => {
+        if (done || mutation.status === last) return;
+        last = mutation.status;
+        controller.enqueue(`data: ${JSON.stringify({ status: mutation.status })}\n\n`);
+        if (mutation.status === "finalized" || mutation.status === "rejected") {
+          done = true;
+          unsubscribe();
+          latest.delete(id);
+          controller.close();
+        }
+      };
+
+      unsubscribe = typewriter.on("mutation", (mutation) => {
+        if (mutation.id === id) send(mutation);
+      });
+
+      const current = latest.get(id);
+      if (current !== undefined) send(current);
+    },
+    cancel() {
+      unsubscribe();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 },
 ```
 
-`typewriter.state` reflects locally accepted state, which can be ahead of what is included or finalized onchain. Use `typewriter.schema` with a Drizzle client to query finalized mutation history from the database.
+Three details matter here. `typewriter.on` returns an unsubscribe function, and a
+client that abandons the stream only tells you through `cancel`, so call it in both
+places or every disconnected client leaks a listener. Subscribe before replaying the
+stored status, so the unsubscribe function exists if that status is already terminal.
+And `latest` grows until entries are removed, which the terminal branch above does.
 
-## Stream mutation status over SSE
+For status meanings, see the [mutation lifecycle](/how-it-works#mutation-lifecycle).
 
-Use `typewriter.on("mutation", callback)` to subscribe to lifecycle events. The callback fires every time a mutation changes status — from `received` through `accepted`, `included`, `safe`, and `finalized`, or `rejected` on failure.
+## Next steps
 
-A minimal pattern is to keep a `Map` of recent mutations and serve each mutation's status as a server-sent event (SSE) stream:
-
-```ts
-import type { MutationEvent, MutationStatus } from "typewriter";
-
-const mutations = new Map<number, MutationEvent>();
-
-typewriter.on("mutation", (mutation) => {
-  mutations.set(mutation.id, mutation);
-});
-
-// In your route handler:
-"/api/mutation/:id/status": {
-  GET: (req) => {
-    const id = Number(req.params.id);
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        let last: MutationStatus | undefined;
-        while (true) {
-          const mutation = mutations.get(id);
-          if (mutation !== undefined && mutation.status !== last) {
-            last = mutation.status;
-            controller.enqueue(
-              `data: ${JSON.stringify({ status: mutation.status })}\n\n`,
-            );
-          }
-          if (last === "finalized" || last === "rejected") break;
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        controller.close();
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
-  },
-},
-```
-
-The client opens the SSE stream after it receives the mutation `id` from the submit endpoint. The stream closes once the mutation reaches `finalized` or `rejected`.
-
-`typewriter.on` returns an unsubscribe function. Call it when you no longer need the subscription — for example, in a `cancel` handler on the `ReadableStream`.
+- [Submit mutations](/guides/submit-mutations) is the client side of these
+  endpoints.
+- [Read application state](/guides/read-state) covers state reads and mutation
+  history.

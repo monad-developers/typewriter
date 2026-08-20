@@ -1,28 +1,32 @@
 ---
 title: Token
-description: A walkthrough of the token example app, which demonstrates account-owned mints and transfers with batch sequencing.
+description: A minimal Typewriter application — two mutations, batch sequencing, and a browser client that signs with a locally generated key.
 ---
 
 # Token
 
-The token app is the smallest practical Typewriter application. It implements two mutations — mint and transfer — for a single ERC-20-style token, and shows how each layer of a Typewriter app fits together: Solidity state and mutation libraries, a Bun HTTP server, and a React frontend.
+The token example is the smallest complete Typewriter application: a token with
+balances, two mutations, a server, and a browser client. It is the reference to
+copy when starting something new.
 
 Source: [apps/token](https://github.com/monad-exp/typewriter/tree/main/apps/token).
 
-## What the app demonstrates
+## What it shows
 
-- A `State` struct tracked inside a `Typewriter` contract.
-- Two mutation libraries (`MintMutation` and `TransferMutation`) compiled as Solidity libraries and dispatched from the contract.
-- EIP-712 typed-data signing for each mutation, verified on-chain.
-- Batch sequencing: the server orders mutations so that all `Mint` operations in a batch are settled before `Transfer` operations.
-- A server-sent events (SSE) endpoint that streams mutation status from `received` through to `finalized` or `rejected`.
-- A browser UI where users sign in by minting tokens to a locally generated key, then transfer to other known addresses.
+- A `State` struct with a total supply and a mapping of accounts.
+- Two mutation libraries, `MintMutation` and `TransferMutation`, sharing one
+  signature verifier.
+- secp256k1 signatures with a per-account nonce and a deadline.
+- Batch sequencing with an explicit mutation order.
+- A server-sent event stream that reports a mutation from `accepted` through
+  `finalized`.
+- A React client that generates its own key, signs typed data, and submits
+  mutations over HTTP.
 
-## Parts walkthrough
+## The contract
 
-### State and mutations
-
-`contracts/src/Token.sol` defines the on-chain state:
+`contracts/src/Token.sol` holds the state, the signature struct, and the shared
+verifier:
 
 ```solidity
 struct Account {
@@ -34,22 +38,32 @@ struct State {
     uint256 totalSupply;
     mapping(address => Account) accounts;
 }
+
+struct Signature {
+    uint8 keyType;
+    bytes rawSignature;
+}
 ```
 
-The `Token` contract extends `Typewriter` and holds a single `State` storage variable. Its `dispatch` function routes incoming mutation bytes to one of two handlers, identified by the `Mutation` enum (`Transfer = 0`, `Mint = 1`).
+The `Token` contract declares `enum Mutation { Transfer, Mint }` and routes both in
+`dispatch`. Each mutation lives in its own library:
 
-Each mutation lives in its own Solidity library:
+| Mutation | File | Effect |
+| --- | --- | --- |
+| `Transfer` | `contracts/src/Transfer.sol` | Moves a balance from `from` to `to`. The signer must be `from`. |
+| `Mint` | `contracts/src/Mint.sol` | Increases `totalSupply` and the balance of `to`. The signer must be `to`. |
 
-- `contracts/src/Mint.sol` — `MintMutation`. Increases `totalSupply` and the recipient's balance. The signer must be the `to` address.
-- `contracts/src/Transfer.sol` — `TransferMutation`. Decreases the sender's balance and increases the recipient's. The signer must be the `from` address.
+Both verifiers call one `verifyTokenSignature` helper, which checks the deadline,
+requires a secp256k1 key, checks the account's nonce, verifies the signature, then
+increments the nonce. Anyone can mint to themselves — the example has no supply
+policy, which keeps the authorization rule to one function.
 
-Both libraries use a shared `verifyTokenSignature` helper in `Token.sol` that checks the EIP-712 digest, validates the per-account nonce, and checks the deadline before accepting a mutation.
+[Define state and mutations](/guides/state-and-mutations) walks through this
+contract piece by piece.
 
-For more on writing state and mutations, see [State and mutations](/guides/state-and-mutations).
+## The server
 
-### Server
-
-`src/index.ts` is the entry point for the Bun server. It calls `createTypewriter` with the compiled `Token` artifact and a configuration object:
+`src/index.ts` starts the runtime with batch sequencing:
 
 ```ts
 const typewriter = await createTypewriter(Token, {
@@ -62,63 +76,71 @@ const typewriter = await createTypewriter(Token, {
 });
 ```
 
-The `sequencing` field sets the mode to `batch` and specifies that `Mint` mutations are settled before `Transfer` mutations within each batch. For details on sequencing options, see [Configuration](/guides/configuration).
+`batchOrder` puts every `Mint` in a batch before every `Transfer`, so a new account
+can mint and spend within one batch window. Under first-in-first-out sequencing the
+transfer would fail if it arrived first.
 
-The server exposes these HTTP routes:
+The routes are:
 
-| Route | Method | Description |
-|---|---|---|
-| `/` | GET | Serves the frontend HTML |
-| `/api` | POST | Accepts a signed mutation and returns its ID |
-| `/api/domain` | GET | Returns the EIP-712 domain for client-side signing |
-| `/api/addresses` | GET | Returns all known account addresses |
-| `/api/account/:address` | GET | Returns balance and nonce for an address |
-| `/api/mutation/:id/status` | GET | SSE stream of mutation status updates |
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/` | GET | The frontend |
+| `/api` | POST | Submits a signed mutation, returns its ID |
+| `/api/domain` | GET | The EIP-712 domain to sign against |
+| `/api/addresses` | GET | Known account addresses, for the transfer form |
+| `/api/account/:address` | GET | An account's balance and nonce |
+| `/api/mutation/:id/status` | GET | Server-sent event stream of one mutation's status |
 
-`src/app.ts` exports `signMint` and `signTransfer` helper functions used by both the test suite and the frontend. Each helper calls `signTypedData` via viem, then encodes the `v`, `r`, `s` components into the `TokenSignature` struct the contract expects.
+`/api/addresses` reads `Object.keys(typewriter.state.accounts)`, which returns the
+mapping keys the runtime has seen written — a convenience that works for a demo,
+not a general account index.
 
-### Frontend
+Requests and responses are encoded with superjson, because mutation arguments
+contain `bigint` values.
 
-`frontend/App.tsx` is a React component that uses TanStack Query for data fetching. When a user clicks "Sign In", the frontend generates a fresh private key in the browser, mints 1,000 tokens to the new address by calling `POST /api`, and stores the key in `localStorage`. After signing in, the user can transfer tokens to any other address that the server knows about.
+## The frontend
 
-The frontend fetches the EIP-712 domain from `/api/domain` on load so it can produce correctly-typed signatures without any hardcoded chain or contract addresses.
+`frontend/App.tsx` runs in the browser and holds no wallet. Signing in generates a
+fresh private key, stores it in `localStorage`, and mints 1,000 tokens to the new
+address. After that the user can transfer to any address the server knows.
 
-## How to run
+For each mutation the client fetches the domain and the account's nonce, signs the
+typed data with viem, posts it to `/api`, then opens the status stream with the
+returned ID and updates the row as the mutation advances.
 
-For full local setup — installing dependencies, configuring environment variables, and starting Anvil — follow [Get started](/guides/get-started).
-
-The app-specific steps, run from `apps/token`, are:
-
-1. Build the contract artifacts:
+## Run it
 
 ```bash
-bun run contracts:build
+git clone https://github.com/monad-exp/typewriter
+cd typewriter
+bun install
+cd apps/token
+cp .env.example .env
 ```
 
-2. Deploy the token contract:
+The example `.env` values match a local Anvil node and a Postgres instance on
+`localhost`. Start the chain in a second terminal:
+
+```bash
+anvil --monad --block-time 0.4
+```
+
+Then deploy and run:
 
 ```bash
 bun run deploy
-```
-
-3. Start the development server with hot reload:
-
-```bash
 bun run dev
 ```
 
-4. Open the app at `http://localhost:3000`.
-
-To run in production mode without hot reload, use `bun run start` instead of `bun run dev`.
+Open `http://localhost:3000`. `bun run deploy` prints the deployed address; if it
+differs from `TOKEN_ADDRESS` in `.env`, update it before starting the server.
 
 ### Environment variables
 
-Copy `apps/token/.env.example` to `apps/token/.env` and set these variables:
-
 | Variable | Description |
-|---|---|
-| `RPC_URL` | RPC endpoint used by the app and the deploy script |
+| --- | --- |
+| `RPC_URL` | RPC endpoint for the server and the deploy script |
+| `CHAIN_ID` | Chain ID used in the EIP-712 domain |
 | `DATABASE_URL` | Postgres connection string |
-| `CHAIN_ID` | Chain ID used for EIP-712 typed-data signing |
-| `TOKEN_ADDRESS` | Deployed token contract address |
-| `PRIVATE_KEY` | Private key for the scheduler account and Foundry broadcast |
+| `TOKEN_ADDRESS` | Deployed contract address |
+| `PRIVATE_KEY` | Scheduler key, also used to broadcast the deployment |

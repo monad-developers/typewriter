@@ -1,110 +1,131 @@
 ---
 title: Configure the server
-description: Set the required fields and tune sequencing and confirmation behavior for the Typewriter runtime.
+description: Start the runtime with createTypewriter and choose a sequencing mode.
 ---
 
 # Configure the server
 
-`createTypewriter` accepts a Solidity entrypoint and a `TypewriterConfig` object. This page covers every field you need to start the runtime and the options you can tune from there.
+`createTypewriter` takes your contract and a configuration object, and returns the
+handle your application uses to submit mutations and read state. This page covers
+the fields you need to start a working server. The
+[TypeScript reference](/reference/typescript#configuration) documents every field
+and its default.
 
-For a description of what each lifecycle stage means and how sequencing works conceptually, see [Concepts](/concepts). For the full TypeScript type signatures, see the [TypeScript reference](/reference/typescript).
+```ts [src/index.ts]
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  address: process.env.CONTRACT_ADDRESS as `0x${string}`,
+  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as `0x${string}`),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: process.env.RPC_URL as string,
+  database: { url: process.env.DATABASE_URL as string },
+});
+```
 
 ## Required fields
 
-The following five fields are required in every `TypewriterConfig`.
+Five fields are required.
 
-**`address`** — the onchain address of the deployed Typewriter contract.
+**`address`** is the deployed contract's address.
 
-**`account`** — a `PrivateKeyAccount` (from viem) that the runtime uses to sign and submit the onchain `execute` transactions. This account is the scheduler: the contract gates submission to this address, which lets the server simulate mutations locally and trust the result will hold onchain.
+**`account`** is the scheduler: a viem `PrivateKeyAccount` that signs and sends
+the transactions that settle mutations. Its address must be the `SCHEDULER` the
+contract was deployed with, or every settlement transaction reverts with
+`UnauthorizedExecute`. The account needs a gas balance, because it pays for all
+settlement.
 
-**`chainId`** — the chain ID as a number.
+**`chainId`** is the chain the contract is deployed to. The runtime puts it in the
+EIP-712 domain it hands to clients, so a wrong value produces signatures the
+contract rejects.
 
-**`rpcUrl`** — a JSON-RPC endpoint, as `string | string[]`. Pass an array to configure multiple fallback endpoints.
+**`rpcUrl`** is a JSON-RPC endpoint, or an array of endpoints to fall back
+through.
 
-**`database`** — a `{ url }` object pointing to a Postgres database. The runtime runs migrations and persists every accepted mutation and raw storage-slot write here.
+**`database`** is `{ url }` for a Postgres database. The runtime creates one
+schema per deployment and owns it.
 
-## Sequencing
+## Choose a sequencing mode
 
-Sequencing controls the order in which the server accepts mutations and groups them for onchain submission. Set it with the `sequencing` field. When `sequencing` is omitted, the runtime defaults to FIFO.
+`sequencing` sets the order the server accepts mutations in. It defaults to
+first-in-first-out, so you can leave it out until the order matters.
 
-### FIFO
+### First-in-first-out
 
 ```ts
 sequencing: {
   order: "fifo",
-  submitIntervalMs: 400, // default
-}
+  submitIntervalMs: 400,
+},
 ```
 
-Each call to `typewriter.execute()` immediately executes the mutation against local state and returns once the mutation is accepted — or throws if the mutation is rejected. Every `submitIntervalMs` milliseconds (default `400`), all accepted mutations are submitted with a single onchain transaction. Onchain inclusion order matches the order mutations were passed to `execute`.
+Each call to `typewriter.execute` runs immediately and returns as soon as the
+mutation is accepted or rejected. Mutations settle onchain in the order they were
+executed.
+
+Use this unless two mutation types need a guaranteed relative order.
 
 ### Batch
 
 ```ts
 sequencing: {
   order: "batch",
-  batchIntervalMs: 50,   // default
-  submitIntervalMs: 400, // default
-  batchOrder: ["CloseOrder", "LimitOrder", "MarketOrder"],
-}
+  batchIntervalMs: 50,
+  submitIntervalMs: 400,
+  batchOrder: ["Mint", "Transfer"],
+},
 ```
 
-Each call to `typewriter.execute()` enqueues the mutation and returns once the next batch is processed. Every `batchIntervalMs` milliseconds (default `50`), all enqueued mutations are gathered into a batch and ordered according to `batchOrder`, then accepted or rejected together. Every `submitIntervalMs` milliseconds (default `400`), all accepted batches are submitted with a single onchain transaction.
+Each call to `typewriter.execute` waits for the next batch. Every
+`batchIntervalMs`, the server gathers everything enqueued since the last batch,
+sorts it by mutation type according to `batchOrder`, and executes the batch in
+that order.
 
-`batchOrder` is required when `order` is `"batch"`. It is an array of mutation names — each the `Mutation` enum member name as declared in the contract — that determines the ordering within each batch. Within a batch, mutations run in `batchOrder` order; across batches, batches submit in acceptance order.
+`batchOrder` lists mutation names — the `Mutation` enum member names from your
+contract. It is required in batch mode and rejected in first-in-first-out mode.
+The token example uses `["Mint", "Transfer"]` so a mint and a transfer submitted
+in the same window always apply in that order, letting a new account mint and
+spend within one batch.
 
-**Acceptance timing difference.** In FIFO mode, `execute` resolves as soon as the mutation succeeds locally — there is no waiting period. In batch mode, `execute` resolves at the next batch interval, so callers wait up to `batchIntervalMs` milliseconds before getting a response.
+The tradeoff is latency: `execute` resolves at the next batch boundary, so callers
+wait up to `batchIntervalMs`.
 
-## Confirmation depths
+Batch order applies within a batch only. Batches settle in the order they were
+accepted.
 
-The runtime tracks two confirmation thresholds, both configurable under `confirmations`.
+## What happens at startup
 
-**`safeBlockDepth`** (default `1`) — the number of blocks that must build on top of an inclusion block before the mutation advances to `safe`. This maps to the JSON-RPC `safe` tag.
+`createTypewriter` is asynchronous and does real work before it resolves:
 
-**`finalizedBlockDepth`** (default `5`) — the number of blocks that must build on top of an inclusion block before the mutation advances to `finalized`. This maps to the JSON-RPC `finalized` tag. `finalizedBlockDepth` must be greater than or equal to `safeBlockDepth`.
+1. Runs `forge build` on the contract and reads the compiled output.
+2. Connects to the RPC endpoint and to Postgres.
+3. Takes a Postgres advisory lock for this chain ID and contract address, so only
+   one server runs per deployment.
+4. Creates or reuses the deployment's schema and tables.
+5. Rebuilds local EVM state from the storage writes it previously persisted.
 
-```ts
-confirmations: {
-  safeBlockDepth: 1,      // default
-  finalizedBlockDepth: 5, // default
-}
-```
+Only after that does the handle accept mutations. Await it before you start
+serving requests — that is the point of `await createTypewriter(...)` at the top
+level of your server file.
 
-## Block polling
+Errors from any of these steps reject the promise, so a misconfigured server fails
+at startup rather than at the first request.
 
-**`blockPollingIntervalMs`** (default `200`) — how often the runtime polls for new blocks, in milliseconds. Lower values reduce latency to `included`, `safe`, and `finalized` status updates at the cost of more RPC calls.
+## Shutting down
 
-## Fatal error handling
+Call `typewriter.close()` to stop the runtime and release its database
+connections, including the deployment lock. A process that exits without closing
+releases the lock when its Postgres connection drops.
 
-**`onFatalError`** — an optional `(error: unknown) => void` callback. The runtime calls it when an unrecoverable error occurs. Without this callback, the runtime rethrows the error. Use this hook to trigger a graceful shutdown.
+To handle unrecoverable runtime errors — a permanently unreachable RPC endpoint,
+for example — pass an `onFatalError` callback. Without one, the runtime rethrows
+the error. See
+[`onFatalError`](/reference/typescript#onfatalerror).
 
-To shut down the runtime intentionally, call `typewriter.close()`. This stops block polling, flushes pending work, and closes the database connection.
+## Next steps
 
-## Complete example
-
-```ts
-import { createTypewriter } from "typewriter";
-import { privateKeyToAccount } from "viem/accounts";
-import Token from "../contracts/src/Token.sol";
-
-const typewriter = await createTypewriter(Token, {
-  address: "0xYourDeployedContractAddress",
-  account: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY as `0x${string}`),
-  chainId: 1,
-  rpcUrl: ["https://rpc-primary.example.com", "https://rpc-fallback.example.com"],
-  database: { url: process.env.DATABASE_URL },
-  blockPollingIntervalMs: 200,
-  confirmations: {
-    safeBlockDepth: 1,
-    finalizedBlockDepth: 5,
-  },
-  sequencing: {
-    order: "fifo",
-    submitIntervalMs: 400,
-  },
-  onFatalError: (error) => {
-    console.error("Fatal runtime error:", error);
-    process.exit(1);
-  },
-});
-```
+- [Add API endpoints](/guides/api-endpoints) serves the handle over HTTP.
+- The [TypeScript reference](/reference/typescript#configuration) lists every
+  configuration field, including confirmation depths and block polling.

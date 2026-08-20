@@ -1,155 +1,160 @@
 ---
 title: Solidity
-description: The Solidity API surface exported from typewriter/Typewriter.sol.
+description: Reference for everything exported from typewriter/Typewriter.sol, and the shapes an app must provide.
 ---
 
 # Solidity
 
-This page documents the complete Solidity surface exported from `typewriter/Typewriter.sol`. An app imports these items, inherits the `Typewriter` base contract, and provides the shapes described in [App requirements](#app-requirements).
-
-## Signature verification
-
-Free functions and types for checking a raw signature against an EIP-712 digest. A mutation's verifier calls `verifySignature` after it resolves the account and applies replay protection.
-
-### `KeyType`
-
-* **Type:** `enum`
-
-The signature algorithm for an account. Members appear in this order:
+Reference for the exports of `typewriter/Typewriter.sol`: the `Typewriter` base
+contract, the signature verification functions, the EIP-712 constants, and the
+errors. The last section documents the shapes `Typewriter` requires an app to
+provide.
 
 ```solidity
-enum KeyType {
-    P256,
-    WebAuthnP256,
-    Secp256k1
+import {KeyType, Typewriter, UnknownMutation, verifySignature} from "typewriter/Typewriter.sol";
+```
+
+## Base contract
+
+### `Typewriter`
+
+* **Type:** `abstract contract`
+
+The base contract every Typewriter application inherits. It provides the external
+entry points (`execute`, `enqueue`, `forceExecute`), the force-inclusion queue, the
+EIP-712 domain separator, and the settlement counter. It calls the app's
+[`dispatch`](#dispatch) once per mutation.
+
+An inheriting contract assigns [`SCHEDULER`](#scheduler) and
+[`FORCE_INCLUSION_DELAY`](#force_inclusion_delay) in its constructor and
+implements `dispatch`.
+
+```solidity
+contract Token is Typewriter {
+    State internal state;
+
+    enum Mutation {
+        Transfer,
+        Mint
+    }
+
+    constructor(address _scheduler) {
+        SCHEDULER = _scheduler;
+        FORCE_INCLUSION_DELAY = 658;
+    }
+
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
+        // ...
+    }
 }
 ```
-
-### `verifySignature`
-
-* **Type:** `function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view`
-* **Reverts:** `InvalidSignature(KeyType)`
-
-Verifies `signature` against `digest` for the given `keyType` and `publicKey`. Dispatches to `verifySecp256k1`, `verifyP256`, or `verifyWebAuthnP256` based on `keyType`. Returns nothing on success and reverts on a failed check.
-
-```solidity
-import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
-
-verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
-```
-
-### `verifySecp256k1`
-
-* **Type:** `function verifySecp256k1(bytes32 digest, bytes memory publicKey, bytes memory signature) pure`
-* **Reverts:** `InvalidSignature(KeyType.Secp256k1)`
-
-Verifies a secp256k1 signature. Decodes `publicKey` as an `address`, decodes `signature` as `(uint8 v, bytes32 r, bytes32 s)`, and recovers the signer with `ecrecover`. Reverts if the recovered address is the zero address or does not match the decoded address. This function is `pure` because `ecrecover` is a precompile that requires no state.
-
-### `verifyP256`
-
-* **Type:** `function verifyP256(bytes32 digest, bytes memory publicKey, bytes memory signature) view`
-* **Reverts:** `InvalidSignature(KeyType.P256)`
-
-Verifies a P-256 signature. Decodes the public key with `decodeP256PublicKey`, decodes `signature` as `(uint256 r, uint256 s)`, and `staticcall`s the verifier precompile at `P256_VERIFIER` (`address(0x100)`) over `sha256(digest)`. Reverts if the call fails, returns fewer than 32 bytes, or does not return `1`.
-
-### `verifyWebAuthnP256`
-
-* **Type:** `function verifyWebAuthnP256(bytes32 digest, bytes memory publicKey, bytes memory signature) view`
-* **Reverts:** `InvalidSignature(KeyType.WebAuthnP256)`
-
-Verifies a WebAuthn-P256 signature. Decodes the public key with `decodeP256PublicKey`, decodes `signature` as `(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)`, and confirms the challenge with `verifyChallenge`. The verified message is `sha256(authData || sha256(clientDataJSON))`. Reverts if the `staticcall` to `P256_VERIFIER` fails, returns fewer than 32 bytes, or does not return `1`.
-
-### `decodeP256PublicKey`
-
-* **Type:** `function decodeP256PublicKey(bytes memory publicKey) pure returns (uint256 x, uint256 y)`
-
-Decodes a P-256 public key into its `x` and `y` coordinates. A 65-byte input is read as an uncompressed key (`0x04 || X || Y`); any other length is decoded as `abi.encode(uint256 x, uint256 y)`.
-
-### `verifyChallenge`
-
-* **Type:** `function verifyChallenge(bytes memory clientDataJSON, uint256 offset, bytes32 digest) pure`
-* **Reverts:** `InvalidSignature(KeyType.WebAuthnP256)`
-
-Confirms that `clientDataJSON` contains the base64url encoding of `digest` starting at `offset`. Reverts if `offset + 43` exceeds the length of `clientDataJSON`, or if any encoded character does not match. `verifyWebAuthnP256` calls this before it checks the signature.
-
-### `InvalidSignature`
-
-* **Type:** `error InvalidSignature(KeyType keyType)`
-
-Raised by the verification functions when a signature check fails. The `keyType` field identifies the algorithm whose check failed.
-
-### Byte layouts
-
-The `publicKey` and raw `signature` encodings expected for each `KeyType`:
-
-| `KeyType` | `publicKey` | raw `signature` |
-| --- | --- | --- |
-| `Secp256k1` | `abi.encode(address)` | `abi.encode(uint8 v, bytes32 r, bytes32 s)` |
-| `P256` | 65-byte uncompressed (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)` over `sha256(digest)` |
-| `WebAuthnP256` | same as `P256` | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)`; `clientDataJSON` must contain the base64url-encoded `digest` starting at `challengeOffset`, and the verified message is `sha256(authData \|\| sha256(clientDataJSON))` |
-
-`Secp256k1` verification uses `ecrecover` and is `pure`. `P256` and `WebAuthnP256` verification `staticcall` the precompile at `P256_VERIFIER` (`address(0x100)`). Deployments on chains without this precompile revert from those paths.
-
-## EIP-712 domain
-
-Constants used to build the EIP-712 domain separator. The `Typewriter` constructor computes `DOMAIN_SEPARATOR` from the first three constants, `block.chainid`, and the contract address.
-
-### `EIP712_DOMAIN_TYPEHASH`
-
-* **Type:** `bytes32 constant`
-
-The EIP-712 domain type hash.
-
-```solidity
-bytes32 constant EIP712_DOMAIN_TYPEHASH =
-    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-```
-
-### `TYPEWRITER_DOMAIN_NAME`
-
-* **Type:** `string constant`
-
-The EIP-712 domain name. The value is `"Typewriter"`.
-
-### `TYPEWRITER_DOMAIN_VERSION`
-
-* **Type:** `string constant`
-
-The EIP-712 domain version. The value is `"1"`.
-
-### `P256_VERIFIER`
-
-* **Type:** `address constant`
-
-The address of the P-256 verifier precompile that `verifyP256` and `verifyWebAuthnP256` call. The value is `address(0x100)`.
-
-## Base contract (`Typewriter`)
-
-`Typewriter` is an `abstract contract`. An app inherits it, assigns `SCHEDULER` and `FORCE_INCLUSION_DELAY` in its constructor, and implements `dispatch`. The base constructor assigns `DOMAIN_SEPARATOR`. `Typewriter` supplies the force-inclusion queue and the `execute`, `enqueue`, and `forceExecute` entry points, and routes every mutation through the app's `dispatch`.
 
 ### `SCHEDULER`
 
 * **Type:** `address internal immutable`
 
-The privileged address allowed to call `execute`. The inheriting contract assigns it in its constructor.
+The only address allowed to call [`execute`](#execute). Set it to the address of
+the account the server submits transactions from. The inheriting contract must
+assign it in its constructor; `Typewriter` does not.
+
+Gating settlement to one address is what lets the server accept a mutation before
+a block exists: nothing else can change state in between.
 
 ### `DOMAIN_SEPARATOR`
 
 * **Type:** `bytes32 internal immutable`
 
-The EIP-712 domain separator used to build mutation digests. The `Typewriter` base constructor assigns it from `EIP712_DOMAIN_TYPEHASH`, the fixed domain name `TYPEWRITER_DOMAIN_NAME` (`"Typewriter"`) and version `TYPEWRITER_DOMAIN_VERSION` (`"1"`), `block.chainid`, and `address(this)`. The inheriting contract does not assign it; it reads it when building each mutation digest.
+The EIP-712 domain separator used to build mutation digests. The `Typewriter`
+constructor assigns it from [`EIP712_DOMAIN_TYPEHASH`](#eip712_domain_typehash),
+[`TYPEWRITER_DOMAIN_NAME`](#typewriter_domain_name),
+[`TYPEWRITER_DOMAIN_VERSION`](#typewriter_domain_version), `block.chainid`, and
+`address(this)`.
+
+The inheriting contract reads it when building a digest and must not assign it.
+
+```solidity
+bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, AddMutation.hashAdd(add)));
+```
 
 ### `FORCE_INCLUSION_DELAY`
 
 * **Type:** `uint256 internal immutable`
 
-The number of blocks that must elapse after a mutation is enqueued before `forceExecute` succeeds. `Typewriter` imposes no value, so the inheriting contract assigns it in its constructor.
+The number of blocks that must pass after [`enqueue`](#enqueue) before
+[`forceExecute`](#forceexecute) succeeds. `Typewriter` imposes no value, so the
+inheriting contract must assign it in its constructor.
+
+### `dispatch`
+
+* **Type:** `function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal virtual`
+
+The one function an app implements. `Typewriter` calls it once per mutation: for
+every mutation in every `Batch` passed to `execute`, for every queue entry settled
+through `execute`, and for every `forceExecute`.
+
+An implementation branches on the `uint8` tag, decodes `mutationData` and
+`signatureData`, builds the EIP-712 digest, calls the mutation's verifier, then
+applies the state transition. The runtime parses this function to derive mutation
+parameters, so its shape is constrained — see
+[Define state and mutations](/guides/state-and-mutations#implement-dispatch).
+
+### `execute`
+
+* **Type:** `function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external`
+* **Reverts:** [`UnauthorizedExecute`](#unauthorizedexecute), [`LengthMismatch`](#lengthmismatch), [`ForceInclusionAlreadyExecuted`](#forceinclusionalreadyexecuted)
+
+The settlement entry point, callable only by [`SCHEDULER`](#scheduler). The server
+calls it; applications do not.
+
+For each [`Batch`](#batch), it checks that the three arrays have equal length and
+calls `dispatch` for each mutation in array order. It then settles each queue entry
+named in `forceExecuteIndexes` and deletes it. Every settled mutation increments
+[`executionIndex`](#executionindex).
+
+A revert anywhere in the call reverts the whole transaction, so no batch settles
+partially.
+
+### `enqueue`
+
+* **Type:** `function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata signatureData) external returns (uint256)`
+
+The force-inclusion entry point, callable by anyone. It stores a
+[`QueuedMutation`](#queuedmutation) recording the current `block.number`, emits
+[`ForceInclusionQueued`](#forceinclusionqueued), and returns the queue index.
+
+Enqueuing does not execute the mutation. It makes the mutation visible onchain so
+that the server settles it, or so that [`forceExecute`](#forceexecute) can settle
+it after the delay. See [Force inclusion](/concepts#force-inclusion).
+
+### `forceExecute`
+
+* **Type:** `function forceExecute(uint256 index) external`
+* **Reverts:** [`ForceInclusionTooEarly`](#forceinclusiontooearly), [`ForceInclusionAlreadyExecuted`](#forceinclusionalreadyexecuted)
+
+Settles a queued mutation without the server. Callable by anyone, including someone
+other than the account that enqueued it, once
+[`FORCE_INCLUSION_DELAY`](#force_inclusion_delay) blocks have passed since the
+entry was enqueued.
+
+It calls `dispatch` for the queued mutation, increments
+[`executionIndex`](#executionindex), and deletes the entry. The mutation goes
+through the same `dispatch`, and therefore the same signature check, as a mutation
+the server settles.
+
+### `executionIndex`
+
+* **Type:** `uint256 public`
+
+A counter incremented once for every mutation settled through `execute` or
+`forceExecute`. The runtime reads it at startup to align its view with the chain.
 
 ### `Batch`
 
 * **Type:** `struct`
 
-A group of mutations submitted together through `execute`. The three arrays are parallel and must have equal length.
+A group of mutations settled together by [`execute`](#execute). The three arrays are
+parallel and must have equal length, or `execute` reverts with
+[`LengthMismatch`](#lengthmismatch).
 
 ```solidity
 struct Batch {
@@ -163,7 +168,10 @@ struct Batch {
 
 * **Type:** `struct`
 
-A force-included mutation stored in the queue by `enqueue`.
+A force-included mutation stored by [`enqueue`](#enqueue). The queue itself is
+`internal`, so clients discover entries through
+[`ForceInclusionQueued`](#forceinclusionqueued) rather than by reading it.
+`enqueuedBlock` is zeroed when the entry is settled.
 
 ```solidity
 struct QueuedMutation {
@@ -178,7 +186,9 @@ struct QueuedMutation {
 
 * **Type:** `event`
 
-Emitted by `enqueue` when a mutation is added to the force-inclusion queue. Clients and watchers decode it to discover queued mutations.
+Emitted by [`enqueue`](#enqueue). The runtime watches for it to discover queued
+mutations and settle them; clients can decode it to find the index they need for
+[`forceExecute`](#forceexecute).
 
 ```solidity
 event ForceInclusionQueued(
@@ -190,95 +200,251 @@ event ForceInclusionQueued(
 );
 ```
 
-### `execute`
+## Signature verification
 
-* **Type:** `function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external`
-* **Reverts:** `UnauthorizedExecute(address)`, `LengthMismatch()`, `ForceInclusionAlreadyExecuted(uint256)`
+These are file-level functions, not contract members. A mutation's verifier calls
+[`verifySignature`](#verifysignature) after resolving the account and applying
+replay protection.
 
-The scheduler-gated settlement entry point. Reverts with `UnauthorizedExecute` unless the caller is `SCHEDULER`. For each `Batch`, checks that the three arrays have equal length (reverting with `LengthMismatch` otherwise) and calls `dispatch` for each mutation in array order, incrementing `executionIndex`. Then, for each index in `forceExecuteIndexes`, settles the queued mutation, reverting with `ForceInclusionAlreadyExecuted` if the entry has already been consumed, and deletes it from the queue.
+### `KeyType`
 
-### `enqueue`
+* **Type:** `enum`
 
-* **Type:** `function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata signatureData) external returns (uint256)`
+The signature algorithm for a key. The member order fixes the numeric value each
+one has on the wire: `P256` is `0`, `WebAuthnP256` is `1`, `Secp256k1` is `2`.
 
-The user force-inclusion entry point. Pushes a `QueuedMutation` recording the current `block.number` as `enqueuedBlock`, emits `ForceInclusionQueued`, and returns the queue index.
+```solidity
+enum KeyType {
+    P256,
+    WebAuthnP256,
+    Secp256k1
+}
+```
 
-### `forceExecute`
+### `verifySignature`
 
-* **Type:** `function forceExecute(uint256 index) external`
-* **Reverts:** `ForceInclusionTooEarly(uint256)`, `ForceInclusionAlreadyExecuted(uint256)`
+* **Type:** `function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view`
+* **Reverts:** [`InvalidSignature`](#invalidsignature)
 
-The un-gated escape hatch, callable by anyone. Reverts with `ForceInclusionTooEarly` if fewer than `FORCE_INCLUSION_DELAY` blocks have elapsed since the entry was enqueued, and with `ForceInclusionAlreadyExecuted` if the entry has already been consumed. Otherwise calls `dispatch` for the queued mutation, increments `executionIndex`, and deletes the entry.
+Verifies `signature` against `digest` for the given key. Dispatches to
+[`verifySecp256k1`](#verifysecp256k1), [`verifyP256`](#verifyp256), or
+[`verifyWebAuthnP256`](#verifywebauthnp256) based on `keyType`. Returns nothing on
+success.
 
-### `executionIndex`
+For the encodings each key type expects, see [Byte layouts](#byte-layouts).
 
-* **Type:** `uint256 public`
+```solidity
+verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
+```
 
-A counter incremented once for every mutation settled through `execute` or `forceExecute`.
+### `verifySecp256k1`
 
-### `dispatch`
+* **Type:** `function verifySecp256k1(bytes32 digest, bytes memory publicKey, bytes memory signature) pure`
+* **Reverts:** `InvalidSignature(KeyType.Secp256k1)`
 
-* **Type:** `function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal virtual`
+Verifies a secp256k1 signature. Decodes `publicKey` as an `address`, decodes
+`signature` as `(uint8 v, bytes32 r, bytes32 s)`, and recovers the signer with
+`ecrecover`. Reverts if recovery fails or the recovered address does not match.
 
-The abstract function each app implements. `Typewriter` calls `dispatch` once per mutation, for every mutation in every `Batch` passed to `execute`, for every queue entry settled through `execute`, and for every `forceExecute`. The implementation branches on the `uint8` tag, decodes `mutationData` and `signatureData`, computes the EIP-712 digest, calls the mutation's verifier, and applies the state transition. See [App requirements](#app-requirements).
+This is the only verifier that is `pure`, because `ecrecover` needs no state.
 
-### `UnauthorizedExecute`
+### `verifyP256`
 
-* **Type:** `error UnauthorizedExecute(address caller)`
+* **Type:** `function verifyP256(bytes32 digest, bytes memory publicKey, bytes memory signature) view`
+* **Reverts:** `InvalidSignature(KeyType.P256)`
 
-Raised by `execute` when the caller is not `SCHEDULER`.
+Verifies a P-256 signature over `sha256(digest)`. Decodes the public key with
+[`decodeP256PublicKey`](#decodep256publickey), decodes `signature` as
+`(uint256 r, uint256 s)`, and `staticcall`s the verifier precompile at
+[`P256_VERIFIER`](#p256_verifier). Reverts if the call fails, returns fewer than 32
+bytes, or does not return `1`.
 
-### `ForceInclusionTooEarly`
+A chain without that precompile reverts on this path.
 
-* **Type:** `error ForceInclusionTooEarly(uint256 remainingDelay)`
+### `verifyWebAuthnP256`
 
-Raised by `forceExecute` when `FORCE_INCLUSION_DELAY` blocks have not yet elapsed. The `remainingDelay` field is the number of blocks that remain.
+* **Type:** `function verifyWebAuthnP256(bytes32 digest, bytes memory publicKey, bytes memory signature) view`
+* **Reverts:** `InvalidSignature(KeyType.WebAuthnP256)`
 
-### `ForceInclusionAlreadyExecuted`
+Verifies a WebAuthn assertion signed with a P-256 key. Decodes `signature` as
+`(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)`,
+confirms the challenge with [`verifyChallenge`](#verifychallenge), then verifies
+the signature over `sha256(authData || sha256(clientDataJSON))` using the
+precompile at [`P256_VERIFIER`](#p256_verifier).
 
-* **Type:** `error ForceInclusionAlreadyExecuted(uint256 index)`
+### `decodeP256PublicKey`
 
-Raised by `execute` and `forceExecute` when a queued mutation at `index` has already been settled.
+* **Type:** `function decodeP256PublicKey(bytes memory publicKey) pure returns (uint256 x, uint256 y)`
 
-### `LengthMismatch`
+Decodes a P-256 public key into its coordinates. A 65-byte input is read as an
+uncompressed key (`0x04 || X || Y`); any other length is decoded as
+`abi.encode(uint256 x, uint256 y)`.
 
-* **Type:** `error LengthMismatch()`
+### `verifyChallenge`
 
-Raised by `execute` when a `Batch`'s `mutations`, `mutationData`, and `signatureData` arrays do not have equal length.
+* **Type:** `function verifyChallenge(bytes memory clientDataJSON, uint256 offset, bytes32 digest) pure`
+* **Reverts:** `InvalidSignature(KeyType.WebAuthnP256)`
+
+Confirms that `clientDataJSON` contains the base64url encoding of `digest` — 43
+characters — starting at `offset`. Reverts if the encoding does not match or if
+`offset + 43` exceeds the length of `clientDataJSON`.
+[`verifyWebAuthnP256`](#verifywebauthnp256) calls it before checking the
+signature. Verifying the challenge is what binds the WebAuthn assertion to this
+mutation.
+
+### Byte layouts
+
+The `publicKey` and `signature` encodings each [`KeyType`](#keytype) expects:
+
+| `KeyType` | `publicKey` | `signature` |
+| --- | --- | --- |
+| `Secp256k1` | `abi.encode(address)` | `abi.encode(uint8 v, bytes32 r, bytes32 s)` |
+| `P256` | 65-byte uncompressed (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)`, over `sha256(digest)` |
+| `WebAuthnP256` | same as `P256` | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)` |
+
+## Constants
+
+### `EIP712_DOMAIN_TYPEHASH`
+
+* **Type:** `bytes32 constant`
+
+The EIP-712 domain type hash, used to build
+[`DOMAIN_SEPARATOR`](#domain_separator).
+
+```solidity
+bytes32 constant EIP712_DOMAIN_TYPEHASH =
+    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+```
+
+### `TYPEWRITER_DOMAIN_NAME`
+
+* **Type:** `string constant`
+* **Value:** `"Typewriter"`
+
+The EIP-712 domain name. It is the same for every Typewriter application; the chain
+ID and contract address make the domain unique.
+
+### `TYPEWRITER_DOMAIN_VERSION`
+
+* **Type:** `string constant`
+* **Value:** `"1"`
+
+The EIP-712 domain version.
+
+### `P256_VERIFIER`
+
+* **Type:** `address constant`
+* **Value:** `address(0x100)`
+
+The address of the [RIP-7212](https://github.com/ethereum/RIPs/blob/master/RIPS/rip-7212.md)
+P-256 verifier precompile that [`verifyP256`](#verifyp256) and
+[`verifyWebAuthnP256`](#verifywebauthnp256) call.
+
+## Errors
 
 ### `UnknownMutation`
 
 * **Type:** `error UnknownMutation(uint8 mutation)`
 
-An error an app reverts with from `dispatch` when the `uint8` tag does not match any `Mutation` enum member. `Typewriter` exports it; the app raises it.
+Exported for apps to raise from [`dispatch`](#dispatch) when a tag matches no
+`Mutation` enum member. `Typewriter` never raises it itself.
 
-## App requirements
+### `InvalidSignature`
 
-`Typewriter` does not define these shapes. Each app provides them and wires them together in `dispatch`.
+* **Type:** `error InvalidSignature(KeyType keyType)`
+
+Raised by the verification functions when a signature check fails. The field
+identifies which algorithm's check failed.
+
+### `UnauthorizedExecute`
+
+* **Type:** `error UnauthorizedExecute(address caller)`
+
+Raised by [`execute`](#execute) when the caller is not
+[`SCHEDULER`](#scheduler). Usually means the server's account and the deployed
+contract disagree about the scheduler address.
+
+### `ForceInclusionTooEarly`
+
+* **Type:** `error ForceInclusionTooEarly(uint256 remainingDelay)`
+
+Raised by [`forceExecute`](#forceexecute) before
+[`FORCE_INCLUSION_DELAY`](#force_inclusion_delay) blocks have passed. The field is
+the number of blocks remaining.
+
+### `ForceInclusionAlreadyExecuted`
+
+* **Type:** `error ForceInclusionAlreadyExecuted(uint256 index)`
+
+Raised by [`execute`](#execute) and [`forceExecute`](#forceexecute) when the queue
+entry at `index` has already been settled.
+
+### `LengthMismatch`
+
+* **Type:** `error LengthMismatch()`
+
+Raised by [`execute`](#execute) when a [`Batch`](#batch)'s `mutations`,
+`mutationData`, and `signatureData` arrays do not have equal length.
+
+## App-defined shapes
+
+`Typewriter` does not define these. Your contract provides them, and the runtime
+reads them from your source at startup to learn your application's interface. See
+[Define state and mutations](/guides/state-and-mutations) for how they fit
+together.
 
 ### `State`
 
 * **Type:** `struct`
+* **Required name:** `State`, held in a variable named `state`
 
-The single struct that holds all application state. The app stores one non-public variable of this type. Underlying storage slots are read directly, so Solidity visibility does not affect runtime reads.
+The single struct holding all application state, declared at file scope. The
+contract declares exactly one variable of this type, named `state`. Visibility does
+not matter: the runtime reads the underlying storage slots.
+
+Any Solidity type is allowed. For a mapping to be readable through
+[`typewriter.state`](/reference/typescript#state), its key type must be `address`,
+`bool`, `uintN`, `intN`, or `bytesN`.
 
 ```solidity
 struct State {
-    uint256 total;
-    mapping(bytes32 accountId => Account) accounts;
+    uint256 totalSupply;
+    mapping(address => Account) accounts;
+}
+```
+
+### `Signature`
+
+* **Type:** `struct`
+* **Required name:** `Signature`
+
+The authorization data carried with each mutation, declared at file scope. The
+fields are yours to choose — whatever your verifiers need to identify the signer
+and check the signature. `dispatch` decodes `signatureData` into it, the runtime
+requires clients to send every field, and each field becomes a
+`signature_`-prefixed column in the mutation tables.
+
+```solidity
+struct Signature {
+    uint8 keyType;
+    bytes rawSignature;
 }
 ```
 
 ### `Mutation`
 
 * **Type:** `enum`
+* **Required name:** `Mutation`, declared in the contract
 
-An app-defined enum that maps each `uint8` tag to a mutation name. The `dispatch` function matches the incoming tag against these members. The runtime mutation name is the enum member name as declared (for example, `Transfer`).
+The list of the application's mutations. A member's position is its `uint8` tag,
+and its name is the name clients pass to
+[`typewriter.execute`](/reference/typescript#execute) and the name used in
+`batchOrder`. Reordering members changes tags.
 
 ```solidity
 enum Mutation {
-    NewAccount,
-    Add
+    Transfer,
+    Mint
 }
 ```
 
@@ -286,50 +452,68 @@ enum Mutation {
 
 * **Type:** `struct`
 
-The arguments of one mutation, defined in that mutation's library. `dispatch` ABI-decodes `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and declaration order define the params the runtime extracts.
+One mutation's arguments, declared in that mutation's library. `dispatch` decodes
+`mutationData` into it, and the same fields form the EIP-712 message the user
+signs. Field names and order define the parameters clients send and the argument
+columns in the mutation's table.
 
-### `execute[Mutation]`
-
-* **Type:** `function execute[Mutation](State storage state, [Mutation] memory [mutation]) internal`
-
-Applies the mutation to `state`. `dispatch` calls it after the signature has been verified. It performs the state transition only; it contains no authorization checks.
-
-### `hash[Mutation]`
-
-* **Type:** `function hash[Mutation]([Mutation] memory [mutation]) internal pure returns (bytes32)`
-
-Returns the EIP-712 struct hash of the mutation, `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The type hash is `keccak256` of the canonical EIP-712 type string, whose primary type name matches the `Mutation` enum member name as declared (for example, `Transfer`) and whose parameter names and order match the mutation struct. `dispatch` combines this struct hash with `DOMAIN_SEPARATOR` to form the digest.
-
-### `verify[Mutation]Signature`
-
-* **Type:** `function verify[Mutation]Signature(State storage state, [Mutation] memory [mutation], Signature memory signature, bytes32 digest) internal`
-* **Reverts:** app-defined, plus `InvalidSignature(KeyType)` from `verifySignature`
-
-Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces replay protection such as nonce, deadline, or scope, and calls `verifySignature` to check the raw signature against `digest`. Each mutation controls its own rules, including whether a signature is required at all; bootstrap mutations may not need one.
-
-### `Signature`
-
-* **Type:** `struct`
-
-An app-defined struct carried with each signed mutation. `Typewriter` imposes no shape; the fields are whatever the contract needs to authenticate the user and authorize the mutation. `dispatch` decodes `signatureData` into it and passes it to `verify[Mutation]Signature`.
+Fields may be elementary types, enums, or arrays of those. A field whose type is
+another struct is not supported and fails at startup.
 
 ```solidity
-struct Signature {
-    bytes32 accountId;
-    bytes rawSignature;
+struct Transfer {
+    address from;
+    address to;
+    uint256 amount;
+    uint256 nonce;
+    uint256 deadline;
 }
 ```
 
-## Determinism
+### `hash[Mutation]`
 
-The server executes accepted mutations locally before they settle onchain, so a mutation must produce the same result in both environments. Opcodes whose values cannot be reproduced offchain cause divergence and are incompatible with Typewriter:
+* **Type:** `function hash[Mutation]([Mutation] memory mutation) internal pure returns (bytes32)`
 
-- `block.coinbase` (`COINBASE`) — the miner of the settling block is not known until inclusion.
-- `block.difficulty` and `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
-- `blockhash(n)` (`BLOCKHASH`) for blocks the server has not seen.
-- `blobhash(i)` (`BLOBHASH`) and `block.blobbasefee` (`BLOBBASEFEE`) — blob context belongs to the submitting transaction, not the mutation.
-- `gasleft()` (`GAS`) — gas accounting in the local EVM does not match the live EVM, so any branch on remaining gas can diverge.
+Returns the EIP-712 struct hash of the mutation's arguments:
+`keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. `dispatch`
+combines the result with [`DOMAIN_SEPARATOR`](#domain_separator) to form the digest
+the verifier checks.
 
-`block.number` and `block.timestamp` are approximations. The server executes accepted mutations against the last known block's values, so what a mutation sees lags the block of inclusion by at least one. Use them for coarse checks such as expiries and epoch windows, not for tight windows, sub-block timing, or logic that branches on the exact block of inclusion.
+The type string behind the type hash is what clients must reproduce to produce a
+valid signature. Nothing in the runtime enforces the naming; the digests simply
+have to match.
 
-Calls to external contracts are not allowed. The server's local state covers only the Typewriter contract, so any external call, or state it depends on, cannot be reproduced offchain and diverges.
+```solidity
+bytes32 constant TRANSFER_TYPEHASH =
+    keccak256("Transfer(address from,address to,uint256 amount,uint256 nonce,uint256 deadline)");
+
+function hashTransfer(Transfer memory transfer) internal pure returns (bytes32) {
+    return keccak256(
+        abi.encode(
+            TRANSFER_TYPEHASH, transfer.from, transfer.to, transfer.amount, transfer.nonce, transfer.deadline
+        )
+    );
+}
+```
+
+### `verify[Mutation]Signature`
+
+* **Type:** `function verify[Mutation]Signature(State storage state, [Mutation] memory mutation, Signature memory signature, bytes32 digest) internal`
+* **Reverts:** app-defined, plus [`InvalidSignature`](#invalidsignature) from `verifySignature`
+
+Authorizes one mutation. It resolves the signer from the `Signature` fields,
+enforces replay protection such as a nonce or deadline, and calls
+[`verifySignature`](#verifysignature) to check the raw signature against `digest`.
+
+Each mutation has its own verifier and therefore its own rules, including whether a
+signature is required at all.
+
+### `execute[Mutation]`
+
+* **Type:** `function execute[Mutation](State storage state, [Mutation] memory mutation) internal`
+
+Applies the mutation to `state`. `dispatch` calls it after verification, so it
+contains no authorization logic. A revert rejects the mutation.
+
+Mutation code must be deterministic — see [Determinism](/concepts#determinism) for
+what it may not read.
