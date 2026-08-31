@@ -4,7 +4,7 @@ Repo-wide guidance. Per-app specifics live in each workspace's own `AGENTS.md` /
 
 ## Layout
 
-A Bun monorepo. Apps live under `apps/*`; reusable framework code lives under `packages/*`. The current state is one app (`order-book-*`) plus a framework package (`typewriter`) being extracted from it.
+A Bun monorepo. Apps live under `apps/*`; reusable framework code lives under `packages/*`. The current state is one app (`order-book-*`) plus a framework package (`typewriter`) being extracted from it. The repo root also defines a Cargo workspace (`Cargo.toml`) whose only member is the Rust crate at `packages/typewriter-evm`.
 
 ## Docs
 
