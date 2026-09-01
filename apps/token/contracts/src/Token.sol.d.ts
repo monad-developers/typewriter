@@ -4,76 +4,164 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
   readonly storageLayout: {
     readonly storage: readonly [
       {
-        readonly astId: 41569;
+        readonly astId: 694;
         readonly contract: "src/Token.sol:Token";
-        readonly label: "totalSupply";
+        readonly label: "accounts";
+        readonly offset: 0;
+        readonly slot: "0";
+        readonly type: "t_mapping(t_bytes32,t_struct(Account)26_storage)";
+      },
+      {
+        readonly astId: 698;
+        readonly contract: "src/Token.sol:Token";
+        readonly label: "queue";
+        readonly offset: 0;
+        readonly slot: "1";
+        readonly type: "t_array(t_struct(QueuedMutation)657_storage)dyn_storage";
+      },
+      {
+        readonly astId: 700;
+        readonly contract: "src/Token.sol:Token";
+        readonly label: "executionIndex";
         readonly offset: 0;
         readonly slot: "2";
         readonly type: "t_uint256";
       },
       {
-        readonly astId: 41574;
+        readonly astId: 42145;
         readonly contract: "src/Token.sol:Token";
-        readonly label: "accounts";
+        readonly label: "state";
         readonly offset: 0;
         readonly slot: "3";
-        readonly type: "t_mapping(t_address,t_struct(Account)41567_storage)";
+        readonly type: "t_struct(State)42134_storage";
       },
     ];
     readonly types: {
-      readonly t_address: {
-        readonly encoding: "inplace";
-        readonly label: "address";
-        readonly numberOfBytes: "20";
+      readonly "t_array(t_struct(Credential)15_storage)dyn_storage": {
+        readonly encoding: "dynamic_array";
+        readonly label: "struct Credential[]";
+        readonly numberOfBytes: "32";
+        readonly base: "t_struct(Credential)15_storage";
       };
-      readonly "t_array(t_struct(QueuedMutation)538_storage)dyn_storage": {
+      readonly "t_array(t_struct(QueuedMutation)657_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
         readonly label: "struct Typewriter.QueuedMutation[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(QueuedMutation)538_storage";
+        readonly base: "t_struct(QueuedMutation)657_storage";
+      };
+      readonly t_bytes32: {
+        readonly encoding: "inplace";
+        readonly label: "bytes32";
+        readonly numberOfBytes: "32";
       };
       readonly t_bytes_storage: {
         readonly encoding: "bytes";
         readonly label: "bytes";
         readonly numberOfBytes: "32";
       };
-      readonly "t_mapping(t_address,t_struct(Account)41567_storage)": {
-        readonly encoding: "mapping";
-        readonly key: "t_address";
-        readonly label: "mapping(address => struct Account)";
-        readonly numberOfBytes: "32";
-        readonly value: "t_struct(Account)41567_storage";
+      readonly "t_enum(KeyType)5": {
+        readonly encoding: "inplace";
+        readonly label: "enum KeyType";
+        readonly numberOfBytes: "1";
       };
-      readonly "t_struct(Account)41567_storage": {
+      readonly "t_mapping(t_bytes32,t_struct(Account)26_storage)": {
+        readonly encoding: "mapping";
+        readonly key: "t_bytes32";
+        readonly label: "mapping(bytes32 => struct Account)";
+        readonly numberOfBytes: "32";
+        readonly value: "t_struct(Account)26_storage";
+      };
+      readonly "t_mapping(t_bytes32,t_uint256)": {
+        readonly encoding: "mapping";
+        readonly key: "t_bytes32";
+        readonly label: "mapping(bytes32 => uint256)";
+        readonly numberOfBytes: "32";
+        readonly value: "t_uint256";
+      };
+      readonly "t_mapping(t_uint192,t_uint64)": {
+        readonly encoding: "mapping";
+        readonly key: "t_uint192";
+        readonly label: "mapping(uint192 => uint64)";
+        readonly numberOfBytes: "32";
+        readonly value: "t_uint64";
+      };
+      readonly "t_struct(Account)26_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Account";
-        readonly numberOfBytes: "64";
+        readonly numberOfBytes: "96";
         readonly members: readonly [
           {
-            readonly astId: 41564;
+            readonly astId: 19;
             readonly contract: "src/Token.sol:Token";
-            readonly label: "nonce";
+            readonly label: "nonces";
             readonly offset: 0;
             readonly slot: "0";
-            readonly type: "t_uint256";
+            readonly type: "t_mapping(t_uint192,t_uint64)";
           },
           {
-            readonly astId: 41566;
+            readonly astId: 23;
             readonly contract: "src/Token.sol:Token";
-            readonly label: "balance";
+            readonly label: "credentials";
+            readonly offset: 0;
+            readonly slot: "1";
+            readonly type: "t_array(t_struct(Credential)15_storage)dyn_storage";
+          },
+          {
+            readonly astId: 25;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "activeCredentials";
+            readonly offset: 0;
+            readonly slot: "2";
+            readonly type: "t_uint64";
+          },
+        ];
+      };
+      readonly "t_struct(Credential)15_storage": {
+        readonly encoding: "inplace";
+        readonly label: "struct Credential";
+        readonly numberOfBytes: "96";
+        readonly members: readonly [
+          {
+            readonly astId: 7;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "expiration";
+            readonly offset: 0;
+            readonly slot: "0";
+            readonly type: "t_uint40";
+          },
+          {
+            readonly astId: 10;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "keyType";
+            readonly offset: 5;
+            readonly slot: "0";
+            readonly type: "t_enum(KeyType)5";
+          },
+          {
+            readonly astId: 12;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "permissions";
             readonly offset: 0;
             readonly slot: "1";
             readonly type: "t_uint256";
           },
+          {
+            readonly astId: 14;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "publicKey";
+            readonly offset: 0;
+            readonly slot: "2";
+            readonly type: "t_bytes_storage";
+          },
         ];
       };
-      readonly "t_struct(QueuedMutation)538_storage": {
+      readonly "t_struct(QueuedMutation)657_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Typewriter.QueuedMutation";
         readonly numberOfBytes: "128";
         readonly members: readonly [
           {
-            readonly astId: 531;
+            readonly astId: 650;
             readonly contract: "src/Token.sol:Token";
             readonly label: "mutation";
             readonly offset: 0;
@@ -81,7 +169,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint8";
           },
           {
-            readonly astId: 533;
+            readonly astId: 652;
             readonly contract: "src/Token.sol:Token";
             readonly label: "mutationData";
             readonly offset: 0;
@@ -89,15 +177,15 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 535;
+            readonly astId: 654;
             readonly contract: "src/Token.sol:Token";
-            readonly label: "signatureData";
+            readonly label: "authorizationData";
             readonly offset: 0;
             readonly slot: "2";
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 537;
+            readonly astId: 656;
             readonly contract: "src/Token.sol:Token";
             readonly label: "enqueuedBlock";
             readonly offset: 0;
@@ -106,13 +194,13 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(State)41575_storage": {
+      readonly "t_struct(State)42134_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 41569;
+            readonly astId: 42129;
             readonly contract: "src/Token.sol:Token";
             readonly label: "totalSupply";
             readonly offset: 0;
@@ -120,19 +208,34 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint256";
           },
           {
-            readonly astId: 41574;
+            readonly astId: 42133;
             readonly contract: "src/Token.sol:Token";
-            readonly label: "accounts";
+            readonly label: "balances";
             readonly offset: 0;
             readonly slot: "1";
-            readonly type: "t_mapping(t_address,t_struct(Account)41567_storage)";
+            readonly type: "t_mapping(t_bytes32,t_uint256)";
           },
         ];
+      };
+      readonly t_uint192: {
+        readonly encoding: "inplace";
+        readonly label: "uint192";
+        readonly numberOfBytes: "24";
       };
       readonly t_uint256: {
         readonly encoding: "inplace";
         readonly label: "uint256";
         readonly numberOfBytes: "32";
+      };
+      readonly t_uint40: {
+        readonly encoding: "inplace";
+        readonly label: "uint40";
+        readonly numberOfBytes: "5";
+      };
+      readonly t_uint64: {
+        readonly encoding: "inplace";
+        readonly label: "uint64";
+        readonly numberOfBytes: "8";
       };
       readonly t_uint8: {
         readonly encoding: "inplace";
@@ -143,61 +246,70 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
   };
   readonly mutations: {
     readonly Transfer: {
-      readonly tag: 0;
+      readonly id: 0;
       readonly params: readonly [
         {
-          readonly name: "from";
-          readonly type: "address";
-        },
-        {
           readonly name: "to";
-          readonly type: "address";
+          readonly type: "bytes32";
         },
         {
           readonly name: "amount";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
           readonly type: "uint256";
         },
       ];
     };
     readonly Mint: {
-      readonly tag: 1;
+      readonly id: 1;
       readonly params: readonly [
-        {
-          readonly name: "to";
-          readonly type: "address";
-        },
         {
           readonly name: "amount";
           readonly type: "uint256";
         },
+      ];
+    };
+    readonly CreateAccount: {
+      readonly id: 253;
+      readonly params: readonly [
         {
-          readonly name: "nonce";
+          readonly name: "keyType";
+          readonly type: "uint8";
+        },
+        {
+          readonly name: "publicKey";
+          readonly type: "bytes";
+        },
+      ];
+    };
+    readonly AddCredential: {
+      readonly id: 254;
+      readonly params: readonly [
+        {
+          readonly name: "expiration";
+          readonly type: "uint40";
+        },
+        {
+          readonly name: "keyType";
+          readonly type: "uint8";
+        },
+        {
+          readonly name: "permissions";
           readonly type: "uint256";
         },
         {
-          readonly name: "deadline";
-          readonly type: "uint256";
+          readonly name: "publicKey";
+          readonly type: "bytes";
+        },
+      ];
+    };
+    readonly RemoveCredential: {
+      readonly id: 255;
+      readonly params: readonly [
+        {
+          readonly name: "credentialID";
+          readonly type: "uint64";
         },
       ];
     };
   };
-  readonly signature: readonly [
-    {
-      readonly name: "keyType";
-      readonly type: "uint8";
-    },
-    {
-      readonly name: "rawSignature";
-      readonly type: "bytes";
-    },
-  ];
 }>;
 export default entrypoint;

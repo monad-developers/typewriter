@@ -14,6 +14,7 @@ import { Hash, Hex } from "ox";
 import {
   createStorageProxy,
   recoverStoragePaths,
+  type StorageLayout,
   type StorageProxy,
 } from "storage-layout";
 import {
@@ -41,8 +42,8 @@ import {
   updateMutationsLifecycle,
 } from "./db-query";
 import {
+  decodeAuthorizationCalldata,
   decodeMutationCalldata,
-  decodeSignatureCalldata,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
@@ -54,6 +55,7 @@ import { Rpc } from "./rpc";
 import { requestBlock, requestExecutionIndex } from "./rpc-request";
 import type {
   AcceptedMutation,
+  Authorization,
   BatchEvent,
   BlockEvent,
   EnqueuedMutation,
@@ -82,7 +84,7 @@ const SUBMIT_RETRY_TIMES = 5;
 type RuntimeExecuteInput = {
   name: string;
   params: unknown;
-  signature: unknown;
+  authorization: Authorization;
 };
 
 function resolveMutationConfig(app: InternalApp, name: string) {
@@ -241,14 +243,14 @@ export function executeMutation(params: {
       isForceInclusion: params.mutation.status === "enqueued",
     });
 
+    // TODO: Validate the fixed Authorization against the mirrored account
+    // state before entering revm, then retain contract execution as the final
+    // authority. The static wire shape makes this a future fast-rejection path.
     const mutationCalldata = yield* Effect.try({
       try: () =>
         params.mutation.status === "enqueued"
           ? encodeExecuteCalldata([], [params.mutation.queueIndex])
-          : encodeExecuteCalldata(
-              [encodeBatchArg(params.app.signature.params, [acceptedMutation])],
-              [],
-            ),
+          : encodeExecuteCalldata([encodeBatchArg([acceptedMutation])], []),
       catch: (cause) =>
         new EncodeMutationError({ mutation: params.mutation, cause }),
     });
@@ -308,10 +310,7 @@ export function enqueueMutation(params: {
   mutation: EnqueuedMutation;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
-    const enqueueCalldata = encodeEnqueueCalldata(
-      params.app.signature.params,
-      params.mutation,
-    );
+    const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
 
     return yield* params.evm.execute({
       from: "0x0000000000000000000000000000000000000000",
@@ -338,20 +337,23 @@ export function decodeEnqueuedMutation(params: {
     strict: true,
   }).args;
 
-  const [mutationName, mutationConfig] = Object.entries(
-    params.app.mutations,
-  ).find(
-    ([_, mutationConfig]) => mutationConfig.tag === forceInclusionLog.mutation,
-  )!;
+  const mutationEntry = Object.entries(params.app.mutations).find(
+    ([_, mutationConfig]) => mutationConfig.id === forceInclusionLog.mutation,
+  );
+  if (mutationEntry === undefined) {
+    throw new Error(
+      `unknown mutation tag in ForceInclusionQueued event: ${forceInclusionLog.mutation}`,
+    );
+  }
+  const [mutationName, mutationConfig] = mutationEntry;
 
   return {
     status: "enqueued",
     id: params.id,
     name: mutationName,
     config: mutationConfig,
-    signature: decodeSignatureCalldata(
-      params.app.signature.params,
-      forceInclusionLog.signatureData,
+    authorization: decodeAuthorizationCalldata(
+      forceInclusionLog.authorizationData,
     ),
     isForceInclusion: true,
     queueIndex: forceInclusionLog.index,
@@ -376,7 +378,8 @@ export function createRevmRevertError(
 export function createRuntimeState(app: InternalApp): Effect.Effect<
   {
     evm: EVM;
-    state: StorageProxy<InternalApp["storageLayout"], true>;
+    accounts: StorageProxy<StorageLayout, true>[string];
+    state: StorageProxy<StorageLayout, true>[string];
     knownPaths: string[];
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
@@ -445,7 +448,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       }
     };
 
-    const state = createStorageProxy(
+    const storageProxy = createStorageProxy(
       app.storageLayout,
       async (slots) => {
         const missingSlots = slots.filter((slot) => !slotCache.has(slot));
@@ -473,7 +476,15 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       knownPaths,
     );
 
-    return { evm, state, knownPaths, invalidateStorageCache };
+    return {
+      evm,
+      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
+      accounts: storageProxy["accounts"],
+      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
+      state: storageProxy["state"],
+      knownPaths,
+      invalidateStorageCache,
+    };
   });
 }
 
@@ -525,7 +536,7 @@ export function createRuntimeEffect(
     const scope = yield* Scope.Scope;
 
     const schema = app.schema;
-    const { evm, state, knownPaths, invalidateStorageCache } =
+    const { evm, accounts, state, knownPaths, invalidateStorageCache } =
       yield* createRuntimeState(app);
     const knownPathSet = new Set(knownPaths);
 
@@ -552,8 +563,23 @@ export function createRuntimeEffect(
     );
     const withSubmitLock = Semaphore.withPermits(Semaphore.makeUnsafe(1), 1);
 
+    const builtInMutationOrder = [
+      "CreateAccount",
+      "AddCredential",
+      "RemoveCredential",
+    ];
     const batchOrder =
-      app.sequencing.order === "batch" ? [...app.sequencing.batchOrder] : [];
+      app.sequencing.order === "batch"
+        ? [
+            ...builtInMutationOrder,
+            ...app.sequencing.batchOrder.filter(
+              (name) => !builtInMutationOrder.includes(name),
+            ),
+          ]
+        : [];
+    const batchOrderByName = new Map(
+      batchOrder.map((name, position) => [name, position]),
+    );
 
     let nonce = yield* rpc
       .request({
@@ -677,15 +703,16 @@ export function createRuntimeEffect(
         }
 
         if (batchOrder.length > 0) {
-          submittedMutations.sort(
-            (a, b) =>
-              batchOrder.indexOf(
-                (mutationsById.get(a.mutationId)! as ReceivedMutation).name,
-              ) -
-              batchOrder.indexOf(
-                (mutationsById.get(b.mutationId)! as ReceivedMutation).name,
-              ),
-          );
+          submittedMutations.sort((a, b) => {
+            const aName = (mutationsById.get(a.mutationId)! as ReceivedMutation)
+              .name;
+            const bName = (mutationsById.get(b.mutationId)! as ReceivedMutation)
+              .name;
+            return (
+              (batchOrderByName.get(aName) ?? batchOrder.length) -
+              (batchOrderByName.get(bName) ?? batchOrder.length)
+            );
+          });
         }
 
         const acceptedMutations: {
@@ -831,9 +858,7 @@ export function createRuntimeEffect(
             );
 
           const calldata = encodeExecuteCalldata(
-            batches.map((batch) =>
-              encodeBatchArg(app.signature.params, batch.mutations),
-            ),
+            batches.map((batch) => encodeBatchArg(batch.mutations)),
             acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
           );
 
@@ -1163,7 +1188,7 @@ export function createRuntimeEffect(
         const runtimeMutation = {
           name: resolvedMutation.name,
           params: mutation.params,
-          signature: mutation.signature,
+          authorization: mutation.authorization,
           id: mutationId++,
           status: "received",
           config: resolvedMutation.config,
@@ -1249,6 +1274,7 @@ export function createRuntimeEffect(
     }
 
     return {
+      accounts,
       state,
       schema,
       execute,

@@ -1,13 +1,5 @@
 import { parseAbiParameters } from "abitype";
-import {
-  type Abi,
-  AbiParameters,
-  Hash,
-  Hex as OxHex,
-  P256,
-  Secp256k1,
-  type TypedData,
-} from "ox";
+import { type Abi, AbiParameters, Hex as OxHex, P256, Secp256k1 } from "ox";
 import { Authentication } from "ox/webauthn";
 import {
   type AccountStorage,
@@ -21,31 +13,31 @@ import { type Address, encodeDeployData, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
 import { anvil } from "viem/chains";
-import type { TypewriterMutation } from "../src";
-import { TYPEWRITER_DOMAIN } from "../src";
-import type { ResolvedTypewriterMutationConfig } from "../src/config";
-import { hashMutationEip712 } from "../src/eip712";
+import {
+  authorizeMutation,
+  deriveAccountID,
+  getAuthorizationPayload,
+  KeyType,
+  packNonce,
+  type TypedMutation,
+} from "../src/client";
+import type {
+  ResolvedTypewriterMutationConfig,
+  TypewriterManifest,
+} from "../src/config";
+import { BUILTIN_MUTATIONS } from "../src/config";
+import type { KeyType as KeyTypeValue } from "../src/types";
 import {
   SCHEDULER_ACCOUNT,
   TEST_PUBLIC_CLIENT,
   TEST_WALLET_CLIENT,
 } from "./setup";
 
-export const COUNTER_SIGNATURE_PARAMS = parseAbiParameters(
-  "bytes32 accountId, bytes publicKey, bytes rawSignature",
-);
-export const HARNESS_SIGNATURE_PARAMS = parseAbiParameters(
-  "bytes32 account, uint64 keyId, uint8 keyType, bytes rawSignature",
-);
-
 export const EMPTY_STORAGE_LAYOUT = {
   storage: [],
   types: {},
 } as const satisfies StorageLayout;
 
-// Minimal ABI for tests that createTypewriter without a real contract. Contains the
-// execute function and ForceInclusionQueued event so the runtime and watch
-// layer have the shapes they expect.
 export const STUB_TYPEWRITER_ABI = [
   {
     type: "function",
@@ -54,12 +46,12 @@ export const STUB_TYPEWRITER_ABI = [
       {
         name: "batches",
         type: "tuple[]",
-        internalType: "struct Batch[]",
+        internalType: "struct Typewriter.Batch[]",
         components: [
           { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
           { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
           {
-            name: "signatureData",
+            name: "authorizationData",
             type: "bytes[]",
             internalType: "bytes[]",
           },
@@ -97,7 +89,7 @@ export const STUB_TYPEWRITER_ABI = [
         internalType: "bytes",
       },
       {
-        name: "signatureData",
+        name: "authorizationData",
         type: "bytes",
         indexed: false,
         internalType: "bytes",
@@ -113,21 +105,13 @@ export const STUB_TYPEWRITER_ABI = [
   },
 ] as const satisfies Abi.Abi;
 
-// Deploy a forge-built contract by name. Reads the artifact from the
-// contracts workspace, broadcasts via the test wallet, waits for the
-// receipt, returns the deployed address.
-async function deployContract(
-  name: string,
-  constructorParams?: readonly unknown[],
-): Promise<Address> {
+async function deployContract(name: string): Promise<Address> {
   const artifact = await Bun.file(
     `${import.meta.dir}/contracts/out/${name}.sol/${name}.json`,
   ).json();
   const data = encodeDeployData({
     abi: artifact.abi,
     bytecode: artifact.bytecode.object as Hex,
-    // biome-ignore lint/suspicious/noExplicitAny: viem deployContract args type
-    args: constructorParams as any,
   });
 
   const request = await TEST_WALLET_CLIENT.prepareTransactionRequest({
@@ -148,13 +132,7 @@ async function deployContract(
   return receipt.contractAddress;
 }
 
-// Deploy Counter. The contract hardcodes its EIP-712 domain (name="Counter",
-// version="1") and takes no constructor params. The parameter is retained only
-// so existing call sites don't need to care about the constructor change.
-export async function deployCounter(_: Address): Promise<Address> {
-  return deployContract("Counter");
-}
-
+export const deployCounter = (): Promise<Address> => deployContract("Counter");
 export const deployHarness = (): Promise<Address> => deployContract("Harness");
 
 export async function readContractStorage<
@@ -165,7 +143,7 @@ export async function readContractStorage<
   address: Address,
   variable: variable,
 ): Promise<StorageVariableToPrimitiveType<layout, variable>> {
-  // @ts-expect-error
+  // @ts-expect-error storage-layout's generic slot tuple is wider than AccountStorage.
   const slots = getStorageSlot(layout, variable);
   const values = await Promise.all(
     slots.map((slot) => TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })),
@@ -177,162 +155,63 @@ export async function readContractStorage<
   return decodeStorageVariable(layout, variable, storage);
 }
 
-// Mutation definitions for the Counter test fixture. The contract/revm owns
-// acceptance and state transitions; this config only describes encoding.
 export const COUNTER_MUTATIONS = {
-  NewAccount: {
-    tag: 0,
-    params: parseAbiParameters("uint8 keyType, bytes publicKey"),
-  },
   Add: {
-    tag: 1,
-    params: parseAbiParameters("uint256 amount, uint256 nonce"),
+    id: 0,
+    params: parseAbiParameters("uint256 amount"),
   },
-} as const satisfies {
-  NewAccount: ResolvedTypewriterMutationConfig;
-  Add: ResolvedTypewriterMutationConfig;
-};
+  ...BUILTIN_MUTATIONS,
+} as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
 
-export function counterAccountId(publicKey: Hex): Hex {
-  return Hash.keccak256(publicKey) as Hex;
-}
-
-export function counterNewAccountMutation(params: {
-  address: Address;
-}): TypewriterMutation<
-  "NewAccount",
-  typeof COUNTER_MUTATIONS.NewAccount,
-  typeof COUNTER_SIGNATURE_PARAMS
-> {
-  const publicKey = secp256k1PublicKey(params.address);
-  return {
-    name: "NewAccount",
-    params: { keyType: 2, publicKey },
-    signature: {
-      accountId: counterAccountId(publicKey),
-      publicKey,
-      rawSignature: "0x",
-    },
-  };
-}
-
-// Sign Counter's `add` mutation. The runtime ABI-encodes this record against
-// COUNTER_SIGNATURE_PARAMS before passing it through Typewriter's signatureData channel.
-export function signCounter(params: {
-  privateKey: Hex;
-  amount: bigint;
-  nonce: bigint;
-  address: Address;
-  chainId: number;
-}): {
-  readonly accountId: Hex;
-  readonly publicKey: Hex;
-  readonly rawSignature: Hex;
-} {
-  const domain: TypedData.Domain = {
-    ...TYPEWRITER_DOMAIN,
-    chainId: params.chainId,
-    verifyingContract: params.address,
-  };
-  const digest = hashMutationEip712(
-    COUNTER_MUTATIONS.Add,
-    "Add",
-    { amount: params.amount, nonce: params.nonce },
-    domain,
-  );
-  const signerAddress = privateKeyToAccount(params.privateKey).address;
-  const publicKey = secp256k1PublicKey(signerAddress);
-  const rawSignature = signSecp256k1Raw(digest, params.privateKey);
-  return { accountId: counterAccountId(publicKey), publicKey, rawSignature };
-}
-
-// Mutation definitions for the Harness test fixture. Tags match the contract:
-//   initialize (0): bootstraps an account with a root key. Account id is
-//                    derived as keccak256(rootPublicKey); no signature.
-//   authorize  (1): adds a key to an existing account. Signed by an
-//                    existing key.
-//   credit     (2): adds amount to balance. Signed.
-//   debit      (3): subtracts amount from balance onchain. Signed.
-//   assert     (4): read-only check; the contract reverts if balance !=
-//                    expected. Signed.
 export const HARNESS_MUTATIONS = {
-  Initialize: {
-    tag: 0,
-    params: parseAbiParameters("uint8 rootKeyType, bytes rootPublicKey"),
-  },
-  Authorize: {
-    tag: 1,
-    params: parseAbiParameters(
-      "bytes32 account, uint64 keyId, uint8 keyType, bytes publicKey, uint256 nonce",
-    ),
-  },
   Credit: {
-    tag: 2,
-    params: parseAbiParameters(
-      "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
-    ),
+    id: 0,
+    params: parseAbiParameters("uint256 amount"),
   },
   Debit: {
-    tag: 3,
-    params: parseAbiParameters(
-      "bytes32 account, uint64 keyId, uint256 amount, uint256 nonce",
-    ),
+    id: 1,
+    params: parseAbiParameters("uint256 amount"),
   },
   Assert: {
-    tag: 4,
-    params: parseAbiParameters(
-      "bytes32 account, uint64 keyId, uint256 expected, uint256 nonce",
-    ),
+    id: 2,
+    params: parseAbiParameters("uint256 expected"),
   },
-} as const satisfies {
-  Initialize: ResolvedTypewriterMutationConfig;
-  Authorize: ResolvedTypewriterMutationConfig;
-  Credit: ResolvedTypewriterMutationConfig;
-  Debit: ResolvedTypewriterMutationConfig;
-  Assert: ResolvedTypewriterMutationConfig;
-};
+  ...BUILTIN_MUTATIONS,
+} as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
 
-// Derive the bytes32 account id from a public key (matches Harness.sol's
-// `keccak256(rootPublicKey)` bootstrap rule).
-export function harnessAccountId(publicKey: Hex): Hex {
-  return Hash.keccak256(publicKey) as Hex;
+function fixtureManifest<
+  const mutations extends Record<string, ResolvedTypewriterMutationConfig>,
+>(mutations: mutations, address: Address, chainId: number) {
+  return { address, chainId, mutations } as const;
 }
 
-// secp256k1 public key for an EOA, in the abi.encode(address) form
-// Typewriter.sol's verifySecp256k1 expects.
 export function secp256k1PublicKey(address: Address): Hex {
   return AbiParameters.encode(parseAbiParameters("address"), [address]);
 }
 
-// P-256 public key for a private key, in the abi.encode(uint256 x, uint256 y)
-// form Typewriter.sol's verifyP256 / decodeP256PublicKey accepts.
 export function p256PublicKey(privateKey: Hex): Hex {
-  const pk = P256.getPublicKey({ privateKey });
+  const publicKey = P256.getPublicKey({ privateKey });
   return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
-    pk.x,
-    pk.y,
+    publicKey.x,
+    publicKey.y,
   ]);
 }
 
-// Sign a digest with a P-256 private key. Returns rawSignature in the
-// abi.encode(uint256 r, uint256 s) form. The contract sha256s the digest
-// before passing to the precompile, so we sign with hash: true to match.
+export function nativeAccountID(keyType: number, publicKey: Hex): Hex {
+  if (keyType !== 0 && keyType !== 1 && keyType !== 2) {
+    throw new RangeError(`unknown key type: ${keyType}`);
+  }
+  return deriveAccountID({ keyType, publicKey });
+}
+
 export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
-  const sig = P256.sign({ payload: digest, privateKey, hash: true });
+  const signature = P256.sign({ payload: digest, privateKey, hash: true });
   return AbiParameters.encode(parseAbiParameters("uint256 r, uint256 s"), [
-    sig.r,
-    sig.s,
+    signature.r,
+    signature.s,
   ]);
 }
 
-// Sign a digest as a WebAuthn-P256 challenge. Returns rawSignature in the
-// abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset,
-// uint256 r, uint256 s) form Typewriter.sol's verifyWebAuthnP256 expects.
-//
-// rpId/origin are fixed to empty strings — Typewriter.sol doesn't inspect
-// either, so their values don't affect on-chain verification. Real apps
-// that care about origin enforcement would do that check off-chain
-// (browser refuses to sign for the wrong RP ID anyway).
 export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
   const { metadata, payload } = Authentication.getSignPayload({
     challenge: digest,
@@ -340,65 +219,24 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
     origin: "",
     userVerification: "required",
   });
-  const sig = P256.sign({ payload, privateKey, hash: true });
-  // Typewriter.sol's verifyChallenge expects the byte offset at which the
-  // base64url-encoded challenge VALUE starts inside clientDataJSON. ox's
-  // `challengeIndex` points at the JSON key (`"challenge":"`), so add 13
-  // to land on the first byte of the value.
+  const signature = P256.sign({ payload, privateKey, hash: true });
   const challengeOffset =
     metadata.clientDataJSON.indexOf('"challenge":"') + '"challenge":"'.length;
   return AbiParameters.encode(
     parseAbiParameters(
-      "bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s",
+      "bytes authenticatorData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s",
     ),
     [
       metadata.authenticatorData,
       OxHex.fromString(metadata.clientDataJSON),
       BigInt(challengeOffset),
-      sig.r,
-      sig.s,
+      signature.r,
+      signature.s,
     ],
   );
 }
 
-// Sign one of Harness's signed mutation types. Returns the structured
-// signature typewriter encodes into batch.signatureData[i].
-export function signHarness(params: {
-  keyType: number;
-  privateKey: Hex;
-  mutation: "Authorize" | "Credit" | "Debit" | "Assert";
-  params: Record<string, unknown>;
-  address: Address;
-  chainId: number;
-}): Hex {
-  const domain: TypedData.Domain = {
-    ...TYPEWRITER_DOMAIN,
-    chainId: params.chainId,
-    verifyingContract: params.address,
-  };
-  const digest = hashMutationEip712(
-    HARNESS_MUTATIONS[params.mutation],
-    params.mutation,
-    params.params,
-    domain,
-  );
-  if (params.keyType === 0) return signP256Raw(digest, params.privateKey);
-  if (params.keyType === 1)
-    return signWebAuthnP256Raw(digest, params.privateKey);
-  if (params.keyType === 2) return signSecp256k1Raw(digest, params.privateKey);
-  throw new Error(`signHarness: unknown keyType ${params.keyType}`);
-}
-
-export function encodeHarnessSignature(params: {
-  readonly account: Hex;
-  readonly keyId: bigint;
-  readonly keyType: number;
-  readonly rawSignature: Hex;
-}): typeof params {
-  return params;
-}
-
-function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
+export function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = Secp256k1.sign({ payload: digest, privateKey });
   return AbiParameters.encode(
     parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
@@ -410,28 +248,236 @@ function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
   );
 }
 
-// Bootstrap an account by submitting an `initialize` mutation. Returns the
-// derived account id so callers can reference it. The signature is unused
-// by the contract (initialize is bootstrap) but typewriter's wire format still
-// requires a structured value, so we pass a stub.
-export async function setupHarnessAccount(
-  // biome-ignore lint/suspicious/noExplicitAny: structural typing for the typewriter instance
-  typewriter: { execute: (m: any) => Promise<any> },
-  params: { rootKeyType: number; rootPublicKey: Hex },
-): Promise<Hex> {
-  const account = harnessAccountId(params.rootPublicKey);
-  await typewriter.execute({
-    name: "Initialize",
-    params: {
-      rootKeyType: params.rootKeyType,
-      rootPublicKey: params.rootPublicKey,
+type AuthorizationSigner = (digest: Hex) => Hex;
+
+function authorizationSigner(
+  keyType: number,
+  privateKey: Hex,
+): AuthorizationSigner {
+  if (keyType === KeyType.P256) {
+    return (digest: Hex) => signP256Raw(digest, privateKey);
+  }
+  if (keyType === KeyType.WebAuthnP256) {
+    return (digest: Hex) => signWebAuthnP256Raw(digest, privateKey);
+  }
+  if (keyType === KeyType.Secp256k1) {
+    return (digest: Hex) => signSecp256k1Raw(digest, privateKey);
+  }
+  throw new RangeError(`unknown key type: ${keyType}`);
+}
+
+export function authorizationRequest(params: {
+  accountID: Hex;
+  credentialID?: bigint;
+  lane?: bigint;
+  sequence: bigint;
+  expiration?: bigint;
+}) {
+  return {
+    accountID: params.accountID,
+    credentialID: params.credentialID ?? 0n,
+    nonce: packNonce(params.lane ?? 0n, params.sequence),
+    expiration: params.expiration ?? 0n,
+  };
+}
+
+function authorize<
+  const manifest extends TypewriterManifest,
+  const name extends keyof manifest["mutations"] & string,
+>(
+  manifest: manifest,
+  mutation: TypedMutation<manifest, name>,
+  keyType: number,
+  privateKey: Hex,
+) {
+  const signer = authorizationSigner(keyType, privateKey);
+  return authorizeMutation(
+    mutation,
+    signer(getAuthorizationPayload(manifest, mutation)),
+  );
+}
+
+export function prepareCounterCreateAccount(params: {
+  privateKey: Hex;
+  address: Address;
+  chainId: number;
+}) {
+  const publicKey = secp256k1PublicKey(
+    privateKeyToAccount(params.privateKey).address,
+  );
+  const manifest = fixtureManifest(
+    COUNTER_MUTATIONS,
+    params.address,
+    params.chainId,
+  );
+  const accountID = nativeAccountID(KeyType.Secp256k1, publicKey);
+  return authorize(
+    manifest,
+    {
+      name: "CreateAccount",
+      params: { keyType: KeyType.Secp256k1, publicKey },
+      accountID,
+      credentialID: 0n,
+      nonce: 0n,
+      expiration: 0n,
     },
-    signature: encodeHarnessSignature({
-      account,
-      keyId: 0n,
-      keyType: params.rootKeyType,
-      rawSignature: "0x",
-    }),
+    KeyType.Secp256k1,
+    params.privateKey,
+  );
+}
+
+export function prepareCounterAdd(params: {
+  privateKey: Hex;
+  address: Address;
+  chainId: number;
+  amount: bigint;
+  sequence: bigint;
+}) {
+  const publicKey = secp256k1PublicKey(
+    privateKeyToAccount(params.privateKey).address,
+  );
+  const accountID = nativeAccountID(KeyType.Secp256k1, publicKey);
+  const manifest = fixtureManifest(
+    COUNTER_MUTATIONS,
+    params.address,
+    params.chainId,
+  );
+  const request = authorizationRequest({
+    accountID,
+    sequence: params.sequence,
   });
-  return account;
+  return authorize(
+    manifest,
+    { name: "Add", params: { amount: params.amount }, ...request },
+    KeyType.Secp256k1,
+    params.privateKey,
+  );
+}
+
+export function prepareHarnessCreateAccount(params: {
+  keyType: number;
+  publicKey: Hex;
+  privateKey: Hex;
+  address: Address;
+  chainId: number;
+}) {
+  if (params.keyType !== 0 && params.keyType !== 1 && params.keyType !== 2) {
+    throw new RangeError(`unknown key type: ${params.keyType}`);
+  }
+  const manifest = fixtureManifest(
+    HARNESS_MUTATIONS,
+    params.address,
+    params.chainId,
+  );
+  const accountID = nativeAccountID(params.keyType, params.publicKey);
+  return authorize(
+    manifest,
+    {
+      name: "CreateAccount",
+      params: { keyType: params.keyType, publicKey: params.publicKey },
+      accountID,
+      credentialID: 0n,
+      nonce: 0n,
+      expiration: 0n,
+    },
+    params.keyType,
+    params.privateKey,
+  );
+}
+
+type HarnessMutation =
+  | { mutation: "Credit"; params: { amount: bigint } }
+  | { mutation: "Debit"; params: { amount: bigint } }
+  | { mutation: "Assert"; params: { expected: bigint } };
+
+export function prepareHarnessMutation(
+  params: HarnessMutation & {
+    accountID: Hex;
+    credentialID?: bigint;
+    lane?: bigint;
+    sequence: bigint;
+    keyType: number;
+    privateKey: Hex;
+    address: Address;
+    chainId: number;
+  },
+) {
+  const manifest = fixtureManifest(
+    HARNESS_MUTATIONS,
+    params.address,
+    params.chainId,
+  );
+  const request = authorizationRequest({
+    accountID: params.accountID,
+    credentialID: params.credentialID,
+    lane: params.lane,
+    sequence: params.sequence,
+  });
+  if (params.mutation === "Assert") {
+    return authorize(
+      manifest,
+      {
+        name: "Assert",
+        params: params.params,
+        ...request,
+      },
+      params.keyType,
+      params.privateKey,
+    );
+  }
+  if (params.mutation === "Debit") {
+    return authorize(
+      manifest,
+      {
+        name: "Debit",
+        params: params.params,
+        ...request,
+      },
+      params.keyType,
+      params.privateKey,
+    );
+  }
+  return authorize(
+    manifest,
+    { name: "Credit", params: params.params, ...request },
+    params.keyType,
+    params.privateKey,
+  );
+}
+
+export function prepareHarnessAddCredential(params: {
+  accountID: Hex;
+  credentialID?: bigint;
+  lane?: bigint;
+  sequence: bigint;
+  credentialKeyType: KeyTypeValue;
+  signerKeyType: number;
+  privateKey: Hex;
+  address: Address;
+  chainId: number;
+  expiration: bigint;
+  permissions: bigint;
+  publicKey: Hex;
+}) {
+  const manifest = fixtureManifest(
+    HARNESS_MUTATIONS,
+    params.address,
+    params.chainId,
+  );
+  const request = authorizationRequest(params);
+  return authorize(
+    manifest,
+    {
+      name: "AddCredential",
+      params: {
+        expiration: params.expiration,
+        keyType: params.credentialKeyType,
+        permissions: params.permissions,
+        publicKey: params.publicKey,
+      },
+      ...request,
+    },
+    params.signerKeyType,
+    params.privateKey,
+  );
 }

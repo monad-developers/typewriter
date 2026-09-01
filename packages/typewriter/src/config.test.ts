@@ -1,218 +1,175 @@
-import { expectTypeOf, test } from "bun:test";
+import { expect, expectTypeOf, test } from "bun:test";
+import type { Hex } from "ox";
 import type { StorageProxy } from "storage-layout";
-import type { Hex } from "viem";
 import {
-  COUNTER_MUTATIONS,
-  type COUNTER_SIGNATURE_PARAMS,
-  type EMPTY_STORAGE_LAYOUT,
-  HARNESS_MUTATIONS,
-  type HARNESS_SIGNATURE_PARAMS,
-} from "../test/utils";
-import type {
-  AbiParametersToValue,
-  MutationsConfig,
-  ResolvedTypewriterMutationConfig,
-  SequencingConfig,
-  SignatureConfig,
-  StorageConfig,
-  TypewriterConfig,
+  BUILTIN_MUTATIONS,
+  buildInternalApp,
+  type MutationsConfig,
+  type SequencingConfig,
+  type StorageConfig,
+  type TypewriterConfig,
 } from "./config";
-import { TYPEWRITER_DOMAIN } from "./eip712";
-import type { Typewriter, TypewriterMutationInput } from "./index";
+import type {
+  Authorization,
+  Typewriter,
+  TypewriterMutationInput,
+} from "./index";
+
+const STORAGE_LAYOUT = {
+  storage: [
+    {
+      astId: 1,
+      contract: "Test.sol:Test",
+      label: "accounts",
+      offset: 0,
+      slot: "0",
+      type: "accounts",
+    },
+    {
+      astId: 2,
+      contract: "Test.sol:Test",
+      label: "state",
+      offset: 0,
+      slot: "1",
+      type: "state",
+    },
+  ],
+  types: {
+    accounts: {
+      encoding: "mapping",
+      label: "mapping(bytes32 => uint256)",
+      numberOfBytes: "32",
+      key: "bytes32",
+      value: "uint256",
+    },
+    bytes32: {
+      encoding: "inplace",
+      label: "bytes32",
+      numberOfBytes: "32",
+    },
+    state: {
+      encoding: "inplace",
+      label: "struct State",
+      numberOfBytes: "32",
+      members: [
+        {
+          astId: 3,
+          contract: "Test.sol:Test",
+          label: "totalSupply",
+          offset: 0,
+          slot: "0",
+          type: "uint256",
+        },
+      ],
+    },
+    uint256: {
+      encoding: "inplace",
+      label: "uint256",
+      numberOfBytes: "32",
+    },
+  },
+} as const satisfies StorageConfig;
+
+const MUTATIONS = {
+  Ping: {
+    id: 0,
+    params: [{ name: "amount", type: "uint256" }],
+  },
+  ...BUILTIN_MUTATIONS,
+} as const;
+
+const AUTHORIZATION = {
+  accountID: "0x01",
+  credentialID: 0n,
+  nonce: 0n,
+  expiration: 0n,
+  signature: "0x02",
+} as const satisfies Authorization;
 
 function createTypewriterTest<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
->(): Typewriter<
-  storageConfig,
-  mutationsConfig,
-  signatureConfig,
-  sequencingConfig
-> {
-  return {
-    state: {},
-    schema: {},
-    domain: {
-      ...TYPEWRITER_DOMAIN,
-      chainId: 1,
-      verifyingContract: "0x0000000000000000000000000000000000000000",
-    },
-    execute: async () => ({ id: 0 }),
-    on: () => () => {},
-  } as unknown as Typewriter<
-    storageConfig,
-    mutationsConfig,
-    signatureConfig,
-    sequencingConfig
-  >;
+>(): Typewriter<storageConfig, mutationsConfig, sequencingConfig> {
+  return {} as Typewriter<storageConfig, mutationsConfig, sequencingConfig>;
 }
-
-type TestStorageConfig = typeof EMPTY_STORAGE_LAYOUT;
-type CounterMutationsConfig = typeof COUNTER_MUTATIONS;
-type CounterSignatureConfig = typeof COUNTER_SIGNATURE_PARAMS;
-type HarnessMutationsConfig = typeof HARNESS_MUTATIONS;
-type HarnessSignatureConfig = typeof HARNESS_SIGNATURE_PARAMS;
 
 const publicConfig = {
   address: "0x0000000000000000000000000000000000000000",
-  // biome-ignore lint/suspicious/noExplicitAny: stub field, types not the focus
-  account: {} as any,
+  account: {} as TypewriterConfig["account"],
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
 } as const satisfies TypewriterConfig;
 
-test("TypewriterConfig accepts app-owned runtime config only", () => {
-  void publicConfig;
+test("buildInternalApp constructs a serializable manifest", () => {
+  const app = buildInternalApp({
+    config: publicConfig,
+    abi: [],
+    storageLayout: STORAGE_LAYOUT,
+    mutations: MUTATIONS,
+  });
+
+  expect(app.manifest).toEqual({
+    chainId: 1,
+    address: publicConfig.address,
+    mutations: MUTATIONS,
+  });
 });
 
-test("ResolvedTypewriterMutationConfig accepts Counter mutation definitions", () => {
-  const mutations = COUNTER_MUTATIONS satisfies Record<
-    string,
-    ResolvedTypewriterMutationConfig
-  >;
-  void mutations;
-});
+test("Typewriter exposes each storage root at one property layer", () => {
+  const app = createTypewriterTest<typeof STORAGE_LAYOUT, typeof MUTATIONS>();
+  type Root = StorageProxy<typeof STORAGE_LAYOUT, true>;
 
-test("ResolvedTypewriterMutationConfig accepts Harness mutation definitions", () => {
-  const mutations = HARNESS_MUTATIONS satisfies Record<
-    string,
-    ResolvedTypewriterMutationConfig
-  >;
-  void mutations;
-});
-
-test("Typewriter state is typed from supplied storage config", () => {
-  const app = createTypewriterTest<
-    TestStorageConfig,
-    CounterMutationsConfig,
-    CounterSignatureConfig
-  >();
-
-  expectTypeOf(app.state).toEqualTypeOf<
-    StorageProxy<TestStorageConfig, true>
+  expectTypeOf(app.state).toEqualTypeOf<Root["state"]>();
+  expectTypeOf(app.accounts).toEqualTypeOf<Root["accounts"]>();
+  expectTypeOf(app.state.totalSupply).toEqualTypeOf<Promise<bigint>>();
+  expectTypeOf(app.accounts["0x01" as Hex.Hex]).toEqualTypeOf<
+    Promise<bigint> | undefined
   >();
 });
 
-test("Typewriter execute input uses manually supplied Counter mutation and signature configs", () => {
-  const app = createTypewriterTest<
-    TestStorageConfig,
-    CounterMutationsConfig,
-    CounterSignatureConfig
-  >();
-
+test("Typewriter mutation input uses concrete authorization", () => {
+  const app = createTypewriterTest<typeof STORAGE_LAYOUT, typeof MUTATIONS>();
   type Input = Parameters<typeof app.execute>[0];
 
   expectTypeOf<Input>().toEqualTypeOf<
-    TypewriterMutationInput<CounterMutationsConfig, CounterSignatureConfig>
+    TypewriterMutationInput<typeof MUTATIONS>
   >();
 
-  type CounterSignature = AbiParametersToValue<CounterSignatureConfig>;
-
-  expectTypeOf<Input["name"]>().toEqualTypeOf<
-    keyof CounterMutationsConfig & string
-  >();
-  const signature = {
-    accountId: "0x" as Hex,
-    publicKey: "0x" as Hex,
-    rawSignature: "0x" as Hex,
-  } satisfies CounterSignature;
-  const newAccountInput = {
-    name: "NewAccount",
-    params: { keyType: 2, publicKey: "0x" as Hex },
-    signature,
+  const ping = {
+    name: "Ping",
+    params: { amount: 1n },
+    authorization: AUTHORIZATION,
   } satisfies Input;
-  const addInput = {
-    name: "Add",
-    params: { amount: 1n, nonce: 0n },
-    signature,
+  const createAccount = {
+    name: "CreateAccount",
+    params: { keyType: 2, publicKey: "0x03" },
+    authorization: AUTHORIZATION,
   } satisfies Input;
 
-  expectTypeOf(newAccountInput).toMatchTypeOf<
-    Extract<Input, { name: "NewAccount" }>
+  expectTypeOf(ping).toMatchTypeOf<Extract<Input, { name: "Ping" }>>();
+  expectTypeOf(createAccount).toMatchTypeOf<
+    Extract<Input, { name: "CreateAccount" }>
   >();
-  expectTypeOf(addInput).toMatchTypeOf<Extract<Input, { name: "Add" }>>();
 
   const acceptInput = (_input: Input) => {};
-
   acceptInput({
-    name: "Add",
-    // @ts-expect-error `Add` must use the `Add` ABI params, not `NewAccount` params.
-    params: { keyType: 2, publicKey: "0x" as Hex },
-    signature,
-  });
-
-  acceptInput({
-    name: "NewAccount",
-    params: { keyType: 2, publicKey: "0x" as Hex },
-    // @ts-expect-error `NewAccount` must use Counter's configured signature shape.
-    signature: { rawSignature: "0x" as Hex },
+    name: "CreateAccount",
+    // @ts-expect-error Native key types are limited to the protocol's three algorithms.
+    params: { keyType: 3, publicKey: "0x03" },
+    authorization: AUTHORIZATION,
   });
 });
 
-test("Typewriter execute input uses manually supplied Harness mutation and signature configs", () => {
+test("Typewriter sequencing type remains part of the handle", () => {
   const app = createTypewriterTest<
-    TestStorageConfig,
-    HarnessMutationsConfig,
-    HarnessSignatureConfig
-  >();
-
-  type Input = Parameters<typeof app.execute>[0];
-
-  expectTypeOf<Input>().toEqualTypeOf<
-    TypewriterMutationInput<HarnessMutationsConfig, HarnessSignatureConfig>
-  >();
-
-  type HarnessSignature = AbiParametersToValue<HarnessSignatureConfig>;
-
-  expectTypeOf<Input["name"]>().toEqualTypeOf<
-    keyof HarnessMutationsConfig & string
-  >();
-  const signature = {
-    account: "0x" as Hex,
-    keyId: 0n,
-    keyType: 2,
-    rawSignature: "0x" as Hex,
-  } satisfies HarnessSignature;
-  const debitInput = {
-    name: "Debit",
-    params: {
-      account: "0x" as Hex,
-      keyId: 0n,
-      amount: 1n,
-      nonce: 0n,
-    },
-    signature,
-  } satisfies Input;
-
-  expectTypeOf(debitInput).toMatchTypeOf<Extract<Input, { name: "Debit" }>>();
-
-  const acceptInput = (_input: Input) => {};
-
-  acceptInput({
-    name: "Debit",
-    // @ts-expect-error `Debit` requires the Harness debit ABI params.
-    params: { rootKeyType: 2, rootPublicKey: "0x" as Hex },
-    signature,
-  });
-});
-
-test("Typewriter sequencing type is represented in the app type", () => {
-  const app = createTypewriterTest<
-    TestStorageConfig,
-    CounterMutationsConfig,
-    CounterSignatureConfig,
+    typeof STORAGE_LAYOUT,
+    typeof MUTATIONS,
     "batch"
   >();
 
   expectTypeOf(app).toEqualTypeOf<
-    Typewriter<
-      TestStorageConfig,
-      CounterMutationsConfig,
-      CounterSignatureConfig,
-      "batch"
-    >
+    Typewriter<typeof STORAGE_LAYOUT, typeof MUTATIONS, "batch">
   >();
 });

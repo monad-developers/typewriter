@@ -3,10 +3,10 @@ import { anvil } from "viem/chains";
 import Counter from "../test/contracts/src/Counter.sol";
 import { SCHEDULER_ACCOUNT, TEST_DB_URL, TEST_RPC_URL } from "../test/setup";
 import { deployCounter } from "../test/utils";
-import { createTypewriter, TYPEWRITER_DOMAIN } from "./index";
+import { createTypewriter } from "./index";
 
-test("typewriter.domain is fixed", async () => {
-  const address = await deployCounter(SCHEDULER_ACCOUNT.address);
+test("typewriter exposes the native-account manifest", async () => {
+  const address = await deployCounter();
   const typewriter = await createTypewriter(Counter, {
     address,
     account: SCHEDULER_ACCOUNT,
@@ -16,10 +16,23 @@ test("typewriter.domain is fixed", async () => {
   });
 
   try {
-    expect(typewriter.domain).toEqual({
-      ...TYPEWRITER_DOMAIN,
+    expect({
+      address: typewriter.manifest.address,
+      chainId: typewriter.manifest.chainId,
+      mutationIDs: Object.fromEntries(
+        Object.entries(typewriter.manifest.mutations).map(
+          ([name, mutation]) => [name, (mutation as { id: number }).id],
+        ),
+      ),
+    }).toEqual({
+      address,
       chainId: anvil.id,
-      verifyingContract: address,
+      mutationIDs: {
+        Add: 0,
+        CreateAccount: 253,
+        AddCredential: 254,
+        RemoveCredential: 255,
+      },
     });
   } finally {
     await typewriter.close();

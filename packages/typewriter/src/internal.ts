@@ -1,24 +1,18 @@
 import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
+import type { TypewriterManifest } from "./config";
 import type { DatabaseOptions } from "./db";
 import type { TypewriterSchema } from "./schema";
 
 export type InternalMutation = {
-  tag: number;
+  id: number;
   params: readonly AbiParameter[];
 };
 
 type InternalConfirmations = {
   safeBlockDepth: number;
   finalizedBlockDepth: number;
-};
-
-type InternalDomain = {
-  name: string;
-  version: string;
-  chainId: number;
-  verifyingContract: Address.Address;
 };
 
 type InternalFIFOSequencing = {
@@ -38,8 +32,7 @@ type InternalSequencing = InternalFIFOSequencing | InternalBatchSequencing;
 export type InternalApp = {
   address: Address.Address;
   abi: Abi;
-  domain: InternalDomain;
-  signature: { params: readonly AbiParameter[] };
+  manifest: TypewriterManifest;
   storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;

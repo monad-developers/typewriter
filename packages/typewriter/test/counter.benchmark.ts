@@ -1,20 +1,17 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
-import type { TypewriterConfig, TypewriterMutation } from "../src";
+import type { TypewriterConfig } from "../src";
 import Counter from "./contracts/src/Counter.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
   TEST_RPC_URL,
-  USER_ACCOUNT,
   USER_PRIVATE_KEY,
 } from "./setup";
 import {
-  type COUNTER_MUTATIONS,
-  type COUNTER_SIGNATURE_PARAMS,
-  counterNewAccountMutation,
   deployCounter,
-  signCounter,
+  prepareCounterAdd,
+  prepareCounterCreateAccount,
 } from "./utils";
 
 process.env.NODE_ENV = "production";
@@ -25,22 +22,14 @@ function counterAddMutation(params: {
   readonly address: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): TypewriterMutation<
-  "Add",
-  typeof COUNTER_MUTATIONS.Add,
-  typeof COUNTER_SIGNATURE_PARAMS
-> {
-  return {
-    name: "Add",
-    params: { amount: params.amount, nonce: params.nonce },
-    signature: signCounter({
-      privateKey: USER_PRIVATE_KEY,
-      amount: params.amount,
-      nonce: params.nonce,
-      address: params.address,
-      chainId: anvil.id,
-    }),
-  };
+}) {
+  return prepareCounterAdd({
+    privateKey: USER_PRIVATE_KEY,
+    amount: params.amount,
+    sequence: params.nonce,
+    address: params.address,
+    chainId: anvil.id,
+  });
 }
 
 function percentile(values: readonly number[], p: number): number {
@@ -57,7 +46,7 @@ function formatMs(durationMs: number): string {
 
 test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
   const { createTypewriter } = await import("../src");
-  const address = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter();
   const config = {
     address,
     account: SCHEDULER_ACCOUNT,
@@ -71,17 +60,21 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
   const typewriter = await createTypewriter(Counter, config);
 
   await typewriter.execute(
-    counterNewAccountMutation({
-      address: USER_ACCOUNT.address,
-    }) as unknown as Parameters<typeof typewriter.execute>[0],
+    await prepareCounterCreateAccount({
+      privateKey: USER_PRIVATE_KEY,
+      address,
+      chainId: anvil.id,
+    }),
   );
 
-  const mutations = Array.from({ length: MUTATION_COUNT }, (_, index) =>
-    counterAddMutation({
-      address,
-      amount: 1n,
-      nonce: BigInt(index),
-    }),
+  const mutations = await Promise.all(
+    Array.from({ length: MUTATION_COUNT }, (_, index) =>
+      counterAddMutation({
+        address,
+        amount: 1n,
+        nonce: BigInt(index),
+      }),
+    ),
   );
 
   const mutationDurationsMs: number[] = [];
@@ -89,9 +82,7 @@ test(`counter accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () =>
 
   for (const mutation of mutations) {
     const mutationStart = performance.now();
-    await typewriter.execute(
-      mutation as unknown as Parameters<typeof typewriter.execute>[0],
-    );
+    await typewriter.execute(mutation);
     mutationDurationsMs.push(performance.now() - mutationStart);
   }
 

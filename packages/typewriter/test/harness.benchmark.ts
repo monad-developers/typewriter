@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
-import type { TypewriterConfig, TypewriterMutation } from "../src";
+import type { TypewriterConfig } from "../src";
 import Harness from "./contracts/src/Harness.sol";
 import {
   SCHEDULER_ACCOUNT,
@@ -11,61 +11,32 @@ import {
 } from "./setup";
 import {
   deployHarness,
-  encodeHarnessSignature,
-  type HARNESS_MUTATIONS,
-  type HARNESS_SIGNATURE_PARAMS,
-  harnessAccountId,
+  nativeAccountID,
+  prepareHarnessCreateAccount,
+  prepareHarnessMutation,
   secp256k1PublicKey,
-  signHarness,
 } from "./utils";
 
 process.env.NODE_ENV = "production";
 
 const MUTATION_COUNT = 10_000;
 
-function harnessSignature(params: {
-  readonly account: `0x${string}`;
-  readonly keyId: bigint;
-  readonly keyType: number;
-  readonly rawSignature: `0x${string}`;
-}) {
-  return encodeHarnessSignature(params);
-}
-
 function harnessCreditMutation(params: {
   readonly address: `0x${string}`;
   readonly account: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): TypewriterMutation<
-  "Credit",
-  typeof HARNESS_MUTATIONS.Credit,
-  typeof HARNESS_SIGNATURE_PARAMS
-> {
-  const mutationParams = {
-    account: params.account,
-    keyId: 0n,
-    amount: params.amount,
-    nonce: params.nonce,
-  };
-
-  return {
-    name: "Credit",
-    params: mutationParams,
-    signature: harnessSignature({
-      account: params.account,
-      keyId: 0n,
-      keyType: 2,
-      rawSignature: signHarness({
-        keyType: 2,
-        privateKey: USER_PRIVATE_KEY,
-        mutation: "Credit",
-        params: mutationParams,
-        address: params.address,
-        chainId: anvil.id,
-      }),
-    }),
-  };
+}) {
+  return prepareHarnessMutation({
+    mutation: "Credit",
+    params: { amount: params.amount },
+    accountID: params.account,
+    sequence: params.nonce,
+    keyType: 2,
+    privateKey: USER_PRIVATE_KEY,
+    address: params.address,
+    chainId: anvil.id,
+  });
 }
 
 function percentile(values: readonly number[], p: number): number {
@@ -119,7 +90,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
       order: "batch",
       batchIntervalMs: 10,
       submitIntervalMs: 3_600_000,
-      batchOrder: ["Initialize", "Credit"],
+      batchOrder: ["CreateAccount", "Credit"],
     },
     database: { url: TEST_DB_URL, maxConnections: 2 },
     blockPollingIntervalMs: 3_600_000,
@@ -128,31 +99,26 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   const typewriter = await createTypewriter(Harness, config);
 
   const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
-  const account = harnessAccountId(rootPublicKey);
+  const account = nativeAccountID(2, rootPublicKey);
 
-  await withoutConsoleOutput(() =>
-    typewriter.execute({
-      name: "Initialize",
-      params: {
-        rootKeyType: 2,
-        rootPublicKey,
-      },
-      signature: harnessSignature({
+  const createAccount = prepareHarnessCreateAccount({
+    keyType: 2,
+    publicKey: rootPublicKey,
+    privateKey: USER_PRIVATE_KEY,
+    address,
+    chainId: anvil.id,
+  });
+  await withoutConsoleOutput(() => typewriter.execute(createAccount));
+
+  const mutations = await Promise.all(
+    Array.from({ length: MUTATION_COUNT }, (_, index) =>
+      harnessCreditMutation({
+        address,
         account,
-        keyId: 0n,
-        keyType: 2,
-        rawSignature: "0x",
+        amount: 1n,
+        nonce: BigInt(index),
       }),
-    } as Parameters<typeof typewriter.execute>[0]),
-  );
-
-  const mutations = Array.from({ length: MUTATION_COUNT }, (_, index) =>
-    harnessCreditMutation({
-      address,
-      account,
-      amount: 1n,
-      nonce: BigInt(index),
-    }),
+    ),
   );
 
   const mutationDurationsMs = new Array<number>(MUTATION_COUNT);
@@ -161,9 +127,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   await withoutConsoleOutput(async () => {
     const promises = mutations.map(async (mutation, index) => {
       const mutationStart = performance.now();
-      await typewriter.execute(
-        mutation as unknown as Parameters<typeof typewriter.execute>[0],
-      );
+      await typewriter.execute(mutation);
       mutationDurationsMs[index] = performance.now() - mutationStart;
     });
 

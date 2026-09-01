@@ -15,7 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import type { Hex } from "ox";
-import type { MutationsConfig, SignatureConfig } from "./config";
+import type { MutationsConfig } from "./config";
 
 const uint256 = () => numeric({ precision: 78, scale: 0, mode: "bigint" });
 const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
@@ -41,6 +41,18 @@ const mutationColumns = () => ({
   includedAt: timestamp(),
   safeAt: timestamp(),
   finalizedAt: timestamp(),
+});
+
+const authorizationColumns = () => ({
+  authorization_account_id: bytes32().notNull(),
+  authorization_credential_id: numeric({
+    precision: 20,
+    scale: 0,
+    mode: "bigint",
+  }).notNull(),
+  authorization_nonce: uint256().notNull(),
+  authorization_expiration: uint256().notNull(),
+  authorization_signature: text().$type<Hex.Hex>().notNull(),
 });
 
 const stateTables = () => ({
@@ -69,73 +81,46 @@ export type TypewriterStateSchema = {
 
 export type TypewriterSchema<
   mutationsConfig extends MutationsConfig = MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
-> = TypewriterStateSchema &
-  TypewriterMutationSchema<mutationsConfig, signatureConfig>;
+> = TypewriterStateSchema & TypewriterMutationSchema<mutationsConfig>;
 
-export type TypewriterMutationSchema<
-  mutationsConfig extends MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
-> = {
-  readonly [name in keyof mutationsConfig as MutationTableName<
-    name & string
-  >]: MutationTable<
-    MutationTableName<name & string>,
-    mutationsConfig[name],
-    signatureConfig
-  >;
-};
+export type TypewriterMutationSchema<mutationsConfig extends MutationsConfig> =
+  {
+    readonly [name in keyof mutationsConfig as MutationTableName<
+      name & string
+    >]: MutationTable<MutationTableName<name & string>, mutationsConfig[name]>;
+  };
 
 type MutationTableName<name extends string> = `${Lowercase<name>}_mutations`;
 
 type ColumnGroup = Record<string, AnyPgColumnBuilder>;
-
-type PrefixColumnNames<Columns, prefix extends string> = {
-  readonly [name in keyof Columns &
-    string as `${prefix}${name}`]: Columns[name] extends AnyPgColumnBuilder
-    ? Columns[name]
-    : never;
-};
 
 type ColumnGroupFrom<Columns> = {
   readonly [name in keyof Columns &
     string]: Columns[name] extends AnyPgColumnBuilder ? Columns[name] : never;
 };
 
-type MutationTableColumns<
-  mutationConfig extends MutationsConfig[string],
-  signatureConfig extends SignatureConfig,
-> = ColumnGroupFrom<
-  ReturnType<typeof mutationColumns> &
-    AbiParametersToColumns<mutationConfig["params"]> &
-    PrefixColumnNames<AbiParametersToColumns<signatureConfig>, "signature_">
->;
+type MutationTableColumns<mutationConfig extends MutationsConfig[string]> =
+  ColumnGroupFrom<
+    ReturnType<typeof mutationColumns> &
+      AbiParametersToColumns<mutationConfig["params"]> &
+      ReturnType<typeof authorizationColumns>
+  >;
 
 type MutationTable<
   tableName extends string,
   mutationConfig extends MutationsConfig[string],
-  signatureConfig extends SignatureConfig,
 > = PgTableWithColumns<{
   name: tableName;
   schema: undefined;
-  columns: PgBuildColumns<
-    tableName,
-    MutationTableColumns<mutationConfig, signatureConfig>
-  >;
+  columns: PgBuildColumns<tableName, MutationTableColumns<mutationConfig>>;
   dialect: "pg";
 }>;
 
 export function createMutationSchema<
   const mutationsConfig extends MutationsConfig,
-  const signatureConfig extends SignatureConfig,
 >(config: {
-  readonly signature: { readonly params: signatureConfig };
   readonly mutations: mutationsConfig;
-}): TypewriterSchema<mutationsConfig, signatureConfig> {
-  const signatureColumns = prefixColumnNames(
-    abiParametersToColumns(config.signature.params) as ColumnGroup,
-    "signature_",
-  );
+}): TypewriterSchema<mutationsConfig> {
   const schema: Record<string, PgTable> = stateTables();
 
   for (const [name, mutation] of Object.entries(config.mutations)) {
@@ -145,30 +130,16 @@ export function createMutationSchema<
       mergeColumns(
         mutationColumns(),
         abiParametersToColumns(mutation.params),
-        signatureColumns,
+        authorizationColumns(),
       ),
     );
   }
 
-  return schema as TypewriterSchema<mutationsConfig, signatureConfig>;
+  return schema as TypewriterSchema<mutationsConfig>;
 }
 
 function mutationTableName(name: string): `${Lowercase<string>}_mutations` {
   return `${name.toLowerCase()}_mutations` as `${Lowercase<string>}_mutations`;
-}
-
-function prefixColumnNames<
-  const prefix extends string,
-  Columns extends Record<string, AnyPgColumnBuilder>,
->(columns: Columns, prefix: prefix): PrefixColumnNames<Columns, prefix> {
-  const prefixed: Record<string, AnyPgColumnBuilder> = {};
-  for (const [name, column] of Object.entries(columns) as [
-    string,
-    AnyPgColumnBuilder,
-  ][]) {
-    prefixed[`${prefix}${name}`] = column;
-  }
-  return prefixed as PrefixColumnNames<Columns, prefix>;
 }
 
 function mergeColumns(...groups: readonly ColumnGroup[]): ColumnGroup {

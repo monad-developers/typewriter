@@ -1,12 +1,11 @@
 import { Deferred, Effect, Layer, Scope } from "effect";
-import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import { getAbiItem, toEventSelector } from "viem";
 import type {
   MutationsConfig,
   SequencingConfig,
-  SignatureConfig,
   StorageConfig,
+  TypewriterManifest,
 } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
@@ -19,6 +18,7 @@ import { requestExecutionIndex } from "./rpc-request";
 import { createRuntimeEffect } from "./runtime";
 import type { TypewriterSchema } from "./schema";
 import type {
+  Authorization,
   BatchListener,
   BlockListener,
   MutationListener,
@@ -27,92 +27,84 @@ import type {
 } from "./types";
 import { layerWatchLive } from "./watch";
 
-export type RuntimeTypewriter<
-  storageConfig extends StorageConfig = StorageConfig,
-  mutationsConfig extends MutationsConfig = MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
-  sequencingConfig extends SequencingConfig = SequencingConfig,
-> = {
-  readonly state: StorageProxy<storageConfig, true>;
-  readonly schema: TypewriterSchema<mutationsConfig, signatureConfig>;
-  execute: (
-    submitted: TypewriterMutationInput<mutationsConfig, signatureConfig>,
-  ) => Effect.Effect<TypewriterMutationResult, unknown>;
-  program: Effect.Effect<unknown, unknown>;
-} & (sequencingConfig extends "fifo"
+type StorageRootProperty<
+  storageConfig extends StorageConfig,
+  name extends "accounts" | "state",
+> =
+  StorageProxy<storageConfig, true> extends infer root
+    ? name extends keyof root
+      ? root[name]
+      : never
+    : never;
+
+type RuntimeListeners<
+  mutationsConfig extends MutationsConfig,
+  sequencingConfig extends SequencingConfig,
+> = sequencingConfig extends "fifo"
   ? {
       on(
         event: "mutation",
-        cb: MutationListener<mutationsConfig, signatureConfig>,
+        cb: MutationListener<mutationsConfig>,
       ): Effect.Effect<() => void>;
       on(
         event: "block",
-        cb: BlockListener<sequencingConfig, mutationsConfig, signatureConfig>,
+        cb: BlockListener<sequencingConfig, mutationsConfig>,
       ): Effect.Effect<() => void>;
     }
   : {
       on(
         event: "mutation",
-        cb: MutationListener<mutationsConfig, signatureConfig>,
+        cb: MutationListener<mutationsConfig>,
       ): Effect.Effect<() => void>;
       on(
         event: "batch",
-        cb: BatchListener<mutationsConfig, signatureConfig>,
+        cb: BatchListener<mutationsConfig>,
       ): Effect.Effect<() => void>;
       on(
         event: "block",
-        cb: BlockListener<sequencingConfig, mutationsConfig, signatureConfig>,
+        cb: BlockListener<sequencingConfig, mutationsConfig>,
       ): Effect.Effect<() => void>;
-    });
+    };
 
-export type RuntimeTypewriterWithDomain<
+export type RuntimeTypewriter<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
-> = RuntimeTypewriter<
-  storageConfig,
-  mutationsConfig,
-  signatureConfig,
-  sequencingConfig
-> & {
-  readonly domain: TypedData.Domain;
-};
+> = {
+  readonly state: StorageRootProperty<storageConfig, "state">;
+  readonly accounts: StorageRootProperty<storageConfig, "accounts">;
+  readonly schema: TypewriterSchema<mutationsConfig>;
+  readonly manifest: TypewriterManifest<mutationsConfig>;
+  execute: (
+    submitted: TypewriterMutationInput<mutationsConfig>,
+  ) => Effect.Effect<TypewriterMutationResult, unknown>;
+  program: Effect.Effect<unknown, unknown>;
+} & RuntimeListeners<mutationsConfig, sequencingConfig>;
 
 export type InternalRuntimeTypewriter<
   sequencingConfig extends SequencingConfig = SequencingConfig,
-> = Omit<
-  RuntimeTypewriter<
-    StorageConfig,
-    MutationsConfig,
-    SignatureConfig,
-    sequencingConfig
-  >,
-  "execute"
-> & {
+> = {
+  readonly state: StorageProxy<StorageConfig, true>[string];
+  readonly accounts: StorageProxy<StorageConfig, true>[string];
+  readonly schema: TypewriterSchema;
   execute(submitted: {
     name: string;
     params: unknown;
-    signature: unknown;
+    authorization: Authorization;
   }): Effect.Effect<TypewriterMutationResult, unknown>;
-};
+  program: Effect.Effect<unknown, unknown>;
+} & RuntimeListeners<MutationsConfig, sequencingConfig>;
 
 export type { BatchListener, BlockListener, MutationListener } from "./types";
 
 export function createTypewriterEffect<
   const storageConfig extends StorageConfig,
   const mutationsConfig extends MutationsConfig,
-  const signatureConfig extends SignatureConfig,
   const sequencingConfig extends SequencingConfig,
 >(
   app: InternalApp,
 ): Effect.Effect<
-  RuntimeTypewriterWithDomain<
-    storageConfig,
-    mutationsConfig,
-    signatureConfig,
-    sequencingConfig
-  >,
+  RuntimeTypewriter<storageConfig, mutationsConfig, sequencingConfig>,
   unknown,
   Scope.Scope
 > {
@@ -181,23 +173,20 @@ export function createTypewriterEffect<
 
       return {
         ...runtime,
-        execute: (
-          mutation: TypewriterMutationInput<mutationsConfig, signatureConfig>,
-        ) =>
+        execute: (mutation: TypewriterMutationInput<mutationsConfig>) =>
           fatalError === undefined
             ? runtime
                 .execute({
                   name: mutation.name,
                   params: mutation.params,
-                  signature: mutation.signature,
+                  authorization: mutation.authorization,
                 })
                 .pipe(Effect.raceFirst(Deferred.await(fatalSignal)))
             : Effect.fail(fatalError.error),
-        domain: app.domain,
-      } as unknown as RuntimeTypewriterWithDomain<
+        manifest: app.manifest,
+      } as unknown as RuntimeTypewriter<
         storageConfig,
         mutationsConfig,
-        signatureConfig,
         sequencingConfig
       >;
     }).pipe(Effect.provide(servicesContext));
@@ -205,12 +194,7 @@ export function createTypewriterEffect<
     Effect.tapError((error) => Effect.logError(error)),
     Effect.provide(loggerLayer),
   ) as Effect.Effect<
-    RuntimeTypewriterWithDomain<
-      storageConfig,
-      mutationsConfig,
-      signatureConfig,
-      sequencingConfig
-    >,
+    RuntimeTypewriter<storageConfig, mutationsConfig, sequencingConfig>,
     unknown,
     Scope.Scope
   >;

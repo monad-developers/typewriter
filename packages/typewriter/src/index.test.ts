@@ -5,42 +5,27 @@ import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
   TEST_RPC_URL,
-  USER_ACCOUNT,
   USER_PRIVATE_KEY,
 } from "../test/setup";
 import {
-  type COUNTER_MUTATIONS,
-  type COUNTER_SIGNATURE_PARAMS,
-  counterNewAccountMutation,
   deployCounter,
-  signCounter,
+  prepareCounterAdd,
+  prepareCounterCreateAccount,
 } from "../test/utils";
-import {
-  createTypewriter,
-  type TypewriterConfig,
-  type TypewriterMutation,
-} from "./index";
+import { createTypewriter, type TypewriterConfig } from "./index";
 
 function counterAddMutation(params: {
   readonly address: `0x${string}`;
   readonly amount: bigint;
   readonly nonce: bigint;
-}): TypewriterMutation<
-  "Add",
-  typeof COUNTER_MUTATIONS.Add,
-  typeof COUNTER_SIGNATURE_PARAMS
-> {
-  return {
-    name: "Add",
-    params: { amount: params.amount, nonce: params.nonce },
-    signature: signCounter({
-      privateKey: USER_PRIVATE_KEY,
-      amount: params.amount,
-      nonce: params.nonce,
-      address: params.address,
-      chainId: anvil.id,
-    }),
-  };
+}) {
+  return prepareCounterAdd({
+    privateKey: USER_PRIVATE_KEY,
+    amount: params.amount,
+    sequence: params.nonce,
+    address: params.address,
+    chainId: anvil.id,
+  });
 }
 
 function sleep(ms: number): Promise<void> {
@@ -167,7 +152,7 @@ function startSubmitOverlapProxy(options: { readonly sendDelayMs: number }) {
 }
 
 test("createTypewriter serializes submit attempts", async () => {
-  const address = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter();
   const proxy = startSubmitOverlapProxy({ sendDelayMs: 250 });
   const config = {
     address,
@@ -176,7 +161,7 @@ test("createTypewriter serializes submit attempts", async () => {
     rpcUrl: proxy.url,
     sequencing: {
       order: "batch",
-      batchOrder: ["NewAccount", "Add"],
+      batchOrder: ["CreateAccount", "Add"],
       batchIntervalMs: 100,
       submitIntervalMs: 25,
     },
@@ -189,15 +174,17 @@ test("createTypewriter serializes submit attempts", async () => {
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribeSetup = typewriter.on("mutation", (event) => {
-      if (event.name === "NewAccount" && event.status === "included") {
+      if (event.name === "CreateAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
 
     await typewriter.execute(
-      counterNewAccountMutation({
-        address: USER_ACCOUNT.address,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      await prepareCounterCreateAccount({
+        privateKey: USER_PRIVATE_KEY,
+        address,
+        chainId: anvil.id,
+      }),
     );
     await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
     unsubscribeSetup();
@@ -214,11 +201,11 @@ test("createTypewriter serializes submit attempts", async () => {
     });
 
     await typewriter.execute(
-      counterAddMutation({
+      await counterAddMutation({
         address,
         amount: 7n,
         nonce: 0n,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      }),
     );
     await timeout(firstAddAccepted.promise, 5_000, "first add timed out");
     unsubscribeFirstAdd();
@@ -237,11 +224,11 @@ test("createTypewriter serializes submit attempts", async () => {
     });
 
     await typewriter.execute(
-      counterAddMutation({
+      await counterAddMutation({
         address,
         amount: 8n,
         nonce: 1n,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      }),
     );
     await timeout(secondAddIncluded.promise, 5_000, "second add timed out");
     unsubscribeSecondAdd();
@@ -254,7 +241,7 @@ test("createTypewriter serializes submit attempts", async () => {
 }, 15_000);
 
 test("createTypewriter checks the receipt before retrying a failed submit", async () => {
-  const address = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter();
   const port = getFreePort();
   const fillNonces: unknown[] = [];
   let sendCount = 0;
@@ -320,7 +307,7 @@ test("createTypewriter checks the receipt before retrying a failed submit", asyn
     rpcUrl: `http://127.0.0.1:${port}`,
     sequencing: {
       order: "batch",
-      batchOrder: ["NewAccount", "Add"],
+      batchOrder: ["CreateAccount", "Add"],
       batchIntervalMs: 100,
       submitIntervalMs: 25,
     },
@@ -333,15 +320,17 @@ test("createTypewriter checks the receipt before retrying a failed submit", asyn
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribeSetup = typewriter.on("mutation", (event) => {
-      if (event.name === "NewAccount" && event.status === "included") {
+      if (event.name === "CreateAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
 
     await typewriter.execute(
-      counterNewAccountMutation({
-        address: USER_ACCOUNT.address,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      await prepareCounterCreateAccount({
+        privateKey: USER_PRIVATE_KEY,
+        address,
+        chainId: anvil.id,
+      }),
     );
     await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
     unsubscribeSetup();
@@ -356,7 +345,7 @@ test("createTypewriter checks the receipt before retrying a failed submit", asyn
 }, 10_000);
 
 test("createTypewriter waits for the next block before submitting again", async () => {
-  const address = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter();
   const config = {
     address,
     account: SCHEDULER_ACCOUNT,
@@ -364,7 +353,7 @@ test("createTypewriter waits for the next block before submitting again", async 
     rpcUrl: TEST_RPC_URL,
     sequencing: {
       order: "batch",
-      batchOrder: ["NewAccount", "Add"],
+      batchOrder: ["CreateAccount", "Add"],
       batchIntervalMs: 100,
       submitIntervalMs: 25,
     },
@@ -377,15 +366,17 @@ test("createTypewriter waits for the next block before submitting again", async 
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribeSetup = typewriter.on("mutation", (event) => {
-      if (event.name === "NewAccount" && event.status === "included") {
+      if (event.name === "CreateAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
 
     await typewriter.execute(
-      counterNewAccountMutation({
-        address: USER_ACCOUNT.address,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      await prepareCounterCreateAccount({
+        privateKey: USER_PRIVATE_KEY,
+        address,
+        chainId: anvil.id,
+      }),
     );
     await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
     unsubscribeSetup();
@@ -409,11 +400,11 @@ test("createTypewriter waits for the next block before submitting again", async 
     });
 
     await typewriter.execute(
-      counterAddMutation({
+      await counterAddMutation({
         address,
         amount: 7n,
         nonce: 0n,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      }),
     );
     const firstBlockNumber = await timeout(
       firstAddBlock.promise,
@@ -422,11 +413,11 @@ test("createTypewriter waits for the next block before submitting again", async 
     );
 
     await typewriter.execute(
-      counterAddMutation({
+      await counterAddMutation({
         address,
         amount: 8n,
         nonce: 1n,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      }),
     );
 
     const secondBlockNumber = await timeout(
@@ -443,7 +434,7 @@ test("createTypewriter waits for the next block before submitting again", async 
 }, 15_000);
 
 test("createTypewriter stops accepting mutations after fatal submit failure", async () => {
-  const address = await deployCounter(USER_ACCOUNT.address);
+  const address = await deployCounter();
   let failFillTransaction = false;
   const fatalError = Promise.withResolvers<unknown>();
   const proxy = startRpcProxy({
@@ -456,7 +447,7 @@ test("createTypewriter stops accepting mutations after fatal submit failure", as
     rpcUrl: proxy.url,
     sequencing: {
       order: "batch",
-      batchOrder: ["NewAccount", "Add"],
+      batchOrder: ["CreateAccount", "Add"],
       batchIntervalMs: 100,
       submitIntervalMs: 25,
     },
@@ -470,14 +461,16 @@ test("createTypewriter stops accepting mutations after fatal submit failure", as
   try {
     const setupIncluded = Promise.withResolvers<void>();
     const unsubscribeSetup = typewriter.on("mutation", (event) => {
-      if (event.name === "NewAccount" && event.status === "included") {
+      if (event.name === "CreateAccount" && event.status === "included") {
         setupIncluded.resolve();
       }
     });
     await typewriter.execute(
-      counterNewAccountMutation({
-        address: USER_ACCOUNT.address,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      await prepareCounterCreateAccount({
+        privateKey: USER_PRIVATE_KEY,
+        address,
+        chainId: anvil.id,
+      }),
     );
     await timeout(setupIncluded.promise, 5_000, "setup mutation timed out");
     unsubscribeSetup();
@@ -491,11 +484,11 @@ test("createTypewriter stops accepting mutations after fatal submit failure", as
 
     failFillTransaction = true;
     await typewriter.execute(
-      counterAddMutation({
+      await counterAddMutation({
         address,
         amount: 7n,
         nonce: 0n,
-      }) as unknown as Parameters<typeof typewriter.execute>[0],
+      }),
     );
     await timeout(accepted.promise, 1_000, "mutation was not accepted");
     unsubscribeAccepted();
@@ -508,11 +501,11 @@ test("createTypewriter stops accepting mutations after fatal submit failure", as
     let rejected: unknown;
     try {
       await typewriter.execute(
-        counterAddMutation({
+        await counterAddMutation({
           address,
           amount: 8n,
           nonce: 1n,
-        }) as unknown as Parameters<typeof typewriter.execute>[0],
+        }),
       );
     } catch (error) {
       rejected = error;

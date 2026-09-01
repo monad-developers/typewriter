@@ -1,6 +1,9 @@
 # Token
 
-Minimal token app built on `typewriter` with FIFO sequencing.
+Minimal token app built on `typewriter` with native credential-based accounts
+and FIFO sequencing. The browser creates a P-256 key with WebCrypto, stores it
+in IndexedDB, and uses `typewriter/client` to authorize account creation, mint,
+and transfer mutations.
 
 ## Getting Started
 
@@ -54,7 +57,7 @@ The latest Foundry release includes Monad support, so no separate category-labs 
 |---|---|---|
 | `RPC_URL` | App runtime, deploy script | RPC endpoint for the token app and deployment command |
 | `DATABASE_URL` | App runtime, tests | Postgres connection string used by Typewriter |
-| `CHAIN_ID` | App runtime | Chain ID used for typed-data signing |
+| `CHAIN_ID` | App runtime | Chain ID included in the Typewriter manifest and authorization domain |
 | `TOKEN_ADDRESS` | App runtime | Deployed token contract address |
 | `PRIVATE_KEY` | App runtime, deploy script | Private key used by the scheduler account and Foundry broadcast |
 

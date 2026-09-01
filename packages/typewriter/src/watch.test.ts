@@ -8,17 +8,11 @@ import {
   TEST_RPC_URL,
   TEST_WALLET_CLIENT,
   USER_ACCOUNT,
-  USER_PRIVATE_KEY,
 } from "../test/setup";
+import { COUNTER_MUTATIONS, deployCounter } from "../test/utils";
 import {
-  COUNTER_MUTATIONS,
-  COUNTER_SIGNATURE_PARAMS,
-  deployCounter,
-  signCounter,
-} from "../test/utils";
-import {
+  encodeAuthorizationCalldata,
   encodeMutationCalldata,
-  encodeSignatureCalldata,
   TYPEWRITER_ABI,
 } from "./encoding";
 import { layerRpcLive } from "./rpc";
@@ -33,7 +27,7 @@ const liveLayer = () =>
   }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] })));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
-  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, bytes signatureData, uint256 enqueuedBlock)",
+  "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint256 enqueuedBlock)",
 );
 
 const collect = (
@@ -143,26 +137,24 @@ test("emits no message when no new blocks are mined", async () => {
 });
 
 test("attaches matching force inclusion enqueue logs", async () => {
-  const counterAddress = await deployCounter(USER_ACCOUNT.address);
+  const counterAddress = await deployCounter();
   const amount = 5n;
   const nonce = 0n;
-  const signature = signCounter({
-    privateKey: USER_PRIVATE_KEY,
-    amount,
+  const authorization = {
+    accountID:
+      "0x1111111111111111111111111111111111111111111111111111111111111111",
+    credentialID: 0n,
     nonce,
-    address: counterAddress,
-    chainId: anvil.id,
-  });
-  const signatureData = encodeSignatureCalldata(
-    COUNTER_SIGNATURE_PARAMS,
-    signature,
-  );
+    expiration: 0n,
+    signature: "0x",
+  } as const;
+  const authorizationData = encodeAuthorizationCalldata(authorization);
   const mutationData = encodeMutationCalldata({
     id: 0,
     status: "accepted",
     name: "Add",
-    params: { amount, nonce },
-    signature,
+    params: { amount },
+    authorization,
     journalId: 0,
     isForceInclusion: false,
     config: COUNTER_MUTATIONS.Add,
@@ -180,7 +172,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
           address: counterAddress,
           abi: TYPEWRITER_ABI,
           functionName: "enqueue",
-          args: [COUNTER_MUTATIONS.Add.tag, mutationData, signatureData],
+          args: [COUNTER_MUTATIONS.Add.id, mutationData, authorizationData],
         }),
       );
       return { messages: yield* collect(watch.messages, 1), transactionHash };
@@ -219,14 +211,14 @@ test("attaches matching force inclusion enqueue logs", async () => {
     index: bigint;
     mutation: number;
     mutationData: typeof mutationData;
-    signatureData: typeof signatureData;
+    authorizationData: typeof authorizationData;
     enqueuedBlock: bigint;
   };
 
   expect(eventParams.index).toMatchInlineSnapshot(`0n`);
-  expect(eventParams.mutation).toMatchInlineSnapshot(`1`);
+  expect(eventParams.mutation).toMatchInlineSnapshot(`0`);
   expect(eventParams.mutationData).toBe(mutationData);
-  expect(eventParams.signatureData).toEqual(signatureData);
+  expect(eventParams.authorizationData).toEqual(authorizationData);
   expect(eventParams.enqueuedBlock).toBe(message.block.number);
 });
 

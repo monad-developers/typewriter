@@ -1,18 +1,13 @@
 import { Effect, Exit, Scope } from "effect";
-import type { TypedData } from "ox";
 import type { StorageProxy } from "storage-layout";
 import type {
   MutationConfig,
   MutationsConfig,
   SequencingConfig,
-  SignatureConfig,
   StorageConfig,
   TypewriterConfig,
+  TypewriterManifest,
 } from "./config";
-import { createTypewriterEffect } from "./typewriter";
-
-export { TYPEWRITER_DOMAIN } from "./eip712";
-
 import type { TypewriterSchema } from "./schema";
 import {
   loadSolidityTypewriterApp,
@@ -25,52 +20,64 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./types";
+import { createTypewriterEffect } from "./typewriter";
+
+type StorageRootProperty<
+  storageConfig extends StorageConfig,
+  name extends "accounts" | "state",
+> =
+  StorageProxy<storageConfig, true> extends infer root
+    ? name extends keyof root
+      ? root[name]
+      : never
+    : never;
 
 export type Typewriter<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
-  signatureConfig extends SignatureConfig = SignatureConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
-  readonly state: StorageProxy<storageConfig, true>;
-  readonly schema: TypewriterSchema<mutationsConfig, signatureConfig>;
-  readonly domain: TypedData.Domain;
+  readonly state: StorageRootProperty<storageConfig, "state">;
+  readonly accounts: StorageRootProperty<storageConfig, "accounts">;
+  readonly schema: TypewriterSchema<mutationsConfig>;
+  readonly manifest: TypewriterManifest<mutationsConfig>;
   execute: <const name extends keyof mutationsConfig & string>(
-    submitted: TypewriterMutationInput<mutationsConfig, signatureConfig, name>,
+    submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Promise<TypewriterMutationResult>;
   close: () => Promise<void>;
-  on(
-    event: "mutation",
-    cb: MutationListener<mutationsConfig, signatureConfig>,
-  ): () => void;
-  on(
-    event: "batch",
-    cb: BatchListener<mutationsConfig, signatureConfig>,
-  ): () => void;
+  on(event: "mutation", cb: MutationListener<mutationsConfig>): () => void;
+  on(event: "batch", cb: BatchListener<mutationsConfig>): () => void;
   on(
     event: "block",
-    cb: BlockListener<sequencingConfig, mutationsConfig, signatureConfig>,
+    cb: BlockListener<sequencingConfig, mutationsConfig>,
   ): () => void;
 };
 
 export type {
   ResolvedTypewriterMutationConfig,
   TypewriterConfig,
+  TypewriterManifest,
 } from "./config";
 export type {
   TypewriterMutationSchema,
   TypewriterSchema,
   TypewriterStateSchema,
 } from "./schema";
-export type { KeyType } from "./signature";
 export type { TypewriterSolidityEntrypoint } from "./sol-parse";
 export type {
+  Account,
+  AddCredentialParams,
+  Authorization,
   BatchEvent,
   BatchStatus,
   BlockEvent,
   BlockStatus,
+  CreateAccountParams,
+  Credential,
+  KeyType,
   MutationEvent,
   MutationStatus,
+  RemoveCredentialParams,
   TypewriterMutation,
   TypewriterMutationInput,
   TypewriterMutationResult,
@@ -95,13 +102,6 @@ type EntrypointMutationsConfig<entrypoint> =
     ? mutations
     : MutationsConfig;
 
-type EntrypointSignatureConfig<entrypoint> =
-  EntrypointMetadata<entrypoint> extends {
-    readonly signature: infer signature extends SignatureConfig;
-  }
-    ? signature
-    : SignatureConfig;
-
 export async function createTypewriter<
   const entrypoint extends TypewriterSolidityEntrypoint,
   const sequencingConfig extends SequencingConfig = SequencingConfig,
@@ -112,7 +112,6 @@ export async function createTypewriter<
   Typewriter<
     EntrypointStorageConfig<entrypoint>,
     EntrypointMutationsConfig<entrypoint>,
-    EntrypointSignatureConfig<entrypoint>,
     sequencingConfig
   >
 >;
@@ -126,7 +125,6 @@ export async function createTypewriter<
   Typewriter<
     EntrypointStorageConfig<entrypoint>,
     EntrypointMutationsConfig<entrypoint>,
-    EntrypointSignatureConfig<entrypoint>,
     sequencingConfig
   >
 > {
@@ -145,7 +143,6 @@ export async function createTypewriter<
       createTypewriterEffect<
         EntrypointStorageConfig<entrypoint>,
         EntrypointMutationsConfig<entrypoint>,
-        EntrypointSignatureConfig<entrypoint>,
         sequencingConfig
       >(app).pipe(Effect.provideService(Scope.Scope, scope)),
     );
@@ -158,32 +155,24 @@ export async function createTypewriter<
       Effect.runSync(runtimeOn(event, cb))) as Typewriter<
       EntrypointStorageConfig<entrypoint>,
       EntrypointMutationsConfig<entrypoint>,
-      EntrypointSignatureConfig<entrypoint>,
       sequencingConfig
     >["on"];
 
     const execute = ((
-      submitted: TypewriterMutationInput<
-        EntrypointMutationsConfig<entrypoint>,
-        EntrypointSignatureConfig<entrypoint>
-      >,
+      submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
     ) => Effect.runPromise(typewriter.execute(submitted))) as Typewriter<
       EntrypointStorageConfig<entrypoint>,
       EntrypointMutationsConfig<entrypoint>,
-      EntrypointSignatureConfig<entrypoint>,
       sequencingConfig
     >["execute"];
 
     return {
-      state: typewriter.state as StorageProxy<
-        EntrypointStorageConfig<entrypoint>,
-        true
-      >,
+      state: typewriter.state,
+      accounts: typewriter.accounts,
       schema: typewriter.schema as unknown as TypewriterSchema<
-        EntrypointMutationsConfig<entrypoint>,
-        EntrypointSignatureConfig<entrypoint>
+        EntrypointMutationsConfig<entrypoint>
       >,
-      domain: typewriter.domain,
+      manifest: typewriter.manifest,
       execute,
       close: closeScope,
       on,

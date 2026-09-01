@@ -3,7 +3,6 @@ import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
-import { TYPEWRITER_DOMAIN } from "./eip712";
 import type { InternalApp } from "./internal";
 import { createMutationSchema } from "./schema";
 
@@ -17,7 +16,6 @@ export type MutationConfig = {
   params: readonly AbiParameter[];
 };
 export type MutationsConfig = { [name: string]: MutationConfig };
-export type SignatureConfig = readonly AbiParameter[];
 export type SequencingConfig = "fifo" | "batch";
 
 export type AbiParametersToValue<params extends readonly AbiParameter[]> =
@@ -32,8 +30,48 @@ export type AbiParametersToValue<params extends readonly AbiParameter[]> =
     : object;
 
 export type ResolvedTypewriterMutationConfig = MutationConfig & {
-  tag: number;
+  id: number;
 };
+
+export type TypewriterManifest<
+  mutationsConfig extends MutationsConfig = MutationsConfig,
+> = {
+  readonly chainId: number;
+  readonly address: Address.Address;
+  readonly mutations: {
+    readonly [name in keyof mutationsConfig]: {
+      readonly id: mutationsConfig[name] extends {
+        readonly id: infer id extends number;
+      }
+        ? id
+        : number;
+      readonly params: mutationsConfig[name]["params"];
+    };
+  };
+};
+
+export const BUILTIN_MUTATIONS = {
+  CreateAccount: {
+    id: 253,
+    params: [
+      { name: "keyType", type: "uint8" },
+      { name: "publicKey", type: "bytes" },
+    ],
+  },
+  AddCredential: {
+    id: 254,
+    params: [
+      { name: "expiration", type: "uint40" },
+      { name: "keyType", type: "uint8" },
+      { name: "permissions", type: "uint256" },
+      { name: "publicKey", type: "bytes" },
+    ],
+  },
+  RemoveCredential: {
+    id: 255,
+    params: [{ name: "credentialID", type: "uint64" }],
+  },
+} as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
 
 export type TypewriterSequencingConfig<
   sequencingConfig extends SequencingConfig,
@@ -131,12 +169,33 @@ export function validateConfig(config: TypewriterConfig): void {
 function validateMutationDefinitions(mutations: {
   readonly [name: string]: ResolvedTypewriterMutationConfig;
 }): void {
-  const mutationTags = new Set<number>();
-  for (const mutation of Object.values(mutations)) {
-    if (mutationTags.has(mutation.tag)) {
-      throw new Error(`duplicate mutation tag: ${mutation.tag}`);
+  const mutationIDs = new Set<number>();
+  for (const [name, mutation] of Object.entries(mutations)) {
+    if (
+      !Number.isSafeInteger(mutation.id) ||
+      mutation.id < 0 ||
+      mutation.id > 255
+    ) {
+      throw new Error(`mutation ID must be a uint8: ${mutation.id}`);
     }
-    mutationTags.add(mutation.tag);
+    if (mutationIDs.has(mutation.id)) {
+      throw new Error(`duplicate mutation ID: ${mutation.id}`);
+    }
+    if (!Object.hasOwn(BUILTIN_MUTATIONS, name) && mutation.id >= 253) {
+      throw new Error(
+        `app mutation ID must be below 253: ${name}=${mutation.id}`,
+      );
+    }
+    mutationIDs.add(mutation.id);
+  }
+
+  for (const [name, builtin] of Object.entries(BUILTIN_MUTATIONS)) {
+    const mutation = mutations[name];
+    if (mutation === undefined || mutation.id !== builtin.id) {
+      throw new Error(
+        `missing built-in mutation ${name} with ID ${builtin.id}`,
+      );
+    }
   }
 }
 
@@ -144,10 +203,9 @@ export function buildInternalApp(params: {
   config: TypewriterConfig;
   abi: Abi;
   storageLayout: StorageConfig;
-  signature: { params: SignatureConfig };
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
 }): InternalApp {
-  const { abi, config, mutations, signature, storageLayout } = params;
+  const { abi, config, mutations, storageLayout } = params;
   validateConfig(config);
   validateMutationDefinitions(mutations);
 
@@ -181,19 +239,23 @@ export function buildInternalApp(params: {
   return {
     address: config.address,
     abi,
-    domain: {
-      ...TYPEWRITER_DOMAIN,
+    manifest: {
       chainId: config.chainId,
-      verifyingContract: config.address,
+      address: config.address,
+      mutations: Object.fromEntries(
+        Object.entries(mutations).map(([name, mutation]) => [
+          name,
+          { id: mutation.id, params: mutation.params },
+        ]),
+      ),
     },
-    signature,
     storageLayout,
     account: config.account,
     chainId: config.chainId,
     rpcUrls,
     database: config.database,
     mutations: mutations as InternalApp["mutations"],
-    schema: createMutationSchema({ signature, mutations }),
+    schema: createMutationSchema({ mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     confirmations,

@@ -1,6 +1,14 @@
 import { AbiParameters, type Hex } from "ox";
 import { type Abi, encodeFunctionData } from "viem";
-import type { ExecutableMutation } from "./types";
+import type { Authorization, ExecutableMutation } from "./types";
+
+export const AUTHORIZATION_ABI_PARAMS = [
+  { name: "accountID", type: "bytes32" },
+  { name: "credentialID", type: "uint64" },
+  { name: "nonce", type: "uint256" },
+  { name: "expiration", type: "uint256" },
+  { name: "signature", type: "bytes" },
+] as const satisfies readonly AbiParameters.Parameter[];
 
 export const TYPEWRITER_ABI = [
   {
@@ -13,7 +21,7 @@ export const TYPEWRITER_ABI = [
         components: [
           { name: "mutations", type: "uint8[]" },
           { name: "mutationData", type: "bytes[]" },
-          { name: "signatureData", type: "bytes[]" },
+          { name: "authorizationData", type: "bytes[]" },
         ],
       },
       { name: "forceExecuteIndexes", type: "uint256[]" },
@@ -27,7 +35,7 @@ export const TYPEWRITER_ABI = [
     inputs: [
       { name: "mutation", type: "uint8" },
       { name: "mutationData", type: "bytes" },
-      { name: "signatureData", type: "bytes" },
+      { name: "authorizationData", type: "bytes" },
     ],
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "nonpayable",
@@ -53,7 +61,7 @@ export const TYPEWRITER_ABI = [
       { name: "index", type: "uint256", indexed: false },
       { name: "mutation", type: "uint8", indexed: false },
       { name: "mutationData", type: "bytes", indexed: false },
-      { name: "signatureData", type: "bytes", indexed: false },
+      { name: "authorizationData", type: "bytes", indexed: false },
       { name: "enqueuedBlock", type: "uint256", indexed: false },
     ],
     anonymous: false,
@@ -62,10 +70,8 @@ export const TYPEWRITER_ABI = [
 
 export type TypewriterAbi = typeof TYPEWRITER_ABI;
 
-// Typewriter mutation params are the flat semantic fields used for EIP-712. Contract
-// calldata encodes those fields as one top-level Solidity struct. This assumes
-// each mutation's calldata shape is exactly one struct whose components are
-// `mutation.params`.
+// Contract calldata and EIP-712 mutationData encode params as one top-level
+// Solidity struct whose components are `mutation.params`.
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
 ): readonly AbiParameters.Parameter[] {
@@ -91,24 +97,20 @@ export function decodeMutationCalldata(
   return { params: decodedParams };
 }
 
-export function encodeSignatureCalldata(
-  signatureParams: readonly AbiParameters.Parameter[],
-  signature: unknown,
+export function encodeAuthorizationCalldata(
+  authorization: Authorization,
 ): Hex.Hex {
-  return AbiParameters.encode(calldataStructParams(signatureParams), [
-    signature,
+  return AbiParameters.encode(calldataStructParams(AUTHORIZATION_ABI_PARAMS), [
+    authorization,
   ]);
 }
 
-export function decodeSignatureCalldata(
-  signatureParams: readonly AbiParameters.Parameter[],
-  calldata: Hex.Hex,
-): unknown {
-  const [signature] = AbiParameters.decode(
-    calldataStructParams(signatureParams),
+export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
+  const [authorization] = AbiParameters.decode(
+    calldataStructParams(AUTHORIZATION_ABI_PARAMS),
     calldata,
   );
-  return signature;
+  return authorization as Authorization;
 }
 
 // Encode `execute(Batch[], uint256[])` calldata from structured batch values
@@ -117,7 +119,7 @@ export function encodeExecuteCalldata(
   batches: readonly {
     mutations: readonly number[];
     mutationData: readonly Hex.Hex[];
-    signatureData: readonly Hex.Hex[];
+    authorizationData: readonly Hex.Hex[];
   }[],
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
@@ -128,41 +130,29 @@ export function encodeExecuteCalldata(
   });
 }
 
-export function encodeEnqueueCalldata(
-  signatureParams: readonly AbiParameters.Parameter[],
-  mutation: ExecutableMutation,
-): Hex.Hex {
-  const signatureValue = encodeSignatureCalldata(
-    signatureParams,
-    mutation.signature,
-  );
+export function encodeEnqueueCalldata(mutation: ExecutableMutation): Hex.Hex {
   return encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "enqueue",
     args: [
-      mutation.config.tag,
+      mutation.config.id,
       encodeMutationCalldata(mutation),
-      signatureValue,
+      encodeAuthorizationCalldata(mutation.authorization),
     ],
   });
 }
 
 // Build a structured Batch value from executable mutations.
-// Each signature is projected from a keyed record to a positional tuple
-// matching the ABI declaration order.
-export function encodeBatchArg(
-  signatureParams: readonly AbiParameters.Parameter[],
-  mutations: ExecutableMutation[],
-): {
+export function encodeBatchArg(mutations: ExecutableMutation[]): {
   mutations: readonly number[];
   mutationData: readonly Hex.Hex[];
-  signatureData: readonly Hex.Hex[];
+  authorizationData: readonly Hex.Hex[];
 } {
   return {
-    mutations: mutations.map((m) => m.config.tag),
+    mutations: mutations.map((mutation) => mutation.config.id),
     mutationData: mutations.map((m) => encodeMutationCalldata(m)),
-    signatureData: mutations.map((m) =>
-      encodeSignatureCalldata(signatureParams, m.signature),
+    authorizationData: mutations.map((mutation) =>
+      encodeAuthorizationCalldata(mutation.authorization),
     ),
   };
 }
