@@ -12,7 +12,6 @@ import {
   type TypedMutation,
 } from "typewriter/client";
 import {
-  type Address,
   bytesToHex,
   formatUnits,
   type Hex,
@@ -50,45 +49,45 @@ type RequestLogEntry = {
 
 const EMPTY_ACCOUNT_ID = "" as Hex;
 
-const manifest = {
-  chainId: 31337,
-  address: "0x5FbDB2315678afecb367f032d93F642f64180aa3" as Address,
-  mutations: {
-    Transfer: {
-      id: 0,
-      params: [
-        { name: "to", type: "bytes32" },
-        { name: "amount", type: "uint256" },
-      ],
-    },
-    Mint: {
-      id: 1,
-      params: [{ name: "amount", type: "uint256" }],
-    },
-    CreateAccount: {
-      id: 253,
-      params: [
-        { name: "keyType", type: "uint8" },
-        { name: "publicKey", type: "bytes" },
-      ],
-    },
-    AddCredential: {
-      id: 254,
-      params: [
-        { name: "expiration", type: "uint40" },
-        { name: "keyType", type: "uint8" },
-        { name: "permissions", type: "uint256" },
-        { name: "publicKey", type: "bytes" },
-      ],
-    },
-    RemoveCredential: {
-      id: 255,
-      params: [{ name: "credentialID", type: "uint64" }],
-    },
+const TOKEN_MUTATIONS = {
+  Transfer: {
+    id: 0,
+    params: [
+      { name: "to", type: "bytes32" },
+      { name: "amount", type: "uint256" },
+    ],
   },
-} as const satisfies TypewriterManifest;
+  Mint: {
+    id: 1,
+    params: [{ name: "amount", type: "uint256" }],
+  },
+  CreateAccount: {
+    id: 253,
+    params: [
+      { name: "keyType", type: "uint8" },
+      { name: "publicKey", type: "bytes" },
+    ],
+  },
+  AddCredential: {
+    id: 254,
+    params: [
+      { name: "expiration", type: "uint40" },
+      { name: "keyType", type: "uint8" },
+      { name: "permissions", type: "uint256" },
+      { name: "publicKey", type: "bytes" },
+    ],
+  },
+  RemoveCredential: {
+    id: 255,
+    params: [{ name: "credentialID", type: "uint64" }],
+  },
+} as const;
 
-const ACCOUNT_STORAGE_KEY = `${manifest.chainId}:${manifest.address.toLowerCase()}`;
+type TokenManifest = TypewriterManifest<typeof TOKEN_MUTATIONS>;
+
+function accountStorageKey(manifest: TokenManifest): string {
+  return `${manifest.chainId}:${manifest.address.toLowerCase()}`;
+}
 
 function shortID(value: string) {
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
@@ -101,10 +100,11 @@ function relativeTime(timestamp: number) {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
-async function loadAccount(): Promise<Account | null> {
-  const accountID = localStorage.getItem(`${ACCOUNT_STORAGE_KEY}:accountID`);
-  const nonce = localStorage.getItem(`${ACCOUNT_STORAGE_KEY}:nonce`);
-  const keyPair = await loadKeyPair(ACCOUNT_STORAGE_KEY);
+async function loadAccount(manifest: TokenManifest): Promise<Account | null> {
+  const storageKey = accountStorageKey(manifest);
+  const accountID = localStorage.getItem(`${storageKey}:accountID`);
+  const nonce = localStorage.getItem(`${storageKey}:nonce`);
+  const keyPair = await loadKeyPair(storageKey);
   if (accountID?.startsWith("0x") !== true || accountID.length !== 66) {
     return null;
   }
@@ -117,13 +117,14 @@ async function loadAccount(): Promise<Account | null> {
   }
 }
 
-async function storeAccount(account: Account): Promise<void> {
-  localStorage.setItem(`${ACCOUNT_STORAGE_KEY}:accountID`, account.accountID);
-  localStorage.setItem(
-    `${ACCOUNT_STORAGE_KEY}:nonce`,
-    account.nonce.toString(),
-  );
-  await saveKeyPair(ACCOUNT_STORAGE_KEY, account.keyPair);
+async function storeAccount(
+  manifest: TokenManifest,
+  account: Account,
+): Promise<void> {
+  const storageKey = accountStorageKey(manifest);
+  localStorage.setItem(`${storageKey}:accountID`, account.accountID);
+  localStorage.setItem(`${storageKey}:nonce`, account.nonce.toString());
+  await saveKeyPair(storageKey, account.keyPair);
 }
 
 async function generateP256KeyPair(): Promise<CryptoKeyPair> {
@@ -204,6 +205,11 @@ export function App() {
       [{ id: Date.now() + Math.random(), ...entry }, ...previous].slice(0, 24),
     );
   }, []);
+  const manifestQuery = useQuery({
+    queryKey: ["manifest"],
+    queryFn: () => request<TokenManifest>({ path: "/api/manifest", record }),
+  });
+  const manifest = manifestQuery.data;
   const accountQuery = useQuery({
     queryKey: ["account", account?.accountID],
     queryFn: () =>
@@ -234,7 +240,8 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadAccount().then((stored) => {
+    if (manifest === undefined) return;
+    void loadAccount(manifest).then((stored) => {
       if (cancelled) return;
       setAccount(stored);
       setAccountLoaded(true);
@@ -242,7 +249,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [manifest]);
 
   useEffect(() => {
     setTo((current) => {
@@ -272,11 +279,13 @@ export function App() {
 
   const signInMutation = useMutation({
     mutationFn: async () => {
+      if (manifest === undefined) throw new Error("manifest unavailable");
       const keyPair = await generateP256KeyPair();
       const publicKey = await publicKeyHex(keyPair);
+      const storageKey = accountStorageKey(manifest);
       const createParams = { keyType: KeyType.P256, publicKey } as const;
       const accountID = deriveAccountID(createParams);
-      await saveKeyPair(ACCOUNT_STORAGE_KEY, keyPair);
+      await saveKeyPair(storageKey, keyPair);
       const createMutation = {
         name: "CreateAccount",
         params: createParams,
@@ -330,7 +339,8 @@ export function App() {
     },
     onMutate: () => setError(null),
     onSuccess: async (result) => {
-      await storeAccount(result.account);
+      if (manifest === undefined) return;
+      await storeAccount(manifest, result.account);
       setAccount(result.account);
       await queryClient.invalidateQueries({ queryKey: ["accountIDs"] });
       await queryClient.invalidateQueries({
@@ -356,6 +366,7 @@ export function App() {
   const transferMutation = useMutation({
     mutationFn: async () => {
       if (account === null) throw new Error("missing account");
+      if (manifest === undefined) throw new Error("manifest unavailable");
 
       const amountUnits = parseUnits(amount.toString(), 0);
       const transferMutation = {
@@ -390,8 +401,9 @@ export function App() {
     onMutate: () => setError(null),
     onSuccess: async (result) => {
       if (account === null) return;
+      if (manifest === undefined) return;
       const nextAccount = { ...account, nonce: result.nextNonce };
-      await storeAccount(nextAccount);
+      await storeAccount(manifest, nextAccount);
       setAccount(nextAccount);
       setTxs((previous) => [
         {
@@ -415,7 +427,7 @@ export function App() {
   });
 
   const pending = signInMutation.isPending || transferMutation.isPending;
-  if (!accountLoaded) return null;
+  if (manifest === undefined || !accountLoaded) return null;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -426,11 +438,7 @@ export function App() {
         </p>
         <a
           className="text-blue-500 hover:underline text-sm"
-          href={
-            manifest?.address
-              ? `https://testnet.monadscan.com/address/${manifest.address}`
-              : "/"
-          }
+          href={`https://testnet.monadscan.com/address/${manifest.address}`}
         >
           Token contract
         </a>

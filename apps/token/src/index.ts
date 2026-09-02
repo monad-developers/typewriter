@@ -47,6 +47,7 @@ function sse(value: unknown): string {
 const server = Bun.serve({
   routes: {
     "/": index,
+    "/api/manifest": () => jsonResponse(typewriter.manifest),
     "/api": {
       POST: async (req) => {
         const body = superjson.parse(await req.text());
