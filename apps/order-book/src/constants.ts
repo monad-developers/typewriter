@@ -1,8 +1,8 @@
 import type { Address } from "viem";
 import { extractChain } from "viem";
-import { anvil, monadTestnet } from "viem/chains";
+import { anvil, monadTestnet, monad } from "viem/chains";
 
-const chains = [anvil, monadTestnet] as const;
+const chains = [anvil, monadTestnet, monad] as const;
 
 if (!process.env.CHAIN_ID) throw new Error("CHAIN_ID env var is required");
 export const CHAIN_ID = Number(process.env.CHAIN_ID);

@@ -61,6 +61,5 @@ The latest Foundry release includes Monad support, so no separate category-labs 
 | `TOKEN_ADDRESS` | App runtime | Deployed token contract address |
 | `PRIVATE_KEY` | App runtime, deploy script | Private key used by the scheduler account and Foundry broadcast |
 
-### Test-only
-
-`bun run test` also honors `TEST_DATABASE_URL` if you want to point the test suite at a separate Postgres instance. If it is unset, the tests default to `postgres://postgres:postgres@localhost:5432/postgres`.
+Tests use `DATABASE_URL` for the administrative connection. Each test creates
+and removes its own temporary Postgres database.

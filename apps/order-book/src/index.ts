@@ -23,12 +23,14 @@ if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
+const DATABASE_URL = process.env.DATABASE_URL;
+
 const app = await createTypewriter(OrderBook, {
   address: ORDER_BOOK_ADDRESS,
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
-  database: { url: process.env.DATABASE_URL, maxConnections: 25 },
+  database: { url: DATABASE_URL, maxConnections: 25 },
   sequencing: {
     order: "batch",
     batchOrder: ORDER_BOOK_BATCH_ORDER,
@@ -37,7 +39,7 @@ const app = await createTypewriter(OrderBook, {
 
 const readerDb = drizzle({
   client: new Bun.SQL({
-    url: process.env.DATABASE_URL,
+    url: DATABASE_URL,
     max: 25,
   }),
 });

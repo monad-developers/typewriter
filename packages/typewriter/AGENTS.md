@@ -44,7 +44,7 @@ tear down Anvil/Postgres before later files run.
 Run the native account Solidity suite with `forge test --root test/contracts`.
 The fixture project's `test` path points at `src/Typewriter.t.sol`.
 
-If broad test runs fail during setup, run `DATABASE_URL=postgres://postgres@localhost:5432/postgres bun test packages/typewriter/test/setup.test.ts` first to isolate Anvil/Postgres environment failures before debugging app logic.
+If broad test runs fail during setup, run `DATABASE_URL=postgresql://ubuntu@localhost:5432/postgres bun test packages/typewriter/test/setup.test.ts` first to isolate Anvil/Postgres environment failures before debugging app logic.
 
 ## Roadmap
 
