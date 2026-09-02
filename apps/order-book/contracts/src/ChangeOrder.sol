@@ -7,50 +7,21 @@ import {
     Instrument,
     Order,
     OrderNotFound,
-    PERM_CHANGE_ORDER,
-    Signature,
     State,
     Tick,
     TickPartiallyFilled,
-    Unauthorized,
     getTicks,
-    removeBookTick,
-    verifyMutationSignature
+    removeBookTick
 } from "./OrderBook.sol";
 
 library ChangeOrderMutation {
     struct ChangeOrder {
         uint64 orderId;
         uint64 price;
-        uint256 nonce;
-        uint256 deadline;
     }
 
-    bytes32 constant CHANGE_ORDER_TYPEHASH =
-        keccak256("ChangeOrder(uint64 orderId,uint64 price,uint256 nonce,uint256 deadline)");
-
-    function hashChangeOrder(ChangeOrder memory changeOrder) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                CHANGE_ORDER_TYPEHASH, changeOrder.orderId, changeOrder.price, changeOrder.nonce, changeOrder.deadline
-            )
-        );
-    }
-
-    function verifyChangeOrderSignature(
-        State storage state,
-        ChangeOrder memory changeOrder,
-        Signature memory signature,
-        bytes32 digest
-    ) internal {
-        uint16 permissions = verifyMutationSignature(state, signature, digest, changeOrder.nonce, changeOrder.deadline);
-        if ((permissions & PERM_CHANGE_ORDER) == 0) revert Unauthorized();
-    }
-
-    function executeChangeOrder(State storage state, ChangeOrder memory changeOrder, Signature memory signature)
-        internal
-    {
-        Account storage account = state.accounts[signature.account];
+    function executeChangeOrder(State storage state, ChangeOrder memory changeOrder, bytes32 accountID) internal {
+        Account storage account = state.accounts[accountID];
         Order storage order = account.orders[changeOrder.orderId];
         uint64 orderQuantity = order.quantity;
         if (orderQuantity == 0) revert OrderNotFound();
@@ -88,11 +59,9 @@ library ChangeOrderMutation {
                 quantity: uint256(orderQuantity) << instrument.baseLotExp,
                 instrumentId: instrumentId,
                 price: changeOrder.price,
-                bidOrAsk: orderSide,
-                nonce: changeOrder.nonce,
-                deadline: changeOrder.deadline
+                bidOrAsk: orderSide
             }),
-            signature
+            accountID
         );
     }
 }

@@ -8,7 +8,6 @@ import {
     InvalidMutation,
     SlippageExceeded,
     InsufficientBalance,
-    Signature,
     State,
     insertBookTick
 } from "src/OrderBook.sol";
@@ -48,7 +47,7 @@ contract MarketOrderTest is Test {
     }
 
     function _executeMarketOrder(MarketOrderMutation.MarketOrder memory order, bytes32 account) internal {
-        MarketOrderMutation.executeMarketOrder(state, order, Signature({account: account, keyId: 0, rawSignature: ""}));
+        MarketOrderMutation.executeMarketOrder(state, order, account);
     }
 
     function callMarketOrder(MarketOrderMutation.MarketOrder memory order, bytes32 account) external {
@@ -57,9 +56,7 @@ contract MarketOrderTest is Test {
 
     function test_MarketOrder_InvalidInstrument() external {
         try this.callMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 1, minReceivedQuantity: 0, instrumentId: 99, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 1, minReceivedQuantity: 0, instrumentId: 99, bidOrAsk: 0}),
             ACCOUNT
         ) {
             fail();
@@ -74,9 +71,7 @@ contract MarketOrderTest is Test {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0}),
             ACCOUNT
         );
 
@@ -96,9 +91,7 @@ contract MarketOrderTest is Test {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 1}),
             ACCOUNT
         );
 
@@ -120,9 +113,7 @@ contract MarketOrderTest is Test {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 15, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 15, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0}),
             ACCOUNT
         );
 
@@ -136,9 +127,7 @@ contract MarketOrderTest is Test {
 
     function test_MarketOrder_NotFullyFilled() external {
         try this.callMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 101, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 101, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0}),
             ACCOUNT
         ) {
             fail();
@@ -149,9 +138,7 @@ contract MarketOrderTest is Test {
 
     function test_MarketOrder_SlippageExceeded() external {
         try this.callMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 10, minReceivedQuantity: 999, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 10, minReceivedQuantity: 999, instrumentId: 0, bidOrAsk: 0}),
             ACCOUNT
         ) {
             fail();
@@ -168,9 +155,7 @@ contract MarketOrderTest is Test {
         vm.resumeGasMetering();
 
         try this.callMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 10, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0}),
             ACCOUNT
         ) {
             fail();
@@ -191,9 +176,7 @@ contract MarketOrderTest is Test {
         vm.resumeGasMetering();
 
         _executeMarketOrder(
-            MarketOrderMutation.MarketOrder({
-                quantity: 10 << 18, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
+            MarketOrderMutation.MarketOrder({quantity: 10 << 18, minReceivedQuantity: 0, instrumentId: 0, bidOrAsk: 0}),
             ACCOUNT
         );
 

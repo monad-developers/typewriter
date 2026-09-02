@@ -1,49 +1,132 @@
-import { DEFAULT_NON_ROOT_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
+import { AbiParameters } from "ox";
 import * as Address from "ox/Address";
-import * as Hash from "ox/Hash";
 import type * as Hex from "ox/Hex";
+import * as OxHex from "ox/Hex";
 import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
-import * as TypedData from "ox/TypedData";
 import superjson from "superjson";
-import { TYPEWRITER_DOMAIN } from "typewriter";
+import {
+  authorizeMutation,
+  deriveAccountID,
+  getAuthorizationPayload,
+  type TypedMutation,
+} from "typewriter/client";
 import { API_URL, CHAIN_ID, ORDER_BOOK_ADDRESS } from "./constants";
 
 console.log(
   `Using API_URL=${API_URL}, CHAIN_ID=${CHAIN_ID}, ORDER_BOOK_ADDRESS=${ORDER_BOOK_ADDRESS}`,
 );
 
-function farDeadline(): bigint {
-  return BigInt(Math.floor(Date.now() / 1000) + 86400);
-}
 const FETCH_TIMEOUT_MS = 30_000;
 
-function domain() {
-  return {
-    ...TYPEWRITER_DOMAIN,
-    chainId: CHAIN_ID,
-    verifyingContract: ORDER_BOOK_ADDRESS,
-  };
-}
+const manifest = {
+  chainId: CHAIN_ID,
+  address: ORDER_BOOK_ADDRESS,
+  mutations: {
+    CloseOrder: { id: 0, params: [{ name: "orderId", type: "uint64" }] },
+    ChangeOrder: {
+      id: 1,
+      params: [
+        { name: "orderId", type: "uint64" },
+        { name: "price", type: "uint64" },
+      ],
+    },
+    LimitOrder: {
+      id: 2,
+      params: [
+        { name: "quantity", type: "uint256" },
+        { name: "instrumentId", type: "uint64" },
+        { name: "price", type: "uint64" },
+        { name: "bidOrAsk", type: "uint8" },
+      ],
+    },
+    MarketOrder: {
+      id: 3,
+      params: [
+        { name: "quantity", type: "uint256" },
+        { name: "minReceivedQuantity", type: "uint256" },
+        { name: "instrumentId", type: "uint64" },
+        { name: "bidOrAsk", type: "uint8" },
+      ],
+    },
+    AddInstrument: {
+      id: 4,
+      params: [
+        { name: "instrumentId", type: "uint64" },
+        { name: "base", type: "address" },
+        { name: "quote", type: "address" },
+        { name: "baseLotExp", type: "uint8" },
+        { name: "quoteLotExp", type: "uint8" },
+      ],
+    },
+    Deposit: {
+      id: 5,
+      params: [
+        { name: "asset", type: "address" },
+        { name: "amount", type: "uint256" },
+      ],
+    },
+    Withdrawal: {
+      id: 6,
+      params: [
+        { name: "asset", type: "address" },
+        { name: "amount", type: "uint256" },
+      ],
+    },
+    CreateAccount: {
+      id: 253,
+      params: [
+        { name: "keyType", type: "uint8" },
+        { name: "publicKey", type: "bytes" },
+      ],
+    },
+    AddCredential: {
+      id: 254,
+      params: [
+        { name: "expiration", type: "uint40" },
+        { name: "keyType", type: "uint8" },
+        { name: "permissions", type: "uint256" },
+        { name: "publicKey", type: "bytes" },
+      ],
+    },
+    RemoveCredential: {
+      id: 255,
+      params: [{ name: "credentialID", type: "uint64" }],
+    },
+  },
+} as const;
 
 export function sign(
-  privateKey: Hex.Hex,
-  primaryType: keyof typeof EIP712_TYPES,
-  message: TypedData.MessageDefinition<
-    typeof EIP712_TYPES,
-    keyof typeof EIP712_TYPES
-  >["message"],
-): Hex.Hex {
-  const payload = TypedData.getSignPayload({
-    domain: domain(),
-    types: EIP712_TYPES,
-    primaryType,
-    message,
-    // getSignPayload can't model a runtime-chosen primaryType over a multi-type
-    // schema; the value above is a valid definition for the chosen type.
-  } as TypedData.Definition<typeof EIP712_TYPES, typeof primaryType>);
-  const sig = Secp256k1.sign({ payload, privateKey });
-  return Signature.toHex(sig);
+  account: Account,
+  name: keyof typeof manifest.mutations,
+  params: Record<string, unknown>,
+  nonce: bigint,
+) {
+  const mutation = {
+    name,
+    params,
+    accountID: account.accountHex,
+    credentialID: BigInt(account.keyId),
+    nonce,
+    expiration: 0n,
+  } as unknown as TypedMutation<typeof manifest, typeof name>;
+  const signature = Secp256k1.sign({
+    payload: getAuthorizationPayload(manifest, mutation),
+    privateKey: account.privateKey,
+  });
+  const packedSignature = AbiParameters.encode(
+    [
+      { name: "v", type: "uint8" },
+      { name: "r", type: "bytes32" },
+      { name: "s", type: "bytes32" },
+    ],
+    [
+      Signature.yParityToV(signature.yParity),
+      OxHex.fromNumber(signature.r, { size: 32 }),
+      OxHex.fromNumber(signature.s, { size: 32 }),
+    ],
+  );
+  return authorizeMutation(mutation, packedSignature);
 }
 
 async function post(path: string, body: unknown) {
@@ -106,20 +189,10 @@ function reserveNonce(
 async function postWithNonce<T>(params: {
   rollback: () => void;
   account: Account;
-  name: string;
-  mutationParams: unknown;
-  rawSignature: Hex.Hex;
+  mutation: unknown;
 }): Promise<T> {
   try {
-    return (await post("/api", {
-      name: params.name,
-      params: params.mutationParams,
-      signature: {
-        account: params.account.accountHex,
-        keyId: BigInt(params.account.keyId),
-        rawSignature: params.rawSignature,
-      },
-    })) as T;
+    return (await post("/api", params.mutation)) as T;
   } catch (err) {
     params.rollback();
     throw err;
@@ -138,38 +211,47 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
   const address = Address.fromPublicKey(publicKey);
   const rootPublicKey =
     `0x000000000000000000000000${address.slice(2).toLowerCase()}` as Hex.Hex;
-  const accountHex = Hash.keccak256(rootPublicKey);
+  const accountHex = deriveAccountID({ keyType: 2, publicKey: rootPublicKey });
 
   const existsRes = await fetch(`${API_URL}/api/account/${accountHex}/exists`, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
-  const { hasKeys } = await readJson<{ hasKeys: boolean }>(existsRes);
+  const { exists } = await readJson<{ exists: boolean }>(existsRes);
 
-  if (!hasKeys) {
-    await post("/api", {
-      name: "Initialize",
-      params: {
-        account: accountHex,
-        expiry: 0,
-        rootKeyType: 2,
-        keyType: 2,
-        permissions: DEFAULT_NON_ROOT_PERMISSIONS,
-        rootPublicKey,
-        publicKey: rootPublicKey,
-      },
-      signature: {
-        account: accountHex,
-        keyId: 0n,
-        rawSignature: "0x",
-      },
-    });
+  if (!exists) {
+    const mutation = {
+      name: "CreateAccount",
+      params: { keyType: 2, publicKey: rootPublicKey },
+      accountID: accountHex,
+      credentialID: 0n,
+      nonce: 0n,
+      expiration: 0n,
+    } as const satisfies TypedMutation<typeof manifest, "CreateAccount">;
+    const authorization = authorizeMutation(
+      mutation,
+      (() => {
+        const signature = Secp256k1.sign({
+          payload: getAuthorizationPayload(manifest, mutation),
+          privateKey: pk,
+        });
+        return AbiParameters.encode(
+          [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
+          [
+            Signature.yParityToV(signature.yParity),
+            OxHex.fromNumber(signature.r, { size: 32 }),
+            OxHex.fromNumber(signature.s, { size: 32 }),
+          ],
+        );
+      })(),
+    );
+    await post("/api", authorization);
   }
 
   return {
     privateKey: pk,
     address,
     accountHex,
-    keyId: 1,
+    keyId: 0,
     nonceKey: randomNonceKey(),
     seq: 0n,
   };
@@ -333,27 +415,17 @@ export async function addInstrument(
   opts?: MutationOpts,
 ) {
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "AddInstrument", {
+  const mutationParams = {
     instrumentId: BigInt(instrument.instrumentId),
     base: instrument.base,
     quote: instrument.quote,
     baseLotExp: instrument.baseLotExp,
     quoteLotExp: instrument.quoteLotExp,
-    nonce,
-    deadline,
-  });
+  };
   return postWithNonce({
     rollback,
     account,
-    name: "AddInstrument",
-    mutationParams: {
-      ...instrument,
-      instrumentId: BigInt(instrument.instrumentId),
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "AddInstrument", mutationParams, nonce),
   });
 }
 
@@ -364,24 +436,11 @@ export async function deposit(
 ) {
   const { quantity } = params;
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "Deposit", {
-    asset: quantity.asset,
-    amount: quantity.raw,
-    nonce,
-    deadline,
-  });
+  const mutationParams = { asset: quantity.asset, amount: quantity.raw };
   return postWithNonce({
     rollback,
     account,
-    name: "Deposit",
-    mutationParams: {
-      asset: quantity.asset,
-      amount: quantity.raw,
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "Deposit", mutationParams, nonce),
   });
 }
 
@@ -400,28 +459,16 @@ export async function limitOrder(
   const q32Price = priceToQ32(params.price, instrument);
   const quantity = lotAligned(params.quantity.raw, instrument.baseLotExp);
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "LimitOrder", {
+  const mutationParams = {
     quantity,
     instrumentId: BigInt(instrument.id),
     price: q32Price,
     bidOrAsk,
-    nonce,
-    deadline,
-  });
+  };
   return postWithNonce({
     rollback,
     account,
-    name: "LimitOrder",
-    mutationParams: {
-      quantity,
-      instrumentId: BigInt(instrument.id),
-      price: q32Price,
-      bidOrAsk,
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "LimitOrder", mutationParams, nonce),
   });
 }
 
@@ -445,28 +492,16 @@ export async function marketOrder(
     receivedLotExp,
   );
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "MarketOrder", {
+  const mutationParams = {
     quantity,
     minReceivedQuantity,
     instrumentId: BigInt(instrument.id),
     bidOrAsk,
-    nonce,
-    deadline,
-  });
+  };
   return postWithNonce({
     rollback,
     account,
-    name: "MarketOrder",
-    mutationParams: {
-      quantity,
-      minReceivedQuantity,
-      instrumentId: BigInt(instrument.id),
-      bidOrAsk,
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "MarketOrder", mutationParams, nonce),
   });
 }
 
@@ -476,22 +511,11 @@ export async function closeOrder(
   opts?: MutationOpts,
 ) {
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "CloseOrder", {
-    orderId: BigInt(params.orderId),
-    nonce,
-    deadline,
-  });
+  const mutationParams = { orderId: BigInt(params.orderId) };
   return postWithNonce({
     rollback,
     account,
-    name: "CloseOrder",
-    mutationParams: {
-      orderId: BigInt(params.orderId),
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "CloseOrder", mutationParams, nonce),
   });
 }
 
@@ -502,24 +526,14 @@ export async function changeOrder(
 ) {
   const price = priceToQ32(params.price, params.instrument);
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "ChangeOrder", {
+  const mutationParams = {
     orderId: BigInt(params.orderId),
     price,
-    nonce,
-    deadline,
-  });
+  };
   return postWithNonce({
     rollback,
     account,
-    name: "ChangeOrder",
-    mutationParams: {
-      orderId: BigInt(params.orderId),
-      price,
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "ChangeOrder", mutationParams, nonce),
   });
 }
 
@@ -530,23 +544,10 @@ export async function withdraw(
 ) {
   const { quantity } = params;
   const { nonce, rollback } = reserveNonce(account, opts);
-  const deadline = farDeadline();
-  const rawSignature = sign(account.privateKey, "Withdrawal", {
-    asset: quantity.asset,
-    amount: quantity.raw,
-    nonce,
-    deadline,
-  });
+  const mutationParams = { asset: quantity.asset, amount: quantity.raw };
   return postWithNonce({
     rollback,
     account,
-    name: "Withdrawal",
-    mutationParams: {
-      asset: quantity.asset,
-      amount: quantity.raw,
-      nonce,
-      deadline,
-    },
-    rawSignature,
+    mutation: sign(account, "Withdrawal", mutationParams, nonce),
   });
 }

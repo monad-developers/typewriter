@@ -5,8 +5,8 @@ import type { ApiMutation } from "./useMutations";
 
 export type ApiKey = {
   keyType: 0 | 1 | 2;
-  permissions: number;
-  expiry: number;
+  permissions: string;
+  expiration: number;
   publicKey: Hex;
 };
 
@@ -20,8 +20,7 @@ export type ApiOrder = {
 
 export type ApiAccount = {
   address: Hex;
-  serial: number;
-  keys: ApiKey[];
+  credentials: ApiKey[];
   nonces: Record<string, string>;
   orders: ApiOrder[];
   balances: Record<Address, string>;

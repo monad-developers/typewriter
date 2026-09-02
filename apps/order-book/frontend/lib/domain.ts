@@ -1,5 +1,5 @@
+import type { TypewriterManifest } from "typewriter";
 import {
-  type Address,
   encodeAbiParameters,
   type Hex,
   keccak256,
@@ -10,10 +10,7 @@ import {
 const TYPEWRITER_DOMAIN_NAME = "Typewriter";
 const TYPEWRITER_DOMAIN_VERSION = "1";
 
-export type AppDomain = {
-  chainId: number;
-  verifyingContract: Address;
-};
+export type AppDomain = TypewriterManifest;
 
 export function domainHash(domain: AppDomain): Hex {
   return keccak256(
@@ -28,7 +25,7 @@ export function domainHash(domain: AppDomain): Hex {
         keccak256(toHex(TYPEWRITER_DOMAIN_NAME)),
         keccak256(toHex(TYPEWRITER_DOMAIN_VERSION)),
         BigInt(domain.chainId),
-        domain.verifyingContract,
+        domain.address,
       ],
     ),
   );

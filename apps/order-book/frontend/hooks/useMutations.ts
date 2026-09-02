@@ -21,9 +21,11 @@ export type ApiMutation = {
   includedAt: Date | null;
   safeAt: Date | null;
   finalizedAt: Date | null;
-  signature_account: Hex;
-  signature_keyId: bigint;
-  signature_rawSignature: Hex;
+  authorization_account_id: Hex;
+  authorization_credential_id: bigint;
+  authorization_nonce: bigint;
+  authorization_expiration: bigint;
+  authorization_signature: Hex;
   [column: string]: unknown;
 };
 

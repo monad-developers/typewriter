@@ -7,16 +7,12 @@ import {
     Instrument,
     InvalidInstrument,
     Order,
-    PERM_LIMIT_ORDER,
-    Signature,
     State,
     Tick,
     TickPartiallyFilled,
-    Unauthorized,
     getTicks,
     insertBookTick,
-    toLots,
-    verifyMutationSignature
+    toLots
 } from "./OrderBook.sol";
 
 library LimitOrderMutation {
@@ -25,39 +21,9 @@ library LimitOrderMutation {
         uint64 instrumentId;
         uint64 price;
         uint8 bidOrAsk;
-        uint256 nonce;
-        uint256 deadline;
     }
 
-    bytes32 constant LIMIT_ORDER_TYPEHASH = keccak256(
-        "LimitOrder(uint256 quantity,uint64 instrumentId,uint64 price,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
-    );
-
-    function hashLimitOrder(LimitOrder memory order) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                LIMIT_ORDER_TYPEHASH,
-                order.quantity,
-                order.instrumentId,
-                order.price,
-                order.bidOrAsk,
-                order.nonce,
-                order.deadline
-            )
-        );
-    }
-
-    function verifyLimitOrderSignature(
-        State storage state,
-        LimitOrder memory order,
-        Signature memory signature,
-        bytes32 digest
-    ) internal {
-        uint16 permissions = verifyMutationSignature(state, signature, digest, order.nonce, order.deadline);
-        if ((permissions & PERM_LIMIT_ORDER) == 0) revert Unauthorized();
-    }
-
-    function executeLimitOrder(State storage state, LimitOrder memory order, Signature memory signature) internal {
+    function executeLimitOrder(State storage state, LimitOrder memory order, bytes32 accountID) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         address base = instrument.base;
         if (base == address(0)) revert InvalidInstrument();
@@ -71,7 +37,7 @@ library LimitOrderMutation {
         uint64 currentQuantity = tick.quantity;
         if (tick.remainingQuantity != currentQuantity) revert TickPartiallyFilled();
 
-        Account storage account = state.accounts[signature.account];
+        Account storage account = state.accounts[accountID];
         if (order.bidOrAsk == 0) {
             address quote = instrument.quote;
             uint256 rawLock = ((uint256(quantityLots) * uint256(order.price)) >> 32) << instrument.quoteLotExp;

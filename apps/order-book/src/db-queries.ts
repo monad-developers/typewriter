@@ -7,9 +7,9 @@ type OrderBookSchema = any;
 type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
 
 const mutationTableNames = [
-  "initialize_mutations",
-  "authorize_mutations",
-  "revoke_mutations",
+  "createaccount_mutations",
+  "addcredential_mutations",
+  "removecredential_mutations",
   "closeorder_mutations",
   "changeorder_mutations",
   "limitorder_mutations",
@@ -93,7 +93,7 @@ export async function selectMutationsByAccount(
       return await db
         .select()
         .from(table)
-        .where(eq(table.signature_account, account))
+        .where(eq(table.authorization_account_id, account))
         .orderBy(desc(table.id))
         .limit(limit);
     }),

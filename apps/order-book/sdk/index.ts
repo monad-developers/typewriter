@@ -9,29 +9,24 @@ export const BTC: Address = "0x6666666666666666666666666666666666666666";
 
 export const ASSETS = [USD, GOLD, WTIOIL, EUR, SPX, BTC] as const;
 
-export const PERM_AUTHORIZE = 1 << 0;
-export const PERM_REVOKE = 1 << 1;
-export const PERM_CLOSE_ORDER = 1 << 2;
-export const PERM_LIMIT_ORDER = 1 << 3;
-export const PERM_MARKET_ORDER = 1 << 4;
+export const PERM_CLOSE_ORDER = 1 << 0;
+export const PERM_CHANGE_ORDER = 1 << 1;
+export const PERM_LIMIT_ORDER = 1 << 2;
+export const PERM_MARKET_ORDER = 1 << 3;
+export const PERM_ADD_INSTRUMENT = 1 << 4;
 export const PERM_DEPOSIT = 1 << 5;
 export const PERM_WITHDRAW = 1 << 6;
-export const PERM_ADD_INSTRUMENT = 1 << 7;
-export const PERM_CHANGE_ORDER = 1 << 8;
 
 export const ALL_PERMISSIONS =
-  PERM_AUTHORIZE |
-  PERM_REVOKE |
   PERM_CLOSE_ORDER |
+  PERM_CHANGE_ORDER |
   PERM_LIMIT_ORDER |
   PERM_MARKET_ORDER |
-  PERM_DEPOSIT |
-  PERM_WITHDRAW |
   PERM_ADD_INSTRUMENT |
-  PERM_CHANGE_ORDER;
+  PERM_DEPOSIT |
+  PERM_WITHDRAW;
 
-export const DEFAULT_NON_ROOT_PERMISSIONS =
-  ALL_PERMISSIONS & ~(PERM_AUTHORIZE | PERM_REVOKE | PERM_WITHDRAW);
+export const DEFAULT_NON_ROOT_PERMISSIONS = ALL_PERMISSIONS & ~PERM_WITHDRAW;
 
 export const INSTRUMENTS = {
   "GOLD/USD": {
@@ -69,81 +64,6 @@ export const INSTRUMENTS = {
     baseLotExp: 29,
     quoteLotExp: 46,
   },
-} as const;
-
-export const EIP712_TYPES = {
-  Initialize: [
-    { name: "account", type: "bytes32" },
-    { name: "expiry", type: "uint40" },
-    { name: "rootKeyType", type: "uint8" },
-    { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint16" },
-    { name: "rootPublicKey", type: "bytes" },
-    { name: "publicKey", type: "bytes" },
-  ],
-  Authorize: [
-    { name: "account", type: "bytes32" },
-    { name: "expiry", type: "uint40" },
-    { name: "keyType", type: "uint8" },
-    { name: "permissions", type: "uint16" },
-    { name: "publicKey", type: "bytes" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Revoke: [
-    { name: "account", type: "bytes32" },
-    { name: "keyId", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  CloseOrder: [
-    { name: "orderId", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  ChangeOrder: [
-    { name: "orderId", type: "uint64" },
-    { name: "price", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  LimitOrder: [
-    { name: "quantity", type: "uint256" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "price", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  MarketOrder: [
-    { name: "quantity", type: "uint256" },
-    { name: "minReceivedQuantity", type: "uint256" },
-    { name: "instrumentId", type: "uint64" },
-    { name: "bidOrAsk", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  AddInstrument: [
-    { name: "instrumentId", type: "uint64" },
-    { name: "base", type: "address" },
-    { name: "quote", type: "address" },
-    { name: "baseLotExp", type: "uint8" },
-    { name: "quoteLotExp", type: "uint8" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Deposit: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
-  Withdrawal: [
-    { name: "asset", type: "address" },
-    { name: "amount", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint256" },
-  ],
 } as const;
 
 export type InstrumentConfig = {

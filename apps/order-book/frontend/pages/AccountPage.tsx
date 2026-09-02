@@ -3,12 +3,11 @@ import {
   EUR,
   GOLD,
   PERM_ADD_INSTRUMENT,
-  PERM_AUTHORIZE,
+  PERM_CHANGE_ORDER,
   PERM_CLOSE_ORDER,
   PERM_DEPOSIT,
   PERM_LIMIT_ORDER,
   PERM_MARKET_ORDER,
-  PERM_REVOKE,
   PERM_WITHDRAW,
   SPX,
   TokenAmount,
@@ -32,9 +31,8 @@ const ASSET_SYMBOLS: Record<Address, string> = {
 const KEY_TYPE_LABELS = ["P256", "WebAuthnP256", "Secp256k1"] as const;
 
 const PERMISSIONS = [
-  { bit: PERM_AUTHORIZE, name: "authorize" },
-  { bit: PERM_REVOKE, name: "revoke" },
   { bit: PERM_CLOSE_ORDER, name: "closeOrder" },
+  { bit: PERM_CHANGE_ORDER, name: "changeOrder" },
   { bit: PERM_LIMIT_ORDER, name: "limitOrder" },
   { bit: PERM_MARKET_ORDER, name: "marketOrder" },
   { bit: PERM_ADD_INSTRUMENT, name: "addInstrument" },
@@ -68,12 +66,13 @@ function formatExpiry(expiry: number) {
   return new Date(expiry * 1000).toISOString();
 }
 
-function formatPermissions(permissions: number) {
-  if (permissions === 0) return "none";
-  const names = PERMISSIONS.filter((p) => permissions & p.bit).map(
+function formatPermissions(permissions: string) {
+  const value = BigInt(permissions);
+  if (value === 0n) return "none";
+  const names = PERMISSIONS.filter((p) => value & BigInt(p.bit)).map(
     (p) => p.name,
   );
-  return names.join(", ") || `0x${permissions.toString(16)}`;
+  return names.join(", ") || `0x${value.toString(16)}`;
 }
 
 function formatAssetAmount(asset: Address, amount: string) {
@@ -90,7 +89,7 @@ export function AccountPage() {
     <div className="min-h-screen w-full flex flex-col">
       <section className="w-full border-b p-4 flex flex-col gap-2">
         <h2 className="text-2xl font-bold">Account</h2>
-        <code>id: {account?.serial ?? "..."}</code>
+        <code>id: {account?.address ?? "..."}</code>
       </section>
 
       <section className="w-full p-4">
@@ -134,7 +133,7 @@ export function AccountPage() {
 
       <section className="w-full p-4">
         <h2 className="text-2xl font-bold mb-4">
-          Keys ({account?.keys.length ?? 0})
+          Credentials ({account?.credentials.length ?? 0})
         </h2>
         <table className="w-full border-collapse">
           <thead>
@@ -147,17 +146,17 @@ export function AccountPage() {
             </tr>
           </thead>
           <tbody>
-            {account && account.keys.length === 0 ? (
+            {account && account.credentials.length === 0 ? (
               <tr>
                 <td
                   colSpan={KEY_COLUMNS.length}
                   className="py-2 pr-6 text-muted-foreground"
                 >
-                  <code>No keys</code>
+                  <code>No credentials</code>
                 </td>
               </tr>
             ) : (
-              account?.keys.map((k) => (
+              account?.credentials.map((k) => (
                 <tr key={k.publicKey} className="border-b last:border-0">
                   <td className="py-2 pr-6">
                     <code>{KEY_TYPE_LABELS[k.keyType]}</code>
@@ -166,7 +165,7 @@ export function AccountPage() {
                     <code>{formatPermissions(k.permissions)}</code>
                   </td>
                   <td className="py-2 pr-6">
-                    <code>{formatExpiry(k.expiry)}</code>
+                    <code>{formatExpiry(k.expiration)}</code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>{displayPublicKey(k.keyType, k.publicKey)}</code>

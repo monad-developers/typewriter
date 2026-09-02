@@ -8,15 +8,11 @@ import {
     InvalidInstrument,
     InvalidMutation,
     InvalidTick,
-    PERM_MARKET_ORDER,
-    Signature,
     SlippageExceeded,
     State,
     Tick,
-    Unauthorized,
     removeBookTick,
-    toLots,
-    verifyMutationSignature
+    toLots
 } from "./OrderBook.sol";
 
 struct Fill {
@@ -30,39 +26,9 @@ library MarketOrderMutation {
         uint256 minReceivedQuantity;
         uint64 instrumentId;
         uint8 bidOrAsk;
-        uint256 nonce;
-        uint256 deadline;
     }
 
-    bytes32 constant MARKET_ORDER_TYPEHASH = keccak256(
-        "MarketOrder(uint256 quantity,uint256 minReceivedQuantity,uint64 instrumentId,uint8 bidOrAsk,uint256 nonce,uint256 deadline)"
-    );
-
-    function hashMarketOrder(MarketOrder memory order) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                MARKET_ORDER_TYPEHASH,
-                order.quantity,
-                order.minReceivedQuantity,
-                order.instrumentId,
-                order.bidOrAsk,
-                order.nonce,
-                order.deadline
-            )
-        );
-    }
-
-    function verifyMarketOrderSignature(
-        State storage state,
-        MarketOrder memory order,
-        Signature memory signature,
-        bytes32 digest
-    ) internal {
-        uint16 permissions = verifyMutationSignature(state, signature, digest, order.nonce, order.deadline);
-        if ((permissions & PERM_MARKET_ORDER) == 0) revert Unauthorized();
-    }
-
-    function executeMarketOrder(State storage state, MarketOrder memory order, Signature memory signature) internal {
+    function executeMarketOrder(State storage state, MarketOrder memory order, bytes32 accountID) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         if (instrument.base == address(0)) revert InvalidInstrument();
 
@@ -71,8 +37,8 @@ library MarketOrderMutation {
         uint64 minReceivedLots = toLots(order.minReceivedQuantity, receivedLotExp);
 
         uint256 totalReceived = order.bidOrAsk == 0
-            ? fillBuy(instrument, state.accounts[signature.account], quantityLots)
-            : fillSell(instrument, state.accounts[signature.account], quantityLots);
+            ? fillBuy(instrument, state.accounts[accountID], quantityLots)
+            : fillSell(instrument, state.accounts[accountID], quantityLots);
 
         if (totalReceived < minReceivedLots) revert SlippageExceeded();
     }

@@ -12,7 +12,6 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   http,
-  parseSignature,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import OrderBook from "../contracts/src/OrderBook.sol";
@@ -30,8 +29,6 @@ const RPC_URL = requiredEnv("RPC_URL", process.env.RPC_URL);
 const BASELINE_N = 10;
 const SETTLE_MS = 1000;
 
-const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86400);
-
 const PRIVATE_KEY = requiredEnv(
   "PRIVATE_KEY",
   process.env.PRIVATE_KEY,
@@ -39,10 +36,10 @@ const PRIVATE_KEY = requiredEnv(
 const SCHEDULER_ADDRESS = privateKeyToAccount(PRIVATE_KEY).address;
 
 enum MutationType {
-  CloseOrder = 3,
-  ChangeOrder = 4,
-  LimitOrder = 5,
-  MarketOrder = 6,
+  CloseOrder = 0,
+  ChangeOrder = 1,
+  LimitOrder = 2,
+  MarketOrder = 3,
 }
 
 const publicClient = createPublicClient({ transport: http(RPC_URL) });
@@ -67,7 +64,7 @@ function randomHumanPrice(): number {
 type BatchArg = {
   mutations: number[];
   mutationData: Hex[];
-  signatureData: Hex[];
+  authorizationData: Hex[];
 };
 
 type Mut =
@@ -78,7 +75,6 @@ type Mut =
       price: bigint;
       bidOrAsk: 0 | 1;
       nonce: bigint;
-      deadline: bigint;
     }
   | {
       type: MutationType.MarketOrder;
@@ -87,20 +83,17 @@ type Mut =
       instrumentId: number;
       bidOrAsk: 0 | 1;
       nonce: bigint;
-      deadline: bigint;
     }
   | {
       type: MutationType.CloseOrder;
       orderId: number;
       nonce: bigint;
-      deadline: bigint;
     }
   | {
       type: MutationType.ChangeOrder;
       orderId: number;
       price: bigint;
       nonce: bigint;
-      deadline: bigint;
     };
 
 function encodeMutationData(m: Mut): Hex {
@@ -115,8 +108,6 @@ function encodeMutationData(m: Mut): Hex {
               { type: "uint64", name: "instrumentId" },
               { type: "uint64", name: "price" },
               { type: "uint8", name: "bidOrAsk" },
-              { type: "uint256", name: "nonce" },
-              { type: "uint256", name: "deadline" },
             ],
           },
         ],
@@ -126,8 +117,6 @@ function encodeMutationData(m: Mut): Hex {
             instrumentId: BigInt(m.instrumentId),
             price: m.price,
             bidOrAsk: m.bidOrAsk,
-            nonce: m.nonce,
-            deadline: m.deadline,
           },
         ],
       );
@@ -141,8 +130,6 @@ function encodeMutationData(m: Mut): Hex {
               { type: "uint256", name: "minReceivedQuantity" },
               { type: "uint64", name: "instrumentId" },
               { type: "uint8", name: "bidOrAsk" },
-              { type: "uint256", name: "nonce" },
-              { type: "uint256", name: "deadline" },
             ],
           },
         ],
@@ -152,8 +139,6 @@ function encodeMutationData(m: Mut): Hex {
             minReceivedQuantity: m.minReceivedQuantity,
             instrumentId: BigInt(m.instrumentId),
             bidOrAsk: m.bidOrAsk,
-            nonce: m.nonce,
-            deadline: m.deadline,
           },
         ],
       );
@@ -162,18 +147,12 @@ function encodeMutationData(m: Mut): Hex {
         [
           {
             type: "tuple",
-            components: [
-              { type: "uint64", name: "orderId" },
-              { type: "uint256", name: "nonce" },
-              { type: "uint256", name: "deadline" },
-            ],
+            components: [{ type: "uint64", name: "orderId" }],
           },
         ],
         [
           {
             orderId: BigInt(m.orderId),
-            nonce: m.nonce,
-            deadline: m.deadline,
           },
         ],
       );
@@ -185,8 +164,6 @@ function encodeMutationData(m: Mut): Hex {
             components: [
               { type: "uint64", name: "orderId" },
               { type: "uint64", name: "price" },
-              { type: "uint256", name: "nonce" },
-              { type: "uint256", name: "deadline" },
             ],
           },
         ],
@@ -194,80 +171,76 @@ function encodeMutationData(m: Mut): Hex {
           {
             orderId: BigInt(m.orderId),
             price: m.price,
-            nonce: m.nonce,
-            deadline: m.deadline,
           },
         ],
       );
   }
 }
 
-function signMutation(account: Account, m: Mut): Hex {
+function signMutation(account: Account, m: Mut) {
   switch (m.type) {
     case MutationType.LimitOrder:
-      return sign(account.privateKey, "LimitOrder", {
-        quantity: m.quantity,
-        instrumentId: BigInt(m.instrumentId),
-        price: m.price,
-        bidOrAsk: m.bidOrAsk,
-        nonce: m.nonce,
-        deadline: m.deadline,
-      });
+      return sign(
+        account,
+        "LimitOrder",
+        {
+          quantity: m.quantity,
+          instrumentId: BigInt(m.instrumentId),
+          price: m.price,
+          bidOrAsk: m.bidOrAsk,
+        },
+        m.nonce,
+      ).authorization;
     case MutationType.MarketOrder:
-      return sign(account.privateKey, "MarketOrder", {
-        quantity: m.quantity,
-        minReceivedQuantity: m.minReceivedQuantity,
-        instrumentId: BigInt(m.instrumentId),
-        bidOrAsk: m.bidOrAsk,
-        nonce: m.nonce,
-        deadline: m.deadline,
-      });
+      return sign(
+        account,
+        "MarketOrder",
+        {
+          quantity: m.quantity,
+          minReceivedQuantity: m.minReceivedQuantity,
+          instrumentId: BigInt(m.instrumentId),
+          bidOrAsk: m.bidOrAsk,
+        },
+        m.nonce,
+      ).authorization;
     case MutationType.CloseOrder:
-      return sign(account.privateKey, "CloseOrder", {
-        orderId: BigInt(m.orderId),
-        nonce: m.nonce,
-        deadline: m.deadline,
-      });
+      return sign(
+        account,
+        "CloseOrder",
+        { orderId: BigInt(m.orderId) },
+        m.nonce,
+      ).authorization;
     case MutationType.ChangeOrder:
-      return sign(account.privateKey, "ChangeOrder", {
-        orderId: BigInt(m.orderId),
-        price: m.price,
-        nonce: m.nonce,
-        deadline: m.deadline,
-      });
+      return sign(
+        account,
+        "ChangeOrder",
+        { orderId: BigInt(m.orderId), price: m.price },
+        m.nonce,
+      ).authorization;
   }
 }
 
-function reencodeSig(raw: Hex): Hex {
-  if (raw.length === 132) {
-    const { v, r, s } = parseSignature(raw);
-    return encodeAbiParameters(
-      [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-      [Number(v), r, s],
-    );
-  }
-  return raw;
-}
-
-function encodeSignature(account: Account, rawSignature: Hex): Hex {
+function encodeAuthorization(authorization: {
+  accountID: Hex;
+  credentialID: bigint;
+  nonce: bigint;
+  expiration: bigint;
+  signature: Hex;
+}): Hex {
   return encodeAbiParameters(
     [
       {
         type: "tuple",
         components: [
-          { type: "bytes32", name: "account" },
-          { type: "uint64", name: "keyId" },
-          { type: "bytes", name: "rawSignature" },
+          { type: "bytes32", name: "accountID" },
+          { type: "uint64", name: "credentialID" },
+          { type: "uint256", name: "nonce" },
+          { type: "uint256", name: "expiration" },
+          { type: "bytes", name: "signature" },
         ],
       },
     ],
-    [
-      {
-        account: account.accountHex,
-        keyId: BigInt(account.keyId),
-        rawSignature,
-      },
-    ],
+    [authorization],
   );
 }
 
@@ -275,8 +248,8 @@ function buildBatch(account: Account, muts: Mut[]): BatchArg {
   return {
     mutations: muts.map((m) => m.type),
     mutationData: muts.map(encodeMutationData),
-    signatureData: muts.map((m) =>
-      encodeSignature(account, reencodeSig(signMutation(account, m))),
+    authorizationData: muts.map((m) =>
+      encodeAuthorization(signMutation(account, m)),
     ),
   };
 }
@@ -367,7 +340,6 @@ console.log("");
     price: priceToQ32(basePrice + i, instrument),
     bidOrAsk: 0,
     nonce: nonceFor(account, BigInt(i)),
-    deadline: FAR_DEADLINE,
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkLimit(i));
@@ -400,7 +372,6 @@ console.log("");
     price: q32,
     bidOrAsk: 0,
     nonce: nonceFor(account, BigInt(i)),
-    deadline: FAR_DEADLINE,
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkLimit(i));
@@ -434,7 +405,6 @@ console.log("");
     instrumentId: instrument.id,
     bidOrAsk: 0,
     nonce: nonceFor(taker, BigInt(i)),
-    deadline: FAR_DEADLINE,
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkMarket(i));
@@ -470,7 +440,6 @@ console.log("");
     instrumentId: instrument.id,
     bidOrAsk: 0,
     nonce: nonceFor(taker, BigInt(i)),
-    deadline: FAR_DEADLINE,
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkMarket(i));
@@ -501,7 +470,6 @@ console.log("");
     type: MutationType.CloseOrder,
     orderId: i,
     nonce: nonceFor(account, BigInt(i)),
-    deadline: FAR_DEADLINE,
   });
 
   const baseline = Array.from({ length: BASELINE_N }, (_, i) => mkClose(i));

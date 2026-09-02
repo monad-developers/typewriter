@@ -1,21 +1,32 @@
 import { useMutation } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
-import { hexToBytes, keccak256 } from "viem";
-import { Registration as ClientRegistration } from "webauthx/client";
+import {
+  authorizeMutation,
+  deriveAccountID,
+  getAuthorizationPayload,
+  type TypedMutation,
+} from "typewriter/client";
+import { bytesToHex } from "viem";
+import {
+  Authentication as ClientAuthentication,
+  Registration as ClientRegistration,
+} from "webauthx/client";
 import { Registration as ServerRegistration } from "webauthx/server";
-import type { SubmittedOrderBookMutation } from "../../src/app";
 import { useAccountContext } from "../contexts/AccountContext";
+import { useDomainContext } from "../contexts/DomainContext";
 import { request } from "../lib/api";
 import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
-import { RP_ID, RP_NAME } from "../lib/webauthn";
+import { encodeWebAuthnSignature, RP_ID, RP_NAME } from "../lib/webauthn";
 
 export function useSignUp() {
   const { setAccount } = useAccountContext();
+  const { domain } = useDomainContext();
 
   return useMutation({
     mutationFn: async () => {
       const sessionKey = await generateSessionKey();
       const sessionPublicKey = await exportPublicKey(sessionKey);
+      if (domain === null) throw new Error("Missing domain");
 
       const placeholderUserId = crypto.getRandomValues(new Uint8Array(32));
       const { options: createOptions } = ServerRegistration.getOptions({
@@ -32,27 +43,56 @@ export function useSignUp() {
         options: createOptions,
       });
 
-      const accountId = keccak256(hexToBytes(credential.publicKey));
+      const createParams = {
+        keyType: 1,
+        publicKey: credential.publicKey,
+      } as const;
+      const accountId = deriveAccountID(createParams);
+      const createMutation = {
+        name: "CreateAccount",
+        params: createParams,
+        accountID: accountId,
+        credentialID: 0n,
+        nonce: 0n,
+        expiration: 0n,
+      } as unknown as TypedMutation<typeof domain, "CreateAccount">;
+      const createAssertion = await ClientAuthentication.sign({
+        rpId: RP_ID,
+        challenge: getAuthorizationPayload(domain, createMutation),
+      });
 
       await request("/api", {
         method: "POST",
-        body: {
-          name: "Initialize",
-          params: {
-            account: accountId,
-            expiry: 0,
-            rootKeyType: 1,
-            keyType: 0,
-            permissions: DEFAULT_NON_ROOT_PERMISSIONS,
-            rootPublicKey: credential.publicKey,
-            publicKey: sessionPublicKey,
-          },
-          signature: {
-            account: accountId,
-            keyId: 0n,
-            rawSignature: "0x",
-          },
-        } satisfies SubmittedOrderBookMutation<"Initialize">,
+        body: authorizeMutation(
+          createMutation,
+          encodeWebAuthnSignature(createAssertion),
+        ),
+      });
+
+      const addMutation = {
+        name: "AddCredential",
+        params: {
+          expiration: 0n,
+          keyType: 0,
+          permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
+          publicKey: sessionPublicKey,
+        },
+        accountID: accountId,
+        credentialID: 0n,
+        nonce:
+          BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n,
+        expiration: 0n,
+      } as unknown as TypedMutation<typeof domain, "AddCredential">;
+      const addAssertion = await ClientAuthentication.sign({
+        rpId: RP_ID,
+        challenge: getAuthorizationPayload(domain, addMutation),
+      });
+      await request("/api", {
+        method: "POST",
+        body: authorizeMutation(
+          addMutation,
+          encodeWebAuthnSignature(addAssertion),
+        ),
       });
 
       await setAccount({ accountId, keyId: 1, sessionKey });

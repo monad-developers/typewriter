@@ -491,12 +491,12 @@ function forceExecute(uint256 index) external {
                 <td className="px-3 py-2 font-semibold">Order Book</td>
                 <td className="px-3 py-2 break-all">
                   <a
-                    href={`https://testnet.monadscan.com/address/${domain?.verifyingContract ?? "0x0000000000000000000000000000000000000000"}`}
+                    href={`https://testnet.monadscan.com/address/${domain?.address ?? "0x0000000000000000000000000000000000000000"}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-blue-500 hover:underline"
                   >
-                    {domain?.verifyingContract ??
+                    {domain?.address ??
                       "0x0000000000000000000000000000000000000000"}
                   </a>
                 </td>

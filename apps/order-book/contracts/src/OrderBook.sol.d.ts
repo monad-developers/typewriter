@@ -4,20 +4,36 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
   readonly storageLayout: {
     readonly storage: readonly [
       {
-        readonly astId: 43554;
+        readonly astId: 694;
         readonly contract: "src/OrderBook.sol:OrderBook";
         readonly label: "accounts";
         readonly offset: 0;
-        readonly slot: "2";
-        readonly type: "t_mapping(t_bytes32,t_struct(Account)43577_storage)";
+        readonly slot: "0";
+        readonly type: "t_mapping(t_bytes32,t_struct(Account)26_storage)";
       },
       {
-        readonly astId: 43559;
+        readonly astId: 698;
         readonly contract: "src/OrderBook.sol:OrderBook";
-        readonly label: "instruments";
+        readonly label: "queue";
+        readonly offset: 0;
+        readonly slot: "1";
+        readonly type: "t_array(t_struct(QueuedMutation)657_storage)dyn_storage";
+      },
+      {
+        readonly astId: 700;
+        readonly contract: "src/OrderBook.sol:OrderBook";
+        readonly label: "executionIndex";
+        readonly offset: 0;
+        readonly slot: "2";
+        readonly type: "t_uint256";
+      },
+      {
+        readonly astId: 43903;
+        readonly contract: "src/OrderBook.sol:OrderBook";
+        readonly label: "state";
         readonly offset: 0;
         readonly slot: "3";
-        readonly type: "t_mapping(t_uint64,t_struct(Instrument)43611_storage)";
+        readonly type: "t_struct(State)43420_storage";
       },
     ];
     readonly types: {
@@ -26,23 +42,23 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly label: "address";
         readonly numberOfBytes: "20";
       };
-      readonly "t_array(t_struct(Key)43549_storage)dyn_storage": {
+      readonly "t_array(t_struct(Credential)15_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
-        readonly label: "struct Key[]";
+        readonly label: "struct Credential[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(Key)43549_storage";
+        readonly base: "t_struct(Credential)15_storage";
       };
-      readonly "t_array(t_struct(Order)43588_storage)dyn_storage": {
+      readonly "t_array(t_struct(Order)43440_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
         readonly label: "struct Order[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(Order)43588_storage";
+        readonly base: "t_struct(Order)43440_storage";
       };
-      readonly "t_array(t_struct(QueuedMutation)538_storage)dyn_storage": {
+      readonly "t_array(t_struct(QueuedMutation)657_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
         readonly label: "struct Typewriter.QueuedMutation[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(QueuedMutation)538_storage";
+        readonly base: "t_struct(QueuedMutation)657_storage";
       };
       readonly t_bytes32: {
         readonly encoding: "inplace";
@@ -66,12 +82,19 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly numberOfBytes: "32";
         readonly value: "t_uint256";
       };
-      readonly "t_mapping(t_bytes32,t_struct(Account)43577_storage)": {
+      readonly "t_mapping(t_bytes32,t_struct(Account)26_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_bytes32";
         readonly label: "mapping(bytes32 => struct Account)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Account)43577_storage";
+        readonly value: "t_struct(Account)26_storage";
+      };
+      readonly "t_mapping(t_bytes32,t_struct(Account)43429_storage)": {
+        readonly encoding: "mapping";
+        readonly key: "t_bytes32";
+        readonly label: "mapping(bytes32 => struct Account)";
+        readonly numberOfBytes: "32";
+        readonly value: "t_struct(Account)43429_storage";
       };
       readonly "t_mapping(t_uint192,t_uint64)": {
         readonly encoding: "mapping";
@@ -80,27 +103,27 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly numberOfBytes: "32";
         readonly value: "t_uint64";
       };
-      readonly "t_mapping(t_uint64,t_struct(Instrument)43611_storage)": {
+      readonly "t_mapping(t_uint64,t_struct(Instrument)43463_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_uint64";
         readonly label: "mapping(uint64 => struct Instrument)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Instrument)43611_storage";
+        readonly value: "t_struct(Instrument)43463_storage";
       };
-      readonly "t_mapping(t_uint64,t_struct(Tick)43622_storage)": {
+      readonly "t_mapping(t_uint64,t_struct(Tick)43474_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_uint64";
         readonly label: "mapping(uint64 => struct Tick)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Tick)43622_storage";
+        readonly value: "t_struct(Tick)43474_storage";
       };
-      readonly "t_struct(Account)43577_storage": {
+      readonly "t_struct(Account)26_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Account";
-        readonly numberOfBytes: "128";
+        readonly numberOfBytes: "96";
         readonly members: readonly [
           {
-            readonly astId: 43564;
+            readonly astId: 19;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "nonces";
             readonly offset: 0;
@@ -108,117 +131,61 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_mapping(t_uint192,t_uint64)";
           },
           {
-            readonly astId: 43568;
+            readonly astId: 23;
             readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "balances";
+            readonly label: "credentials";
             readonly offset: 0;
             readonly slot: "1";
-            readonly type: "t_mapping(t_address,t_uint256)";
+            readonly type: "t_array(t_struct(Credential)15_storage)dyn_storage";
           },
           {
-            readonly astId: 43572;
+            readonly astId: 25;
             readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "keys";
-            readonly offset: 0;
-            readonly slot: "2";
-            readonly type: "t_array(t_struct(Key)43549_storage)dyn_storage";
-          },
-          {
-            readonly astId: 43576;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "orders";
-            readonly offset: 0;
-            readonly slot: "3";
-            readonly type: "t_array(t_struct(Order)43588_storage)dyn_storage";
-          },
-        ];
-      };
-      readonly "t_struct(Instrument)43611_storage": {
-        readonly encoding: "inplace";
-        readonly label: "struct Instrument";
-        readonly numberOfBytes: "160";
-        readonly members: readonly [
-          {
-            readonly astId: 43590;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "base";
-            readonly offset: 0;
-            readonly slot: "0";
-            readonly type: "t_address";
-          },
-          {
-            readonly astId: 43592;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "quote";
-            readonly offset: 0;
-            readonly slot: "1";
-            readonly type: "t_address";
-          },
-          {
-            readonly astId: 43594;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "baseLotExp";
-            readonly offset: 20;
-            readonly slot: "1";
-            readonly type: "t_uint8";
-          },
-          {
-            readonly astId: 43596;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "quoteLotExp";
-            readonly offset: 21;
-            readonly slot: "1";
-            readonly type: "t_uint8";
-          },
-          {
-            readonly astId: 43598;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "bestBid";
-            readonly offset: 22;
-            readonly slot: "1";
-            readonly type: "t_uint64";
-          },
-          {
-            readonly astId: 43600;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "bestAsk";
+            readonly label: "activeCredentials";
             readonly offset: 0;
             readonly slot: "2";
             readonly type: "t_uint64";
           },
-          {
-            readonly astId: 43605;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "bids";
-            readonly offset: 0;
-            readonly slot: "3";
-            readonly type: "t_mapping(t_uint64,t_struct(Tick)43622_storage)";
-          },
-          {
-            readonly astId: 43610;
-            readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "asks";
-            readonly offset: 0;
-            readonly slot: "4";
-            readonly type: "t_mapping(t_uint64,t_struct(Tick)43622_storage)";
-          },
         ];
       };
-      readonly "t_struct(Key)43549_storage": {
+      readonly "t_struct(Account)43429_storage": {
         readonly encoding: "inplace";
-        readonly label: "struct Key";
+        readonly label: "struct Account";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 43541;
+            readonly astId: 43424;
             readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "expiry";
+            readonly label: "balances";
+            readonly offset: 0;
+            readonly slot: "0";
+            readonly type: "t_mapping(t_address,t_uint256)";
+          },
+          {
+            readonly astId: 43428;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "orders";
+            readonly offset: 0;
+            readonly slot: "1";
+            readonly type: "t_array(t_struct(Order)43440_storage)dyn_storage";
+          },
+        ];
+      };
+      readonly "t_struct(Credential)15_storage": {
+        readonly encoding: "inplace";
+        readonly label: "struct Credential";
+        readonly numberOfBytes: "96";
+        readonly members: readonly [
+          {
+            readonly astId: 7;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "expiration";
             readonly offset: 0;
             readonly slot: "0";
             readonly type: "t_uint40";
           },
           {
-            readonly astId: 43544;
+            readonly astId: 10;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "keyType";
             readonly offset: 5;
@@ -226,30 +193,101 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_enum(KeyType)5";
           },
           {
-            readonly astId: 43546;
+            readonly astId: 12;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "permissions";
-            readonly offset: 6;
-            readonly slot: "0";
-            readonly type: "t_uint16";
+            readonly offset: 0;
+            readonly slot: "1";
+            readonly type: "t_uint256";
           },
           {
-            readonly astId: 43548;
+            readonly astId: 14;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "publicKey";
             readonly offset: 0;
-            readonly slot: "1";
+            readonly slot: "2";
             readonly type: "t_bytes_storage";
           },
         ];
       };
-      readonly "t_struct(Order)43588_storage": {
+      readonly "t_struct(Instrument)43463_storage": {
+        readonly encoding: "inplace";
+        readonly label: "struct Instrument";
+        readonly numberOfBytes: "160";
+        readonly members: readonly [
+          {
+            readonly astId: 43442;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "base";
+            readonly offset: 0;
+            readonly slot: "0";
+            readonly type: "t_address";
+          },
+          {
+            readonly astId: 43444;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "quote";
+            readonly offset: 0;
+            readonly slot: "1";
+            readonly type: "t_address";
+          },
+          {
+            readonly astId: 43446;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "baseLotExp";
+            readonly offset: 20;
+            readonly slot: "1";
+            readonly type: "t_uint8";
+          },
+          {
+            readonly astId: 43448;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "quoteLotExp";
+            readonly offset: 21;
+            readonly slot: "1";
+            readonly type: "t_uint8";
+          },
+          {
+            readonly astId: 43450;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "bestBid";
+            readonly offset: 22;
+            readonly slot: "1";
+            readonly type: "t_uint64";
+          },
+          {
+            readonly astId: 43452;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "bestAsk";
+            readonly offset: 0;
+            readonly slot: "2";
+            readonly type: "t_uint64";
+          },
+          {
+            readonly astId: 43457;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "bids";
+            readonly offset: 0;
+            readonly slot: "3";
+            readonly type: "t_mapping(t_uint64,t_struct(Tick)43474_storage)";
+          },
+          {
+            readonly astId: 43462;
+            readonly contract: "src/OrderBook.sol:OrderBook";
+            readonly label: "asks";
+            readonly offset: 0;
+            readonly slot: "4";
+            readonly type: "t_mapping(t_uint64,t_struct(Tick)43474_storage)";
+          },
+        ];
+      };
+      readonly "t_struct(Order)43440_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Order";
         readonly numberOfBytes: "32";
         readonly members: readonly [
           {
-            readonly astId: 43579;
+            readonly astId: 43431;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "quantity";
             readonly offset: 0;
@@ -257,7 +295,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43581;
+            readonly astId: 43433;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "instrumentId";
             readonly offset: 8;
@@ -265,7 +303,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43583;
+            readonly astId: 43435;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "price";
             readonly offset: 16;
@@ -273,7 +311,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43585;
+            readonly astId: 43437;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "tickVolume";
             readonly offset: 24;
@@ -281,7 +319,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint32";
           },
           {
-            readonly astId: 43587;
+            readonly astId: 43439;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "side";
             readonly offset: 28;
@@ -290,13 +328,13 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(QueuedMutation)538_storage": {
+      readonly "t_struct(QueuedMutation)657_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Typewriter.QueuedMutation";
         readonly numberOfBytes: "128";
         readonly members: readonly [
           {
-            readonly astId: 531;
+            readonly astId: 650;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "mutation";
             readonly offset: 0;
@@ -304,7 +342,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint8";
           },
           {
-            readonly astId: 533;
+            readonly astId: 652;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "mutationData";
             readonly offset: 0;
@@ -312,15 +350,15 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 535;
+            readonly astId: 654;
             readonly contract: "src/OrderBook.sol:OrderBook";
-            readonly label: "signatureData";
+            readonly label: "authorizationData";
             readonly offset: 0;
             readonly slot: "2";
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 537;
+            readonly astId: 656;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "enqueuedBlock";
             readonly offset: 0;
@@ -329,36 +367,36 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(State)43560_storage": {
+      readonly "t_struct(State)43420_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 43554;
+            readonly astId: 43414;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "accounts";
             readonly offset: 0;
             readonly slot: "0";
-            readonly type: "t_mapping(t_bytes32,t_struct(Account)43577_storage)";
+            readonly type: "t_mapping(t_bytes32,t_struct(Account)43429_storage)";
           },
           {
-            readonly astId: 43559;
+            readonly astId: 43419;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "instruments";
             readonly offset: 0;
             readonly slot: "1";
-            readonly type: "t_mapping(t_uint64,t_struct(Instrument)43611_storage)";
+            readonly type: "t_mapping(t_uint64,t_struct(Instrument)43463_storage)";
           },
         ];
       };
-      readonly "t_struct(Tick)43622_storage": {
+      readonly "t_struct(Tick)43474_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Tick";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 43613;
+            readonly astId: 43465;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "quantity";
             readonly offset: 0;
@@ -366,7 +404,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43615;
+            readonly astId: 43467;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "remainingQuantity";
             readonly offset: 8;
@@ -374,7 +412,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43617;
+            readonly astId: 43469;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "volume";
             readonly offset: 16;
@@ -382,7 +420,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint32";
           },
           {
-            readonly astId: 43619;
+            readonly astId: 43471;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "prev";
             readonly offset: 20;
@@ -390,7 +428,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43621;
+            readonly astId: 43473;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "next";
             readonly offset: 0;
@@ -398,11 +436,6 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
         ];
-      };
-      readonly t_uint16: {
-        readonly encoding: "inplace";
-        readonly label: "uint16";
-        readonly numberOfBytes: "2";
       };
       readonly t_uint192: {
         readonly encoding: "inplace";
@@ -437,112 +470,17 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
     };
   };
   readonly mutations: {
-    readonly Initialize: {
-      readonly tag: 0;
-      readonly params: readonly [
-        {
-          readonly name: "account";
-          readonly type: "bytes32";
-        },
-        {
-          readonly name: "expiry";
-          readonly type: "uint40";
-        },
-        {
-          readonly name: "rootKeyType";
-          readonly type: "uint8";
-        },
-        {
-          readonly name: "keyType";
-          readonly type: "uint8";
-        },
-        {
-          readonly name: "permissions";
-          readonly type: "uint16";
-        },
-        {
-          readonly name: "rootPublicKey";
-          readonly type: "bytes";
-        },
-        {
-          readonly name: "publicKey";
-          readonly type: "bytes";
-        },
-      ];
-    };
-    readonly Authorize: {
-      readonly tag: 1;
-      readonly params: readonly [
-        {
-          readonly name: "account";
-          readonly type: "bytes32";
-        },
-        {
-          readonly name: "expiry";
-          readonly type: "uint40";
-        },
-        {
-          readonly name: "keyType";
-          readonly type: "uint8";
-        },
-        {
-          readonly name: "permissions";
-          readonly type: "uint16";
-        },
-        {
-          readonly name: "publicKey";
-          readonly type: "bytes";
-        },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
-      ];
-    };
-    readonly Revoke: {
-      readonly tag: 2;
-      readonly params: readonly [
-        {
-          readonly name: "account";
-          readonly type: "bytes32";
-        },
-        {
-          readonly name: "keyId";
-          readonly type: "uint64";
-        },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
-      ];
-    };
     readonly CloseOrder: {
-      readonly tag: 3;
+      readonly id: 0;
       readonly params: readonly [
         {
           readonly name: "orderId";
           readonly type: "uint64";
         },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
       ];
     };
     readonly ChangeOrder: {
-      readonly tag: 4;
+      readonly id: 1;
       readonly params: readonly [
         {
           readonly name: "orderId";
@@ -552,18 +490,10 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           readonly name: "price";
           readonly type: "uint64";
         },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
       ];
     };
     readonly LimitOrder: {
-      readonly tag: 5;
+      readonly id: 2;
       readonly params: readonly [
         {
           readonly name: "quantity";
@@ -581,18 +511,10 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           readonly name: "bidOrAsk";
           readonly type: "uint8";
         },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
       ];
     };
     readonly MarketOrder: {
-      readonly tag: 6;
+      readonly id: 3;
       readonly params: readonly [
         {
           readonly name: "quantity";
@@ -610,18 +532,10 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           readonly name: "bidOrAsk";
           readonly type: "uint8";
         },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
       ];
     };
     readonly AddInstrument: {
-      readonly tag: 7;
+      readonly id: 4;
       readonly params: readonly [
         {
           readonly name: "instrumentId";
@@ -643,18 +557,10 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           readonly name: "quoteLotExp";
           readonly type: "uint8";
         },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
-          readonly type: "uint256";
-        },
       ];
     };
     readonly Deposit: {
-      readonly tag: 8;
+      readonly id: 5;
       readonly params: readonly [
         {
           readonly name: "asset";
@@ -662,20 +568,12 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         },
         {
           readonly name: "amount";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "nonce";
-          readonly type: "uint256";
-        },
-        {
-          readonly name: "deadline";
           readonly type: "uint256";
         },
       ];
     };
     readonly Withdrawal: {
-      readonly tag: 9;
+      readonly id: 6;
       readonly params: readonly [
         {
           readonly name: "asset";
@@ -685,30 +583,51 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           readonly name: "amount";
           readonly type: "uint256";
         },
+      ];
+    };
+    readonly CreateAccount: {
+      readonly id: 253;
+      readonly params: readonly [
         {
-          readonly name: "nonce";
+          readonly name: "keyType";
+          readonly type: "uint8";
+        },
+        {
+          readonly name: "publicKey";
+          readonly type: "bytes";
+        },
+      ];
+    };
+    readonly AddCredential: {
+      readonly id: 254;
+      readonly params: readonly [
+        {
+          readonly name: "expiration";
+          readonly type: "uint40";
+        },
+        {
+          readonly name: "keyType";
+          readonly type: "uint8";
+        },
+        {
+          readonly name: "permissions";
           readonly type: "uint256";
         },
         {
-          readonly name: "deadline";
-          readonly type: "uint256";
+          readonly name: "publicKey";
+          readonly type: "bytes";
+        },
+      ];
+    };
+    readonly RemoveCredential: {
+      readonly id: 255;
+      readonly params: readonly [
+        {
+          readonly name: "credentialID";
+          readonly type: "uint64";
         },
       ];
     };
   };
-  readonly signature: readonly [
-    {
-      readonly name: "account";
-      readonly type: "bytes32";
-    },
-    {
-      readonly name: "keyId";
-      readonly type: "uint64";
-    },
-    {
-      readonly name: "rawSignature";
-      readonly type: "bytes";
-    },
-  ];
 }>;
 export default entrypoint;
