@@ -151,3 +151,20 @@ test("exposes protocol key types and packs raw signatures", () => {
 
   expect(() => packP256Signature(Hex.fromNumber(1))).toThrow(/64 bytes/);
 });
+
+test("normalizes high-s P256 signatures when packing", () => {
+  const p256N =
+    0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+  const highS = Hex.fromNumber(p256N / 2n + 1n, { size: 32 });
+  const raw = Hex.concat(`0x${"11".repeat(32)}`, highS);
+
+  expect(
+    AbiParameters.decode(
+      [
+        { name: "r", type: "uint256" },
+        { name: "s", type: "uint256" },
+      ],
+      packP256Signature(raw),
+    ),
+  ).toEqual([BigInt(`0x${"11".repeat(32)}`), p256N - (p256N / 2n + 1n)]);
+});

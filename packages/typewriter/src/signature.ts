@@ -20,12 +20,16 @@ const P256_SIGNATURE_PARAMS = parseAbiParameters("uint256 r, uint256 s");
 const SECP256K1_SIGNATURE_PARAMS = parseAbiParameters(
   "uint8 v, bytes32 r, bytes32 s",
 );
+const P256_N =
+  0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
 export function packP256Signature(signature: Hex.Hex): Hex.Hex {
   assertSignatureSize(signature, 64, "P256");
+  const r = BigInt(Hex.slice(signature, 0, 32));
+  const s = BigInt(Hex.slice(signature, 32, 64));
   return AbiParameters.encode(P256_SIGNATURE_PARAMS, [
-    BigInt(Hex.slice(signature, 0, 32)),
-    BigInt(Hex.slice(signature, 32, 64)),
+    r,
+    s > P256_N / 2n ? P256_N - s : s,
   ]);
 }
 
