@@ -41,7 +41,10 @@ Run typewriter tests from `packages/typewriter` (`bun test`) or through the work
 root: that does not load `packages/typewriter/bunfig.toml`, so the preload hooks can
 tear down Anvil/Postgres before later files run.
 
-If broad test runs fail during setup, run `DATABASE_URL=postgres://postgres@localhost:5432/postgres bun test packages/typewriter/test/setup.test.ts` first to isolate Anvil/Postgres environment failures before debugging app logic.
+Run the native account Solidity suite with `forge test --root test/contracts`.
+The fixture project's `test` path points at `src/Typewriter.t.sol`.
+
+If broad test runs fail during setup, run `DATABASE_URL=postgresql://ubuntu@localhost:5432/postgres bun test packages/typewriter/test/setup.test.ts` first to isolate Anvil/Postgres environment failures before debugging app logic.
 
 ## Roadmap
 
@@ -78,7 +81,11 @@ The work catalog. Non-sequenced — items in different lanes can run in parallel
 
 Multi-week projects that span lanes. Each has its own internal sequence.
 
-**Account/signature boundary.** typewriter requires EIP-712 and supports three signature algorithms: P-256, WebAuthn-P256, and secp256k1. It does not prescribe account/key/nonce state. Users implement the account registry, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions in their app and contract.
+**Account/signature boundary.** typewriter owns the account registry, credential
+lifecycle, packed parallel nonces, expirations, mutation permission bitsets, and
+the fixed EIP-712 `Authorization` envelope. It supports P-256, WebAuthn-P256,
+and secp256k1. Apps receive the authenticated `bytes32 accountID` in their
+execution callback instead of implementing account policy.
 
 **Server-managed deployment.** Runtime startup should eventually deploy or load the matching compiled artifact, persist deployment metadata, and verify deployed bytecode against the artifact before starting. This removes copied contract addresses from app env/config and prevents the server from running against stale generated artifacts or stale deployed bytecode.
 

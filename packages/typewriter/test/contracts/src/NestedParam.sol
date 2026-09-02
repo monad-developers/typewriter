@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Typewriter, EIP712_DOMAIN_TYPEHASH, UnknownMutation} from "typewriter/Typewriter.sol";
+import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
 struct Inner {
     uint256 a;
@@ -12,15 +12,9 @@ struct State {
     uint256 total;
 }
 
-struct Signature {
-    bytes32 accountId;
-    bytes rawSignature;
-}
-
 library UpdateMutation {
     struct Update {
         Inner inner;
-        uint256 nonce;
     }
 
     function executeUpdate(State storage state, Update memory update) internal {
@@ -43,8 +37,8 @@ contract NestedParam is Typewriter {
         FORCE_INCLUSION_DELAY = 658;
     }
 
-    function dispatch(uint8 mutation, bytes memory mutationData, bytes memory) internal override {
-        if (Mutation(mutation) == Mutation.Update) {
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {
+        if (mutation == uint8(Mutation.Update)) {
             UpdateMutation.Update memory update = abi.decode(mutationData, (UpdateMutation.Update));
             UpdateMutation.executeUpdate(state, update);
         } else {

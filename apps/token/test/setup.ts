@@ -27,11 +27,10 @@ export let TEST_CLIENT!: ReturnType<typeof createTestClient>;
 export let TEST_PUBLIC_CLIENT!: ReturnType<typeof createPublicClient>;
 export let TEST_WALLET_CLIENT!: ReturnType<typeof createWalletClient>;
 
-const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL ??
-  "postgres://postgres:postgres@localhost:5432/postgres";
+const DATABASE_URL =
+  process.env.DATABASE_URL ?? "postgresql://ubuntu@localhost:5432/postgres";
 
-const adminConnection = new Bun.SQL({ url: TEST_DATABASE_URL, max: 1 });
+const adminConnection = new Bun.SQL({ url: DATABASE_URL, max: 1 });
 export let TEST_DB_CONNECTION!: Bun.SQL;
 export let TEST_DB_URL!: string;
 
@@ -58,7 +57,7 @@ function quoteIdentifier(identifier: string): string {
 }
 
 function databaseUrl(databaseName: string): string {
-  const url = new URL(TEST_DATABASE_URL);
+  const url = new URL(DATABASE_URL);
   url.pathname = `/${databaseName}`;
   return url.toString();
 }

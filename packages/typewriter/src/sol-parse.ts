@@ -6,7 +6,7 @@ import type {
   StorageConfig,
   TypewriterConfig,
 } from "./config";
-import { buildInternalApp } from "./config";
+import { BUILTIN_MUTATIONS, buildInternalApp } from "./config";
 import type { InternalApp } from "./internal";
 
 type JsonObject = Record<string, unknown>;
@@ -46,7 +46,6 @@ type AstNode = JsonObject & {
 };
 
 type StorageLayout = StorageConfig;
-type StorageEntry = StorageLayout["storage"][number];
 type StorageType = StorageLayout["types"][string];
 
 export type TypewriterSolidityEntrypoint<metadata = unknown> = string & {
@@ -66,7 +65,7 @@ type FoundryProject = {
 
 type ParsedMutation = {
   readonly enumName: string;
-  readonly tag: number;
+  readonly id: number;
   readonly params: readonly AbiParameter[];
 };
 
@@ -74,7 +73,6 @@ type ParsedSolidityMetadata = {
   readonly contractName: string;
   readonly abi: Abi;
   readonly storageLayout: StorageLayout;
-  readonly signature: { readonly params: readonly AbiParameter[] };
   readonly mutations: readonly ParsedMutation[];
 };
 
@@ -353,18 +351,6 @@ function findContractNode(
   return matches[0]!;
 }
 
-function findSourceStruct(asts: readonly AstNode[], name: string): AstNode {
-  const matches = asts.flatMap((ast) =>
-    asAstNodes(ast.nodes).filter(
-      (node) => node.nodeType === "StructDefinition" && node.name === name,
-    ),
-  );
-  if (matches.length !== 1) {
-    throw new Error(`source unit must define exactly one ${name} struct`);
-  }
-  return matches[0]!;
-}
-
 function abiTypeFromTypeName(typeName: unknown): string {
   const node = asAstNode(typeName, "typeName");
   if (node.nodeType === "ElementaryTypeName") {
@@ -409,30 +395,33 @@ function structToAbiParameters(struct: AstNode): readonly AbiParameter[] {
   });
 }
 
-function flattenStateStorageLayout(layout: StorageLayout): StorageLayout {
-  const stateVariables = layout.storage.filter(
-    (entry) => entry.label === "state",
-  );
-  if (stateVariables.length !== 1) {
-    throw new Error(
-      "storage layout must contain exactly one State storage variable named state",
-    );
-  }
-  const state = stateVariables[0]!;
-  const stateType = layout.types[state.type] as StorageType | undefined;
-  if (stateType === undefined || !Array.isArray(stateType.members)) {
-    throw new Error(
-      "State storage variable must be a struct with storage members",
-    );
+function validateRootStorageLayout(layout: StorageLayout): StorageLayout {
+  for (const label of ["accounts", "state"] as const) {
+    const roots = layout.storage.filter((entry) => entry.label === label);
+    if (roots.length !== 1) {
+      throw new Error(
+        `storage layout must contain exactly one top-level ${label} variable`,
+      );
+    }
+
+    const type = layout.types[roots[0]!.type] as StorageType | undefined;
+    if (
+      label === "accounts" &&
+      (type === undefined ||
+        typeof type.key !== "string" ||
+        typeof type.value !== "string")
+    ) {
+      throw new Error("top-level accounts storage variable must be a mapping");
+    }
+    if (
+      label === "state" &&
+      (type === undefined || !Array.isArray(type.members))
+    ) {
+      throw new Error("top-level state storage variable must be a struct");
+    }
   }
 
-  const baseSlot = BigInt(state.slot);
-  const storage = stateType.members.map((member) => ({
-    ...member,
-    slot: (baseSlot + BigInt(member.slot)).toString(),
-  })) as StorageEntry[];
-
-  return { storage, types: layout.types };
+  return layout;
 }
 
 function isIdentifier(node: unknown, name: string): boolean {
@@ -560,20 +549,27 @@ function findDecodeStructIds(
 function parseMutations(params: {
   readonly contract: AstNode;
   readonly declarations: Map<number, AstNode>;
-  readonly signatureStruct: AstNode;
 }): readonly ParsedMutation[] {
   const mutationEnum = findContractNode(
     params.contract,
     "EnumDefinition",
     "Mutation",
   );
-  const enumMembers = asAstNodes(mutationEnum.members).map((member, tag) => {
+  const enumMembers = asAstNodes(mutationEnum.members).map((member, id) => {
     if (typeof member.name !== "string") {
       throw new Error(
         `Mutation enum member missing name at ${member.src ?? "unknown source"}`,
       );
     }
-    return { enumName: member.name, tag };
+    if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
+      throw new Error(`Mutation.${member.name} is reserved by Typewriter`);
+    }
+    if (id >= 253) {
+      throw new Error(
+        `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below 253`,
+      );
+    }
+    return { enumName: member.name, id };
   });
   const dispatch = findContractNode(
     params.contract,
@@ -610,17 +606,9 @@ function parseMutations(params: {
         `Mutation.${member.enumName} decode target is not a struct`,
       );
     }
-    const signatureStructIds = findDecodeStructIds(branch, "signatureData");
-    for (const signatureStructId of signatureStructIds) {
-      if (signatureStructId !== params.signatureStruct.id) {
-        throw new Error(
-          `Mutation.${member.enumName} must decode signatureData as Signature`,
-        );
-      }
-    }
     return {
       enumName: member.enumName,
-      tag: member.tag,
+      id: member.id,
       params: structToAbiParameters(mutationStruct),
     };
   });
@@ -634,7 +622,7 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
 
   for (const mutation of metadata.mutations) {
     mutations[mutation.enumName] = {
-      tag: mutation.tag,
+      id: mutation.id,
       params: mutation.params,
     };
   }
@@ -643,7 +631,6 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
     config: baseConfig,
     abi: metadata.abi,
     storageLayout: metadata.storageLayout,
-    signature: metadata.signature,
     mutations,
   });
 }
@@ -652,19 +639,17 @@ function solidityDeclarationMetadata(metadata: ParsedSolidityMetadata): {
   readonly storageLayout: StorageLayout;
   readonly mutations: Record<
     string,
-    { readonly tag: number; readonly params: readonly AbiParameter[] }
+    { readonly id: number; readonly params: readonly AbiParameter[] }
   >;
-  readonly signature: readonly AbiParameter[];
 } {
   return {
     storageLayout: metadata.storageLayout,
     mutations: Object.fromEntries(
       metadata.mutations.map((mutation) => [
         mutation.enumName,
-        { tag: mutation.tag, params: mutation.params },
+        { id: mutation.id, params: mutation.params },
       ]),
     ),
-    signature: metadata.signature.params,
   };
 }
 
@@ -759,15 +744,20 @@ export async function parseSolidityMetadata(
 
   const asts = await readReachableSourceAsts(project, entrypointAst);
   const declarations = collectDeclarations(asts);
-  const signatureStruct = findSourceStruct(asts, "Signature");
-  findSourceStruct(asts, "State");
+  const appMutations = parseMutations({ contract, declarations });
+  const builtinMutations = Object.entries(BUILTIN_MUTATIONS).map(
+    ([enumName, mutation]) => ({
+      enumName,
+      id: mutation.id,
+      params: mutation.params,
+    }),
+  );
 
   return {
     contractName: contract.name,
     abi,
-    storageLayout: flattenStateStorageLayout(artifact.storageLayout),
-    signature: { params: structToAbiParameters(signatureStruct) },
-    mutations: parseMutations({ contract, declarations, signatureStruct }),
+    storageLayout: validateRootStorageLayout(artifact.storageLayout),
+    mutations: [...appMutations, ...builtinMutations],
   };
 }
 

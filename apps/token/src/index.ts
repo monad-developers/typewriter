@@ -31,7 +31,7 @@ const typewriter = await createTypewriter(Token, {
   chainId: Number(requireEnv("CHAIN_ID")),
   rpcUrl: requireEnv("RPC_URL"),
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
-  sequencing: { order: "batch", batchOrder: ["Mint", "Transfer"] },
+  sequencing: { order: "fifo" },
 });
 
 const mutations = new Map<number, MutationEvent>();
@@ -56,17 +56,12 @@ const server = Bun.serve({
         return jsonResponse(mutation);
       },
     },
-    "/api/domain": () => jsonResponse(typewriter.domain),
-    "/api/addresses": () =>
-      jsonResponse([
-        ...Object.keys(typewriter.state.accounts),
-        scheduler.address,
-      ]),
-    "/api/account/:address": async (req) => {
-      const account = typewriter.state.accounts[req.params.address as Address];
+    "/api/accountIds": () =>
+      jsonResponse(Object.keys(typewriter.state.balances)),
+    "/api/account/:accountID": async (req) => {
+      const accountID = req.params.accountID as Hex;
       return jsonResponse({
-        balance: await account.balance,
-        nonce: await account.nonce,
+        balance: await typewriter.state.balances[accountID],
       });
     },
     "/api/mutation/:id/status": {

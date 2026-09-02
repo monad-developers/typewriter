@@ -2,18 +2,18 @@ import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
 import { encodeFunctionData } from "viem";
-import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import {
+  AUTHORIZATION_ABI_PARAMS,
+  decodeAuthorizationCalldata,
   decodeMutationCalldata,
-  decodeSignatureCalldata,
+  encodeAuthorizationCalldata,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
   encodeMutationCalldata,
-  encodeSignatureCalldata,
   TYPEWRITER_ABI,
 } from "./encoding";
-import type { ExecutableMutation } from "./types";
+import type { Authorization, ExecutableMutation } from "./types";
 
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
@@ -21,16 +21,26 @@ function calldataStructParams(
   return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
 }
 
+const AUTHORIZATION = {
+  accountID:
+    "0x1111111111111111111111111111111111111111111111111111111111111111",
+  credentialID: 7n,
+  nonce: 11n,
+  expiration: 1_900_000_000n,
+  signature: "0xdeadbeef",
+} as const satisfies Authorization;
+
 function acceptedMutation(
   config: ExecutableMutation["config"],
   params: unknown,
+  authorization: Authorization = AUTHORIZATION,
 ): ExecutableMutation {
   return {
     id: 0,
     status: "accepted",
     name: "test",
     params,
-    signature: "0x",
+    authorization,
     journalId: 0,
     isForceInclusion: false,
     config,
@@ -39,7 +49,7 @@ function acceptedMutation(
 
 test("encodeMutationCalldata wraps params as one struct", () => {
   const mutation = {
-    tag: 0,
+    id: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const params = {
@@ -57,7 +67,7 @@ test("encodeMutationCalldata wraps params as one struct", () => {
 
 test("encodeMutationCalldata wraps dynamic params as one struct", () => {
   const mutation = {
-    tag: 0,
+    id: 0,
     params: parseAbiParameters("bytes32 account, bytes publicKey"),
   };
   const params = {
@@ -75,7 +85,7 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
 
 test("decodeMutationCalldata round-trips params", () => {
   const mutation = {
-    tag: 0,
+    id: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const params = {
@@ -90,31 +100,22 @@ test("decodeMutationCalldata round-trips params", () => {
   expect(decoded.params).toEqual(params);
 });
 
-test("encodeSignatureCalldata encodes signatures as one Solidity struct", () => {
-  const signature = {
-    accountId:
-      "0x1111111111111111111111111111111111111111111111111111111111111111",
-    publicKey: "0x1234",
-    rawSignature: "0xdeadbeef",
-  } as const;
-
-  const encoded = encodeSignatureCalldata(COUNTER_SIGNATURE_PARAMS, signature);
+test("fixed Authorization calldata round-trips as one Solidity struct", () => {
+  const encoded = encodeAuthorizationCalldata(AUTHORIZATION);
 
   expect(encoded).toBe(
-    AbiParameters.encode(calldataStructParams(COUNTER_SIGNATURE_PARAMS), [
-      signature,
+    AbiParameters.encode(calldataStructParams(AUTHORIZATION_ABI_PARAMS), [
+      AUTHORIZATION,
     ]),
   );
-  expect(decodeSignatureCalldata(COUNTER_SIGNATURE_PARAMS, encoded)).toEqual(
-    signature,
-  );
+  expect(decodeAuthorizationCalldata(encoded)).toEqual(AUTHORIZATION);
 });
 
 test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const batch = {
     mutations: [0],
     mutationData: ["0x1234" as `0x${string}`],
-    signatureData: ["0xaa" as `0x${string}`],
+    authorizationData: ["0xaa" as `0x${string}`],
   };
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
@@ -126,89 +127,55 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
 });
 
 test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
-  const signature = {
-    accountId:
-      "0x1111111111111111111111111111111111111111111111111111111111111111",
-    publicKey: "0x1234",
-    rawSignature: "0xbb",
-  } as const;
   const config = {
-    tag: 0,
+    id: 3,
     params: parseAbiParameters("bytes data"),
   };
   const mutation = acceptedMutation(config, { data: "0x1234" });
-  mutation.signature = signature;
   const mutationData = encodeMutationCalldata(mutation);
-  const signatureData = encodeSignatureCalldata(
-    COUNTER_SIGNATURE_PARAMS,
-    signature,
-  );
+  const authorizationData = encodeAuthorizationCalldata(AUTHORIZATION);
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "enqueue",
-    args: [0, mutationData, signatureData],
+    args: [3, mutationData, authorizationData],
   });
-  const actual = encodeEnqueueCalldata(COUNTER_SIGNATURE_PARAMS, mutation);
+  const actual = encodeEnqueueCalldata(mutation);
   expect(actual).toBe(expected);
 });
 
 test("encodeBatchArg builds a structured batch value", () => {
   const transfer = {
-    tag: 0,
+    id: 0,
     params: parseAbiParameters("address from, address to, uint256 amount"),
   };
   const market = {
-    tag: 1,
+    id: 1,
     params: parseAbiParameters("uint256 size"),
   };
+  const secondAuthorization = {
+    ...AUTHORIZATION,
+    accountID:
+      "0x2222222222222222222222222222222222222222222222222222222222222222",
+    credentialID: 8n,
+    signature: "0xbeef",
+  } as const satisfies Authorization;
+  const transferResolved = acceptedMutation(transfer, {
+    from: "0x0000000000000000000000000000000000000001",
+    to: "0x0000000000000000000000000000000000000002",
+    amount: 100n,
+  });
+  const marketResolved = acceptedMutation(
+    market,
+    { size: 10n },
+    secondAuthorization,
+  );
 
-  const transferResolved: ExecutableMutation = {
-    id: 0,
-    status: "accepted",
-    name: "transfer",
-    params: {
-      from: "0x0000000000000000000000000000000000000001",
-      to: "0x0000000000000000000000000000000000000002",
-      amount: 100n,
-    },
-    signature: {
-      accountId:
-        "0x1111111111111111111111111111111111111111111111111111111111111111",
-      publicKey: "0x1234",
-      rawSignature: "0xaa",
-    },
-    journalId: 0,
-    isForceInclusion: false,
-    config: transfer,
-  };
-  const marketResolved: ExecutableMutation = {
-    id: 1,
-    status: "accepted",
-    name: "market",
-    params: { size: 10n },
-    signature: {
-      accountId:
-        "0x2222222222222222222222222222222222222222222222222222222222222222",
-      publicKey: "0x5678",
-      rawSignature: "0xbb",
-    },
-    journalId: 1,
-    isForceInclusion: false,
-    config: market,
-  };
-
-  const batch = encodeBatchArg(COUNTER_SIGNATURE_PARAMS, [
-    transferResolved,
-    marketResolved,
-  ]);
+  const batch = encodeBatchArg([transferResolved, marketResolved]);
 
   expect(batch.mutations).toEqual([0, 1]);
-  expect(batch.signatureData).toEqual([
-    encodeSignatureCalldata(
-      COUNTER_SIGNATURE_PARAMS,
-      transferResolved.signature,
-    ),
-    encodeSignatureCalldata(COUNTER_SIGNATURE_PARAMS, marketResolved.signature),
+  expect(batch.authorizationData).toEqual([
+    encodeAuthorizationCalldata(AUTHORIZATION),
+    encodeAuthorizationCalldata(secondAuthorization),
   ]);
 
   const [decodedTransfer] = AbiParameters.decode(

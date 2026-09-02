@@ -96,20 +96,18 @@ function asAddress(value: unknown) {
 }
 
 export function MutationDescription({ mutation }: { mutation: ApiMutation }) {
-  if (hasColumn(mutation, "rootKeyType")) {
+  if (hasColumn(mutation, "keyType") && hasColumn(mutation, "publicKey")) {
+    if (hasColumn(mutation, "permissions")) {
+      return <>add {keyTypeName(asNumber(mutation.keyType) ?? 0)} key</>;
+    }
     return (
       <>
-        initialize account with {keyTypeName(asNumber(mutation.keyType) ?? 0)}
-        key
+        create account with {keyTypeName(asNumber(mutation.keyType) ?? 0)} key
       </>
     );
   }
 
-  if (hasColumn(mutation, "keyType") && hasColumn(mutation, "publicKey")) {
-    return <>authorize {keyTypeName(asNumber(mutation.keyType) ?? 0)} key</>;
-  }
-
-  if (hasColumn(mutation, "keyId")) return <>revoke key</>;
+  if (hasColumn(mutation, "credentialID")) return <>remove key</>;
 
   if (hasColumn(mutation, "asset") && hasColumn(mutation, "amount")) {
     const asset = asAddress(mutation.asset);

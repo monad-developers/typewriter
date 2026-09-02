@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { ALL_PERMISSIONS, EIP712_TYPES } from "order-book-sdk";
-import { createTypewriter, TYPEWRITER_DOMAIN } from "typewriter";
-import { type Address, encodeAbiParameters, type Hex, keccak256 } from "viem";
-import { signTypedData } from "viem/accounts";
+import { Hex as OxHex, Secp256k1, Signature } from "ox";
+import { createTypewriter } from "typewriter";
+import {
+  authorizeMutation,
+  deriveAccountID,
+  getAuthorizationPayload,
+  type TypedMutation,
+} from "typewriter/client";
+import { type Address, encodeAbiParameters, type Hex } from "viem";
 import { anvil } from "viem/chains";
 import OrderBook from "../contracts/src/OrderBook.sol";
 import {
@@ -15,11 +20,7 @@ import {
   TEST_DB_URL,
   TEST_RPC_URL,
 } from "../test/setup";
-import {
-  normalizeSignatureForContract,
-  ORDER_BOOK_BATCH_ORDER,
-  type SubmittedOrderBookMutation,
-} from "./app";
+import { ORDER_BOOK_BATCH_ORDER } from "./app";
 import {
   selectBlock,
   selectMutationById,
@@ -30,10 +31,11 @@ import {
 const BASE: Address = "0x1111111111111111111111111111111111111111";
 const QUOTE: Address = "0x2222222222222222222222222222222222222222";
 const Q32 = 1n << 32n;
-const FAR_DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 86_400);
+const FAR_EXPIRATION = 0n;
 type OrderBookTypewriter = Awaited<
   ReturnType<typeof createOrderBookTypewriter>
 >;
+type OrderBookMutationInput = Parameters<OrderBookTypewriter["execute"]>[0];
 
 async function createOrderBookTypewriter(
   address: Hex,
@@ -57,167 +59,71 @@ function secp256k1PublicKey(address: Address): Hex {
   return encodeAbiParameters([{ type: "address" }], [address]);
 }
 
-function accountId(publicKey: Hex): Hex {
-  return keccak256(publicKey);
-}
-
-function messageFor(name: string, params: Record<string, unknown>) {
-  switch (name) {
-    case "Initialize":
-      return {
-        account: params.account,
-        expiry: params.expiry,
-        rootKeyType: params.rootKeyType,
-        keyType: params.keyType,
-        permissions: params.permissions,
-        rootPublicKey: params.rootPublicKey,
-        publicKey: params.publicKey,
-      };
-    case "Authorize":
-      return {
-        account: params.account,
-        expiry: params.expiry,
-        keyType: params.keyType,
-        permissions: params.permissions,
-        publicKey: params.publicKey,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "Revoke":
-      return {
-        account: params.account,
-        keyId: params.keyId,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "CloseOrder":
-      return {
-        orderId: BigInt(params.orderId as number),
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "ChangeOrder":
-      return {
-        orderId: BigInt(params.orderId as number),
-        price: params.price,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "LimitOrder":
-      return {
-        quantity: params.quantity,
-        instrumentId: BigInt(params.instrumentId as number),
-        price: params.price,
-        bidOrAsk: params.bidOrAsk,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "MarketOrder":
-      return {
-        quantity: params.quantity,
-        minReceivedQuantity: params.minReceivedQuantity,
-        instrumentId: BigInt(params.instrumentId as number),
-        bidOrAsk: params.bidOrAsk,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "AddInstrument":
-      return {
-        instrumentId: BigInt(params.instrumentId as number),
-        base: params.base,
-        quote: params.quote,
-        baseLotExp: params.baseLotExp,
-        quoteLotExp: params.quoteLotExp,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-    case "Deposit":
-    case "Withdrawal":
-      return {
-        asset: params.asset,
-        amount: params.amount,
-        nonce: params.nonce,
-        deadline: params.deadline,
-      };
-  }
-}
-
-async function signedMutation<const name extends string>(input: {
-  name: name;
-  params: SubmittedOrderBookMutation<name>["params"];
-  signerKeyId: bigint;
-  privateKey: Hex;
-  address: Address;
-  account: Hex;
-}): Promise<SubmittedOrderBookMutation<name>> {
-  const rawSignature =
-    input.name === "Initialize"
-      ? "0x"
-      : await signTypedData({
-          privateKey: input.privateKey,
-          domain: {
-            ...TYPEWRITER_DOMAIN,
-            chainId: anvil.id,
-            verifyingContract: input.address,
-          },
-          types: EIP712_TYPES,
-          primaryType: input.name,
-          message: messageFor(
-            input.name,
-            input.params as Record<string, unknown>,
-          ),
-          // signTypedData can't model a runtime-chosen primaryType over a
-          // multi-type schema; the value above is valid for the chosen type.
-        } as Parameters<typeof signTypedData>[0]);
-  return {
-    name: input.name,
-    params: input.params,
-    signature: {
-      account: input.account,
-      keyId: input.signerKeyId,
-      rawSignature,
-    },
-  };
-}
-
-async function setupAccount(params: {
-  app: OrderBookTypewriter;
-  account: Address;
-  privateKey: Hex;
-  contract: Address;
-}): Promise<Hex> {
-  const publicKey = secp256k1PublicKey(params.account);
-  const id = accountId(publicKey);
-  await executeOrderBookMutation(
-    params.app,
-    await signedMutation({
-      name: "Initialize",
-      address: params.contract,
-      privateKey: params.privateKey,
-      signerKeyId: 0n,
-      account: id,
-      params: {
-        account: id,
-        expiry: 0,
-        rootKeyType: 2,
-        keyType: 2,
-        permissions: ALL_PERMISSIONS,
-        rootPublicKey: publicKey,
-        publicKey,
-      },
-    }),
+function signAuthorization(privateKey: Hex, payload: Hex): Hex {
+  const signature = Secp256k1.sign({
+    payload: payload as OxHex.Hex,
+    privateKey: privateKey as OxHex.Hex,
+  });
+  return encodeAbiParameters(
+    [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
+    [
+      Signature.yParityToV(signature.yParity),
+      OxHex.fromNumber(signature.r, { size: 32 }),
+      OxHex.fromNumber(signature.s, { size: 32 }),
+    ],
   );
-  return id;
 }
 
-function executeOrderBookMutation(
-  app: OrderBookTypewriter,
-  submitted: SubmittedOrderBookMutation,
-) {
-  return app.execute({
-    ...submitted,
-    signature: normalizeSignatureForContract(submitted.signature),
-  } as Parameters<OrderBookTypewriter["execute"]>[0]);
+async function setupAccount(app: OrderBookTypewriter): Promise<Hex> {
+  const params = {
+    keyType: 2,
+    publicKey: secp256k1PublicKey(MAKER_ACCOUNT.address),
+  } as const;
+  const accountID = deriveAccountID(params);
+  const mutation = {
+    name: "CreateAccount",
+    params,
+    accountID,
+    credentialID: 0n,
+    nonce: 0n,
+    expiration: 0n,
+  } as const satisfies TypedMutation<typeof app.manifest, "CreateAccount">;
+  const authorization = authorizeMutation(
+    mutation,
+    signAuthorization(
+      MAKER_PRIVATE_KEY,
+      getAuthorizationPayload(app.manifest, mutation),
+    ),
+  );
+  await app.execute(authorization);
+  return accountID;
+}
+
+async function signedMutation<
+  const name extends keyof OrderBookTypewriter["manifest"]["mutations"] &
+    string,
+>(params: {
+  app: OrderBookTypewriter;
+  name: name;
+  params: Record<string, unknown>;
+  accountID: Hex;
+  nonce: bigint;
+}): Promise<OrderBookMutationInput> {
+  const mutation = {
+    name: params.name,
+    params: params.params,
+    accountID: params.accountID,
+    credentialID: 0n,
+    nonce: params.nonce,
+    expiration: FAR_EXPIRATION,
+  } as unknown as TypedMutation<typeof params.app.manifest, name>;
+  return authorizeMutation(
+    mutation,
+    signAuthorization(
+      MAKER_PRIVATE_KEY,
+      getAuthorizationPayload(params.app.manifest, mutation),
+    ),
+  ) as unknown as OrderBookMutationInput;
 }
 
 async function waitForIncluded(
@@ -236,121 +142,71 @@ async function waitForIncluded(
   throw new Error(`${label} never reached included`);
 }
 
-test("typewriter order book rejects invalid signatures before applying", async () => {
+test("typewriter order book rejects a tampered mutation payload", async () => {
   const address = await deployOrderBook();
   const app = await createOrderBookTypewriter(address);
-
-  const maker = await setupAccount({
-    app,
-    account: MAKER_ACCOUNT.address,
-    privateKey: MAKER_PRIVATE_KEY,
-    contract: address,
-  });
+  const accountID = await setupAccount(app);
   const signed = await signedMutation({
+    app,
     name: "Deposit",
-    address,
-    privateKey: MAKER_PRIVATE_KEY,
-    signerKeyId: 1n,
-    account: maker,
-    params: {
-      asset: BASE,
-      amount: 11n,
-      nonce: 0n,
-      deadline: FAR_DEADLINE,
-    },
+    accountID,
+    nonce: 0n,
+    params: { asset: BASE, amount: 11n },
   });
 
   await expect(
-    executeOrderBookMutation(app, {
+    app.execute({
       ...signed,
-      params: {
-        asset: BASE,
-        amount: 10n,
-        nonce: 0n,
-        deadline: FAR_DEADLINE,
-      },
-    }),
+      params: { asset: BASE, amount: 10n },
+    } as Parameters<OrderBookTypewriter["execute"]>[0]),
   ).rejects.toThrow(/reverted/);
 });
 
 test("typewriter order book changes an unfilled order to a new price", async () => {
   const address = await deployOrderBook();
   const app = await createOrderBookTypewriter(address);
-
-  const maker = await setupAccount({
-    app,
-    account: MAKER_ACCOUNT.address,
-    privateKey: MAKER_PRIVATE_KEY,
-    contract: address,
-  });
-  await executeOrderBookMutation(
-    app,
+  const accountID = await setupAccount(app);
+  await app.execute(
     await signedMutation({
+      app,
       name: "AddInstrument",
-      address,
-      privateKey: MAKER_PRIVATE_KEY,
-      signerKeyId: 1n,
-      account: maker,
+      accountID,
+      nonce: 0n,
       params: {
         instrumentId: 0n,
         base: BASE,
         quote: QUOTE,
         baseLotExp: 0,
         quoteLotExp: 0,
-        nonce: 0n,
-        deadline: FAR_DEADLINE,
       },
     }),
   );
-  await executeOrderBookMutation(
-    app,
+  await app.execute(
     await signedMutation({
+      app,
       name: "Deposit",
-      address,
-      privateKey: MAKER_PRIVATE_KEY,
-      signerKeyId: 1n,
-      account: maker,
-      params: {
-        asset: QUOTE,
-        amount: 100n,
-        nonce: 1n,
-        deadline: FAR_DEADLINE,
-      },
+      accountID,
+      nonce: 1n,
+      params: { asset: QUOTE, amount: 100n },
     }),
   );
-  await executeOrderBookMutation(
-    app,
+  await app.execute(
     await signedMutation({
+      app,
       name: "LimitOrder",
-      address,
-      privateKey: MAKER_PRIVATE_KEY,
-      signerKeyId: 1n,
-      account: maker,
-      params: {
-        quantity: 10n,
-        instrumentId: 0n,
-        price: 5n * Q32,
-        bidOrAsk: 0,
-        nonce: 2n,
-        deadline: FAR_DEADLINE,
-      },
+      accountID,
+      nonce: 2n,
+      params: { quantity: 10n, instrumentId: 0n, price: 5n * Q32, bidOrAsk: 0 },
     }),
   );
 
-  const result = await executeOrderBookMutation(
-    app,
+  const result = await app.execute(
     await signedMutation({
+      app,
       name: "ChangeOrder",
-      address,
-      privateKey: MAKER_PRIVATE_KEY,
-      signerKeyId: 1n,
-      account: maker,
-      params: {
-        orderId: 0n,
-        price: 6n * Q32,
-        nonce: 3n,
-        deadline: FAR_DEADLINE,
-      },
+      accountID,
+      nonce: 3n,
+      params: { orderId: 0n, price: 6n * Q32 },
     }),
   );
   expect(result.id).toBeGreaterThanOrEqual(0);
@@ -362,61 +218,39 @@ test("db-queries fan out across per-mutation tables", async () => {
     submitIntervalMs: 400,
   });
   const schema = app.schema;
-  const db = drizzle({
-    client: TEST_DB_CONNECTION,
-  });
-
-  const maker = await setupAccount({
-    app,
-    account: MAKER_ACCOUNT.address,
-    privateKey: MAKER_PRIVATE_KEY,
-    contract: address,
-  });
-  await executeOrderBookMutation(
-    app,
+  const db = drizzle({ client: TEST_DB_CONNECTION });
+  const accountID = await setupAccount(app);
+  await app.execute(
     await signedMutation({
+      app,
       name: "AddInstrument",
-      address,
-      privateKey: MAKER_PRIVATE_KEY,
-      signerKeyId: 1n,
-      account: maker,
+      accountID,
+      nonce: 0n,
       params: {
         instrumentId: 0n,
         base: BASE,
         quote: QUOTE,
         baseLotExp: 0,
         quoteLotExp: 0,
-        nonce: 0n,
-        deadline: FAR_DEADLINE,
       },
     }),
   );
-  await executeOrderBookMutation(
-    app,
+  await app.execute(
     await signedMutation({
+      app,
       name: "Deposit",
-      address,
-      privateKey: MAKER_PRIVATE_KEY,
-      signerKeyId: 1n,
-      account: maker,
-      params: {
-        asset: BASE,
-        amount: 7n,
-        nonce: 1n,
-        deadline: FAR_DEADLINE,
-      },
+      accountID,
+      nonce: 1n,
+      params: { asset: BASE, amount: 7n },
     }),
   );
 
   await waitForIncluded(db, schema.deposit_mutations, "deposit");
-
   const [depositRowRaw] = await db
     .select()
     .from(schema.deposit_mutations)
     .limit(1);
   expect(depositRowRaw).toBeDefined();
-  // Typewriter returns numeric(78,0) columns as bigint (block number, block
-  // timestamp, etc.); the API layer stringifies them at the wire boundary.
   const depositRow = depositRowRaw as unknown as {
     id: number;
     blockNumber: bigint;
@@ -424,40 +258,30 @@ test("db-queries fan out across per-mutation tables", async () => {
     blockTimestamp: bigint;
   };
   const blockNumber = depositRow.blockNumber.toString();
-
-  // selectBlock: any per-type table referencing this block returns its metadata.
   const block = await selectBlock(db, schema, blockNumber);
   expect(block).toMatchObject({
     number: blockNumber,
     hash: depositRow.blockHash,
     timestamp: depositRow.blockTimestamp.toString(),
   });
-
-  // selectMutationById: globally unique id resolves through the right table.
   const byId = await selectMutationById(db, schema, depositRow.id);
   expect(byId).toMatchObject({
     id: depositRow.id,
     status: "included",
-    signature_account: maker,
-    nonce: 1n,
+    authorization_account_id: accountID,
+    authorization_nonce: 1n,
     blockNumber: depositRow.blockNumber,
   });
   expect(byId).toMatchObject({ asset: BASE, amount: 7n });
-
-  // selectMutationsByBlock: returns every persisted mutation that landed in
-  // the block, ordered by mutation id.
   const inBlock = await selectMutationsByBlock(db, schema, blockNumber);
-  expect(inBlock.length).toBeGreaterThanOrEqual(1);
-  const idsInBlock = new Set(inBlock.map((m) => m.id));
-  expect(idsInBlock.has(depositRow.id)).toBe(true);
-
-  // selectMutationsByAccount: most recent N mutations for this account across
-  // all per-type tables, ordered by id desc.
-  const recent = await selectMutationsByAccount(db, schema, maker, 10);
+  expect(
+    new Set(inBlock.map((mutation) => mutation.id)).has(depositRow.id),
+  ).toBe(true);
+  const recent = await selectMutationsByAccount(db, schema, accountID, 10);
   expect(recent[0]?.id).toBe(depositRow.id);
-  expect(recent.every((m) => m.signature_account === maker)).toBe(true);
-
-  // 404 paths.
+  expect(
+    recent.every((mutation) => mutation.authorization_account_id === accountID),
+  ).toBe(true);
   expect(await selectBlock(db, schema, "999999")).toBeNull();
   expect(await selectMutationById(db, schema, 999_999)).toBeNull();
 });

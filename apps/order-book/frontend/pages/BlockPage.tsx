@@ -105,10 +105,10 @@ export function BlockPage() {
                   <td className="py-2 pr-6">
                     <code>
                       <Link
-                        to={`/account/${m.signature_account}`}
+                        to={`/account/${m.authorization_account_id}`}
                         className={linkClass}
                       >
-                        {shortAddr(m.signature_account)}
+                        {shortAddr(m.authorization_account_id)}
                       </Link>
                     </code>
                   </td>

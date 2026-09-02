@@ -4,7 +4,6 @@ import { ApiError, request } from "../lib/api";
 
 type BalancesResponse = {
   account: Address;
-  nonce: string;
   balances: Record<Address, string>;
 };
 

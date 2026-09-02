@@ -27,10 +27,6 @@ function shortAddr(addr: string) {
 
 function mutationKind(mutation: ApiMutation | undefined) {
   if (mutation === undefined) return "...";
-  if (mutation.rootKeyType !== undefined) return "initialize";
-  if (mutation.keyType !== undefined && mutation.publicKey !== undefined)
-    return "authorize";
-  if (mutation.keyId !== undefined) return "revoke";
   if (mutation.orderId !== undefined && mutation.price !== undefined)
     return "changeOrder";
   if (mutation.orderId !== undefined) return "closeOrder";
@@ -57,10 +53,11 @@ export function MutationPage() {
 
   const timestamps = mutation ? stageTimestamps(mutation) : undefined;
 
-  const account = useAccount(mutation?.signature_account);
+  const account = useAccount(mutation?.authorization_account_id);
   const keyType =
     mutation && account.data
-      ? (account.data.keys[Number(mutation.signature_keyId)]?.keyType ?? null)
+      ? (account.data.credentials[Number(mutation.authorization_credential_id)]
+          ?.keyType ?? null)
       : null;
 
   return (
@@ -101,10 +98,10 @@ export function MutationPage() {
             account:{" "}
             {mutation ? (
               <Link
-                to={`/account/${mutation.signature_account}`}
+                to={`/account/${mutation.authorization_account_id}`}
                 className={linkClass}
               >
-                {shortAddr(mutation.signature_account)}
+                {shortAddr(mutation.authorization_account_id)}
               </Link>
             ) : (
               "..."
@@ -114,7 +111,7 @@ export function MutationPage() {
             type:{" "}
             {mutation == null
               ? "..."
-              : mutation.signature_keyId === 0n
+              : mutation.authorization_credential_id === 0n
                 ? "root"
                 : keyType != null
                   ? KEY_TYPE_LABELS[keyType]

@@ -49,7 +49,7 @@ function HeaderAccountControls() {
 
   const rawBalance = data?.balances[USD] ?? "0";
   const balance = TokenAmount.fromRaw(BigInt(rawBalance), USD).human;
-  const serial = accountQuery.data?.serial;
+  const accountID = accountQuery.data?.address;
 
   return (
     <>
@@ -57,9 +57,9 @@ function HeaderAccountControls() {
       {account ? (
         <>
           <span>balance: ${balance.toFixed(2)}</span>
-          {serial != null ? (
+          {accountID != null ? (
             <Link
-              to={`/account/${serial}`}
+              to={`/account/${accountID}`}
               className="text-blue-500 hover:underline"
             >
               view account

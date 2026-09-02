@@ -8,7 +8,6 @@ import {
     TickPartiallyFilled,
     InsufficientBalance,
     AmountNotLotMultiple,
-    Signature,
     State
 } from "src/OrderBook.sol";
 import {LimitOrderMutation} from "src/LimitOrder.sol";
@@ -32,7 +31,7 @@ contract LimitOrderTest is Test {
     }
 
     function _executeLimitOrder(LimitOrderMutation.LimitOrder memory order, bytes32 account) internal {
-        LimitOrderMutation.executeLimitOrder(state, order, Signature({account: account, keyId: 0, rawSignature: ""}));
+        LimitOrderMutation.executeLimitOrder(state, order, account);
     }
 
     function callLimitOrder(LimitOrderMutation.LimitOrder memory order, bytes32 account) external {
@@ -41,10 +40,7 @@ contract LimitOrderTest is Test {
 
     function test_LimitOrder_InvalidInstrument() external {
         try this.callLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 1, instrumentId: 99, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 1, instrumentId: 99, price: 10 * Q32, bidOrAsk: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -54,10 +50,7 @@ contract LimitOrderTest is Test {
 
     function test_LimitOrder_PlaceBid() external {
         _executeLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 0}), ACCOUNT
         );
 
         vm.pauseGasMetering();
@@ -74,10 +67,7 @@ contract LimitOrderTest is Test {
 
     function test_LimitOrder_PlaceAsk() external {
         _executeLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10, instrumentId: 0, price: 20 * Q32, bidOrAsk: 1}), ACCOUNT
         );
 
         vm.pauseGasMetering();
@@ -100,10 +90,7 @@ contract LimitOrderTest is Test {
         vm.resumeGasMetering();
 
         try this.callLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -119,10 +106,7 @@ contract LimitOrderTest is Test {
         vm.resumeGasMetering();
 
         try this.callLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 0}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -138,10 +122,7 @@ contract LimitOrderTest is Test {
         vm.resumeGasMetering();
 
         try this.callLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10, instrumentId: 0, price: 10 * Q32, bidOrAsk: 1}), ACCOUNT
         ) {
             fail();
         } catch (bytes memory reason) {
@@ -160,10 +141,7 @@ contract LimitOrderTest is Test {
         vm.resumeGasMetering();
 
         _executeLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10 << 18, instrumentId: 0, price: 5 * Q32, bidOrAsk: 0, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10 << 18, instrumentId: 0, price: 5 * Q32, bidOrAsk: 0}), ACCOUNT
         );
 
         vm.pauseGasMetering();
@@ -179,9 +157,7 @@ contract LimitOrderTest is Test {
         state.instruments[0].quoteLotExp = 6;
 
         try this.callLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: (10 << 18) + 1, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0
-            }),
+            LimitOrderMutation.LimitOrder({quantity: (10 << 18) + 1, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1}),
             ACCOUNT
         ) {
             fail();
@@ -201,10 +177,7 @@ contract LimitOrderTest is Test {
         vm.resumeGasMetering();
 
         _executeLimitOrder(
-            LimitOrderMutation.LimitOrder({
-                quantity: 10 << 18, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1, nonce: 0, deadline: 0
-            }),
-            ACCOUNT
+            LimitOrderMutation.LimitOrder({quantity: 10 << 18, instrumentId: 0, price: 5 * Q32, bidOrAsk: 1}), ACCOUNT
         );
 
         vm.pauseGasMetering();

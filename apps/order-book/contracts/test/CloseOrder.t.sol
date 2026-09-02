@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 
-import {Order, OrderNotFound, Signature, State} from "src/OrderBook.sol";
+import {Order, OrderNotFound, State} from "src/OrderBook.sol";
 import {CloseOrderMutation} from "src/CloseOrder.sol";
 
 contract CloseOrderTest is Test {
@@ -25,7 +25,7 @@ contract CloseOrderTest is Test {
     }
 
     function _executeCloseOrder(CloseOrderMutation.CloseOrder memory close, bytes32 account) internal {
-        CloseOrderMutation.executeCloseOrder(state, close, Signature({account: account, keyId: 0, rawSignature: ""}));
+        CloseOrderMutation.executeCloseOrder(state, close, account);
     }
 
     function callCloseOrder(CloseOrderMutation.CloseOrder memory close, bytes32 account) external {
@@ -39,7 +39,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        try this.callCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT) {
+        try this.callCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT) {
             fail();
         } catch (bytes memory reason) {
             assertEq(bytes4(reason), OrderNotFound.selector);
@@ -60,7 +60,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
@@ -83,7 +83,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
@@ -106,7 +106,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
@@ -127,7 +127,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
@@ -154,7 +154,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 
@@ -179,7 +179,7 @@ contract CloseOrderTest is Test {
 
         vm.resumeGasMetering();
 
-        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0, nonce: 0, deadline: 0}), ACCOUNT);
+        _executeCloseOrder(CloseOrderMutation.CloseOrder({orderId: 0}), ACCOUNT);
 
         vm.pauseGasMetering();
 

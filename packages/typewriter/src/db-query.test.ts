@@ -9,7 +9,6 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
-import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import type { ResolvedTypewriterMutationConfig } from "./config";
 import { Database, layerDatabaseLive } from "./db";
 import {
@@ -26,20 +25,22 @@ import { createMutationSchema, mutationStatusEnum } from "./schema";
 import type { RuntimeBlock, RuntimeMutation } from "./types";
 
 const transferConfig = {
-  tag: 0,
+  id: 0,
   params: parseAbiParameters("address to, uint256 amount"),
 } satisfies ResolvedTypewriterMutationConfig;
 
 const debitConfig = {
-  tag: 1,
+  id: 1,
   params: parseAbiParameters("bytes32 account, uint256 amount"),
 } satisfies ResolvedTypewriterMutationConfig;
 
-const testSignature = {
-  accountId:
+const testAuthorization = {
+  accountID:
     "0x1111111111111111111111111111111111111111111111111111111111111111",
-  publicKey: "0x1234",
-  rawSignature: "0xdeadbeef",
+  credentialID: 7n,
+  nonce: 11n,
+  expiration: 1_900_000_000n,
+  signature: "0xdeadbeef",
 } as const;
 
 async function applyGeneratedMigration(
@@ -77,7 +78,6 @@ function requiredTable<
 
 test("insertMutation inserts a mutation row", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Debit: debitConfig },
   });
   await applyGeneratedMigration(schema);
@@ -91,7 +91,7 @@ test("insertMutation inserts a mutation row", async () => {
         "0x1111111111111111111111111111111111111111111111111111111111111111",
       amount: 123n,
     },
-    signature: testSignature,
+    authorization: testAuthorization,
     journalId: 1,
     isForceInclusion: false,
     config: debitConfig,
@@ -118,15 +118,16 @@ test("insertMutation inserts a mutation row", async () => {
     account:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
     amount: 123n,
-    signature_accountId: testSignature.accountId,
-    signature_publicKey: testSignature.publicKey,
-    signature_rawSignature: testSignature.rawSignature,
+    authorization_account_id: testAuthorization.accountID,
+    authorization_credential_id: testAuthorization.credentialID,
+    authorization_nonce: testAuthorization.nonce,
+    authorization_expiration: testAuthorization.expiration,
+    authorization_signature: testAuthorization.signature,
   });
 });
 
 test("updateMutationLifecycle updates lifecycle columns", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
   });
   await applyGeneratedMigration(schema);
@@ -139,7 +140,7 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
       to: "0x0000000000000000000000000000000000000001",
       amount: 456n,
     },
-    signature: { ...testSignature, rawSignature: "0xfeed" },
+    authorization: { ...testAuthorization, signature: "0xfeed" },
     journalId: 2,
     isForceInclusion: false,
     config: transferConfig,
@@ -186,31 +187,32 @@ test("updateMutationLifecycle updates lifecycle columns", async () => {
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
     amount: 456n,
-    signature_accountId: testSignature.accountId,
-    signature_publicKey: testSignature.publicKey,
-    signature_rawSignature: "0xfeed",
+    authorization_account_id: testAuthorization.accountID,
+    authorization_credential_id: testAuthorization.credentialID,
+    authorization_nonce: testAuthorization.nonce,
+    authorization_expiration: testAuthorization.expiration,
+    authorization_signature: "0xfeed",
   });
   expect(includedAt).toBeInstanceOf(Date);
 });
 
 test("selectNextMutationId resumes after the max id across mutation tables", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Debit: debitConfig, Transfer: transferConfig },
   });
   await applyGeneratedMigration(schema);
 
   await TEST_DB_CONNECTION`
     INSERT INTO transfer_mutations
-      (id, status, ${TEST_DB_CONNECTION("to")}, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, ${TEST_DB_CONNECTION("to")}, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (2, 'included', '0x0000000000000000000000000000000000000001', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+      (2, 'included', '0x0000000000000000000000000000000000000001', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO debit_mutations
-      (id, status, account, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, account, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (7, 'included', '0x1111111111111111111111111111111111111111111111111111111111111111', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+      (7, 'included', '0x1111111111111111111111111111111111111111111111111111111111111111', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x')
   `;
 
   const nextId = await runWithDatabase(selectNextMutationId(schema));
@@ -220,7 +222,6 @@ test("selectNextMutationId resumes after the max id across mutation tables", asy
 
 test("insertSlotWrites records raw slot writes", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
   });
   await applyGeneratedMigration(schema);
@@ -273,7 +274,6 @@ test("insertSlotWrites records raw slot writes", async () => {
 
 test("selectAccountStorage replays latest slot writes", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
   });
   await applyGeneratedMigration(schema);
@@ -319,7 +319,6 @@ test("selectAccountStorage replays latest slot writes", async () => {
 
 test("selectAccountStorage uses slot writes after redeploy migration cleanup", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
   });
   const chainId = 31341;
@@ -337,10 +336,10 @@ test("selectAccountStorage uses slot writes after redeploy migration cleanup", a
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.transfer_mutations
-      (id, status, ${TEST_DB_CONNECTION("to")}, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, ${TEST_DB_CONNECTION("to")}, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (1, 'included', '0x0000000000000000000000000000000000000001', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
-      (2, 'accepted', '0x0000000000000000000000000000000000000002', 2, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+      (1, 'included', '0x0000000000000000000000000000000000000001', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x'),
+      (2, 'accepted', '0x0000000000000000000000000000000000000002', 2, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
@@ -366,7 +365,6 @@ test("selectAccountStorage uses slot writes after redeploy migration cleanup", a
 
 test("insertKnownPaths upserts known paths", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: { Transfer: transferConfig },
   });
   await applyGeneratedMigration(schema);

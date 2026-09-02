@@ -6,7 +6,7 @@ import {
   loadSessionKey,
   saveSessionKey,
 } from "../lib/sessionKeyStore";
-import { useDomainContext } from "./DomainContext";
+import { useManifestContext } from "./ManifestContext";
 
 export type Account = {
   accountId: Hex;
@@ -31,7 +31,7 @@ type AccountContextValue = {
 
 const AccountContext = createContext<AccountContextValue | null>(null);
 
-async function clearStoredAccount(prefix: Hex): Promise<void> {
+async function clearStoredAccount(prefix: string): Promise<void> {
   localStorage.removeItem(`${prefix}:accountId`);
   localStorage.removeItem(`${prefix}:keyId`);
   await clearSessionKey(prefix);
@@ -41,7 +41,7 @@ function randomNonceKey(): bigint {
   return BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24))));
 }
 
-async function loadAccount(storagePrefix: Hex): Promise<Account | null> {
+async function loadAccount(storagePrefix: string): Promise<Account | null> {
   const accountId = localStorage.getItem(
     `${storagePrefix}:accountId`,
   ) as Hex | null;
@@ -63,7 +63,7 @@ async function loadAccount(storagePrefix: Hex): Promise<Account | null> {
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
-  const { storagePrefix, loading: domainLoading } = useDomainContext();
+  const { storagePrefix, loading: manifestLoading } = useManifestContext();
 
   const { data: account = null, isLoading: loading } = useQuery({
     queryKey: ["account", storagePrefix],
@@ -76,7 +76,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
     async (
       nextAccount: Pick<Account, "accountId" | "keyId" | "sessionKey"> | null,
     ) => {
-      if (storagePrefix === null) throw new Error("Missing domain");
+      if (storagePrefix === null) throw new Error("Missing manifest");
       let account: Account | null = null;
       if (nextAccount) {
         account = {
@@ -111,7 +111,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
     <AccountContext.Provider
       value={{
         account,
-        loading: domainLoading || loading,
+        loading: manifestLoading || loading,
         setAccount,
         incrementSeq,
       }}

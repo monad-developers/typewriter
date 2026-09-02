@@ -43,9 +43,11 @@ const PARAM_EXCLUDES = new Set([
   "includedAt",
   "safeAt",
   "finalizedAt",
-  "signature_account",
-  "signature_keyId",
-  "signature_rawSignature",
+  "authorization_account_id",
+  "authorization_credential_id",
+  "authorization_nonce",
+  "authorization_expiration",
+  "authorization_signature",
 ]);
 
 function assetSymbol(asset: Address) {

@@ -1,48 +1,91 @@
 import { useMutation } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
-import type { Hex } from "viem";
-import { keccak256 } from "viem";
+import { Hex as OxHex, Secp256k1, Signature } from "ox";
+import type * as HexNamespace from "ox/Hex";
+import {
+  authorizeMutation,
+  deriveAccountID,
+  getAuthorizationPayload,
+  type TypedMutation,
+} from "typewriter/client";
+import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import type { SubmittedOrderBookMutation } from "../../src/app";
 import { useAccountContext } from "../contexts/AccountContext";
+import { useManifestContext } from "../contexts/ManifestContext";
 import { request } from "../lib/api";
 import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
 
+function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
+  const signature = Secp256k1.sign({
+    payload,
+    privateKey: privateKey as HexNamespace.Hex,
+  });
+  return encodeAbiParameters(
+    [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
+    [
+      Signature.yParityToV(signature.yParity),
+      OxHex.fromNumber(signature.r, { size: 32 }),
+      OxHex.fromNumber(signature.s, { size: 32 }),
+    ],
+  );
+}
+
 export function useDemoSignUp() {
   const { setAccount } = useAccountContext();
+  const { manifest } = useManifestContext();
 
   return useMutation({
     mutationFn: async () => {
+      if (manifest === null) throw new Error("Missing manifest");
       const rootPrivateKey = generatePrivateKey();
-      const rootWallet = privateKeyToAccount(rootPrivateKey);
-      const rootPublicKey =
-        `0x000000000000000000000000${rootWallet.address.slice(2).toLowerCase()}` as Hex;
-      const accountId = keccak256(rootPublicKey);
+      const rootAddress = privateKeyToAccount(rootPrivateKey).address;
+      const rootPublicKey = encodeAbiParameters(
+        [{ type: "address" }],
+        [rootAddress],
+      );
+      const createParams = { keyType: 2, publicKey: rootPublicKey } as const;
+      const accountId = deriveAccountID(createParams);
+      const createMutation = {
+        name: "CreateAccount",
+        params: createParams,
+        accountID: accountId,
+        credentialID: 0n,
+        nonce: 0n,
+        expiration: 0n,
+      } as unknown as TypedMutation<typeof manifest, "CreateAccount">;
+      const create = authorizeMutation(
+        createMutation,
+        signSecp256k1(
+          rootPrivateKey,
+          getAuthorizationPayload(manifest, createMutation),
+        ),
+      );
+      await request("/api", { method: "POST", body: create });
 
       const sessionKey = await generateSessionKey();
       const sessionPublicKey = await exportPublicKey(sessionKey);
-
-      await request("/api", {
-        method: "POST",
-        body: {
-          name: "Initialize",
-          params: {
-            account: accountId,
-            expiry: 0,
-            rootKeyType: 2,
-            keyType: 0,
-            permissions: DEFAULT_NON_ROOT_PERMISSIONS,
-            rootPublicKey,
-            publicKey: sessionPublicKey,
-          },
-          signature: {
-            account: accountId,
-            keyId: 0n,
-            rawSignature: "0x",
-          },
-        } satisfies SubmittedOrderBookMutation<"Initialize">,
-      });
-
+      const addMutation = {
+        name: "AddCredential",
+        params: {
+          expiration: 0n,
+          keyType: 0,
+          permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
+          publicKey: sessionPublicKey,
+        },
+        accountID: accountId,
+        credentialID: 0n,
+        nonce:
+          BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n,
+        expiration: 0n,
+      } as unknown as TypedMutation<typeof manifest, "AddCredential">;
+      const add = authorizeMutation(
+        addMutation,
+        signSecp256k1(
+          rootPrivateKey,
+          getAuthorizationPayload(manifest, addMutation),
+        ),
+      );
+      await request("/api", { method: "POST", body: add });
       await setAccount({ accountId, keyId: 1, sessionKey });
     },
   });

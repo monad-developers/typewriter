@@ -29,7 +29,7 @@ Run from `apps/order-book` unless noted:
 
 ```bash
 bun test
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres bun test
+DATABASE_URL=postgresql://ubuntu@localhost:5432/postgres bun test
 forge test --root contracts
 forge test --root contracts --match-test testFillsAtUniformPrice
 ```

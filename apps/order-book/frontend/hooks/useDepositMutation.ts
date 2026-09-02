@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Address } from "viem";
 import { getNonce, useAccountContext } from "../contexts/AccountContext";
-import { useDomainContext } from "../contexts/DomainContext";
+import { useManifestContext } from "../contexts/ManifestContext";
 import { request } from "../lib/api";
 import { signDeposit } from "./useSign";
 
@@ -12,15 +12,15 @@ type DepositParams = {
 
 export function useDepositMutation() {
   const { account, incrementSeq } = useAccountContext();
-  const { domain } = useDomainContext();
+  const { manifest } = useManifestContext();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ asset, amount }: DepositParams) => {
       if (!account) throw new Error("No account");
-      if (domain === null) throw new Error("Missing domain");
+      if (manifest === null) throw new Error("Missing manifest");
 
-      const signed = await signDeposit(account, domain, getNonce(account), {
+      const signed = await signDeposit(account, manifest, getNonce(account), {
         asset,
         amount,
       });

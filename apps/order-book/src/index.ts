@@ -6,11 +6,7 @@ import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import OrderBook from "../contracts/src/OrderBook.sol";
 import index from "../frontend/index.html";
-import {
-  normalizeSignatureForContract,
-  ORDER_BOOK_BATCH_ORDER,
-  type OrderBookSignature,
-} from "./app";
+import { ORDER_BOOK_BATCH_ORDER } from "./app";
 import { CHAIN, ORDER_BOOK_ADDRESS, RPC_URLS } from "./constants";
 import {
   selectBlock,
@@ -27,12 +23,14 @@ if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
+const DATABASE_URL = process.env.DATABASE_URL;
+
 const app = await createTypewriter(OrderBook, {
   address: ORDER_BOOK_ADDRESS,
   account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
   chainId: CHAIN.id,
   rpcUrl: RPC_URLS,
-  database: { url: process.env.DATABASE_URL, maxConnections: 25 },
+  database: { url: DATABASE_URL, maxConnections: 25 },
   sequencing: {
     order: "batch",
     batchOrder: ORDER_BOOK_BATCH_ORDER,
@@ -41,7 +39,7 @@ const app = await createTypewriter(OrderBook, {
 
 const readerDb = drizzle({
   client: new Bun.SQL({
-    url: process.env.DATABASE_URL,
+    url: DATABASE_URL,
     max: 25,
   }),
 });
@@ -82,27 +80,27 @@ function json(value: unknown, init?: ResponseInit): Response {
   });
 }
 
-async function accountKeys(account: Hex) {
-  const keys = app.state.accounts[account].keys;
-  const length = await keys.length;
+async function accountCredentials(account: Hex) {
+  const credentials = app.accounts[account].credentials;
+  const length = await credentials.length;
   const out: {
-    expiry: number;
+    expiration: number;
     keyType: number;
-    permissions: number;
+    permissions: string;
     publicKey: Hex;
   }[] = [];
   for (let i = 0; i < length; i++) {
-    const key = keys[i];
-    const [expiry, keyType, permissions, publicKey] = await Promise.all([
-      key.expiry,
-      key.keyType,
-      key.permissions,
-      key.publicKey,
+    const credential = credentials[i];
+    const [expiration, keyType, permissions, publicKey] = await Promise.all([
+      credential.expiration,
+      credential.keyType,
+      credential.permissions,
+      credential.publicKey,
     ]);
     out.push({
-      expiry: Number(expiry),
+      expiration: Number(expiration),
       keyType: Number(keyType),
-      permissions: Number(permissions),
+      permissions: String(permissions),
       publicKey: publicKey as Hex,
     });
   }
@@ -110,7 +108,7 @@ async function accountKeys(account: Hex) {
 }
 
 async function accountExists(account: Hex): Promise<boolean> {
-  return (await app.state.accounts[account].keys.length) > 0;
+  return (await app.accounts[account].credentials.length) > 0;
 }
 
 async function accountOrders(account: Hex, instrumentId?: number) {
@@ -163,7 +161,7 @@ async function accountBalances(account: Hex): Promise<Record<string, string>> {
 }
 
 async function accountNonces(account: Hex): Promise<Record<string, string>> {
-  const nonceProxy = app.state.accounts[account].nonces;
+  const nonceProxy = app.accounts[account].nonces;
   const keys = Object.keys(nonceProxy);
   const nonces: Record<string, string> = {};
   for (const key of keys) {
@@ -259,7 +257,7 @@ async function tickAt(
 serve({
   idleTimeout: 0,
   routes: {
-    "/api/domain": () => json(app.domain),
+    "/api/manifest": () => json(app.manifest),
     "/api/ping": () =>
       json({ pong: true }, { headers: { "Cache-Control": "no-store" } }),
     "/api": {
@@ -272,17 +270,14 @@ serve({
         if (
           typeof body.name !== "string" ||
           body.params === undefined ||
-          body.signature === undefined
+          body.authorization === undefined
         ) {
           return json({ error: "Bad Request" }, { status: 400 });
         }
 
-        const result = await app.execute({
-          ...body,
-          signature: normalizeSignatureForContract(
-            body.signature as OrderBookSignature,
-          ),
-        } as Parameters<typeof app.execute>[0]);
+        const result = await app.execute(
+          body as Parameters<typeof app.execute>[0],
+        );
         return json({ id: result.id, status: "accepted" });
       },
     },
@@ -389,21 +384,22 @@ serve({
         if (!(await accountExists(account))) {
           return json({ error: "account not found" }, { status: 404 });
         }
-        const [keys, nonces, orders, balances, mutations] = await Promise.all([
-          accountKeys(account),
-          accountNonces(account),
-          accountOrders(account),
-          accountBalances(account),
-          selectMutationsByAccount(
-            readerDb,
-            app.schema,
-            account,
-            ACCOUNT_MUTATION_HISTORY_LIMIT,
-          ),
-        ]);
+        const [credentials, nonces, orders, balances, mutations] =
+          await Promise.all([
+            accountCredentials(account),
+            accountNonces(account),
+            accountOrders(account),
+            accountBalances(account),
+            selectMutationsByAccount(
+              readerDb,
+              app.schema,
+              account,
+              ACCOUNT_MUTATION_HISTORY_LIMIT,
+            ),
+          ]);
         return json({
           address: account,
-          keys,
+          credentials,
           nonces,
           orders,
           balances,

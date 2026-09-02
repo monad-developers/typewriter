@@ -1,46 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {
-    Account,
-    Instrument,
-    Order,
-    OrderNotFound,
-    PERM_CLOSE_ORDER,
-    Signature,
-    State,
-    Tick,
-    Unauthorized,
-    getTicks,
-    removeBookTick,
-    verifyMutationSignature
-} from "./OrderBook.sol";
+import {Account, Instrument, Order, OrderNotFound, State, Tick, getTicks, removeBookTick} from "./OrderBook.sol";
 
 library CloseOrderMutation {
     struct CloseOrder {
         uint64 orderId;
-        uint256 nonce;
-        uint256 deadline;
     }
 
-    bytes32 constant CLOSE_ORDER_TYPEHASH = keccak256("CloseOrder(uint64 orderId,uint256 nonce,uint256 deadline)");
-
-    function hashCloseOrder(CloseOrder memory closeOrder) internal pure returns (bytes32) {
-        return keccak256(abi.encode(CLOSE_ORDER_TYPEHASH, closeOrder.orderId, closeOrder.nonce, closeOrder.deadline));
-    }
-
-    function verifyCloseOrderSignature(
-        State storage state,
-        CloseOrder memory closeOrder,
-        Signature memory signature,
-        bytes32 digest
-    ) internal {
-        uint16 permissions = verifyMutationSignature(state, signature, digest, closeOrder.nonce, closeOrder.deadline);
-        if ((permissions & PERM_CLOSE_ORDER) == 0) revert Unauthorized();
-    }
-
-    function executeCloseOrder(State storage state, CloseOrder memory closeOrder, Signature memory signature) internal {
-        Account storage account = state.accounts[signature.account];
+    function executeCloseOrder(State storage state, CloseOrder memory closeOrder, bytes32 accountID) internal {
+        Account storage account = state.accounts[accountID];
         Order storage order = account.orders[closeOrder.orderId];
         uint64 orderQuantity = order.quantity;
         if (orderQuantity == 0) revert OrderNotFound();

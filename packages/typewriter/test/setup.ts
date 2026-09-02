@@ -31,8 +31,8 @@ export const BOB_PRIVATE_KEY: Hex =
   "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
 export const BOB_ACCOUNT = privateKeyToAccount(BOB_PRIVATE_KEY);
 
-// Deterministic P-256 private key for tests. Not an Anvil account — P-256
-// keys aren't EOAs; they only exist inside the Harness key registry.
+// Deterministic P-256 private key for native credential tests. P-256 keys are
+// not Anvil EOAs; Typewriter authenticates them through its account storage.
 export const P256_PRIVATE_KEY: Hex =
   "0x1db0e88607f75d3f7fd7fd568b6929551c25e893aa1cbdce2536ad478d8f43b1";
 
@@ -167,6 +167,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Flush any transaction submitted by a runtime immediately before its scope
+  // closed so it cannot remain pending and collide with the next test nonce.
+  await TEST_CLIENT.mine({ blocks: 1 });
   await TEST_DB_CONNECTION.close();
   await dropTestDatabase(testDatabaseName);
 });

@@ -9,7 +9,7 @@ The server is trusted for day-to-day ordering and availability, but it does not 
 - **Custom sequencing**. Applications define their transaction ordering (fifo or batch).
 - **Fast confirmations**. Applications can accept mutations in roughly 50ms, before transactions finalize onchain.
 - **Gas sponsorship**. Users sign application mutations while the server pays for settlement transactions.
-- **Modern signature primitives**. EIP-712 plus native P-256, WebAuthn-P256, and secp256k1 verification; apps define their own account policy.
+- **Native accounts**. Credential management, parallel nonces, expirations, permissions, and EIP-712 authorization with P-256, WebAuthn-P256, or secp256k1.
 - **Direct control**. No external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over what users experience.
 - **Local first**. Build rapidly with a powerful local development loop.
 
@@ -34,7 +34,7 @@ Application state lives onchain, where the Solidity state definition serves as t
 ```solidity
 struct State {
     uint256 totalSupply;
-    mapping(bytes32 => Account) accounts;
+    mapping(bytes32 => uint256) balances;
 }
 ```
 
@@ -44,23 +44,22 @@ Mutations are app-defined state transitions requested by a user and executed onc
 
 ```solidity
 struct Transfer {
-    bytes32 from;
     bytes32 to;
     uint256 amount;
-    uint256 nonce;
 }
 
-function executeTransfer(State storage state, Transfer memory transfer) {
-    state.accounts[transfer.from].balance -= transfer.amount;
+function executeTransfer(State storage state, Transfer memory transfer, bytes32 accountID) {
+    state.balances[accountID] -= transfer.amount;
     unchecked {
-        state.accounts[transfer.to].balance += transfer.amount;
+        state.balances[transfer.to] += transfer.amount;
     }
 }
 ```
 
 ### Accounts and Signatures
 
-Mutations are authorized with an EIP-712 typed-data signature, and the contract verifies it.
+Typewriter owns the account registry and verifies one fixed EIP-712 `Authorization`
+shape for every mutation.
 
 Typewriter supports three signature algorithms:
 
@@ -68,31 +67,25 @@ Typewriter supports three signature algorithms:
 - WebAuthn-P256
 - secp256k1
 
-It exports the primitives that go with them — the `KeyType` enum, a `verifySignature` helper, and the EIP-712 domain typehash. The `Signature` struct itself is app-defined; the contract decides what fields it needs to authenticate the user and authorize the mutation.
-
-Accounts are entirely app-defined. The account registry shape, key lookup, nonce policy, expiry/deadline checks, bootstrap mutations, and permissions all live in the app's contract and state. Typewriter does not impose an `Account` struct or any specific authorization rule.
+An account has a stable `bytes32` ID and array-indexed credentials. Each
+credential stores its key type, public key, expiration, and a `uint256`
+permission bitset keyed by mutation ID. Authorizations select a credential,
+carry a packed parallel nonce and expiration, and sign the mutation's encoded
+data under the deployment's Typewriter EIP-712 domain.
 
 ```solidity
-import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
-
-// App-defined — Typewriter imposes no Account or Signature shape.
-struct Account {
-    KeyType keyType;
-    bytes publicKey;
+struct Authorization {
+    bytes32 accountID;
+    uint64 credentialID;
     uint256 nonce;
+    uint256 expiration;
+    bytes signature;
 }
-
-struct Signature {
-    bytes32 accountId;
-    bytes rawSignature;
-}
-
-// The Typewriter primitive checks a raw signature against a digest. A mutation's
-// verifier calls it after resolving the account and applying replay protection.
-verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
 ```
 
-See [Contract requirements > Signature](#signature) for the full verifier and signature byte layouts.
+Account creation, credential addition, and credential removal are built-in
+mutations with IDs `253`, `254`, and `255`. App mutation IDs occupy `0` through
+`252`.
 
 ### Server runtime
 
@@ -107,7 +100,7 @@ The lifecycle of a mutation is as follows:
 
 `createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout`, mutations, and signature params) is derived from the Solidity entrypoint. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
+`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
 ```ts
 import { createTypewriter } from "typewriter";
@@ -134,7 +127,11 @@ const typewriter = await createTypewriter(Token, {
 // ... setup web server
 
 // submit a signed mutation; resolves once accepted
-const accepted = await typewriter.execute({ name: "transfer", params, signature });
+const accepted = await typewriter.execute({
+  name: "Transfer",
+  params,
+  authorization,
+});
 ```
 
 > Onchain submission is gated to a single scheduler address that the server controls (see [Contract structure](#contract-structure)). Because no one else can submit transactions, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
@@ -183,7 +180,7 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 
 ## Examples
 
-- [`token`](https://github.com/monad-exp/order-book/tree/main/apps/token) is a minimal token application that demonstrates FIFO mutation sequencing, account-owned transfers, and the smallest practical Typewriter app shape.
+- [`token`](https://github.com/monad-exp/order-book/tree/main/apps/token) is a minimal token application that demonstrates native P-256 accounts, batch sequencing, minting, and account-owned transfers.
 - [`order-book`](https://github.com/monad-exp/order-book/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
 ## Failure modes
@@ -234,18 +231,15 @@ In order to be Typewriter-compliant, a smart contract must be written with Solid
 
 #### State
 
-All application state is contained in a single `struct State`.
+All application state is contained in one `struct State` stored in a top-level
+variable named `state`. Typewriter stores its account registry separately in a
+top-level `accounts` mapping inherited from the base contract. Compiler storage
+layout gives the runtime typed proxies for both roots.
 
 ```solidity
-struct Account {
-    KeyType keyType;
-    bytes publicKey;
-    uint256 nonce;
-}
-
 struct State {
-    uint256 total;
-    mapping(bytes32 accountId => Account) accounts;
+    uint256 totalSupply;
+    mapping(bytes32 accountID => uint256 balance) balances;
 }
 ```
 
@@ -254,72 +248,55 @@ struct State {
 #### Mutations
 
 Each mutation is a Solidity library with:
-- **`struct [Mutation]` definition**. The mutation's arguments. The app's `dispatch` function ABI-decodes the mutation's `mutationData` into this struct, and the same fields serve as the EIP-712 message body. Field names and order define the mutation params the runtime extracts from Solidity.
-- **`execute[Mutation]` function**. Applies the mutation to the state. Called by `dispatch` after the signature has verified — no auth checks here, just the state transition.
-- **`hash[Mutation]` function**. Returns the EIP-712 struct hash of the mutation: `keccak256(abi.encode([MUTATION]_TYPEHASH, field1, field2, ...))`. The `[MUTATION]_TYPEHASH` it hashes against is the canonical EIP-712 type string — `keccak256("name(type1 field1,type2 field2,...)")` — whose primary type name must match the Solidity `Mutation` enum member with the first letter lowercased (the client signs this as the `primaryType`), and whose parameter names and declaration order must match the decoded mutation struct (standard EIP-712 typing rules apply, e.g. `uint256`, not `uint`). The type name is independent of the Solidity struct name — e.g. `Mutation.Add` with an `Add` struct uses `keccak256("add(uint256 amount,uint256 nonce)")`. `dispatch` combines this struct hash with the `DOMAIN_SEPARATOR` to form the digest passed to `verify[Mutation]Signature`.
-- **`verify[Mutation]Signature` function**. Authorizes the mutation. Resolves the signer from the `Signature` fields, enforces any replay protection (nonce, deadline, scope), and calls `verifySignature` from `typewriter/Typewriter.sol` to check the raw signature against the digest (see [Signature](#signature)).
+- **`struct [Mutation]` definition**. The app's `dispatch` callback ABI-decodes
+  `mutationData` into this struct. Field names and order define the params
+  extracted into the manifest.
+- **`execute` function**. Applies the mutation to app state using the
+  authenticated `accountID`. Account lookup, permissions, expiration, nonce,
+  and signature checks have already happened in the base contract.
 
 ```solidity
 library AddMutation {
     struct Add {
         uint256 amount;
-        uint256 nonce;
     }
 
-    bytes32 constant ADD_TYPEHASH = keccak256("add(uint256 amount,uint256 nonce)");
-
-    function hashAdd(Add memory add) internal pure returns (bytes32) {
-        return keccak256(abi.encode(ADD_TYPEHASH, add.amount, add.nonce));
-    }
-
-    function verifyAddSignature(State storage state, Add memory add, Signature memory signature, bytes32 digest) internal {
-        Account storage account = state.accounts[signature.accountId];
-        if (account.nonce != add.nonce) revert InvalidNonce(account.nonce, add.nonce);
-        verifySignature(KeyType(account.keyType), digest, account.publicKey, signature.rawSignature);
-        account.nonce++;
-    }
-
-    function executeAdd(State storage state, Add memory add) internal {
+    function execute(State storage state, Add memory add, bytes32) internal {
         state.total += add.amount;
     }
 }
 ```
 
-#### Signature
+#### Authorization
 
-A signature authorizes a mutation on behalf of a user. The outer EVM transaction is submitted by the server, so `msg.sender` can't be used to identify a user. Each mutation in a batch carries an EIP-712 typed-data signature that the contract verifies.
-
-**`Signature` struct.** The fields of `Signature` are not prescribed — they
-are whatever the contract needs to authenticate the user and authorize the
-mutation.
+The outer EVM transaction is submitted by the scheduler, so mutations carry a
+fixed authorization that identifies the user account and credential.
 
 ```solidity
-struct Signature { 
-    bytes32 accountId; 
-    bytes rawSignature;
+struct Authorization {
+    bytes32 accountID;
+    uint64 credentialID;
+    uint256 nonce;
+    uint256 expiration;
+    bytes signature;
 }
 ```
 
-**`verify[Mutation]Signature`.** Every signed mutation implements its own
-verifier — see the [Mutations](#mutations) example.
+The signed EIP-712 primary type is
+`Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint256 expiration,uint8 mutation,bytes mutationData)`
+under domain name `Typewriter`, version `1`, the deployment chain ID, and the
+contract address. Dynamic `mutationData` is hashed according to EIP-712.
+It is the exact `abi.encode(mutation)` passed to contract execution: one
+top-level mutation struct, with no appended account ID.
 
-```solidity
-function verify[Mutation]Signature(
-    State storage state,
-    [Mutation] memory [mutation],
-    Signature memory signature,
-    bytes32 digest
-) external;
-```
+The nonce packs a `uint192` lane into its high bits and a `uint64` sequence into
+its low bits. This allows independent clients to use separate lanes without
+serializing every account action. Zero expiration means no expiration; nonzero
+authorizations and credentials are valid through their expiration timestamp.
 
-The verifier is responsible for resolving the signer from the `Signature`
-fields (e.g. looking up an account, selecting a key), enforcing replay
-protection (nonce, deadline, scope), and calling one of the `verifySignature`
-helpers below to verify the raw signature against the digest.
-
-Per-mutation verification gives each mutation full control over its
-authorization rules, including whether a signature is required at all —
-bootstrap mutations may not need one.
+Credentials use a `uint256` permission bitset where bit `mutationID` grants the
+corresponding mutation. Credential IDs are stable array indexes. Typewriter
+prevents removal of a missing credential or the final active credential.
 
 **Verification helpers.** `typewriter/Typewriter.sol` exports the `KeyType` enum and
 a `verifySignature` helper for verifying a raw signature:
@@ -344,39 +321,44 @@ Byte layouts:
 `WebAuthnP256` verification `staticcall` the precompile at address `0x100`;
 deployments on chains without this precompile will revert from those paths.
 
-The EIP-712 digest each verifier checks is built from the mutation's struct
-hash (see [`hash[Mutation]`](#mutations)) and the contract's `DOMAIN_SEPARATOR`.
+`CreateAccount`, `AddCredential`, and `RemoveCredential` use this same envelope.
+`CreateAccount` derives the account ID from
+`keccak256(abi.encode(keyType, publicKey))`; that derived value is both the
+signed authorization's `accountID` and the wire authorization's `accountID`. The
+authorization must also use zero values for `credentialID`, `nonce`, and
+`expiration`.
+Its signed `mutationData` remains the original `abi.encode(createAccount)`, and
+it creates credential `0` with all permissions.
 
 #### Contract structure
 
-The contract inherits from `typewriter/Typewriter.sol`, which supplies the `SCHEDULER`, `DOMAIN_SEPARATOR`, and `FORCE_INCLUSION_DELAY` immutables, the `Batch` and `QueuedMutation` structs, the force-inclusion queue, the `execute`, `enqueue`, and `forceExecute` entry points, and the `ForceInclusionQueued` event. The app contract is a thin wrapper around its own `State` and a `Mutation` enum (mapping `uint8` tags to mutation names), a constructor that assigns the inherited immutables, and a single `dispatch` function (see [`dispatch`](#dispatch)). `Typewriter` uses the app's `dispatch` to build the external-facing `execute`, `enqueue`, and `forceExecute` methods, routing every mutation — whether batched by the scheduler or force-included — through it.
+The contract inherits from `typewriter/Typewriter.sol`, which supplies native
+account storage and validation, the Typewriter EIP-712 domain, scheduler and
+force-inclusion protocol, and the external execution entry points. The app owns
+only its `State`, app mutation enum, and the `dispatch` callback.
 
 ```solidity
-import {EIP712_DOMAIN_TYPEHASH, Typewriter} from "typewriter/Typewriter.sol";
+import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
 contract Token is Typewriter {
-    State private state;
+    State internal state;
 
     enum Mutation {
-        NewAccount,
         Add
     }
 
     constructor(address _scheduler) {
         SCHEDULER = _scheduler;
-        DOMAIN_SEPARATOR = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("Token")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
-        );
         FORCE_INCLUSION_DELAY = 658;
     }
 
-    // dispatch below
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID)
+        internal override
+    {
+        if (mutation != uint8(Mutation.Add)) revert UnknownMutation(mutation);
+        AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
+        AddMutation.execute(state, add, accountID);
+    }
 }
 ```
 
@@ -386,7 +368,8 @@ contract Token is Typewriter {
 
 **`SCHEDULER`.** The privileged address for submitting mutations. Declared in `Typewriter` as `address internal immutable` — the inheriting contract must assign it in the constructor.
 
-**`DOMAIN_SEPARATOR`.** The EIP-712 domain separator from the [Signature](#signature) section. Declared in `Typewriter` as `bytes32 internal immutable` — the inheriting contract must assign it in the constructor.
+**`DOMAIN_SEPARATOR`.** Constructed by the base contract from the fixed
+Typewriter name/version, `block.chainid`, and `address(this)`.
 
 **`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal immutable` — `Typewriter` does not impose a value, so the inheriting contract must assign it in the constructor. All examples in this repo use `658` blocks (≈4.4 minutes at 0.4 s/block).
 
@@ -399,7 +382,7 @@ function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexe
 
 // User force-inclusion entry point. Pushes a `QueuedMutation` and emits
 // `ForceInclusionQueued`.
-function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata signatureData) external returns (uint256);
+function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata authorizationData) external returns (uint256);
 
 // Un-gated escape hatch, callable by anyone once `FORCE_INCLUSION_DELAY` blocks
 // have elapsed since the entry was enqueued.
@@ -413,7 +396,7 @@ event ForceInclusionQueued(
     uint256 index,
     uint8 mutation,
     bytes mutationData,
-    bytes signatureData,
+    bytes authorizationData,
     uint256 enqueuedBlock
 );
 ```
@@ -421,35 +404,16 @@ event ForceInclusionQueued(
 #### `dispatch`
 
 ```solidity
-function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override;
+function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID)
+    internal override;
 ```
 
-The single function an app must implement. `Typewriter` calls `dispatch` once per mutation — for every mutation in every `Batch` passed to `execute`, for every queue entry settled through `execute`'s `forceExecuteIndexes`, and for every public `forceExecute`. The app never iterates batches or touches the queue itself; it only describes how to turn one `(mutation, mutationData, signatureData)` tuple into a state transition.
-
-For each mutation, branch on the `uint8` tag (matched against the `Mutation` enum), decode `mutationData` and `signatureData` into the mutation's structured types, compute the EIP-712 digest, call `verify[Mutation]Signature`, then call `execute[Mutation]` (see [Mutations](#mutations)). Revert with `UnknownMutation(mutation)` on an unrecognized tag.
-
-```solidity
-function dispatch(uint8 mutation, bytes memory mutationData, bytes memory signatureData) internal override {
-    if (Mutation(mutation) == Mutation.NewAccount) {
-        // NewAccount requires no signature verification
-        NewAccountMutation.NewAccount memory newAccount =
-            abi.decode(mutationData, (NewAccountMutation.NewAccount));
-        NewAccountMutation.executeNewAccount(state, newAccount);
-    } else if (Mutation(mutation) == Mutation.Add) {
-        AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
-        Signature memory signature = abi.decode(signatureData, (Signature));
-
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, AddMutation.hashAdd(add)));
-
-        AddMutation.verifyAddSignature(state, add, signature, digest);
-        AddMutation.executeAdd(state, add);
-    } else {
-        revert UnknownMutation(mutation);
-    }
-}
-```
-
-`dispatch` sees one mutation at a time and is intentionally order-agnostic. `Typewriter` is responsible for invoking it in the order mutations were accepted server-side: across batches in submission order, and within a batch in array order.
+For app mutations, Typewriter first validates the account, credential,
+expiration, permission, and nonce. It verifies the original `mutationData`
+through the fixed authorization envelope, consumes the nonce, and calls
+`dispatch` with the authenticated account ID. The callback branches on the app
+mutation ID and ABI-decodes the mutation struct. Built-in account mutations are
+handled entirely by the base contract.
 
 #### Determinism
 
@@ -469,7 +433,8 @@ Calls to external contracts are not allowed. The server executes mutations again
 
 ### Server runtime
 
-The JavaScript surface exported from `typewriter`: the `createTypewriter` entry point and the `Typewriter` handle it returns (`state`, `schema`, `domain`, `execute`, `on`, `close`).
+The server entry point exports `createTypewriter`. Its handle contains `state`,
+`accounts`, `schema`, `manifest`, `execute`, `on`, and `close`.
 
 #### `createTypewriter()`
 
@@ -489,48 +454,91 @@ Starts the runtime and resolves to the `Typewriter` handle (see the [Server runt
 
 Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ safeBlockDepth?, finalizedBlockDepth? }`, defaults `1` / `5`), `onFatalError` (`(error) => void`; without it a fatal runtime error is rethrown), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
-The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives mutation tags, params, signature params, and typed storage from the contract.
+The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives app mutation IDs, params, and typed storage from the contract.
 
-#### `typewriter.domain`
+#### `typewriter.manifest`
 
 ```ts
-typewriter.domain: TypedData.Domain; // { name, version, chainId, verifyingContract }
+typewriter.manifest: {
+  chainId: number;
+  address: Address;
+  mutations: Record<string, { id: number; params: AbiParameter[] }>;
+};
 ```
 
-The resolved EIP-712 domain, derived from Typewriter's fixed domain plus `chainId` and the contract `address`. Clients build the typed-data payload they sign from this domain and the mutation's `params`; the contract checks the resulting signature in `verify[Mutation]Signature`. Apps typically expose it for the frontend to sign against:
+The serializable manifest contains the deployment and all app/native mutation
+metadata needed to authorize mutations. The browser-safe `typewriter/client`
+subpath consumes this object. It owns ABI encoding, generic EIP-712 payload
+construction, account derivation, nonce arithmetic, and P-256 signature
+packing. The app still owns keys, persistence, signing, HTTP, and status
+handling.
 
 ```ts
-"/api/domain": () => jsonResponse(typewriter.domain),
+import {
+  authorizeMutation,
+  getAuthorizationPayload,
+} from "typewriter/client";
+
+const mutation = {
+  name: "Transfer",
+  params,
+  accountID,
+  credentialID: 0n,
+  nonce,
+  expiration,
+};
+const payload = getAuthorizationPayload(manifest, mutation);
+const signature = await sign(payload);
+const submitted = authorizeMutation(mutation, signature);
 ```
 
 #### `typewriter.execute()`
 
 ```ts
-typewriter.execute(input: { name, params, signature }): Promise<{ id }>;
+typewriter.execute(input: { name, params, authorization }): Promise<{ id }>;
 ```
 
-Submits a signed mutation. `name` is a Solidity `Mutation` enum member with the first letter lowercased, `params` matches the mutation struct decoded in `dispatch`, and `signature` matches the contract's `Signature` struct. Resolves once the mutation is `accepted` (ordered and executed against local state); rejects if the mutation reverts. The result carries the mutation `id`. Acceptance timing follows [Sequencing](#sequencing) — immediate for FIFO, at the next batch interval for batch.
+Submits an authorized mutation. `name` is the exact Solidity `Mutation` enum
+member (or built-in mutation name), `params` matches its struct, and
+`authorization` has the fixed native shape. It resolves once accepted and
+rejects if contract execution reverts.
 
 ```ts
-const accepted = await typewriter.execute({ name: "transfer", params, signature });
+const accepted = await typewriter.execute({
+  name: "Transfer",
+  params,
+  authorization,
+});
 // accepted.id
 ```
 
 #### `typewriter.state`
 
 ```ts
-typewriter.state: StorageProxy<storageLayout>;
+typewriter.state: StorageProxy<State>;
 ```
 
-`typewriter.state` is how an app reads the contract's onchain state. It replaces the public getters and `view` functions you would normally read over `eth_call`: state is read directly from storage slots (typed by `storageLayout`), so the contract needs no public accessors and Solidity visibility doesn't matter. Reads resolve against the runtime's local, revm-backed mirror of that storage rather than issuing an `eth_call` per read; field accesses return promises, and mappings are indexed by key.
+`typewriter.state` resolves the top-level Solidity `state` variable by one proxy
+layer. It reads the runtime's local revm-backed storage mirror, so accepted state
+is visible before onchain inclusion and leaf accesses return promises.
 
 ```ts
-const account = typewriter.state.accounts[address];
-const balance = await account.balance; // bigint
-const nonce = await account.nonce;
+const balance = await typewriter.state.balances[accountID];
 ```
 
 `typewriter.state` reflects locally accepted state, which can be ahead of what is `included` or `finalized` onchain.
+
+#### `typewriter.accounts`
+
+`typewriter.accounts` resolves the base contract's top-level native account
+mapping by one proxy layer. Apps can inspect learned account keys, credentials,
+and nonce lanes without placing account state inside their own `State` struct.
+
+```ts
+const account = typewriter.accounts[accountID];
+const credential = account.credentials[0];
+const sequence = await account.nonces[lane];
+```
 
 #### `typewriter.schema`
 
@@ -561,7 +569,9 @@ Every mutation table starts with the same **lifecycle columns**:
 Then two groups of payload columns:
 
 - **Param columns** — one per ABI parameter in the mutation struct decoded by `dispatch`, named after the parameter (an unnamed parameter becomes `arg<index>`).
-- **Signature columns** — one per ABI parameter in the contract's `Signature` struct, each prefixed `signature_`.
+- **Authorization columns** — fixed `authorization_account_id`,
+  `authorization_credential_id`, `authorization_nonce`,
+  `authorization_expiration`, and `authorization_signature` columns.
 
 Payload columns are typed from their ABI type:
 

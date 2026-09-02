@@ -83,12 +83,17 @@ export function insertMutations(
 }
 
 function mutationRow(mutation: ExecutableMutation): Record<string, unknown> {
+  const { authorization } = mutation;
   return {
     id: mutation.id,
     executionIndex: (mutation as { executionIndex: bigint }).executionIndex,
     status: "accepted",
     ...abiParameterValues(mutation.config.params, mutation.params),
-    ...prefixedObjectValues("signature_", mutation.signature),
+    authorization_account_id: authorization.accountID,
+    authorization_credential_id: authorization.credentialID,
+    authorization_nonce: authorization.nonce,
+    authorization_expiration: authorization.expiration,
+    authorization_signature: authorization.signature,
   };
 }
 
@@ -414,21 +419,6 @@ function abiParameterValues(
       ? values[index]
       : recordValue(values, name);
     row[`${prefix}${name}`] = serializeAbiValue(param.type, value);
-  }
-  return row;
-}
-
-function prefixedObjectValues(
-  prefix: string,
-  value: unknown,
-): Record<string, unknown> {
-  if (!isRecord(value)) {
-    return { [`${prefix}signature`]: serializeJsonValue(value) };
-  }
-
-  const row: Record<string, unknown> = {};
-  for (const [name, entry] of Object.entries(value)) {
-    row[`${prefix}${name}`] = serializeJsonValue(entry);
   }
   return row;
 }

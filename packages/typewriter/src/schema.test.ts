@@ -7,7 +7,6 @@ import {
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { TEST_DB_CONNECTION } from "../test/setup";
-import { COUNTER_SIGNATURE_PARAMS } from "../test/utils";
 import { updateSchema } from "./migrate";
 import { createMutationSchema, mutationStatusEnum } from "./schema";
 
@@ -37,14 +36,13 @@ function requiredTable<
 
 test("createMutationSchema creates lowercased flat mutation tables", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("address to, uint256 amount"),
       },
       Debit: {
-        tag: 1,
+        id: 1,
         params: parseAbiParameters("bytes32 account, uint256 amount"),
       },
     },
@@ -72,19 +70,20 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
   expect(sql).toContain('"status" "mutation_status" NOT NULL');
   expect(sql).toContain('"to" char(42) NOT NULL');
   expect(sql).toContain('"amount" numeric(78,0) NOT NULL');
-  expect(sql).toContain('"signature_accountId" char(66) NOT NULL');
-  expect(sql).toContain('"signature_publicKey" text NOT NULL');
-  expect(sql).toContain('"signature_rawSignature" text NOT NULL');
+  expect(sql).toContain('"authorization_account_id" char(66) NOT NULL');
+  expect(sql).toContain('"authorization_credential_id" numeric(20,0) NOT NULL');
+  expect(sql).toContain('"authorization_nonce" numeric(78,0) NOT NULL');
+  expect(sql).toContain('"authorization_expiration" numeric(78,0) NOT NULL');
+  expect(sql).toContain('"authorization_signature" text NOT NULL');
   expect(sql).toContain('CREATE TABLE "debit_mutations"');
   expect(sql).not.toContain('"resolution_');
 });
 
 test("mutation table supports insert and lifecycle update queries", async () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("address to, uint256 amount"),
       },
     },
@@ -99,10 +98,12 @@ test("mutation table supports insert and lifecycle update queries", async () => 
     status: "accepted",
     to: "0x0000000000000000000000000000000000000001",
     amount: 123n,
-    signature_accountId:
+    authorization_account_id:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
-    signature_publicKey: "0x1234",
-    signature_rawSignature: "0xdeadbeef",
+    authorization_credential_id: 7n,
+    authorization_nonce: 11n,
+    authorization_expiration: 1_900_000_000n,
+    authorization_signature: "0xdeadbeef",
   });
 
   await db.update(transferMutations).set({
@@ -123,10 +124,12 @@ test("mutation table supports insert and lifecycle update queries", async () => 
     status: "included",
     to: "0x0000000000000000000000000000000000000001",
     amount: 123n,
-    signature_accountId:
+    authorization_account_id:
       "0x1111111111111111111111111111111111111111111111111111111111111111",
-    signature_publicKey: "0x1234",
-    signature_rawSignature: "0xdeadbeef",
+    authorization_credential_id: 7n,
+    authorization_nonce: 11n,
+    authorization_expiration: 1_900_000_000n,
+    authorization_signature: "0xdeadbeef",
     blockNumber: 4n,
     blockTimestamp: 5n,
     transactionHash:
@@ -137,14 +140,13 @@ test("mutation table supports insert and lifecycle update queries", async () => 
 
 test("createMutationSchema exposes table names from config keys", () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("address to, uint256 amount"),
       },
       CancelOrder: {
-        tag: 1,
+        id: 1,
         params: parseAbiParameters("bytes32 account"),
       },
     },
@@ -158,14 +160,13 @@ test("createMutationSchema exposes table names from config keys", () => {
 
 test("createMutationSchema preserves generated column types", () => {
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       Transfer: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("address to, uint256 amount"),
       },
       Debit: {
-        tag: 1,
+        id: 1,
         params: parseAbiParameters("bytes32 account, uint256 amount"),
       },
     },
@@ -176,9 +177,11 @@ test("createMutationSchema preserves generated column types", () => {
     status: "accepted" | "included" | "safe" | "finalized";
     to: `0x${string}`;
     amount: bigint;
-    signature_accountId: `0x${string}`;
-    signature_publicKey: `0x${string}`;
-    signature_rawSignature: `0x${string}`;
+    authorization_account_id: `0x${string}`;
+    authorization_credential_id: bigint;
+    authorization_nonce: bigint;
+    authorization_expiration: bigint;
+    authorization_signature: `0x${string}`;
   }>();
   expectTypeOf<typeof schema.debit_mutations.$inferInsert>().toExtend<{
     account: `0x${string}`;

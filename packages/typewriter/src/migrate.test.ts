@@ -3,11 +3,7 @@ import { parseAbiParameters } from "abitype";
 import { Effect } from "effect";
 import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
-import {
-  COUNTER_SIGNATURE_PARAMS,
-  HARNESS_MUTATIONS,
-  HARNESS_SIGNATURE_PARAMS,
-} from "../test/utils";
+import { HARNESS_MUTATIONS } from "../test/utils";
 import { layerDatabaseLive } from "./db";
 import { migrate } from "./migrate";
 import { createMutationSchema } from "./schema";
@@ -28,17 +24,17 @@ const runMigrate = (
 
 const harnessSchema = () =>
   createMutationSchema({
-    signature: { params: HARNESS_SIGNATURE_PARAMS },
     mutations: HARNESS_MUTATIONS,
   });
 
 const HARNESS_TABLES = [
+  "addcredential_mutations",
   "assert_mutations",
-  "authorize_mutations",
+  "createaccount_mutations",
   "credit_mutations",
   "debit_mutations",
-  "initialize_mutations",
   "known_paths",
+  "removecredential_mutations",
   "slot_writes",
 ];
 
@@ -124,9 +120,9 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
     "0x0000000000000000000000000000000000000000000000000000000000000001";
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.credit_mutations
-      (id, status, account, ${TEST_DB_CONNECTION("keyId")}, amount, nonce, ${TEST_DB_CONNECTION("signature_account")}, ${TEST_DB_CONNECTION("signature_keyId")}, ${TEST_DB_CONNECTION("signature_keyType")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (0, 'accepted', ${account}, 0, 1, 0, ${account}, 0, 2, '0x')
+      (0, 'accepted', 1, ${account}, 0, 0, 0, '0x')
   `;
 
   await expect(runMigrate(harnessSchema(), chainId, address, 0n)).resolves.toBe(
@@ -147,10 +143,9 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
   const schemaName =
     "typewriter_31340_0x000000000000000000000000000000000000typewriter";
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       add: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("uint256 amount"),
       },
     },
@@ -160,10 +155,10 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-      (id, status, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (0, 'accepted', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
-      (1, 'included', 2, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+      (0, 'accepted', 1, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x'),
+      (1, 'included', 2, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
@@ -197,10 +192,9 @@ test("migrate removes newer unsettled slot writes for the same slot", async () =
   const schemaName =
     "typewriter_31341_0x000000000000000000000000000000000000typewriter";
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       add: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("uint256 amount"),
       },
     },
@@ -212,10 +206,10 @@ test("migrate removes newer unsettled slot writes for the same slot", async () =
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-      (id, status, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, status, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (0, 'included', 7, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
-      (1, 'accepted', 11, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+      (0, 'included', 7, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x'),
+      (1, 'accepted', 11, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
@@ -258,10 +252,9 @@ test("migrate recovers accepted mutations below the onchain applied count", asyn
   const schemaName =
     "typewriter_31342_0x000000000000000000000000000000000000typewriter";
   const schema = createMutationSchema({
-    signature: { params: COUNTER_SIGNATURE_PARAMS },
     mutations: {
       add: {
-        tag: 0,
+        id: 0,
         params: parseAbiParameters("uint256 amount"),
       },
     },
@@ -273,10 +266,10 @@ test("migrate recovers accepted mutations below the onchain applied count", asyn
 
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.add_mutations
-      (id, ${TEST_DB_CONNECTION("executionIndex")}, status, amount, ${TEST_DB_CONNECTION("signature_accountId")}, ${TEST_DB_CONNECTION("signature_publicKey")}, ${TEST_DB_CONNECTION("signature_rawSignature")})
+      (id, ${TEST_DB_CONNECTION("executionIndex")}, status, amount, authorization_account_id, authorization_credential_id, authorization_nonce, authorization_expiration, authorization_signature)
     VALUES
-      (0, 0, 'accepted', 7, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x'),
-      (1, 1, 'accepted', 11, '0x0000000000000000000000000000000000000000000000000000000000000000', '0x', '0x')
+      (0, 0, 'accepted', 7, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x'),
+      (1, 1, 'accepted', 11, '0x0000000000000000000000000000000000000000000000000000000000000000', 0, 0, 0, '0x')
   `;
   await TEST_DB_CONNECTION`
     INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.slot_writes
