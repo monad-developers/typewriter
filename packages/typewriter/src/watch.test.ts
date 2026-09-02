@@ -249,12 +249,29 @@ test("emits Reorged with the full replacement path", async () => {
       // its local tip is still the pre-mine block and the revert is a no-op.
       const beforeReorg = yield* collect(watch.messages, 3);
 
-      // Revert and mine a fresh segment at the same height. anvil bumps the
-      // timestamp on each mine, so the replacement hashes differ.
+      // Revert and mine a fresh segment at the same height. Advance the
+      // timestamp explicitly because snapshot revert restores the old time.
       yield* Effect.promise(() => TEST_CLIENT.revert({ id: snapshotId }));
+      const revertedTip = yield* Effect.promise(() =>
+        TEST_PUBLIC_CLIENT.getBlock({ blockTag: "latest" }),
+      );
+      yield* Effect.promise(() =>
+        TEST_CLIENT.setNextBlockTimestamp({
+          timestamp: revertedTip.timestamp + 1n,
+        }),
+      );
       yield* Effect.promise(() => TEST_CLIENT.mine({ blocks: 3 }));
 
-      const afterReorg = yield* collect(watch.messages, 1);
+      // The interval miner may queue one more old-chain extension between the
+      // pre-reorg collection and the revert. Ignore those stale messages and
+      // assert on the first message describing the replacement chain.
+      const afterReorg = yield* watch.messages.pipe(
+        Stream.filter((message) => message._tag === "Reorged"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.timeout("5000 millis"),
+        Effect.orDie,
+      );
 
       const latest = yield* Effect.promise(() =>
         TEST_PUBLIC_CLIENT.getBlock({ blockTag: "latest" }),

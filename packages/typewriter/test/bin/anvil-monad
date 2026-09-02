@@ -1,2 +1,2 @@
 #!/bin/sh
-exec anvil --monad "$@"
+exec anvil --network monad "$@"

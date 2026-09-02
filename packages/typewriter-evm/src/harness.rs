@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use monad_revm::{
     api::{builder::MonadBuilder, default_ctx::monad_context_with_db},
-    MonadCfgEnv, MonadSpecId,
+    MonadCfgEnv, MonadHardfork,
 };
 use revm::{
     context::TxEnv,
@@ -28,7 +28,7 @@ use revm::{
         JournalTr,
     },
     database::InMemoryDB,
-    inspector::{InspectEvm, JournalExt},
+    inspector::InspectEvm,
     interpreter::{
         interpreter::EthInterpreter,
         interpreter_types::{Jumps, MemoryTr},
@@ -260,7 +260,7 @@ impl Inspector<monad_revm::api::default_ctx::MonadContext<InMemoryDB>>
     }
 }
 
-// Per-journal pre/post-image record. revm 34's `transact_one` clears its
+// Per-journal pre/post-image record. REVM's transaction execution clears its
 // internal journal log on success, so cross-tx isolation has to live in
 // userland: we capture pre-images on first touch within a journal, post-
 // images each time. revertJournals writes pre-images back; simulate
@@ -472,7 +472,7 @@ impl EvmHarness {
         let state = self.evm.0.ctx.journaled_state.evm_state();
         for (addr, account) in state.iter() {
             let post_info = account.info.clone();
-            let pre_info = (*account.original_info).clone();
+            let pre_info = account.original_info();
             journal
                 .accounts
                 .entry(*addr)
@@ -590,11 +590,11 @@ impl EvmHarness {
             .map_err(|e| format!("transact (pass 2): {e:?}"))?;
 
         let gas_limit = match &result {
-            ExecutionResult::Success { gas_used, .. } => {
+            ExecutionResult::Success { .. } => {
                 self.evm.0.inspector.clear();
                 let _ = self.evm.finalize();
                 let gas_limit =
-                    self.estimate_gas_limit(params, tx_access_list.clone(), *gas_used)?;
+                    self.estimate_gas_limit(params, tx_access_list.clone(), result.tx_gas_used())?;
 
                 // The estimate attempts finalize their own state, so rerun the
                 // successful pass and leave its journal state live for execute().
@@ -605,29 +605,31 @@ impl EvmHarness {
                     .map_err(|e| format!("transact (final pass): {e:?}"))?;
                 gas_limit
             }
-            ExecutionResult::Revert { gas_used, .. } => *gas_used,
-            ExecutionResult::Halt { gas_used, .. } => *gas_used,
+            ExecutionResult::Revert { .. } | ExecutionResult::Halt { .. } => result.tx_gas_used(),
         };
 
         let (success, gas_used, output, revert_data) = match &result {
-            ExecutionResult::Success {
-                gas_used, output, ..
-            } => {
+            ExecutionResult::Success { output, .. } => {
                 let bytes = match output {
                     Output::Call(b) => b.clone(),
                     Output::Create(b, _) => b.clone(),
                 };
-                (true, *gas_used, format!("0x{}", hex::encode(&bytes)), None)
+                (
+                    true,
+                    result.tx_gas_used(),
+                    format!("0x{}", hex::encode(&bytes)),
+                    None,
+                )
             }
-            ExecutionResult::Revert { gas_used, output } => (
+            ExecutionResult::Revert { output, .. } => (
                 false,
-                *gas_used,
+                result.tx_gas_used(),
                 format!("0x{}", hex::encode(output)),
                 Some(format!("0x{}", hex::encode(output))),
             ),
-            ExecutionResult::Halt { gas_used, reason } => (
+            ExecutionResult::Halt { reason, .. } => (
                 false,
-                *gas_used,
+                result.tx_gas_used(),
                 "0x".into(),
                 Some(format!("halt: {reason:?}")),
             ),
@@ -884,11 +886,12 @@ fn relax_cfg(cfg: &mut MonadCfgEnv) {
     cfg.0.tx_gas_limit_cap = Some(u64::MAX);
 }
 
-fn parse_spec(s: &str) -> Option<MonadSpecId> {
+fn parse_spec(s: &str) -> Option<MonadHardfork> {
     match s {
-        "MonadEight" => Some(MonadSpecId::MonadEight),
-        "MonadNine" => Some(MonadSpecId::MonadNine),
-        "MonadNext" => Some(MonadSpecId::MonadNext),
+        "MonadEight" => Some(MonadHardfork::MonadEight),
+        "MonadNine" => Some(MonadHardfork::MonadNine),
+        "MonadTen" => Some(MonadHardfork::MonadTen),
+        "MonadNext" => Some(MonadHardfork::MonadNext),
         _ => None,
     }
 }

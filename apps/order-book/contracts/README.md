@@ -6,7 +6,7 @@ Within each batch, mutations are sequenced cancel → limit → market and marke
 
 ## Prerequisites
 
-[Foundry **nightly**](https://book.getfoundry.sh/getting-started/installation) — `foundryup --install nightly`. The OrderBook contract uses the P256 precompile at `address(0x100)` (RIP-7212), which stable Foundry does not include. Required for both `forge test` and `anvil`.
+[Latest Foundry](https://book.getfoundry.sh/getting-started/installation) with Monad network support. The latest release includes the P256 precompile at `address(0x100)` (RIP-7212) and does not require a separate category-labs Foundry build. Start local Anvil with `anvil --network monad`.
 
 ## Environment Variables
 
@@ -21,7 +21,7 @@ Order-book uses one root `.env` file. From `apps/order-book`, copy `.env.example
 
 ```shell
 bun install
-forge test          # from this contracts directory
+forge test --network monad # from this contracts directory
 bun run contracts:build
 bun run deploy      # from apps/order-book, deploy to the RPC in .env
 ```

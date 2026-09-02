@@ -11,7 +11,7 @@
     "build": "napi build --release --output-dir native",
     "build:debug": "napi build --output-dir native",
     "lint:effect": "effect-language-service diagnostics --project tsconfig.json",
-    "test": "bun run build:debug && bun test",
+    "test": "bun run build:debug && bun test --timeout 30000",
     "typecheck": "tsc --noEmit",
     "lint": "cargo fmt --check && cargo clippy -- -D warnings && forge fmt --check test/contracts"
   },

@@ -4,10 +4,13 @@
 // Counter runtime bytecode — increments storage slot 0 by 1 on any call:
 //   PUSH1 0x00 DUP1 SLOAD PUSH1 0x01 ADD SWAP1 SSTORE STOP
 const COUNTER_CODE = "0x60008054600101905500" as const;
+// Writes two new slots in the same 128-word MIP-8 storage page.
+const SAME_PAGE_WRITES_CODE = "0x6001600055600160015500" as const;
 // Writes slot 0, then reverts. Failed executions must not persist writes.
 const WRITE_THEN_REVERT_CODE = "0x600160005560006000fd" as const;
 
 const COUNTER_ADDR = "0x0000000000000000000000000000000000000c01" as const;
+const PAGE_WRITES_ADDR = "0x0000000000000000000000000000000000000c02" as const;
 const REVERTING_ADDR = "0x0000000000000000000000000000000000000bad" as const;
 const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 
@@ -45,6 +48,35 @@ const initWithCounter = {
     [COUNTER_ADDR]: { code: COUNTER_CODE },
   },
 } as const;
+
+const runSamePageWrites = (spec?: "MonadNine" | "MonadTen") =>
+  Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init({
+      spec,
+      accounts: {
+        [PAGE_WRITES_ADDR]: { code: SAME_PAGE_WRITES_CODE },
+      },
+    });
+    return yield* evm.execute({
+      from: CALLER,
+      to: PAGE_WRITES_ADDR,
+      data: "0x",
+    });
+  });
+
+test("default spec enables MonadTen MIP-8 page storage gas", async () => {
+  const [monadNine, monadTen, defaultSpec] = await Promise.all([
+    Effect.runPromise(Effect.scoped(runSamePageWrites("MonadNine"))),
+    Effect.runPromise(Effect.scoped(runSamePageWrites("MonadTen"))),
+    Effect.runPromise(Effect.scoped(runSamePageWrites())),
+  ]);
+
+  expect(monadTen.success).toBe(true);
+  expect(defaultSpec.success).toBe(true);
+  expect(defaultSpec.gas_used).toBe(monadTen.gas_used);
+  expect(monadTen.gas_used).toBeLessThan(monadNine.gas_used);
+});
 
 test("execute against counter succeeds and returns a journal id", async () => {
   const program = Effect.gen(function* () {

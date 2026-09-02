@@ -36,13 +36,13 @@ bun run dev
 
 ## Optional: Start Anvil
 
-If you want a local chain for deployment and manual testing, start the Monad build of Anvil in a separate terminal:
+If you want a local Monad chain for deployment and manual testing, start Anvil in a separate terminal:
 
 ```bash
-anvil --monad --block-time 0.4
+anvil --network monad --block-time 0.4
 ```
 
-The example `.env` values are set up for that local node. Use `anvil --monad`, not the upstream stable Anvil binary.
+The latest Foundry release includes Monad support, so no separate category-labs Foundry build is required. The example `.env` values are set up for that local node.
 
 ## .env
 
