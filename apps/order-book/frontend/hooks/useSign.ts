@@ -1,3 +1,4 @@
+import type { TypewriterManifest } from "typewriter";
 import {
   authorizeMutation,
   getAuthorizationPayload,
@@ -7,7 +8,6 @@ import {
 import { type Address, bytesToHex, type Hex, hexToBytes } from "viem";
 import type { SubmittedOrderBookMutation } from "../../src/app";
 import type { Account } from "../contexts/AccountContext";
-import type { AppDomain } from "../lib/domain";
 
 async function signP256(sessionKey: CryptoKeyPair, payload: Hex): Promise<Hex> {
   const signature = await crypto.subtle.sign(
@@ -20,7 +20,7 @@ async function signP256(sessionKey: CryptoKeyPair, payload: Hex): Promise<Hex> {
 
 async function signMutation<const name extends string>(params: {
   account: Account;
-  domain: AppDomain;
+  manifest: TypewriterManifest;
   name: name;
   nonce: bigint;
   mutationParams: Record<string, unknown>;
@@ -32,10 +32,10 @@ async function signMutation<const name extends string>(params: {
     credentialID: BigInt(params.account.keyId),
     nonce: params.nonce,
     expiration: 0n,
-  } as unknown as TypedMutation<AppDomain, name>;
+  } as unknown as TypedMutation<TypewriterManifest, name>;
   const signature = await signP256(
     params.account.sessionKey,
-    getAuthorizationPayload(params.domain, mutation),
+    getAuthorizationPayload(params.manifest, mutation),
   );
   return authorizeMutation(
     mutation,
@@ -45,7 +45,7 @@ async function signMutation<const name extends string>(params: {
 
 export function signMarketOrder(
   account: Account,
-  domain: AppDomain,
+  manifest: TypewriterManifest,
   nonce: bigint,
   params: {
     quantity: bigint;
@@ -56,7 +56,7 @@ export function signMarketOrder(
 ) {
   return signMutation({
     account,
-    domain,
+    manifest,
     name: "MarketOrder",
     nonce,
     mutationParams: { ...params, instrumentId: BigInt(params.instrumentId) },
@@ -65,7 +65,7 @@ export function signMarketOrder(
 
 export function signLimitOrder(
   account: Account,
-  domain: AppDomain,
+  manifest: TypewriterManifest,
   nonce: bigint,
   params: {
     quantity: bigint;
@@ -76,7 +76,7 @@ export function signLimitOrder(
 ) {
   return signMutation({
     account,
-    domain,
+    manifest,
     name: "LimitOrder",
     nonce,
     mutationParams: { ...params, instrumentId: BigInt(params.instrumentId) },
@@ -85,13 +85,13 @@ export function signLimitOrder(
 
 export function signCloseOrder(
   account: Account,
-  domain: AppDomain,
+  manifest: TypewriterManifest,
   nonce: bigint,
   params: { orderId: number },
 ) {
   return signMutation({
     account,
-    domain,
+    manifest,
     name: "CloseOrder",
     nonce,
     mutationParams: { orderId: BigInt(params.orderId) },
@@ -100,13 +100,13 @@ export function signCloseOrder(
 
 export function signDeposit(
   account: Account,
-  domain: AppDomain,
+  manifest: TypewriterManifest,
   nonce: bigint,
   params: { asset: Address; amount: bigint },
 ) {
   return signMutation({
     account,
-    domain,
+    manifest,
     name: "Deposit",
     nonce,
     mutationParams: params,

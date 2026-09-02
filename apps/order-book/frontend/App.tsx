@@ -6,7 +6,7 @@ import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
 import { OrderBook } from "./components/OrderBook";
 import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
-import { DomainProvider } from "./contexts/DomainContext";
+import { ManifestProvider } from "./contexts/ManifestContext";
 import { useBalances } from "./hooks/useBalances";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
@@ -133,11 +133,11 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider>
-        <DomainProvider>
+        <ManifestProvider>
           <AccountProvider>
             <Routes />
           </AccountProvider>
-        </DomainProvider>
+        </ManifestProvider>
       </RouterProvider>
     </QueryClientProvider>
   );

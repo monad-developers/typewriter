@@ -255,7 +255,7 @@ async function tickAt(
 serve({
   idleTimeout: 0,
   routes: {
-    "/api/domain": () => json(app.manifest),
+    "/api/manifest": () => json(app.manifest),
     "/api/ping": () =>
       json({ pong: true }, { headers: { "Cache-Control": "no-store" } }),
     "/api": {

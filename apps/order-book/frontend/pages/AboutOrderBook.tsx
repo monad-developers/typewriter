@@ -2,7 +2,7 @@ import architectureDiagram from "../architecture.svg";
 import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
-import { useDomainContext } from "../contexts/DomainContext";
+import { useManifestContext } from "../contexts/ManifestContext";
 import orderBookScreenshot from "../image.png";
 import { Link } from "../lib/router";
 import orderSequencingScreenshot from "../order-sequencing.png";
@@ -13,10 +13,10 @@ const CHAIN_NAMES: Record<number, string> = {
 };
 
 export function AboutOrderBook() {
-  const { domain } = useDomainContext();
-  const chainId = domain?.chainId ?? 0;
-  const chainName = domain
-    ? (CHAIN_NAMES[domain.chainId] ?? `Chain ${domain.chainId}`)
+  const { manifest } = useManifestContext();
+  const chainId = manifest?.chainId ?? 0;
+  const chainName = manifest
+    ? (CHAIN_NAMES[manifest.chainId] ?? `Chain ${manifest.chainId}`)
     : "Loading...";
   const apiUrl =
     typeof window !== "undefined" ? `${window.location.origin}/api` : "/api";
@@ -491,12 +491,12 @@ function forceExecute(uint256 index) external {
                 <td className="px-3 py-2 font-semibold">Order Book</td>
                 <td className="px-3 py-2 break-all">
                   <a
-                    href={`https://testnet.monadscan.com/address/${domain?.address ?? "0x0000000000000000000000000000000000000000"}`}
+                    href={`https://testnet.monadscan.com/address/${manifest?.address ?? "0x0000000000000000000000000000000000000000"}`}
                     target="_blank"
                     rel="noreferrer"
                     className="text-blue-500 hover:underline"
                   >
-                    {domain?.address ??
+                    {manifest?.address ??
                       "0x0000000000000000000000000000000000000000"}
                   </a>
                 </td>

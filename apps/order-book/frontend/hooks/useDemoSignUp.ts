@@ -11,7 +11,7 @@ import {
 import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { useAccountContext } from "../contexts/AccountContext";
-import { useDomainContext } from "../contexts/DomainContext";
+import { useManifestContext } from "../contexts/ManifestContext";
 import { request } from "../lib/api";
 import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
 
@@ -32,11 +32,11 @@ function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
 
 export function useDemoSignUp() {
   const { setAccount } = useAccountContext();
-  const { domain } = useDomainContext();
+  const { manifest } = useManifestContext();
 
   return useMutation({
     mutationFn: async () => {
-      if (domain === null) throw new Error("Missing domain");
+      if (manifest === null) throw new Error("Missing manifest");
       const rootPrivateKey = generatePrivateKey();
       const rootAddress = privateKeyToAccount(rootPrivateKey).address;
       const rootPublicKey = encodeAbiParameters(
@@ -52,12 +52,12 @@ export function useDemoSignUp() {
         credentialID: 0n,
         nonce: 0n,
         expiration: 0n,
-      } as unknown as TypedMutation<typeof domain, "CreateAccount">;
+      } as unknown as TypedMutation<typeof manifest, "CreateAccount">;
       const create = authorizeMutation(
         createMutation,
         signSecp256k1(
           rootPrivateKey,
-          getAuthorizationPayload(domain, createMutation),
+          getAuthorizationPayload(manifest, createMutation),
         ),
       );
       await request("/api", { method: "POST", body: create });
@@ -77,12 +77,12 @@ export function useDemoSignUp() {
         nonce:
           BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n,
         expiration: 0n,
-      } as unknown as TypedMutation<typeof domain, "AddCredential">;
+      } as unknown as TypedMutation<typeof manifest, "AddCredential">;
       const add = authorizeMutation(
         addMutation,
         signSecp256k1(
           rootPrivateKey,
-          getAuthorizationPayload(domain, addMutation),
+          getAuthorizationPayload(manifest, addMutation),
         ),
       );
       await request("/api", { method: "POST", body: add });

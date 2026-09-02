@@ -8,18 +8,18 @@ import {
 import { bytesToHex } from "viem";
 import { Authentication as ClientAuthentication } from "webauthx/client";
 import { useAccountContext } from "../contexts/AccountContext";
-import { useDomainContext } from "../contexts/DomainContext";
+import { useManifestContext } from "../contexts/ManifestContext";
 import { request } from "../lib/api";
 import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
 import { encodeWebAuthnSignature, identify, RP_ID } from "../lib/webauthn";
 
 export function useSignIn() {
   const { setAccount } = useAccountContext();
-  const { domain } = useDomainContext();
+  const { manifest } = useManifestContext();
 
   return useMutation({
     mutationFn: async () => {
-      if (domain === null) throw new Error("Missing domain");
+      if (manifest === null) throw new Error("Missing manifest");
       const [accountId, sessionKey] = await Promise.all([
         identify(),
         generateSessionKey(),
@@ -45,10 +45,10 @@ export function useSignIn() {
         nonce:
           BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n,
         expiration: 0n,
-      } as unknown as TypedMutation<typeof domain, "AddCredential">;
+      } as unknown as TypedMutation<typeof manifest, "AddCredential">;
       const assertion = await ClientAuthentication.sign({
         rpId: RP_ID,
-        challenge: getAuthorizationPayload(domain, addMutation),
+        challenge: getAuthorizationPayload(manifest, addMutation),
       });
 
       await request("/api", {
