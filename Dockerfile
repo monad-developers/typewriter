@@ -6,11 +6,11 @@
 # Command (overrides CMD), so CMD here is only a harmless default.
 
 ARG BUN_VERSION=1.3.13
-ARG FOUNDRY_VERSION=v1.5.0-monad.0.3.0
-ARG RUST_VERSION=1.90.0
+ARG FOUNDRY_VERSION=v1.8.1
+ARG RUST_VERSION=1.98.0
 
 # ---------------------------------------------------------------------------
-# Stage 1: foundry - download and extract the pinned Monad Foundry toolchain.
+# Stage 1: foundry - download and extract the pinned official Foundry toolchain.
 # Kept isolated so the final image only copies the four binaries it needs.
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS foundry
@@ -25,12 +25,12 @@ ENV FOUNDRY_DIR=/root/.foundry
 ENV PATH=${FOUNDRY_DIR}/bin:${PATH}
 
 RUN case "${TARGETARCH}" in \
-        amd64) foundry_sha256=7f1221c9c80cac25895ec9a58d4d01e644044a5d32432cfe22ac14d4be8ba307 ;; \
-        arm64) foundry_sha256=e552557d09f7a9f97f3f6be32a904df982a693e7fcd2a26b63710ed671cefa83 ;; \
+        amd64) foundry_sha256=37b45855232e57624d90113b049ca54f0c92055bb5c1997fcbdc3076c7b89c10 ;; \
+        arm64) foundry_sha256=27a32bd282d73018ab4d043de15ab0320b561c71b4bf3a549b130a0806e79f5c ;; \
         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && mkdir -p "${FOUNDRY_DIR}/bin" \
-    && curl -fL "https://github.com/category-labs/foundry/releases/download/${FOUNDRY_VERSION}/foundry_${FOUNDRY_VERSION}_linux_${TARGETARCH}.tar.gz" -o /tmp/foundry.tar.gz \
+    && curl -fL "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_VERSION}/foundry_${FOUNDRY_VERSION}_linux_${TARGETARCH}.tar.gz" -o /tmp/foundry.tar.gz \
     && printf '%s  /tmp/foundry.tar.gz\n' "${foundry_sha256}" | sha256sum -c - \
     && tar -xzf /tmp/foundry.tar.gz -C "${FOUNDRY_DIR}/bin" \
     && rm /tmp/foundry.tar.gz \
