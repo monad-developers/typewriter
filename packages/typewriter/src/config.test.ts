@@ -123,10 +123,8 @@ test("Typewriter exposes each storage root at one property layer", () => {
 
   expectTypeOf(app.state).toEqualTypeOf<Root["state"]>();
   expectTypeOf(app.accounts).toEqualTypeOf<Root["accounts"]>();
-  expectTypeOf(app.state.totalSupply).toEqualTypeOf<Promise<bigint>>();
-  expectTypeOf(app.accounts["0x01" as Hex.Hex]).toEqualTypeOf<
-    Promise<bigint> | undefined
-  >();
+  expectTypeOf<Root["state"]["totalSupply"]>().toEqualTypeOf<Promise<bigint>>();
+  expectTypeOf<Root["accounts"][Hex.Hex]>().toEqualTypeOf<Promise<bigint>>();
 });
 
 test("Typewriter mutation input uses concrete authorization", () => {

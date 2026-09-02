@@ -30,8 +30,8 @@ const harnessSchema = () =>
 const HARNESS_TABLES = [
   "addcredential_mutations",
   "assert_mutations",
-  "credit_mutations",
   "createaccount_mutations",
+  "credit_mutations",
   "debit_mutations",
   "known_paths",
   "removecredential_mutations",

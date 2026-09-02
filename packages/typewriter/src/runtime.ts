@@ -755,10 +755,6 @@ export function createRuntimeEffect(
 
         emitBatch(batchToEvent(batch));
 
-        for (const { mutation, deferred } of acceptedMutations) {
-          yield* Deferred.succeed(deferred, mutation);
-        }
-
         const persistStartedAtMs = startTimer();
         yield* db.transaction((tx) =>
           Effect.gen(function* () {
@@ -775,6 +771,10 @@ export function createRuntimeEffect(
             );
           }),
         );
+
+        for (const { mutation, deferred } of acceptedMutations) {
+          yield* Deferred.succeed(deferred, mutation);
+        }
 
         yield* Effect.logDebug("persisted accepted mutations").pipe(
           Effect.annotateLogs({

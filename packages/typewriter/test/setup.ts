@@ -167,6 +167,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Flush any transaction submitted by a runtime immediately before its scope
+  // closed so it cannot remain pending and collide with the next test nonce.
+  await TEST_CLIENT.mine({ blocks: 1 });
   await TEST_DB_CONNECTION.close();
   await dropTestDatabase(testDatabaseName);
 });
