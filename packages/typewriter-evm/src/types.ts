@@ -6,7 +6,7 @@
 
 import type { Address, Hex } from "ox";
 
-export type Spec = "MonadEight" | "MonadNine" | "MonadNext";
+export type Spec = "MonadEight" | "MonadNine" | "MonadTen" | "MonadNext";
 
 export type BlockParams = {
   number?: Hex.Hex;

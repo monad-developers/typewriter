@@ -122,7 +122,12 @@ beforeAll(async () => {
     account: SCHEDULER_ACCOUNT,
   });
 
-  const server = Server.create({ instance: Instance.anvil(), port });
+  const server = Server.create({
+    instance: Instance.anvil({
+      binary: `${import.meta.dir}/bin/anvil-monad`,
+    }),
+    port,
+  });
   teardown = await server.start();
   snapshotId = await TEST_CLIENT.snapshot();
 });

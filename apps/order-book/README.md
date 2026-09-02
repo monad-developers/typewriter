@@ -62,7 +62,7 @@ Order-entry scripts also take command-specific variables such as `INSTRUMENT`, `
 Run these from separate terminals:
 
 ```bash
-anvil --block-time 0.4
+anvil --network monad --block-time 0.4
 cd apps/order-book && cp .env.example.local .env && bun run deploy
 cd apps/order-book && bun dev
 ```

@@ -17,6 +17,14 @@ The server is trusted for day-to-day ordering and availability, but it does not 
 > **This project is under active development. Not ready for production use.**
 > It is provided for educational purposes and has not been audited. Do not use it in connection with real funds on mainnet without an independent audit.
 
+## Local Development
+
+The latest Foundry release includes Monad support. Start a local Monad Anvil node with:
+
+```bash
+anvil --network monad --block-time 0.4
+```
+
 ## Concepts
 
 ### State
