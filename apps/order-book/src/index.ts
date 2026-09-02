@@ -268,7 +268,7 @@ serve({
         if (
           typeof body.name !== "string" ||
           body.params === undefined ||
-          body.signature === undefined
+          body.authorization === undefined
         ) {
           return json({ error: "Bad Request" }, { status: 400 });
         }
