@@ -67,7 +67,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://ubuntu@localhost:5432/postgres
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
