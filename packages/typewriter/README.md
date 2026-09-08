@@ -2,12 +2,12 @@
 
 Typewriter is a framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.
 
-You write Solidity state and mutations. Then, Typewriter runs a server that orders user-signed mutations, executes them locally for acceptance in roughly 50ms, and submits them onchain.
+Developers write business logic for their app with Solidity. Then, Typewriter runs a server that orders user-signed mutations, executes them locally for acceptance in single digit ms, and submits them onchain.
 
 The server is trusted for day-to-day ordering and availability, but it does not control user funds. Users can bypass the server and submit valid mutations directly onchain through force inclusion.
 
 - **Custom sequencing**. Applications define their transaction ordering (fifo or batch).
-- **Fast confirmations**. Applications can accept mutations in roughly 50ms, before transactions finalize onchain.
+- **Fast confirmations**. Applications can accept mutations in single digit ms, before transactions finalize onchain.
 - **Gas sponsorship**. Users sign application mutations while the server pays for settlement transactions.
 - **Native accounts**. Credential management, parallel nonces, expirations, permissions, and EIP-712 authorization with P-256, WebAuthn-P256, or secp256k1.
 - **Direct control**. No external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over what users experience.
@@ -16,14 +16,6 @@ The server is trusted for day-to-day ordering and availability, but it does not 
 > [!WARNING]
 > **This project is under active development. Not ready for production use.**
 > It is provided for educational purposes and has not been audited. Do not use it in connection with real funds on mainnet without an independent audit.
-
-## Local Development
-
-The latest Foundry release includes Monad support. Start a local Monad Anvil node with:
-
-```bash
-anvil --network monad --block-time 0.4
-```
 
 ## Concepts
 
@@ -58,34 +50,13 @@ function executeTransfer(State storage state, Transfer memory transfer, bytes32 
 
 ### Accounts and Signatures
 
-Typewriter owns the account registry and verifies one fixed EIP-712 `Authorization`
-shape for every mutation.
+Typewriter provides a built-in account system. An account represents a user and is identified by a stable `bytes32` ID. Each account can have multiple credentials, which can be added or removed without changing its identity.
 
-Typewriter supports three signature algorithms:
+A credential grants permission to act on behalf of an account. It contains a public key, permissions specifying which mutations it can authorize, and an optional expiration. Typewriter supports three signature types: P-256, WebAuthn-P256, and secp256k1.
 
-- P-256
-- WebAuthn-P256
-- secp256k1
+Users sign mutations with a credential to create authorizations. Before executing the mutation onchain, Typewriter verifies the signature, checks permissions, and enforces expirations and replay protection.
 
-An account has a stable `bytes32` ID and array-indexed credentials. Each
-credential stores its key type, public key, expiration, and a `uint256`
-permission bitset keyed by mutation ID. Authorizations select a credential,
-carry a packed parallel nonce and expiration, and sign the mutation's encoded
-data under the deployment's Typewriter EIP-712 domain.
-
-```solidity
-struct Authorization {
-    bytes32 accountID;
-    uint64 credentialID;
-    uint256 nonce;
-    uint256 expiration;
-    bytes signature;
-}
-```
-
-Account creation, credential addition, and credential removal are built-in
-mutations with IDs `253`, `254`, and `255`. App mutation IDs occupy `0` through
-`252`.
+Accounts use two-dimensional nonces: a lane and a sequence number within that lane. Separate clients can use independent lanes to submit mutations for the same account without coordinating a single sequence.
 
 ### Server runtime
 
@@ -183,6 +154,14 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 - [`token`](https://github.com/monad-exp/order-book/tree/main/apps/token) is a minimal token application that demonstrates native P-256 accounts, batch sequencing, minting, and account-owned transfers.
 - [`order-book`](https://github.com/monad-exp/order-book/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
+## Local Development
+
+The latest Foundry release includes Monad support. Start a local Monad Anvil node with:
+
+```bash
+anvil --network monad --block-time 0.4
+```
+
 ## Failure modes
 
 ### Reorg handling
@@ -267,10 +246,68 @@ library AddMutation {
 }
 ```
 
+#### Accounts and credentials
+
+The `Typewriter` base contract provides the account registry and credential management.
+
+Accounts are stored in the inherited `accounts` mapping, separately from the
+application's `State`:
+
+```solidity
+mapping (bytes32 => Account) accounts;
+
+struct Account {
+    mapping(uint192 => uint64) nonces;
+    Credential[] credentials;
+    uint64 activeCredentials;
+}
+
+struct Credential {
+    uint40 expiration;
+    KeyType keyType;
+    uint256 permissions;
+    bytes publicKey;
+}
+
+enum KeyType {
+    P256,
+    WebAuthnP256,
+    Secp256k1
+}
+```
+
+Each credential belongs to an account and grants permission to sign mutations
+on its behalf. `keyType` selects `P256`, `WebAuthnP256`, or `Secp256k1`.
+`permissions` is a bitset: bit `mutationID` grants permission to authorize that
+mutation. `expiration` is a Unix timestamp in seconds; `0` means no expiration.
+
+A credential's ID is its array index. Adding a credential appends a new entry;
+removing one clears its slot without changing other IDs or the account ID.
+`activeCredentials` counts credentials that have not been removed, including
+expired credentials. Typewriter prevents removal of a missing credential or
+the final remaining credential.
+
+Account creation and credential management are built-in mutations:
+
+| Mutation | ID | Parameters |
+| --- | --- | --- |
+| `CreateAccount` | `253` | `KeyType keyType`, `bytes publicKey` |
+| `AddCredential` | `254` | `uint40 expiration`, `KeyType keyType`, `uint256 permissions`, `bytes publicKey` |
+| `RemoveCredential` | `255` | `uint64 credentialID` |
+
+
+`CreateAccount` derives the account ID as
+`keccak256(abi.encode(keyType, publicKey))` and creates credential `0` with all
+permissions and no expiration. The account ID remains unchanged if this
+credential is later removed.
+
 #### Authorization
 
-The outer EVM transaction is submitted by the scheduler, so mutations carry a
-fixed authorization that identifies the user account and credential.
+An authorization is a user's signed approval for a specific mutation. It
+identifies the account and the credential used to sign. Typewriter handles
+decoding and verification internally, then passes an authenticated
+`bytes32 accountID` to `dispatch()`. Application mutation code does not receive
+the authorization or implement these checks.
 
 ```solidity
 struct Authorization {
@@ -282,53 +319,62 @@ struct Authorization {
 }
 ```
 
-The signed EIP-712 primary type is
-`Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint256 expiration,uint8 mutation,bytes mutationData)`
-under domain name `Typewriter`, version `1`, the deployment chain ID, and the
-contract address. Dynamic `mutationData` is hashed according to EIP-712.
-It is the exact `abi.encode(mutation)` passed to contract execution: one
-top-level mutation struct, with no appended account ID.
+`signature` is an an EIP-712 authorization digest. The exact primary type is:
 
-The nonce packs a `uint192` lane into its high bits and a `uint64` sequence into
-its low bits. This allows independent clients to use separate lanes without
-serializing every account action. Zero expiration means no expiration; nonzero
-authorizations and credentials are valid through their expiration timestamp.
-
-Credentials use a `uint256` permission bitset where bit `mutationID` grants the
-corresponding mutation. Credential IDs are stable array indexes. Typewriter
-prevents removal of a missing credential or the final active credential.
-
-**Verification helpers.** `typewriter/Typewriter.sol` exports the `KeyType` enum and
-a `verifySignature` helper for verifying a raw signature:
-
-```solidity
-import {KeyType, verifySignature} from "typewriter/Typewriter.sol";
-
-verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view;
+```text
+Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint256 expiration,uint8 mutation,bytes mutationData)
 ```
 
-`KeyType` is `{ P256, WebAuthnP256, Secp256k1 }`. `verifySignature` will revert with `InvalidSignature(KeyType)` on a failed check.
+The domain is `{ name: "Typewriter", version: "1", chainId, verifyingContract }`,
+using the deployment's chain ID and contract address. This binds the signature
+to that deployment.
 
-Byte layouts:
+**Signature encoding.** The selected credential's `keyType` determines the
+expected key and signature bytes:
 
-| `KeyType` | `publicKey` | raw `signature` |
+| `keyType` | Stored `publicKey` | Encoded `signature` |
 | --- | --- | --- |
-| `Secp256k1` | `abi.encode(address)` | `abi.encode(uint8 v, bytes32 r, bytes32 s)` |
-| `P256` | 65-byte uncompressed (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)` over `sha256(digest)` |
-| `WebAuthnP256` | same as `P256` | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)`; `clientDataJSON` must contain the base64url-encoded `digest` starting at `challengeOffset`, and the verified message is `sha256(authData \|\| sha256(clientDataJSON))` |
+| `P256` (`0`) | 65-byte uncompressed key (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)` |
+| `WebAuthnP256` (`1`) | Same as `P256` | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)` |
+| `Secp256k1` (`2`) | `abi.encode(address)` | `abi.encode(uint8 v, bytes32 r, bytes32 s)` with `v` equal to `27` or `28` |
 
-`Secp256k1` verification uses `ecrecover` and is `pure`. `P256` and
-`WebAuthnP256` verification `staticcall` the precompile at address `0x100`;
-deployments on chains without this precompile will revert from those paths.
+For `Secp256k1`, Typewriter calls `ecrecover` on `digest` and requires a nonzero
+address matching the stored address. For `P256`, it verifies `(r, s)` over
+`sha256(digest)`. For `WebAuthnP256`, it checks that the 43-byte, unpadded
+base64url encoding of `digest` appears in `clientDataJSON` at `challengeOffset`,
+then verifies `(r, s)` over `sha256(authData || sha256(clientDataJSON))`.
+Both P-256 paths use the precompile at `0x100` and require it to return `1`.
 
-`CreateAccount`, `AddCredential`, and `RemoveCredential` use this same envelope.
-`CreateAccount` derives the account ID from
-`keccak256(abi.encode(keyType, publicKey))`; that derived value is both the
-signed authorization's `accountID` and the wire authorization's `accountID`. The
-authorization must also use zero values for `credentialID`, `nonce`, and
-`expiration`.
-Its signed `mutationData` remains the original `abi.encode(createAccount)`, and
-it creates credential `0` with all permissions.
+**Verification.** For an existing account, the base contract performs these
+checks before executing the mutation:
+
+1. The account exists, and `credentialID` selects a credential that has not been removed.
+2. Neither the authorization nor the credential has expired. Both expirations are Unix timestamps in seconds; `0` means no expiration, and nonzero values must be greater than or equal to `block.timestamp`.
+3. The credential permits the mutation: `permissions & (uint256(1) << mutation)` is nonzero.
+4. The nonce sequence matches the account's next expected sequence for its lane and is less than `type(uint64).max`.
+5. The signature is valid for the EIP-712 digest and the credential's key.
+
+If any check fails, execution reverts. After verification, Typewriter increments
+the lane's sequence and executes the mutation.
+
+**Two-dimensional nonces.** The nonce packs a `uint192` lane into its high bits
+and a `uint64` sequence into its low bits:
+
+```solidity
+uint256 nonce = (uint256(lane) << 64) | uint256(sequence);
+```
+
+The next expected sequence is stored in `accounts[accountID].nonces[lane]` and
+starts at `0`. Lanes are shared across the account's credentials. Separate
+clients can choose different lanes to submit mutations without coordinating a
+single sequence; clients using the same lane must coordinate.
+
+**Account creation.** `CreateAccount` uses the same wire format and EIP-712
+payload, but verifies against the key supplied in the mutation because there
+is no existing credential. The account must not already exist, the key and
+signature must be nonempty, and `accountID` must equal
+`keccak256(abi.encode(keyType, publicKey))`. `credentialID`, `nonce`, and
+`expiration` must all be `0`. Creation does not consume a nonce.
 
 #### Contract structure
 
