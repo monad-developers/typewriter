@@ -109,7 +109,7 @@ const accepted = await typewriter.execute({
 
 #### Sequencing
 
-Sequencing controls the order mutations are accepted by the server and included onchain. Typewriter ships two sequencing modes: FIFO and batch. FIFO is the default when `sequencing.order` is omitted.
+Sequencing controls the order mutations are accepted by the server and included onchain. Typewriter ships two sequencing modes: FIFO and batch. FIFO is the default when `sequencing` is omitted.
 
 ##### FIFO
 
@@ -319,7 +319,7 @@ struct Authorization {
 }
 ```
 
-`signature` is an an EIP-712 authorization digest. The exact primary type is:
+`signature` contains the credential-specific encoded signature over the EIP-712 authorization digest. The exact primary type is:
 
 ```text
 Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint256 expiration,uint8 mutation,bytes mutationData)
@@ -401,9 +401,12 @@ contract Token is Typewriter {
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID)
         internal override
     {
-        if (mutation != uint8(Mutation.Add)) revert UnknownMutation(mutation);
-        AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
-        AddMutation.execute(state, add, accountID);
+        if (mutation == uint8(Mutation.Add)) {
+            AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
+            AddMutation.execute(state, add, accountID);
+        } else {
+            revert UnknownMutation(mutation);
+        }
     }
 }
 ```
@@ -485,7 +488,10 @@ The server entry point exports `createTypewriter`. Its handle contains `state`,
 #### `createTypewriter()`
 
 ```ts
-function createTypewriter(config: TypewriterConfig): Promise<Typewriter>;
+function createTypewriter(
+  entrypoint: TypewriterSolidityEntrypoint,
+  config: TypewriterConfig,
+): Promise<Typewriter>;
 ```
 
 Starts the runtime and resolves to the `Typewriter` handle (see the [Server runtime](#server-runtime) example for a full call). On startup it connects to the chain and database, runs migrations, and hydrates local revm state from persisted slot writes; from there it accepts mutations and submits them onchain.
@@ -602,7 +608,7 @@ Every mutation table starts with the same **lifecycle columns**:
 | --- | --- | --- |
 | `id` | `integer`, primary key | mutation id; matches the `typewriter.execute()` result and event `id` |
 | `status` | `mutation_status` enum | one of `accepted`, `included`, `safe`, `finalized` |
-| `executionIndex` | `numeric(78,0)` bigint | onchain execution index; set once included |
+| `executionIndex` | `numeric(78,0)` bigint | speculative onchain execution index; assigned and persisted at acceptance |
 | `blockNumber` | `numeric(78,0)` bigint | inclusion block; null until included |
 | `blockHash` | `char(66)` (hex) | null until included |
 | `blockTimestamp` | `numeric(78,0)` bigint | null until included |
@@ -658,7 +664,7 @@ typewriter.on(event, callback): () => void;
 
 Subscribes to runtime events; returns an unsubscribe function. There are three events, each with its own payload type.
 
-**`"mutation"` → `MutationEvent`** — fires every time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `id` (number), `name` (the mutation name), `params`, and `signature`; the rest depends on `status`:
+**`"mutation"` → `MutationEvent`** — fires every time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `id` (number), `name` (the mutation name), `params`, and `authorization` (including `authorization.signature`); the rest depends on `status`:
 
 | `status` | Additional fields |
 | --- | --- |
