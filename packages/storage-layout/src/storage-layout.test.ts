@@ -1,503 +1,255 @@
 import { expect, test } from "bun:test";
-import { complexLayout, layout } from "../test/utils";
-import {
-  type ResolvedStorageItem,
-  resolveStoragePath,
-  storagePathEndsAtValue,
-} from "./storage-layout";
-import { formatStoragePath, parseStoragePath } from "./storage-path";
+import { complexLayout, layout, OWNER } from "../test/utils";
+import { keccakSlot } from "./solidity-encoding";
+import { resolveStoragePath, type StorageLayout } from "./storage-layout";
+import { parseStoragePath } from "./storage-path";
 
-function summarizeResolvedStorageItem(resolved: ResolvedStorageItem) {
+function resolve(storageLayout: StorageLayout, path: string) {
+  const location = resolveStoragePath(storageLayout, parseStoragePath(path));
   return {
-    baseSlot: resolved.baseSlot,
-    item: {
-      label: resolved.item.label,
-      offset: resolved.item.offset,
-      slot: resolved.item.slot,
-      type: resolved.item.type,
-    },
-    path: formatStoragePath(resolved.path),
-    type: resolved.type.label,
+    slot: location.slot,
+    offset: location.offset,
+    type: location.type.label,
   };
 }
 
-test("resolveStoragePath resolves value paths", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("owner")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
+test("resolveStoragePath resolves top-level and packed values", () => {
+  expect([
+    resolve(layout, "totalSupply"),
+    resolve(layout, "owner"),
+    resolve(layout, "paused"),
+  ]).toMatchInlineSnapshot(`
     [
       {
-        "baseSlot": 0n,
-        "item": {
-          "label": "owner",
-          "offset": 0,
-          "slot": "1",
-          "type": "t_address",
-        },
-        "path": "owner",
-        "type": "address",
-      },
-    ]
-  `);
-});
-
-test("resolveStoragePath resolves nested struct paths", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("metadata.inner.count")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "baseSlot": 6n,
-        "item": {
-          "label": "count",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint256",
-        },
-        "path": "metadata.inner.count",
+        "offset": 0,
+        "slot": 0n,
         "type": "uint256",
       },
+      {
+        "offset": 0,
+        "slot": 1n,
+        "type": "address",
+      },
+      {
+        "offset": 20,
+        "slot": 1n,
+        "type": "bool",
+      },
     ]
   `);
 });
 
-test("resolveStoragePath expands whole structs", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("metadata")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
+test("resolveStoragePath resolves struct fields", () => {
+  expect([
+    resolve(layout, "metadata"),
+    resolve(layout, "metadata.active"),
+    resolve(layout, "metadata.admin"),
+    resolve(layout, "metadata.inner.count"),
+  ]).toMatchInlineSnapshot(`
     [
       {
-        "baseSlot": 4n,
-        "item": {
-          "label": "lastUpdate",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint64",
-        },
-        "path": "metadata.lastUpdate",
-        "type": "uint64",
+        "offset": 0,
+        "slot": 4n,
+        "type": "struct Test.Metadata",
       },
       {
-        "baseSlot": 4n,
-        "item": {
-          "label": "active",
-          "offset": 8,
-          "slot": "0",
-          "type": "t_bool",
-        },
-        "path": "metadata.active",
+        "offset": 8,
+        "slot": 4n,
         "type": "bool",
       },
       {
-        "baseSlot": 4n,
-        "item": {
-          "label": "admin",
-          "offset": 0,
-          "slot": "1",
-          "type": "t_address",
-        },
-        "path": "metadata.admin",
+        "offset": 0,
+        "slot": 5n,
         "type": "address",
       },
       {
-        "baseSlot": 6n,
-        "item": {
-          "label": "count",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint256",
-        },
-        "path": "metadata.inner.count",
+        "offset": 0,
+        "slot": 6n,
         "type": "uint256",
       },
     ]
   `);
 });
 
-test("resolveStoragePath resolves fixed array elements", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("fixedNumbers[1]")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
+test("resolveStoragePath packs fixed array value elements", () => {
+  expect([
+    resolve(layout, "fixedNumbers"),
+    resolve(layout, "fixedNumbers[1]"),
+    resolve(layout, "fixedNumbers[2]"),
+  ]).toMatchInlineSnapshot(`
     [
       {
-        "baseSlot": 8n,
-        "item": {
-          "label": "fixedNumbers[1]",
-          "offset": 16,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "fixedNumbers[1]",
+        "offset": 0,
+        "slot": 8n,
+        "type": "uint128[3]",
+      },
+      {
+        "offset": 16,
+        "slot": 8n,
+        "type": "uint128",
+      },
+      {
+        "offset": 0,
+        "slot": 9n,
         "type": "uint128",
       },
     ]
   `);
 });
 
-test("resolveStoragePath expands fixed arrays", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("fixedNumbers")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "baseSlot": 8n,
-        "item": {
-          "label": "fixedNumbers[0]",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "fixedNumbers[0]",
-        "type": "uint128",
-      },
-      {
-        "baseSlot": 8n,
-        "item": {
-          "label": "fixedNumbers[1]",
-          "offset": 16,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "fixedNumbers[1]",
-        "type": "uint128",
-      },
-      {
-        "baseSlot": 8n,
-        "item": {
-          "label": "fixedNumbers[2]",
-          "offset": 0,
-          "slot": "1",
-          "type": "t_uint128",
-        },
-        "path": "fixedNumbers[2]",
-        "type": "uint128",
-      },
-    ]
-  `);
+test("resolveStoragePath resolves dynamic array elements from keccak256(slot)", () => {
+  expect(resolve(layout, "dynamicNumbers")).toEqual({
+    slot: 10n,
+    offset: 0,
+    type: "uint256[]",
+  });
+  expect(resolve(layout, "dynamicNumbers[1]")).toEqual({
+    slot: keccakSlot(10n) + 1n,
+    offset: 0,
+    type: "uint256",
+  });
 });
 
-test("resolveStoragePath resolves dynamic arrays", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("dynamicNumbers")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
+test("resolveStoragePath resolves bytes and strings to their root slot", () => {
+  expect([
+    resolve(layout, "rawBytes"),
+    resolve(layout, "message"),
+  ]).toMatchInlineSnapshot(`
     [
       {
-        "baseSlot": 0n,
-        "item": {
-          "label": "dynamicNumbers",
-          "offset": 0,
-          "slot": "10",
-          "type": "t_array(t_uint256)dyn_storage",
-        },
-        "path": "dynamicNumbers",
-        "type": "uint256[]",
-      },
-    ]
-  `);
-  expect(
-    resolveStoragePath(layout, parseStoragePath("dynamicNumbers[1]")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "baseSlot": 89717814153306320011181716697424560163256864414616650038987186496166826726056n,
-        "item": {
-          "label": "dynamicNumbers[1]",
-          "offset": 0,
-          "slot": "1",
-          "type": "t_uint256",
-        },
-        "path": "dynamicNumbers[1]",
-        "type": "uint256",
-      },
-    ]
-  `);
-});
-
-test("resolveStoragePath resolves bytes and strings", () => {
-  expect(
-    resolveStoragePath(layout, parseStoragePath("rawBytes")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "baseSlot": 0n,
-        "item": {
-          "label": "rawBytes",
-          "offset": 0,
-          "slot": "11",
-          "type": "t_bytes_storage",
-        },
-        "path": "rawBytes",
+        "offset": 0,
+        "slot": 11n,
         "type": "bytes",
       },
-    ]
-  `);
-  expect(
-    resolveStoragePath(layout, parseStoragePath("message")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
       {
-        "baseSlot": 0n,
-        "item": {
-          "label": "message",
-          "offset": 0,
-          "slot": "12",
-          "type": "t_string_storage",
-        },
-        "path": "message",
+        "offset": 0,
+        "slot": 12n,
         "type": "string",
       },
     ]
   `);
 });
 
-test("resolveStoragePath resolves keyed mappings", () => {
-  expect(
-    resolveStoragePath(
-      layout,
-      parseStoragePath("balances[0x1111111111111111111111111111111111111234]"),
-    ).map(summarizeResolvedStorageItem),
-  ).toMatchInlineSnapshot(`
+test("resolveStoragePath hashes mapping keys with the mapping slot", () => {
+  expect([
+    resolve(layout, "balances"),
+    resolve(layout, `balances[${OWNER}]`),
+  ]).toMatchInlineSnapshot(`
     [
       {
-        "baseSlot": 49388279509293316078577064985078118302854491611548467545929961713850579549116n,
-        "item": {
-          "label": "balances[0x1111111111111111111111111111111111111234]",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint256",
-        },
-        "path": "balances[0x1111111111111111111111111111111111111234]",
-        "type": "uint256",
+        "offset": 0,
+        "slot": 7n,
+        "type": "mapping(address => uint256)",
       },
-    ]
-  `);
-  expect(() =>
-    resolveStoragePath(layout, parseStoragePath("balances")),
-  ).toThrow("mapping storage paths require a key: balances");
-});
-
-test("resolveStoragePath resolves arrays of structs", () => {
-  expect(
-    resolveStoragePath(complexLayout, parseStoragePath("orders[1].amount")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
       {
-        "baseSlot": 2n,
-        "item": {
-          "label": "amount",
-          "offset": 0,
-          "slot": "1",
-          "type": "t_uint256",
-        },
-        "path": "orders[1].amount",
+        "offset": 0,
+        "slot": 49388279509293316078577064985078118302854491611548467545929961713850579549116n,
         "type": "uint256",
       },
     ]
   `);
 });
 
-test("resolveStoragePath resolves structs with array fields", () => {
-  expect(
-    resolveStoragePath(
-      complexLayout,
-      parseStoragePath("book.priceLevels[1]"),
-    ).map(summarizeResolvedStorageItem),
-  ).toMatchInlineSnapshot(`
+test("resolveStoragePath resolves nested composites", () => {
+  expect([
+    resolve(complexLayout, "orders[1].amount"),
+    resolve(complexLayout, "book.priceLevels[1]"),
+    resolve(complexLayout, "book.inner.count"),
+    resolve(complexLayout, "matrix[1][0]"),
+    resolve(complexLayout, "matrix[1][1]"),
+  ]).toMatchInlineSnapshot(`
     [
       {
-        "baseSlot": 10n,
-        "item": {
-          "label": "priceLevels[1]",
-          "offset": 16,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "book.priceLevels[1]",
-        "type": "uint128",
-      },
-    ]
-  `);
-  expect(
-    resolveStoragePath(complexLayout, parseStoragePath("book")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "baseSlot": 10n,
-        "item": {
-          "label": "priceLevels[0]",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "book.priceLevels[0]",
-        "type": "uint128",
-      },
-      {
-        "baseSlot": 10n,
-        "item": {
-          "label": "priceLevels[1]",
-          "offset": 16,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "book.priceLevels[1]",
-        "type": "uint128",
-      },
-      {
-        "baseSlot": 11n,
-        "item": {
-          "label": "count",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint256",
-        },
-        "path": "book.inner.count",
+        "offset": 0,
+        "slot": 3n,
         "type": "uint256",
       },
-    ]
-  `);
-});
-
-test("resolveStoragePath resolves arrays of arrays", () => {
-  expect(
-    resolveStoragePath(complexLayout, parseStoragePath("matrix[1][0]")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
       {
-        "baseSlot": 21n,
-        "item": {
-          "label": "matrix[1][0]",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "matrix[1][0]",
-        "type": "uint128",
-      },
-    ]
-  `);
-  expect(
-    resolveStoragePath(complexLayout, parseStoragePath("matrix")).map(
-      summarizeResolvedStorageItem,
-    ),
-  ).toMatchInlineSnapshot(`
-    [
-      {
-        "baseSlot": 20n,
-        "item": {
-          "label": "matrix[0][0]",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "matrix[0][0]",
+        "offset": 16,
+        "slot": 10n,
         "type": "uint128",
       },
       {
-        "baseSlot": 20n,
-        "item": {
-          "label": "matrix[0][1]",
-          "offset": 16,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "matrix[0][1]",
+        "offset": 0,
+        "slot": 11n,
+        "type": "uint256",
+      },
+      {
+        "offset": 0,
+        "slot": 21n,
         "type": "uint128",
       },
       {
-        "baseSlot": 21n,
-        "item": {
-          "label": "matrix[1][0]",
-          "offset": 0,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "matrix[1][0]",
-        "type": "uint128",
-      },
-      {
-        "baseSlot": 21n,
-        "item": {
-          "label": "matrix[1][1]",
-          "offset": 16,
-          "slot": "0",
-          "type": "t_uint128",
-        },
-        "path": "matrix[1][1]",
+        "offset": 16,
+        "slot": 21n,
         "type": "uint128",
       },
     ]
   `);
 });
 
-test("resolveStoragePath rejects unsupported paths", () => {
-  expect(() =>
-    resolveStoragePath(layout, parseStoragePath("balances")),
-  ).toThrow("mapping storage paths require a key: balances");
-  expect(() =>
-    resolveStoragePath(layout, parseStoragePath("balances[0x1234]")),
-  ).toThrow("mapping key for 'balances' must be 20 bytes");
-  expect(() =>
-    resolveStoragePath(layout, parseStoragePath("fixedNumbers[3]")),
-  ).toThrow("fixed array index out of bounds: fixedNumbers[3]");
+test("resolveStoragePath accepts hex and negative integer subscripts", () => {
+  const intKeyLayout = {
+    storage: [
+      {
+        astId: 1,
+        contract: "src/Test.sol:Test",
+        label: "debts",
+        offset: 0,
+        slot: "0",
+        type: "t_mapping(t_int8,t_uint256)",
+      },
+    ],
+    types: {
+      t_int8: { encoding: "inplace", label: "int8", numberOfBytes: "1" },
+      t_uint256: { encoding: "inplace", label: "uint256", numberOfBytes: "32" },
+      "t_mapping(t_int8,t_uint256)": {
+        encoding: "mapping",
+        key: "t_int8",
+        label: "mapping(int8 => uint256)",
+        numberOfBytes: "32",
+        value: "t_uint256",
+      },
+    },
+  } as const satisfies StorageLayout;
+
+  expect(resolve(layout, "fixedNumbers[0x1]")).toEqual(
+    resolve(layout, "fixedNumbers[1]"),
+  );
+  expect(resolve(intKeyLayout, "debts[-1]").slot).not.toBe(
+    resolve(intKeyLayout, "debts[1]").slot,
+  );
+  expect(() => resolve(intKeyLayout, "debts[128]")).toThrow(
+    "mapping key for 'debts' must be within the int8 range -128 to 127",
+  );
 });
 
-test("isStoragePathEnd identifies terminal paths", () => {
-  expect(storagePathEndsAtValue(layout, parseStoragePath("totalSupply"))).toBe(
-    true,
+test("resolveStoragePath rejects invalid paths", () => {
+  expect(() => resolve(layout, "missing")).toThrow(
+    "storage variable not found: missing",
   );
-  expect(storagePathEndsAtValue(layout, parseStoragePath("metadata"))).toBe(
-    false,
+  expect(() => resolve(layout, "metadata.missing")).toThrow(
+    "struct field not found: metadata.missing",
   );
-  expect(
-    storagePathEndsAtValue(layout, parseStoragePath("metadata.lastUpdate")),
-  ).toBe(true);
-  expect(
-    storagePathEndsAtValue(layout, parseStoragePath("metadata.inner")),
-  ).toBe(false);
-  expect(storagePathEndsAtValue(layout, parseStoragePath("fixedNumbers"))).toBe(
-    false,
+  expect(() => resolve(layout, "totalSupply.field")).toThrow(
+    "storage path field 'field' requires a struct: totalSupply",
   );
-  expect(
-    storagePathEndsAtValue(layout, parseStoragePath("fixedNumbers[0]")),
-  ).toBe(true);
-  expect(
-    storagePathEndsAtValue(layout, parseStoragePath("dynamicNumbers")),
-  ).toBe(false);
-  expect(
-    storagePathEndsAtValue(layout, parseStoragePath("dynamicNumbers[0]")),
-  ).toBe(true);
-  expect(storagePathEndsAtValue(layout, parseStoragePath("rawBytes"))).toBe(
-    true,
+  expect(() => resolve(layout, "metadata[0]")).toThrow(
+    "storage path subscript requires an array or mapping: metadata[0]",
   );
-  expect(storagePathEndsAtValue(layout, parseStoragePath("message"))).toBe(
-    true,
+  expect(() => resolve(layout, "balances[0x1234]")).toThrow(
+    "mapping key for 'balances' must be 20 bytes",
   );
-  expect(() =>
-    storagePathEndsAtValue(layout, parseStoragePath("balances")),
-  ).toThrow("mapping storage paths require a key: balances");
+  expect(() => resolve(layout, "balances[1]")).toThrow(
+    "mapping key for 'balances' must be an address hex string",
+  );
+  expect(() => resolve(layout, "fixedNumbers[3]")).toThrow(
+    "fixed array index out of bounds: fixedNumbers[3]",
+  );
+  expect(() => resolve(layout, "dynamicNumbers[-1]")).toThrow(
+    "dynamic array index out of bounds: dynamicNumbers[-1]",
+  );
+  expect(() => resolve(layout, "dynamicNumbers[true]")).toThrow(
+    "dynamic array index must be a number: dynamicNumbers[true]",
+  );
 });

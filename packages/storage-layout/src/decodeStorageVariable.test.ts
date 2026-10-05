@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { Hex } from "ox";
+import { Hex } from "ox";
 import {
-  expectSingleSlot,
+  bytesStorage,
   layout,
   METADATA_PACKED,
   OWNER,
@@ -9,14 +9,10 @@ import {
   PACKED_OWNER_PAUSED,
   SALT,
   SPENDER,
-  writesToStorage,
+  slotOf,
 } from "../test/utils";
-import {
-  decodeStorageVariable,
-  encodeStorageVariable,
-  getStorageSlot,
-  type StorageLayout,
-} from "./index";
+import { MAX_BYTES_LENGTH } from "./decodeStorageVariable";
+import { decodeStorageVariable, type StorageLayout } from "./index";
 
 const decodeUnknownStorageVariable = decodeStorageVariable as unknown as (
   layout: StorageLayout,
@@ -34,6 +30,21 @@ test("decodeStorageVariable decodes value types from raw slots", () => {
   expect(decodeStorageVariable(layout, "totalSupply", storage)).toBe(42n);
   expect(decodeStorageVariable(layout, "debt", storage)).toBe(-1);
   expect(decodeStorageVariable(layout, "salt", storage)).toBe(SALT);
+});
+
+test("decodeStorageVariable checksums addresses and keeps other hex lowercase", () => {
+  const address = `0x${"ab".repeat(20)}` as const;
+
+  expect(
+    decodeStorageVariable(layout, "owner", {
+      [slotOf(layout, "owner")]: Hex.padLeft(address, 32),
+    }),
+  ).toBe("0xABaBaBaBABabABabAbAbABAbABabababaBaBABaB");
+  expect(
+    decodeStorageVariable(layout, "salt", {
+      [slotOf(layout, "salt")]: `0x${"AB".repeat(32)}`,
+    }),
+  ).toBe(`0x${"ab".repeat(32)}`);
 });
 
 test("decodeStorageVariable decodes packed values", () => {
@@ -71,9 +82,9 @@ test("decodeStorageVariable decodes fixed array elements", () => {
 
 test("decodeStorageVariable decodes dynamic array elements", () => {
   const storage = {
-    [expectSingleSlot(getStorageSlot(layout, "dynamicNumbers"))]: "0x2",
-    [expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[0]"))]: "0x1",
-    [expectSingleSlot(getStorageSlot(layout, "dynamicNumbers[1]"))]: "0x2",
+    [slotOf(layout, "dynamicNumbers")]: "0x2",
+    [slotOf(layout, "dynamicNumbers[0]")]: "0x1",
+    [slotOf(layout, "dynamicNumbers[1]")]: "0x2",
   } as const;
 
   expect(decodeStorageVariable(layout, "dynamicNumbers[1]", storage)).toBe(2n);
@@ -81,10 +92,8 @@ test("decodeStorageVariable decodes dynamic array elements", () => {
 
 test("decodeStorageVariable decodes keyed mappings", () => {
   const storage = {
-    [expectSingleSlot(getStorageSlot(layout, `balances[${OWNER}]`))]: "0x2a",
-    [expectSingleSlot(
-      getStorageSlot(layout, `allowances[${OWNER}][${SPENDER}]`),
-    )]: "0x64",
+    [slotOf(layout, `balances[${OWNER}]`)]: "0x2a",
+    [slotOf(layout, `allowances[${OWNER}][${SPENDER}]`)]: "0x64",
   } as const;
 
   expect(decodeStorageVariable(layout, `balances[${OWNER}]`, storage)).toBe(
@@ -96,10 +105,10 @@ test("decodeStorageVariable decodes keyed mappings", () => {
 });
 
 test("decodeStorageVariable decodes short in-slot bytes and string", () => {
-  const storage = writesToStorage({
-    ...encodeStorageVariable(layout, "rawBytes", "0x1234"),
-    ...encodeStorageVariable(layout, "message", "hello"),
-  });
+  const storage = {
+    ...bytesStorage(slotOf(layout, "rawBytes"), "0x1234"),
+    ...bytesStorage(slotOf(layout, "message"), Hex.fromString("hello")),
+  };
 
   expect(decodeStorageVariable(layout, "rawBytes", storage)).toBe("0x1234");
   expect(decodeStorageVariable(layout, "message", storage)).toBe("hello");
@@ -108,10 +117,10 @@ test("decodeStorageVariable decodes short in-slot bytes and string", () => {
 test("decodeStorageVariable decodes long out-of-slot bytes and string", () => {
   const longBytes = `0x${"11".repeat(33)}` as const;
   const longString = "x".repeat(33);
-  const storage = writesToStorage({
-    ...encodeStorageVariable(layout, "rawBytes", longBytes),
-    ...encodeStorageVariable(layout, "message", longString),
-  });
+  const storage = {
+    ...bytesStorage(slotOf(layout, "rawBytes"), longBytes),
+    ...bytesStorage(slotOf(layout, "message"), Hex.fromString(longString)),
+  };
 
   expect(decodeStorageVariable(layout, "rawBytes", storage)).toBe(longBytes);
   expect(decodeStorageVariable(layout, "message", storage)).toBe(longString);
@@ -138,7 +147,7 @@ test("decodeStorageVariable fails loudly for invalid composite variables", () =>
 });
 
 test("decodeStorageVariable fails loudly when raw slots are missing", () => {
-  const rootSlot = expectSingleSlot(getStorageSlot(layout, "totalSupply"));
+  const rootSlot = slotOf(layout, "totalSupply");
 
   expect(() => decodeStorageVariable(layout, "totalSupply", {})).toThrow(
     `storage value not found for slot: ${rootSlot}`,
@@ -148,14 +157,13 @@ test("decodeStorageVariable fails loudly when raw slots are missing", () => {
 test("decodeStorageVariable requires bytes and string root slots", () => {
   const longBytes = `0x${"11".repeat(33)}` as const;
   const longString = "x".repeat(33);
-  const rawBytesStorage = writesToStorage(
-    encodeStorageVariable(layout, "rawBytes", longBytes),
+  const rawBytesStorage = bytesStorage(slotOf(layout, "rawBytes"), longBytes);
+  const stringStorage = bytesStorage(
+    slotOf(layout, "message"),
+    Hex.fromString(longString),
   );
-  const stringStorage = writesToStorage(
-    encodeStorageVariable(layout, "message", longString),
-  );
-  const rawBytesRootSlot = expectSingleSlot(getStorageSlot(layout, "rawBytes"));
-  const stringRootSlot = expectSingleSlot(getStorageSlot(layout, "message"));
+  const rawBytesRootSlot = slotOf(layout, "rawBytes");
+  const stringRootSlot = slotOf(layout, "message");
 
   delete rawBytesStorage[rawBytesRootSlot];
   delete stringStorage[stringRootSlot];
@@ -171,14 +179,13 @@ test("decodeStorageVariable requires bytes and string root slots", () => {
 test("decodeStorageVariable requires bytes and string payload slots", () => {
   const longBytes = `0x${"11".repeat(33)}` as const;
   const longString = "x".repeat(33);
-  const rawBytesStorage = writesToStorage(
-    encodeStorageVariable(layout, "rawBytes", longBytes),
+  const rawBytesStorage = bytesStorage(slotOf(layout, "rawBytes"), longBytes);
+  const stringStorage = bytesStorage(
+    slotOf(layout, "message"),
+    Hex.fromString(longString),
   );
-  const stringStorage = writesToStorage(
-    encodeStorageVariable(layout, "message", longString),
-  );
-  const rawBytesRootSlot = expectSingleSlot(getStorageSlot(layout, "rawBytes"));
-  const stringRootSlot = expectSingleSlot(getStorageSlot(layout, "message"));
+  const rawBytesRootSlot = slotOf(layout, "rawBytes");
+  const stringRootSlot = slotOf(layout, "message");
   const rawBytesPayloadSlot = Object.keys(rawBytesStorage).find(
     (slot) => slot !== rawBytesRootSlot,
   ) as Hex.Hex;
@@ -221,4 +228,81 @@ test("decodeStorageVariable rejects unsupported value types", () => {
   expect(() =>
     decodeUnknownStorageVariable(unsupportedLayout, "rate", { "0x0": "0x0" }),
   ).toThrow("unsupported storage path type 'fixed128x18' for rate");
+});
+
+test("decodeStorageVariable matches slot keys in any hex form", () => {
+  const slot = slotOf(layout, `balances[${OWNER}]`);
+
+  expect(
+    decodeStorageVariable(layout, `balances[${OWNER}]`, {
+      [slot.toUpperCase().replace("0X", "0x") as Hex.Hex]: "0x2a",
+    }),
+  ).toBe(42n);
+  expect(decodeStorageVariable(layout, "totalSupply", { "0x00": "0x2a" })).toBe(
+    42n,
+  );
+});
+
+test("decodeStorageVariable decodes empty bytes and string", () => {
+  const storage = {
+    [slotOf(layout, "rawBytes")]: "0x0",
+    [slotOf(layout, "message")]: "0x0",
+  } as const;
+
+  expect(decodeStorageVariable(layout, "rawBytes", storage)).toBe("0x");
+  expect(decodeStorageVariable(layout, "message", storage)).toBe("");
+});
+
+test("decodeStorageVariable decodes 32-byte bytes in the long form", () => {
+  const value = `0x${"ab".repeat(32)}` as const;
+  const storage = bytesStorage(slotOf(layout, "rawBytes"), value);
+
+  expect(Object.keys(storage)).toHaveLength(2);
+  expect(decodeStorageVariable(layout, "rawBytes", storage)).toBe(value);
+});
+
+test("decodeStorageVariable rejects bytes root words that Solidity rejects", () => {
+  const slot = slotOf(layout, "message");
+  // Long form (lowest bit 1) with a length below 32: Solidity panics 0x22.
+  expect(() =>
+    decodeStorageVariable(layout, "message", { [slot]: "0x3f" }),
+  ).toThrow("incorrectly encoded bytes length slot: message");
+  // Short form (lowest bit 0) with a length of 32 or more: Solidity panics 0x22.
+  expect(() =>
+    decodeStorageVariable(layout, "message", { [slot]: "0x40" }),
+  ).toThrow("incorrectly encoded bytes length slot: message");
+});
+
+test("decodeStorageVariable rejects bytes longer than MAX_BYTES_LENGTH", () => {
+  const slot = slotOf(layout, "rawBytes");
+  const tooLong = Hex.fromNumber(BigInt(MAX_BYTES_LENGTH + 1) * 2n + 1n, {
+    size: 32,
+  });
+
+  expect(() =>
+    decodeStorageVariable(layout, "rawBytes", { [slot]: tooLong }),
+  ).toThrow(
+    `bytes value of ${MAX_BYTES_LENGTH + 1} bytes is larger than the ${MAX_BYTES_LENGTH}-byte limit: rawBytes`,
+  );
+  expect(() =>
+    decodeStorageVariable(layout, "rawBytes", {
+      [slot]: `0x${"ff".repeat(32)}`,
+    }),
+  ).toThrow("is larger than the");
+});
+
+test("decodeStorageVariable rejects slot values larger than 32 bytes", () => {
+  expect(() =>
+    decodeStorageVariable(layout, "totalSupply", {
+      "0x0": `0x01${"00".repeat(32)}`,
+    }),
+  ).toThrow("storage value is larger than 32 bytes");
+});
+
+test("decodeStorageVariable rejects slot keys that are not hex", () => {
+  expect(() =>
+    decodeStorageVariable(layout, "totalSupply", {
+      ["slot0" as Hex.Hex]: "0x2a",
+    }),
+  ).toThrow("storage slot key is not a hex string: slot0");
 });

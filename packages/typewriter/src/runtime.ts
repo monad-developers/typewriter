@@ -12,10 +12,12 @@ import {
 } from "effect";
 import { Hash, Hex } from "ox";
 import {
-  createStorageProxy,
+  createStorageView,
+  getStorageVariablePreimages,
+  type KeccakPreimage,
   recoverStoragePaths,
   type StorageLayout,
-  type StorageProxy,
+  type StorageView,
 } from "storage-layout";
 import {
   createEVM,
@@ -320,7 +322,6 @@ export function enqueueMutation(params: {
   });
 }
 
-type RawSlotMap = { [slot: Hex.Hex]: Hex.Hex };
 const SLOT_CACHE_MAX_ENTRIES = 200_000;
 
 export function decodeEnqueuedMutation(params: {
@@ -378,9 +379,11 @@ export function createRevmRevertError(
 export function createRuntimeState(app: InternalApp): Effect.Effect<
   {
     evm: EVM;
-    accounts: StorageProxy<StorageLayout, true>[string];
-    state: StorageProxy<StorageLayout, true>[string];
+    accounts: StorageView<StorageLayout, true>[string];
+    state: StorageView<StorageLayout, true>[string];
     knownPaths: string[];
+    /** Append the mapping preimages of a known path, for proxy enumeration. */
+    addKnownPathPreimages: (path: string) => void;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
   unknown,
@@ -404,6 +407,23 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
         };
       }),
     );
+
+    // The proxy enumerates mapping keys from keccak256 preimages. Known paths
+    // are what the database stores, so rebuild their preimages here and append
+    // more as new paths are registered.
+    const preimages: KeccakPreimage[] = [];
+    const preimageHashes = new Set<Hex.Hex>();
+    const addKnownPathPreimages = (path: string) => {
+      for (const entry of getStorageVariablePreimages(
+        app.storageLayout,
+        path,
+      )) {
+        if (preimageHashes.has(entry.hash)) continue;
+        preimageHashes.add(entry.hash);
+        preimages.push(entry);
+      }
+    };
+    for (const path of knownPaths) addKnownPathPreimages(path);
 
     const evm = yield* createEVM();
     const code = yield* rpc.request({
@@ -448,7 +468,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       }
     };
 
-    const storageProxy = createStorageProxy(
+    const storageProxy = createStorageView(
       app.storageLayout,
       async (slots) => {
         const missingSlots = slots.filter((slot) => !slotCache.has(slot));
@@ -469,11 +489,9 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
           }
         }
 
-        return Object.fromEntries(
-          slots.map((slot) => [slot, slotCache.get(slot)!]),
-        ) as RawSlotMap;
+        return slots.map((slot) => slotCache.get(slot)!);
       },
-      knownPaths,
+      preimages,
     );
 
     return {
@@ -483,6 +501,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
       state: storageProxy["state"],
       knownPaths,
+      addKnownPathPreimages,
       invalidateStorageCache,
     };
   });
@@ -536,8 +555,14 @@ export function createRuntimeEffect(
     const scope = yield* Scope.Scope;
 
     const schema = app.schema;
-    const { evm, accounts, state, knownPaths, invalidateStorageCache } =
-      yield* createRuntimeState(app);
+    const {
+      evm,
+      accounts,
+      state,
+      knownPaths,
+      addKnownPathPreimages,
+      invalidateStorageCache,
+    } = yield* createRuntimeState(app);
     const knownPathSet = new Set(knownPaths);
 
     let mutationId = yield* selectNextMutationId(schema);
@@ -671,6 +696,7 @@ export function createRuntimeEffect(
           if (knownPathSet.has(path)) continue;
           knownPathSet.add(path);
           knownPaths.push(path);
+          addKnownPathPreimages(path);
           newKnownPathCount += 1;
         }
         if (newKnownPathCount > 0) {

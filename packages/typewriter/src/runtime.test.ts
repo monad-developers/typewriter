@@ -156,6 +156,53 @@ test("runtime loads persisted root state before returning", async () => {
   expect(result).toBe(7n);
 });
 
+test("runtime enumerates mapping keys from persisted known paths", async () => {
+  const address = await deployCounter();
+  const app = await counterApp(address);
+  const schemaName = deploymentSchemaName(anvil.id, address);
+  const accountId = `0x${"ab".repeat(32)}`;
+
+  const keys = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* migrate(app.schema, app.chainId, app.address, 0n);
+        yield* Effect.promise(
+          () => TEST_DB_CONNECTION`
+            INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.known_paths (path)
+            VALUES (${`accounts[${accountId}].activeCredentials`})
+          `,
+        );
+
+        const runtime = yield* createRuntimeEffect(app);
+        return Object.keys(runtime.accounts);
+      }).pipe(Effect.provide(layerRuntimeServices(address))),
+    ),
+  );
+
+  expect(keys).toEqual([accountId]);
+});
+
+test("runtime enumerates mapping keys registered by accepted mutations", async () => {
+  const address = await deployCounter();
+  const app = await counterApp(address);
+  const createAccount = await prepareCounterCreateAccount({
+    privateKey: USER_PRIVATE_KEY,
+    address,
+    chainId: anvil.id,
+  });
+
+  const keys = await runWithRuntime(app, (runtime) =>
+    Effect.gen(function* () {
+      const before = Object.keys(runtime.accounts);
+      yield* runtime.execute(createAccount);
+      return { before, after: Object.keys(runtime.accounts) };
+    }),
+  );
+
+  expect(keys.before).toEqual([]);
+  expect(keys.after).toHaveLength(1);
+});
+
 test("runtime accepts native account and app mutations", async () => {
   const address = await deployCounter();
   const app = await counterApp(address);

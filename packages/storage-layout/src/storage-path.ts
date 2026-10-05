@@ -61,7 +61,7 @@ export type ParseStoragePath<Path extends string> =
 export const HEX_STRING_PATTERN = /^0x[0-9a-fA-F]*$/;
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const DECIMAL = /^(0|[1-9][0-9]*)$/;
+const DECIMAL = /^-?(0|[1-9][0-9]*)$/;
 
 type ParseStoragePathRoot<Segment extends string> =
   Segment extends `${infer Root}[${string}]${infer Rest}`
@@ -126,7 +126,14 @@ export function parseStoragePath(input: string): StoragePath {
         throw new Error(`unterminated subscript in storage path: ${input}`);
       }
       const raw = input.slice(index + 1, end).trim();
-      segments.push({ kind: "subscript", value: parseSubscript(raw) });
+      if (raw.length === 0) {
+        throw new Error("storage path subscript cannot be empty");
+      }
+      const subscript = parseSubscript(raw);
+      if (subscript === undefined) {
+        throw new Error(`unsupported storage path subscript: ${raw}`);
+      }
+      segments.push({ kind: "subscript", value: subscript });
       index = end + 1;
       continue;
     }
@@ -151,10 +158,6 @@ export function formatStoragePath(path: StoragePath): string {
   return out;
 }
 
-export function normalizePath(path: string): StoragePath {
-  return parseStoragePath(path);
-}
-
 function readIdentifier(
   input: string,
   start: number,
@@ -172,10 +175,12 @@ function readIdentifier(
   return { value, next };
 }
 
-function parseSubscript(raw: string): StoragePathSubscript {
-  if (raw.length === 0) {
-    throw new Error("storage path subscript cannot be empty");
-  }
+/**
+ * Parse the text between `[` and `]` as a subscript: a hex string, a decimal
+ * integer, `true` / `false`, or a quoted string. Returns `undefined` for any
+ * other text.
+ */
+export function parseSubscript(raw: string): StoragePathSubscript | undefined {
   if (HEX_STRING_PATTERN.test(raw)) {
     return { kind: "hex", value: raw as Hex.Hex };
   }
@@ -191,10 +196,26 @@ function parseSubscript(raw: string): StoragePathSubscript {
   ) {
     return { kind: "string", value: raw.slice(1, -1) };
   }
-  throw new Error(`unsupported storage path subscript: ${raw}`);
+  return undefined;
 }
 
-function formatSubscript(subscript: StoragePathSubscript): string {
+/**
+ * Integer value of an array index or integer mapping key subscript. Hex
+ * subscripts are accepted because the type-level `${number}` selector accepts
+ * them too.
+ */
+export function subscriptToInteger(
+  subscript: StoragePathSubscript,
+): bigint | undefined {
+  if (subscript.kind === "number") return subscript.value;
+  if (subscript.kind === "hex" && subscript.value !== "0x") {
+    return BigInt(subscript.value);
+  }
+  return undefined;
+}
+
+/** Format a subscript as it appears between `[` and `]` in a storage path. */
+export function formatSubscript(subscript: StoragePathSubscript): string {
   switch (subscript.kind) {
     case "number":
       return subscript.value.toString();

@@ -17,7 +17,7 @@ const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 import { expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
 import { Hex } from "ox";
-import { createStorageProxy } from "storage-layout";
+import { createStorageView } from "storage-layout";
 import { TEST_PUBLIC_CLIENT } from "../test/setup";
 import {
   BALANCE_OF_SLOT,
@@ -562,9 +562,12 @@ test("readStorage decodes committed token state through storage proxy", async ()
       data,
     });
 
-    const token = createStorageProxy(tokenStorageLayout, (slots) =>
-      Effect.runPromise(evm.readStorage({ address: TOKEN_ADDR, slots })),
-    );
+    const token = createStorageView(tokenStorageLayout, async (slots) => {
+      const storage = await Effect.runPromise(
+        evm.readStorage({ address: TOKEN_ADDR, slots: [...slots] }),
+      );
+      return slots.map((slot) => storage[slot]!);
+    });
     const totalSupply = yield* Effect.promise(() => token.totalSupply);
     const schedulerBalance = yield* Effect.promise(
       () => token.balanceOf[SCHEDULER_ADDR]!,

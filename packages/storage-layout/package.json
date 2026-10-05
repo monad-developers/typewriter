@@ -4,15 +4,20 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "bun test",
-    "lint": "biome check .",
-    "benchmark:known-paths": "bun scripts/known-path-enumeration.ts",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit"
+    "contracts:build": "forge build --root test/contracts && bun scripts/generateTypedArtifacts.ts",
+    "test": "bun run contracts:build && bun test",
+    "lint": "biome check . && forge fmt --check --root test/contracts",
+    "benchmark": "bun scripts/benchmark.ts",
+    "typecheck": "bun run contracts:build && tsc --noEmit",
+    "build": "bun run contracts:build && tsc --noEmit"
   },
   "dependencies": {
     "abitype": "catalog:",
     "ox": "catalog:"
+  },
+  "devDependencies": {
+    "prool": "catalog:",
+    "viem": "catalog:"
   },
   "peerDependencies": {
     "typescript": "catalog:"
