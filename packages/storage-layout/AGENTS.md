@@ -54,7 +54,7 @@ The selector types expand every path of a layout, so careless generics make `tsc
 
 ## Performance Notes
 
-- `bun run benchmark` (`scripts/benchmark.ts`) measures decode, view reads, and mapping enumeration. Run it before and after a performance change.
+- `bun run benchmark` (`scripts/benchmark.ts`) replays the read patterns of `apps/order-book` (linked-list price walks, depth, order and credential scans, mapping enumeration) against `test/contracts/src/OrderBookFixture.sol`, with a global `preimages` array like the typewriter runtime's. It reports time, getter calls, and slots read per call. Run it before and after a performance change, and profile one case with `BENCH_CASE=<name> bun --cpu-prof-md scripts/benchmark.ts`.
 - The storage view is deliberately stateless for now: no cache and no key index. Each leaf access issues one getter call, and mapping enumeration and membership checks scan `preimages`. Because `Object.keys` checks membership once per listed key, enumerating a mapping costs keys × preimages string comparisons. A faster design is planned; measure it with `bun run benchmark`.
 - A known but unimplemented improvement is to coalesce parallel async leaf reads, such as `Promise.all(...)`, into a single deduped slot request.
 

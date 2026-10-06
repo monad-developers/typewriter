@@ -316,7 +316,7 @@ The view keeps no index. `Object.keys` on a mapping lists its keys with one scan
 bun run test        # forge build + generate artifacts, then bun test
 bun run typecheck   # forge build + generate artifacts, then tsc --noEmit
 bun run lint        # biome + forge fmt --check
-bun run benchmark   # micro-benchmarks for decode, view, and enumeration
+bun run benchmark   # order-book read patterns: time, getter calls, slots read
 ```
 
 Tests need Foundry (`forge` and `anvil`) on `PATH`. `bun run contracts:build` compiles `test/contracts` and writes `test/contracts/generated.ts`, which holds each fixture contract's ABI, bytecode, and solc `storageLayout` as `as const` literals. That file is gitignored, so run `contracts:build` (or `test` / `typecheck`, which run it first) after a fresh clone.
