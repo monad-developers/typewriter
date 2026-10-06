@@ -1,16 +1,18 @@
-// Differential tests against real ground truth: the solc `storageLayout` of
-// `test/contracts/src/StorageFixture.sol`, and the storage of that contract on
-// anvil after `populate()`. Each decoded value must equal what the getter that
-// Solidity generates returns for the same variable.
-//
-// The other test files use hand-written layouts. This file is the check that
-// those layouts, and the decoding rules, agree with the compiler and the EVM.
+// Compares decoded values from the solc layout and anvil storage of
+// `StorageFixture.sol` with the Solidity getters.
 
 import { beforeAll, describe, expect, expectTypeOf, test } from "bun:test";
 import { Hash, Hex } from "ox";
-import type { Address, ContractFunctionName } from "viem";
+import {
+  type Address,
+  type ContractFunctionName,
+  createPublicClient,
+  custom,
+} from "viem";
+import { foundry } from "viem/chains";
 import { anvil } from "../test/anvil";
 import { StorageFixture } from "../test/contracts/generated";
+import { slotOf } from "../test/utils";
 import {
   type AccountStorage,
   createStorageView,
@@ -18,9 +20,9 @@ import {
   enumerateMappingKeys,
   getDynamicArrayLength,
   type KeccakPreimage,
+  readStorageVariable,
+  readStorageVariables,
 } from "./index";
-import { resolveStoragePath } from "./storage-layout";
-import { parseStoragePath } from "./storage-path";
 
 const ALICE = "0x1111111111111111111111111111111111111234";
 const BOB = "0x2222222222222222222222222222222222221234";
@@ -42,9 +44,6 @@ beforeAll(async () => {
   preimages = await traceKeccakPreimages(hash);
 });
 
-// -----------------------------------------------------------------------------
-// Helpers
-
 async function deployFixture(): Promise<Address> {
   const hash = await client.deployContract({ abi, bytecode });
   const { contractAddress } = await client.waitForTransactionReceipt({ hash });
@@ -56,7 +55,7 @@ async function deployFixture(): Promise<Address> {
 
 type FunctionName = ContractFunctionName<typeof abi, "view" | "pure">;
 
-/** Call a getter of the populated fixture. */
+/** Call a getter of the fixture. */
 function read(functionName: FunctionName, args: readonly unknown[] = []) {
   return client.readContract({
     address,
@@ -87,22 +86,13 @@ async function proofStorage(
   );
 }
 
-function slotOf(variable: string): Hex.Hex {
-  const { slot } = resolveStoragePath(layout, parseStoragePath(variable));
-  return Hex.fromNumber(slot, { size: 32 });
-}
-
 type StructLog = { op: string; stack?: string[]; memory?: string[] | string };
 
-/**
- * keccak256 preimages of a transaction, from the memory and stack of each
- * `KECCAK256` step in anvil's struct-log trace. This is the input that
- * `enumerateMappingKeys` expects from an execution trace.
- */
+/** keccak256 preimages from the `KECCAK256` steps of a transaction trace. */
 async function traceKeccakPreimages(hash: Hex.Hex): Promise<KeccakPreimage[]> {
   const trace = (await client.request({
     method: "debug_traceTransaction",
-    params: [hash, { enableMemory: true }],
+    params: [hash, { enableMemory: true, disableStorage: true }],
   } as never)) as { structLogs: StructLog[] };
 
   const result: KeccakPreimage[] = [];
@@ -123,17 +113,11 @@ async function traceKeccakPreimages(hash: Hex.Hex): Promise<KeccakPreimage[]> {
   return result;
 }
 
-// -----------------------------------------------------------------------------
-// Fixture
-
 test("the fixture constants agree with the contract", async () => {
   expect(await read("ALICE")).toBe(ALICE);
   expect(await read("BOB")).toBe(BOB);
   expect(preimages.length).toBeGreaterThan(0);
 });
-
-// -----------------------------------------------------------------------------
-// createStorageView over eth_getStorageAt
 
 describe("createStorageView matches the Solidity getters", () => {
   const state = createStorageView(
@@ -344,13 +328,10 @@ describe("createStorageView matches the Solidity getters", () => {
   });
 });
 
-// -----------------------------------------------------------------------------
-// Decoders over eth_getProof
-
 describe("decoders over eth_getProof storage", () => {
   test("decodeStorageVariable decodes a value from proof storage", async () => {
     const variable = `allowances[${BOB}][${ALICE}]` as const;
-    const storage = await proofStorage([slotOf(variable)]);
+    const storage = await proofStorage([slotOf(layout, variable)]);
 
     expect(decodeStorageVariable(layout, variable, storage)).toBe(
       (await read("allowances", [BOB, ALICE])) as bigint,
@@ -358,10 +339,10 @@ describe("decoders over eth_getProof storage", () => {
   });
 
   test("decodeStorageVariable reads a long string from its data slots", async () => {
-    const root = await proofStorage([slotOf("longString")]);
+    const root = await proofStorage([slotOf(layout, "longString")]);
     const rootWord = BigInt(Object.values(root)[0]!);
     const length = Number(rootWord >> 1n);
-    const dataSlot = BigInt(Hash.keccak256(slotOf("longString")));
+    const dataSlot = BigInt(Hash.keccak256(slotOf(layout, "longString")));
     const dataSlots = Array.from({ length: Math.ceil(length / 32) }, (_, i) =>
       Hex.fromNumber(dataSlot + BigInt(i), { size: 32 }),
     );
@@ -374,16 +355,13 @@ describe("decoders over eth_getProof storage", () => {
 
   test("getDynamicArrayLength reads an array inside a mapping", async () => {
     const variable = `history[${ALICE}]` as const;
-    const storage = await proofStorage([slotOf(variable)]);
+    const storage = await proofStorage([slotOf(layout, variable)]);
 
     expect(getDynamicArrayLength(layout, variable, storage)).toBe(
       Number(await read("historyLength", [ALICE])),
     );
   });
 });
-
-// -----------------------------------------------------------------------------
-// Mapping keys from an execution trace
 
 describe("enumerateMappingKeys over traced preimages", () => {
   test("lists the keys that populate() wrote, for each key type", () => {
@@ -441,15 +419,148 @@ describe("enumerateMappingKeys over traced preimages", () => {
   });
 });
 
-// -----------------------------------------------------------------------------
-// Encodings that Solidity rejects
+/** A public client that records the RPC method of each request. */
+function recordingClient() {
+  const methods: string[] = [];
+  const recording = createPublicClient({
+    chain: foundry,
+    transport: custom({
+      async request(args) {
+        methods.push(args.method);
+        return client.request(args as never);
+      },
+    }),
+  });
+  return { client: recording, methods };
+}
+
+describe("readStorageVariable and readStorageVariables", () => {
+  test("readStorageVariable reads one slot with eth_getStorageAt", async () => {
+    const { client: recording, methods } = recordingClient();
+    const balance = await readStorageVariable(recording, {
+      address,
+      storageLayout: layout,
+      variable: `balances[${BOB}]`,
+    });
+
+    expectTypeOf(balance).toEqualTypeOf<bigint>();
+    expect(balance).toBe((await read("balances", [BOB])) as bigint);
+    expect(methods).toEqual(["eth_getStorageAt"]);
+  });
+
+  test("readStorageVariable reads a long string from its data slots", async () => {
+    const { client: recording, methods } = recordingClient();
+    const value = await readStorageVariable(recording, {
+      address,
+      storageLayout: layout,
+      variable: "longString",
+    });
+
+    expect(value).toBe((await read("longString")) as string);
+    // The root slot, then 3 data slots (72 bytes).
+    expect(methods).toHaveLength(1 + 3);
+    expect(new Set(methods)).toEqual(new Set(["eth_getStorageAt"]));
+  });
+
+  test("readStorageVariables reads every slot in one eth_getStorageValues request", async () => {
+    const { client: recording, methods } = recordingClient();
+    const values = await readStorageVariables(recording, {
+      address,
+      storageLayout: layout,
+      // `owner`, `paused`, and `debt` share one packed slot.
+      variables: [
+        "totalSupply",
+        "owner",
+        "paused",
+        "debt",
+        "u48",
+        `allowances[${ALICE}][${BOB}]`,
+        "shortString",
+      ],
+    });
+
+    expectTypeOf(values).toEqualTypeOf<
+      [bigint, Address, boolean, number, number, bigint, string]
+    >();
+    expect(values).toEqual([
+      (await read("totalSupply")) as bigint,
+      (await read("owner")) as Address,
+      (await read("paused")) as boolean,
+      (await read("debt")) as number,
+      (await read("u48")) as number,
+      (await read("allowances", [ALICE, BOB])) as bigint,
+      (await read("shortString")) as string,
+    ]);
+    expect(methods).toEqual(["eth_getStorageValues"]);
+  });
+
+  test("readStorageVariables takes a second request for long bytes and strings", async () => {
+    const { client: recording, methods } = recordingClient();
+    const values = await readStorageVariables(recording, {
+      address,
+      storageLayout: layout,
+      variables: ["longBytes", "longString", `names[${BOB}]`, "book.name"],
+    });
+
+    expect(values).toEqual([
+      (await read("longBytes")) as Hex.Hex,
+      (await read("longString")) as string,
+      (await read("names", [BOB])) as string,
+      (await read("bookName")) as string,
+    ]);
+    expect(methods).toEqual(["eth_getStorageValues", "eth_getStorageValues"]);
+  });
+
+  test("both actions read at a block number", async () => {
+    const target = await deployFixture();
+    const deployBlock = await client.getBlockNumber();
+    const hash = await client.writeContract({
+      address: target,
+      abi,
+      functionName: "populate",
+    });
+    await client.waitForTransactionReceipt({ hash });
+
+    const parameters = { address: target, storageLayout: layout } as const;
+    expect(
+      await readStorageVariable(client, {
+        ...parameters,
+        variable: "longString",
+        blockNumber: deployBlock,
+      }),
+    ).toBe("");
+    expect(
+      await readStorageVariables(client, {
+        ...parameters,
+        variables: ["totalSupply", "longString"],
+        blockNumber: deployBlock,
+      }),
+    ).toEqual([0n, ""]);
+    expect(
+      await readStorageVariables(client, {
+        ...parameters,
+        variables: ["totalSupply"],
+      }),
+    ).toEqual([(await read("totalSupply")) as bigint]);
+  });
+
+  test("a forge artifact spreads into the parameters, like a viem contract config", async () => {
+    const [owner] = await readStorageVariables(client, {
+      ...StorageFixture,
+      address,
+      variables: ["owner"],
+    });
+
+    expect(owner).toBe((await read("owner")) as Address);
+  });
+});
 
 test("a bytes root word that Solidity rejects with panic 0x22 also throws here", async () => {
   const target = await deployFixture();
   // Long form (lowest bit 1) with a length of 5: not a valid encoding.
   await client.setStorageAt({
     address: target,
-    index: slotOf("shortString"),
+    index: slotOf(layout, "shortString"),
     value: Hex.fromNumber(5n * 2n + 1n, { size: 32 }),
   });
 

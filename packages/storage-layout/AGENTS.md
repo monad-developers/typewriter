@@ -2,7 +2,7 @@
 
 `storage-layout` turns Solidity compiler `storageLayout` JSON into decoded storage values, typed storage selectors, and a lazy object view of contract storage.
 
-The public API is `decodeStorageVariable`, `createStorageView`, the enumeration helpers (`enumerateMappingKeys`, `getDynamicArrayLength`), and the types exported from `src/index.ts`. Keep the export surface small: export a helper only when a concrete caller needs it.
+The public API is `decodeStorageVariable`, `createStorageView`, the viem actions (`readStorageVariable`, `readStorageVariables`), the enumeration helpers (`enumerateMappingKeys`, `getDynamicArrayLength`), and the types exported from `src/index.ts`. Keep the export surface small: export a helper only when a concrete caller needs it.
 
 ## Core Model
 
@@ -23,8 +23,9 @@ Keep path parsing/formatting separate from layout resolution.
 - `storage-layout.ts` owns the compiler JSON types and runtime resolution of a path to one `StorageLocation` (`{ type, slot, offset }`).
 - `types.ts` owns the type-level API: selector extraction and Solidity-to-TypeScript value types.
 - `solidity-encoding.ts` owns low-level Solidity rules shared by the modules above: value-type classification (`parseValueType`), the mapping-key codec (`encodeMappingKey` / `decodeMappingKey`, which must stay exact inverses), and slot math.
-- `decodeStorageVariable.ts` owns leaf decoding, including the `bytes`/`string` length rules (`bytesDataSlots`, `MAX_BYTES_LENGTH`). `createStorageView.ts` reuses them, so a size check added there covers both APIs.
-- `account-storage.ts` reads slot words from `AccountStorage` with keys in any hex form.
+- `decodeStorageVariable.ts` owns leaf decoding, including the `bytes`/`string` length rules (`bytesLength`, `MAX_BYTES_LENGTH`). The view and the viem actions use `bytesLength` too, so a check added there covers every API.
+- `account-storage.ts` reads slot words from `AccountStorage` with keys in any hex form, and owns the slot getter types and `fetchStorage` (dedupe, call the getter, check one value per slot) that the view and the viem actions share. Sync and async getters are handled with an explicit `instanceof Promise` branch where needed, not a generic continuation helper.
+- `readStorageVariable.ts` / `readStorageVariables.ts` validate selectors before any request, read root slots, then read `bytes`/`string` data slots. They assume that all requests see the same state, by choice for now: they do not detect a new block between requests.
 - Concrete leaf validation belongs with the function that needs a leaf (for example `decodeStorageVariable`), not path parsing or resolution.
 
 ## Mapping Limitation
@@ -43,6 +44,14 @@ Dynamic array `.length` is different: it lives at the array root slot and can be
 - `src/ground-truth.test.ts` is the source of truth for encoding rules. It compares every decoded value with the Solidity getter of `StorageFixture.sol`, and mapping enumeration with preimages from the `populate()` trace. When you add support for a Solidity type, add a variable of that type to `StorageFixture.sol`, write it in `populate()`, and compare it with its getter there. Hand-written layouts in `test/utils.ts` are for focused unit cases only.
 - Prefer one shared fixture contract over many small ones: solc assigns the slots, so a new variable does not need test updates elsewhere.
 
+## Type Performance
+
+The selector types expand every path of a layout, so careless generics make `tsc` very slow. A full package typecheck is about 0.3M instantiations and under 1 s. If it grows by a large amount, find the cause with `tsc --extendedDiagnostics` and `--generateTrace`. Keep these rules:
+
+- In a public generic function, pass a generic selector to a `string` parameter as `variable as unknown as string`, and cast results the same way. Relating `variable extends ConcreteStorageVariable<layout>` to `string` directly makes TypeScript expand the selector types for a loose layout, which costs seconds per call site.
+- Type aliases that take a selector (`StorageVariableToPrimitiveType`, `MappingEntryVariable`, the read parameter types) leave it unconstrained and narrow with `variable extends string` inside, for the same reason.
+- Wrap computed public return types in `NoInfer<...>`. Without it, a call nested in another generic call (`expect(decodeStorageVariable(...))`, `Promise.all([...])`) makes TypeScript walk the return type before it infers the selector: millions of instantiations per call site.
+
 ## Performance Notes
 
 - `bun run benchmark` (`scripts/benchmark.ts`) measures decode, view reads, and mapping enumeration. Run it before and after a performance change.
@@ -55,4 +64,4 @@ Dynamic array `.length` is different: it lives at the array root slot and can be
 - Prefer focused vertical slices with runtime and type tests.
 - Preserve loud failures for unsupported or non-concrete decode paths.
 - Use `abitype` for Solidity-to-TypeScript primitive mapping where appropriate, but keep storage-specific handling for packing, signed integers, mappings, arrays, structs, and `bytes`/`string`.
-- Prefer Bun and `ox` in `src/`. `viem` and `prool` are dev dependencies for the anvil tests only; do not import them from `src/` outside test files.
+- Prefer Bun and `ox` in `src/`. `viem` is a peer dependency (`^2.56.9`, the first version with `getStorageValues`) used only by the viem actions; keep it out of the decoders. `prool` is a dev dependency for the anvil tests.

@@ -8,8 +8,6 @@ export const OWNER = "0x1111111111111111111111111111111111111234" as const;
 export const SPENDER = "0x2222222222222222222222222222222222221234" as const;
 export const PACKED_OWNER_PAUSED =
   `0x${"00".repeat(11)}01${OWNER.slice(2)}` as Hex.Hex;
-export const PACKED_OWNER_UNPAUSED =
-  `0x${"00".repeat(12)}${OWNER.slice(2)}` as Hex.Hex;
 export const PACKED_FIXED_NUMBERS =
   "0x0000000000000000000000000000000200000000000000000000000000000001" as Hex.Hex;
 export const SALT = `0x${"ff".repeat(32)}` as Hex.Hex;

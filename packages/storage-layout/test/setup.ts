@@ -1,5 +1,4 @@
-// Preloaded by `bunfig.toml` in every test process. The proxy only starts an
-// anvil instance on the first request, so unit tests do not pay for one.
+// Anvil starts on the first request, so unit tests do not start it.
 
 import { afterAll, beforeAll } from "bun:test";
 import { anvil } from "./anvil";

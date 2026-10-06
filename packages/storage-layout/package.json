@@ -20,6 +20,7 @@
     "viem": "catalog:"
   },
   "peerDependencies": {
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "viem": "^2.56.9"
   }
 }

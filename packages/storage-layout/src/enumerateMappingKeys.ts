@@ -24,18 +24,10 @@ import type {
 } from "./types";
 
 /**
- * List the known entries of a mapping, from captured keccak256 preimages.
- *
- * Solidity stores the value for `key` at `keccak256(key . mappingSlot)`, and
- * storage does not record which keys exist. A key is known only if a captured
- * 64-byte preimage hashes it with this mapping's slot. So the result is every
- * key that the captured executions accessed (read or written), including keys
- * whose value is now zero. A key that no captured execution hashed is not
- * listed.
- *
- * Preimages that are not 64 bytes, that belong to another mapping, or whose key
- * word is not a canonical encoding of the mapping's key type are ignored.
- * `hash` is not used, so it is not checked.
+ * List the entries of a mapping whose keys appear in captured keccak256
+ * preimages. Storage does not record mapping keys, so a key is listed only if
+ * a 64-byte preimage hashes it with the mapping's slot, even if its value is
+ * now zero. Other preimages are ignored, and `hash` is not checked.
  *
  * @param layout - Solidity compiler `storageLayout` output.
  * @param mapping - Selector of a mapping, for example `allowances[0x…]`.
@@ -56,8 +48,8 @@ export function enumerateMappingKeys<
   layout: layout,
   mapping: mapping,
   preimages: readonly KeccakPreimage[],
-): MappingEntryVariable<layout, mapping>[] {
-  const path = parseStoragePath(mapping);
+): NoInfer<MappingEntryVariable<layout, mapping>[]> {
+  const path = parseStoragePath(mapping as unknown as string);
   const { type, slot } = resolveStoragePath(layout, path);
   if (isMappingType(type) === false) {
     throw new Error(
@@ -70,14 +62,10 @@ export function enumerateMappingKeys<
       root: path.root,
       segments: [...path.segments, { kind: "subscript", value: key }],
     }),
-  ) as MappingEntryVariable<layout, mapping>[];
+  ) as unknown as MappingEntryVariable<layout, mapping>[];
 }
 
-/**
- * The keys of the mapping at `mappingSlot` that the 64-byte preimages hash, in
- * preimage order without duplicates. Key words that are not a canonical
- * encoding of the key type are skipped.
- */
+/** Keys of the mapping at `mappingSlot` in `preimages`, in order, once each. */
 export function mappingKeys(
   keyType: StorageType,
   mappingSlot: bigint,
@@ -94,11 +82,7 @@ export function mappingKeys(
   return [...keys.values()];
 }
 
-/**
- * Whether a preimage hashes `key` with the mapping at `mappingSlot`. This
- * encodes the expected preimage one time and compares strings, so it does not
- * decode the other preimages.
- */
+/** Whether a preimage hashes `key` with the mapping at `mappingSlot`. */
 export function hasMappingKey(
   keyType: StorageType,
   mappingSlot: bigint,

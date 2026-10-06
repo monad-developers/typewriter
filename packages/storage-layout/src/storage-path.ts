@@ -25,7 +25,7 @@ export type StoragePath = {
 };
 
 /** One step after the root variable in a `StoragePath`. */
-export type StoragePathSegment =
+type StoragePathSegment =
   | { kind: "field"; name: string }
   | { kind: "subscript"; value: StoragePathSubscript };
 
@@ -36,7 +36,7 @@ export type StoragePathSubscript =
   | { kind: "string"; value: string }
   | { kind: "bool"; value: boolean };
 
-export type ParsedStoragePath = {
+type ParsedStoragePath = {
   root: string;
   segments: readonly ParsedStoragePathSegment[];
 };
@@ -58,7 +58,7 @@ export type ParseStoragePath<Path extends string> =
       : never
     : ParseStoragePathRoot<Path>;
 
-export const HEX_STRING_PATTERN = /^0x[0-9a-fA-F]*$/;
+const HEX_STRING_PATTERN = /^0x[0-9a-fA-F]*$/;
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DECIMAL = /^-?(0|[1-9][0-9]*)$/;
@@ -143,9 +143,6 @@ export function parseStoragePath(input: string): StoragePath {
   return { root: root.value, segments };
 }
 
-/**
- * Format a structured storage path as a human-readable string.
- */
 export function formatStoragePath(path: StoragePath): string {
   let out = path.root;
   for (const segment of path.segments) {

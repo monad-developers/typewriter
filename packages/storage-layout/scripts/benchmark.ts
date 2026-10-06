@@ -1,10 +1,7 @@
-// Micro-benchmarks for the storage-layout read and enumeration paths. Run with:
+// Mean time per operation. Compare against `main` on the same machine.
 //
-//   bun run benchmark                   # default sizes
-//   BENCH_KEYS=50000 bun run benchmark  # larger preimage sets
-//
-// Each case reports the mean time per operation. Use it to compare a change
-// against `main`; absolute numbers depend on the machine.
+//   bun run benchmark
+//   BENCH_KEYS=50000 bun run benchmark
 
 import { Hash, Hex } from "ox";
 import {
@@ -18,8 +15,6 @@ import { bytesStorage, layout, OWNER, SPENDER, slotOf } from "../test/utils";
 
 const KEYS = readPositiveInt("BENCH_KEYS", 10_000);
 const MIN_TIME_MS = readPositiveInt("BENCH_MIN_TIME_MS", 250);
-
-// --- Fixture ------------------------------------------------------------------
 
 const word = (value: bigint | Hex.Hex) =>
   Hex.padLeft(typeof value === "bigint" ? Hex.fromNumber(value) : value, 32);
@@ -52,8 +47,6 @@ const getStorageAsync = async (slots: readonly Hex.Hex[]) => getStorage(slots);
 const state = createStorageView(layout, getStorage, preimages);
 const asyncState = createStorageView(layout, getStorageAsync, preimages);
 
-// --- Cases --------------------------------------------------------------------
-
 const results = [
   await bench("decodeStorageVariable: uint256 (baseline)", () =>
     decodeStorageVariable(layout, "totalSupply", storage),
@@ -73,12 +66,7 @@ const results = [
 
 console.table(results);
 
-// --- Harness ------------------------------------------------------------------
-
-/**
- * Run `fn` repeatedly for at least `MIN_TIME_MS` after a warm-up, and report
- * the mean time per call. A promise result is awaited.
- */
+/** Mean time of `fn` over at least `MIN_TIME_MS`, after a warm-up. */
 async function bench(name: string, fn: () => unknown) {
   const run = async () => {
     const result = fn();

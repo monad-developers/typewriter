@@ -68,17 +68,16 @@ export type MappingStorageVariable<layout extends StorageLayout> =
  * @example
  * MappingEntryVariable<typeof layout, "balances"> // `balances[${Hex}]`
  */
-export type MappingEntryVariable<
-  layout extends StorageLayout,
-  mapping extends string,
-> =
+export type MappingEntryVariable<layout extends StorageLayout, mapping> =
   IsLooseLayout<layout> extends true
     ? string
-    : StorageTypeAtPath<layout, mapping> extends {
+    : mapping extends string
+      ? StorageTypeAtPath<layout, mapping> extends {
           encoding: "mapping";
           key: infer key extends string;
         }
-      ? `${mapping}[${MappingKeySelector<layout, key>}]`
+        ? `${mapping}[${MappingKeySelector<layout, key>}]`
+        : never
       : never;
 
 /**
@@ -102,7 +101,7 @@ export type DynamicArrayStorageVariable<layout extends StorageLayout> =
  */
 export type StorageVariableToPrimitiveType<
   layout extends StorageLayout,
-  variable extends string,
+  variable,
 > =
   IsLooseLayout<layout> extends true
     ? unknown
@@ -125,9 +124,6 @@ export type StorageLayoutToPrimitiveType<layout extends StorageLayout> =
         >;
       }>;
 
-// -----------------------------------------------------------------------------
-// Internals
-
 type Pretty<type> = { [key in keyof type]: type[key] } & unknown;
 
 type CustomTypeError<message extends string> = [`Error: ${message}`];
@@ -140,8 +136,6 @@ type StorageTypeById<
   layout extends StorageLayout,
   typeId extends string,
 > = typeId extends keyof layout["types"] ? layout["types"][typeId] : never;
-
-// --- Selector extraction -----------------------------------------------------
 
 /** The kind of value a selector selects. */
 type SelectorKind =
@@ -289,11 +283,12 @@ type FixedArrayLength<label extends string> =
       : never
     : never;
 
-// --- Selector -> storage type ------------------------------------------------
+// Selector parameters are not `extends string`: relating a generic selector to
+// `string` makes TypeScript expand every selector of a loose layout.
 
 type StorageTypeAtPath<
   layout extends StorageLayout,
-  variable extends string,
+  variable,
 > = variable extends string
   ? ParseStoragePath<variable> extends {
       root: infer root;
@@ -348,8 +343,6 @@ type StorageTypeAtSegment<
         : type extends { base: infer base extends string }
           ? StorageTypeById<layout, base>
           : CustomTypeError<"Storage path subscript requires an array or mapping.">;
-
-// --- Storage type -> TypeScript type -----------------------------------------
 
 type StorageTypeToPrimitiveType<
   layout extends StorageLayout,

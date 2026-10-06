@@ -1,19 +1,13 @@
-// A lazy, read-only object view of contract storage. Each property access
-// moves one level into the layout: a composite (struct, array, or mapping)
-// returns a nested view, and a leaf (value type, `bytes`, or `string`) reads
-// its slots through `getStorage` and decodes them. There is no cache: every
-// leaf read calls `getStorage`.
-//
-// The return type of `getStorage` decides sync or async behavior. A sync getter
-// makes leaf reads return values. An async getter makes them return promises.
-// Composite access always returns a nested view synchronously.
-
-import type { Hex } from "ox";
-import { createSlotReader } from "./account-storage";
-import { bytesDataSlots, decodeStorageVariable } from "./decodeStorageVariable";
+import {
+  type AsyncStorageGetter,
+  createSlotReader,
+  fetchStorage,
+  type StorageGetter,
+} from "./account-storage";
+import { bytesLength, decodeStorageVariable } from "./decodeStorageVariable";
 import { hasMappingKey, mappingKeys } from "./enumerateMappingKeys";
 import { getDynamicArrayLength } from "./getDynamicArrayLength";
-import { fixedArrayLength, toWord } from "./solidity-encoding";
+import { fixedArrayLength } from "./solidity-encoding";
 import {
   findStorageItem,
   findStorageType,
@@ -37,20 +31,6 @@ import type {
   StorageLayoutToPrimitiveType,
 } from "./types";
 
-// -----------------------------------------------------------------------------
-// Public types
-
-/**
- * Reads raw slot values. It returns one 32-byte value per slot, in the same
- * order as `slots`, like a DataLoader batch function or `eth_getProof`.
- */
-type SyncStorageGetter = (slots: readonly Hex.Hex[]) => readonly Hex.Hex[];
-/** Asynchronous {@link SyncStorageGetter}. */
-type AsyncStorageGetter = (
-  slots: readonly Hex.Hex[],
-) => Promise<readonly Hex.Hex[]>;
-type StorageGetter = SyncStorageGetter | AsyncStorageGetter;
-
 type StorageViewValue<T, isAsync extends boolean> = [T] extends [
   readonly unknown[],
 ]
@@ -71,19 +51,16 @@ type DynamicArrayView<Element, isAsync extends boolean> = {
 };
 
 type UntypedStorageView = {
-  // biome-ignore lint/suspicious/noExplicitAny: broad layouts are an intentional escape hatch until generated types exist.
+  // biome-ignore lint/suspicious/noExplicitAny: a loose layout has no inferred shape.
   readonly [key: string]: any;
-  // biome-ignore lint/suspicious/noExplicitAny: broad layouts are an intentional escape hatch until generated types exist.
+  // biome-ignore lint/suspicious/noExplicitAny: a loose layout has no inferred shape.
   readonly [index: number]: any;
 };
 
 /**
- * Inferred shape of the view returned by {@link createStorageView}. The
- * structural shape mirrors {@link StorageLayoutToPrimitiveType}; when the
- * getter is asynchronous, leaf positions are wrapped in `Promise<>`. Dynamic
- * array `.length` is also a storage read, so async-backed views expose it as
- * `Promise<number>`. The whole projection is recursively readonly because view
- * writes are rejected.
+ * Type of the view from {@link createStorageView}: a readonly
+ * {@link StorageLayoutToPrimitiveType}. With an async getter, leaves and
+ * dynamic array `length` are promises.
  */
 export type StorageView<
   L extends StorageLayout,
@@ -92,46 +69,29 @@ export type StorageView<
   ? UntypedStorageView
   : StorageViewValue<StorageLayoutToPrimitiveType<L>, isAsync>;
 
-// -----------------------------------------------------------------------------
-// Public API
-
 /**
- * Create a lazy, read-only object view of contract storage, built on a
- * JavaScript `Proxy`.
+ * Create a lazy, read-only view of contract storage. Property access follows
+ * the layout (`state.balances[account]`, `state.numbers.length`). A leaf read
+ * calls `getStorage` with the slots it needs, with no cache. A composite gives
+ * a nested view.
  *
- * Property access follows the Solidity layout: `state.metadata.lastUpdate`,
- * `state.balances[account]`, `state.numbers[3]`, `state.numbers.length`. Leaf
- * reads call `getStorage` with only the slots that the value needs and decode
- * the result. Composite reads return nested views.
- *
- * Enumeration (`Object.keys`, `for...in`, spread) lists top-level variables,
- * struct fields, fixed array indexes, and the mapping keys found in
- * `preimages` (see {@link enumerateMappingKeys}); `in` agrees with that list.
- * A dynamic array cannot be enumerated, because its length is in storage and
- * enumeration is synchronous: read `length` and index it instead. `console.log` shows a view's selector and keys without
- * reading storage.
- *
- * The property names `then`, `catch`, `finally`, `toJSON`, and
- * `asymmetricMatch` return `undefined`, so `await`, `JSON.stringify`, and test
- * matchers treat views as plain objects. A state variable with one of those
- * names cannot be read through the view.
+ * Enumeration lists top-level variables, struct fields, fixed array indexes,
+ * and the mapping keys found in `preimages`. A dynamic array cannot be
+ * enumerated: read `length` and index it. The names `then`, `catch`,
+ * `finally`, `toJSON`, and `asymmetricMatch` give `undefined`, so a state
+ * variable with one of those names cannot be read.
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param getStorage - Reads raw slot values: one value per slot, in the same
- * order as `slots`. Its return type (array or promise)
- * makes leaf reads sync or async.
- * @param preimages - keccak256 preimages that give the known mapping keys.
- * The view reads this array on every enumeration, so later changes are seen.
+ * @param getStorage - One value per slot, in order. A sync getter makes leaf
+ * reads return values; an async getter makes them return promises.
+ * @param preimages - keccak256 preimages for mapping keys, read again on each
+ * enumeration.
  *
  * @example
  * ```ts
- * const state = createStorageView(layout, (slots) =>
- *   Promise.all(
- *     slots.map(async (slot) => (await client.getStorageAt({ address, slot })) ?? "0x0"),
- *   ),
- * );
+ * const state = createStorageView(layout, getStorage, preimages);
  * const balance = await state.balances["0x…"]; // bigint
- * const holders = Object.keys(state.balances); // keys from preimages
+ * const holders = Object.keys(state.balances);
  * ```
  */
 export function createStorageView<
@@ -141,7 +101,7 @@ export function createStorageView<
   layout: L,
   getStorage: G,
   preimages: readonly KeccakPreimage[] = [],
-): StorageView<L, G extends AsyncStorageGetter ? true : false> {
+): NoInfer<StorageView<L, G extends AsyncStorageGetter ? true : false>> {
   const context = { layout, getStorage, preimages };
   return createNode(context, undefined) as StorageView<
     L,
@@ -149,21 +109,17 @@ export function createStorageView<
   >;
 }
 
-// -----------------------------------------------------------------------------
-// Internals
-
 type Context = {
   layout: StorageLayout;
   getStorage: StorageGetter;
   preimages: readonly KeccakPreimage[];
 };
 
-/** A composite node: its path and resolved location. */
+/** A composite's path and location, or `undefined` for the root view. */
 type Node = { path: StoragePath; location: StorageLocation } | undefined;
 
-// JS-protocol property names that the runtime probes by name. Returning
-// `undefined` keeps `await` (not a thenable), `JSON.stringify` (no `toJSON`),
-// and Bun/Jest matchers from treating a proxy as something else.
+// Runtimes probe these names; `undefined` keeps `await`, `JSON.stringify`, and
+// test matchers from treating a view as a thenable, `toJSON`, or a matcher.
 const RESERVED_PROPERTIES = new Set([
   "then",
   "catch",
@@ -176,7 +132,6 @@ const RESERVED_PROPERTIES = new Set([
 // `console.log` support goes on the target.
 const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
-/** A view of the composite at `node`, or of the whole layout. */
 function createNode(context: Context, node: Node): object {
   const target = Object.create(null);
   Object.defineProperty(target, INSPECT, {
@@ -200,7 +155,12 @@ function createNode(context: Context, node: Node): object {
       if (property === "length" && node !== undefined) {
         const { type } = node.location;
         if (isFixedArrayType(type)) return fixedArrayLength(type);
-        if (isDynamicArrayType(type)) return readLength(context, node);
+        if (isDynamicArrayType(type)) {
+          const selector = formatStoragePath(node.path);
+          return readLeaf(context, node.location, selector, (storage) =>
+            getDynamicArrayLength(context.layout, selector, storage),
+          );
+        }
       }
       return read(context, childPath(context.layout, node, property));
     },
@@ -214,7 +174,6 @@ function createNode(context: Context, node: Node): object {
   });
 }
 
-/** Read a leaf value, or return a nested view of a composite. */
 function read(context: Context, path: StoragePath): unknown {
   const location = resolveStoragePath(context.layout, path);
   const { type } = location;
@@ -226,10 +185,12 @@ function read(context: Context, path: StoragePath): unknown {
   ) {
     return createNode(context, { path, location });
   }
-  return readLeaf(context, path, location);
+  const selector = formatStoragePath(path);
+  return readLeaf(context, location, selector, (storage) =>
+    decodeStorageVariable(context.layout, selector, storage),
+  );
 }
 
-/** The path of `property` under `node`. */
 function childPath(
   layout: StorageLayout,
   node: Node,
@@ -284,10 +245,8 @@ function enumerableKeys(context: Context, node: Node): string[] {
 }
 
 /**
- * Whether `property` is a key of the node, for `in` and
- * `Object.getOwnPropertyDescriptor`. A mapping key must be known from the
- * preimages, which this scans. `Object.keys` asks once per listed key, so
- * enumerating a mapping costs keys × preimages string comparisons.
+ * Whether `property` is an enumerable key. `Object.keys` calls this for each
+ * listed key, and a mapping key scans `preimages`.
  */
 function hasKey(context: Context, node: Node, property: string): boolean {
   if (node === undefined) {
@@ -318,7 +277,7 @@ function hasKey(context: Context, node: Node, property: string): boolean {
   return false;
 }
 
-/** `console.log` text: the selector and its keys, without reading storage. */
+/** `console.log` text. It does not read storage. */
 function describe(context: Context, node: Node): string {
   const name =
     node === undefined
@@ -331,79 +290,41 @@ function describe(context: Context, node: Node): string {
   return keys.length === 0 ? `${name} {}` : `${name} { ${keys.join(", ")} }`;
 }
 
+/**
+ * Read the slots at `location` and pass them to `decode`: the value with a
+ * sync getter, a promise with an async one. A long `bytes`/`string` value
+ * needs a second read for its data slots.
+ */
 function readLeaf(
   context: Context,
-  path: StoragePath,
   location: StorageLocation,
+  selector: string,
+  decode: (storage: AccountStorage) => unknown,
 ): unknown {
-  const { layout } = context;
-  const selector = formatStoragePath(path);
-  return chain(fetchSlots(context, [location.slot]), (root) => {
-    // A long `bytes`/`string` value needs a second read for its data slots.
-    const dataSlots =
-      location.type.encoding === "bytes"
-        ? bytesDataSlots(
-            location.slot,
-            createSlotReader(root)(location.slot),
-            selector,
-          )
-        : [];
-    if (dataSlots.length === 0) {
-      return decodeStorageVariable(layout, selector, root);
-    }
-    return chain(fetchSlots(context, dataSlots), (data) =>
-      decodeStorageVariable(layout, selector, { ...root, ...data }),
-    );
-  });
-}
+  const { getStorage } = context;
+  const dataSlots = (root: AccountStorage) =>
+    location.type.encoding === "bytes"
+      ? bytesLength(
+          location.slot,
+          createSlotReader(root)(location.slot),
+          selector,
+        ).dataSlots
+      : [];
 
-function readLength(
-  context: Context,
-  node: { path: StoragePath; location: StorageLocation },
-): unknown {
-  return chain(fetchSlots(context, [node.location.slot]), (storage) =>
-    getDynamicArrayLength(
-      context.layout,
-      formatStoragePath(node.path),
-      storage,
-    ),
-  );
-}
-
-/**
- * Read `slots` through the getter, as account storage for the decoders. The
- * getter must return one value per slot, in order.
- */
-function fetchSlots(
-  context: Context,
-  slots: readonly bigint[],
-): AccountStorage | Promise<AccountStorage> {
-  const words = slots.map(toWord);
-  return chain(context.getStorage(words), (values) => {
-    if (values.length !== words.length) {
-      throw new Error(
-        `getStorage returned ${values.length} values for ${words.length} slots`,
-      );
-    }
-    const storage: AccountStorage = {};
-    for (const [index, slot] of words.entries()) {
-      const value = values[index];
-      if (value === undefined) {
-        throw new Error(`getStorage returned no value for slot: ${slot}`);
-      }
-      storage[slot] = value;
-    }
-    return storage;
-  });
-}
-
-/**
- * Apply `f` now if `value` is not a promise, or after it resolves. This lets
- * one code path serve both sync and async getters.
- */
-function chain<T, R>(
-  value: T | Promise<T>,
-  f: (resolved: T) => R | Promise<R>,
-): R | Promise<R> {
-  return value instanceof Promise ? value.then(f) : f(value);
+  const root = fetchStorage(getStorage, [location.slot]);
+  if (root instanceof Promise) {
+    return root.then(async (root) => {
+      const slots = dataSlots(root);
+      const data =
+        slots.length === 0 ? {} : await fetchStorage(getStorage, slots);
+      return decode({ ...root, ...data });
+    });
+  }
+  const slots = dataSlots(root);
+  // A sync getter gave the root, so it gives the data synchronously too.
+  const data =
+    slots.length === 0
+      ? {}
+      : (fetchStorage(getStorage, slots) as AccountStorage);
+  return decode({ ...root, ...data });
 }

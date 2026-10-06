@@ -2,33 +2,18 @@ import { Address, Hash, Hex } from "ox";
 import type { StorageType } from "./storage-layout";
 import { type StoragePathSubscript, subscriptToInteger } from "./storage-path";
 
-// Low-level Solidity storage-encoding rules shared across the package: slot
-// words, value-type classification, mapping-key encoding, and slot math. Only
-// types come from `storage-layout` (erased at runtime), so any module can
-// import this file without an import cycle.
+// Import only types from `storage-layout`, so this module has no import cycle.
 
-/** Encodes a slot index or slot value as a canonical 32-byte word. */
 export function toWord(value: bigint): Hex.Hex {
   return Hex.fromNumber(value, { size: 32 });
 }
 
-/**
- * The low 20 bytes of `value` as an EIP-55 checksummed address, like viem and
- * abitype return. Other hex values stay lowercase.
- */
-export function toAddress(value: bigint): Address.Address {
-  return Address.checksum(Hex.fromNumber(value, { size: 20 }));
-}
-
-/** keccak256 of the 32-byte word `slot`, as a slot index. */
 export function keccakSlot(slot: bigint): bigint {
   return BigInt(Hash.keccak256(toWord(slot)));
 }
 
-// --- Value types -------------------------------------------------------------
-
 /** A Solidity value type: one that is stored inline in a single slot. */
-export type ValueType =
+type ValueType =
   | { kind: "uint" | "int"; bits: number }
   | { kind: "address" }
   | { kind: "bool" }
@@ -69,12 +54,12 @@ export function parseValueType(type: StorageType): ValueType | undefined {
   return undefined;
 }
 
-export function isValueType(type: StorageType): boolean {
+function isValueType(type: StorageType): boolean {
   return parseValueType(type) !== undefined;
 }
 
 /** Smallest and largest value of a Solidity integer type. */
-export function integerRange(type: { kind: "uint" | "int"; bits: number }): {
+function integerRange(type: { kind: "uint" | "int"; bits: number }): {
   min: bigint;
   max: bigint;
 } {
@@ -83,8 +68,6 @@ export function integerRange(type: { kind: "uint" | "int"; bits: number }): {
     ? { min: 0n, max: (1n << bits) - 1n }
     : { min: -(1n << (bits - 1n)), max: (1n << (bits - 1n)) - 1n };
 }
-
-// --- Mapping keys ------------------------------------------------------------
 
 /**
  * ABI-encode a mapping key as the 32-byte word that Solidity hashes with the
@@ -126,10 +109,7 @@ export function encodeMappingKey(
       }
       return Hex.padRight(key.value, 32);
     default:
-      // TODO: Solidity supports dynamic bytes/string mapping keys, but their
-      // slot derivation hashes the raw key bytes rather than ABI-padding a
-      // fixed-width key. Leave them unsupported until we add explicit tests
-      // for those storage rules.
+      // TODO: `bytes`/`string` keys hash the raw key bytes, not a padded word.
       throw new Error(`unsupported mapping key type: ${keyType.label}`);
   }
 }
@@ -150,7 +130,10 @@ export function decodeMappingKey(
   switch (valueType?.kind) {
     case "address":
       return value >> 160n === 0n
-        ? { kind: "hex", value: toAddress(value) }
+        ? {
+            kind: "hex",
+            value: Address.checksum(Hex.fromNumber(value, { size: 20 })),
+          }
         : undefined;
     case "bool":
       return value === 0n || value === 1n
@@ -174,8 +157,6 @@ export function decodeMappingKey(
       return undefined;
   }
 }
-
-// --- Composite layout --------------------------------------------------------
 
 /** Parses the declared length of a fixed-size array type label. */
 export function fixedArrayLength(type: StorageType): number {

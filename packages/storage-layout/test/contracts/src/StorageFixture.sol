@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 
-/// @notice One state variable per Solidity storage shape that `storage-layout`
-/// decodes. The tests deploy this contract, call `populate`, and compare each
-/// decoded value with the public getter that Solidity generates for it.
+/// @notice One variable per storage shape. Tests compare each decoded value
+/// with its getter after `populate`.
 contract StorageFixture {
     type Price is uint128;
 
@@ -39,8 +38,6 @@ contract StorageFixture {
         string name;
     }
 
-    // --- Value types, packed into shared slots -------------------------------
-
     uint256 public totalSupply;
     address public owner;
     bool public paused;
@@ -55,12 +52,8 @@ contract StorageFixture {
     int48 public i48;
     Status public status;
 
-    // --- Structs -------------------------------------------------------------
-
     Metadata public metadata;
     Book internal book;
-
-    // --- Arrays --------------------------------------------------------------
 
     uint128[3] public fixedNumbers;
     uint256[] public dynamicNumbers;
@@ -70,16 +63,12 @@ contract StorageFixture {
     bool[] public flags;
     address[] public addresses;
 
-    // --- bytes and string ----------------------------------------------------
-
     bytes public emptyBytes;
     bytes public shortBytes;
     bytes public exactBytes;
     bytes public longBytes;
     string public shortString;
     string public longString;
-
-    // --- Mappings ------------------------------------------------------------
 
     mapping(address account => uint256 balance) public balances;
     mapping(address owner => mapping(address spender => uint256 amount)) public allowances;
@@ -91,7 +80,7 @@ contract StorageFixture {
     mapping(address account => string name) public names;
     mapping(uint8 outer => mapping(int256 inner => bytes32 value)) public nested;
 
-    // --- Types that `storage-layout` does not decode -------------------------
+    // Not supported by storage-layout.
 
     StorageFixture public self;
     Price public price;
@@ -99,7 +88,6 @@ contract StorageFixture {
     address public constant ALICE = 0x1111111111111111111111111111111111111234;
     address public constant BOB = 0x2222222222222222222222222222222222221234;
 
-    /// @notice Write a known, non-zero value to every variable above.
     function populate() external {
         totalSupply = 1_000_000 ether;
         owner = ALICE;

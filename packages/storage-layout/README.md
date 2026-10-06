@@ -14,7 +14,19 @@ const totalSupply = decodeStorageVariable(storageLayout, "totalSupply", {
 }); // 10n
 ```
 
-`storage-layout` does not depend on an RPC client.
+To read storage from a node, use the viem actions:
+
+```ts
+import { readStorageVariables } from "storage-layout";
+
+const [totalSupply, owner] = await readStorageVariables(publicClient, {
+  address,
+  storageLayout,
+  variables: ["totalSupply", "owner"],
+}); // [bigint, `0x${string}`]
+```
+
+`viem` (`^2.56.9`, the first version with `getStorageValues`) is a peer dependency. The decoders do not use it: they take raw slot values from any source.
 
 ## Solidity `storageLayout`
 
@@ -165,12 +177,11 @@ import { createStorageView } from "storage-layout";
 
 const state = createStorageView(
   layout,
-  (slots) =>
-    Promise.all(
-      slots.map(
-        async (slot) => (await publicClient.getStorageAt({ address, slot })) ?? "0x0",
-      ),
-    ),
+  // One address, so the result has one entry (its key case depends on the node).
+  async (slots) =>
+    Object.values(
+      await publicClient.getStorageValues({ requests: { [address]: slots } }),
+    )[0]!,
   preimages,
 );
 
@@ -189,6 +200,54 @@ const holders = Object.keys(state.balances); // keys from `preimages`
 | Assignment, `delete`, `defineProperty` | Throw: the view is read-only. |
 
 The names `then`, `catch`, `finally`, `toJSON`, and `asymmetricMatch` return `undefined`, so `await`, `JSON.stringify`, and test matchers treat views as plain objects.
+
+### `readStorageVariable`
+
+Reads and decodes one concrete storage variable with viem's [`getStorageAt`](https://viem.sh/docs/contract/getStorageAt) (`eth_getStorageAt`).
+
+```ts
+function readStorageVariable<chain, layout extends StorageLayout, variable extends ConcreteStorageVariable<layout>>(
+  client: Client<Transport, chain>,
+  parameters: {
+    address: Address;
+    storageLayout: layout;
+    variable: variable;
+  } & ({ blockNumber?: bigint } | { blockTag?: BlockTag } | { blockHash: Hash; requireCanonical?: boolean }),
+): Promise<StorageVariableToPrimitiveType<layout, variable>>;
+
+const balance = await readStorageVariable(publicClient, {
+  address,
+  storageLayout,
+  variable: `balances[${account}]`,
+}); // bigint
+```
+
+A value type, or a `bytes`/`string` value shorter than 32 bytes, is one request. A longer `bytes`/`string` value is one request for the root slot, then one request for each data slot, in parallel. All requests are assumed to see the same state. With a block tag such as `latest`, a new block between requests can give a wrong value, so pass `blockNumber` or `blockHash` when that matters. A selector that is not concrete, or an unsupported type, throws before any request.
+
+The parameter is named `storageLayout`, like the Foundry artifact field, so an artifact spreads in like a viem contract config: `{ ...artifact, address, variable }`.
+
+### `readStorageVariables`
+
+Reads and decodes many concrete storage variables of one contract with viem's [`getStorageValues`](https://viem.sh/docs/actions/public/getStorageValues) (`eth_getStorageValues`).
+
+```ts
+function readStorageVariables<chain, layout extends StorageLayout, variables extends readonly ConcreteStorageVariable<layout>[]>(
+  client: Client<Transport, chain>,
+  parameters: {
+    address: Address;
+    storageLayout: layout;
+    variables: variables;
+  } & ({ blockNumber?: bigint } | { blockTag?: BlockTag } | { blockHash: Hash; requireCanonical?: boolean }),
+): Promise<{ [i in keyof variables]: StorageVariableToPrimitiveType<layout, variables[i]> }>;
+
+const [supply, owner, paused] = await readStorageVariables(publicClient, {
+  address,
+  storageLayout,
+  variables: ["totalSupply", "owner", "paused"],
+}); // [bigint, `0x${string}`, boolean]
+```
+
+One request reads the slots of all variables, and each slot is requested once, so packed variables share a read. If a `bytes`/`string` value is 32 bytes or more, a second request reads its data slots. Both requests are assumed to see the same state. With a block tag such as `latest`, a new block between them can give a wrong value, so pass `blockNumber` or `blockHash` when that matters. The node must support `eth_getStorageValues` (anvil does).
 
 ### `enumerateMappingKeys`
 
@@ -233,6 +292,8 @@ function getDynamicArrayLength<layout extends StorageLayout, array extends Dynam
 | `DynamicArrayStorageVariable<layout>` | Selectors of dynamic arrays, at any depth. |
 | `ExtractVariableNames<layout>` | Names of the top-level state variables. |
 | `StorageView<layout, isAsync>` | Type of the view that `createStorageView` returns. |
+| `ReadStorageVariableParameters<layout, variable>` | Parameters of `readStorageVariable`. |
+| `ReadStorageVariablesParameters<layout, variables>`, `ReadStorageVariablesReturnType<layout, variables>` | Parameters and result of `readStorageVariables`. |
 | `StorageItem`, `StorageType` | One `storage` entry and one `types` entry of the compiler output. |
 | `AccountStorage` | Raw slot values keyed by slot, in the shape of `eth_getProof` and `prestateTracer` storage. |
 | `KeccakPreimage` | A captured keccak256 input and output, for mapping key enumeration. Only `preimage` is read; `hash` is not checked. |
@@ -260,4 +321,4 @@ bun run benchmark   # micro-benchmarks for decode, view, and enumeration
 
 Tests need Foundry (`forge` and `anvil`) on `PATH`. `bun run contracts:build` compiles `test/contracts` and writes `test/contracts/generated.ts`, which holds each fixture contract's ABI, bytecode, and solc `storageLayout` as `as const` literals. That file is gitignored, so run `contracts:build` (or `test` / `typecheck`, which run it first) after a fresh clone.
 
-`src/ground-truth.test.ts` is the differential test: it deploys `test/contracts/src/StorageFixture.sol` on anvil, calls `populate()`, and checks that every decoded value equals the Solidity getter for the same variable. It also captures keccak256 preimages from the `populate()` trace and checks `enumerateMappingKeys` against the keys that were written. The other test files use hand-written layouts for focused cases.
+`src/ground-truth.test.ts` is the differential test: it deploys `test/contracts/src/StorageFixture.sol` on anvil, calls `populate()`, and checks that every decoded value equals the Solidity getter for the same variable. It also captures keccak256 preimages from the `populate()` trace and checks `enumerateMappingKeys` against the keys that were written, and it checks which RPC methods `readStorageVariable` and `readStorageVariables` send. The other test files use hand-written layouts for focused cases.

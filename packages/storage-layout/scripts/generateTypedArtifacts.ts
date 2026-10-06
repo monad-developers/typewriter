@@ -1,7 +1,5 @@
-// Write `test/contracts/generated.ts` from the Foundry build output, so tests
-// get each fixture contract's ABI, bytecode, and solc `storageLayout` as
-// literal types. Run through `bun run contracts:build`, which builds first.
-// The generated file is gitignored.
+// Writes each fixture's ABI, bytecode, and `storageLayout` from the Foundry
+// output to `test/contracts/generated.ts` as `as const` literals.
 
 import { Glob } from "bun";
 

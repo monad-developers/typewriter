@@ -5,6 +5,15 @@ export {
 export { decodeStorageVariable } from "./decodeStorageVariable";
 export { enumerateMappingKeys } from "./enumerateMappingKeys";
 export { getDynamicArrayLength } from "./getDynamicArrayLength";
+export {
+  type ReadStorageVariableParameters,
+  readStorageVariable,
+} from "./readStorageVariable";
+export {
+  type ReadStorageVariablesParameters,
+  type ReadStorageVariablesReturnType,
+  readStorageVariables,
+} from "./readStorageVariables";
 export type {
   StorageItem,
   StorageLayout,

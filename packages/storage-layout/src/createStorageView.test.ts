@@ -19,14 +19,7 @@ import {
   type StorageLayout,
 } from "./index";
 
-// -----------------------------------------------------------------------------
-// Helpers
-
-/**
- * A getter backed by an in-memory slot map. It records every call, and it
- * throws on a slot that is not in the map, so a test cannot pass by reading
- * slots it did not set up.
- */
+/** A recording getter that throws on a slot the test did not set up. */
 function getter(storage: AccountStorage) {
   const calls: (readonly Hex.Hex[])[] = [];
   const read = (slots: readonly Hex.Hex[]): Hex.Hex[] => {
@@ -56,9 +49,6 @@ function mappingPreimage(key: Hex.Hex, slot: bigint | Hex.Hex): KeccakPreimage {
 
 // biome-ignore lint/suspicious/noExplicitAny: tests reach runtime-only behavior.
 type Untyped = any;
-
-// -----------------------------------------------------------------------------
-// Reads
 
 test("reads value types and returns the decoded values", () => {
   const { get } = getter({
@@ -182,9 +172,6 @@ test("a corrupt bytes root word throws before any data slot read", () => {
   expect(calls).toHaveLength(1);
 });
 
-// -----------------------------------------------------------------------------
-// Async reads
-
 test("async: leaves and dynamic array length return promises", async () => {
   const { getAsync } = getter({ [word(0n)]: "0xff", [word(10n)]: "0x2" });
   const state = createStorageView(layout, getAsync);
@@ -225,9 +212,6 @@ test("async: a getter rejection rejects the read", async () => {
 
   await expect(state.totalSupply).rejects.toThrow("rpc down");
 });
-
-// -----------------------------------------------------------------------------
-// Enumeration
 
 test("Object.keys lists top-level variables, struct fields, and fixed array indexes", () => {
   const state = createStorageView(layout, getter({}).get);
@@ -358,9 +342,6 @@ test("a dynamic array cannot be enumerated", () => {
   );
 });
 
-// -----------------------------------------------------------------------------
-// console.log
-
 test("console.log shows the selector and keys without reading storage", () => {
   const { get, calls } = getter({});
   const state = createStorageView(layout, get, [mappingPreimage(OWNER, 7n)]);
@@ -384,9 +365,6 @@ test("console.log shows the selector and keys without reading storage", () => {
   );
   expect(calls).toEqual([]);
 });
-
-// -----------------------------------------------------------------------------
-// JS interop
 
 test("symbols and reserved interop names return undefined", async () => {
   const { get } = getter({ [word(4n)]: METADATA_PACKED });
@@ -440,9 +418,6 @@ test("the view is read-only", () => {
     "storage view is read-only (attempted to change owner)",
   );
 });
-
-// -----------------------------------------------------------------------------
-// Errors
 
 test("invalid property access throws with the selector", () => {
   const state: Untyped = createStorageView(layout, getter({}).get);

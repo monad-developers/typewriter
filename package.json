@@ -19,7 +19,7 @@
     "prool": "0.2.4",
     "superjson": "2.2.6",
     "typescript": "^5",
-    "viem": "2.47.6"
+    "viem": "2.56.9"
   },
   "scripts": {
     "lint": "biome check . && bun run --filter '*' lint",
