@@ -24,7 +24,7 @@ export type {
   ConcreteStorageVariable,
   DynamicArrayStorageVariable,
   ExtractVariableNames,
-  KeccakPreimage,
+  KeccakPreimages,
   MappingEntryVariable,
   MappingStorageVariable,
   StorageLayoutToPrimitiveType,

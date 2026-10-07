@@ -15,7 +15,6 @@ import {
 import {
   type AccountStorage,
   createStorageView,
-  type KeccakPreimage,
   type StorageLayout,
 } from "./index";
 
@@ -41,10 +40,12 @@ function getter(storage: AccountStorage) {
 const word = (value: bigint | Hex.Hex): Hex.Hex =>
   Hex.padLeft(typeof value === "bigint" ? Hex.fromNumber(value) : value, 32);
 
-/** The preimage Solidity hashes for `mapping[key]`, with the mapping at `slot`. */
-function mappingPreimage(key: Hex.Hex, slot: bigint | Hex.Hex): KeccakPreimage {
-  const preimage = Hex.concat(word(key), word(slot));
-  return { hash: Hash.keccak256(preimage), preimage };
+/**
+ * The preimage Solidity hashes for `mapping[key]`, with the mapping at `slot`,
+ * as lowercase hex.
+ */
+function mappingPreimage(key: Hex.Hex, slot: bigint | Hex.Hex): Hex.Hex {
+  return Hex.concat(word(key), word(slot)).toLowerCase() as Hex.Hex;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: tests reach runtime-only behavior.
@@ -229,13 +230,16 @@ test("Object.keys lists top-level variables, struct fields, and fixed array inde
 
 test("Object.keys lists the mapping keys found in the preimages", () => {
   const outer = mappingPreimage(OWNER, 13n);
-  const state = createStorageView(layout, getter({}).get, [
-    mappingPreimage(OWNER, 7n),
-    mappingPreimage(SPENDER, 7n),
-    mappingPreimage(OWNER, 7n), // duplicate
-    outer, // allowances, another mapping
-    mappingPreimage(SPENDER, outer.hash), // allowances[OWNER]
-  ]);
+  const state = createStorageView(
+    layout,
+    getter({}).get,
+    new Set([
+      mappingPreimage(OWNER, 7n),
+      mappingPreimage(SPENDER, 7n),
+      outer, // allowances, another mapping
+      mappingPreimage(SPENDER, Hash.keccak256(outer)), // allowances[OWNER]
+    ]),
+  );
 
   expect(Object.keys(state.balances)).toEqual([OWNER, SPENDER]);
   expect(Object.keys(state.allowances)).toEqual([OWNER]);
@@ -243,8 +247,24 @@ test("Object.keys lists the mapping keys found in the preimages", () => {
   expect(Object.keys(state.allowances[SPENDER]!)).toEqual([]);
 });
 
-test("enumeration sees preimages appended after the proxy was created", () => {
-  const preimages: KeccakPreimage[] = [];
+test("enumeration and 'in' ignore preimages with uppercase hex", () => {
+  const outer = mappingPreimage(OWNER, 13n);
+  const inner = mappingPreimage(SPENDER, Hash.keccak256(outer));
+  const upper = (preimage: Hex.Hex) =>
+    `0x${preimage.slice(2).toUpperCase()}` as Hex.Hex;
+  const state = createStorageView(
+    layout,
+    getter({}).get,
+    new Set([outer, upper(inner)]),
+  );
+
+  expect(Object.keys(state.allowances)).toEqual([OWNER]);
+  expect(Object.keys(state.allowances[OWNER]!)).toEqual([]);
+  expect(SPENDER in state.allowances[OWNER]!).toBe(false);
+});
+
+test("enumeration sees preimages added after the proxy was created", () => {
+  const preimages = new Set<Hex.Hex>();
   const balances = createStorageView(
     layout,
     getter({}).get,
@@ -254,36 +274,18 @@ test("enumeration sees preimages appended after the proxy was created", () => {
   expect(Object.keys(balances)).toEqual([]);
   expect(OWNER in balances).toBe(false);
 
-  preimages.push(mappingPreimage(OWNER, 7n));
+  preimages.add(mappingPreimage(OWNER, 7n));
 
   expect(Object.keys(balances)).toEqual([OWNER]);
   expect(OWNER in balances).toBe(true);
 });
 
-test("enumeration rebuilds its key index when the preimage array shrinks", () => {
-  const preimages: KeccakPreimage[] = [
-    mappingPreimage(OWNER, 7n),
-    mappingPreimage(SPENDER, 7n),
-  ];
-  const balances = createStorageView(
+test("'in' and for...in follow the enumerable keys", () => {
+  const state = createStorageView(
     layout,
     getter({}).get,
-    preimages,
-  ).balances;
-
-  expect(Object.keys(balances)).toEqual([OWNER, SPENDER]);
-
-  preimages.length = 0;
-  preimages.push(mappingPreimage(SPENDER, 7n));
-
-  expect(Object.keys(balances)).toEqual([SPENDER]);
-  expect(OWNER in balances).toBe(false);
-});
-
-test("'in' and for...in follow the enumerable keys", () => {
-  const state = createStorageView(layout, getter({}).get, [
-    mappingPreimage(OWNER, 7n),
-  ]);
+    new Set([mappingPreimage(OWNER, 7n)]),
+  );
   const keys: string[] = [];
   for (const key in state.balances) keys.push(key);
 
@@ -298,10 +300,11 @@ test("'in' and for...in follow the enumerable keys", () => {
 
 test("'in' is true only for known mapping keys", () => {
   const mixedCase = `0x${"AB".repeat(20)}` as Hex.Hex;
-  const balances = createStorageView(layout, getter({}).get, [
-    mappingPreimage(OWNER, 7n),
-    mappingPreimage(mixedCase, 7n),
-  ]).balances;
+  const balances = createStorageView(
+    layout,
+    getter({}).get,
+    new Set([mappingPreimage(OWNER, 7n), mappingPreimage(mixedCase, 7n)]),
+  ).balances;
 
   expect(OWNER in balances).toBe(true);
   expect(Object.hasOwn(balances, OWNER)).toBe(true);
@@ -344,7 +347,11 @@ test("a dynamic array cannot be enumerated", () => {
 
 test("console.log shows the selector and keys without reading storage", () => {
   const { get, calls } = getter({});
-  const state = createStorageView(layout, get, [mappingPreimage(OWNER, 7n)]);
+  const state = createStorageView(
+    layout,
+    get,
+    new Set([mappingPreimage(OWNER, 7n)]),
+  );
 
   expect(Bun.inspect(state)).toBe(
     `StorageView { ${layout.storage.map((item) => item.label).join(", ")} }`,

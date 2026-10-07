@@ -7,13 +7,12 @@
 //   BENCH_ACCOUNTS=5000 BENCH_TICKS=500 bun run benchmark
 //   BENCH_CASE=depth bun --cpu-prof-md scripts/benchmark.ts  # profile one case
 
-import { Hash, Hex } from "ox";
+import { Hex } from "ox";
 import {
   type AccountStorage,
   createStorageView,
   decodeStorageVariable,
   enumerateMappingKeys,
-  type KeccakPreimage,
 } from "../src/index";
 import { encodeMappingKey, toWord } from "../src/solidity-encoding";
 import {
@@ -37,8 +36,7 @@ const layout = OrderBookFixture.storageLayout;
 
 // Storage and preimages, as the runtime holds them after the writes below.
 const words = new Map<Hex.Hex, bigint>();
-const preimages: KeccakPreimage[] = [];
-const preimageSet = new Set<Hex.Hex>();
+const preimages = new Set<Hex.Hex>();
 
 /** Record the mapping preimages of `path`, as the runtime does for known paths. */
 function touch(path: string) {
@@ -52,10 +50,7 @@ function touch(path: string) {
       subscript.value,
       path,
     );
-    const preimage = Hex.concat(key, toWord(slot));
-    if (preimageSet.has(preimage)) continue;
-    preimageSet.add(preimage);
-    preimages.push({ hash: Hash.keccak256(preimage), preimage });
+    preimages.add(Hex.concat(key, toWord(slot)).toLowerCase() as Hex.Hex);
   }
 }
 
@@ -296,7 +291,7 @@ const results = [
 ];
 
 console.log(
-  `${ACCOUNTS} accounts, ${TICKS} ticks per side, ${ORDERS} orders, ${preimages.length} preimages`,
+  `${ACCOUNTS} accounts, ${TICKS} ticks per side, ${ORDERS} orders, ${preimages.size} preimages`,
 );
 console.table(results.filter((result) => result !== undefined));
 

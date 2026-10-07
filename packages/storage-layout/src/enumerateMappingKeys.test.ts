@@ -11,20 +11,21 @@ function word(value: bigint | Hex.Hex): Hex.Hex {
 }
 
 /** The preimage Solidity hashes for `mapping[key]` at `mappingSlot`. */
-function entry(key: Hex.Hex, mappingSlot: bigint | Hex.Hex) {
-  const preimage = Hex.concat(word(key), word(mappingSlot));
-  return { hash: Hash.keccak256(preimage), preimage };
+function entry(key: Hex.Hex, mappingSlot: bigint | Hex.Hex): Hex.Hex {
+  return Hex.concat(word(key), word(mappingSlot)).toLowerCase() as Hex.Hex;
 }
 
 test("enumerateMappingKeys lists keys hashed with the mapping slot", () => {
-  const preimages = [
+  const preimages = new Set([
     entry(OWNER, 7n), // balances (slot 7)
     entry(SPENDER, 7n),
-    entry(OWNER, 7n), // duplicate
     entry(OWNER, 13n), // allowances, another mapping
-    { hash: Hash.keccak256(word(7n)), preimage: word(7n) }, // 32 bytes
+    word(7n), // 32 bytes
     entry(`0x01${"00".repeat(11)}${OWNER.slice(2)}`, 7n), // dirty address word
-  ];
+    `0x${entry(`0x${"cd".repeat(20)}`, 7n)
+      .slice(2)
+      .toUpperCase()}` as Hex.Hex, // not lowercase
+  ]);
 
   expect(enumerateMappingKeys(layout, "balances", preimages)).toEqual([
     `balances[${OWNER}]`,
@@ -34,15 +35,18 @@ test("enumerateMappingKeys lists keys hashed with the mapping slot", () => {
 
 test("enumerateMappingKeys lists inner keys of nested mappings", () => {
   const outer = entry(OWNER, 13n);
-  const inner = entry(SPENDER, outer.hash);
+  const inner = entry(SPENDER, Hash.keccak256(outer));
+  const preimages = new Set([outer, inner]);
 
-  expect(enumerateMappingKeys(layout, "allowances", [outer, inner])).toEqual([
+  expect(enumerateMappingKeys(layout, "allowances", preimages)).toEqual([
     `allowances[${OWNER}]`,
   ]);
   expect(
-    enumerateMappingKeys(layout, `allowances[${OWNER}]`, [outer, inner]),
+    enumerateMappingKeys(layout, `allowances[${OWNER}]`, preimages),
   ).toEqual([`allowances[${OWNER}][${SPENDER}]`]);
-  expect(slotOf(layout, `allowances[${OWNER}][${SPENDER}]`)).toBe(inner.hash);
+  expect(slotOf(layout, `allowances[${OWNER}][${SPENDER}]`)).toBe(
+    Hash.keccak256(inner),
+  );
 });
 
 test("enumerateMappingKeys finds mappings inside structs and arrays", () => {
@@ -102,11 +106,15 @@ test("enumerateMappingKeys finds mappings inside structs and arrays", () => {
   const levelsSlot = slotOf(nestedLayout, "books[2].levels");
 
   expect(
-    enumerateMappingKeys(nestedLayout, "books[2].levels", [
-      entry(Hex.fromNumber(BigInt.asUintN(256, -3n)), levelsSlot),
-      entry("0x05", levelsSlot),
-      entry("0x05", slotOf(nestedLayout, "books[1].levels")),
-    ]),
+    enumerateMappingKeys(
+      nestedLayout,
+      "books[2].levels",
+      new Set([
+        entry(Hex.fromNumber(BigInt.asUintN(256, -3n)), levelsSlot),
+        entry("0x05", levelsSlot),
+        entry("0x05", slotOf(nestedLayout, "books[1].levels")),
+      ]),
+    ),
   ).toEqual(["books[2].levels[-3]", "books[2].levels[5]"]);
 });
 
@@ -114,13 +122,13 @@ test("enumerateMappingKeys rejects selectors that are not mappings", () => {
   const enumerate = enumerateMappingKeys as (
     layout: StorageLayout,
     mapping: string,
-    preimages: [],
+    preimages: ReadonlySet<Hex.Hex>,
   ) => string[];
 
-  expect(() => enumerate(layout, "totalSupply", [])).toThrow(
+  expect(() => enumerate(layout, "totalSupply", new Set())).toThrow(
     "storage path is not a mapping: totalSupply",
   );
-  expect(() => enumerate(layout, `balances[${OWNER}]`, [])).toThrow(
+  expect(() => enumerate(layout, `balances[${OWNER}]`, new Set())).toThrow(
     `storage path is not a mapping: balances[${OWNER}]`,
   );
 });

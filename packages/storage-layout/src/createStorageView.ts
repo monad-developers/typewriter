@@ -19,10 +19,10 @@ import {
   type StorageLayout,
   type StorageLocation,
 } from "./storage-layout";
-import { formatSubscript, parseSubscript } from "./storage-path";
+import { parseSubscript } from "./storage-path";
 import type {
   AccountStorage,
-  KeccakPreimage,
+  KeccakPreimages,
   StorageLayoutToPrimitiveType,
 } from "./types";
 
@@ -79,8 +79,8 @@ export type StorageView<
  * @param layout - Solidity compiler `storageLayout` output.
  * @param getStorage - One value per slot, in order. A sync getter makes leaf
  * reads return values; an async getter makes them return promises.
- * @param preimages - keccak256 preimages for mapping keys, read again on each
- * enumeration.
+ * @param preimages - keccak256 preimages for mapping keys, as lowercase hex.
+ * The view reads the set again on each enumeration, so it sees later changes.
  *
  * @example
  * ```ts
@@ -95,7 +95,7 @@ export function createStorageView<
 >(
   layout: L,
   getStorage: G,
-  preimages: readonly KeccakPreimage[] = [],
+  preimages: KeccakPreimages = new Set(),
 ): NoInfer<StorageView<L, G extends AsyncStorageGetter ? true : false>> {
   const context = { layout, getStorage, preimages };
   return createNode(context, undefined) as StorageView<
@@ -107,7 +107,7 @@ export function createStorageView<
 type Context = {
   layout: StorageLayout;
   getStorage: StorageGetter;
-  preimages: readonly KeccakPreimage[];
+  preimages: KeccakPreimages;
 };
 
 /** A composite's location, or `undefined` for the root view. */
@@ -211,9 +211,7 @@ function enumerableKeys(context: Context, node: Node): string[] {
   }
   if (isMappingType(type)) {
     const keyType = findStorageType(context.layout, type.key);
-    return mappingKeys(keyType, node.slot, context.preimages).map(
-      formatSubscript,
-    );
+    return [...mappingKeys(keyType, node.slot, context.preimages).keys()];
   }
   throw new Error(
     `cannot enumerate dynamic array ${node.selector}: read its length and index it instead`,
@@ -222,7 +220,7 @@ function enumerableKeys(context: Context, node: Node): string[] {
 
 /**
  * Whether `property` is an enumerable key. `Object.keys` calls this for each
- * listed key, and a mapping key scans `preimages`.
+ * listed key, so a mapping key is one lookup in `preimages`, not a scan.
  */
 function hasKey(context: Context, node: Node, property: string): boolean {
   if (node === undefined) {

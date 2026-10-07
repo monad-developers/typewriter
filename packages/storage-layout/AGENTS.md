@@ -35,6 +35,11 @@ The selector string is the only external path format. Internally a path exists o
 
 Mapping slots hash keys into one-way storage locations, so mapping keys cannot be recovered from raw slots. Keys are known only from keccak256 preimages that the caller captured during execution (`enumerateMappingKeys`, and enumeration in `createStorageView`). Do not try to recover keys from slots or storage values alone.
 
+Two known limits, documented in the README and not handled for now:
+
+- With the optimizer on, solc hashes a constant key (`m[1]`, `roles[ADMIN]`) at compile time. No `KECCAK256` step runs, so a trace has no preimage for that key.
+- `bytes`/`string` mapping keys are not supported. Their preimage is the unpadded key data followed by the slot, so it does not fit the 64-byte model.
+
 Dynamic array `.length` is different: it lives at the array root slot and can be read directly.
 
 ## Testing
@@ -55,8 +60,8 @@ The selector types expand every path of a layout, so careless generics make `tsc
 
 ## Performance Notes
 
-- `bun run benchmark` (`scripts/benchmark.ts`) replays the read patterns of `apps/order-book` (linked-list price walks, depth, order and credential scans, mapping enumeration) against `test/contracts/src/OrderBookFixture.sol`, with a global `preimages` array like the typewriter runtime's. It reports time, getter calls, and slots read per call. Run it before and after a performance change, and profile one case with `BENCH_CASE=<name> bun --cpu-prof-md scripts/benchmark.ts`.
-- The storage view is deliberately stateless for now: no cache and no key index. Each leaf access issues one getter call, and mapping enumeration and membership checks scan `preimages`. Because `Object.keys` checks membership once per listed key, enumerating a mapping costs keys × preimages string comparisons. A faster design is planned; measure it with `bun run benchmark`.
+- `bun run benchmark` (`scripts/benchmark.ts`) replays the read patterns of `apps/order-book` (linked-list price walks, depth, order and credential scans, mapping enumeration) against `test/contracts/src/OrderBookFixture.sol`, with a global `preimages` set like the typewriter runtime's. It reports time, getter calls, and slots read per call. Run it before and after a performance change, and profile one case with `BENCH_CASE=<name> bun --cpu-prof-md scripts/benchmark.ts`.
+- The storage view is deliberately stateless: no cache and no key index. Each leaf access issues one getter call. `preimages` is a `Set` of lowercase hex, so a membership check is one lookup, and mapping enumeration reads the set once. `Object.keys` checks membership once per listed key, so it costs one pass plus one lookup per key. Do not change `hasMappingKey` back to a scan: that makes `Object.keys` quadratic.
 - A known but unimplemented improvement is to coalesce parallel async leaf reads, such as `Promise.all(...)`, into a single deduped slot request.
 
 ## Design Constraints

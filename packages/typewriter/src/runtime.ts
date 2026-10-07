@@ -14,7 +14,6 @@ import { Hash, Hex } from "ox";
 import {
   createStorageView,
   getStorageVariablePreimages,
-  type KeccakPreimage,
   recoverStoragePaths,
   type StorageLayout,
   type StorageView,
@@ -411,16 +410,13 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
     // The proxy enumerates mapping keys from keccak256 preimages. Known paths
     // are what the database stores, so rebuild their preimages here and append
     // more as new paths are registered.
-    const preimages: KeccakPreimage[] = [];
-    const preimageHashes = new Set<Hex.Hex>();
+    const preimages = new Set<Hex.Hex>();
     const addKnownPathPreimages = (path: string) => {
       for (const entry of getStorageVariablePreimages(
         app.storageLayout,
         path,
       )) {
-        if (preimageHashes.has(entry.hash)) continue;
-        preimageHashes.add(entry.hash);
-        preimages.push(entry);
+        preimages.add(entry.preimage.toLowerCase() as Hex.Hex);
       }
     };
     for (const path of knownPaths) addKnownPathPreimages(path);

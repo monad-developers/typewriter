@@ -70,12 +70,12 @@ test("createStorageView gracefully falls back for loose layouts", () => {
   expectTypeOf(looseAsyncState[accountsKey]["0xabcd"][balanceKey]).toBeAny();
 });
 
-test("createStorageView takes keccak preimages, not known paths", () => {
+test("createStorageView takes a set of keccak preimages", () => {
   const syncGetter = (_slots: readonly Hex.Hex[]): Hex.Hex[] => [];
   const typeAssertions = () => {
+    createStorageView(layout, syncGetter, new Set(["0x2" as const]));
+    // @ts-expect-error an array of preimages is no longer accepted
     createStorageView(layout, syncGetter, [{ hash: "0x1", preimage: "0x2" }]);
-    // @ts-expect-error known variable paths are no longer accepted
-    createStorageView(layout, syncGetter, ["balances[0x1]"]);
   };
   expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
 });

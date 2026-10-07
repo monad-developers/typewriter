@@ -166,7 +166,7 @@ function createStorageView<
 >(
   layout: layout,
   getStorage: getStorage,
-  preimages?: readonly KeccakPreimage[],
+  preimages?: KeccakPreimages,
 ): StorageView<layout, getStorage extends (slots: readonly Hex[]) => Promise<readonly Hex[]> ? true : false>;
 ```
 
@@ -194,7 +194,7 @@ const holders = Object.keys(state.balances); // keys from `preimages`
 | Operation | Behavior |
 | --- | --- |
 | `Object.keys`, `for...in`, spread | Top-level variables, struct fields, fixed array indexes, and the mapping keys found in `preimages`. The view reads `preimages` on every enumeration, so later changes are seen. A dynamic array throws: read `length` and index it instead. |
-| `key in view`, `Object.hasOwn` | True only for keys that `Object.keys` lists: known mapping keys, struct fields, top-level variables, and fixed array indexes. A mapping key check scans `preimages`. |
+| `key in view`, `Object.hasOwn` | True only for keys that `Object.keys` lists: known mapping keys, struct fields, top-level variables, and fixed array indexes. A mapping key check is one lookup in `preimages`. |
 | `.length` | A fixed array's length comes from its type. A dynamic array's length is a storage read. |
 | `console.log` | Prints the selector and keys, for example `StorageView metadata { lastUpdate, active }`, without reading storage. |
 | Assignment, `delete`, `defineProperty` | Throw: the view is read-only. |
@@ -257,7 +257,7 @@ Lists the known entries of a mapping from captured keccak256 preimages, for exam
 function enumerateMappingKeys<layout extends StorageLayout, mapping extends MappingStorageVariable<layout>>(
   layout: layout,
   mapping: mapping,
-  preimages: readonly KeccakPreimage[],
+  preimages: KeccakPreimages,
 ): MappingEntryVariable<layout, mapping>[];
 
 enumerateMappingKeys(layout, "balances", preimages);
@@ -296,7 +296,7 @@ function getDynamicArrayLength<layout extends StorageLayout, array extends Dynam
 | `ReadStorageVariablesParameters<layout, variables>`, `ReadStorageVariablesReturnType<layout, variables>` | Parameters and result of `readStorageVariables`. |
 | `StorageItem`, `StorageType` | One `storage` entry and one `types` entry of the compiler output. |
 | `AccountStorage` | Raw slot values keyed by slot, in the shape of `eth_getProof` and `prestateTracer` storage. |
-| `KeccakPreimage` | A captured keccak256 input and output, for mapping key enumeration. Only `preimage` is read; `hash` is not checked. |
+| `KeccakPreimages` | `ReadonlySet<Hex>` of captured keccak256 inputs, as lowercase hex, for mapping key enumeration. An input with uppercase letters is ignored. |
 
 When the layout is typed as plain `StorageLayout` instead of a literal, selectors fall back to `string` and values to `unknown`.
 
@@ -306,9 +306,15 @@ When the layout is typed as plain `StorageLayout` instead of a literal, selector
 
 Storage does not record which keys a mapping has. `enumerateMappingKeys` and `createStorageView` list a key only if a captured 64-byte preimage hashes it with the mapping's slot. A key written by an execution whose preimages were not captured is not listed. Every 64-byte preimage is trusted, so a hash that a contract computes for another purpose, with the same second word as a mapping slot, also appears as a key of that mapping.
 
-### Mapping enumeration in `createStorageView` is quadratic
+A key that is a compile-time constant can be missing even when its preimages were captured. With the optimizer on, solc computes the slot hash of a constant key, such as `m[1]` or `roles[ADMIN]`, at compile time. The contract then executes no `KECCAK256` step for that key, so a trace has no preimage for it. To list such a key, add its preimage yourself.
 
-The view keeps no index. `Object.keys` on a mapping lists its keys with one scan of `preimages`, and then checks each listed key with another scan. Enumerating a mapping therefore costs keys × preimages string comparisons: about 37 ms for 1,000 keys and 560 ms for 4,000 keys. `enumerateMappingKeys` does one scan and is linear. Measure changes with `bun run benchmark`.
+### Mappings with `bytes` or `string` keys are not supported
+
+The slot of a `bytes` or `string` key hashes the unpadded key data followed by the mapping slot, not a 64-byte word pair. A selector with such a key, for example `names["alice"]`, throws `unsupported mapping key type`. Enumeration reads only 64-byte preimages, so it lists no keys for these mappings.
+
+### Mapping enumeration reads every preimage
+
+The view keeps no index. `Object.keys` on a mapping reads all of `preimages` once to list its keys. Then it checks each listed key with one `Set` lookup. The cost is linear in the number of preimages, even for a mapping with few keys. In `bun run benchmark`, `Object.keys` takes about 1.8 ms for 1,000 keys in 8,401 preimages and 9 ms for 4,000 keys in 32,401 preimages. A mapping with 3 keys takes about 0.13 ms in 8,401 preimages. Measure changes with `bun run benchmark`.
 
 ## Development
 

@@ -424,9 +424,9 @@ test("mapping selector types", () => {
   expectTypeOf<
     MappingEntryVariable<typeof layout, `allowances[${Hex.Hex}]`>
   >().toEqualTypeOf<`allowances[${Hex.Hex}][${Hex.Hex}]`>();
-  expectTypeOf(enumerateMappingKeys(layout, "balances", [])).toEqualTypeOf<
-    `balances[${Hex.Hex}]`[]
-  >();
+  expectTypeOf(
+    enumerateMappingKeys(layout, "balances", new Set()),
+  ).toEqualTypeOf<`balances[${Hex.Hex}]`[]>();
   expectTypeOf<MappingStorageVariable<StorageLayout>>().toEqualTypeOf<string>();
 
   const typeAssertions = () => {

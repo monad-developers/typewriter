@@ -19,7 +19,7 @@ import {
   decodeStorageVariable,
   enumerateMappingKeys,
   getDynamicArrayLength,
-  type KeccakPreimage,
+  type KeccakPreimages,
   readStorageVariable,
   readStorageVariables,
 } from "./index";
@@ -31,7 +31,7 @@ const { abi, bytecode, storageLayout: layout } = StorageFixture;
 const client = anvil.getClient();
 
 let address: Address;
-let preimages: KeccakPreimage[];
+let preimages: KeccakPreimages;
 
 beforeAll(async () => {
   address = await deployFixture();
@@ -89,13 +89,13 @@ async function proofStorage(
 type StructLog = { op: string; stack?: string[]; memory?: string[] | string };
 
 /** keccak256 preimages from the `KECCAK256` steps of a transaction trace. */
-async function traceKeccakPreimages(hash: Hex.Hex): Promise<KeccakPreimage[]> {
+async function traceKeccakPreimages(hash: Hex.Hex): Promise<KeccakPreimages> {
   const trace = (await client.request({
     method: "debug_traceTransaction",
     params: [hash, { enableMemory: true, disableStorage: true }],
   } as never)) as { structLogs: StructLog[] };
 
-  const result: KeccakPreimage[] = [];
+  const result = new Set<Hex.Hex>();
   for (const { op, stack, memory } of trace.structLogs) {
     if (op !== "KECCAK256" && op !== "SHA3") continue;
     if (stack === undefined || memory === undefined) {
@@ -108,7 +108,7 @@ async function traceKeccakPreimages(hash: Hex.Hex): Promise<KeccakPreimage[]> {
       .map((word) => word.replace(/^0x/, ""))
       .join("");
     const preimage: Hex.Hex = `0x${bytes.slice(offset * 2, (offset + size) * 2)}`;
-    result.push({ hash: Hash.keccak256(preimage), preimage });
+    result.add(preimage.toLowerCase() as Hex.Hex);
   }
   return result;
 }
@@ -116,7 +116,7 @@ async function traceKeccakPreimages(hash: Hex.Hex): Promise<KeccakPreimage[]> {
 test("the fixture constants agree with the contract", async () => {
   expect(await read("ALICE")).toBe(ALICE);
   expect(await read("BOB")).toBe(BOB);
-  expect(preimages.length).toBeGreaterThan(0);
+  expect(preimages.size).toBeGreaterThan(0);
 });
 
 describe("createStorageView matches the Solidity getters", () => {

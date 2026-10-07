@@ -11,11 +11,12 @@ export type AccountStorage = {
   [slot: Hex.Hex]: Hex.Hex;
 };
 
-/** A keccak256 input and its output, as captured during execution. */
-export type KeccakPreimage = {
-  hash: Hex.Hex;
-  preimage: Hex.Hex;
-};
+/**
+ * keccak256 inputs captured during execution, as lowercase hex. Mapping key
+ * lookup uses only 64-byte inputs, and it ignores an input with uppercase
+ * letters.
+ */
+export type KeccakPreimages = ReadonlySet<Hex.Hex>;
 
 /** Names of the top-level state variables in a storage layout. */
 export type ExtractVariableNames<layout extends StorageLayout> =
