@@ -4,8 +4,12 @@ import { type StoragePathSubscript, subscriptToInteger } from "./storage-path";
 
 // Import only types from `storage-layout`, so this module has no import cycle.
 
+// Hot path: `Hex.fromNumber` validates more and is several times slower.
 export function toWord(value: bigint): Hex.Hex {
-  return Hex.fromNumber(value, { size: 32 });
+  if (value < 0n || value >> 256n !== 0n) {
+    throw new Error(`${value} is not a 32-byte unsigned integer`);
+  }
+  return `0x${value.toString(16).padStart(64, "0")}`;
 }
 
 export function keccakSlot(slot: bigint): bigint {

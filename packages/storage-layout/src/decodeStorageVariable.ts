@@ -5,9 +5,8 @@ import {
   isMappingType,
   resolveStoragePath,
   type StorageLayout,
-  type StorageType,
+  type StorageLocation,
 } from "./storage-layout";
-import { formatStoragePath, parseStoragePath } from "./storage-path";
 import type {
   AccountStorage,
   ConcreteStorageVariable,
@@ -44,15 +43,24 @@ export function decodeStorageVariable<
   variable: variable,
   storage: AccountStorage,
 ): NoInfer<StorageVariableToPrimitiveType<layout, variable>> {
-  const path = parseStoragePath(variable as unknown as string);
-  const selector = formatStoragePath(path);
-  const { type, slot, offset } = resolveStoragePath(layout, path);
-  assertConcreteType(type, selector);
+  return decodeStorageLocation(
+    resolveStoragePath(layout, variable as unknown as string),
+    storage,
+  ) as never;
+}
+
+/** Decode the concrete value at `location` from raw account storage. */
+export function decodeStorageLocation(
+  location: StorageLocation,
+  storage: AccountStorage,
+): unknown {
+  assertConcreteType(location);
+  const { type, slot, offset } = location;
   const readSlot = createSlotReader(storage);
 
   if (type.encoding === "bytes") {
     const root = readSlot(slot);
-    const { length, dataSlots } = bytesLength(slot, root, selector);
+    const { length, dataSlots } = bytesLength(location, root);
     const data =
       dataSlots.length === 0
         ? toWord(root)
@@ -60,7 +68,7 @@ export function decodeStorageVariable<
             ...dataSlots.map((dataSlot) => toWord(readSlot(dataSlot))),
           );
     const bytes = Hex.slice(data, 0, length);
-    return (type.label === "string" ? Hex.toString(bytes) : bytes) as never;
+    return type.label === "string" ? Hex.toString(bytes) : bytes;
   }
 
   const valueType = parseValueType(type)!;
@@ -68,37 +76,39 @@ export function decodeStorageVariable<
   const field = (readSlot(slot) >> BigInt(offset * 8)) & ((1n << bits) - 1n);
   switch (valueType.kind) {
     case "address":
-      return Address.checksum(Hex.fromNumber(field, { size: 20 })) as never;
+      return Address.checksum(Hex.fromNumber(field, { size: 20 }));
     case "bool":
-      return (field !== 0n) as never;
+      return field !== 0n;
     case "enum":
-      return Number(field) as never;
+      return Number(field);
     case "fixedBytes":
-      return Hex.fromNumber(field, { size: valueType.size }) as never;
+      return Hex.fromNumber(field, { size: valueType.size });
     case "uint":
     case "int": {
       const value =
         valueType.kind === "int" ? BigInt.asIntN(valueType.bits, field) : field;
       // Like abitype, integers of 48 bits or fewer are `number`.
-      return (valueType.bits <= 48 ? Number(value) : value) as never;
+      return valueType.bits <= 48 ? Number(value) : value;
     }
   }
 }
 
-/** Throw unless `type` is a value type, `bytes`, or `string`. */
-export function assertConcreteType(type: StorageType, path: string): void {
+/** Throw unless `location` holds a value type, `bytes`, or `string`. */
+export function assertConcreteType({ type, selector }: StorageLocation) {
   if (type.encoding === "bytes" || parseValueType(type) !== undefined) return;
   if (isMappingType(type)) {
-    throw new Error(`mapping storage paths require a key: ${path}`);
+    throw new Error(`mapping storage paths require a key: ${selector}`);
   }
   if (
     type.encoding === "dynamic_array" ||
     type.members !== undefined ||
     type.base !== undefined
   ) {
-    throw new Error(`storage path does not point to a leaf value: ${path}`);
+    throw new Error(`storage path does not point to a leaf value: ${selector}`);
   }
-  throw new Error(`unsupported storage path type '${type.label}' for ${path}`);
+  throw new Error(
+    `unsupported storage path type '${type.label}' for ${selector}`,
+  );
 }
 
 /**
@@ -117,23 +127,22 @@ export const MAX_BYTES_LENGTH = 2 ** 24;
  * whose form does not agree with its length throws, like Solidity's panic
  * `0x22`.
  */
-export function bytesLength(
-  rootSlot: bigint,
+function bytesLength(
+  { slot, selector }: StorageLocation,
   rootWord: bigint,
-  path: string,
 ): { length: number; dataSlots: bigint[] } {
   const long = (rootWord & 1n) === 1n;
   const length = long ? rootWord >> 1n : (rootWord & 0xffn) >> 1n;
   if (long !== length >= 32n) {
-    throw new Error(`incorrectly encoded bytes length slot: ${path}`);
+    throw new Error(`incorrectly encoded bytes length slot: ${selector}`);
   }
   if (length > BigInt(MAX_BYTES_LENGTH)) {
     throw new Error(
-      `bytes value of ${length} bytes is larger than the ${MAX_BYTES_LENGTH}-byte limit: ${path}`,
+      `bytes value of ${length} bytes is larger than the ${MAX_BYTES_LENGTH}-byte limit: ${selector}`,
     );
   }
   if (long === false) return { length: Number(length), dataSlots: [] };
-  const dataSlot = keccakSlot(rootSlot);
+  const dataSlot = keccakSlot(slot);
   return {
     length: Number(length),
     dataSlots: Array.from(
@@ -141,4 +150,17 @@ export function bytesLength(
       (_, index) => dataSlot + BigInt(index),
     ),
   };
+}
+
+/**
+ * Data slots that `location` needs besides its own slot: those of a long
+ * `bytes`/`string` value, from its root word in `storage`, or none.
+ */
+export function bytesDataSlots(
+  location: StorageLocation,
+  storage: AccountStorage,
+): bigint[] {
+  if (location.type.encoding !== "bytes") return [];
+  return bytesLength(location, createSlotReader(storage)(location.slot))
+    .dataSlots;
 }

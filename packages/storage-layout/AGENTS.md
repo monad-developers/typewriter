@@ -17,13 +17,14 @@ Path syntax is syntactic only. Whether `[3]` is an array index or mapping key is
 
 ## Boundaries
 
-Keep path parsing/formatting separate from layout resolution.
+The selector string is the only external path format. Internally a path exists only as a resolved `StorageLocation` (`{ type, slot, offset, selector }`); there is no parsed, unresolved path type.
 
-- `storage-path.ts` should stay about parsing, formatting, and path syntax.
-- `storage-layout.ts` owns the compiler JSON types and runtime resolution of a path to one `StorageLocation` (`{ type, slot, offset }`).
+- `storage-path.ts` owns selector syntax: the lexing primitives (`readIdentifier`, `readSubscript`, `parseSubscript`), subscript formatting, and the type-level `ParseStoragePath`.
+- `storage-layout.ts` owns the compiler JSON types and resolution. `resolveRoot`, `resolveField`, and `resolveSubscript` each step one level from a parent location, and are the only code that hashes (one keccak256 per mapping key or dynamic array element). `resolveStoragePath` lexes a selector and folds those steps.
+- Callers resolve once and pass the location on: the view keeps a location per node and steps from it, and `decodeStorageLocation` / `decodeDynamicArrayLength` decode from a location without resolving again. Keep it that way; a cache belongs in the step functions, not in callers.
 - `types.ts` owns the type-level API: selector extraction and Solidity-to-TypeScript value types.
 - `solidity-encoding.ts` owns low-level Solidity rules shared by the modules above: value-type classification (`parseValueType`), the mapping-key codec (`encodeMappingKey` / `decodeMappingKey`, which must stay exact inverses), and slot math.
-- `decodeStorageVariable.ts` owns leaf decoding, including the `bytes`/`string` length rules (`bytesLength`, `MAX_BYTES_LENGTH`). The view and the viem actions use `bytesLength` too, so a check added there covers every API.
+- `decodeStorageVariable.ts` owns leaf decoding, including the `bytes`/`string` length rules (`MAX_BYTES_LENGTH`). The view and the viem actions get data slots from `bytesDataSlots`, which uses the same rules, so a check added there covers every API.
 - `account-storage.ts` reads slot words from `AccountStorage` with keys in any hex form, and owns the slot getter types and `fetchStorage` (dedupe, call the getter, check one value per slot) that the view and the viem actions share. Sync and async getters are handled with an explicit `instanceof Promise` branch where needed, not a generic continuation helper.
 - `readStorageVariable.ts` / `readStorageVariables.ts` validate selectors before any request, read root slots, then read `bytes`/`string` data slots. They assume that all requests see the same state, by choice for now: they do not detect a new block between requests.
 - Concrete leaf validation belongs with the function that needs a leaf (for example `decodeStorageVariable`), not path parsing or resolution.

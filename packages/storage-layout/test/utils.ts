@@ -2,7 +2,6 @@ import { Hex } from "ox";
 import type { AccountStorage, StorageLayout } from "../src/index";
 import { keccakSlot, toWord } from "../src/solidity-encoding";
 import { resolveStoragePath } from "../src/storage-layout";
-import { parseStoragePath } from "../src/storage-path";
 
 export const OWNER = "0x1111111111111111111111111111111111111234" as const;
 export const SPENDER = "0x2222222222222222222222222222222222221234" as const;
@@ -16,7 +15,7 @@ export const METADATA_PACKED =
 
 /** The 32-byte slot where a storage path's value resides or starts. */
 export function slotOf(layout: StorageLayout, path: string): Hex.Hex {
-  return toWord(resolveStoragePath(layout, parseStoragePath(path)).slot);
+  return toWord(resolveStoragePath(layout, path).slot);
 }
 
 /**

@@ -11,12 +11,7 @@ import {
   type StorageLayout,
   type StorageType,
 } from "./storage-layout";
-import {
-  formatStoragePath,
-  formatSubscript,
-  parseStoragePath,
-  type StoragePathSubscript,
-} from "./storage-path";
+import { formatSubscript, type StoragePathSubscript } from "./storage-path";
 import type {
   KeccakPreimage,
   MappingEntryVariable,
@@ -49,19 +44,16 @@ export function enumerateMappingKeys<
   mapping: mapping,
   preimages: readonly KeccakPreimage[],
 ): NoInfer<MappingEntryVariable<layout, mapping>[]> {
-  const path = parseStoragePath(mapping as unknown as string);
-  const { type, slot } = resolveStoragePath(layout, path);
+  const { type, slot, selector } = resolveStoragePath(
+    layout,
+    mapping as unknown as string,
+  );
   if (isMappingType(type) === false) {
-    throw new Error(
-      `storage path is not a mapping: ${formatStoragePath(path)}`,
-    );
+    throw new Error(`storage path is not a mapping: ${selector}`);
   }
   const keys = mappingKeys(findStorageType(layout, type.key), slot, preimages);
-  return keys.map((key) =>
-    formatStoragePath({
-      root: path.root,
-      segments: [...path.segments, { kind: "subscript", value: key }],
-    }),
+  return keys.map(
+    (key) => `${selector}[${formatSubscript(key)}]`,
   ) as unknown as MappingEntryVariable<layout, mapping>[];
 }
 

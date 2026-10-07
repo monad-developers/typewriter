@@ -1,30 +1,25 @@
 import {
   type AsyncStorageGetter,
-  createSlotReader,
   fetchStorage,
   type StorageGetter,
 } from "./account-storage";
-import { bytesLength, decodeStorageVariable } from "./decodeStorageVariable";
+import { bytesDataSlots, decodeStorageLocation } from "./decodeStorageVariable";
 import { hasMappingKey, mappingKeys } from "./enumerateMappingKeys";
-import { getDynamicArrayLength } from "./getDynamicArrayLength";
+import { decodeDynamicArrayLength } from "./getDynamicArrayLength";
 import { fixedArrayLength } from "./solidity-encoding";
 import {
-  findStorageItem,
   findStorageType,
   isDynamicArrayType,
   isFixedArrayType,
   isMappingType,
   isStructType,
-  resolveStoragePath,
+  resolveField,
+  resolveRoot,
+  resolveSubscript,
   type StorageLayout,
   type StorageLocation,
 } from "./storage-layout";
-import {
-  formatStoragePath,
-  formatSubscript,
-  parseSubscript,
-  type StoragePath,
-} from "./storage-path";
+import { formatSubscript, parseSubscript } from "./storage-path";
 import type {
   AccountStorage,
   KeccakPreimage,
@@ -115,8 +110,8 @@ type Context = {
   preimages: readonly KeccakPreimage[];
 };
 
-/** A composite's path and location, or `undefined` for the root view. */
-type Node = { path: StoragePath; location: StorageLocation } | undefined;
+/** A composite's location, or `undefined` for the root view. */
+type Node = StorageLocation | undefined;
 
 // Runtimes probe these names; `undefined` keeps `await`, `JSON.stringify`, and
 // test matchers from treating a view as a thenable, `toJSON`, or a matcher.
@@ -153,16 +148,26 @@ function createNode(context: Context, node: Node): object {
         return undefined;
       }
       if (property === "length" && node !== undefined) {
-        const { type } = node.location;
-        if (isFixedArrayType(type)) return fixedArrayLength(type);
-        if (isDynamicArrayType(type)) {
-          const selector = formatStoragePath(node.path);
-          return readLeaf(context, node.location, selector, (storage) =>
-            getDynamicArrayLength(context.layout, selector, storage),
+        if (isFixedArrayType(node.type)) return fixedArrayLength(node.type);
+        if (isDynamicArrayType(node.type)) {
+          return readLeaf(context, node, (storage) =>
+            decodeDynamicArrayLength(node, storage),
           );
         }
       }
-      return read(context, childPath(context.layout, node, property));
+      const child = resolveProperty(context.layout, node, property);
+      const { type } = child;
+      if (
+        isStructType(type) ||
+        isFixedArrayType(type) ||
+        isDynamicArrayType(type) ||
+        isMappingType(type)
+      ) {
+        return createNode(context, child);
+      }
+      return readLeaf(context, child, (storage) =>
+        decodeStorageLocation(child, storage),
+      );
     },
     has: (_, property) => isKey(property),
     ownKeys: () => enumerableKeys(context, node),
@@ -174,57 +179,28 @@ function createNode(context: Context, node: Node): object {
   });
 }
 
-function read(context: Context, path: StoragePath): unknown {
-  const location = resolveStoragePath(context.layout, path);
-  const { type } = location;
-  if (
-    isStructType(type) ||
-    isFixedArrayType(type) ||
-    isDynamicArrayType(type) ||
-    isMappingType(type)
-  ) {
-    return createNode(context, { path, location });
-  }
-  const selector = formatStoragePath(path);
-  return readLeaf(context, location, selector, (storage) =>
-    decodeStorageVariable(context.layout, selector, storage),
-  );
-}
-
-function childPath(
+/** Location of `property` under `node`: a struct field or a subscript. */
+function resolveProperty(
   layout: StorageLayout,
   node: Node,
   property: string,
-): StoragePath {
-  if (node === undefined) {
-    findStorageItem(layout, property);
-    return { root: property, segments: [] };
-  }
-  const { path, location } = node;
-  if (isStructType(location.type)) {
-    return {
-      root: path.root,
-      segments: [...path.segments, { kind: "field", name: property }],
-    };
-  }
+): StorageLocation {
+  if (node === undefined) return resolveRoot(layout, property);
+  if (isStructType(node.type)) return resolveField(layout, node, property);
   const subscript = parseSubscript(property);
   if (subscript === undefined) {
     throw new Error(
-      `'${property}' is not a valid subscript for ${formatStoragePath(path)}`,
+      `'${property}' is not a valid subscript for ${node.selector}`,
     );
   }
-  return {
-    root: path.root,
-    segments: [...path.segments, { kind: "subscript", value: subscript }],
-  };
+  return resolveSubscript(layout, node, subscript);
 }
 
 function enumerableKeys(context: Context, node: Node): string[] {
   if (node === undefined) {
     return context.layout.storage.map((item) => item.label);
   }
-  const { path, location } = node;
-  const { type } = location;
+  const { type } = node;
   if (isStructType(type)) {
     return type.members.map((member) => member.label);
   }
@@ -235,12 +211,12 @@ function enumerableKeys(context: Context, node: Node): string[] {
   }
   if (isMappingType(type)) {
     const keyType = findStorageType(context.layout, type.key);
-    return mappingKeys(keyType, location.slot, context.preimages).map(
+    return mappingKeys(keyType, node.slot, context.preimages).map(
       formatSubscript,
     );
   }
   throw new Error(
-    `cannot enumerate dynamic array ${formatStoragePath(path)}: read its length and index it instead`,
+    `cannot enumerate dynamic array ${node.selector}: read its length and index it instead`,
   );
 }
 
@@ -252,7 +228,7 @@ function hasKey(context: Context, node: Node, property: string): boolean {
   if (node === undefined) {
     return context.layout.storage.some((item) => item.label === property);
   }
-  const { type } = node.location;
+  const { type } = node;
   if (isStructType(type)) {
     return type.members.some((member) => member.label === property);
   }
@@ -268,7 +244,7 @@ function hasKey(context: Context, node: Node, property: string): boolean {
       key !== undefined &&
       hasMappingKey(
         findStorageType(context.layout, type.key),
-        node.location.slot,
+        node.slot,
         key,
         context.preimages,
       )
@@ -280,10 +256,8 @@ function hasKey(context: Context, node: Node, property: string): boolean {
 /** `console.log` text. It does not read storage. */
 function describe(context: Context, node: Node): string {
   const name =
-    node === undefined
-      ? "StorageView"
-      : `StorageView ${formatStoragePath(node.path)}`;
-  if (node !== undefined && isDynamicArrayType(node.location.type)) {
+    node === undefined ? "StorageView" : `StorageView ${node.selector}`;
+  if (node !== undefined && isDynamicArrayType(node.type)) {
     return `${name} [dynamic array]`;
   }
   const keys = enumerableKeys(context, node);
@@ -298,29 +272,19 @@ function describe(context: Context, node: Node): string {
 function readLeaf(
   context: Context,
   location: StorageLocation,
-  selector: string,
   decode: (storage: AccountStorage) => unknown,
 ): unknown {
   const { getStorage } = context;
-  const dataSlots = (root: AccountStorage) =>
-    location.type.encoding === "bytes"
-      ? bytesLength(
-          location.slot,
-          createSlotReader(root)(location.slot),
-          selector,
-        ).dataSlots
-      : [];
-
   const root = fetchStorage(getStorage, [location.slot]);
   if (root instanceof Promise) {
     return root.then(async (root) => {
-      const slots = dataSlots(root);
+      const slots = bytesDataSlots(location, root);
       const data =
         slots.length === 0 ? {} : await fetchStorage(getStorage, slots);
       return decode({ ...root, ...data });
     });
   }
-  const slots = dataSlots(root);
+  const slots = bytesDataSlots(location, root);
   // A sync getter gave the root, so it gives the data synchronously too.
   const data =
     slots.length === 0

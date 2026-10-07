@@ -2,10 +2,9 @@ import { expect, test } from "bun:test";
 import { complexLayout, layout, OWNER } from "../test/utils";
 import { keccakSlot } from "./solidity-encoding";
 import { resolveStoragePath, type StorageLayout } from "./storage-layout";
-import { parseStoragePath } from "./storage-path";
 
 function resolve(storageLayout: StorageLayout, path: string) {
-  const location = resolveStoragePath(storageLayout, parseStoragePath(path));
+  const location = resolveStoragePath(storageLayout, path);
   return {
     slot: location.slot,
     offset: location.offset,

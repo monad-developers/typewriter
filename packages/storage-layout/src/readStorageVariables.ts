@@ -9,14 +9,13 @@ import type {
 } from "viem";
 import { getStorageValues } from "viem/actions";
 import { getAction } from "viem/utils";
-import { createSlotReader, fetchStorage } from "./account-storage";
+import { fetchStorage } from "./account-storage";
 import {
   assertConcreteType,
-  bytesLength,
-  decodeStorageVariable,
+  bytesDataSlots,
+  decodeStorageLocation,
 } from "./decodeStorageVariable";
 import { resolveStoragePath, type StorageLayout } from "./storage-layout";
-import { formatStoragePath, parseStoragePath } from "./storage-path";
 import type {
   ConcreteStorageVariable,
   StorageVariableToPrimitiveType,
@@ -77,15 +76,11 @@ export async function readStorageVariables<
   parameters: ReadStorageVariablesParameters<layout, variables>,
 ): Promise<NoInfer<ReadStorageVariablesReturnType<layout, variables>>> {
   const { address, storageLayout, variables, ...block } = parameters;
-  const selectors = variables as unknown as readonly string[];
-  const leaves = selectors.map((variable) => {
-    const path = parseStoragePath(variable);
-    const { type, slot } = resolveStoragePath(storageLayout, path);
-    const selector = formatStoragePath(path);
-    assertConcreteType(type, selector);
-    return { selector, slot, isBytes: type.encoding === "bytes" };
-  });
-  if (leaves.length === 0) return [] as never;
+  const locations = (variables as unknown as readonly string[]).map(
+    (variable) => resolveStoragePath(storageLayout, variable),
+  );
+  for (const location of locations) assertConcreteType(location);
+  if (locations.length === 0) return [] as never;
 
   const getStorageValuesAction = getAction(
     client,
@@ -109,20 +104,16 @@ export async function readStorageVariables<
 
   const roots = await fetchStorage(
     getStorage,
-    leaves.map((leaf) => leaf.slot),
+    locations.map((location) => location.slot),
   );
-  const readRoot = createSlotReader(roots);
-  const dataSlots = leaves
-    .filter((leaf) => leaf.isBytes)
-    .flatMap(
-      (leaf) =>
-        bytesLength(leaf.slot, readRoot(leaf.slot), leaf.selector).dataSlots,
-    );
+  const dataSlots = locations.flatMap((location) =>
+    bytesDataSlots(location, roots),
+  );
   const storage =
     dataSlots.length === 0
       ? roots
       : { ...roots, ...(await fetchStorage(getStorage, dataSlots)) };
-  return selectors.map((variable) =>
-    decodeStorageVariable(storageLayout as StorageLayout, variable, storage),
+  return locations.map((location) =>
+    decodeStorageLocation(location, storage),
   ) as never;
 }

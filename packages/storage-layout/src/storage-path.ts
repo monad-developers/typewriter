@@ -1,34 +1,5 @@
 import type { Hex } from "ox";
 
-/**
- * Structured representation of a Solidity storage variable or sub-value.
- *
- * @example
- * // totalSupply
- * { root: "totalSupply", segments: [] }
- *
- * @example
- * // accounts[0xabcd].orders[3].price
- * {
- *   root: "accounts",
- *   segments: [
- *     { kind: "subscript", value: { kind: "hex", value: "0xabcd" } },
- *     { kind: "field", name: "orders" },
- *     { kind: "subscript", value: { kind: "number", value: 3n } },
- *     { kind: "field", name: "price" },
- *   ],
- * }
- */
-export type StoragePath = {
-  root: string;
-  segments: readonly StoragePathSegment[];
-};
-
-/** One step after the root variable in a `StoragePath`. */
-type StoragePathSegment =
-  | { kind: "field"; name: string }
-  | { kind: "subscript"; value: StoragePathSubscript };
-
 /** Human-entered bracket selector. Resolution decides whether this is an array index or mapping key. */
 export type StoragePathSubscript =
   | { kind: "number"; value: bigint }
@@ -95,67 +66,8 @@ type ParseStoragePathSubscripts<Tail extends string> =
     ? readonly [{ kind: "subscript" }, ...ParseStoragePathSubscripts<Rest>]
     : readonly [];
 
-/**
- * Parse a human-readable Solidity storage path into structured form.
- *
- * @example
- * parseStoragePath("metadata.lastUpdate")
- * parseStoragePath("balances[0x1234]")
- */
-export function parseStoragePath(input: string): StoragePath {
-  if (input.length === 0) {
-    throw new Error("storage path cannot be empty");
-  }
-
-  let index = 0;
-  const root = readIdentifier(input, index);
-  index = root.next;
-  const segments: StoragePathSegment[] = [];
-
-  while (index < input.length) {
-    const char = input[index];
-    if (char === ".") {
-      const field = readIdentifier(input, index + 1);
-      segments.push({ kind: "field", name: field.value });
-      index = field.next;
-      continue;
-    }
-    if (char === "[") {
-      const end = input.indexOf("]", index + 1);
-      if (end === -1) {
-        throw new Error(`unterminated subscript in storage path: ${input}`);
-      }
-      const raw = input.slice(index + 1, end).trim();
-      if (raw.length === 0) {
-        throw new Error("storage path subscript cannot be empty");
-      }
-      const subscript = parseSubscript(raw);
-      if (subscript === undefined) {
-        throw new Error(`unsupported storage path subscript: ${raw}`);
-      }
-      segments.push({ kind: "subscript", value: subscript });
-      index = end + 1;
-      continue;
-    }
-    throw new Error(`unexpected '${char}' in storage path: ${input}`);
-  }
-
-  return { root: root.value, segments };
-}
-
-export function formatStoragePath(path: StoragePath): string {
-  let out = path.root;
-  for (const segment of path.segments) {
-    if (segment.kind === "field") {
-      out += `.${segment.name}`;
-    } else {
-      out += `[${formatSubscript(segment.value)}]`;
-    }
-  }
-  return out;
-}
-
-function readIdentifier(
+/** Read the identifier at `start`. */
+export function readIdentifier(
   input: string,
   start: number,
 ): { value: string; next: number } {
@@ -170,6 +82,26 @@ function readIdentifier(
     throw new Error(`expected identifier in storage path: ${input}`);
   }
   return { value, next };
+}
+
+/** Read the `[…]` subscript that starts at `start`. */
+export function readSubscript(
+  input: string,
+  start: number,
+): { value: StoragePathSubscript; next: number } {
+  const end = input.indexOf("]", start + 1);
+  if (end === -1) {
+    throw new Error(`unterminated subscript in storage path: ${input}`);
+  }
+  const raw = input.slice(start + 1, end).trim();
+  if (raw.length === 0) {
+    throw new Error("storage path subscript cannot be empty");
+  }
+  const value = parseSubscript(raw);
+  if (value === undefined) {
+    throw new Error(`unsupported storage path subscript: ${raw}`);
+  }
+  return { value, next: end + 1 };
 }
 
 /**

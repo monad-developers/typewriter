@@ -9,14 +9,13 @@ import type {
 } from "viem";
 import { getStorageAt } from "viem/actions";
 import { getAction } from "viem/utils";
-import { createSlotReader, fetchStorage } from "./account-storage";
+import { fetchStorage } from "./account-storage";
 import {
   assertConcreteType,
-  bytesLength,
-  decodeStorageVariable,
+  bytesDataSlots,
+  decodeStorageLocation,
 } from "./decodeStorageVariable";
 import { resolveStoragePath, type StorageLayout } from "./storage-layout";
-import { formatStoragePath, parseStoragePath } from "./storage-path";
 import type {
   ConcreteStorageVariable,
   StorageVariableToPrimitiveType,
@@ -67,10 +66,11 @@ export async function readStorageVariable<
   parameters: ReadStorageVariableParameters<layout, variable>,
 ): Promise<NoInfer<StorageVariableToPrimitiveType<layout, variable>>> {
   const { address, storageLayout, variable, ...block } = parameters;
-  const path = parseStoragePath(variable as unknown as string);
-  const selector = formatStoragePath(path);
-  const { type, slot } = resolveStoragePath(storageLayout, path);
-  assertConcreteType(type, selector);
+  const location = resolveStoragePath(
+    storageLayout,
+    variable as unknown as string,
+  );
+  assertConcreteType(location);
 
   const getStorageAtAction = getAction(client, getStorageAt, "getStorageAt");
   const getStorage = (slots: readonly Hex.Hex[]) =>
@@ -85,18 +85,11 @@ export async function readStorageVariable<
       ),
     );
 
-  const root = await fetchStorage(getStorage, [slot]);
-  const { dataSlots } =
-    type.encoding === "bytes"
-      ? bytesLength(slot, createSlotReader(root)(slot), selector)
-      : { dataSlots: [] };
+  const root = await fetchStorage(getStorage, [location.slot]);
+  const dataSlots = bytesDataSlots(location, root);
   const storage =
     dataSlots.length === 0
       ? root
       : { ...root, ...(await fetchStorage(getStorage, dataSlots)) };
-  return decodeStorageVariable(
-    storageLayout as StorageLayout,
-    selector,
-    storage,
-  ) as never;
+  return decodeStorageLocation(location, storage) as never;
 }

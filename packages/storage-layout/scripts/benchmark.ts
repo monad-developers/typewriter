@@ -21,7 +21,7 @@ import {
   isMappingType,
   resolveStoragePath,
 } from "../src/storage-layout";
-import { parseStoragePath } from "../src/storage-path";
+import { readSubscript } from "../src/storage-path";
 import { OrderBookFixture } from "../test/contracts/generated";
 import { bytesStorage } from "../test/utils";
 
@@ -42,17 +42,14 @@ const preimageSet = new Set<Hex.Hex>();
 
 /** Record the mapping preimages of `path`, as the runtime does for known paths. */
 function touch(path: string) {
-  const { root, segments } = parseStoragePath(path);
-  for (const [index, segment] of segments.entries()) {
-    if (segment.kind !== "subscript") continue;
-    const { type, slot } = resolveStoragePath(layout, {
-      root,
-      segments: segments.slice(0, index),
-    });
+  for (let index = path.indexOf("["); index !== -1; ) {
+    const { type, slot } = resolveStoragePath(layout, path.slice(0, index));
+    const subscript = readSubscript(path, index);
+    index = path.indexOf("[", subscript.next);
     if (isMappingType(type) === false) continue;
     const key = encodeMappingKey(
       findStorageType(layout, type.key),
-      segment.value,
+      subscript.value,
       path,
     );
     const preimage = Hex.concat(key, toWord(slot));
@@ -64,10 +61,7 @@ function touch(path: string) {
 
 function write(path: string, value: bigint) {
   touch(path);
-  const { slot, offset, type } = resolveStoragePath(
-    layout,
-    parseStoragePath(path),
-  );
+  const { slot, offset, type } = resolveStoragePath(layout, path);
   const shift = BigInt(offset * 8);
   const mask = ((1n << BigInt(Number(type.numberOfBytes) * 8)) - 1n) << shift;
   const word = words.get(toWord(slot)) ?? 0n;
@@ -76,7 +70,7 @@ function write(path: string, value: bigint) {
 
 function writeBytes(path: string, value: Hex.Hex) {
   touch(path);
-  const { slot } = resolveStoragePath(layout, parseStoragePath(path));
+  const { slot } = resolveStoragePath(layout, path);
   for (const [key, word] of Object.entries(bytesStorage(toWord(slot), value))) {
     words.set(key as Hex.Hex, BigInt(word));
   }
