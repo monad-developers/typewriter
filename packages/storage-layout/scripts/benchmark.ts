@@ -38,7 +38,7 @@ const layout = OrderBookFixture.storageLayout;
 const words = new Map<Hex.Hex, bigint>();
 const preimages = new Set<Hex.Hex>();
 
-/** Record the mapping preimages of `path`, as the runtime does for known paths. */
+/** Record the mapping preimages of `path`, as an execution that writes it would. */
 function touch(path: string) {
   for (let index = path.indexOf("["); index !== -1; ) {
     const { type, slot } = resolveStoragePath(layout, path.slice(0, index));

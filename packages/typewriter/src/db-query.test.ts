@@ -12,11 +12,11 @@ import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import type { ResolvedTypewriterMutationConfig } from "./config";
 import { Database, layerDatabaseLive } from "./db";
 import {
-  insertKnownPaths,
+  insertKeccakPreimages,
   insertMutation,
   insertSlotWrites,
   selectAccountStorage,
-  selectKnownPaths,
+  selectKeccakPreimages,
   selectNextMutationId,
   updateMutationLifecycle,
 } from "./db-query";
@@ -363,28 +363,24 @@ test("selectAccountStorage uses slot writes after redeploy migration cleanup", a
   });
 });
 
-test("insertKnownPaths upserts known paths", async () => {
+test("insertKeccakPreimages ignores preimages already stored", async () => {
   const schema = createMutationSchema({
     mutations: { Transfer: transferConfig },
   });
   await applyGeneratedMigration(schema);
+  const first = `0x${"11".repeat(64)}` as const;
+  const second = `0x${"22".repeat(64)}` as const;
 
-  const paths = await runWithDatabase(
+  const preimages = await runWithDatabase(
     Effect.gen(function* () {
       const db = yield* Database;
       yield* db.transaction((tx) =>
-        insertKnownPaths(tx, schema, [
-          "balances[0x0000000000000000000000000000000000000001]",
-          "balances[0x0000000000000000000000000000000000000001]",
-          "balances[0x0000000000000000000000000000000000000002]",
-        ]),
+        insertKeccakPreimages(tx, schema, [first, second]),
       );
-      return yield* db.transaction((tx) => selectKnownPaths(tx, schema));
+      yield* db.transaction((tx) => insertKeccakPreimages(tx, schema, [first]));
+      return yield* db.transaction((tx) => selectKeccakPreimages(tx, schema));
     }),
   );
 
-  expect(paths).toEqual([
-    "balances[0x0000000000000000000000000000000000000001]",
-    "balances[0x0000000000000000000000000000000000000002]",
-  ]);
+  expect(preimages.toSorted()).toEqual([first, second]);
 });

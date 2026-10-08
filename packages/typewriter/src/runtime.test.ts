@@ -156,11 +156,15 @@ test("runtime loads persisted root state before returning", async () => {
   expect(result).toBe(7n);
 });
 
-test("runtime enumerates mapping keys from persisted known paths", async () => {
+test("runtime enumerates mapping keys from persisted preimages", async () => {
   const address = await deployCounter();
   const app = await counterApp(address);
   const schemaName = deploymentSchemaName(anvil.id, address);
   const accountId = `0x${"ab".repeat(32)}`;
+  const accountsSlot = app.storageLayout.storage.find(
+    (item) => item.label === "accounts",
+  )!.slot;
+  const preimage = `${accountId}${BigInt(accountsSlot).toString(16).padStart(64, "0")}`;
 
   const keys = await Effect.runPromise(
     Effect.scoped(
@@ -168,8 +172,8 @@ test("runtime enumerates mapping keys from persisted known paths", async () => {
         yield* migrate(app.schema, app.chainId, app.address, 0n);
         yield* Effect.promise(
           () => TEST_DB_CONNECTION`
-            INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.known_paths (path)
-            VALUES (${`accounts[${accountId}].activeCredentials`})
+            INSERT INTO ${TEST_DB_CONNECTION(schemaName)}.keccak_preimages (preimage)
+            VALUES (${preimage})
           `,
         );
 
@@ -201,6 +205,12 @@ test("runtime enumerates mapping keys registered by accepted mutations", async (
 
   expect(keys.before).toEqual([]);
   expect(keys.after).toHaveLength(1);
+
+  // The preimages were persisted, so a restarted runtime lists the same keys.
+  const restarted = await runWithRuntime(app, (runtime) =>
+    Effect.sync(() => Object.keys(runtime.accounts)),
+  );
+  expect(restarted).toEqual(keys.after);
 });
 
 test("runtime accepts native account and app mutations", async () => {
