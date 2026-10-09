@@ -1,48 +1,39 @@
 import { expect, test } from "bun:test";
-import { formatStoragePath, parseStoragePath } from "./storage-path";
+import { layout, OWNER } from "../test/utils";
+import { resolveStoragePath } from "./storage-layout";
 
-test("parseStoragePath round-trips human-readable paths", () => {
-  const path = parseStoragePath(
-    'accounts[0xabcd].orders[3].metadata["lastUpdate"]',
+test("resolveStoragePath gives the canonical selector", () => {
+  expect(
+    resolveStoragePath(
+      layout,
+      `allowances[ ${OWNER.toUpperCase().replace("0X", "0x")} ][${OWNER}]`,
+    ).selector,
+  ).toBe(`allowances[0x1111111111111111111111111111111111111234][${OWNER}]`);
+  expect(resolveStoragePath(layout, "dynamicNumbers[0x0a]").selector).toBe(
+    "dynamicNumbers[0x0a]",
   );
+  expect(resolveStoragePath(layout, "metadata.inner.count").selector).toBe(
+    "metadata.inner.count",
+  );
+});
 
-  expect(path).toMatchInlineSnapshot(`
-    {
-      "root": "accounts",
-      "segments": [
-        {
-          "kind": "subscript",
-          "value": {
-            "kind": "hex",
-            "value": "0xabcd",
-          },
-        },
-        {
-          "kind": "field",
-          "name": "orders",
-        },
-        {
-          "kind": "subscript",
-          "value": {
-            "kind": "number",
-            "value": 3n,
-          },
-        },
-        {
-          "kind": "field",
-          "name": "metadata",
-        },
-        {
-          "kind": "subscript",
-          "value": {
-            "kind": "string",
-            "value": "lastUpdate",
-          },
-        },
-      ],
-    }
-  `);
-  expect(formatStoragePath(path)).toBe(
-    'accounts[0xabcd].orders[3].metadata["lastUpdate"]',
+test("resolveStoragePath rejects malformed selectors", () => {
+  expect(() => resolveStoragePath(layout, "")).toThrow(
+    "expected identifier in storage path: ",
+  );
+  expect(() => resolveStoragePath(layout, "metadata.")).toThrow(
+    "expected identifier in storage path: metadata.",
+  );
+  expect(() => resolveStoragePath(layout, "balances[0x1")).toThrow(
+    "unterminated subscript in storage path: balances[0x1",
+  );
+  expect(() => resolveStoragePath(layout, "balances[ ]")).toThrow(
+    "storage path subscript cannot be empty",
+  );
+  expect(() => resolveStoragePath(layout, "balances[abc]")).toThrow(
+    "unsupported storage path subscript: abc",
+  );
+  expect(() => resolveStoragePath(layout, "totalSupply!")).toThrow(
+    "unexpected '!' in storage path: totalSupply!",
   );
 });

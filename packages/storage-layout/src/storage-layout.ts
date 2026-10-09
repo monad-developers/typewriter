@@ -1,18 +1,17 @@
-import type { AbiParameterToPrimitiveType, AbiType } from "abitype";
 import { Hash, Hex } from "ox";
 import {
   arrayElementLocation,
+  encodeMappingKey,
   fixedArrayLength,
-  integerBits,
-  isValueType,
+  keccakSlot,
+  toWord,
 } from "./solidity-encoding";
 import {
-  formatStoragePath,
-  type ParsedStoragePath,
-  type ParsedStoragePathSegment,
-  type ParseStoragePath,
-  type StoragePath,
-  type StoragePathSegment,
+  formatSubscript,
+  readIdentifier,
+  readSubscript,
+  type StoragePathSubscript,
+  subscriptToInteger,
 } from "./storage-path";
 
 /**
@@ -67,626 +66,140 @@ export type StorageLayout = {
   types: Record<string, StorageType>;
 };
 
-/** Storage layout item resolved to an absolute path context. */
-export type ResolvedStorageItem = {
-  path: StoragePath;
-  item: StorageItem;
+/** Where the value that a selector selects is stored. */
+export type StorageLocation = {
+  /** Solidity type of the value. */
   type: StorageType;
-  baseSlot: bigint;
+  /** Absolute slot where the value resides or, for multi-slot values, starts. */
+  slot: bigint;
+  /** Byte offset of the value within `slot`, from the least-significant byte. */
+  offset: number;
+  /** Canonical selector of the value, for example `balances[0x…]`. */
+  selector: string;
 };
 
-type Pretty<T> = { [K in keyof T]: T[K] } & unknown;
-
-type CustomTypeError<Message extends string> = [`Error: ${Message}`];
-
-export type ExtractVariableNames<Layout extends StorageLayout> =
-  Layout["storage"][number]["label"];
-
-export type ExtractStorageVariables<Layout extends StorageLayout> =
-  string extends ExtractVariableNames<Layout>
-    ? string
-    : StorageItemPaths<Layout, Layout["storage"][number]>;
-
-export type ExtractConcreteStorageVariables<Layout extends StorageLayout> =
-  string extends ExtractVariableNames<Layout>
-    ? string
-    : ConcreteStorageItemPaths<Layout, Layout["storage"][number]>;
-
-export type ExtractMultiSlotStorageVariables<Layout extends StorageLayout> =
-  string extends ExtractVariableNames<Layout>
-    ? string
-    : MultiSlotStorageItemPaths<Layout, Layout["storage"][number]>;
-
-export type StorageLayoutToPrimitiveType<Layout extends StorageLayout> =
-  string extends ExtractVariableNames<Layout>
-    ? Record<string, unknown>
-    : Pretty<{
-        [Name in ExtractVariableNames<Layout>]: StorageVariableToPrimitiveType<
-          Layout,
-          Name
-        >;
-      }>;
-
-export type StorageVariableToPrimitiveType<
-  Layout extends StorageLayout,
-  Path extends string,
-> =
-  string extends ExtractVariableNames<Layout>
-    ? unknown
-    : StoragePathTypeToPrimitiveType<Layout, StorageTypeForPath<Layout, Path>>;
-
+/**
+ * Resolve a selector to the location of the value it selects. A composite
+ * (struct, array, or mapping) resolves to the location where it starts.
+ */
 export function resolveStoragePath(
   layout: StorageLayout,
-  path: StoragePath,
-): ResolvedStorageItem[] {
-  let item = findStorageItem(layout, path.root);
-  let baseSlot = 0n;
-  let resolvedPath: StoragePath = { root: path.root, segments: [] };
-  let type = findStorageType(layout, item.type);
-
-  for (const segment of path.segments) {
-    const absoluteSlot = baseSlot + BigInt(item.slot);
-    if (segment.kind === "subscript") {
-      if (isFixedArrayType(type)) {
-        const resolved = resolveFixedArrayElement(
-          layout,
-          item,
-          type,
-          absoluteSlot,
-          segment,
-          resolvedPath,
-        );
-        item = resolved.item;
-        baseSlot = resolved.baseSlot;
-        resolvedPath = resolved.path;
-        type = resolved.type;
-        continue;
-      }
-      if (isDynamicArrayType(type)) {
-        const resolved = resolveDynamicArrayElement(
-          layout,
-          item,
-          type,
-          absoluteSlot,
-          segment,
-          resolvedPath,
-        );
-        item = resolved.item;
-        baseSlot = resolved.baseSlot;
-        resolvedPath = resolved.path;
-        type = resolved.type;
-        continue;
-      }
-      if (isMappingType(type)) {
-        const resolved = resolveMappingValue(
-          layout,
-          item,
-          type,
-          absoluteSlot,
-          segment,
-          resolvedPath,
-        );
-        item = resolved.item;
-        baseSlot = resolved.baseSlot;
-        resolvedPath = resolved.path;
-        type = resolved.type;
-        continue;
-      }
-      if (isFixedArrayType(type) === false) {
-        throw new Error(
-          `subscript storage paths are not supported yet: ${formatStoragePath({
-            root: path.root,
-            segments: [...resolvedPath.segments, segment],
-          })}`,
-        );
-      }
+  selector: string,
+): StorageLocation {
+  const root = readIdentifier(selector, 0);
+  let location = resolveRoot(layout, root.value);
+  let index = root.next;
+  while (index < selector.length) {
+    const char = selector[index];
+    if (char === ".") {
+      const field = readIdentifier(selector, index + 1);
+      location = resolveField(layout, location, field.value);
+      index = field.next;
+    } else if (char === "[") {
+      const subscript = readSubscript(selector, index);
+      location = resolveSubscript(layout, location, subscript.value);
+      index = subscript.next;
+    } else {
+      throw new Error(`unexpected '${char}' in storage path: ${selector}`);
     }
-    if (segment.kind !== "field") {
-      throw new Error(
-        `subscript storage paths are not supported yet: ${formatStoragePath({
-          root: path.root,
-          segments: [...resolvedPath.segments, segment],
-        })}`,
-      );
-    }
-    if (isStructType(type) === false) {
-      throw new Error(
-        `storage path field '${segment.name}' requires a struct: ${formatStoragePath(resolvedPath)}`,
-      );
-    }
-
-    const member = type.members.find(
-      (candidate) => candidate.label === segment.name,
-    );
-    if (member === undefined) {
-      throw new Error(
-        `struct field not found: ${formatStoragePath(resolvedPath)}.${segment.name}`,
-      );
-    }
-
-    item = member;
-    baseSlot = absoluteSlot;
-    resolvedPath = {
-      root: path.root,
-      segments: [...resolvedPath.segments, segment],
-    };
-    type = findStorageType(layout, item.type);
   }
-
-  const absoluteSlot = baseSlot + BigInt(item.slot);
-
-  if (isValueType(type)) {
-    return [
-      {
-        path: resolvedPath,
-        item,
-        type,
-        baseSlot,
-      },
-    ];
-  }
-  if (isStructType(type)) {
-    return expandStructSlots(layout, type, absoluteSlot, resolvedPath, true);
-  }
-  if (isFixedArrayType(type)) {
-    return expandFixedArraySlots(
-      layout,
-      item,
-      type,
-      absoluteSlot,
-      resolvedPath,
-    );
-  }
-  if (isDynamicArrayType(type)) {
-    return [
-      {
-        path: resolvedPath,
-        item,
-        type,
-        baseSlot,
-      },
-    ];
-  }
-  if (isBytesType(type)) {
-    return [
-      {
-        path: resolvedPath,
-        item,
-        type,
-        baseSlot,
-      },
-    ];
-  }
-  if (isMappingType(type)) {
-    throw new Error(
-      `mapping storage paths require a key: ${formatStoragePath(resolvedPath)}`,
-    );
-  }
-
-  throw new Error(
-    `unsupported storage path type '${type.label}' for ${formatStoragePath(resolvedPath)}`,
-  );
+  return location;
 }
 
-export function storagePathEndsAtValue(
+/** Location of the top-level state variable `label`. */
+export function resolveRoot(
   layout: StorageLayout,
-  path: StoragePath,
-): boolean {
-  const resolved = resolveStoragePath(layout, path);
-  return (
-    resolved.length === 1 &&
-    resolved[0]!.type.encoding !== "dynamic_array" &&
-    formatStoragePath(resolved[0]!.path) === formatStoragePath(path)
-  );
-}
-
-function expandStructSlots(
-  layout: StorageLayout,
-  type: StorageType & { members: readonly StorageItem[] },
-  baseSlot: bigint,
-  path: StoragePath,
-  strict: boolean,
-): ResolvedStorageItem[] {
-  const slots: ResolvedStorageItem[] = [];
-  for (const member of type.members) {
-    const memberType = findStorageType(layout, member.type);
-    const memberPath: StoragePath = {
-      root: path.root,
-      segments: [...path.segments, { kind: "field", name: member.label }],
-    };
-    const memberSlot = baseSlot + BigInt(member.slot);
-    if (isValueType(memberType)) {
-      slots.push({
-        path: memberPath,
-        item: member,
-        type: memberType,
-        baseSlot,
-      });
-      continue;
-    }
-    if (isStructType(memberType)) {
-      slots.push(
-        ...expandStructSlots(
-          layout,
-          memberType,
-          memberSlot,
-          memberPath,
-          strict,
-        ),
-      );
-      continue;
-    }
-    if (isFixedArrayType(memberType)) {
-      slots.push(
-        ...expandFixedArraySlots(
-          layout,
-          member,
-          memberType,
-          memberSlot,
-          memberPath,
-        ),
-      );
-      continue;
-    }
-    if (isDynamicArrayType(memberType)) {
-      slots.push({
-        path: memberPath,
-        item: member,
-        type: memberType,
-        baseSlot,
-      });
-      continue;
-    }
-    if (isBytesType(memberType)) {
-      slots.push({
-        path: memberPath,
-        item: member,
-        type: memberType,
-        baseSlot,
-      });
-      continue;
-    }
-    if (strict) {
-      if (memberType.encoding === "mapping") {
-        throw new Error(
-          `cannot infer storage path for mapping '${formatStoragePath(memberPath)}' from raw slots: Solidity mapping keys are hashed into storage slots and cannot be reversed from a slot alone`,
-        );
-      }
-      throw new Error(
-        `unsupported storage path type '${memberType.label}' for ${formatStoragePath(memberPath)}`,
-      );
-    }
-  }
-  return slots;
-}
-
-function expandFixedArraySlots(
-  layout: StorageLayout,
-  item: StorageItem,
-  type: StorageType & { base: string },
-  baseSlot: bigint,
-  path: StoragePath,
-): ResolvedStorageItem[] {
-  const slots: ResolvedStorageItem[] = [];
-  const length = fixedArrayLength(type);
-  for (let index = 0; index < length; index++) {
-    const resolved = resolveFixedArrayElement(
-      layout,
-      item,
-      type,
-      baseSlot,
-      { kind: "subscript", value: { kind: "number", value: BigInt(index) } },
-      path,
-    );
-    if (isValueType(resolved.type)) {
-      slots.push(resolved);
-      continue;
-    }
-    const elementSlot = resolved.baseSlot + BigInt(resolved.item.slot);
-    if (isStructType(resolved.type)) {
-      slots.push(
-        ...expandStructSlots(
-          layout,
-          resolved.type,
-          elementSlot,
-          resolved.path,
-          true,
-        ),
-      );
-      continue;
-    }
-    if (isFixedArrayType(resolved.type)) {
-      slots.push(
-        ...expandFixedArraySlots(
-          layout,
-          resolved.item,
-          resolved.type,
-          elementSlot,
-          resolved.path,
-        ),
-      );
-      continue;
-    }
-    if (isDynamicArrayType(resolved.type)) {
-      slots.push(resolved);
-      continue;
-    }
-    if (isBytesType(resolved.type)) {
-      slots.push(resolved);
-      continue;
-    }
-    if (resolved.type.encoding === "mapping") {
-      throw new Error(
-        `mapping storage paths require a key: ${formatStoragePath(resolved.path)}`,
-      );
-    }
-    throw new Error(
-      `unsupported storage path type '${resolved.type.label}' for ${formatStoragePath(resolved.path)}`,
-    );
-  }
-  return slots;
-}
-
-function resolveFixedArrayElement(
-  layout: StorageLayout,
-  item: StorageItem,
-  type: StorageType & { base: string },
-  baseSlot: bigint,
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  path: StoragePath,
-): ResolvedStorageItem {
-  const index = fixedArrayIndex(segment, type, path);
-  const baseType = findStorageType(layout, type.base);
-  const { slot, offset } = fixedArrayElementLocation(baseType, index);
-  return {
-    path: { root: path.root, segments: [...path.segments, segment] },
-    item: {
-      astId: item.astId,
-      contract: item.contract,
-      label: `${item.label}[${index}]`,
-      offset,
-      slot: String(slot) as `${number}`,
-      type: type.base,
-    },
-    type: baseType,
-    baseSlot,
-  };
-}
-
-function resolveDynamicArrayElement(
-  layout: StorageLayout,
-  item: StorageItem,
-  type: StorageType & { base: string },
-  absoluteSlot: bigint,
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  path: StoragePath,
-): ResolvedStorageItem {
-  const index = dynamicArrayIndex(segment, path);
-  const baseType = findStorageType(layout, type.base);
-  const { slot, offset } = arrayElementLocation(baseType, index);
-  return {
-    path: { root: path.root, segments: [...path.segments, segment] },
-    item: {
-      astId: item.astId,
-      contract: item.contract,
-      label: `${item.label}[${index}]`,
-      offset,
-      slot: String(slot) as `${number}`,
-      type: type.base,
-    },
-    type: baseType,
-    baseSlot: dynamicArrayDataBaseSlot(absoluteSlot),
-  };
-}
-
-function resolveMappingValue(
-  layout: StorageLayout,
-  item: StorageItem,
-  type: StorageType & { key: string; value: string },
-  absoluteSlot: bigint,
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  path: StoragePath,
-): ResolvedStorageItem {
-  const valueType = findStorageType(layout, type.value);
-  const keyType = findStorageType(layout, type.key);
-  return {
-    path: { root: path.root, segments: [...path.segments, segment] },
-    item: {
-      astId: item.astId,
-      contract: item.contract,
-      label: `${item.label}[${formatSubscript(segment)}]`,
-      offset: 0,
-      slot: "0",
-      type: type.value,
-    },
-    type: valueType,
-    baseSlot: mappingValueBaseSlot(keyType, segment, absoluteSlot, path),
-  };
-}
-
-function fixedArrayElementLocation(
-  type: StorageType,
-  index: number,
-): { slot: number; offset: number } {
-  const location = arrayElementLocation(type, BigInt(index));
-  return { slot: Number(location.slot), offset: location.offset };
-}
-
-function dynamicArrayDataBaseSlot(slot: bigint): bigint {
-  return BigInt(Hash.keccak256(Hex.fromNumber(slot, { size: 32 })));
-}
-
-function mappingValueBaseSlot(
-  keyType: StorageType,
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  slot: bigint,
-  path: StoragePath,
-): bigint {
-  return BigInt(
-    Hash.keccak256(
-      Hex.concat(
-        encodeMappingKey(keyType, segment, path),
-        Hex.fromNumber(slot, { size: 32 }),
-      ),
-    ),
-  );
-}
-
-function encodeMappingKey(
-  keyType: StorageType,
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  path: StoragePath,
-): Hex.Hex {
-  const label = keyType.label;
-  if (label === "address") {
-    if (segment.value.kind !== "hex") {
-      throw new Error(
-        `mapping key for '${formatStoragePath(path)}' must be an address hex string`,
-      );
-    }
-    if (Hex.size(segment.value.value) !== 20) {
-      throw new Error(
-        `mapping key for '${formatStoragePath(path)}' must be 20 bytes`,
-      );
-    }
-    return Hex.padLeft(segment.value.value, 32);
-  }
-  if (label === "bool") {
-    if (segment.value.kind !== "bool") {
-      throw new Error(
-        `mapping key for '${formatStoragePath(path)}' must be a boolean`,
-      );
-    }
-    return Hex.fromNumber(segment.value.value ? 1 : 0, { size: 32 });
-  }
-  if (label.startsWith("uint")) {
-    return encodeMappingIntegerKey(label, "uint", segment, path);
-  }
-  if (label.startsWith("int")) {
-    return encodeMappingIntegerKey(label, "int", segment, path);
-  }
-  if (/^bytes([1-9]|[12][0-9]|3[0-2])$/.test(label)) {
-    if (segment.value.kind !== "hex") {
-      throw new Error(
-        `mapping key for '${formatStoragePath(path)}' must be a fixed bytes hex string`,
-      );
-    }
-    const size = Number(label.slice("bytes".length));
-    if (Hex.size(segment.value.value) !== size) {
-      throw new Error(
-        `mapping key for '${formatStoragePath(path)}' must be ${size} bytes`,
-      );
-    }
-    return Hex.padRight(segment.value.value, 32);
-  }
-
-  // TODO: Solidity supports dynamic bytes/string mapping keys, but their slot
-  // derivation hashes the raw key bytes rather than ABI-padding a fixed-width key.
-  // Leave them unsupported until we add explicit tests for those storage rules.
-  throw new Error(`unsupported mapping key type: ${label}`);
-}
-
-function encodeMappingIntegerKey(
   label: string,
-  kind: "uint" | "int",
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  path: StoragePath,
-): Hex.Hex {
-  if (segment.value.kind !== "number") {
-    throw new Error(
-      `mapping key for '${formatStoragePath(path)}' must be an integer`,
-    );
-  }
-  const bits = integerBits(label, kind);
-  const value = segment.value.value;
-  if (kind === "uint") {
-    const max = 1n << BigInt(bits);
-    if (value < 0n || value >= max) {
-      throw new Error(`mapping key does not fit in ${bits} bits`);
-    }
-    return Hex.fromNumber(value, { size: 32 });
-  }
-
-  const min = -(1n << BigInt(bits - 1));
-  const max = (1n << BigInt(bits - 1)) - 1n;
-  if (value < min || value > max) {
-    throw new Error(`mapping key does not fit in ${bits} bits`);
-  }
-  return Hex.fromNumber(value >= 0n ? value : (1n << 256n) + value, {
-    size: 32,
-  });
-}
-
-function formatSubscript(
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-): string {
-  switch (segment.value.kind) {
-    case "number":
-      return segment.value.value.toString();
-    case "hex":
-      return segment.value.value;
-    case "string":
-      return JSON.stringify(segment.value.value);
-    case "bool":
-      return String(segment.value.value);
-  }
-}
-
-function fixedArrayIndex(
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  type: StorageType,
-  path: StoragePath,
-): number {
-  if (segment.value.kind !== "number") {
-    throw new Error(
-      `fixed array index must be a number: ${formatStoragePath({
-        root: path.root,
-        segments: [...path.segments, segment],
-      })}`,
-    );
-  }
-  const length = fixedArrayLength(type);
-  const index = Number(segment.value.value);
-  if (!Number.isSafeInteger(index) || index < 0 || index >= length) {
-    throw new Error(
-      `fixed array index out of bounds: ${formatStoragePath({
-        root: path.root,
-        segments: [...path.segments, segment],
-      })}`,
-    );
-  }
-  return index;
-}
-
-function dynamicArrayIndex(
-  segment: Extract<StoragePathSegment, { kind: "subscript" }>,
-  path: StoragePath,
-): bigint {
-  if (segment.value.kind !== "number") {
-    throw new Error(
-      `dynamic array index must be a number: ${formatStoragePath({
-        root: path.root,
-        segments: [...path.segments, segment],
-      })}`,
-    );
-  }
-  if (segment.value.value < 0n) {
-    throw new Error(
-      `dynamic array index out of bounds: ${formatStoragePath({
-        root: path.root,
-        segments: [...path.segments, segment],
-      })}`,
-    );
-  }
-  return segment.value.value;
-}
-
-function findStorageItem(layout: StorageLayout, label: string): StorageItem {
+): StorageLocation {
   const item = layout.storage.find((candidate) => candidate.label === label);
   if (item === undefined) {
     throw new Error(`storage variable not found: ${label}`);
   }
-  return item;
+  return {
+    type: findStorageType(layout, item.type),
+    slot: BigInt(item.slot),
+    offset: item.offset,
+    selector: label,
+  };
+}
+
+/** Location of struct field `name` in the struct at `parent`. */
+export function resolveField(
+  layout: StorageLayout,
+  parent: StorageLocation,
+  name: string,
+): StorageLocation {
+  if (isStructType(parent.type) === false) {
+    throw new Error(
+      `storage path field '${name}' requires a struct: ${parent.selector}`,
+    );
+  }
+  const member = parent.type.members.find(
+    (candidate) => candidate.label === name,
+  );
+  if (member === undefined) {
+    throw new Error(`struct field not found: ${parent.selector}.${name}`);
+  }
+  return {
+    type: findStorageType(layout, member.type),
+    slot: parent.slot + BigInt(member.slot),
+    offset: member.offset,
+    selector: `${parent.selector}.${name}`,
+  };
+}
+
+/**
+ * Location of the array element or mapping value at `subscript` in `parent`.
+ * A mapping value or a dynamic array element costs one keccak256.
+ */
+export function resolveSubscript(
+  layout: StorageLayout,
+  parent: StorageLocation,
+  subscript: StoragePathSubscript,
+): StorageLocation {
+  const { type } = parent;
+  const selector = `${parent.selector}[${formatSubscript(subscript)}]`;
+
+  if (isFixedArrayType(type) || isDynamicArrayType(type)) {
+    const kind = type.encoding === "dynamic_array" ? "dynamic" : "fixed";
+    const index = subscriptToInteger(subscript);
+    if (index === undefined) {
+      throw new Error(`${kind} array index must be a number: ${selector}`);
+    }
+    if (
+      index < 0n ||
+      (kind === "fixed" && index >= BigInt(fixedArrayLength(type)))
+    ) {
+      throw new Error(`${kind} array index out of bounds: ${selector}`);
+    }
+    const elementType = findStorageType(layout, type.base);
+    const element = arrayElementLocation(elementType, index);
+    const dataSlot = kind === "fixed" ? parent.slot : keccakSlot(parent.slot);
+    return {
+      type: elementType,
+      slot: dataSlot + element.slot,
+      offset: element.offset,
+      selector,
+    };
+  }
+
+  if (isMappingType(type)) {
+    const key = encodeMappingKey(
+      findStorageType(layout, type.key),
+      subscript,
+      parent.selector,
+    );
+    return {
+      type: findStorageType(layout, type.value),
+      slot: BigInt(Hash.keccak256(Hex.concat(key, toWord(parent.slot)))),
+      offset: 0,
+      selector,
+    };
+  }
+
+  throw new Error(
+    `storage path subscript requires an array or mapping: ${selector}`,
+  );
 }
 
 export function findStorageType(
@@ -700,25 +213,25 @@ export function findStorageType(
   return type;
 }
 
-function isStructType(
+export function isStructType(
   type: StorageType,
 ): type is StorageType & { members: readonly StorageItem[] } {
   return type.encoding === "inplace" && type.members !== undefined;
 }
 
-function isFixedArrayType(
+export function isFixedArrayType(
   type: StorageType,
 ): type is StorageType & { base: string } {
   return type.encoding === "inplace" && type.base !== undefined;
 }
 
-function isDynamicArrayType(
+export function isDynamicArrayType(
   type: StorageType,
 ): type is StorageType & { base: string } {
   return type.encoding === "dynamic_array" && type.base !== undefined;
 }
 
-function isMappingType(
+export function isMappingType(
   type: StorageType,
 ): type is StorageType & { key: string; value: string } {
   return (
@@ -727,482 +240,3 @@ function isMappingType(
     type.value !== undefined
   );
 }
-
-function isBytesType(type: StorageType): boolean {
-  return type.encoding === "bytes";
-}
-
-type StorageItemPaths<
-  Layout extends StorageLayout,
-  Item extends StorageItem,
-> = Item extends StorageItem
-  ? StorageTypePaths<
-      Layout,
-      StorageTypeForItem<Layout, Item>,
-      Extract<Item["label"], string>
-    >
-  : never;
-
-type ConcreteStorageItemPaths<
-  Layout extends StorageLayout,
-  Item extends StorageItem,
-> = Item extends StorageItem
-  ? ConcreteStorageTypePaths<
-      Layout,
-      StorageTypeForItem<Layout, Item>,
-      Extract<Item["label"], string>
-    >
-  : never;
-
-type MultiSlotStorageItemPaths<
-  Layout extends StorageLayout,
-  Item extends StorageItem,
-> = Item extends StorageItem
-  ? MultiSlotStorageTypePaths<
-      Layout,
-      StorageTypeForItem<Layout, Item>,
-      Extract<Item["label"], string>
-    >
-  : never;
-
-type StorageTypePaths<
-  Layout extends StorageLayout,
-  Type,
-  Prefix extends string,
-> = Type extends {
-  encoding: "mapping";
-  key: infer Key extends string;
-  value: infer Value extends string;
-}
-  ? MappingStoragePaths<Layout, Key, Value, Prefix>
-  : Prefix | StorageTypeChildPaths<Layout, Type, Prefix>;
-
-type ConcreteStorageTypePaths<
-  Layout extends StorageLayout,
-  Type,
-  Prefix extends string,
-> = Type extends {
-  encoding: "mapping";
-  key: infer Key extends string;
-  value: infer Value extends string;
-}
-  ? MappingConcreteStoragePaths<Layout, Key, Value, Prefix>
-  : Type extends { members: readonly StorageItem[] }
-    ? StructMemberConcretePaths<Layout, Type["members"], Prefix>
-    : Type extends {
-          base: infer Base extends string;
-          encoding: "dynamic_array";
-        }
-      ? ConcreteStorageTypePaths<
-          Layout,
-          StorageTypeForId<Layout, Base>,
-          `${Prefix}[${number}]`
-        >
-      : Type extends {
-            base: infer Base extends string;
-            label: infer Label extends string;
-          }
-        ? FixedArrayLength<Label> extends infer Length extends number
-          ? FixedArrayIndex<Length> extends infer Index extends number
-            ? ConcreteStorageTypePaths<
-                Layout,
-                StorageTypeForId<Layout, Base>,
-                `${Prefix}[${Index}]`
-              >
-            : never
-          : never
-        : Type extends StorageType
-          ? Type["encoding"] extends "bytes" | "inplace"
-            ? Prefix
-            : never
-          : never;
-
-type MultiSlotStorageTypePaths<
-  Layout extends StorageLayout,
-  Type,
-  Prefix extends string,
-> = Type extends {
-  encoding: "mapping";
-  key: infer Key extends string;
-  value: infer Value extends string;
-}
-  ? MappingMultiSlotStoragePaths<Layout, Key, Value, Prefix>
-  : Type extends StorageType
-    ?
-        | MultiSlotStorageTypeSelfPath<Type, Prefix>
-        | MultiSlotStorageTypeChildPaths<Layout, Type, Prefix>
-    : never;
-
-type MultiSlotStorageTypeSelfPath<
-  Type extends StorageType,
-  Prefix extends string,
-> = Type["numberOfBytes"] extends SingleSlotByteCount ? never : Prefix;
-
-type MultiSlotStorageTypeChildPaths<
-  Layout extends StorageLayout,
-  Type,
-  Prefix extends string,
-> = Type extends { members: readonly StorageItem[] }
-  ? StructMemberMultiSlotPaths<Layout, Type["members"], Prefix>
-  : Type extends {
-        base: infer Base extends string;
-        encoding: "dynamic_array";
-      }
-    ? MultiSlotStorageTypePaths<
-        Layout,
-        StorageTypeForId<Layout, Base>,
-        `${Prefix}[${number}]`
-      >
-    : Type extends {
-          base: infer Base extends string;
-          label: infer Label extends string;
-        }
-      ? FixedArrayLength<Label> extends infer Length extends number
-        ? FixedArrayIndex<Length> extends infer Index extends number
-          ? MultiSlotStorageTypePaths<
-              Layout,
-              StorageTypeForId<Layout, Base>,
-              `${Prefix}[${Index}]`
-            >
-          : never
-        : never
-      : never;
-
-type MappingStoragePaths<
-  Layout extends StorageLayout,
-  Key extends string,
-  Value extends string,
-  Prefix extends string,
-> =
-  MappingKeyPath<Layout, Key> extends infer KeyPath extends string
-    ? StorageTypePaths<
-        Layout,
-        StorageTypeForId<Layout, Value>,
-        `${Prefix}[${KeyPath}]`
-      >
-    : never;
-
-type MappingConcreteStoragePaths<
-  Layout extends StorageLayout,
-  Key extends string,
-  Value extends string,
-  Prefix extends string,
-> =
-  MappingKeyPath<Layout, Key> extends infer KeyPath extends string
-    ? ConcreteStorageTypePaths<
-        Layout,
-        StorageTypeForId<Layout, Value>,
-        `${Prefix}[${KeyPath}]`
-      >
-    : never;
-
-type MappingMultiSlotStoragePaths<
-  Layout extends StorageLayout,
-  Key extends string,
-  Value extends string,
-  Prefix extends string,
-> =
-  MappingKeyPath<Layout, Key> extends infer KeyPath extends string
-    ? MultiSlotStorageTypePaths<
-        Layout,
-        StorageTypeForId<Layout, Value>,
-        `${Prefix}[${KeyPath}]`
-      >
-    : never;
-
-type MappingKeyPath<Layout extends StorageLayout, Key extends string> =
-  StorageTypeForId<Layout, Key> extends infer KeyType extends StorageType
-    ? KeyType["label"] extends "address"
-      ? Hex.Hex
-      : KeyType["label"] extends "bool"
-        ? "true" | "false"
-        : KeyType["label"] extends `uint${string}` | `int${string}`
-          ? `${number}`
-          : KeyType["label"] extends `bytes${number}`
-            ? Hex.Hex
-            : never
-    : never;
-
-type StorageTypeChildPaths<
-  Layout extends StorageLayout,
-  Type,
-  Prefix extends string,
-> = Type extends { members: readonly StorageItem[] }
-  ? StructMemberPaths<Layout, Type["members"], Prefix>
-  : Type extends {
-        base: infer Base extends string;
-        encoding: "dynamic_array";
-      }
-    ? StorageTypePaths<
-        Layout,
-        StorageTypeForId<Layout, Base>,
-        `${Prefix}[${number}]`
-      >
-    : Type extends {
-          base: infer Base extends string;
-          label: infer Label extends string;
-        }
-      ? FixedArrayLength<Label> extends infer Length extends number
-        ? FixedArrayIndex<Length> extends infer Index extends number
-          ? StorageTypePaths<
-              Layout,
-              StorageTypeForId<Layout, Base>,
-              `${Prefix}[${Index}]`
-            >
-          : never
-        : never
-      : never;
-
-type StructMemberPaths<
-  Layout extends StorageLayout,
-  Members extends readonly StorageItem[],
-  Prefix extends string,
-> = Members[number] extends infer Member extends StorageItem
-  ? Member extends StorageItem
-    ? StorageTypePaths<
-        Layout,
-        StorageTypeForItem<Layout, Member>,
-        `${Prefix}.${Extract<Member["label"], string>}`
-      >
-    : never
-  : never;
-
-type StructMemberConcretePaths<
-  Layout extends StorageLayout,
-  Members extends readonly StorageItem[],
-  Prefix extends string,
-> = Members[number] extends infer Member extends StorageItem
-  ? Member extends StorageItem
-    ? ConcreteStorageTypePaths<
-        Layout,
-        StorageTypeForItem<Layout, Member>,
-        `${Prefix}.${Extract<Member["label"], string>}`
-      >
-    : never
-  : never;
-
-type StructMemberMultiSlotPaths<
-  Layout extends StorageLayout,
-  Members extends readonly StorageItem[],
-  Prefix extends string,
-> = Members[number] extends infer Member extends StorageItem
-  ? Member extends StorageItem
-    ? MultiSlotStorageTypePaths<
-        Layout,
-        StorageTypeForItem<Layout, Member>,
-        `${Prefix}.${Extract<Member["label"], string>}`
-      >
-    : never
-  : never;
-
-type FixedArrayIndex<
-  Length extends number,
-  Acc extends readonly unknown[] = [],
-> = number extends Length
-  ? number
-  : Acc["length"] extends Length
-    ? never
-    : Acc["length"] | FixedArrayIndex<Length, readonly [...Acc, unknown]>;
-
-type FixedArrayLength<Label extends string> =
-  Label extends `${string}[${infer Rest}`
-    ? FixedArrayLengthSuffix<Rest>
-    : never;
-
-type FixedArrayLengthSuffix<Rest extends string> =
-  Rest extends `${infer Current}]${infer Tail}`
-    ? Tail extends ""
-      ? Current extends `${infer Length extends number}`
-        ? Length
-        : never
-      : FixedArrayLength<Tail>
-    : never;
-
-type StoragePathTypeToPrimitiveType<
-  Layout extends StorageLayout,
-  Type,
-> = Type extends StorageType ? StorageTypeToPrimitiveType<Type, Layout> : Type;
-
-type StorageTypeForPath<
-  Layout extends StorageLayout,
-  Path extends string,
-> = Path extends string
-  ? string extends Path
-    ?
-        | StorageType
-        | CustomTypeError<"StoragePath root was not found in storage layout.">
-    : StorageTypeForParsedPath<Layout, ParseStoragePath<Path>>
-  : never;
-
-type StorageTypeForParsedPath<
-  Layout extends StorageLayout,
-  Path extends ParsedStoragePath,
-> = Path extends {
-  root: infer Root extends ExtractVariableNames<Layout>;
-  segments: infer Segments extends readonly ParsedStoragePathSegment[];
-}
-  ? StoragePathSegmentsToStorageType<
-      Layout,
-      StorageTypeForItem<
-        Layout,
-        Extract<Layout["storage"][number], { label: Root }>
-      >,
-      Segments
-    >
-  : CustomTypeError<"StoragePath root was not found in storage layout.">;
-
-type StoragePathSegmentsToStorageType<
-  Layout extends StorageLayout,
-  Type,
-  Segments extends readonly ParsedStoragePathSegment[],
-> = Segments extends readonly [
-  infer Segment extends ParsedStoragePathSegment,
-  ...infer Rest extends ParsedStoragePathSegment[],
-]
-  ? Segment extends { kind: "field"; name: infer Field extends string }
-    ? Type extends { members: readonly StorageItem[] }
-      ? StoragePathSegmentsToStorageType<
-          Layout,
-          StorageTypeForStructField<Layout, Type["members"], Field>,
-          Rest
-        >
-      : CustomTypeError<"Storage path field requires a struct.">
-    : StoragePathSegmentsToStorageType<
-        Layout,
-        SubscriptStorageType<Layout, Type>,
-        Rest
-      >
-  : Type;
-
-type SubscriptStorageType<Layout extends StorageLayout, Type> = Type extends {
-  encoding: "mapping";
-  value: infer Value extends string;
-}
-  ? StorageTypeForId<Layout, Value>
-  : Type extends { base: infer Base extends string }
-    ? StorageTypeForId<Layout, Base>
-    : CustomTypeError<"Storage path subscript requires an array or mapping.">;
-
-type StorageTypeForStructField<
-  Layout extends StorageLayout,
-  Members extends readonly StorageItem[],
-  Field extends string,
-  Member extends StorageItem = Extract<Members[number], { label: Field }>,
-> = [Member] extends [never]
-  ? CustomTypeError<"Storage path field was not found in struct.">
-  : StorageTypeForItem<Layout, Member>;
-
-type StorageTypeForItem<
-  Layout extends StorageLayout,
-  Item extends StorageItem,
-> = StorageTypeForId<Layout, Item["type"]>;
-
-type StorageTypeForId<
-  Layout extends StorageLayout,
-  TypeId extends string,
-> = TypeId extends keyof Layout["types"] ? Layout["types"][TypeId] : never;
-
-type StorageTypeToPrimitiveType<
-  Type extends StorageType,
-  Layout extends StorageLayout,
-> = Type["encoding"] extends "mapping"
-  ? StorageMappingToPrimitiveType<Layout, Type>
-  : Type extends { members: readonly StorageItem[] }
-    ? Pretty<StorageMembersToObject<Layout, Type["members"]>>
-    : Type["label"] extends `enum ${string}`
-      ? number
-      : Type["label"] extends AbiType
-        ? AbiParameterToPrimitiveType<{ type: Type["label"] }>
-        : Type["encoding"] extends "dynamic_array"
-          ? Type extends { base: infer Base extends string }
-            ? readonly StorageTypeToPrimitiveType<
-                StorageTypeForId<Layout, Base>,
-                Layout
-              >[]
-            : CustomTypeError<`Array type '${Type["label"]}' is missing base type.`>
-          : Type extends { base: infer Base extends string }
-            ? Type["label"] extends `${string}[${infer Length extends number}]`
-              ? FixedArray<
-                  StorageTypeToPrimitiveType<
-                    StorageTypeForId<Layout, Base>,
-                    Layout
-                  >,
-                  Length
-                >
-              : SolidityLabelToPrimitiveType<Type["label"]>
-            : Type["label"] extends `${infer Element}[${infer Length extends number}]`
-              ? FixedArray<SolidityLabelToPrimitiveType<Element>, Length>
-              : SolidityLabelToPrimitiveType<Type["label"]>;
-
-type StorageMappingToPrimitiveType<
-  Layout extends StorageLayout,
-  Type extends StorageType,
-> = Type extends {
-  key: infer Key extends string;
-  value: infer Value extends string;
-}
-  ? [MappingKeyPath<Layout, Key>] extends [never]
-    ? CustomTypeError<`Unsupported mapping key type '${StorageTypeForId<Layout, Key> extends StorageType ? StorageTypeForId<Layout, Key>["label"] : Key}'.`>
-    : Record<
-        MappingKeyPath<Layout, Key>,
-        StorageTypeToPrimitiveType<StorageTypeForId<Layout, Value>, Layout>
-      >
-  : CustomTypeError<`Mapping type '${Type["label"]}' is missing key or value type.`>;
-
-type StorageMembersToObject<
-  Layout extends StorageLayout,
-  Members extends readonly StorageItem[],
-> = {
-  [Member in Members[number] as Member["label"]]: StorageTypeToPrimitiveType<
-    StorageTypeForItem<Layout, Member>,
-    Layout
-  >;
-};
-
-type SolidityLabelToPrimitiveType<Label extends string> = Label extends AbiType
-  ? AbiParameterToPrimitiveType<{ type: Label }>
-  : Label extends `enum ${string}`
-    ? number
-    : CustomTypeError<`Unsupported type '${Label}'.`>;
-
-type SingleSlotByteCount =
-  | "1"
-  | "2"
-  | "3"
-  | "4"
-  | "5"
-  | "6"
-  | "7"
-  | "8"
-  | "9"
-  | "10"
-  | "11"
-  | "12"
-  | "13"
-  | "14"
-  | "15"
-  | "16"
-  | "17"
-  | "18"
-  | "19"
-  | "20"
-  | "21"
-  | "22"
-  | "23"
-  | "24"
-  | "25"
-  | "26"
-  | "27"
-  | "28"
-  | "29"
-  | "30"
-  | "31"
-  | "32";
-
-type FixedArray<
-  Element,
-  Length extends number,
-  Acc extends readonly Element[] = [],
-> = Acc["length"] extends Length
-  ? Acc
-  : FixedArray<Element, Length, readonly [...Acc, Element]>;

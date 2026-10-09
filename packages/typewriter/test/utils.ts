@@ -2,10 +2,8 @@ import { parseAbiParameters } from "abitype";
 import { type Abi, AbiParameters, Hex as OxHex, P256, Secp256k1 } from "ox";
 import { Authentication } from "ox/webauthn";
 import {
-  type AccountStorage,
   type ConcreteStorageVariable,
-  decodeStorageVariable,
-  getStorageSlot,
+  createStorageView,
   type StorageLayout,
   type StorageVariableToPrimitiveType,
 } from "storage-layout";
@@ -143,16 +141,22 @@ export async function readContractStorage<
   address: Address,
   variable: variable,
 ): Promise<StorageVariableToPrimitiveType<layout, variable>> {
-  // @ts-expect-error storage-layout's generic slot tuple is wider than AccountStorage.
-  const slots = getStorageSlot(layout, variable);
-  const values = await Promise.all(
-    slots.map((slot) => TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })),
+  const storage: { [key: string]: unknown } = createStorageView(
+    layout as StorageLayout,
+    (slots) =>
+      Promise.all(
+        slots.map(
+          async (slot) =>
+            (await TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })) ?? "0x0",
+        ),
+      ),
   );
-  const storage = Object.fromEntries(
-    slots.map((slot, index) => [slot, values[index]!]),
-  ) as AccountStorage;
-
-  return decodeStorageVariable(layout, variable, storage);
+  // Walk the selector through the proxy: `a.b[c]` reads `storage.a.b[c]`.
+  let value: unknown = storage;
+  for (const key of variable.split(/[.[\]]+/)) {
+    if (key !== "") value = (value as { [key: string]: unknown })[key];
+  }
+  return value as Promise<StorageVariableToPrimitiveType<layout, variable>>;
 }
 
 export const COUNTER_MUTATIONS = {

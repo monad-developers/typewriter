@@ -68,8 +68,10 @@ const stateTables = () => ({
       index("slot_writes_latest_idx").on(table.slot, table.id.desc()),
     ],
   ),
-  known_paths: pgTable("known_paths", {
-    path: text().notNull().primaryKey(),
+  // 64-byte keccak256 preimages from accepted mutations, as lowercase hex. The
+  // storage view lists mapping keys from them.
+  keccak_preimages: pgTable("keccak_preimages", {
+    preimage: char({ length: 130 }).$type<Hex.Hex>().notNull().primaryKey(),
   }),
 });
 

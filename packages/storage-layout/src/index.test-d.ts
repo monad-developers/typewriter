@@ -1,17 +1,22 @@
 import { expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
+import type { complexLayout } from "../test/utils";
 import type {
   ConcreteStorageVariable,
+  DynamicArrayStorageVariable,
   ExtractVariableNames,
+  MappingEntryVariable,
+  MappingStorageVariable,
   StorageLayout,
   StorageLayoutToPrimitiveType,
-  StorageSlotDiff,
-  StorageSlotWriteDiff,
   StorageVariable,
-  StorageVariableDiff,
   StorageVariableToPrimitiveType,
 } from "./index";
-import { decodeStorageVariable, encodeStorageVariable } from "./index";
+import {
+  decodeStorageVariable,
+  enumerateMappingKeys,
+  getDynamicArrayLength,
+} from "./index";
 import type { ParseStoragePath } from "./storage-path";
 
 const layout = {
@@ -284,29 +289,6 @@ test("StorageVariableToPrimitiveType handles top-level variable selectors", () =
   expectTypeOf<Message>().toEqualTypeOf<string>();
 });
 
-test("StorageVariableDiff infers sparse concrete variable keys and values", () => {
-  type Diff = StorageVariableDiff<typeof layout>;
-
-  expectTypeOf<Diff["pre"]["owner"]>().toEqualTypeOf<
-    `0x${string}` | undefined
-  >();
-  expectTypeOf<Diff["post"]["metadata.lastUpdate"]>().toEqualTypeOf<
-    bigint | undefined
-  >();
-  expectTypeOf<Diff["pre"][`balances[${Hex.Hex}]`]>().toEqualTypeOf<
-    bigint | undefined
-  >();
-});
-
-test("StorageSlotDiff uses raw slot values and StorageSlotWriteDiff uses masks", () => {
-  expectTypeOf<StorageSlotDiff["pre"]>().toEqualTypeOf<{
-    [slot: Hex.Hex]: Hex.Hex;
-  }>();
-  expectTypeOf<StorageSlotWriteDiff["pre"]>().toEqualTypeOf<{
-    [slot: Hex.Hex]: { value: Hex.Hex; mask: Hex.Hex };
-  }>();
-});
-
 test("public storage variable types preserve layout names", () => {
   type Names = ExtractVariableNames<typeof layout>;
   type Variables = StorageVariable<typeof layout>;
@@ -362,16 +344,121 @@ test("public storage variable types preserve layout names", () => {
 test("concrete path APIs reject composite paths at type-check time", () => {
   const typeAssertions = () => {
     decodeStorageVariable(layout, "owner", {});
-    encodeStorageVariable(layout, "metadata.paused", false);
+    decodeStorageVariable(layout, "metadata.paused", {});
 
     // @ts-expect-error structs are not concrete leaf paths
     decodeStorageVariable(layout, "metadata", {});
     // @ts-expect-error dynamic array roots are not concrete leaf paths
     decodeStorageVariable(layout, "numbers", {});
     // @ts-expect-error fixed array roots are not concrete leaf paths
-    encodeStorageVariable(layout, "fixedNumbers", [1n, 2n, 3n]);
+    decodeStorageVariable(layout, "fixedNumbers", {});
     // @ts-expect-error nested mappings require all keys to reach a leaf
     decodeStorageVariable(layout, `allowances[${"0x123" as Hex.Hex}]`, {});
+  };
+  expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
+});
+
+test("selector types expand nested arrays and structs", () => {
+  type Variables = StorageVariable<typeof complexLayout>;
+  type ConcreteVariables = ConcreteStorageVariable<typeof complexLayout>;
+
+  expectTypeOf<Variables>().toEqualTypeOf<
+    | "orders"
+    | "orders[0]"
+    | "orders[0].price"
+    | "orders[0].amount"
+    | "orders[1]"
+    | "orders[1].price"
+    | "orders[1].amount"
+    | "book"
+    | "book.priceLevels"
+    | "book.priceLevels[0]"
+    | "book.priceLevels[1]"
+    | "book.inner"
+    | "book.inner.count"
+    | "matrix"
+    | "matrix[0]"
+    | "matrix[0][0]"
+    | "matrix[0][1]"
+    | "matrix[1]"
+    | "matrix[1][0]"
+    | "matrix[1][1]"
+  >();
+  expectTypeOf<ConcreteVariables>().toEqualTypeOf<
+    | "orders[0].price"
+    | "orders[0].amount"
+    | "orders[1].price"
+    | "orders[1].amount"
+    | "book.priceLevels[0]"
+    | "book.priceLevels[1]"
+    | "book.inner.count"
+    | "matrix[0][0]"
+    | "matrix[0][1]"
+    | "matrix[1][0]"
+    | "matrix[1][1]"
+  >();
+  expectTypeOf<
+    StorageVariableToPrimitiveType<typeof complexLayout, "matrix">
+  >().toEqualTypeOf<
+    readonly [readonly [bigint, bigint], readonly [bigint, bigint]]
+  >();
+});
+
+test("selector types fall back for loose layouts", () => {
+  expectTypeOf<StorageVariable<StorageLayout>>().toEqualTypeOf<string>();
+  expectTypeOf<
+    ConcreteStorageVariable<StorageLayout>
+  >().toEqualTypeOf<string>();
+  expectTypeOf<
+    StorageVariableToPrimitiveType<StorageLayout, "anything">
+  >().toEqualTypeOf<unknown>();
+  expectTypeOf<
+    StorageVariableToPrimitiveType<typeof layout, string>
+  >().toEqualTypeOf<unknown>();
+});
+
+test("mapping selector types", () => {
+  expectTypeOf<MappingStorageVariable<typeof layout>>().toEqualTypeOf<
+    "balances" | "allowances" | `allowances[${Hex.Hex}]`
+  >();
+  expectTypeOf<
+    MappingEntryVariable<typeof layout, `allowances[${Hex.Hex}]`>
+  >().toEqualTypeOf<`allowances[${Hex.Hex}][${Hex.Hex}]`>();
+  expectTypeOf(
+    enumerateMappingKeys(layout, "balances", new Set()),
+  ).toEqualTypeOf<`balances[${Hex.Hex}]`[]>();
+  expectTypeOf<MappingStorageVariable<StorageLayout>>().toEqualTypeOf<string>();
+
+  const typeAssertions = () => {
+    // @ts-expect-error not a mapping
+    enumerateMappingKeys(layout, "supply", []);
+    // @ts-expect-error a mapping entry, not a mapping
+    enumerateMappingKeys(layout, `balances[${"0x1" as Hex.Hex}]`, []);
+  };
+  expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
+});
+
+test("dynamic array selector types", () => {
+  expectTypeOf<
+    DynamicArrayStorageVariable<typeof layout>
+  >().toEqualTypeOf<"numbers">();
+  expectTypeOf<
+    DynamicArrayStorageVariable<typeof complexLayout>
+  >().toEqualTypeOf<never>();
+  expectTypeOf(
+    getDynamicArrayLength(layout, "numbers", {}),
+  ).toEqualTypeOf<number>();
+  expectTypeOf<
+    DynamicArrayStorageVariable<StorageLayout>
+  >().toEqualTypeOf<string>();
+
+  const typeAssertions = () => {
+    // @ts-expect-error a fixed array has no length slot
+    getDynamicArrayLength(layout, "fixedNumbers", {});
+    // @ts-expect-error not an array
+    getDynamicArrayLength(layout, "metadata", {});
+    // @ts-expect-error an array element, not an array
+    getDynamicArrayLength(layout, "numbers[0]", {});
   };
   expectTypeOf(typeAssertions).toEqualTypeOf<() => void>();
 });

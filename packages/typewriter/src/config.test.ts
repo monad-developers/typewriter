@@ -1,6 +1,6 @@
 import { expect, expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
-import type { StorageProxy } from "storage-layout";
+import type { StorageView } from "storage-layout";
 import {
   BUILTIN_MUTATIONS,
   buildInternalApp,
@@ -119,7 +119,7 @@ test("buildInternalApp constructs a serializable manifest", () => {
 
 test("Typewriter exposes each storage root at one property layer", () => {
   const app = createTypewriterTest<typeof STORAGE_LAYOUT, typeof MUTATIONS>();
-  type Root = StorageProxy<typeof STORAGE_LAYOUT, true>;
+  type Root = StorageView<typeof STORAGE_LAYOUT, true>;
 
   expectTypeOf(app.state).toEqualTypeOf<Root["state"]>();
   expectTypeOf(app.accounts).toEqualTypeOf<Root["accounts"]>();

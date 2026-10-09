@@ -222,7 +222,7 @@ struct State {
 }
 ```
 
-> All Solidity data types are supported. Mapping and dynamic keys touched during accepted execution are recovered from the local EVM trace and persisted for read models when their storage slot preimages are available.
+> Value types, enums, structs, fixed and dynamic arrays, mappings, `bytes`, and `string` are supported, nested in any combination. Fixed-point numbers, function types, contract and interface types, user-defined value types, and `bytes`/`string`/enum mapping keys are not supported and fail loudly. The runtime stores the 64-byte keccak256 preimages from each accepted execution, so `Object.keys` on a mapping lists every key that an accepted mutation hashed.
 
 #### Mutations
 
@@ -567,7 +567,7 @@ const accepted = await typewriter.execute({
 #### `typewriter.state`
 
 ```ts
-typewriter.state: StorageProxy<State>;
+typewriter.state: StorageView<State>;
 ```
 
 `typewriter.state` resolves the top-level Solidity `state` variable by one proxy

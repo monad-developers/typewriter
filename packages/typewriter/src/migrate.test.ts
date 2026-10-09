@@ -33,7 +33,7 @@ const HARNESS_TABLES = [
   "createaccount_mutations",
   "credit_mutations",
   "debit_mutations",
-  "known_paths",
+  "keccak_preimages",
   "removecredential_mutations",
   "slot_writes",
 ];

@@ -55,7 +55,7 @@ Use `executeMany` first in `acceptBatch`.
    - reject individual failures
    - assign `journalId` on success
    - invalidate storage cache from returned slot writes
-   - collect known paths
+   - collect new keccak preimages
    - persist accepted mutations
    - emit the same events
 

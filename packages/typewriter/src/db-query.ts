@@ -328,38 +328,35 @@ export function insertSlotWritesMany(
   });
 }
 
-export function insertKnownPaths(
+export function insertKeccakPreimages(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
-  paths: readonly string[],
+  preimages: readonly Hex.Hex[],
 ): Effect.Effect<void, unknown> {
   return Effect.gen(function* () {
-    if (paths.length === 0) return;
+    if (preimages.length === 0) return;
 
-    const rows = paths.map((path) => ({ path }));
+    const rows = preimages.map((preimage) => ({ preimage }));
     for (const batch of chunk(rows, 30_000)) {
       yield* tx
-        .insert(getTable(schema, "known_paths"))
+        .insert(getTable(schema, "keccak_preimages"))
         .values(batch)
         .onConflictDoNothing();
     }
   });
 }
 
-export function selectKnownPaths(
+export function selectKeccakPreimages(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
-): Effect.Effect<string[], unknown> {
+): Effect.Effect<Hex.Hex[], unknown> {
   return Effect.gen(function* () {
-    const table = getTable(schema, "known_paths");
+    const table = getTable(schema, "keccak_preimages");
     const columns = getColumns(table);
-    const pathColumn = (columns as Record<"path", PgColumn>).path;
+    const preimageColumn = (columns as Record<"preimage", PgColumn>).preimage;
 
-    const rows = yield* tx
-      .select({ path: pathColumn })
-      .from(table)
-      .orderBy(asc(pathColumn));
-    return rows.map((row) => String(row.path));
+    const rows = yield* tx.select({ preimage: preimageColumn }).from(table);
+    return rows.map((row) => row.preimage as Hex.Hex);
   });
 }
 

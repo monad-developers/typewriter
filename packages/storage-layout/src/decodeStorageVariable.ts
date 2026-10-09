@@ -1,185 +1,166 @@
-import { Hex } from "ox";
+import { Address, Hex } from "ox";
+import { createSlotReader } from "./account-storage";
+import { keccakSlot, parseValueType, toWord } from "./solidity-encoding";
 import {
-  type ResolvedStorageItem,
+  isMappingType,
   resolveStoragePath,
   type StorageLayout,
-  type StorageVariableToPrimitiveType,
+  type StorageLocation,
 } from "./storage-layout";
-import {
-  formatStoragePath,
-  normalizePath,
-  type StoragePath,
-} from "./storage-path";
-import {
-  assertConcreteLeafPath,
-  dynamicDataBaseSlot,
-  fieldMask,
-  normalizeSlot,
-  normalizeSlotValue,
-  parseValueType,
-  storageItemByteLength,
-  storageSlot,
-} from "./storage-variable";
-import type { AccountStorage, ConcreteStorageVariable } from "./types";
+import type {
+  AccountStorage,
+  ConcreteStorageVariable,
+  StorageVariableToPrimitiveType,
+} from "./types";
 
 /**
- * Decode a concrete Solidity storage path value from raw slot values.
+ * Decode one concrete storage variable from raw account storage.
+ *
+ * `storage` must contain every slot that the value occupies: the slot of a
+ * value type, or the root slot of a `bytes`/`string` value. A `bytes`/`string`
+ * value of 32 bytes or more also needs each data slot at `keccak256(root) + i`.
+ * Slot keys can be in any hex form, for example `0x0` or a 32-byte word.
  *
  * @param layout - Solidity compiler `storageLayout` output.
- * @param variable - Human-readable storage path.
+ * @param variable - Storage variable selector, for example `balances[0x…]`.
  * @param storage - Raw account storage keyed by slot.
+ * @returns The decoded value, typed from the layout.
+ * @throws If `variable` does not select one concrete value, if a type is not
+ * supported, or if `storage` does not contain a required slot.
+ *
+ * @example
+ * ```ts
+ * const supply = decodeStorageVariable(layout, "totalSupply", {
+ *   "0x0": "0x2a",
+ * }); // 42n
+ * ```
  */
 export function decodeStorageVariable<
   const layout extends StorageLayout,
-  const variable extends ConcreteStorageVariable<layout>,
+  variable extends ConcreteStorageVariable<layout>,
 >(
   layout: layout,
   variable: variable,
   storage: AccountStorage,
-): StorageVariableToPrimitiveType<layout, variable> {
-  const normalizedPath = assertConcreteLeafPath(
-    layout,
-    normalizePath(variable as string),
-  );
-  const resolved = resolveStoragePath(layout, normalizedPath);
-  const [slot] = resolved;
-  if (slot === undefined) {
-    throw new Error(
-      `storage path did not resolve to a slot: ${formatStoragePath(normalizedPath)}`,
-    );
-  }
-  const slotHex = storageSlot(slot);
-  const value = getSlotValue(storage, slotHex);
-  if (value === undefined) {
-    throw new Error(`storage value not found for slot: ${slotHex}`);
-  }
-  if (slot.type.encoding === "bytes") {
-    return decodeBytesValue(
-      slot,
-      value,
-      storage,
-    ) as StorageVariableToPrimitiveType<layout, variable>;
-  }
-  return decodeValue(slot, value) as StorageVariableToPrimitiveType<
-    layout,
-    variable
-  >;
+): NoInfer<StorageVariableToPrimitiveType<layout, variable>> {
+  return decodeStorageLocation(
+    resolveStoragePath(layout, variable as unknown as string),
+    storage,
+  ) as never;
 }
 
-function getSlotValue(
+/** Decode the concrete value at `location` from raw account storage. */
+export function decodeStorageLocation(
+  location: StorageLocation,
   storage: AccountStorage,
-  requestedSlot: Hex.Hex,
-): Hex.Hex | undefined {
-  const normalized = normalizeSlot(requestedSlot);
-  const direct = storage[normalized];
-  if (direct !== undefined) {
-    return normalizeSlotValue(direct);
-  }
-
-  for (const [slot, value] of Object.entries(storage)) {
-    if (
-      normalizeSlot(slot as Hex.Hex).toLowerCase() === normalized.toLowerCase()
-    ) {
-      return normalizeSlotValue(value as Hex.Hex);
-    }
-  }
-  return undefined;
-}
-
-function decodeValue(
-  resolved: ResolvedStorageItem,
-  slotValue: Hex.Hex,
 ): unknown {
-  const numberOfBytes = storageItemByteLength(resolved);
-  const value = extractField(
-    BigInt(slotValue),
-    resolved.item.offset,
-    numberOfBytes,
-  );
-  const info = parseValueType(resolved.type.label, numberOfBytes);
-  switch (info.kind) {
-    case "uint":
-      return integerResult(value, numberOfBytes);
-    case "int":
-      return integerResult(decodeSigned(value, info.bits), numberOfBytes);
+  assertConcreteType(location);
+  const { type, slot, offset } = location;
+  const readSlot = createSlotReader(storage);
+
+  if (type.encoding === "bytes") {
+    const root = readSlot(slot);
+    const { length, dataSlots } = bytesLength(location, root);
+    const data =
+      dataSlots.length === 0
+        ? toWord(root)
+        : Hex.concat(
+            ...dataSlots.map((dataSlot) => toWord(readSlot(dataSlot))),
+          );
+    const bytes = Hex.slice(data, 0, length);
+    return type.label === "string" ? Hex.toString(bytes) : bytes;
+  }
+
+  const valueType = parseValueType(type)!;
+  const bits = BigInt(Number(type.numberOfBytes) * 8);
+  const field = (readSlot(slot) >> BigInt(offset * 8)) & ((1n << bits) - 1n);
+  switch (valueType.kind) {
     case "address":
-      return Hex.fromNumber(value, { size: 20 });
+      return Address.checksum(Hex.fromNumber(field, { size: 20 }));
     case "bool":
-      return value !== 0n;
-    case "bytes":
-      return Hex.fromNumber(value, { size: numberOfBytes });
+      return field !== 0n;
     case "enum":
-      return Number(value);
-  }
-}
-
-function decodeBytesValue(
-  resolved: ResolvedStorageItem,
-  slotValue: Hex.Hex,
-  storage: AccountStorage,
-): Hex.Hex | string {
-  const bytes = decodeBytesPayload(resolved, slotValue, storage);
-  if (resolved.type.label === "string") {
-    return Hex.toString(bytes);
-  }
-  return bytes;
-}
-
-function decodeBytesPayload(
-  resolved: ResolvedStorageItem,
-  slotValue: Hex.Hex,
-  storage: AccountStorage,
-): Hex.Hex {
-  const normalized = normalizeSlotValue(slotValue);
-  const marker = Number(BigInt(Hex.slice(normalized, 31, 32)));
-  if (marker % 2 === 0) {
-    const length = marker / 2;
-    return Hex.slice(normalized, 0, length);
-  }
-
-  const length = bytesLength((BigInt(normalized) - 1n) / 2n, resolved.path);
-  const baseSlot = dynamicDataBaseSlot(storageSlot(resolved));
-  const chunks: Hex.Hex[] = [];
-  for (let index = 0; index < Math.ceil(length / 32); index++) {
-    const slot = Hex.fromNumber(baseSlot + BigInt(index), { size: 32 });
-    const value = getSlotValue(storage, slot);
-    if (value === undefined) {
-      throw new Error(`storage value not found for slot: ${slot}`);
+      return Number(field);
+    case "fixedBytes":
+      return Hex.fromNumber(field, { size: valueType.size });
+    case "uint":
+    case "int": {
+      const value =
+        valueType.kind === "int" ? BigInt.asIntN(valueType.bits, field) : field;
+      // Like abitype, integers of 48 bits or fewer are `number`.
+      return valueType.bits <= 48 ? Number(value) : value;
     }
-    chunks.push(value);
   }
-  return Hex.slice(Hex.concat(...chunks), 0, length);
 }
 
-function bytesLength(length: bigint, path: StoragePath): number {
-  if (length > BigInt(Number.MAX_SAFE_INTEGER)) {
+/** Throw unless `location` holds a value type, `bytes`, or `string`. */
+export function assertConcreteType({ type, selector }: StorageLocation) {
+  if (type.encoding === "bytes" || parseValueType(type) !== undefined) return;
+  if (isMappingType(type)) {
+    throw new Error(`mapping storage paths require a key: ${selector}`);
+  }
+  if (
+    type.encoding === "dynamic_array" ||
+    type.members !== undefined ||
+    type.base !== undefined
+  ) {
+    throw new Error(`storage path does not point to a leaf value: ${selector}`);
+  }
+  throw new Error(
+    `unsupported storage path type '${type.label}' for ${selector}`,
+  );
+}
+
+/**
+ * The largest `bytes`/`string` value to decode: 2^19 data slots, more than any
+ * block gas limit allows a contract to write. A corrupt root word could
+ * otherwise ask for 2^250 slots.
+ */
+export const MAX_BYTES_LENGTH = 2 ** 24;
+
+/**
+ * Length and data slots of a `bytes`/`string` value from its root word.
+ *
+ * Below 32 bytes, the value is in the root slot with `length * 2` in the
+ * lowest byte, and there are no data slots. Otherwise the root holds
+ * `length * 2 + 1` and the data starts at `keccak256(rootSlot)`. A root word
+ * whose form does not agree with its length throws, like Solidity's panic
+ * `0x22`.
+ */
+function bytesLength(
+  { slot, selector }: StorageLocation,
+  rootWord: bigint,
+): { length: number; dataSlots: bigint[] } {
+  const long = (rootWord & 1n) === 1n;
+  const length = long ? rootWord >> 1n : (rootWord & 0xffn) >> 1n;
+  if (long !== length >= 32n) {
+    throw new Error(`incorrectly encoded bytes length slot: ${selector}`);
+  }
+  if (length > BigInt(MAX_BYTES_LENGTH)) {
     throw new Error(
-      `bytes value is too large to decode: ${formatStoragePath(path)}`,
+      `bytes value of ${length} bytes is larger than the ${MAX_BYTES_LENGTH}-byte limit: ${selector}`,
     );
   }
-  return Number(length);
+  if (long === false) return { length: Number(length), dataSlots: [] };
+  const dataSlot = keccakSlot(slot);
+  return {
+    length: Number(length),
+    dataSlots: Array.from(
+      { length: Math.ceil(Number(length) / 32) },
+      (_, index) => dataSlot + BigInt(index),
+    ),
+  };
 }
 
-function extractField(
-  slotValue: bigint,
-  offset: number,
-  numberOfBytes: number,
-): bigint {
-  return (slotValue >> BigInt(offset * 8)) & fieldMask(numberOfBytes);
-}
-
-function integerResult(value: bigint, numberOfBytes: number): bigint | number {
-  // Match abitype's default primitive mapping: <= 48-bit ints are numbers.
-  if (numberOfBytes <= 6) {
-    return Number(value);
-  }
-  return value;
-}
-
-function decodeSigned(value: bigint, bits: number): bigint {
-  const signBit = 1n << BigInt(bits - 1);
-  if ((value & signBit) === 0n) {
-    return value;
-  }
-  return value - (1n << BigInt(bits));
+/**
+ * Data slots that `location` needs besides its own slot: those of a long
+ * `bytes`/`string` value, from its root word in `storage`, or none.
+ */
+export function bytesDataSlots(
+  location: StorageLocation,
+  storage: AccountStorage,
+): bigint[] {
+  if (location.type.encoding !== "bytes") return [];
+  return bytesLength(location, createSlotReader(storage)(location.slot))
+    .dataSlots;
 }

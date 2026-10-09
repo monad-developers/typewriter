@@ -1,5 +1,5 @@
 import { Deferred, Effect, Layer, Scope } from "effect";
-import type { StorageProxy } from "storage-layout";
+import type { StorageView } from "storage-layout";
 import { getAbiItem, toEventSelector } from "viem";
 import type {
   MutationsConfig,
@@ -31,7 +31,7 @@ type StorageRootProperty<
   storageConfig extends StorageConfig,
   name extends "accounts" | "state",
 > =
-  StorageProxy<storageConfig, true> extends infer root
+  StorageView<storageConfig, true> extends infer root
     ? name extends keyof root
       ? root[name]
       : never
@@ -84,8 +84,8 @@ export type RuntimeTypewriter<
 export type InternalRuntimeTypewriter<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
-  readonly state: StorageProxy<StorageConfig, true>[string];
-  readonly accounts: StorageProxy<StorageConfig, true>[string];
+  readonly state: StorageView<StorageConfig, true>[string];
+  readonly accounts: StorageView<StorageConfig, true>[string];
   readonly schema: TypewriterSchema;
   execute(submitted: {
     name: string;

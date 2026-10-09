@@ -52,7 +52,7 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
 
   expect(Object.keys(schema)).toEqual([
     "slot_writes",
-    "known_paths",
+    "keccak_preimages",
     "transfer_mutations",
     "debit_mutations",
   ]);
@@ -62,8 +62,8 @@ test("createMutationSchema creates lowercased flat mutation tables", async () =>
   expect(sql).toContain('"slot" char(66) NOT NULL');
   expect(sql).toContain('"value" char(66) NOT NULL');
   expect(sql).toContain('CREATE INDEX "slot_writes_latest_idx"');
-  expect(sql).toContain('CREATE TABLE "known_paths"');
-  expect(sql).toContain('"path" text PRIMARY KEY');
+  expect(sql).toContain('CREATE TABLE "keccak_preimages"');
+  expect(sql).toContain('"preimage" char(130) PRIMARY KEY');
   expect(sql).toContain('CREATE TYPE "mutation_status"');
   expect(sql).toContain('CREATE TABLE "transfer_mutations"');
   expect(sql).toContain('"executionIndex" numeric(78,0)');

@@ -1,5 +1,5 @@
 import { Effect, Exit, Scope } from "effect";
-import type { StorageProxy } from "storage-layout";
+import type { StorageView } from "storage-layout";
 import type {
   MutationConfig,
   MutationsConfig,
@@ -26,7 +26,7 @@ type StorageRootProperty<
   storageConfig extends StorageConfig,
   name extends "accounts" | "state",
 > =
-  StorageProxy<storageConfig, true> extends infer root
+  StorageView<storageConfig, true> extends infer root
     ? name extends keyof root
       ? root[name]
       : never

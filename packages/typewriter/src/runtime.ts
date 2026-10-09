@@ -12,10 +12,9 @@ import {
 } from "effect";
 import { Hash, Hex } from "ox";
 import {
-  createStorageProxy,
-  recoverStoragePaths,
+  createStorageView,
   type StorageLayout,
-  type StorageProxy,
+  type StorageView,
 } from "storage-layout";
 import {
   createEVM,
@@ -33,11 +32,11 @@ import {
 } from "viem";
 import { Database } from "./db";
 import {
-  insertKnownPaths,
+  insertKeccakPreimages,
   insertMutations,
   insertSlotWritesMany,
   selectAccountStorage,
-  selectKnownPaths,
+  selectKeccakPreimages,
   selectNextMutationId,
   updateMutationsLifecycle,
 } from "./db-query";
@@ -74,7 +73,6 @@ import type {
   InternalRuntimeTypewriter,
   MutationListener,
 } from "./typewriter";
-import { dedupe } from "./utils";
 import type { LocalLog } from "./watch";
 import { Watch } from "./watch";
 
@@ -182,38 +180,16 @@ export function batchBlockToEvent(
   };
 }
 
-function recoverKnownPaths(params: {
-  app: InternalApp;
-  executeResult: ExecuteResult;
-}): readonly string[] {
-  const touchedSlots =
-    params.executeResult.access_list.find(
-      (entry) =>
-        entry.address.toLowerCase() === params.app.address.toLowerCase(),
-    )?.storageKeys ?? [];
-  if (touchedSlots.length === 0) {
-    return [];
-  }
-
-  // Recover every touched slot in one pass so the keccak preimages are
-  // normalized once rather than per slot. `recoverStoragePaths` skips slots
-  // that no captured preimage produced (e.g. dynamic-key mappings) and throws
-  // only on a genuine recovery gap; that throw — and any unexpected error —
-  // propagates to fail and roll back the mutation instead of silently dropping
-  // a keyed path.
-  return recoverStoragePaths(
-    params.app.storageLayout,
-    touchedSlots,
-    params.executeResult.keccak_preimages,
-  ).filter((path) => path.includes("["));
+/**
+ * The 64-byte keccak256 preimages of an execution: the inputs that hash a
+ * mapping key with its slot. Shorter preimages give dynamic array data slots,
+ * which enumeration does not need. The EVM writes them as lowercase hex.
+ */
+function mappingPreimages(executeResult: ExecuteResult): readonly Hex.Hex[] {
+  return executeResult.keccak_preimages
+    .map(({ preimage }) => preimage)
+    .filter((preimage) => Hex.size(preimage) === 64);
 }
-
-export class RecoverKnownPathsError extends Data.TaggedError(
-  "RecoverKnownPathsError",
-)<{
-  readonly mutation: ReceivedMutation | EnqueuedMutation;
-  readonly cause: unknown;
-}> {}
 
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
@@ -230,12 +206,8 @@ export function executeMutation(params: {
   {
     mutation: AcceptedMutation;
     executeResult: ExecuteResult;
-    knownPaths: readonly string[];
   },
-  | RecoverKnownPathsError
-  | EncodeMutationError
-  | EvmError
-  | ContractFunctionRevertedError
+  EncodeMutationError | EvmError | ContractFunctionRevertedError
 > {
   return Effect.gen(function* () {
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
@@ -270,28 +242,12 @@ export function executeMutation(params: {
 
     acceptedMutation.journalId = executeResult.journal_id!;
 
-    const knownPaths = yield* Effect.try({
-      try: () => recoverKnownPaths({ app: params.app, executeResult }),
-      catch: (cause) =>
-        new RecoverKnownPathsError({
-          mutation: params.mutation,
-          cause,
-        }),
-    }).pipe(
-      Effect.tapError(() =>
-        params.evm.revertJournals({
-          journal_ids: [acceptedMutation.journalId],
-        }),
-      ),
-    );
-
     yield* Effect.logDebug("executed mutation").pipe(
       Effect.annotateLogs({
         id: acceptedMutation.id,
         name: acceptedMutation.name,
         success: executeResult.success,
         slotWriteCount: executeResult.slot_writes.length,
-        knownPathCount: knownPaths.length,
         duration: durationMs(executeStartedAtMs),
       }),
     );
@@ -299,7 +255,6 @@ export function executeMutation(params: {
     return {
       mutation: acceptedMutation,
       executeResult,
-      knownPaths,
     };
   });
 }
@@ -320,7 +275,6 @@ export function enqueueMutation(params: {
   });
 }
 
-type RawSlotMap = { [slot: Hex.Hex]: Hex.Hex };
 const SLOT_CACHE_MAX_ENTRIES = 200_000;
 
 export function decodeEnqueuedMutation(params: {
@@ -378,9 +332,13 @@ export function createRevmRevertError(
 export function createRuntimeState(app: InternalApp): Effect.Effect<
   {
     evm: EVM;
-    accounts: StorageProxy<StorageLayout, true>[string];
-    state: StorageProxy<StorageLayout, true>[string];
-    knownPaths: string[];
+    accounts: StorageView<StorageLayout, true>[string];
+    state: StorageView<StorageLayout, true>[string];
+    /**
+     * The keccak256 preimages the storage view enumerates mapping keys from.
+     * Add the preimages of each accepted mutation.
+     */
+    preimages: Set<Hex.Hex>;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
   unknown,
@@ -390,16 +348,16 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
     const db = yield* Database;
     const rpc = yield* Rpc;
 
-    const { initialAccountStorage, knownPaths } = yield* db.transaction((tx) =>
+    const { initialAccountStorage, preimages } = yield* db.transaction((tx) =>
       Effect.gen(function* () {
-        const knownPaths = yield* selectKnownPaths(tx, app.schema);
+        const preimages = yield* selectKeccakPreimages(tx, app.schema);
         const initialAccountStorage = yield* selectAccountStorage(
           tx,
           app.schema,
         );
 
         return {
-          knownPaths,
+          preimages: new Set(preimages),
           initialAccountStorage,
         };
       }),
@@ -448,7 +406,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       }
     };
 
-    const storageProxy = createStorageProxy(
+    const storageProxy = createStorageView(
       app.storageLayout,
       async (slots) => {
         const missingSlots = slots.filter((slot) => !slotCache.has(slot));
@@ -469,11 +427,9 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
           }
         }
 
-        return Object.fromEntries(
-          slots.map((slot) => [slot, slotCache.get(slot)!]),
-        ) as RawSlotMap;
+        return slots.map((slot) => slotCache.get(slot)!);
       },
-      knownPaths,
+      preimages,
     );
 
     return {
@@ -482,7 +438,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
       accounts: storageProxy["accounts"],
       // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
       state: storageProxy["state"],
-      knownPaths,
+      preimages,
       invalidateStorageCache,
     };
   });
@@ -536,9 +492,8 @@ export function createRuntimeEffect(
     const scope = yield* Scope.Scope;
 
     const schema = app.schema;
-    const { evm, accounts, state, knownPaths, invalidateStorageCache } =
+    const { evm, accounts, state, preimages, invalidateStorageCache } =
       yield* createRuntimeState(app);
-    const knownPathSet = new Set(knownPaths);
 
     let mutationId = yield* selectNextMutationId(schema);
     let nextExecutionIndex = yield* requestExecutionIndex(app.address);
@@ -632,32 +587,30 @@ export function createRuntimeEffect(
       {
         mutation: AcceptedMutation;
         executeResult: ExecuteResult;
-        knownPaths: readonly string[];
+        /** Preimages first seen in this mutation, to persist. */
+        preimages: readonly Hex.Hex[];
       },
       unknown
     > {
       return Effect.gen(function* () {
-        const {
-          executeResult,
-          knownPaths: mutationKnownPaths,
-          mutation: acceptedMutation,
-        } = yield* executeMutation({
-          app,
-          evm,
-          mutation,
-        }).pipe(
-          Effect.tapError((error) => {
-            const rejectedMutation = updateMutationToRejected(mutation, {
-              error,
-            });
+        const { executeResult, mutation: acceptedMutation } =
+          yield* executeMutation({
+            app,
+            evm,
+            mutation,
+          }).pipe(
+            Effect.tapError((error) => {
+              const rejectedMutation = updateMutationToRejected(mutation, {
+                error,
+              });
 
-            mutationsById.delete(mutation.id);
+              mutationsById.delete(mutation.id);
 
-            emitMutation(mutationToEvent(rejectedMutation));
+              emitMutation(mutationToEvent(rejectedMutation));
 
-            return Effect.void;
-          }),
-        );
+              return Effect.void;
+            }),
+          );
 
         acceptedMutation.executionIndex = nextExecutionIndex++;
 
@@ -666,21 +619,11 @@ export function createRuntimeEffect(
         );
 
         mutationsById.set(acceptedMutation.id, acceptedMutation);
-        let newKnownPathCount = 0;
-        for (const path of mutationKnownPaths) {
-          if (knownPathSet.has(path)) continue;
-          knownPathSet.add(path);
-          knownPaths.push(path);
-          newKnownPathCount += 1;
-        }
-        if (newKnownPathCount > 0) {
-          yield* Effect.logDebug("registered known paths").pipe(
-            Effect.annotateLogs({
-              id: acceptedMutation.id,
-              name: acceptedMutation.name,
-              totalKnownPathCount: knownPaths.length,
-            }),
-          );
+        const newPreimages: Hex.Hex[] = [];
+        for (const preimage of mappingPreimages(executeResult)) {
+          if (preimages.has(preimage)) continue;
+          preimages.add(preimage);
+          newPreimages.push(preimage);
         }
 
         emitMutation(mutationToEvent(acceptedMutation));
@@ -688,7 +631,7 @@ export function createRuntimeEffect(
         return {
           mutation: acceptedMutation,
           executeResult,
-          knownPaths: mutationKnownPaths,
+          preimages: newPreimages,
         };
       });
     }
@@ -718,7 +661,7 @@ export function createRuntimeEffect(
         const acceptedMutations: {
           mutation: AcceptedMutation;
           executeResult: ExecuteResult;
-          knownPaths: readonly string[];
+          preimages: readonly Hex.Hex[];
           deferred: Deferred.Deferred<AcceptedMutation, unknown>;
         }[] = [];
 
@@ -764,10 +707,10 @@ export function createRuntimeEffect(
               acceptedMutations.map((entry) => entry.mutation),
             );
             yield* insertSlotWritesMany(tx, schema, acceptedMutations);
-            yield* insertKnownPaths(
+            yield* insertKeccakPreimages(
               tx,
               schema,
-              dedupe(acceptedMutations.flatMap(({ knownPaths }) => knownPaths)),
+              acceptedMutations.flatMap(({ preimages }) => preimages),
             );
           }),
         );
@@ -803,7 +746,7 @@ export function createRuntimeEffect(
           const acceptedEnqueuedMutations: {
             mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
             executeResult: ExecuteResult;
-            knownPaths: readonly string[];
+            preimages: readonly Hex.Hex[];
           }[] = [];
           for (const mutationId of enqueuedMutationIds) {
             const enqueuedMutation = mutationsById.get(
@@ -813,7 +756,7 @@ export function createRuntimeEffect(
               (yield* acceptMutation(enqueuedMutation)) as {
                 mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
                 executeResult: ExecuteResult;
-                knownPaths: readonly string[];
+                preimages: readonly Hex.Hex[];
               },
             );
           }
@@ -835,14 +778,10 @@ export function createRuntimeEffect(
                   schema,
                   acceptedEnqueuedMutations,
                 );
-                yield* insertKnownPaths(
+                yield* insertKeccakPreimages(
                   tx,
                   schema,
-                  dedupe(
-                    acceptedEnqueuedMutations.flatMap(
-                      (entry) => entry.knownPaths,
-                    ),
-                  ),
+                  acceptedEnqueuedMutations.flatMap((entry) => entry.preimages),
                 );
               }),
             );
