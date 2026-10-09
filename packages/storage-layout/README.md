@@ -166,11 +166,11 @@ function createStorageView<
 >(
   layout: layout,
   getStorage: getStorage,
-  preimages?: KeccakPreimages,
+  preimages?: KeccakPreimages, // default: an empty set
 ): StorageView<layout, getStorage extends (slots: readonly Hex[]) => Promise<readonly Hex[]> ? true : false>;
 ```
 
-`getStorage` returns one 32-byte value per slot, in the same order as `slots`, like a [DataLoader](https://github.com/graphql/dataloader) batch function or `eth_getProof`. A result of the wrong length, or with a missing value, throws. If `getStorage` is async, leaf reads return promises. Composite reads return nested views synchronously. There is no cache: every leaf read calls `getStorage`. This composes with any client that can read raw storage slots:
+`getStorage` returns one 32-byte value per slot, in the same order as `slots`, like a [DataLoader](https://github.com/graphql/dataloader) batch function or `eth_getProof`. A result of the wrong length, or with a missing value, throws. If `getStorage` is async, leaf reads return promises. Composite reads return nested views synchronously. There is no cache, and reads are not batched: every leaf read calls `getStorage` once (twice for a long `bytes`/`string` value), also for leaf reads in one `Promise.all`. This composes with any client that can read raw storage slots:
 
 ```ts
 import { createStorageView } from "storage-layout";
@@ -187,19 +187,19 @@ const state = createStorageView(
 
 const owner = await state.owner;
 const balance = await state.balances[account];
-const length = await state.history.length; // dynamic array length is a read
+const length = await state.dynamicNumbers.length; // dynamic array length is a read
 const holders = Object.keys(state.balances); // keys from `preimages`
 ```
 
 | Operation | Behavior |
 | --- | --- |
 | `Object.keys`, `for...in`, spread | Top-level variables, struct fields, fixed array indexes, and the mapping keys found in `preimages`. The view reads `preimages` on every enumeration, so later changes are seen. A dynamic array throws: read `length` and index it instead. |
-| `key in view`, `Object.hasOwn` | True only for keys that `Object.keys` lists: known mapping keys, struct fields, top-level variables, and fixed array indexes. A mapping key check is one lookup in `preimages`. |
+| `key in view`, `Object.hasOwn` | True only for keys that `Object.keys` lists: known mapping keys, struct fields, top-level variables, and fixed array indexes. A mapping key check is one lookup in `preimages`. On a dynamic array, always false. |
 | `.length` | A fixed array's length comes from its type. A dynamic array's length is a storage read. |
 | `console.log` | Prints the selector and keys, for example `StorageView metadata { lastUpdate, active }`, without reading storage. |
 | Assignment, `delete`, `defineProperty` | Throw: the view is read-only. |
 
-The names `then`, `catch`, `finally`, `toJSON`, and `asymmetricMatch` return `undefined`, so `await`, `JSON.stringify`, and test matchers treat views as plain objects.
+The names `then`, `catch`, `finally`, `toJSON`, and `asymmetricMatch` return `undefined`, so `await`, `JSON.stringify`, and test matchers treat views as plain objects. Thus the view cannot read a state variable or struct field with one of these names. Use `decodeStorageVariable` or the viem actions for it.
 
 ### `readStorageVariable`
 
@@ -240,14 +240,14 @@ function readStorageVariables<chain, layout extends StorageLayout, variables ext
   } & ({ blockNumber?: bigint } | { blockTag?: BlockTag } | { blockHash: Hash; requireCanonical?: boolean }),
 ): Promise<{ [i in keyof variables]: StorageVariableToPrimitiveType<layout, variables[i]> }>;
 
-const [supply, owner, paused] = await readStorageVariables(publicClient, {
+const [supply, owner, active] = await readStorageVariables(publicClient, {
   address,
   storageLayout,
-  variables: ["totalSupply", "owner", "paused"],
+  variables: ["totalSupply", "owner", "metadata.active"],
 }); // [bigint, `0x${string}`, boolean]
 ```
 
-One request reads the slots of all variables, and each slot is requested once, so packed variables share a read. If a `bytes`/`string` value is 32 bytes or more, a second request reads its data slots. Both requests are assumed to see the same state. With a block tag such as `latest`, a new block between them can give a wrong value, so pass `blockNumber` or `blockHash` when that matters. The node must support `eth_getStorageValues` (anvil does).
+One request reads the slots of all variables, and each slot is requested once, so packed variables share a read. If a `bytes`/`string` value is 32 bytes or more, a second request reads its data slots. Both requests are assumed to see the same state. With a block tag such as `latest`, a new block between them can give a wrong value, so pass `blockNumber` or `blockHash` when that matters. The node must support `eth_getStorageValues` (anvil does). An empty `variables` list returns `[]` and sends no request.
 
 ### `enumerateMappingKeys`
 
@@ -264,7 +264,7 @@ enumerateMappingKeys(layout, "balances", preimages);
 // ["balances[0x1111…]", "balances[0x2222…]"]
 ```
 
-Storage does not record which keys exist. A key is listed only if a captured 64-byte preimage hashes it with the mapping's slot, so the result is every key that captured executions accessed, including keys whose value is now zero.
+Storage does not record which keys exist. A key is listed only if a captured 64-byte preimage hashes it with the mapping's slot, so the result is every key that captured executions accessed, including keys whose value is now zero. Each key is listed one time. The order of the keys is not specified. A selector that is not a mapping throws.
 
 ### `getDynamicArrayLength`
 
@@ -276,7 +276,11 @@ function getDynamicArrayLength<layout extends StorageLayout, array extends Dynam
   array: array,
   storage: AccountStorage,
 ): number;
+
+getDynamicArrayLength(layout, "dynamicNumbers", { "0x6": "0x2" }); // 2
 ```
+
+A selector that is not a dynamic array, a missing slot, or a length above `Number.MAX_SAFE_INTEGER` throws.
 
 ### Types
 
@@ -314,7 +318,16 @@ The slot of a `bytes` or `string` key hashes the unpadded key data followed by t
 
 ### Mapping enumeration reads every preimage
 
-The view keeps no index. `Object.keys` on a mapping reads all of `preimages` once to list its keys. Then it checks each listed key with one `Set` lookup. The cost is linear in the number of preimages, even for a mapping with few keys. In `bun run benchmark`, `Object.keys` takes about 1.8 ms for 1,000 keys in 8,401 preimages and 9 ms for 4,000 keys in 32,401 preimages. A mapping with 3 keys takes about 0.13 ms in 8,401 preimages. Measure changes with `bun run benchmark`.
+The view keeps no index. `Object.keys` on a mapping reads all of `preimages` once to list its keys. Then it checks each listed key with one `Set` lookup. The cost is linear in the number of preimages, even for a mapping with few keys. On an `m8a.large` instance, `bun run benchmark` gives these results for `Object.keys`:
+
+| Mapping keys | Preimages | Time |
+| --- | --- | --- |
+| 3 | 8,401 | about 0.13 ms |
+| 3 | 32,401 | about 0.44 ms |
+| 1,000 | 8,401 | about 2.2 ms |
+| 4,000 | 32,401 | 12 to 16 ms |
+
+Use `BENCH_ACCOUNTS=4000` for the larger set. Measure changes with `bun run benchmark`.
 
 ## Development
 

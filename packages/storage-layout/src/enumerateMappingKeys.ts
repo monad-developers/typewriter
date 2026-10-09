@@ -32,8 +32,8 @@ import type {
  * @param mapping - Selector of a mapping, for example `allowances[0x…]`.
  * @param preimages - keccak256 preimages captured during execution, as
  * lowercase hex.
- * @returns One selector per known key, for example `allowances[0x…][0x…]`, in
- * preimage order without duplicates.
+ * @returns One selector per known key, for example `allowances[0x…][0x…]`,
+ * without duplicates. The order is not specified.
  *
  * @example
  * ```ts
