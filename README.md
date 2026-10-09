@@ -151,8 +151,8 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 
 ## Examples
 
-- [`token`](https://github.com/monad-exp/order-book/tree/main/apps/token) is a minimal token application that demonstrates native P-256 accounts, batch sequencing, minting, and account-owned transfers.
-- [`order-book`](https://github.com/monad-exp/order-book/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
+- [`token`](https://github.com/monad-developers/typewriter/tree/main/apps/token) is a minimal token application that demonstrates native P-256 accounts, batch sequencing, minting, and account-owned transfers.
+- [`order-book`](https://github.com/monad-developers/typewriter/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
 ## Local Development
 
