@@ -62,8 +62,8 @@ export type ExecuteResult = TxResult & {
 };
 
 // gas_used is the gas with the access list warm, as the chain charges it.
-// gas_limit is the smallest limit that runs the call on the same path as a
-// run at max gas.
+// gas_limit is gas_used plus a reserve for the SSTORE sentry and the 1/64
+// that each call keeps, so the call takes the same path as at max gas.
 export type SimulateResult = TxResult & {
   gas_limit: number;
 };
