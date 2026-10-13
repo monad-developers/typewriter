@@ -640,6 +640,27 @@ export function createRuntimeEffect(
       deferred: Deferred.Deferred<AcceptedMutation, unknown>;
     };
 
+    type PersistJob = {
+      batch: RuntimeBatch;
+      acceptedMutations: {
+        mutation: AcceptedMutation;
+        executeResult: ExecuteResult;
+        preimages: readonly Hex.Hex[];
+        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      }[];
+      committed: Deferred.Deferred<void, unknown>;
+    };
+
+    // Accepted batches are persisted by one fiber, in order, outside the
+    // speculative-state lock, so batch N+1 executes while batch N commits.
+    // Callers get a response only after their batch commits. A batch reaches
+    // `submit` only after it commits.
+    const persistQueue = yield* Queue.unbounded<PersistJob>();
+    yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
+    // Resolves when the most recently accepted batch has committed. Because
+    // commits are ordered, all earlier batches have committed too.
+    let lastBatchCommitted: Deferred.Deferred<void, unknown> | undefined;
+
     const acceptBatch = (submittedMutations: ReceivedMutationEntry[]) =>
       withSpeculativeStateLock(
         Effect.gen(function* () {
@@ -704,8 +725,25 @@ export function createRuntimeEffect(
 
           emitBatch(batchToEvent(batch));
 
-          const persistStartedAtMs = startTimer();
-          yield* db.transaction((tx) =>
+          const committed = yield* Deferred.make<void, unknown>();
+          lastBatchCommitted = committed;
+          yield* Queue.offer(persistQueue, {
+            batch,
+            acceptedMutations,
+            committed,
+          });
+        }),
+      );
+
+    // Commits every batch that queued during the previous commit in one
+    // transaction.
+    const persistBatches = (jobs: PersistJob[]) =>
+      Effect.gen(function* () {
+        const persistStartedAtMs = startTimer();
+        const acceptedMutations = jobs.flatMap((job) => job.acceptedMutations);
+
+        yield* db
+          .transaction((tx) =>
             Effect.gen(function* () {
               yield* insertMutations(
                 tx,
@@ -719,26 +757,48 @@ export function createRuntimeEffect(
                 acceptedMutations.flatMap(({ preimages }) => preimages),
               );
             }),
+          )
+          .pipe(
+            Effect.tapError((error) =>
+              Effect.gen(function* () {
+                for (const { deferred } of acceptedMutations) {
+                  yield* Deferred.fail(deferred, error);
+                }
+                for (const { committed } of jobs) {
+                  yield* Deferred.fail(committed, error);
+                }
+              }),
+            ),
           );
 
-          for (const { mutation, deferred } of acceptedMutations) {
-            yield* Deferred.succeed(deferred, mutation);
-          }
+        for (const { mutation, deferred } of acceptedMutations) {
+          yield* Deferred.succeed(deferred, mutation);
+        }
 
-          yield* Effect.logDebug("persisted accepted mutations").pipe(
-            Effect.annotateLogs({
-              mutationCount: acceptedMutations.length,
-              duration: durationMs(persistStartedAtMs),
-            }),
-          );
+        yield* Effect.logDebug("persisted accepted mutations").pipe(
+          Effect.annotateLogs({
+            batchCount: jobs.length,
+            mutationCount: acceptedMutations.length,
+            duration: durationMs(persistStartedAtMs),
+          }),
+        );
 
+        for (const { batch, committed } of jobs) {
           yield* Queue.offer(acceptedBatchesQueue, batch.id);
-        }),
-      );
+          yield* Deferred.succeed(committed, undefined);
+        }
+      });
 
     const submit = Effect.gen(function* () {
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
+          // Simulate rewinds and replays the journals it is given, which is
+          // only correct when they are the newest journals. So every executed
+          // batch must be in `acceptedBatchesQueue`: wait for the in-flight
+          // commit. The lock keeps new batches from executing meanwhile.
+          if (lastBatchCommitted !== undefined) {
+            yield* Deferred.await(lastBatchCommitted);
+          }
           const batchIds = yield* Queue.clear(acceptedBatchesQueue);
           const enqueuedMutationIds = yield* Queue.clear(
             enqueuedMutationsQueue,
@@ -1124,9 +1184,14 @@ export function createRuntimeEffect(
       ),
     );
 
-    const program = Effect.all([batchProgram, submitProgram, watchProgram], {
-      concurrency: "unbounded",
-    });
+    const persistProgram = Effect.forever(
+      Queue.takeAll(persistQueue).pipe(Effect.flatMap(persistBatches)),
+    );
+
+    const program = Effect.all(
+      [batchProgram, persistProgram, submitProgram, watchProgram],
+      { concurrency: "unbounded" },
+    );
 
     function execute(
       mutation: RuntimeExecuteInput,
