@@ -44,7 +44,6 @@ export type ExecuteResult = {
   success: boolean;
   journal_id?: number;
   gas_used: number;
-  gas_limit: number;
   output: Hex.Hex;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
   slot_writes: {
@@ -55,6 +54,12 @@ export type ExecuteResult = {
   }[];
   keccak_preimages: { hash: Hex.Hex; preimage: Hex.Hex }[];
   revert_data?: Hex.Hex;
+};
+
+// Simulate also estimates the smallest gas limit that lets the call succeed.
+// Execute skips that search because accepting a mutation does not need it.
+export type SimulateResult = ExecuteResult & {
+  gas_limit: number;
 };
 
 export type ReadStorageParams = {

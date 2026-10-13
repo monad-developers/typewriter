@@ -94,6 +94,8 @@ test("execute against counter succeeds and returns a journal id", async () => {
   expect(exec.success).toBe(true);
   expect(exec.journal_id).toBe(1);
   expect(exec.revert_data).toBeUndefined();
+  // Only simulate estimates a gas limit.
+  expect(exec).not.toHaveProperty("gas_limit");
   expect(exec.slot_writes).toEqual([
     {
       address: COUNTER_ADDR,
