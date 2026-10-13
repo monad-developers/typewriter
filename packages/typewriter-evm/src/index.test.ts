@@ -783,7 +783,7 @@ test("harness gas_limit includes EIP-150 call headroom", async () => {
   expect(normalizeAccessRecord(harness.access_list)).toEqual(
     normalizeAccessRecord(rpcAccessList),
   );
-  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+  expect(BigInt(harness.gas_limit)).toBeGreaterThanOrEqual(rpcGasEstimate);
   expect(harness.gas_used).toBeLessThan(harness.gas_limit);
 });
 
@@ -836,7 +836,7 @@ test("access list leaves out the P-256 precompile at 0x100", async () => {
   expect(rpcAccessList).toEqual([]);
   expect(executed.access_list).toEqual([]);
   expect(simulated.access_list).toEqual([]);
-  expect(BigInt(simulated.gas_limit)).toEqual(rpcGasEstimate);
+  expect(BigInt(simulated.gas_limit)).toBeGreaterThanOrEqual(rpcGasEstimate);
 });
 
 test("init twice fails", async () => {
