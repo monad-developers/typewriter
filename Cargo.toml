@@ -1,3 +1,7 @@
 [workspace]
 members = ["packages/typewriter-evm"]
 resolver = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
