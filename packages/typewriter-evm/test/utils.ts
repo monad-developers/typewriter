@@ -105,6 +105,22 @@ export async function loadCallGasCaller(): Promise<ForgeArtifact> {
   ).json()) as ForgeArtifact;
 }
 
+export async function loadPrecompileCaller(): Promise<ForgeArtifact> {
+  return (await Bun.file(
+    `${import.meta.dir}/contracts/out/PrecompileCaller.sol/PrecompileCaller.json`,
+  ).json()) as ForgeArtifact;
+}
+
+export function callPrecompileData(
+  target: Address.Address,
+  data: Hex.Hex,
+): Hex.Hex {
+  const callPrecompile = AbiFunction.from(
+    "function callPrecompile(address target, bytes data) returns (bytes)",
+  );
+  return AbiFunction.encodeData(callPrecompile, [target, data]);
+}
+
 export function tokenInit(
   artifact: ForgeArtifact,
   tokenAddr: Address.Address = TOKEN_ADDR,

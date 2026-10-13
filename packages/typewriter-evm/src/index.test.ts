@@ -13,6 +13,7 @@ const COUNTER_ADDR = "0x0000000000000000000000000000000000000c01" as const;
 const PAGE_WRITES_ADDR = "0x0000000000000000000000000000000000000c02" as const;
 const REVERTING_ADDR = "0x0000000000000000000000000000000000000bad" as const;
 const CALLER = "0x000000000000000000000000000000000000ca11" as const;
+const P256_VERIFIER = "0x0000000000000000000000000000000000000100" as const;
 
 import { expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
@@ -22,11 +23,13 @@ import { TEST_PUBLIC_CLIENT } from "../test/setup";
 import {
   BALANCE_OF_SLOT,
   callBurnData,
+  callPrecompileData,
   deployArtifact,
   deployTestToken,
   INITIAL_SUPPLY,
   loadCallGasCallee,
   loadCallGasCaller,
+  loadPrecompileCaller,
   loadTestToken,
   mappingSlot,
   normalizeAccessRecord,
@@ -782,6 +785,109 @@ test("harness gas_limit includes EIP-150 call headroom", async () => {
   );
   expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
   expect(harness.gas_used).toBeLessThan(harness.gas_limit);
+});
+
+test("simulate with a cached journal matches eth_createAccessList for a call to another contract", async () => {
+  const calleeArtifact = await loadCallGasCallee();
+  const callerArtifact = await loadCallGasCaller();
+  const calleeAddr = await deployArtifact(calleeArtifact);
+  const callerAddr = await deployArtifact(callerArtifact);
+  const data = callBurnData(calleeAddr, 250n);
+
+  const { accessList: rpcAccessList } =
+    await TEST_PUBLIC_CLIENT.createAccessList({
+      account: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+    });
+  const rpcGasEstimate = await TEST_PUBLIC_CLIENT.estimateGas({
+    account: SCHEDULER_ADDR,
+    to: callerAddr,
+    data,
+    accessList: rpcAccessList,
+  });
+
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init({
+      chain_id: 31337,
+      accounts: {
+        [calleeAddr]: { code: calleeArtifact.deployedBytecode.object },
+        [callerAddr]: { code: callerArtifact.deployedBytecode.object },
+      },
+    });
+    const executed = yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+    });
+    // The journal's access list replaces the discovery pass.
+    return yield* evm.simulate({
+      from: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+      journal_ids: [executed.journal_id!],
+    });
+  });
+  const harness = await Effect.runPromise(Effect.scoped(program));
+
+  expect(harness.success).toBe(true);
+  expect(normalizeAccessRecord(harness.access_list)).toEqual(
+    normalizeAccessRecord(rpcAccessList),
+  );
+  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+});
+
+test("access list leaves out the P-256 precompile at 0x100", async () => {
+  const artifact = await loadPrecompileCaller();
+  const callerAddr = await deployArtifact(artifact);
+  // An invalid signature: the precompile charges its gas and returns no data.
+  const data = callPrecompileData(P256_VERIFIER, Hex.padLeft("0x", 160));
+
+  const { accessList: rpcAccessList } =
+    await TEST_PUBLIC_CLIENT.createAccessList({
+      account: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+    });
+  const rpcGasEstimate = await TEST_PUBLIC_CLIENT.estimateGas({
+    account: SCHEDULER_ADDR,
+    to: callerAddr,
+    data,
+    accessList: rpcAccessList,
+  });
+
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init({
+      chain_id: 31337,
+      accounts: {
+        [callerAddr]: { code: artifact.deployedBytecode.object },
+      },
+    });
+    const executed = yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+    });
+    const simulated = yield* evm.simulate({
+      from: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+      journal_ids: [],
+    });
+    return { executed, simulated };
+  });
+  const { executed, simulated } = await Effect.runPromise(
+    Effect.scoped(program),
+  );
+
+  expect(executed.success).toBe(true);
+  expect(simulated.success).toBe(true);
+  expect(rpcAccessList).toEqual([]);
+  expect(executed.access_list).toEqual([]);
+  expect(simulated.access_list).toEqual([]);
+  expect(BigInt(simulated.gas_limit)).toEqual(rpcGasEstimate);
 });
 
 test("init twice fails", async () => {
