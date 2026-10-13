@@ -8,7 +8,6 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "lint:effect": "effect-language-service diagnostics --project tsconfig.json",
     "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit"
   },
@@ -26,7 +25,6 @@
     "viem": "catalog:"
   },
   "devDependencies": {
-    "@effect/language-service": "catalog:",
     "@types/pg": "8.23.1",
     "prool": "catalog:"
   },

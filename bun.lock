@@ -105,7 +105,6 @@
         "viem": "catalog:",
       },
       "devDependencies": {
-        "@effect/language-service": "catalog:",
         "@types/pg": "8.23.1",
         "prool": "catalog:",
       },
@@ -120,7 +119,6 @@
         "ox": "catalog:",
       },
       "devDependencies": {
-        "@effect/language-service": "catalog:",
         "@napi-rs/cli": "3.10.8",
         "prool": "catalog:",
         "solmate": "github:transmissions11/solmate",
@@ -133,7 +131,6 @@
     },
   },
   "catalog": {
-    "@effect/language-service": "0.85.1",
     "@tanstack/react-query": "5.104.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
@@ -171,8 +168,6 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.15", "", { "os": "win32", "cpu": "x64" }, "sha512-yAzh4UqEImV6Hcy0zjUqNfJAsUhoD64FBQCdTG8Md/Z2wQeVP/ZmJ3XRYAs1g8J9fjTFyl2fCtc5FB5til47+g=="],
 
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.11.0", "", {}, "sha512-hD3pekGiPg0WPCCGAZmusBBJsDqGUR66Y452YgQsZOnkdQ7ViEPKuyP4huUGEZQefp8g34RRodXYmJ2TbCH+tg=="],
-
-    "@effect/language-service": ["@effect/language-service@0.85.1", "", { "bin": { "effect-language-service": "cli.js" } }, "sha512-EXnJjIy6zQ3nUO/MZ+ynWUb8B895KZPotd1++oTs9JjDkplwM7cb6zo8Zq2zU6piwq+KflO7amXbEfj1UMpHkw=="],
 
     "@effect/sql-pg": ["@effect/sql-pg@4.0.0-beta.58", "", { "dependencies": { "pg": "^8.20.0", "pg-connection-string": "2.12.0", "pg-cursor": "^2.19.0", "pg-pool": "^3.13.0", "pg-types": "^4.1.0" }, "peerDependencies": { "effect": "^4.0.0-beta.58" } }, "sha512-PxK5D0fyva3P9r0XIuhoEYG7ihP+ZbB5PLvowUBgxuyqRTg+Egwrt9siyL1/sSr+1Ni3WTRWtyzZ0NKC0kCvqw=="],
 
