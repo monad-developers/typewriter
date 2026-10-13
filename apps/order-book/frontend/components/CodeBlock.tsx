@@ -28,7 +28,6 @@ export function CodeBlock({
       )}
       <div
         className="text-sm [&_pre]:p-4 [&_pre]:overflow-x-auto [&_pre]:m-0"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: shiki outputs sanitized HTML
         dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>

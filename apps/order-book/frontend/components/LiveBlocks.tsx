@@ -75,7 +75,6 @@ function FormingBlockColumn({
       >
         {batchSlots.map((batch, i) => (
           <div
-            // biome-ignore lint/suspicious/noArrayIndexKey: slot position is identity
             key={i}
             className={
               batch
