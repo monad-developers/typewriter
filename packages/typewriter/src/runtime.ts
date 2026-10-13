@@ -635,12 +635,12 @@ export function createRuntimeEffect(
       });
     }
 
-    type ReceivedMutationEntry = {
-      mutationId: number;
-      deferred: Deferred.Deferred<AcceptedMutation, unknown>;
-    };
-
-    const acceptBatch = (submittedMutations: ReceivedMutationEntry[]) =>
+    const acceptBatch = (
+      submittedMutations: {
+        mutationId: number;
+        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      }[],
+    ) =>
       withSpeculativeStateLock(
         Effect.gen(function* () {
           const batchStartedAtMs = startTimer();
@@ -1094,10 +1094,6 @@ export function createRuntimeEffect(
 
     const submitIntervalMs = app.sequencing.submitIntervalMs;
 
-    // FIFO wakes as soon as a mutation arrives and accepts everything that
-    // queued while the previous batch ran. Batch mode collects for a fixed
-    // window so it can reorder by `batchOrder`. Both take mutations outside
-    // the state lock, so a wait never blocks submit.
     const batchProgram =
       app.sequencing.order === "batch"
         ? Effect.sleep(Duration.millis(app.sequencing.batchIntervalMs)).pipe(
