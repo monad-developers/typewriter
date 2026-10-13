@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import { anvil } from "viem/chains";
 import type { TypewriterConfig } from "../src";
+import { formatMs, percentile, withCapturedLogs } from "./benchmark-utils";
 import Harness from "./contracts/src/Harness.sol";
 import {
   SCHEDULER_ACCOUNT,
@@ -39,45 +40,6 @@ function harnessCreditMutation(params: {
   });
 }
 
-function percentile(values: readonly number[], p: number): number {
-  const index = Math.min(
-    values.length - 1,
-    Math.floor((values.length - 1) * p),
-  );
-  return values[index]!;
-}
-
-function formatMs(durationMs: number): string {
-  return `${durationMs.toFixed(2)}ms`;
-}
-
-async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
-  const original = {
-    debug: console.debug,
-    error: console.error,
-    info: console.info,
-    log: console.log,
-    warn: console.warn,
-  };
-  const noop = () => {};
-
-  console.debug = noop;
-  console.error = noop;
-  console.info = noop;
-  console.log = noop;
-  console.warn = noop;
-
-  try {
-    return await run();
-  } finally {
-    console.debug = original.debug;
-    console.error = original.error;
-    console.info = original.info;
-    console.log = original.log;
-    console.warn = original.warn;
-  }
-}
-
 test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
   const { createTypewriter } = await import("../src");
   const address = await deployHarness();
@@ -108,7 +70,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     address,
     chainId: anvil.id,
   });
-  await withoutConsoleOutput(() => typewriter.execute(createAccount));
+  await withCapturedLogs(() => typewriter.execute(createAccount));
 
   const mutations = await Promise.all(
     Array.from({ length: MUTATION_COUNT }, (_, index) =>
@@ -124,7 +86,7 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
   const mutationDurationsMs = new Array<number>(MUTATION_COUNT);
   const totalStart = performance.now();
 
-  await withoutConsoleOutput(async () => {
+  const { phases } = await withCapturedLogs(async () => {
     const promises = mutations.map(async (mutation, index) => {
       const mutationStart = performance.now();
       await typewriter.execute(mutation);
@@ -150,5 +112,6 @@ average: ${formatMs(averageDurationMs)}
 p50: ${formatMs(percentile(sortedDurationsMs, 0.5))}
 p95: ${formatMs(percentile(sortedDurationsMs, 0.95))}
 p99: ${formatMs(percentile(sortedDurationsMs, 0.99))}
-throughput: ${mutationsPerSecond.toFixed(2)} mutations/s`);
+throughput: ${mutationsPerSecond.toFixed(2)} mutations/s
+${phases}`);
 }, 300_000);
