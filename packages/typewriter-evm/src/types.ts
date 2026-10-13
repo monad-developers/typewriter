@@ -40,25 +40,31 @@ export type SimulateParams = ExecuteParams & {
   journal_ids: number[];
 };
 
-export type ExecuteResult = {
+// Fields that execute and simulate both return.
+type TxResult = {
   success: boolean;
-  journal_id?: number;
   gas_used: number;
   output: Hex.Hex;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
+  keccak_preimages: { hash: Hex.Hex; preimage: Hex.Hex }[];
+  revert_data?: Hex.Hex;
+};
+
+// gas_used is the gas with cold access. Execute does not warm an access list.
+export type ExecuteResult = TxResult & {
+  journal_id?: number;
   slot_writes: {
     address: Address.Address;
     slot: Hex.Hex;
     prev_value: Hex.Hex;
     new_value: Hex.Hex;
   }[];
-  keccak_preimages: { hash: Hex.Hex; preimage: Hex.Hex }[];
-  revert_data?: Hex.Hex;
 };
 
-// Simulate also estimates the smallest gas limit that lets the call succeed.
-// Execute skips that search because accepting a mutation does not need it.
-export type SimulateResult = ExecuteResult & {
+// gas_used is the gas with the access list warm, as the chain charges it.
+// gas_limit is the smallest limit that runs the call on the same path as a
+// run at max gas.
+export type SimulateResult = TxResult & {
   gas_limit: number;
 };
 
