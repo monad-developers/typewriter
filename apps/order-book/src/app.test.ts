@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/bun-sql/postgres";
-import { Hex as OxHex, Secp256k1, Signature } from "ox";
+import { type Hex as OxHex, Secp256k1, Signature } from "ox";
 import { createTypewriter } from "typewriter";
 import {
   authorizeMutation,
@@ -66,11 +66,7 @@ function signAuthorization(privateKey: Hex, payload: Hex): Hex {
   });
   return encodeAbiParameters(
     [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-    [
-      Signature.yParityToV(signature.yParity),
-      OxHex.fromNumber(signature.r, { size: 32 }),
-      OxHex.fromNumber(signature.s, { size: 32 }),
-    ],
+    [Signature.yParityToV(signature.yParity), signature.r, signature.s],
   );
 }
 

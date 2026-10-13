@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
-import { Hex as OxHex, Secp256k1, Signature } from "ox";
+import { Secp256k1, Signature } from "ox";
 import type * as HexNamespace from "ox/Hex";
 import {
   authorizeMutation,
@@ -22,11 +22,7 @@ function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
   });
   return encodeAbiParameters(
     [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-    [
-      Signature.yParityToV(signature.yParity),
-      OxHex.fromNumber(signature.r, { size: 32 }),
-      OxHex.fromNumber(signature.s, { size: 32 }),
-    ],
+    [Signature.yParityToV(signature.yParity), signature.r, signature.s],
   );
 }
 

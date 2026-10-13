@@ -196,8 +196,8 @@ export function secp256k1PublicKey(address: Address): Hex {
 export function p256PublicKey(privateKey: Hex): Hex {
   const publicKey = P256.getPublicKey({ privateKey });
   return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
-    publicKey.x,
-    publicKey.y,
+    BigInt(publicKey.x),
+    BigInt(publicKey.y),
   ]);
 }
 
@@ -211,8 +211,8 @@ export function nativeAccountID(keyType: number, publicKey: Hex): Hex {
 export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = P256.sign({ payload: digest, privateKey, hash: true });
   return AbiParameters.encode(parseAbiParameters("uint256 r, uint256 s"), [
-    signature.r,
-    signature.s,
+    BigInt(signature.r),
+    BigInt(signature.s),
   ]);
 }
 
@@ -234,8 +234,8 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
       metadata.authenticatorData,
       OxHex.fromString(metadata.clientDataJSON),
       BigInt(challengeOffset),
-      signature.r,
-      signature.s,
+      BigInt(signature.r),
+      BigInt(signature.s),
     ],
   );
 }
@@ -244,11 +244,7 @@ export function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = Secp256k1.sign({ payload: digest, privateKey });
   return AbiParameters.encode(
     parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-    [
-      signature.yParity + 27,
-      OxHex.fromNumber(signature.r, { size: 32 }),
-      OxHex.fromNumber(signature.s, { size: 32 }),
-    ],
+    [signature.yParity + 27, signature.r, signature.s],
   );
 }
 

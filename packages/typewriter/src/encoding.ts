@@ -93,6 +93,7 @@ export function decodeMutationCalldata(
   const [decodedParams] = AbiParameters.decode(
     calldataStructParams(mutationConfig.params),
     calldata,
+    { checksumAddress: false },
   );
   return { params: decodedParams };
 }
@@ -109,6 +110,7 @@ export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
   const [authorization] = AbiParameters.decode(
     calldataStructParams(AUTHORIZATION_ABI_PARAMS),
     calldata,
+    { checksumAddress: false },
   );
   return authorization as Authorization;
 }
