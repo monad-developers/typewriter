@@ -1,5 +1,5 @@
-import { AbiParameters, type Hex } from "ox";
-import { type Abi, encodeFunctionData } from "viem";
+import { AbiFunction, AbiParameters, type Hex } from "ox";
+import type { Abi } from "viem";
 import type { Authorization, ExecutableMutation } from "./types";
 
 export const AUTHORIZATION_ABI_PARAMS = [
@@ -70,6 +70,11 @@ export const TYPEWRITER_ABI = [
 
 export type TypewriterAbi = typeof TYPEWRITER_ABI;
 
+// Resolved once: looking up the ABI item and hashing its selector on each
+// call costs more than the encoding itself.
+const EXECUTE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
+const ENQUEUE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "enqueue");
+
 // Contract calldata and EIP-712 mutationData encode params as one top-level
 // Solidity struct whose components are `mutation.params`.
 function calldataStructParams(
@@ -125,23 +130,18 @@ export function encodeExecuteCalldata(
   }[],
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
-  return encodeFunctionData({
-    abi: TYPEWRITER_ABI,
-    functionName: "execute",
-    args: [batches, forceExecuteIndexes],
-  });
+  return AbiFunction.encodeData(EXECUTE_FUNCTION, [
+    batches,
+    forceExecuteIndexes,
+  ]);
 }
 
 export function encodeEnqueueCalldata(mutation: ExecutableMutation): Hex.Hex {
-  return encodeFunctionData({
-    abi: TYPEWRITER_ABI,
-    functionName: "enqueue",
-    args: [
-      mutation.config.id,
-      encodeMutationCalldata(mutation),
-      encodeAuthorizationCalldata(mutation.authorization),
-    ],
-  });
+  return AbiFunction.encodeData(ENQUEUE_FUNCTION, [
+    mutation.config.id,
+    encodeMutationCalldata(mutation),
+    encodeAuthorizationCalldata(mutation.authorization),
+  ]);
 }
 
 // Build a structured Batch value from executable mutations.
