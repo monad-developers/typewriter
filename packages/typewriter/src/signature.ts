@@ -77,8 +77,8 @@ function verifySecp256k1(
   const recovered = Secp256k1.recoverAddress({
     payload: digest,
     signature: OxSignature.from({
-      r: BigInt(r),
-      s: BigInt(s),
+      r,
+      s,
       yParity: OxSignature.vToYParity(v),
     }),
   });
@@ -101,7 +101,7 @@ function verifyP256(
   const ok = P256.verify({
     payload: digest,
     publicKey: { prefix: 4, x, y },
-    signature: { r, s },
+    signature: { r: toWord(r), s: toWord(s) },
     hash: true,
   });
   if (!ok) throw invalidSignature(0);
@@ -129,16 +129,16 @@ function verifyWebAuthnP256(
   const ok = P256.verify({
     payload: message,
     publicKey: { prefix: 4, x, y },
-    signature: { r, s },
+    signature: { r: toWord(r), s: toWord(s) },
   });
   if (!ok) throw invalidSignature(1);
 }
 
-function decodeP256PublicKey(publicKey: Hex.Hex): { x: bigint; y: bigint } {
+function decodeP256PublicKey(publicKey: Hex.Hex): { x: Hex.Hex; y: Hex.Hex } {
   if (Hex.size(publicKey) === 65) {
     return {
-      x: BigInt(Hex.slice(publicKey, 1, 33)),
-      y: BigInt(Hex.slice(publicKey, 33, 65)),
+      x: Hex.slice(publicKey, 1, 33),
+      y: Hex.slice(publicKey, 33, 65),
     };
   }
 
@@ -146,7 +146,11 @@ function decodeP256PublicKey(publicKey: Hex.Hex): { x: bigint; y: bigint } {
     parseAbiParameters("uint256 x, uint256 y"),
     publicKey,
   ) as readonly [bigint, bigint];
-  return { x, y };
+  return { x: toWord(x), y: toWord(y) };
+}
+
+function toWord(value: bigint): Hex.Hex {
+  return Hex.fromNumber(value, { size: 32 });
 }
 
 function verifyChallenge(

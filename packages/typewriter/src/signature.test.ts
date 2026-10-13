@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseAbiParameters } from "abitype";
-import { AbiParameters, Hash, Hex, P256, PublicKey, Secp256k1 } from "ox";
+import { AbiParameters, Hash, type Hex, P256, PublicKey, Secp256k1 } from "ox";
 import {
   BOB_ACCOUNT,
   P256_PRIVATE_KEY,
@@ -113,10 +113,6 @@ function signSecp256k1Raw(digest: Hex.Hex, privateKey: Hex.Hex): Hex.Hex {
   const signature = Secp256k1.sign({ payload: digest, privateKey });
   return AbiParameters.encode(
     parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-    [
-      signature.yParity + 27,
-      Hex.fromNumber(signature.r, { size: 32 }),
-      Hex.fromNumber(signature.s, { size: 32 }),
-    ],
+    [signature.yParity + 27, signature.r, signature.s],
   );
 }

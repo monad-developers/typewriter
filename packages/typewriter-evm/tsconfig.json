@@ -25,7 +25,6 @@
     "baseUrl": ".",
     "paths": {
       "storage-layout": ["../storage-layout/src/index.ts"]
-    },
-    "plugins": [{ "name": "@effect/language-service" }]
+    }
   }
 }

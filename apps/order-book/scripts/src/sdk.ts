@@ -1,7 +1,6 @@
 import { AbiParameters } from "ox";
 import * as Address from "ox/Address";
 import type * as Hex from "ox/Hex";
-import * as OxHex from "ox/Hex";
 import * as Secp256k1 from "ox/Secp256k1";
 import * as Signature from "ox/Signature";
 import superjson from "superjson";
@@ -120,11 +119,7 @@ export function sign(
       { name: "r", type: "bytes32" },
       { name: "s", type: "bytes32" },
     ],
-    [
-      Signature.yParityToV(signature.yParity),
-      OxHex.fromNumber(signature.r, { size: 32 }),
-      OxHex.fromNumber(signature.s, { size: 32 }),
-    ],
+    [Signature.yParityToV(signature.yParity), signature.r, signature.s],
   );
   return authorizeMutation(mutation, packedSignature);
 }
@@ -236,11 +231,7 @@ export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
         });
         return AbiParameters.encode(
           [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-          [
-            Signature.yParityToV(signature.yParity),
-            OxHex.fromNumber(signature.r, { size: 32 }),
-            OxHex.fromNumber(signature.s, { size: 32 }),
-          ],
+          [Signature.yParityToV(signature.yParity), signature.r, signature.s],
         );
       })(),
     );
