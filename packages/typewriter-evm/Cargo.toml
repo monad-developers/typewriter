@@ -15,7 +15,3 @@ revm = { version = "42.0.1", default-features = false, features = ["std", "optio
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
