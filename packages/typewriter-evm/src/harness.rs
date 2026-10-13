@@ -149,7 +149,9 @@ struct ExecuteOk {
     #[serde(skip_serializing_if = "Option::is_none")]
     journal_id: Option<u64>,
     gas_used: u64,
-    gas_limit: u64,
+    // Only simulate estimates a gas limit; execute leaves it unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gas_limit: Option<u64>,
     output: String,
     access_list: Vec<AccessListEntry>,
     slot_writes: Vec<SlotWriteEntry>,
@@ -386,7 +388,7 @@ impl EvmHarness {
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         self.ensure_initialized()?;
-        let mut result = match self.run_two_pass(params, None) {
+        let mut result = match self.run_tx(params, None, false) {
             Ok(result) => result,
             Err(error) => {
                 let _ = self.evm.finalize();
@@ -429,7 +431,7 @@ impl EvmHarness {
         }
 
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
-        let result = self.run_two_pass(&params.as_execute_params(), cached_access_list);
+        let result = self.run_tx(&params.as_execute_params(), cached_access_list, true);
 
         // Drop pass 2's journal-state writes so they never reach the DB.
         let _ = self.evm.finalize();
@@ -513,18 +515,29 @@ impl EvmHarness {
         Ok(())
     }
 
-    // Two-pass execution. Pass 1 discovers the access list; pass 2 runs with
-    // those addresses/slots pre-warmed so the metered gas matches what the
-    // chain will charge for a tx broadcast with the discovered access list.
+    // Execute and simulate share this path.
     //
-    // After pass 1, finalize drains the journal state and we discard it so
-    // pass 2 starts from the same DB state. The alternative —
+    // Execute (`estimate_gas == false`) runs once with no access list and
+    // leaves the post-state live. The touched accounts and slots become the
+    // journal's access list, and gas_used is the gas with cold access. Only
+    // simulate builds the onchain transaction, so only simulate needs warm
+    // gas and a gas limit.
+    //
+    // Simulate runs pass 1 to discover the access list, unless the caller
+    // gives one from cached journals. Pass 2 runs with those addresses/slots
+    // pre-warmed, so the metered gas matches what the chain charges for a tx
+    // sent with that access list. On success, a gas-limit search and a final
+    // pass at that limit follow.
+    //
+    // Between passes, finalize drains the journal state and we discard it so
+    // the next pass starts from the same DB state. The alternative —
     // checkpoint_revert — doesn't work because transact_one calls commit_tx
     // after success, which clears the revertable journal log.
-    fn run_two_pass(
+    fn run_tx(
         &mut self,
         params: &ExecuteParams,
         cached_access_list: Option<AccessList>,
+        estimate_gas: bool,
     ) -> Result<ExecuteOk, String> {
         let from = parse_address(&params.from)?;
         let to = parse_address(&params.to)?;
@@ -549,6 +562,22 @@ impl EvmHarness {
                 .build_fill()
         };
 
+        if !estimate_gas {
+            // Execute: the discovery pass is the only pass.
+            self.evm.0.inspector.clear();
+            let result = self
+                .evm
+                .inspect_one_tx(build_tx(AccessList::default(), u64::MAX))
+                .map_err(|e| format!("transact (execute): {e:?}"))?;
+            let tx_access_list = discovered_access_list(
+                self.evm.0.ctx.journaled_state.evm_state(),
+                from,
+                to,
+                coinbase,
+            );
+            return Ok(self.execute_ok(&result, None, tx_access_list));
+        }
+
         let tx_access_list = match cached_access_list {
             Some(access_list) => access_list,
             None => {
@@ -558,26 +587,16 @@ impl EvmHarness {
                     .evm
                     .inspect_one_tx(build_tx(AccessList::default(), u64::MAX))
                     .map_err(|e| format!("transact (pass 1): {e:?}"))?;
-                let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
+                let access_list = discovered_access_list(
+                    self.evm.0.ctx.journaled_state.evm_state(),
+                    from,
+                    to,
+                    coinbase,
+                );
                 self.evm.0.inspector.clear();
                 // Drain pass 1's journal state without committing it.
                 let _ = self.evm.finalize();
-
-                // collect_access_list includes every account touched during execution.
-                // Keep address-only entries for cold callees, but drop addresses that
-                // are already warm at transaction start.
-                AccessList(
-                    touched
-                        .0
-                        .iter()
-                        .filter(|item| {
-                            !item.storage_keys.is_empty()
-                                || (!is_intrinsically_warm(item.address, from, to, coinbase)
-                                    && !is_precompile(item.address))
-                        })
-                        .cloned()
-                        .collect(),
-                )
+                access_list
             }
         };
 
@@ -597,7 +616,7 @@ impl EvmHarness {
                     self.estimate_gas_limit(params, tx_access_list.clone(), result.tx_gas_used())?;
 
                 // The estimate attempts finalize their own state, so rerun the
-                // successful pass and leave its journal state live for execute().
+                // successful pass at the estimated limit.
                 self.evm.0.inspector.clear();
                 result = self
                     .evm
@@ -608,7 +627,16 @@ impl EvmHarness {
             ExecutionResult::Revert { .. } | ExecutionResult::Halt { .. } => result.tx_gas_used(),
         };
 
-        let (success, gas_used, output, revert_data) = match &result {
+        Ok(self.execute_ok(&result, Some(gas_limit), tx_access_list))
+    }
+
+    fn execute_ok<H: std::fmt::Debug>(
+        &self,
+        result: &ExecutionResult<H>,
+        gas_limit: Option<u64>,
+        tx_access_list: AccessList,
+    ) -> ExecuteOk {
+        let (success, gas_used, output, revert_data) = match result {
             ExecutionResult::Success { output, .. } => {
                 let bytes = match output {
                     Output::Call(b) => b.clone(),
@@ -638,7 +666,7 @@ impl EvmHarness {
         let access_list_wire = encode_access_list(&tx_access_list);
         let keccak_preimages = self.evm.0.inspector.wire_preimages();
 
-        Ok(ExecuteOk {
+        ExecuteOk {
             success,
             journal_id: None,
             gas_used,
@@ -649,7 +677,7 @@ impl EvmHarness {
             keccak_preimages,
             revert_data,
             tx_access_list,
-        })
+        }
     }
 
     fn merge_journal_access_lists(&self, journal_ids: &[u64]) -> Option<AccessList> {
@@ -791,6 +819,28 @@ fn collect_access_list(state: &revm::state::EvmState) -> AccessList {
         });
     }
     AccessList(items)
+}
+
+// collect_access_list includes every account touched during execution. Keep
+// address-only entries for cold callees, but drop addresses that are already
+// warm at transaction start.
+fn discovered_access_list(
+    state: &revm::state::EvmState,
+    from: Address,
+    to: Address,
+    coinbase: Address,
+) -> AccessList {
+    AccessList(
+        collect_access_list(state)
+            .0
+            .into_iter()
+            .filter(|item| {
+                !item.storage_keys.is_empty()
+                    || (!is_intrinsically_warm(item.address, from, to, coinbase)
+                        && !is_precompile(item.address))
+            })
+            .collect(),
+    )
 }
 
 fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {

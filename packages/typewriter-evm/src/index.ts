@@ -12,6 +12,7 @@ import type {
   Request,
   Response,
   SimulateParams,
+  SimulateResult,
 } from "./types";
 
 export type {
@@ -24,6 +25,7 @@ export type {
   ReadStorageParams,
   ReadStorageResult,
   SimulateParams,
+  SimulateResult,
   Spec,
 } from "./types";
 
@@ -76,7 +78,7 @@ export type EVM = {
   ) => Effect.Effect<ExecuteResult, EvmError>;
   readonly simulate: (
     params: SimulateParams,
-  ) => Effect.Effect<ExecuteResult, EvmError>;
+  ) => Effect.Effect<SimulateResult, EvmError>;
   readonly readStorage: (
     params: ReadStorageParams,
   ) => Effect.Effect<ReadStorageResult, EvmError>;
@@ -175,7 +177,7 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
             params,
           })),
         simulate: (params) =>
-          call<ExecuteResult>("simulate", (id) => ({
+          call<SimulateResult>("simulate", (id) => ({
             method: "simulate",
             id,
             params,
