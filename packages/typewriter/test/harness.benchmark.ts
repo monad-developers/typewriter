@@ -19,66 +19,10 @@ import {
 
 process.env.NODE_ENV = "production";
 
-const MUTATION_COUNT = 10_000;
+const LATENCY_MUTATION_COUNT = 1_000;
+const THROUGHPUT_MUTATION_COUNT = 10_000;
 
-function harnessCreditMutation(params: {
-  readonly address: `0x${string}`;
-  readonly account: `0x${string}`;
-  readonly amount: bigint;
-  readonly nonce: bigint;
-}) {
-  return prepareHarnessMutation({
-    mutation: "Credit",
-    params: { amount: params.amount },
-    accountID: params.account,
-    sequence: params.nonce,
-    keyType: 2,
-    privateKey: USER_PRIVATE_KEY,
-    address: params.address,
-    chainId: anvil.id,
-  });
-}
-
-function percentile(values: readonly number[], p: number): number {
-  const index = Math.min(
-    values.length - 1,
-    Math.floor((values.length - 1) * p),
-  );
-  return values[index]!;
-}
-
-function formatMs(durationMs: number): string {
-  return `${durationMs.toFixed(2)}ms`;
-}
-
-async function withoutConsoleOutput<T>(run: () => Promise<T>): Promise<T> {
-  const original = {
-    debug: console.debug,
-    error: console.error,
-    info: console.info,
-    log: console.log,
-    warn: console.warn,
-  };
-  const noop = () => {};
-
-  console.debug = noop;
-  console.error = noop;
-  console.info = noop;
-  console.log = noop;
-  console.warn = noop;
-
-  try {
-    return await run();
-  } finally {
-    console.debug = original.debug;
-    console.error = original.error;
-    console.info = original.info;
-    console.log = original.log;
-    console.warn = original.warn;
-  }
-}
-
-test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async () => {
+test("harness benchmark", async () => {
   const { createTypewriter } = await import("../src");
   const address = await deployHarness();
   const config = {
@@ -86,21 +30,11 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     account: SCHEDULER_ACCOUNT,
     chainId: anvil.id,
     rpcUrl: TEST_RPC_URL,
-    sequencing: {
-      order: "batch",
-      batchIntervalMs: 10,
-      submitIntervalMs: 3_600_000,
-      batchOrder: ["CreateAccount", "Credit"],
-    },
-    database: { url: TEST_DB_URL, maxConnections: 2 },
-    blockPollingIntervalMs: 3_600_000,
+    database: { url: TEST_DB_URL },
   } as const satisfies TypewriterConfig;
-
-  const typewriter = await createTypewriter(Harness, config);
 
   const rootPublicKey = secp256k1PublicKey(USER_ACCOUNT.address);
   const account = nativeAccountID(2, rootPublicKey);
-
   const createAccount = prepareHarnessCreateAccount({
     keyType: 2,
     publicKey: rootPublicKey,
@@ -108,47 +42,66 @@ test(`harness batch accepts ${MUTATION_COUNT.toLocaleString()} mutations`, async
     address,
     chainId: anvil.id,
   });
-  await withoutConsoleOutput(() => typewriter.execute(createAccount));
-
   const mutations = await Promise.all(
-    Array.from({ length: MUTATION_COUNT }, (_, index) =>
-      harnessCreditMutation({
-        address,
-        account,
-        amount: 1n,
-        nonce: BigInt(index),
-      }),
+    Array.from(
+      { length: LATENCY_MUTATION_COUNT + THROUGHPUT_MUTATION_COUNT },
+      (_, index) =>
+        prepareHarnessMutation({
+          mutation: "Credit",
+          params: { amount: 1n },
+          accountID: account,
+          sequence: BigInt(index),
+          keyType: 2,
+          privateKey: USER_PRIVATE_KEY,
+          address,
+          chainId: anvil.id,
+        }),
     ),
   );
+  const latencyMutations = mutations.slice(0, LATENCY_MUTATION_COUNT);
+  const throughputMutations = mutations.slice(LATENCY_MUTATION_COUNT);
 
-  const mutationDurationsMs = new Array<number>(MUTATION_COUNT);
-  const totalStart = performance.now();
+  // Keep the cost of Debug log formatting, but do not print the lines.
+  const consoleLog = console.log;
+  const consoleDebug = console.debug;
+  console.log = () => {};
+  console.debug = () => {};
 
-  await withoutConsoleOutput(async () => {
-    const promises = mutations.map(async (mutation, index) => {
-      const mutationStart = performance.now();
+  const latenciesMs: number[] = [];
+  let throughputDurationMs: number;
+  try {
+    const typewriter = await createTypewriter(Harness, config);
+    await typewriter.execute(createAccount);
+
+    for (const mutation of latencyMutations) {
+      const start = performance.now();
       await typewriter.execute(mutation);
-      mutationDurationsMs[index] = performance.now() - mutationStart;
-    });
+      latenciesMs.push(performance.now() - start);
+    }
 
-    await Promise.all(promises);
-  });
+    const start = performance.now();
+    await Promise.all(
+      throughputMutations.map((mutation) => typewriter.execute(mutation)),
+    );
+    throughputDurationMs = performance.now() - start;
+  } finally {
+    console.log = consoleLog;
+    console.debug = consoleDebug;
+  }
 
-  const totalDurationMs = performance.now() - totalStart;
-  const sortedDurationsMs = mutationDurationsMs.toSorted((a, b) => a - b);
-  const averageDurationMs =
-    mutationDurationsMs.reduce((total, duration) => total + duration, 0) /
-    MUTATION_COUNT;
-  const mutationsPerSecond = MUTATION_COUNT / (totalDurationMs / 1_000);
+  latenciesMs.sort((a, b) => a - b);
+  const averageMs =
+    latenciesMs.reduce((total, latency) => total + latency, 0) /
+    LATENCY_MUTATION_COUNT;
+  const p50Ms = latenciesMs[Math.floor(LATENCY_MUTATION_COUNT * 0.5)]!;
+  const p99Ms = latenciesMs[Math.floor(LATENCY_MUTATION_COUNT * 0.99)]!;
+  const mutationsPerSecond =
+    THROUGHPUT_MUTATION_COUNT / (throughputDurationMs / 1_000);
 
   console.log(`
-Harness batch benchmark
-mutations: ${MUTATION_COUNT.toLocaleString()}
-batch window: 10ms
-total: ${formatMs(totalDurationMs)}
-average: ${formatMs(averageDurationMs)}
-p50: ${formatMs(percentile(sortedDurationsMs, 0.5))}
-p95: ${formatMs(percentile(sortedDurationsMs, 0.95))}
-p99: ${formatMs(percentile(sortedDurationsMs, 0.99))}
-throughput: ${mutationsPerSecond.toFixed(2)} mutations/s`);
+Harness benchmark
+single user, ${LATENCY_MUTATION_COUNT.toLocaleString()} sequential mutations:
+  average ${averageMs.toFixed(2)}ms, p50 ${p50Ms.toFixed(2)}ms, p99 ${p99Ms.toFixed(2)}ms
+max throughput, ${THROUGHPUT_MUTATION_COUNT.toLocaleString()} concurrent mutations:
+  ${Math.round(mutationsPerSecond).toLocaleString()} mutations/s`);
 }, 300_000);
