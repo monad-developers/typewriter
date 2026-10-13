@@ -108,7 +108,7 @@ const DEFAULT_SAFE_BLOCK_DEPTH = 1;
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
-const DEFAULT_SUBMIT_INTERVAL_MS = 400;
+const DEFAULT_SUBMIT_INTERVAL_MS = 300;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,

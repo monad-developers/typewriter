@@ -91,7 +91,7 @@ const typewriter = await createTypewriter(Token, {
   blockPollingIntervalMs: 200,
   sequencing: {
     order: "fifo",
-    submitIntervalMs: 400,
+    submitIntervalMs: 300,
   },
 });
 
@@ -120,7 +120,7 @@ const app = await createTypewriter(Token, {
   // ... more config
   sequencing: {
     order: "fifo",
-    submitIntervalMs: 400,
+    submitIntervalMs: 300,
   },
 });
 ```
@@ -139,7 +139,7 @@ const app = await createTypewriter(Token, {
   sequencing: {
     order: "batch",
     batchIntervalMs: 50,
-    submitIntervalMs: 400,
+    submitIntervalMs: 300,
     batchOrder: ["cancelOrder", "limitOrder", "marketOrder"],
   }
 });
@@ -159,7 +159,7 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 The latest Foundry release includes Monad support. Start a local Monad Anvil node with:
 
 ```bash
-anvil --network monad --block-time 0.4
+anvil --network monad --block-time 0.3
 ```
 
 ## Failure modes
@@ -420,7 +420,7 @@ contract Token is Typewriter {
 **`DOMAIN_SEPARATOR`.** Constructed by the base contract from the fixed
 Typewriter name/version, `block.chainid`, and `address(this)`.
 
-**`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal immutable` — `Typewriter` does not impose a value, so the inheriting contract must assign it in the constructor. All examples in this repo use `658` blocks (≈4.4 minutes at 0.4 s/block).
+**`FORCE_INCLUSION_DELAY`.** The number of blocks that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal immutable` — `Typewriter` does not impose a value, so the inheriting contract must assign it in the constructor. All examples in this repo use `658` blocks (≈3.3 minutes at 0.3 s/block).
 
 **Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `Typewriter` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 

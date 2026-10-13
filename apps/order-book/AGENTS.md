@@ -16,7 +16,7 @@ Order book implementation using `typewriter` as the runtime. The app owns order-
 Three terminals:
 
 ```bash
-anvil --block-time 0.4
+anvil --network monad --block-time 0.3
 cd apps/order-book && cp .env.example.local .env && bun run deploy
 cd apps/order-book && cp .env.example.local .env && bun dev
 ```
