@@ -76,7 +76,6 @@ import type {
 import type { LocalLog } from "./watch";
 import { Watch } from "./watch";
 
-const FIFO_BATCH_INTERVAL_MS = 4;
 const SUBMIT_RETRY_TIMES = 5;
 
 type RuntimeExecuteInput = {
@@ -636,99 +635,106 @@ export function createRuntimeEffect(
       });
     }
 
-    const acceptBatch = withSpeculativeStateLock(
-      Effect.gen(function* () {
-        const batchStartedAtMs = startTimer();
-        const submittedMutations = yield* Queue.clear(receivedMutationQueue);
+    const acceptBatch = (
+      submittedMutations: {
+        mutationId: number;
+        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      }[],
+    ) =>
+      withSpeculativeStateLock(
+        Effect.gen(function* () {
+          const batchStartedAtMs = startTimer();
 
-        if (submittedMutations.length === 0) {
-          return;
-        }
-
-        if (batchOrder.length > 0) {
-          submittedMutations.sort((a, b) => {
-            const aName = (mutationsById.get(a.mutationId)! as ReceivedMutation)
-              .name;
-            const bName = (mutationsById.get(b.mutationId)! as ReceivedMutation)
-              .name;
-            return (
-              (batchOrderByName.get(aName) ?? batchOrder.length) -
-              (batchOrderByName.get(bName) ?? batchOrder.length)
-            );
-          });
-        }
-
-        const acceptedMutations: {
-          mutation: AcceptedMutation;
-          executeResult: ExecuteResult;
-          preimages: readonly Hex.Hex[];
-          deferred: Deferred.Deferred<AcceptedMutation, unknown>;
-        }[] = [];
-
-        for (const { mutationId, deferred } of submittedMutations) {
-          const mutation = mutationsById.get(mutationId)! as ReceivedMutation;
-          const result = yield* Effect.result(acceptMutation(mutation));
-          if (Result.isSuccess(result)) {
-            acceptedMutations.push({ ...result.success, deferred });
-          } else {
-            yield* Deferred.fail(deferred, result.failure);
+          if (submittedMutations.length === 0) {
+            return;
           }
-        }
 
-        if (acceptedMutations.length === 0) {
-          return;
-        }
+          if (batchOrder.length > 0) {
+            submittedMutations.sort((a, b) => {
+              const aName = (
+                mutationsById.get(a.mutationId)! as ReceivedMutation
+              ).name;
+              const bName = (
+                mutationsById.get(b.mutationId)! as ReceivedMutation
+              ).name;
+              return (
+                (batchOrderByName.get(aName) ?? batchOrder.length) -
+                (batchOrderByName.get(bName) ?? batchOrder.length)
+              );
+            });
+          }
 
-        const batch: RuntimeBatch = {
-          status: "accepted",
-          id: batchId++,
-          position: batchPosition++,
-          mutations: acceptedMutations.map(({ mutation }) => mutation),
-        };
+          const acceptedMutations: {
+            mutation: AcceptedMutation;
+            executeResult: ExecuteResult;
+            preimages: readonly Hex.Hex[];
+            deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+          }[] = [];
 
-        yield* Effect.logDebug("batched mutations").pipe(
-          Effect.annotateLogs({
-            id: batch.id,
-            mutationCount: batch.mutations.length,
-            duration: durationMs(batchStartedAtMs),
-          }),
-        );
+          for (const { mutationId, deferred } of submittedMutations) {
+            const mutation = mutationsById.get(mutationId)! as ReceivedMutation;
+            const result = yield* Effect.result(acceptMutation(mutation));
+            if (Result.isSuccess(result)) {
+              acceptedMutations.push({ ...result.success, deferred });
+            } else {
+              yield* Deferred.fail(deferred, result.failure);
+            }
+          }
 
-        batchesById.set(batch.id, batch);
+          if (acceptedMutations.length === 0) {
+            return;
+          }
 
-        emitBatch(batchToEvent(batch));
+          const batch: RuntimeBatch = {
+            status: "accepted",
+            id: batchId++,
+            position: batchPosition++,
+            mutations: acceptedMutations.map(({ mutation }) => mutation),
+          };
 
-        const persistStartedAtMs = startTimer();
-        yield* db.transaction((tx) =>
-          Effect.gen(function* () {
-            yield* insertMutations(
-              tx,
-              schema,
-              acceptedMutations.map((entry) => entry.mutation),
-            );
-            yield* insertSlotWritesMany(tx, schema, acceptedMutations);
-            yield* insertKeccakPreimages(
-              tx,
-              schema,
-              acceptedMutations.flatMap(({ preimages }) => preimages),
-            );
-          }),
-        );
+          yield* Effect.logDebug("batched mutations").pipe(
+            Effect.annotateLogs({
+              id: batch.id,
+              mutationCount: batch.mutations.length,
+              duration: durationMs(batchStartedAtMs),
+            }),
+          );
 
-        for (const { mutation, deferred } of acceptedMutations) {
-          yield* Deferred.succeed(deferred, mutation);
-        }
+          batchesById.set(batch.id, batch);
 
-        yield* Effect.logDebug("persisted accepted mutations").pipe(
-          Effect.annotateLogs({
-            mutationCount: acceptedMutations.length,
-            duration: durationMs(persistStartedAtMs),
-          }),
-        );
+          emitBatch(batchToEvent(batch));
 
-        yield* Queue.offer(acceptedBatchesQueue, batch.id);
-      }),
-    );
+          const persistStartedAtMs = startTimer();
+          yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              yield* insertMutations(
+                tx,
+                schema,
+                acceptedMutations.map((entry) => entry.mutation),
+              );
+              yield* insertSlotWritesMany(tx, schema, acceptedMutations);
+              yield* insertKeccakPreimages(
+                tx,
+                schema,
+                acceptedMutations.flatMap(({ preimages }) => preimages),
+              );
+            }),
+          );
+
+          for (const { mutation, deferred } of acceptedMutations) {
+            yield* Deferred.succeed(deferred, mutation);
+          }
+
+          yield* Effect.logDebug("persisted accepted mutations").pipe(
+            Effect.annotateLogs({
+              mutationCount: acceptedMutations.length,
+              duration: durationMs(persistStartedAtMs),
+            }),
+          );
+
+          yield* Queue.offer(acceptedBatchesQueue, batch.id);
+        }),
+      );
 
     const submit = Effect.gen(function* () {
       const simulation = yield* withSpeculativeStateLock(
@@ -1086,20 +1092,25 @@ export function createRuntimeEffect(
       );
     }).pipe(Effect.withLogSpan("watch"));
 
-    const batchIntervalMs =
-      app.sequencing.order === "batch"
-        ? app.sequencing.batchIntervalMs
-        : FIFO_BATCH_INTERVAL_MS;
     const submitIntervalMs = app.sequencing.submitIntervalMs;
 
-    const batchProgram = Effect.sleep(Duration.millis(batchIntervalMs)).pipe(
-      Effect.andThen(
-        Effect.repeat(
-          acceptBatch,
-          Schedule.fixed(Duration.millis(batchIntervalMs)),
-        ),
-      ),
-    );
+    const batchProgram =
+      app.sequencing.order === "batch"
+        ? Effect.sleep(Duration.millis(app.sequencing.batchIntervalMs)).pipe(
+            Effect.andThen(
+              Effect.repeat(
+                Queue.clear(receivedMutationQueue).pipe(
+                  Effect.flatMap(acceptBatch),
+                ),
+                Schedule.fixed(Duration.millis(app.sequencing.batchIntervalMs)),
+              ),
+            ),
+          )
+        : Effect.forever(
+            Queue.takeAll(receivedMutationQueue).pipe(
+              Effect.flatMap(acceptBatch),
+            ),
+          );
     const submitProgram = Effect.sleep(Duration.millis(submitIntervalMs)).pipe(
       Effect.andThen(
         Effect.repeat(
