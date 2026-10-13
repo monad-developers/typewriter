@@ -149,7 +149,9 @@ struct ExecuteOk {
     #[serde(skip_serializing_if = "Option::is_none")]
     journal_id: Option<u64>,
     gas_used: u64,
-    gas_limit: u64,
+    // Only simulate estimates a gas limit; execute leaves it unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gas_limit: Option<u64>,
     output: String,
     access_list: Vec<AccessListEntry>,
     slot_writes: Vec<SlotWriteEntry>,
@@ -386,7 +388,7 @@ impl EvmHarness {
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         self.ensure_initialized()?;
-        let mut result = match self.run_two_pass(params, None) {
+        let mut result = match self.run_two_pass(params, None, false) {
             Ok(result) => result,
             Err(error) => {
                 let _ = self.evm.finalize();
@@ -429,7 +431,7 @@ impl EvmHarness {
         }
 
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
-        let result = self.run_two_pass(&params.as_execute_params(), cached_access_list);
+        let result = self.run_two_pass(&params.as_execute_params(), cached_access_list, true);
 
         // Drop pass 2's journal-state writes so they never reach the DB.
         let _ = self.evm.finalize();
@@ -517,6 +519,11 @@ impl EvmHarness {
     // those addresses/slots pre-warmed so the metered gas matches what the
     // chain will charge for a tx broadcast with the discovered access list.
     //
+    // With `estimate_gas`, a successful pass 2 is followed by a gas-limit
+    // search and a final pass at that limit. Only simulate needs this: it
+    // builds the transaction that goes onchain. Execute only accepts the
+    // mutation into local state, so it skips the search (about 15 extra runs).
+    //
     // After pass 1, finalize drains the journal state and we discard it so
     // pass 2 starts from the same DB state. The alternative —
     // checkpoint_revert — doesn't work because transact_one calls commit_tx
@@ -525,6 +532,7 @@ impl EvmHarness {
         &mut self,
         params: &ExecuteParams,
         cached_access_list: Option<AccessList>,
+        estimate_gas: bool,
     ) -> Result<ExecuteOk, String> {
         let from = parse_address(&params.from)?;
         let to = parse_address(&params.to)?;
@@ -590,6 +598,7 @@ impl EvmHarness {
             .map_err(|e| format!("transact (pass 2): {e:?}"))?;
 
         let gas_limit = match &result {
+            ExecutionResult::Success { .. } if !estimate_gas => None,
             ExecutionResult::Success { .. } => {
                 self.evm.0.inspector.clear();
                 let _ = self.evm.finalize();
@@ -603,9 +612,11 @@ impl EvmHarness {
                     .evm
                     .inspect_one_tx(build_tx(tx_access_list.clone(), gas_limit))
                     .map_err(|e| format!("transact (final pass): {e:?}"))?;
-                gas_limit
+                Some(gas_limit)
             }
-            ExecutionResult::Revert { .. } | ExecutionResult::Halt { .. } => result.tx_gas_used(),
+            ExecutionResult::Revert { .. } | ExecutionResult::Halt { .. } => {
+                estimate_gas.then(|| result.tx_gas_used())
+            }
         };
 
         let (success, gas_used, output, revert_data) = match &result {
