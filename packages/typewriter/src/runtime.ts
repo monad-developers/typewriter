@@ -76,7 +76,6 @@ import type {
 import type { LocalLog } from "./watch";
 import { Watch } from "./watch";
 
-const FIFO_BATCH_INTERVAL_MS = 4;
 const SUBMIT_RETRY_TIMES = 5;
 
 type RuntimeExecuteInput = {
@@ -636,84 +635,141 @@ export function createRuntimeEffect(
       });
     }
 
-    const acceptBatch = withSpeculativeStateLock(
-      Effect.gen(function* () {
-        const batchStartedAtMs = startTimer();
-        const submittedMutations = yield* Queue.clear(receivedMutationQueue);
+    type ReceivedMutationEntry = {
+      mutationId: number;
+      deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+    };
 
-        if (submittedMutations.length === 0) {
-          return;
-        }
+    type PersistJob = {
+      batch: RuntimeBatch;
+      acceptedMutations: {
+        mutation: AcceptedMutation;
+        executeResult: ExecuteResult;
+        preimages: readonly Hex.Hex[];
+        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      }[];
+      committed: Deferred.Deferred<void, unknown>;
+    };
 
-        if (batchOrder.length > 0) {
-          submittedMutations.sort((a, b) => {
-            const aName = (mutationsById.get(a.mutationId)! as ReceivedMutation)
-              .name;
-            const bName = (mutationsById.get(b.mutationId)! as ReceivedMutation)
-              .name;
-            return (
-              (batchOrderByName.get(aName) ?? batchOrder.length) -
-              (batchOrderByName.get(bName) ?? batchOrder.length)
-            );
-          });
-        }
+    // Accepted batches are persisted by one fiber, in order, outside the
+    // speculative-state lock, so batch N+1 executes while batch N commits.
+    // Callers get a response only after their batch commits. A batch reaches
+    // `submit` only after it commits.
+    const persistQueue = yield* Queue.unbounded<PersistJob>();
+    yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
+    // Resolves when the most recently accepted batch has committed. Because
+    // commits are ordered, all earlier batches have committed too.
+    let lastBatchCommitted: Deferred.Deferred<void, unknown> | undefined;
 
-        const acceptedMutations: {
-          mutation: AcceptedMutation;
-          executeResult: ExecuteResult;
-          preimages: readonly Hex.Hex[];
-          deferred: Deferred.Deferred<AcceptedMutation, unknown>;
-        }[] = [];
+    const acceptBatch = (submittedMutations: ReceivedMutationEntry[]) =>
+      withSpeculativeStateLock(
+        Effect.gen(function* () {
+          const batchStartedAtMs = startTimer();
 
-        for (const { mutationId, deferred } of submittedMutations) {
-          const mutation = mutationsById.get(mutationId)! as ReceivedMutation;
-          const result = yield* Effect.result(acceptMutation(mutation));
-          if (Result.isSuccess(result)) {
-            acceptedMutations.push({ ...result.success, deferred });
-          } else {
-            yield* Deferred.fail(deferred, result.failure);
+          if (submittedMutations.length === 0) {
+            return;
           }
-        }
 
-        if (acceptedMutations.length === 0) {
-          return;
-        }
+          if (batchOrder.length > 0) {
+            submittedMutations.sort((a, b) => {
+              const aName = (
+                mutationsById.get(a.mutationId)! as ReceivedMutation
+              ).name;
+              const bName = (
+                mutationsById.get(b.mutationId)! as ReceivedMutation
+              ).name;
+              return (
+                (batchOrderByName.get(aName) ?? batchOrder.length) -
+                (batchOrderByName.get(bName) ?? batchOrder.length)
+              );
+            });
+          }
 
-        const batch: RuntimeBatch = {
-          status: "accepted",
-          id: batchId++,
-          position: batchPosition++,
-          mutations: acceptedMutations.map(({ mutation }) => mutation),
-        };
+          const acceptedMutations: {
+            mutation: AcceptedMutation;
+            executeResult: ExecuteResult;
+            preimages: readonly Hex.Hex[];
+            deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+          }[] = [];
 
-        yield* Effect.logDebug("batched mutations").pipe(
-          Effect.annotateLogs({
-            id: batch.id,
-            mutationCount: batch.mutations.length,
-            duration: durationMs(batchStartedAtMs),
-          }),
-        );
+          for (const { mutationId, deferred } of submittedMutations) {
+            const mutation = mutationsById.get(mutationId)! as ReceivedMutation;
+            const result = yield* Effect.result(acceptMutation(mutation));
+            if (Result.isSuccess(result)) {
+              acceptedMutations.push({ ...result.success, deferred });
+            } else {
+              yield* Deferred.fail(deferred, result.failure);
+            }
+          }
 
-        batchesById.set(batch.id, batch);
+          if (acceptedMutations.length === 0) {
+            return;
+          }
 
-        emitBatch(batchToEvent(batch));
+          const batch: RuntimeBatch = {
+            status: "accepted",
+            id: batchId++,
+            position: batchPosition++,
+            mutations: acceptedMutations.map(({ mutation }) => mutation),
+          };
 
+          yield* Effect.logDebug("batched mutations").pipe(
+            Effect.annotateLogs({
+              id: batch.id,
+              mutationCount: batch.mutations.length,
+              duration: durationMs(batchStartedAtMs),
+            }),
+          );
+
+          batchesById.set(batch.id, batch);
+
+          emitBatch(batchToEvent(batch));
+
+          const committed = yield* Deferred.make<void, unknown>();
+          lastBatchCommitted = committed;
+          yield* Queue.offer(persistQueue, {
+            batch,
+            acceptedMutations,
+            committed,
+          });
+        }),
+      );
+
+    // Commits every batch that queued during the previous commit in one
+    // transaction.
+    const persistBatches = (jobs: PersistJob[]) =>
+      Effect.gen(function* () {
         const persistStartedAtMs = startTimer();
-        yield* db.transaction((tx) =>
-          Effect.gen(function* () {
-            yield* insertMutations(
-              tx,
-              schema,
-              acceptedMutations.map((entry) => entry.mutation),
-            );
-            yield* insertSlotWritesMany(tx, schema, acceptedMutations);
-            yield* insertKeccakPreimages(
-              tx,
-              schema,
-              acceptedMutations.flatMap(({ preimages }) => preimages),
-            );
-          }),
-        );
+        const acceptedMutations = jobs.flatMap((job) => job.acceptedMutations);
+
+        yield* db
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* insertMutations(
+                tx,
+                schema,
+                acceptedMutations.map((entry) => entry.mutation),
+              );
+              yield* insertSlotWritesMany(tx, schema, acceptedMutations);
+              yield* insertKeccakPreimages(
+                tx,
+                schema,
+                acceptedMutations.flatMap(({ preimages }) => preimages),
+              );
+            }),
+          )
+          .pipe(
+            Effect.tapError((error) =>
+              Effect.gen(function* () {
+                for (const { deferred } of acceptedMutations) {
+                  yield* Deferred.fail(deferred, error);
+                }
+                for (const { committed } of jobs) {
+                  yield* Deferred.fail(committed, error);
+                }
+              }),
+            ),
+          );
 
         for (const { mutation, deferred } of acceptedMutations) {
           yield* Deferred.succeed(deferred, mutation);
@@ -721,18 +777,28 @@ export function createRuntimeEffect(
 
         yield* Effect.logDebug("persisted accepted mutations").pipe(
           Effect.annotateLogs({
+            batchCount: jobs.length,
             mutationCount: acceptedMutations.length,
             duration: durationMs(persistStartedAtMs),
           }),
         );
 
-        yield* Queue.offer(acceptedBatchesQueue, batch.id);
-      }),
-    );
+        for (const { batch, committed } of jobs) {
+          yield* Queue.offer(acceptedBatchesQueue, batch.id);
+          yield* Deferred.succeed(committed, undefined);
+        }
+      });
 
     const submit = Effect.gen(function* () {
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
+          // Simulate rewinds and replays the journals it is given, which is
+          // only correct when they are the newest journals. So every executed
+          // batch must be in `acceptedBatchesQueue`: wait for the in-flight
+          // commit. The lock keeps new batches from executing meanwhile.
+          if (lastBatchCommitted !== undefined) {
+            yield* Deferred.await(lastBatchCommitted);
+          }
           const batchIds = yield* Queue.clear(acceptedBatchesQueue);
           const enqueuedMutationIds = yield* Queue.clear(
             enqueuedMutationsQueue,
@@ -1086,20 +1152,29 @@ export function createRuntimeEffect(
       );
     }).pipe(Effect.withLogSpan("watch"));
 
-    const batchIntervalMs =
-      app.sequencing.order === "batch"
-        ? app.sequencing.batchIntervalMs
-        : FIFO_BATCH_INTERVAL_MS;
     const submitIntervalMs = app.sequencing.submitIntervalMs;
 
-    const batchProgram = Effect.sleep(Duration.millis(batchIntervalMs)).pipe(
-      Effect.andThen(
-        Effect.repeat(
-          acceptBatch,
-          Schedule.fixed(Duration.millis(batchIntervalMs)),
-        ),
-      ),
-    );
+    // FIFO wakes as soon as a mutation arrives and accepts everything that
+    // queued while the previous batch ran. Batch mode collects for a fixed
+    // window so it can reorder by `batchOrder`. Both take mutations outside
+    // the state lock, so a wait never blocks submit.
+    const batchProgram =
+      app.sequencing.order === "batch"
+        ? Effect.sleep(Duration.millis(app.sequencing.batchIntervalMs)).pipe(
+            Effect.andThen(
+              Effect.repeat(
+                Queue.clear(receivedMutationQueue).pipe(
+                  Effect.flatMap(acceptBatch),
+                ),
+                Schedule.fixed(Duration.millis(app.sequencing.batchIntervalMs)),
+              ),
+            ),
+          )
+        : Effect.forever(
+            Queue.takeAll(receivedMutationQueue).pipe(
+              Effect.flatMap(acceptBatch),
+            ),
+          );
     const submitProgram = Effect.sleep(Duration.millis(submitIntervalMs)).pipe(
       Effect.andThen(
         Effect.repeat(
@@ -1109,9 +1184,14 @@ export function createRuntimeEffect(
       ),
     );
 
-    const program = Effect.all([batchProgram, submitProgram, watchProgram], {
-      concurrency: "unbounded",
-    });
+    const persistProgram = Effect.forever(
+      Queue.takeAll(persistQueue).pipe(Effect.flatMap(persistBatches)),
+    );
+
+    const program = Effect.all(
+      [batchProgram, persistProgram, submitProgram, watchProgram],
+      { concurrency: "unbounded" },
+    );
 
     function execute(
       mutation: RuntimeExecuteInput,
