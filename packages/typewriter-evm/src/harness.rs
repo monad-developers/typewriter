@@ -8,8 +8,9 @@
 //   setBlockContext— update block number, timestamp, basefee, coinbase.
 //   execute        — run one tx and store its successful state transition as a
 //                    journal identified by a numeric id.
-//   simulate       — temporarily undo the given journal ids, run one tx, then
-//                    re-apply the journals; does not create/modify journals.
+//   simulate       — temporarily undo the given journal ids, run one tx and
+//                    trace its gas limit, then re-apply the journals; does
+//                    not create/modify journals.
 //   readStorage    — read raw account storage slots from the in-memory DB.
 //   revertJournals — revert and delete the given journal ids.
 //   pruneJournals  — delete the given journal ids without touching state.
@@ -21,20 +22,23 @@ use monad_revm::{
     MonadCfgEnv, MonadHardfork,
 };
 use revm::{
+    bytecode::opcode,
     context::TxEnv,
     context_interface::{
-        result::{ExecutionResult, Output},
+        cfg::GasParams,
+        result::{ExecutionResult, HaltReason, Output},
         transaction::{AccessList, AccessListItem},
-        JournalTr,
+        Host, JournalTr,
     },
     database::InMemoryDB,
     inspector::InspectEvm,
     interpreter::{
         interpreter::EthInterpreter,
-        interpreter_types::{Jumps, MemoryTr},
-        Interpreter,
+        interpreter_types::{Jumps, LoopControl, MemoryTr},
+        CallInputs, CallOutcome, CallValue, CreateInputs, CreateOutcome, Interpreter,
+        InterpreterAction, InterpreterResult,
     },
-    primitives::{Address, Bytes, TxKind, B256, U256},
+    primitives::{Address, AddressSet, Bytes, TxKind, B256, U256},
     state::{AccountInfo, Bytecode},
     DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
@@ -89,22 +93,9 @@ struct ExecuteParams {
 
 #[derive(Deserialize)]
 struct SimulateParams {
-    from: String,
-    to: String,
-    data: String,
-    value: Option<String>,
+    #[serde(flatten)]
+    tx: ExecuteParams,
     journal_ids: Vec<u64>,
-}
-
-impl SimulateParams {
-    fn as_execute_params(&self) -> ExecuteParams {
-        ExecuteParams {
-            from: self.from.clone(),
-            to: self.to.clone(),
-            data: self.data.clone(),
-            value: self.value.clone(),
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -143,23 +134,34 @@ fn serialize_response<T: Serialize>(response: &T) -> String {
     serde_json::to_string(response).unwrap_or_else(|_| RESPONSE_SERIALIZE_ERROR.into())
 }
 
+// Fields that execute and simulate both return.
 #[derive(Serialize)]
-struct ExecuteOk {
+struct TxOutcome {
     success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    journal_id: Option<u64>,
     gas_used: u64,
-    // Only simulate estimates a gas limit; execute leaves it unset.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gas_limit: Option<u64>,
     output: String,
     access_list: Vec<AccessListEntry>,
-    slot_writes: Vec<SlotWriteEntry>,
     keccak_preimages: Vec<KeccakPreimageEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
-    #[serde(skip_serializing)]
-    tx_access_list: AccessList,
+}
+
+// gas_used is the gas with cold access. Execute does not warm an access list.
+#[derive(Serialize)]
+struct ExecuteOk {
+    #[serde(flatten)]
+    outcome: TxOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_id: Option<u64>,
+    slot_writes: Vec<SlotWriteEntry>,
+}
+
+// gas_used is the gas with the access list warm, as the chain charges it.
+#[derive(Serialize)]
+struct SimulateOk {
+    #[serde(flatten)]
+    outcome: TxOutcome,
+    gas_limit: u64,
 }
 
 #[derive(Serialize)]
@@ -186,14 +188,16 @@ struct KeccakPreimageEntry {
 // -----------------------------------------------------------------------------
 // Harness
 
-type Evm = monad_revm::api::builder::DefaultMonadEvm<
-    monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
-    MappingRecoveryInspector,
->;
+type MonadCtx = monad_revm::api::default_ctx::MonadContext<InMemoryDB>;
+
+type Evm = monad_revm::api::builder::DefaultMonadEvm<MonadCtx, HarnessInspector>;
+
+type TxResult = ExecutionResult<HaltReason>;
 
 #[derive(Default)]
-struct MappingRecoveryInspector {
+struct HarnessInspector {
     keccak_preimages: Vec<RawKeccakPreimage>,
+    gas: GasLimitTracker,
 }
 
 struct RawKeccakPreimage {
@@ -201,7 +205,7 @@ struct RawKeccakPreimage {
     preimage: Vec<u8>,
 }
 
-impl MappingRecoveryInspector {
+impl HarnessInspector {
     fn clear(&mut self) {
         self.keccak_preimages.clear();
     }
@@ -215,20 +219,8 @@ impl MappingRecoveryInspector {
             })
             .collect()
     }
-}
 
-impl Inspector<monad_revm::api::default_ctx::MonadContext<InMemoryDB>>
-    for MappingRecoveryInspector
-{
-    fn step(
-        &mut self,
-        interp: &mut Interpreter<EthInterpreter>,
-        _context: &mut monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
-    ) {
-        if interp.bytecode.opcode() != 0x20 {
-            return;
-        }
-
+    fn record_keccak_preimage(&mut self, interp: &mut Interpreter<EthInterpreter>) {
         let stack = interp.stack.data();
         if stack.len() < 2 {
             return;
@@ -262,6 +254,212 @@ impl Inspector<monad_revm::api::default_ctx::MonadContext<InMemoryDB>>
     }
 }
 
+impl Inspector<MonadCtx> for HarnessInspector {
+    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, context: &mut MonadCtx) {
+        let opcode = interp.bytecode.opcode();
+        if opcode == opcode::KECCAK256 {
+            self.record_keccak_preimage(interp);
+        }
+        self.gas.step(opcode, interp, context);
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<EthInterpreter>, _context: &mut MonadCtx) {
+        self.gas.step_end(interp);
+    }
+
+    fn call(&mut self, context: &mut MonadCtx, inputs: &mut CallInputs) -> Option<CallOutcome> {
+        let transfers_value =
+            matches!(inputs.value, CallValue::Transfer(value) if !value.is_zero());
+        let stipend = if transfers_value {
+            context.gas_params().call_stipend()
+        } else {
+            0
+        };
+        self.gas.frame_start(inputs.gas_limit, stipend);
+        None
+    }
+
+    fn call_end(
+        &mut self,
+        context: &mut MonadCtx,
+        _inputs: &CallInputs,
+        outcome: &mut CallOutcome,
+    ) {
+        self.gas.frame_end(&outcome.result, context.gas_params());
+    }
+
+    fn create(
+        &mut self,
+        _context: &mut MonadCtx,
+        inputs: &mut CreateInputs,
+    ) -> Option<CreateOutcome> {
+        self.gas.frame_start(inputs.gas_limit(), 0);
+        None
+    }
+
+    fn create_end(
+        &mut self,
+        context: &mut MonadCtx,
+        _inputs: &CreateInputs,
+        outcome: &mut CreateOutcome,
+    ) {
+        self.gas.frame_end(&outcome.result, context.gas_params());
+    }
+}
+
+// Traces the smallest gas limit that runs a tx on the same path as a run at
+// max gas. The gas used is not enough for two reasons: CALL and CREATE
+// forward at most 63/64 of the remaining gas (EIP-150), and SSTORE fails
+// unless more than the call stipend remains (EIP-2200). Monad gives no
+// refunds, so refunds do not change the limit.
+//
+// Each frame records the most gas it spent at any point (`need`). When a
+// child frame ends, its need becomes a requirement on the gas the parent must
+// have left before the call forwards gas. Contracts do not branch on gas, so
+// every other charge is the same at each gas limit that keeps this path, and
+// intrinsic gas plus the top frame's need is the exact minimum.
+//
+// A child that halts uses all the gas it gets. At max gas that is almost all
+// of u64::MAX, so no gas limit that the chain accepts can run the tx.
+#[derive(Default)]
+struct GasLimitTracker {
+    enabled: bool,
+    halted: bool,
+    frames: Vec<FrameGas>,
+    // The last opcode that `step` saw, so `step_end` knows what ran.
+    opcode: u8,
+    // Gas the current frame has left after a CALL or CREATE took the gas it
+    // forwards. The next `frame_start` uses it.
+    remaining_after_forward: Option<u64>,
+    top_frame: Option<FrameGas>,
+}
+
+#[derive(Clone, Copy)]
+struct FrameGas {
+    gas_limit: u64,
+    need: u64,
+    // Gas the parent spent before it forwarded gas to this frame.
+    parent_spent: u64,
+    stipend: u64,
+}
+
+impl GasLimitTracker {
+    fn start(&mut self) {
+        self.enabled = true;
+        self.halted = false;
+        self.frames.clear();
+        self.remaining_after_forward = None;
+        self.top_frame = None;
+    }
+
+    fn finish(&mut self, tx_gas_limit: u64) -> Result<u64, String> {
+        self.enabled = false;
+        if self.halted {
+            return Err("a call halted and used all its gas; no gas limit can run the tx".into());
+        }
+        let top_frame = self
+            .top_frame
+            .ok_or_else(|| "gas trace has no top frame".to_string())?;
+        let intrinsic_gas = tx_gas_limit - top_frame.gas_limit;
+        Ok(intrinsic_gas + top_frame.need)
+    }
+
+    fn step(&mut self, opcode: u8, interp: &mut Interpreter<EthInterpreter>, context: &MonadCtx) {
+        if !self.enabled || interp.bytecode.is_end() {
+            return;
+        }
+        self.opcode = opcode;
+        if opcode == opcode::SSTORE {
+            if let Some(frame) = self.frames.last_mut() {
+                let sentry = interp.gas.total_gas_spent() + context.gas_params().call_stipend() + 1;
+                frame.need = frame.need.max(sentry);
+            }
+        }
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<EthInterpreter>) {
+        if !self.enabled {
+            return;
+        }
+        let Some(frame) = self.frames.last_mut() else {
+            return;
+        };
+        let forwards_gas = matches!(
+            self.opcode,
+            opcode::CALL
+                | opcode::CALLCODE
+                | opcode::DELEGATECALL
+                | opcode::STATICCALL
+                | opcode::CREATE
+                | opcode::CREATE2
+        ) && matches!(
+            interp.bytecode.action(),
+            Some(InterpreterAction::NewFrame(_))
+        );
+        if forwards_gas {
+            // The spent gas now includes the forwarded gas. The child returns
+            // the gas it does not use, so frame_end records the requirement.
+            self.remaining_after_forward = Some(interp.gas.remaining());
+        } else {
+            frame.need = frame.need.max(interp.gas.total_gas_spent());
+        }
+    }
+
+    fn frame_start(&mut self, gas_limit: u64, stipend: u64) {
+        if !self.enabled {
+            return;
+        }
+        let forwarded = gas_limit - stipend;
+        let parent_spent = match (self.frames.last(), self.remaining_after_forward.take()) {
+            (Some(parent), Some(remaining)) => parent.gas_limit - (remaining + forwarded),
+            _ => 0,
+        };
+        self.frames.push(FrameGas {
+            gas_limit,
+            need: 0,
+            parent_spent,
+            stipend,
+        });
+    }
+
+    fn frame_end(&mut self, result: &InterpreterResult, gas_params: &GasParams) {
+        if !self.enabled {
+            return;
+        }
+        let Some(mut frame) = self.frames.pop() else {
+            return;
+        };
+        // A frame with no bytecode (a precompile or an account with no code)
+        // has no steps, so its need is the gas it used.
+        frame.need = frame.need.max(frame.gas_limit - result.gas.remaining());
+        if !result.result.is_ok_or_revert() {
+            self.halted = true;
+        }
+        match self.frames.last_mut() {
+            Some(parent) => {
+                let child_gas = frame.need.saturating_sub(frame.stipend);
+                let required = frame.parent_spent + min_gas_to_forward(gas_params, child_gas);
+                parent.need = parent.need.max(required);
+            }
+            None => self.top_frame = Some(frame),
+        }
+    }
+}
+
+// The smallest remaining gas from which CALL or CREATE forwards at least
+// `child_gas` (EIP-150 keeps 1/64 in the caller).
+fn min_gas_to_forward(gas_params: &GasParams, child_gas: u64) -> u64 {
+    let forwarded = |gas: u64| gas_params.call_stipend_reduction(gas);
+    let mut gas = child_gas.saturating_add(child_gas / 63);
+    while gas < u64::MAX && forwarded(gas) < child_gas {
+        gas += 1;
+    }
+    while gas > 0 && forwarded(gas - 1) >= child_gas {
+        gas -= 1;
+    }
+    gas
+}
+
 // Per-journal pre/post-image record. REVM's transaction execution clears its
 // internal journal log on success, so cross-tx isolation has to live in
 // userland: we capture pre-images on first touch within a journal, post-
@@ -285,7 +483,7 @@ impl EvmHarness {
     pub fn new() -> Self {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
-        let evm = ctx.build_monad_with_inspector(MappingRecoveryInspector::default());
+        let evm = ctx.build_monad_with_inspector(HarnessInspector::default());
         Self {
             evm,
             journals: HashMap::new(),
@@ -388,36 +586,50 @@ impl EvmHarness {
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         self.ensure_initialized()?;
-        let mut result = match self.run_tx(params, None, false) {
-            Ok(result) => result,
+        let tx = TxRequest::parse(params, self.evm.0.ctx.cfg.0.chain_id)?;
+        // The discovery pass is the only pass. Its post-state is the
+        // mutation's state, and the accounts and slots it touched become the
+        // journal's access list.
+        let (result, access_list) = match self.discovery_pass(&tx) {
+            Ok(pass) => pass,
             Err(error) => {
                 let _ = self.evm.finalize();
                 return Err(error);
             }
         };
-        if result.success {
-            result.slot_writes = collect_slot_writes(self.evm.0.ctx.journaled_state.evm_state());
-            let mut journal = Journal::default();
-            self.record_into_journal(&mut journal);
-            journal.access_list = result.tx_access_list.clone();
-            // Commit the journaled state into the DB so future reads and
-            // writes see the post-tx state.
-            self.flush_journal_to_db();
-            let journal_id = self.next_journal_id;
-            self.next_journal_id += 1;
-            self.journals.insert(journal_id, journal);
-            result.journal_id = Some(journal_id);
-        } else {
+        let outcome = self.tx_outcome(&result, &access_list);
+        if !outcome.success {
             // A failed tx is observable as a rejection, not as local state.
             // Drain and discard any journal state left by revm.
             let _ = self.evm.finalize();
+            return Ok(ExecuteOk {
+                outcome,
+                journal_id: None,
+                slot_writes: Vec::new(),
+            });
         }
-        Ok(result)
+
+        let slot_writes = collect_slot_writes(self.evm.0.ctx.journaled_state.evm_state());
+        let mut journal = Journal::default();
+        self.record_into_journal(&mut journal);
+        journal.access_list = access_list;
+        // Commit the journaled state into the DB so future reads and
+        // writes see the post-tx state.
+        self.flush_journal_to_db();
+        let journal_id = self.next_journal_id;
+        self.next_journal_id += 1;
+        self.journals.insert(journal_id, journal);
+        Ok(ExecuteOk {
+            outcome,
+            journal_id: Some(journal_id),
+            slot_writes,
+        })
     }
 
-    fn simulate(&mut self, params: &SimulateParams) -> Result<ExecuteOk, String> {
+    fn simulate(&mut self, params: &SimulateParams) -> Result<SimulateOk, String> {
         self.ensure_initialized()?;
         self.ensure_journal_ids(&params.journal_ids)?;
+        let tx = TxRequest::parse(&params.tx, self.evm.0.ctx.cfg.0.chain_id)?;
 
         {
             let db = self.evm.0.ctx.journaled_state.db_mut();
@@ -431,9 +643,9 @@ impl EvmHarness {
         }
 
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
-        let result = self.run_tx(&params.as_execute_params(), cached_access_list, true);
+        let result = self.run_simulate(&tx, cached_access_list);
 
-        // Drop pass 2's journal-state writes so they never reach the DB.
+        // Drop the last pass's journal-state writes so they never reach the DB.
         let _ = self.evm.finalize();
 
         // Re-apply post-images in caller-provided occurrence order regardless
@@ -515,168 +727,96 @@ impl EvmHarness {
         Ok(())
     }
 
-    // Execute and simulate share this path.
-    //
-    // Execute (`estimate_gas == false`) runs once with no access list and
-    // leaves the post-state live. The touched accounts and slots become the
-    // journal's access list, and gas_used is the gas with cold access. Only
-    // simulate builds the onchain transaction, so only simulate needs warm
-    // gas and a gas limit.
-    //
-    // Simulate runs pass 1 to discover the access list, unless the caller
-    // gives one from cached journals. Pass 2 runs with those addresses/slots
-    // pre-warmed, so the metered gas matches what the chain charges for a tx
-    // sent with that access list. On success, a gas-limit search and a final
-    // pass at that limit follow.
+    // Run the tx with no access list at max gas and collect the accounts and
+    // slots it touched. The post-state stays live; the caller commits or
+    // discards it.
     //
     // Between passes, finalize drains the journal state and we discard it so
     // the next pass starts from the same DB state. The alternative —
     // checkpoint_revert — doesn't work because transact_one calls commit_tx
     // after success, which clears the revertable journal log.
-    fn run_tx(
+    fn discovery_pass(&mut self, tx: &TxRequest) -> Result<(TxResult, AccessList), String> {
+        self.evm.0.inspector.clear();
+        let result = self
+            .evm
+            .inspect_one_tx(tx.tx_env(AccessList::default(), u64::MAX))
+            .map_err(|e| format!("transact (discovery pass): {e:?}"))?;
+        let journaled_state = &self.evm.0.ctx.journaled_state;
+        let access_list = discovered_access_list(
+            journaled_state.evm_state(),
+            journaled_state.precompile_addresses(),
+            tx,
+            self.evm.0.ctx.block.beneficiary,
+        );
+        Ok((result, access_list))
+    }
+
+    // Simulate discovers the access list, unless the caller gives one from
+    // cached journals. The measured pass runs at max gas with those addresses
+    // and slots pre-warmed, so the metered gas matches what the chain charges
+    // for a tx sent with that access list. The same pass traces the gas limit.
+    // The post-state stays live.
+    fn run_simulate(
         &mut self,
-        params: &ExecuteParams,
+        tx: &TxRequest,
         cached_access_list: Option<AccessList>,
-        estimate_gas: bool,
-    ) -> Result<ExecuteOk, String> {
-        let from = parse_address(&params.from)?;
-        let to = parse_address(&params.to)?;
-        let data = parse_bytes(&params.data)?;
-        let value = match params.value.as_deref() {
-            Some(v) => parse_u256(v)?,
-            None => U256::ZERO,
-        };
-        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
-        let coinbase = self.evm.0.ctx.block.beneficiary;
-
-        let build_tx = |access_list: AccessList, gas_limit: u64| {
-            TxEnv::builder()
-                .caller(from)
-                .chain_id(Some(chain_id))
-                .kind(TxKind::Call(to))
-                .gas_limit(gas_limit)
-                .gas_price(0)
-                .value(value)
-                .data(data.clone())
-                .access_list(access_list)
-                .build_fill()
-        };
-
-        if !estimate_gas {
-            // Execute: the discovery pass is the only pass.
-            self.evm.0.inspector.clear();
-            let result = self
-                .evm
-                .inspect_one_tx(build_tx(AccessList::default(), u64::MAX))
-                .map_err(|e| format!("transact (execute): {e:?}"))?;
-            let tx_access_list = discovered_access_list(
-                self.evm.0.ctx.journaled_state.evm_state(),
-                from,
-                to,
-                coinbase,
-            );
-            return Ok(self.execute_ok(&result, None, tx_access_list));
-        }
-
-        let tx_access_list = match cached_access_list {
+    ) -> Result<SimulateOk, String> {
+        let access_list = match cached_access_list {
             Some(access_list) => access_list,
             None => {
-                // Pass 1 — discover the access list from touched accounts/slots.
-                self.evm.0.inspector.clear();
-                let _ = self
-                    .evm
-                    .inspect_one_tx(build_tx(AccessList::default(), u64::MAX))
-                    .map_err(|e| format!("transact (pass 1): {e:?}"))?;
-                let access_list = discovered_access_list(
-                    self.evm.0.ctx.journaled_state.evm_state(),
-                    from,
-                    to,
-                    coinbase,
-                );
-                self.evm.0.inspector.clear();
-                // Drain pass 1's journal state without committing it.
+                let (_, access_list) = self.discovery_pass(tx)?;
+                // Drain the discovery pass's journal state without committing it.
                 let _ = self.evm.finalize();
                 access_list
             }
         };
 
-        // Measure with pre-warmed access list.
-
         self.evm.0.inspector.clear();
-        let mut result = self
+        self.evm.0.inspector.gas.start();
+        let result = self
             .evm
-            .inspect_one_tx(build_tx(tx_access_list.clone(), u64::MAX))
-            .map_err(|e| format!("transact (pass 2): {e:?}"))?;
+            .inspect_one_tx(tx.tx_env(access_list.clone(), u64::MAX))
+            .map_err(|e| format!("transact (simulate): {e:?}"));
+        let traced_gas_limit = self.evm.0.inspector.gas.finish(u64::MAX);
+        let result = result?;
 
-        let gas_limit = match &result {
-            ExecutionResult::Success { .. } => {
-                self.evm.0.inspector.clear();
-                let _ = self.evm.finalize();
-                let gas_limit =
-                    self.estimate_gas_limit(params, tx_access_list.clone(), result.tx_gas_used())?;
-
-                // The estimate attempts finalize their own state, so rerun the
-                // successful pass at the estimated limit.
-                self.evm.0.inspector.clear();
-                result = self
-                    .evm
-                    .inspect_one_tx(build_tx(tx_access_list.clone(), gas_limit))
-                    .map_err(|e| format!("transact (final pass): {e:?}"))?;
-                gas_limit
-            }
-            ExecutionResult::Revert { .. } | ExecutionResult::Halt { .. } => result.tx_gas_used(),
+        let outcome = self.tx_outcome(&result, &access_list);
+        let gas_limit = if outcome.success {
+            // tx_gas_used is at least the calldata floor (EIP-7623), and the
+            // chain rejects a gas limit below the floor.
+            traced_gas_limit?.max(result.tx_gas_used())
+        } else {
+            result.tx_gas_used()
         };
-
-        Ok(self.execute_ok(&result, Some(gas_limit), tx_access_list))
+        Ok(SimulateOk { outcome, gas_limit })
     }
 
-    fn execute_ok<H: std::fmt::Debug>(
-        &self,
-        result: &ExecutionResult<H>,
-        gas_limit: Option<u64>,
-        tx_access_list: AccessList,
-    ) -> ExecuteOk {
-        let (success, gas_used, output, revert_data) = match result {
+    fn tx_outcome(&self, result: &TxResult, access_list: &AccessList) -> TxOutcome {
+        let (success, output, revert_data) = match result {
             ExecutionResult::Success { output, .. } => {
                 let bytes = match output {
-                    Output::Call(b) => b.clone(),
-                    Output::Create(b, _) => b.clone(),
+                    Output::Call(b) => b,
+                    Output::Create(b, _) => b,
                 };
-                (
-                    true,
-                    result.tx_gas_used(),
-                    format!("0x{}", hex::encode(&bytes)),
-                    None,
-                )
+                (true, format!("0x{}", hex::encode(bytes)), None)
             }
             ExecutionResult::Revert { output, .. } => (
                 false,
-                result.tx_gas_used(),
                 format!("0x{}", hex::encode(output)),
                 Some(format!("0x{}", hex::encode(output))),
             ),
-            ExecutionResult::Halt { reason, .. } => (
-                false,
-                result.tx_gas_used(),
-                "0x".into(),
-                Some(format!("halt: {reason:?}")),
-            ),
+            ExecutionResult::Halt { reason, .. } => {
+                (false, "0x".into(), Some(format!("halt: {reason:?}")))
+            }
         };
 
-        let access_list_wire = encode_access_list(&tx_access_list);
-        let keccak_preimages = self.evm.0.inspector.wire_preimages();
-
-        ExecuteOk {
+        TxOutcome {
             success,
-            journal_id: None,
-            gas_used,
-            gas_limit,
+            gas_used: result.tx_gas_used(),
             output,
-            access_list: access_list_wire,
-            slot_writes: Vec::new(),
-            keccak_preimages,
+            access_list: encode_access_list(access_list),
+            keccak_preimages: self.evm.0.inspector.wire_preimages(),
             revert_data,
-            tx_access_list,
         }
     }
 
@@ -710,74 +850,49 @@ impl EvmHarness {
 
         Some(AccessList(items))
     }
-
-    fn estimate_gas_limit(
-        &mut self,
-        params: &ExecuteParams,
-        access_list: AccessList,
-        gas_used: u64,
-    ) -> Result<u64, String> {
-        let mut high = gas_used.max(21_000);
-        while !self.succeeds_with_gas_limit(params, access_list.clone(), high)? {
-            high = high
-                .checked_add((high / 64).max(1_000))
-                .ok_or_else(|| "gas estimate overflow".to_string())?;
-        }
-
-        let mut low = gas_used.saturating_sub(1);
-        while low + 1 < high {
-            let mid = low + (high - low) / 2;
-            if self.succeeds_with_gas_limit(params, access_list.clone(), mid)? {
-                high = mid;
-            } else {
-                low = mid;
-            }
-        }
-
-        Ok(high)
-    }
-
-    fn succeeds_with_gas_limit(
-        &mut self,
-        params: &ExecuteParams,
-        access_list: AccessList,
-        gas_limit: u64,
-    ) -> Result<bool, String> {
-        let from = parse_address(&params.from)?;
-        let to = parse_address(&params.to)?;
-        let data = parse_bytes(&params.data)?;
-        let value = match params.value.as_deref() {
-            Some(v) => parse_u256(v)?,
-            None => U256::ZERO,
-        };
-        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
-
-        let tx = TxEnv::builder()
-            .caller(from)
-            .chain_id(Some(chain_id))
-            .kind(TxKind::Call(to))
-            .gas_limit(gas_limit)
-            .gas_price(0)
-            .value(value)
-            .data(data)
-            .access_list(access_list)
-            .build_fill();
-
-        self.evm.0.inspector.clear();
-        let result = self
-            .evm
-            .inspect_one_tx(tx)
-            .map_err(|e| format!("transact (estimate): {e:?}"))?;
-        let success = matches!(result, ExecutionResult::Success { .. });
-        let _ = self.evm.finalize();
-        self.evm.0.inspector.clear();
-        Ok(success)
-    }
 }
 
 impl Default for EvmHarness {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// The tx fields parsed once per request. Each pass builds its TxEnv from
+// these with its own access list and gas limit.
+struct TxRequest {
+    from: Address,
+    to: Address,
+    data: Bytes,
+    value: U256,
+    chain_id: u64,
+}
+
+impl TxRequest {
+    fn parse(params: &ExecuteParams, chain_id: u64) -> Result<Self, String> {
+        Ok(Self {
+            from: parse_address(&params.from)?,
+            to: parse_address(&params.to)?,
+            data: parse_bytes(&params.data)?,
+            value: match params.value.as_deref() {
+                Some(v) => parse_u256(v)?,
+                None => U256::ZERO,
+            },
+            chain_id,
+        })
+    }
+
+    fn tx_env(&self, access_list: AccessList, gas_limit: u64) -> TxEnv {
+        TxEnv::builder()
+            .caller(self.from)
+            .chain_id(Some(self.chain_id))
+            .kind(TxKind::Call(self.to))
+            .gas_limit(gas_limit)
+            .gas_price(0)
+            .value(self.value)
+            .data(self.data.clone())
+            .access_list(access_list)
+            .build_fill()
     }
 }
 
@@ -802,42 +917,33 @@ fn replay(db: &mut InMemoryDB, journal: &Journal) {
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-// Walk the journal's post-tx state, collecting every account that was
-// touched and the storage slots that were loaded for it. This is what we
-// pass to pass 2 as the access list, and what we serialize back to TS.
-fn collect_access_list(state: &revm::state::EvmState) -> AccessList {
-    let mut items: Vec<AccessListItem> = Vec::new();
-    for (address, account) in state.iter() {
-        let storage_keys: Vec<B256> = account
-            .storage
-            .keys()
-            .map(|slot| B256::from(slot.to_be_bytes()))
-            .collect();
-        items.push(AccessListItem {
-            address: *address,
-            storage_keys,
-        });
-    }
-    AccessList(items)
-}
-
-// collect_access_list includes every account touched during execution. Keep
+// Every account the tx touched, with the storage slots it loaded. Keep
 // address-only entries for cold callees, but drop addresses that are already
-// warm at transaction start.
+// warm at transaction start: the sender, the recipient, the coinbase, and the
+// precompiles of the active spec.
 fn discovered_access_list(
     state: &revm::state::EvmState,
-    from: Address,
-    to: Address,
+    precompiles: &AddressSet,
+    tx: &TxRequest,
     coinbase: Address,
 ) -> AccessList {
+    let is_warm = |address: &Address| {
+        *address == tx.from
+            || *address == tx.to
+            || *address == coinbase
+            || precompiles.contains(address)
+    };
     AccessList(
-        collect_access_list(state)
-            .0
-            .into_iter()
-            .filter(|item| {
-                !item.storage_keys.is_empty()
-                    || (!is_intrinsically_warm(item.address, from, to, coinbase)
-                        && !is_precompile(item.address))
+        state
+            .iter()
+            .filter(|(address, account)| !account.storage.is_empty() || !is_warm(address))
+            .map(|(address, account)| AccessListItem {
+                address: *address,
+                storage_keys: account
+                    .storage
+                    .keys()
+                    .map(|slot| B256::from(slot.to_be_bytes()))
+                    .collect(),
             })
             .collect(),
     )
@@ -846,12 +952,11 @@ fn discovered_access_list(
 fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
     let mut out: Vec<AccessListEntry> = Vec::new();
     for item in &list.0 {
-        let keys: Vec<String> = item
+        let mut keys: Vec<String> = item
             .storage_keys
             .iter()
             .map(|k| format!("0x{}", hex::encode(k.as_slice())))
             .collect();
-        let mut keys = keys;
         keys.sort();
         out.push(AccessListEntry {
             address: format!("0x{:x}", item.address),
@@ -881,20 +986,6 @@ fn collect_slot_writes(state: &revm::state::EvmState) -> Vec<SlotWriteEntry> {
     }
     writes.sort_by(|a, b| a.address.cmp(&b.address).then(a.slot.cmp(&b.slot)));
     writes
-}
-
-fn is_intrinsically_warm(
-    address: Address,
-    caller: Address,
-    to: Address,
-    coinbase: Address,
-) -> bool {
-    address == caller || address == to || address == coinbase
-}
-
-fn is_precompile(address: Address) -> bool {
-    let bytes = address.as_slice();
-    bytes[..19].iter().all(|byte| *byte == 0) && (1..=10).contains(&bytes[19])
 }
 
 fn parse_address(s: &str) -> Result<Address, String> {
@@ -1007,4 +1098,244 @@ fn err(id: u64, error: String) -> String {
         ok: false,
         error,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CALLER: u16 = 0xca11;
+    const CONTRACT: u16 = 0x0c01;
+    const CALLEE: u16 = 0x0c02;
+    const INNER: u16 = 0x0c03;
+
+    // Increments slot 0: PUSH1 0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE STOP.
+    const COUNTER: &[u8] = &[0x60, 0x00, 0x80, 0x54, 0x60, 0x01, 0x01, 0x90, 0x55, 0x00];
+    // Revert target at offset 3, then the body starts at offset 8:
+    // PUSH1 8 JUMP | JUMPDEST PUSH1 0 DUP1 REVERT | JUMPDEST.
+    const PRELUDE: &[u8] = &[0x60, 0x08, 0x56, 0x5b, 0x60, 0x00, 0x80, 0xfd, 0x5b];
+    // ISZERO PUSH1 3 JUMPI: revert unless the top of the stack is nonzero.
+    const REQUIRE: &[u8] = &[0x15, 0x60, 0x03, 0x57];
+
+    fn address(n: u16) -> Address {
+        let mut bytes = [0u8; 20];
+        bytes[18..].copy_from_slice(&n.to_be_bytes());
+        Address::from(bytes)
+    }
+
+    fn push_address(code: &mut Vec<u8>, target: u16) {
+        code.push(0x73);
+        code.extend_from_slice(address(target).as_slice());
+    }
+
+    // CALL target with all gas, no calldata, and `value` wei.
+    fn call(code: &mut Vec<u8>, target: u16, value: u8) {
+        code.extend_from_slice(&[0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0, 0x60, value]);
+        push_address(code, target);
+        code.extend_from_slice(&[0x5a, 0xf1]);
+    }
+
+    // STATICCALL target with all gas and no calldata.
+    fn static_call(code: &mut Vec<u8>, target: u16) {
+        code.extend_from_slice(&[0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0]);
+        push_address(code, target);
+        code.extend_from_slice(&[0x5a, 0xfa]);
+    }
+
+    // Calls `target` and reverts when the call fails.
+    fn call_or_revert(target: u16, value: u8) -> Vec<u8> {
+        let mut code = PRELUDE.to_vec();
+        call(&mut code, target, value);
+        code.extend_from_slice(REQUIRE);
+        code.push(0x00);
+        code
+    }
+
+    fn harness(accounts: &[(u16, &[u8])], storage: &[(u16, u8, u8)]) -> EvmHarness {
+        let mut init = serde_json::Map::new();
+        for (account, code) in accounts {
+            let account_storage: serde_json::Map<String, serde_json::Value> = storage
+                .iter()
+                .filter(|(owner, _, _)| owner == account)
+                .map(|(_, slot, value)| (format!("0x{slot:x}"), format!("0x{value:x}").into()))
+                .collect();
+            init.insert(
+                format!("{:#x}", address(*account)),
+                serde_json::json!({
+                    "code": format!("0x{}", hex::encode(code)),
+                    "balance": "0x100",
+                    "storage": account_storage,
+                }),
+            );
+        }
+        let params: InitParams =
+            serde_json::from_value(serde_json::json!({ "accounts": init })).unwrap();
+        let mut harness = EvmHarness::new();
+        harness.init(&params).unwrap();
+        harness
+    }
+
+    fn tx(harness: &EvmHarness, to: u16) -> TxRequest {
+        TxRequest {
+            from: address(CALLER),
+            to: address(to),
+            data: Bytes::new(),
+            value: U256::ZERO,
+            chain_id: harness.evm.0.ctx.cfg.0.chain_id,
+        }
+    }
+
+    // Returns the traced gas limit and the gas used at max gas.
+    fn simulate(harness: &mut EvmHarness, to: u16) -> Result<(u64, u64), String> {
+        let tx = tx(harness, to);
+        let result = harness.run_simulate(&tx, Some(AccessList::default()));
+        let _ = harness.evm.finalize();
+        let result = result?;
+        assert!(result.outcome.success);
+        Ok((result.gas_limit, result.outcome.gas_used))
+    }
+
+    // Runs the tx at `gas_limit` and returns whether it succeeded and the
+    // value it left in `account`'s slot 0.
+    fn run_at(harness: &mut EvmHarness, to: u16, gas_limit: u64, account: u16) -> (bool, U256) {
+        let tx = tx(harness, to);
+        harness.evm.0.inspector.clear();
+        let result = harness
+            .evm
+            .inspect_one_tx(tx.tx_env(AccessList::default(), gas_limit))
+            .unwrap();
+        let slot = harness
+            .evm
+            .0
+            .ctx
+            .journaled_state
+            .evm_state()
+            .get(&address(account))
+            .and_then(|account| account.storage.get(&U256::ZERO))
+            .map_or(U256::ZERO, |slot| slot.present_value());
+        let _ = harness.evm.finalize();
+        (matches!(result, ExecutionResult::Success { .. }), slot)
+    }
+
+    // The traced limit succeeds and one gas less fails. Returns the limit and
+    // the gas used.
+    fn assert_exact(harness: &mut EvmHarness, to: u16) -> (u64, u64) {
+        let (gas_limit, gas_used) = simulate(harness, to).unwrap();
+        assert!(run_at(harness, to, gas_limit, to).0);
+        assert!(!run_at(harness, to, gas_limit - 1, to).0);
+        (gas_limit, gas_used)
+    }
+
+    #[test]
+    fn sstore_needs_more_than_the_call_stipend() {
+        // PUSH1 0 SLOAD PUSH1 0 SSTORE STOP: a warm SSTORE costs less than
+        // the 2,300 gas that must remain before it.
+        let code = [0x60, 0x00, 0x54, 0x60, 0x00, 0x55, 0x00];
+        let mut harness = harness(&[(CONTRACT, &code)], &[]);
+        let (gas_limit, gas_used) = assert_exact(&mut harness, CONTRACT);
+        assert!(gas_limit > gas_used);
+    }
+
+    #[test]
+    fn call_keeps_one_64th() {
+        let caller = call_or_revert(CALLEE, 0);
+        let mut harness = harness(&[(CONTRACT, &caller), (CALLEE, COUNTER)], &[]);
+        let (gas_limit, gas_used) = assert_exact(&mut harness, CONTRACT);
+        assert!(gas_limit > gas_used);
+    }
+
+    #[test]
+    fn nested_calls() {
+        let outer = call_or_revert(CALLEE, 0);
+        let middle = call_or_revert(INNER, 0);
+        let mut harness = harness(
+            &[(CONTRACT, &outer), (CALLEE, &middle), (INNER, COUNTER)],
+            &[],
+        );
+        assert_exact(&mut harness, CONTRACT);
+    }
+
+    #[test]
+    fn value_call_gets_the_stipend() {
+        let caller = call_or_revert(CALLEE, 1);
+        let mut harness = harness(&[(CONTRACT, &caller), (CALLEE, COUNTER)], &[]);
+        assert_exact(&mut harness, CONTRACT);
+    }
+
+    #[test]
+    fn value_call_to_an_account_with_no_code() {
+        let caller = call_or_revert(INNER, 1);
+        let mut harness = harness(&[(CONTRACT, &caller)], &[]);
+        assert_exact(&mut harness, CONTRACT);
+    }
+
+    #[test]
+    fn static_call_to_precompiles() {
+        for precompile in [0x01, 0x100] {
+            let mut caller = PRELUDE.to_vec();
+            static_call(&mut caller, precompile);
+            caller.extend_from_slice(REQUIRE);
+            caller.push(0x00);
+            let mut harness = harness(&[(CONTRACT, &caller)], &[]);
+            assert_exact(&mut harness, CONTRACT);
+        }
+    }
+
+    #[test]
+    fn create_keeps_one_64th() {
+        // Init code: PUSH1 1 PUSH1 0 SSTORE PUSH1 0 PUSH1 0 RETURN.
+        let init_code = [0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x00, 0xf3];
+        let mut caller = PRELUDE.to_vec();
+        caller.push(0x69);
+        caller.extend_from_slice(&init_code);
+        // PUSH1 0 MSTORE, then CREATE(value 0, offset 22, size 10).
+        caller.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x0a, 0x60, 0x16, 0x60, 0x00, 0xf0]);
+        caller.extend_from_slice(REQUIRE);
+        caller.push(0x00);
+        let mut harness = harness(&[(CONTRACT, &caller)], &[]);
+        let (gas_limit, gas_used) = assert_exact(&mut harness, CONTRACT);
+        assert!(gas_limit > gas_used);
+    }
+
+    #[test]
+    fn clearing_a_slot_gives_no_refund() {
+        // PUSH1 0 PUSH1 0 SSTORE STOP clears slot 0. Ethereum refunds gas
+        // for this, and gas used then falls below the gas the tx needs.
+        // Monad gives no refunds.
+        let code = [0x60, 0x00, 0x60, 0x00, 0x55, 0x00];
+        let mut harness = harness(&[(CONTRACT, &code)], &[(CONTRACT, 0, 1)]);
+        let (gas_limit, gas_used) = assert_exact(&mut harness, CONTRACT);
+        assert_eq!(gas_limit, gas_used);
+    }
+
+    #[test]
+    fn ignored_call_failure_keeps_the_max_gas_path() {
+        // CALL the counter, POP the result, STOP. One gas below the traced
+        // limit the counter runs out of gas, but the caller still succeeds on
+        // a different path.
+        let mut caller = Vec::new();
+        call(&mut caller, CALLEE, 0);
+        caller.extend_from_slice(&[0x50, 0x00]);
+        let mut harness = harness(&[(CONTRACT, &caller), (CALLEE, COUNTER)], &[]);
+        let (gas_limit, _) = simulate(&mut harness, CONTRACT).unwrap();
+        assert_eq!(
+            run_at(&mut harness, CONTRACT, gas_limit, CALLEE),
+            (true, U256::from(1))
+        );
+        assert_eq!(
+            run_at(&mut harness, CONTRACT, gas_limit - 1, CALLEE),
+            (true, U256::ZERO)
+        );
+    }
+
+    #[test]
+    fn halting_call_has_no_gas_limit() {
+        // CALL a contract that runs INVALID with all gas, POP, STOP. The
+        // child uses almost all of u64::MAX gas.
+        let mut caller = Vec::new();
+        call(&mut caller, CALLEE, 0);
+        caller.extend_from_slice(&[0x50, 0x00]);
+        let mut harness = harness(&[(CONTRACT, &caller), (CALLEE, &[0xfe])], &[]);
+        assert!(simulate(&mut harness, CONTRACT).is_err());
+    }
 }
