@@ -215,7 +215,7 @@ test("typewriter order book changes an unfilled order to a new price", async () 
 test("db-queries fan out across per-mutation tables", async () => {
   const address = await deployOrderBook();
   const app = await createOrderBookTypewriter(address, {
-    submitIntervalMs: 400,
+    submitIntervalMs: 300,
   });
   const schema = app.schema;
   const db = drizzle({ client: TEST_DB_CONNECTION });

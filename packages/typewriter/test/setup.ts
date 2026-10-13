@@ -149,7 +149,7 @@ beforeAll(async () => {
   const server = Server.create({
     instance: Instance.anvil({
       binary: `${import.meta.dir}/bin/anvil-monad`,
-      blockTime: 0.4,
+      blockTime: 0.3,
     }),
     port,
   });
