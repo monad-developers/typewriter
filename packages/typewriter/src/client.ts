@@ -9,8 +9,8 @@ import type {
   RemoveCredentialParams,
 } from "./types";
 
-export { KeyType, packP256Signature };
 export type { Authorization, CreateAccountParams };
+export { KeyType, packP256Signature };
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_UINT192 = (1n << 192n) - 1n;
