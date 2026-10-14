@@ -5,11 +5,10 @@ import { Deposit } from "./components/Deposit";
 import { Header } from "./components/Header";
 import { LiveBlocks } from "./components/LiveBlocks";
 import { OrderBook } from "./components/OrderBook";
-import { AccountProvider, useAccountContext } from "./contexts/AccountContext";
-import { ManifestProvider } from "./contexts/ManifestContext";
 import { useBalances } from "./hooks/useBalances";
 import { useDemoSignUp } from "./hooks/useDemoSignUp";
 import { useSignUp } from "./hooks/useSignUp";
+import { useStoredAccount } from "./hooks/useStoredAccount";
 import "./index.css";
 import { RouterProvider, useMatch, useRoute } from "./lib/router";
 import { AboutOrderBook } from "./pages/AboutOrderBook";
@@ -53,7 +52,7 @@ function Auth() {
 }
 
 function OrderBookRoute() {
-  const { account, loading } = useAccountContext();
+  const { data: account, isPending: loading } = useStoredAccount();
   const balances = useBalances(account?.accountId);
 
   if (loading) return <Shell compact />;
@@ -133,11 +132,7 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider>
-        <ManifestProvider>
-          <AccountProvider>
-            <Routes />
-          </AccountProvider>
-        </ManifestProvider>
+        <Routes />
       </RouterProvider>
     </QueryClientProvider>
   );

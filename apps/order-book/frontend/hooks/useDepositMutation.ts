@@ -1,9 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { deploymentKey, incrementNonce } from "typewriter/client";
 import type { Address } from "viem";
-import { getNonce, useAccountContext } from "../contexts/AccountContext";
-import { useManifestContext } from "../contexts/ManifestContext";
 import { request } from "../lib/api";
+import { useManifest } from "./useManifest";
 import { signDeposit } from "./useSign";
+import { useStoredAccount } from "./useStoredAccount";
 
 type DepositParams = {
   asset: Address;
@@ -11,16 +12,20 @@ type DepositParams = {
 };
 
 export function useDepositMutation() {
-  const { account, incrementSeq } = useAccountContext();
-  const { manifest } = useManifestContext();
+  const { data: manifest } = useManifest();
+  const storageKey =
+    manifest === undefined
+      ? undefined
+      : deploymentKey(manifest.chainId, manifest.address);
+  const { data: account } = useStoredAccount();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ asset, amount }: DepositParams) => {
       if (!account) throw new Error("No account");
-      if (manifest === null) throw new Error("Missing manifest");
+      if (manifest === undefined) throw new Error("Missing manifest");
 
-      const signed = await signDeposit(account, manifest, getNonce(account), {
+      const signed = await signDeposit(account, manifest, account.nonce, {
         asset,
         amount,
       });
@@ -34,10 +39,13 @@ export function useDepositMutation() {
         `[tx-latency] deposit ${(performance.now() - start).toFixed(1)}ms`,
       );
 
-      return result;
+      return {
+        id: result.id,
+        account: { ...account, nonce: incrementNonce(account.nonce) },
+      };
     },
-    onSuccess: async () => {
-      incrementSeq();
+    onSuccess: async (result) => {
+      queryClient.setQueryData(["storedAccount", storageKey], result.account);
       await queryClient.invalidateQueries({
         queryKey: ["balances", account?.accountId],
       });

@@ -10,6 +10,7 @@ import { isTable } from "drizzle-orm/table";
 import { Data, Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import type { Address } from "ox";
+import { deploymentKey } from "./client";
 import { Database, type DatabaseClient } from "./db";
 import {
   deleteSlotWritesForUnsettledMutations,
@@ -50,14 +51,20 @@ export function updateSchema(
   }
 }
 
+// Postgres truncates longer identifiers without an error.
+const MAX_IDENTIFIER_LENGTH = 63;
+
 export function deploymentSchemaName(
   chainId: number,
   address: Address.Address,
 ): string {
-  if (!Number.isSafeInteger(chainId) || chainId < 0) {
-    throw new Error(`Invalid chain id: ${chainId}`);
+  const schemaName = `typewriter_${deploymentKey(chainId, address)}`;
+  if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
+    throw new Error(
+      `Schema name is longer than ${MAX_IDENTIFIER_LENGTH} characters: ${schemaName}`,
+    );
   }
-  return `typewriter_${chainId}_${address.toLowerCase()}`;
+  return schemaName;
 }
 
 function lockKey(schemaName: string): bigint {

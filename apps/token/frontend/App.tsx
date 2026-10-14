@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import superjson from "superjson";
 import type { TypewriterManifest } from "typewriter";
 import {
   authorizeMutation,
+  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   incrementNonce,
@@ -19,9 +19,11 @@ import {
   parseUnits,
   zeroHash,
 } from "viem";
-import { loadKeyPair, saveKeyPair } from "./key-store";
+import { useManifest } from "./hooks/useManifest";
+import { toAccount, useStoredAccount } from "./hooks/useStoredAccount";
+import { saveStoredAccount } from "./lib/account-store";
+import { type RequestParams, request } from "./lib/api";
 
-type Account = { accountID: Hex; nonce: bigint; keyPair: CryptoKeyPair };
 type AccountInfo = { balance: bigint };
 type TxStatus =
   | "received"
@@ -83,11 +85,7 @@ const TOKEN_MUTATIONS = {
   },
 } as const;
 
-type TokenManifest = TypewriterManifest<typeof TOKEN_MUTATIONS>;
-
-function accountStorageKey(manifest: TokenManifest): string {
-  return `${manifest.chainId}:${manifest.address.toLowerCase()}`;
-}
+export type TokenManifest = TypewriterManifest<typeof TOKEN_MUTATIONS>;
 
 function shortID(value: string) {
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
@@ -100,56 +98,6 @@ function relativeTime(timestamp: number) {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
-async function loadAccount(manifest: TokenManifest): Promise<Account | null> {
-  const storageKey = accountStorageKey(manifest);
-  const accountID = localStorage.getItem(`${storageKey}:accountID`);
-  const nonce = localStorage.getItem(`${storageKey}:nonce`);
-  const keyPair = await loadKeyPair(storageKey);
-  if (accountID?.startsWith("0x") !== true || accountID.length !== 66) {
-    return null;
-  }
-  if (nonce === null || keyPair === null) return null;
-
-  try {
-    return { accountID: accountID as Hex, nonce: BigInt(nonce), keyPair };
-  } catch {
-    return null;
-  }
-}
-
-async function storeAccount(
-  manifest: TokenManifest,
-  account: Account,
-): Promise<void> {
-  const storageKey = accountStorageKey(manifest);
-  localStorage.setItem(`${storageKey}:accountID`, account.accountID);
-  localStorage.setItem(`${storageKey}:nonce`, account.nonce.toString());
-  await saveKeyPair(storageKey, account.keyPair);
-}
-
-async function generateP256KeyPair(): Promise<CryptoKeyPair> {
-  const generated = (await crypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"],
-  )) as CryptoKeyPair;
-  const privateJwk = await crypto.subtle.exportKey("jwk", generated.privateKey);
-  const privateKey = await crypto.subtle.importKey(
-    "jwk",
-    privateJwk,
-    { name: "ECDSA", namedCurve: "P-256" },
-    false,
-    ["sign"],
-  );
-  return { privateKey, publicKey: generated.publicKey };
-}
-
-async function publicKeyHex(keyPair: CryptoKeyPair): Promise<Hex> {
-  return bytesToHex(
-    new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
-  );
-}
-
 async function signPayload(keyPair: CryptoKeyPair, payload: Hex): Promise<Hex> {
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
@@ -159,41 +107,8 @@ async function signPayload(keyPair: CryptoKeyPair, payload: Hex): Promise<Hex> {
   return packP256Signature(bytesToHex(new Uint8Array(signature)));
 }
 
-async function request<T>(params: {
-  method?: "GET" | "POST";
-  path: string;
-  body?: unknown;
-  log?: boolean;
-  record: (entry: Omit<RequestLogEntry, "id">) => void;
-}): Promise<T> {
-  const start = performance.now();
-  const method = params.method ?? "GET";
-  const response = await fetch(params.path, {
-    method,
-    headers:
-      params.body === undefined
-        ? undefined
-        : { "Content-Type": "application/json" },
-    body:
-      params.body === undefined ? undefined : superjson.stringify(params.body),
-  });
-  const duration = performance.now() - start;
-  if (params.log === true) {
-    params.record({
-      method,
-      path: params.path,
-      duration,
-      status: response.ok ? "ok" : "error",
-    });
-  }
-  if (!response.ok) throw new Error(await response.text());
-  return superjson.parse(await response.text()) as T;
-}
-
 export function App() {
   const queryClient = useQueryClient();
-  const [account, setAccount] = useState<Account | null>(null);
-  const [accountLoaded, setAccountLoaded] = useState(false);
   const [amount, setAmount] = useState(1);
   const [to, setTo] = useState<Hex>(EMPTY_ACCOUNT_ID);
   const [txs, setTxs] = useState<Tx[]>([]);
@@ -205,24 +120,42 @@ export function App() {
       [{ id: Date.now() + Math.random(), ...entry }, ...previous].slice(0, 24),
     );
   }, []);
-  const manifestQuery = useQuery({
-    queryKey: ["manifest"],
-    queryFn: () => request<TokenManifest>({ path: "/api/manifest", record }),
-  });
-  const manifest = manifestQuery.data;
+  // Records the request in the request log shown on the page.
+  async function loggedRequest<T>(
+    path: string,
+    params: RequestParams = {},
+  ): Promise<T> {
+    const start = performance.now();
+    const entry = { method: params.method ?? "GET", path };
+    try {
+      const result = await request<T>(path, params);
+      record({ ...entry, duration: performance.now() - start, status: "ok" });
+      return result;
+    } catch (error) {
+      record({
+        ...entry,
+        duration: performance.now() - start,
+        status: "error",
+      });
+      throw error;
+    }
+  }
+  const { data: manifest } = useManifest();
+  const storageKey =
+    manifest === undefined
+      ? undefined
+      : deploymentKey(manifest.chainId, manifest.address);
+  const storedAccountQuery = useStoredAccount();
+  const account = storedAccountQuery.data ?? null;
   const accountQuery = useQuery({
-    queryKey: ["account", account?.accountID],
+    queryKey: ["account", account?.accountId],
     queryFn: () =>
-      request<AccountInfo>({
-        path: `/api/account/${account!.accountID}`,
-        log: true,
-        record,
-      }),
+      loggedRequest<AccountInfo>(`/api/account/${account!.accountId}`),
     enabled: account !== null,
   });
   const accountIDsQuery = useQuery({
     queryKey: ["accountIDs"],
-    queryFn: () => request<Hex[]>({ path: "/api/accountIds", record }),
+    queryFn: () => request<Hex[]>("/api/accountIds"),
     enabled: account !== null,
     refetchInterval: 5_000,
   });
@@ -232,24 +165,11 @@ export function App() {
     () =>
       accountIDs.filter(
         (accountID) =>
-          accountID.toLowerCase() !== account?.accountID.toLowerCase(),
+          accountID.toLowerCase() !== account?.accountId.toLowerCase(),
       ),
     [accountIDs, account],
   );
   const recipientOptions = recipients.length === 0 ? [zeroHash] : recipients;
-
-  useEffect(() => {
-    let cancelled = false;
-    if (manifest === undefined) return;
-    void loadAccount(manifest).then((stored) => {
-      if (cancelled) return;
-      setAccount(stored);
-      setAccountLoaded(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [manifest]);
 
   useEffect(() => {
     setTo((current) => {
@@ -279,17 +199,23 @@ export function App() {
 
   const signInMutation = useMutation({
     mutationFn: async () => {
-      if (manifest === undefined) throw new Error("manifest unavailable");
-      const keyPair = await generateP256KeyPair();
-      const publicKey = await publicKeyHex(keyPair);
-      const storageKey = accountStorageKey(manifest);
+      if (manifest === undefined || storageKey === undefined) {
+        throw new Error("manifest unavailable");
+      }
+      const keyPair = await crypto.subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign", "verify"],
+      );
+      const publicKey = bytesToHex(
+        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
+      );
       const createParams = { keyType: KeyType.P256, publicKey } as const;
-      const accountID = deriveAccountID(createParams);
-      await saveKeyPair(storageKey, keyPair);
+      const accountId = deriveAccountID(createParams);
       const createMutation = {
         name: "CreateAccount",
         params: createParams,
-        accountID,
+        accountID: accountId,
         credentialID: 0n,
         nonce: 0n,
         expiration: 0n,
@@ -299,17 +225,14 @@ export function App() {
         getAuthorizationPayload(manifest, createMutation),
       );
       const create = authorizeMutation(createMutation, createSignature);
-      await request<{ id: number }>({
-        method: "POST",
-        path: "/api",
-        record,
-        body: create,
-      });
+      await request<{ id: number }>("/api", { method: "POST", body: create });
+      const stored = { accountId, keyPair };
+      await saveStoredAccount(storageKey, stored);
 
       const mintMutation = {
         name: "Mint",
         params: { amount: 1_000n },
-        accountID,
+        accountID: accountId,
         credentialID: 0n,
         nonce: 0n,
         expiration: BigInt(Math.floor(Date.now() / 1000) + 60),
@@ -320,38 +243,29 @@ export function App() {
       );
       const mint = authorizeMutation(mintMutation, mintSignature);
       const startedAt = performance.now();
-      const result = await request<{ id: number }>({
+      const result = await loggedRequest<{ id: number }>("/api", {
         method: "POST",
-        path: "/api",
-        log: true,
-        record,
         body: mint,
       });
       return {
-        account: {
-          accountID,
-          nonce: incrementNonce(mintMutation.nonce),
-          keyPair,
-        },
+        account: toAccount(stored),
         mutationId: result.id,
         submissionLatency: performance.now() - startedAt,
       };
     },
     onMutate: () => setError(null),
     onSuccess: async (result) => {
-      if (manifest === undefined) return;
-      await storeAccount(manifest, result.account);
-      setAccount(result.account);
+      queryClient.setQueryData(["storedAccount", storageKey], result.account);
       await queryClient.invalidateQueries({ queryKey: ["accountIDs"] });
       await queryClient.invalidateQueries({
-        queryKey: ["account", result.account.accountID],
+        queryKey: ["account", result.account.accountId],
       });
       setTxs((previous) => [
         {
           id: result.mutationId,
           status: "accepted",
           amount: 1_000n,
-          to: result.account.accountID,
+          to: result.account.accountId,
           submissionLatency: result.submissionLatency,
           timestamp: Date.now(),
         },
@@ -372,7 +286,7 @@ export function App() {
       const transferMutation = {
         name: "Transfer",
         params: { to, amount: amountUnits },
-        accountID: account.accountID,
+        accountID: account.accountId,
         credentialID: 0n,
         nonce: account.nonce,
         expiration: BigInt(Math.floor(Date.now() / 1000) + 60),
@@ -383,28 +297,22 @@ export function App() {
       );
       const transfer = authorizeMutation(transferMutation, transferSignature);
       const startedAt = performance.now();
-      const result = await request<{ id: number }>({
+      const result = await loggedRequest<{ id: number }>("/api", {
         method: "POST",
-        path: "/api",
-        log: true,
-        record,
         body: transfer,
       });
       return {
         id: result.id,
         amount: amountUnits,
         to,
-        nextNonce: incrementNonce(account.nonce),
+        account: { ...account, nonce: incrementNonce(account.nonce) },
         submissionLatency: performance.now() - startedAt,
       };
     },
     onMutate: () => setError(null),
     onSuccess: async (result) => {
       if (account === null) return;
-      if (manifest === undefined) return;
-      const nextAccount = { ...account, nonce: result.nextNonce };
-      await storeAccount(manifest, nextAccount);
-      setAccount(nextAccount);
+      queryClient.setQueryData(["storedAccount", storageKey], result.account);
       setTxs((previous) => [
         {
           id: result.id,
@@ -417,7 +325,7 @@ export function App() {
         ...previous,
       ]);
       await queryClient.invalidateQueries({
-        queryKey: ["account", account.accountID],
+        queryKey: ["account", account.accountId],
       });
       await queryClient.invalidateQueries({ queryKey: ["accountIDs"] });
       watchStatus(result.id);
@@ -427,7 +335,7 @@ export function App() {
   });
 
   const pending = signInMutation.isPending || transferMutation.isPending;
-  if (manifest === undefined || !accountLoaded) return null;
+  if (manifest === undefined || storedAccountQuery.isPending) return null;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -454,8 +362,8 @@ export function App() {
             {pending ? "Creating account..." : "Sign In"}
           </button>
           <p className="text-sm text-gray-400 max-w-md">
-            Create a P-256 account. The signing key stays in IndexedDB and only
-            the account ID and nonce are stored in localStorage.
+            Create a P-256 account. The account ID and signing key are stored
+            together in IndexedDB.
           </p>
           {error !== null ? <p className="error">{error}</p> : null}
         </main>
@@ -464,7 +372,7 @@ export function App() {
           <header className="w-full border-b p-4 min-h-80 flex flex-col md:flex-row gap-4">
             <div className="flex items-start gap-2 flex-col flex-1 min-w-0">
               <h2 className="text-2xl font-bold">Account Overview</h2>
-              <code className="break-all">account ID: {account.accountID}</code>
+              <code className="break-all">account ID: {account.accountId}</code>
               <code>balance: {formatUnits(info?.balance ?? 0n, 0)}</code>
               <code className="break-all">
                 nonce: {account.nonce.toString()}

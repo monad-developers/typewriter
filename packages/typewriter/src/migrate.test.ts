@@ -5,7 +5,7 @@ import type { Address } from "ox";
 import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import { HARNESS_MUTATIONS } from "../test/utils";
 import { layerDatabaseLive } from "./db";
-import { migrate } from "./migrate";
+import { deploymentSchemaName, migrate } from "./migrate";
 import { createMutationSchema } from "./schema";
 
 const runMigrate = (
@@ -41,9 +41,9 @@ const HARNESS_TABLES = [
 test("migrate creates the configured schema", async () => {
   const chainId = 31337;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const testSchema =
-    "typewriter_31337_0x000000000000000000000000000000000000typewriter";
+    "typewriter_31337_0x00000000000000000000000000000000000000ff";
 
   const schemaName = await runMigrate(harnessSchema(), chainId, address, 0n);
 
@@ -78,9 +78,9 @@ test("migrate creates the configured schema", async () => {
 test("migrate is idempotent when schema already exists", async () => {
   const chainId = 31338;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const testSchema =
-    "typewriter_31338_0x000000000000000000000000000000000000typewriter";
+    "typewriter_31338_0x00000000000000000000000000000000000000ff";
 
   const firstSchemaName = await runMigrate(
     harnessSchema(),
@@ -110,9 +110,9 @@ test("migrate is idempotent when schema already exists", async () => {
 test("migrate deletes unsettled mutations in an existing schema", async () => {
   const chainId = 31339;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const schemaName =
-    "typewriter_31339_0x000000000000000000000000000000000000typewriter";
+    "typewriter_31339_0x00000000000000000000000000000000000000ff";
 
   await runMigrate(harnessSchema(), chainId, address, 0n);
 
@@ -139,9 +139,9 @@ test("migrate deletes unsettled mutations in an existing schema", async () => {
 test("migrate deletes slot writes for unsettled mutations", async () => {
   const chainId = 31340;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const schemaName =
-    "typewriter_31340_0x000000000000000000000000000000000000typewriter";
+    "typewriter_31340_0x00000000000000000000000000000000000000ff";
   const schema = createMutationSchema({
     mutations: {
       add: {
@@ -188,9 +188,9 @@ test("migrate deletes slot writes for unsettled mutations", async () => {
 test("migrate removes newer unsettled slot writes for the same slot", async () => {
   const chainId = 31341;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const schemaName =
-    "typewriter_31341_0x000000000000000000000000000000000000typewriter";
+    "typewriter_31341_0x00000000000000000000000000000000000000ff";
   const schema = createMutationSchema({
     mutations: {
       add: {
@@ -248,9 +248,9 @@ test("migrate removes newer unsettled slot writes for the same slot", async () =
 test("migrate recovers accepted mutations below the onchain applied count", async () => {
   const chainId = 31342;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const schemaName =
-    "typewriter_31342_0x000000000000000000000000000000000000typewriter";
+    "typewriter_31342_0x00000000000000000000000000000000000000ff";
   const schema = createMutationSchema({
     mutations: {
       add: {
@@ -307,4 +307,13 @@ test("migrate recovers accepted mutations below the onchain applied count", asyn
         "0x0000000000000000000000000000000000000000000000000000000000000007",
     },
   ]);
+});
+
+test("deploymentSchemaName rejects names that Postgres would truncate", () => {
+  const address = "0x1111111111111111111111111111111111111111";
+  expect(deploymentSchemaName(10143, address)).toBe(
+    `typewriter_10143_${address}`,
+  );
+  expect(deploymentSchemaName(999_999_999, address)).toHaveLength(63);
+  expect(() => deploymentSchemaName(1_000_000_000, address)).toThrow();
 });

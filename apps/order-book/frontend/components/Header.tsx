@@ -1,8 +1,9 @@
 import { TokenAmount, USD } from "order-book-sdk";
-import { useAccountContext } from "../contexts/AccountContext";
 import { useAccount } from "../hooks/useAccount";
 import { useBalances } from "../hooks/useBalances";
 import { usePing } from "../hooks/usePing";
+import { useSignOut } from "../hooks/useSignOut";
+import { useStoredAccount } from "../hooks/useStoredAccount";
 import { Link } from "../lib/router";
 
 export function Header({ compact = false }: { compact?: boolean }) {
@@ -43,7 +44,8 @@ function Ping() {
 }
 
 function HeaderAccountControls() {
-  const { account, setAccount } = useAccountContext();
+  const { data: account } = useStoredAccount();
+  const signOut = useSignOut();
   const { data } = useBalances(account?.accountId);
   const accountQuery = useAccount(account?.accountId);
 
@@ -67,7 +69,7 @@ function HeaderAccountControls() {
           ) : null}
           <button
             type="button"
-            onClick={() => void setAccount(null)}
+            onClick={() => signOut.mutate()}
             className="border border-black px-3 py-1 cursor-pointer hover:bg-zinc-50"
           >
             sign out

@@ -2,7 +2,7 @@ import architectureDiagram from "../architecture.svg";
 import { CodeBlock } from "../components/CodeBlock";
 import { Info } from "../components/Info";
 import { InlineCode } from "../components/InlineCode";
-import { useManifestContext } from "../contexts/ManifestContext";
+import { useManifest } from "../hooks/useManifest";
 import orderBookScreenshot from "../image.png";
 import { Link } from "../lib/router";
 import orderSequencingScreenshot from "../order-sequencing.png";
@@ -13,7 +13,7 @@ const CHAIN_NAMES: Record<number, string> = {
 };
 
 export function AboutOrderBook() {
-  const { manifest } = useManifestContext();
+  const { data: manifest } = useManifest();
   const chainId = manifest?.chainId ?? 0;
   const chainName = manifest
     ? (CHAIN_NAMES[manifest.chainId] ?? `Chain ${manifest.chainId}`)
