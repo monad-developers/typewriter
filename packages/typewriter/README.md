@@ -508,6 +508,13 @@ Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmati
 
 The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives app mutation IDs, params, and typed storage from the contract.
 
+**Logging.** Two environment variables control runtime logs:
+
+- `TYPEWRITER_LOG_LEVEL` — `"trace" | "debug" | "info" | "warn" | "error"`. Default `"info"`.
+- `TYPEWRITER_LOG_FORMAT` — `"pretty" | "json"`. Default `"json"` when `NODE_ENV` is `"production"`, else `"pretty"`.
+
+An invalid value throws when the server module loads.
+
 #### `typewriter.manifest`
 
 ```ts
