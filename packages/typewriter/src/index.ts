@@ -26,7 +26,7 @@ type StorageRootProperty<
   storageConfig extends StorageConfig,
   name extends "accounts" | "state",
 > =
-  StorageView<storageConfig, true> extends infer root
+  StorageView<storageConfig, false> extends infer root
     ? name extends keyof root
       ? root[name]
       : never

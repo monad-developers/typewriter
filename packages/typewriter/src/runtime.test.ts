@@ -147,8 +147,8 @@ test("runtime loads persisted root state before returning", async () => {
         );
 
         const runtime = yield* createRuntimeEffect(app);
-        const state = runtime.state as { total: Promise<bigint> };
-        return yield* Effect.promise(() => state.total);
+        const state = runtime.state as { total: bigint };
+        return state.total;
       }).pipe(Effect.provide(layerRuntimeServices(address))),
     ),
   );
@@ -398,9 +398,9 @@ test("batch ordering executes credit before a submitted debit", async () => {
         concurrency: "unbounded",
       });
       const state = runtime.state as {
-        balances: Record<string, Promise<bigint> | undefined>;
+        balances: Record<string, bigint | undefined>;
       };
-      return yield* Effect.promise(() => state.balances[accountID]!);
+      return state.balances[accountID]!;
     }),
   );
 
@@ -480,9 +480,9 @@ test("runtime uses native credentials for P256 and WebAuthn mutations", async ()
       yield* runtime.execute(addWebAuthn);
       yield* runtime.execute(webAuthnCredit);
       const state = runtime.state as {
-        balances: Record<string, Promise<bigint> | undefined>;
+        balances: Record<string, bigint | undefined>;
       };
-      return yield* Effect.promise(() => state.balances[accountID]!);
+      return state.balances[accountID]!;
     }),
   );
 

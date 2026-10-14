@@ -1,6 +1,4 @@
-// Effect-native client for the typewriter-evm native addon.
-
-import { Data, Effect, Ref, type Scope, Semaphore } from "effect";
+import { Data, Effect, Ref, type Scope } from "effect";
 import type {
   BlockParams,
   ExecuteParams,
@@ -103,61 +101,60 @@ function loadNativeAddon(): NativeAddon {
   }
 }
 
-// Creates one native EVM harness per createEVM. A semaphore (capacity 1)
-// serializes calls so the harness only ever sees one request at a time.
+// Creates one native EVM harness per createEVM. Every method is one
+// synchronous native call, which blocks the thread, so the harness only ever
+// sees one request at a time without a lock. Nothing in a call suspends, so
+// `Effect.runSync` on a call always completes. Keep native methods synchronous:
+// an async native method needs calls to be serialized again.
 export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.gen(function* () {
       const native = new (loadNativeAddon().NativeEvm)();
-      const sem = yield* Semaphore.make(1);
-      const locked = sem.withPermits(1);
       const idCounterRef = yield* Ref.make(1);
 
       const call = <T>(
         method: Request["method"],
         build: (id: number) => Request,
       ): Effect.Effect<T, EvmError> =>
-        locked(
-          Effect.gen(function* () {
-            const id = yield* Ref.getAndUpdate(idCounterRef, (n) => n + 1);
-            const req = build(id);
+        Effect.gen(function* () {
+          const id = yield* Ref.getAndUpdate(idCounterRef, (n) => n + 1);
+          const req = build(id);
 
-            const responseJson = yield* Effect.try({
-              try: () => native.call(JSON.stringify(req)),
-              catch: (e) =>
-                new EvmCrashed({ message: "native call failed", cause: e }),
-            });
+          const responseJson = yield* Effect.try({
+            try: () => native.call(JSON.stringify(req)),
+            catch: (e) =>
+              new EvmCrashed({ message: "native call failed", cause: e }),
+          });
 
-            const res = yield* Effect.try({
-              try: () => JSON.parse(responseJson) as Response,
-              catch: (e) =>
-                new EvmProtocolError({
-                  message: `invalid response JSON: ${responseJson}`,
-                  cause: e,
-                }),
+          const res = yield* Effect.try({
+            try: () => JSON.parse(responseJson) as Response,
+            catch: (e) =>
+              new EvmProtocolError({
+                message: `invalid response JSON: ${responseJson}`,
+                cause: e,
+              }),
+          });
+          if (res.id !== id) {
+            const responseError = res.ok ? undefined : res.error;
+            // Mismatches often mean the TypeScript client and native addon
+            // are out of sync.
+            return yield* new EvmProtocolError({
+              message:
+                `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
+                (responseError === undefined
+                  ? ""
+                  : `; response error: ${responseError}`),
             });
-            if (res.id !== id) {
-              const responseError = res.ok ? undefined : res.error;
-              // Mismatches often mean the TypeScript client and native addon
-              // are out of sync.
-              return yield* new EvmProtocolError({
-                message:
-                  `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
-                  (responseError === undefined
-                    ? ""
-                    : `; response error: ${responseError}`),
-              });
-            }
-            if (!res.ok) {
-              return yield* new EvmCallError({
-                method,
-                message: `${method} failed: ${res.error}`,
-                cause: res.error,
-              });
-            }
-            return res.result as T;
-          }),
-        );
+          }
+          if (!res.ok) {
+            return yield* new EvmCallError({
+              method,
+              message: `${method} failed: ${res.error}`,
+              cause: res.error,
+            });
+          }
+          return res.result as T;
+        });
 
       const evm: EVM = {
         init: (params) =>

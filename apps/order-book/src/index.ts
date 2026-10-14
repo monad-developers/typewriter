@@ -80,9 +80,9 @@ function json(value: unknown, init?: ResponseInit): Response {
   });
 }
 
-async function accountCredentials(account: Hex) {
+function accountCredentials(account: Hex) {
   const credentials = app.accounts[account].credentials;
-  const length = await credentials.length;
+  const length = credentials.length;
   const out: {
     expiration: number;
     keyType: number;
@@ -91,29 +91,23 @@ async function accountCredentials(account: Hex) {
   }[] = [];
   for (let i = 0; i < length; i++) {
     const credential = credentials[i];
-    const [expiration, keyType, permissions, publicKey] = await Promise.all([
-      credential.expiration,
-      credential.keyType,
-      credential.permissions,
-      credential.publicKey,
-    ]);
     out.push({
-      expiration: Number(expiration),
-      keyType: Number(keyType),
-      permissions: String(permissions),
-      publicKey: publicKey as Hex,
+      expiration: Number(credential.expiration),
+      keyType: Number(credential.keyType),
+      permissions: String(credential.permissions),
+      publicKey: credential.publicKey as Hex,
     });
   }
   return out;
 }
 
-async function accountExists(account: Hex): Promise<boolean> {
-  return (await app.accounts[account].credentials.length) > 0;
+function accountExists(account: Hex): boolean {
+  return app.accounts[account].credentials.length > 0;
 }
 
-async function accountOrders(account: Hex, instrumentId?: number) {
+function accountOrders(account: Hex, instrumentId?: number) {
   const orders = app.state.accounts[account].orders;
-  const length = await orders.length;
+  const length = orders.length;
   const out: {
     orderId: number;
     quantity: string;
@@ -124,14 +118,7 @@ async function accountOrders(account: Hex, instrumentId?: number) {
   }[] = [];
   for (let i = 0; i < length; i++) {
     const order = orders[i];
-    const [quantity, orderInstrumentId, price, tickVolume, side] =
-      await Promise.all([
-        order.quantity,
-        order.instrumentId,
-        order.price,
-        order.tickVolume,
-        order.side,
-      ]);
+    const orderInstrumentId = order.instrumentId;
     if (
       instrumentId !== undefined &&
       Number(orderInstrumentId) !== instrumentId
@@ -140,53 +127,48 @@ async function accountOrders(account: Hex, instrumentId?: number) {
     }
     out.push({
       orderId: i,
-      quantity: String(quantity),
+      quantity: String(order.quantity),
       instrumentId: Number(orderInstrumentId),
-      price: String(price),
-      tickVolume: Number(tickVolume),
-      side: Number(side) as 0 | 1,
+      price: String(order.price),
+      tickVolume: Number(order.tickVolume),
+      side: Number(order.side) as 0 | 1,
     });
   }
   return out;
 }
 
-async function accountBalances(account: Hex): Promise<Record<string, string>> {
+function accountBalances(account: Hex): Record<string, string> {
   const balanceProxy = app.state.accounts[account].balances;
   const assets = Object.keys(balanceProxy) as Address[];
   const balances: Record<string, string> = {};
   for (const asset of assets) {
-    balances[asset] = String(await balanceProxy[asset]);
+    balances[asset] = String(balanceProxy[asset]);
   }
   return balances;
 }
 
-async function accountNonces(account: Hex): Promise<Record<string, string>> {
+function accountNonces(account: Hex): Record<string, string> {
   const nonceProxy = app.accounts[account].nonces;
   const keys = Object.keys(nonceProxy);
   const nonces: Record<string, string> = {};
   for (const key of keys) {
-    nonces[key] = String(await nonceProxy[key as `${number}`]);
+    nonces[key] = String(nonceProxy[key as `${number}`]);
   }
   return nonces;
 }
 
-async function getPrices(
-  instrumentId: number,
-  side: "bids" | "asks",
-): Promise<number[]> {
+function getPrices(instrumentId: number, side: "bids" | "asks"): number[] {
   const instrument = app.state.instruments[`${instrumentId}`];
   const prices: number[] = [];
-  let price = Number(
-    await (side === "asks" ? instrument.bestAsk : instrument.bestBid),
-  );
+  let price = Number(side === "asks" ? instrument.bestAsk : instrument.bestBid);
   while (price !== 0) {
     prices.push(price);
-    price = Number(await instrument[side][`${price}`].next);
+    price = Number(instrument[side][`${price}`].next);
   }
   return prices;
 }
 
-async function summarizePrice(
+function summarizePrice(
   instrumentId: number,
   bidPrices: number[],
   askPrices: number[],
@@ -196,7 +178,7 @@ async function summarizePrice(
 
   for (const price of bidPrices) {
     const remainingQuantity =
-      await app.state.instruments[`${instrumentId}`].bids[`${price}`]
+      app.state.instruments[`${instrumentId}`].bids[`${price}`]
         .remainingQuantity;
     if (remainingQuantity > 0n) {
       bestBid = price;
@@ -205,7 +187,7 @@ async function summarizePrice(
   }
   for (const price of askPrices) {
     const remainingQuantity =
-      await app.state.instruments[`${instrumentId}`].asks[`${price}`]
+      app.state.instruments[`${instrumentId}`].asks[`${price}`]
         .remainingQuantity;
     if (remainingQuantity > 0n) {
       bestAsk = price;
@@ -226,24 +208,22 @@ async function summarizePrice(
   };
 }
 
-async function tickAt(
+function tickAt(
   instrumentId: number,
   side: "bids" | "asks",
   priceQ32: number,
-): Promise<{
+): {
   quantity: string;
   remainingQuantity: string;
   volume: number;
-} | null> {
+} | null {
   const tick =
     app.state.instruments[String(instrumentId) as `${number}`][side][
       String(priceQ32) as `${number}`
     ];
-  const [quantity, remainingQuantity, volume] = await Promise.all([
-    tick.quantity,
-    tick.remainingQuantity,
-    tick.volume,
-  ]);
+  const quantity = tick.quantity;
+  const remainingQuantity = tick.remainingQuantity;
+  const volume = tick.volume;
   if (quantity === 0n && remainingQuantity === 0n && Number(volume) === 0) {
     return null;
   }
@@ -347,12 +327,12 @@ serve({
       },
     },
     "/api/account/:id/orders": {
-      GET: async (req) => {
+      GET: (req) => {
         const account = req.params.id as Hex;
         if (account === null) {
           return json({ error: "Invalid account address" }, { status: 400 });
         }
-        if (!(await accountExists(account))) {
+        if (!accountExists(account)) {
           return json({ error: "account not found" }, { status: 404 });
         }
         const instrumentIdParam = new URL(req.url).searchParams.get(
@@ -362,16 +342,16 @@ serve({
           instrumentIdParam !== null && /^\d+$/.test(instrumentIdParam)
             ? Number(instrumentIdParam)
             : undefined;
-        return json({ orders: await accountOrders(account, instrumentId) });
+        return json({ orders: accountOrders(account, instrumentId) });
       },
     },
     "/api/account/:id/exists": {
-      GET: async (req) => {
+      GET: (req) => {
         const account = req.params.id as Hex;
         if (account === null) {
           return json({ exists: false, hasKeys: false });
         }
-        const exists = await accountExists(account);
+        const exists = accountExists(account);
         return json({ exists, hasKeys: exists });
       },
     },
@@ -381,22 +361,19 @@ serve({
         if (account === null) {
           return json({ error: "Invalid account address" }, { status: 400 });
         }
-        if (!(await accountExists(account))) {
+        if (!accountExists(account)) {
           return json({ error: "account not found" }, { status: 404 });
         }
-        const [credentials, nonces, orders, balances, mutations] =
-          await Promise.all([
-            accountCredentials(account),
-            accountNonces(account),
-            accountOrders(account),
-            accountBalances(account),
-            selectMutationsByAccount(
-              readerDb,
-              app.schema,
-              account,
-              ACCOUNT_MUTATION_HISTORY_LIMIT,
-            ),
-          ]);
+        const credentials = accountCredentials(account);
+        const nonces = accountNonces(account);
+        const orders = accountOrders(account);
+        const balances = accountBalances(account);
+        const mutations = await selectMutationsByAccount(
+          readerDb,
+          app.schema,
+          account,
+          ACCOUNT_MUTATION_HISTORY_LIMIT,
+        );
         return json({
           address: account,
           credentials,
@@ -408,7 +385,7 @@ serve({
       },
     },
     "/api/balances": {
-      GET: async (req) => {
+      GET: (req) => {
         const account = new URL(req.url).searchParams.get(
           "account",
         ) as Hex | null;
@@ -418,15 +395,15 @@ serve({
             { status: 400 },
           );
         }
-        if (!(await accountExists(account))) {
+        if (!accountExists(account)) {
           return json({ error: "account not found" }, { status: 404 });
         }
-        const balances = await accountBalances(account);
+        const balances = accountBalances(account);
         return json({ account, balances });
       },
     },
     "/api/price": {
-      GET: async (req) => {
+      GET: (req) => {
         const instrumentIdParam = new URL(req.url).searchParams.get(
           "instrumentId",
         );
@@ -437,13 +414,13 @@ serve({
           );
         }
         const instrumentId = Number(instrumentIdParam);
-        const bidPrices = await getPrices(instrumentId, "bids");
-        const askPrices = await getPrices(instrumentId, "asks");
-        return json(await summarizePrice(instrumentId, bidPrices, askPrices));
+        const bidPrices = getPrices(instrumentId, "bids");
+        const askPrices = getPrices(instrumentId, "asks");
+        return json(summarizePrice(instrumentId, bidPrices, askPrices));
       },
     },
     "/api/depth": {
-      GET: async (req) => {
+      GET: (req) => {
         const instrumentIdParam = new URL(req.url).searchParams.get(
           "instrumentId",
         );
@@ -454,13 +431,9 @@ serve({
           );
         }
         const instrumentId = Number(instrumentIdParam);
-        const bidPrices = await getPrices(instrumentId, "bids");
-        const askPrices = await getPrices(instrumentId, "asks");
-        const summary = await summarizePrice(
-          instrumentId,
-          bidPrices,
-          askPrices,
-        );
+        const bidPrices = getPrices(instrumentId, "bids");
+        const askPrices = getPrices(instrumentId, "asks");
+        const summary = summarizePrice(instrumentId, bidPrices, askPrices);
         const bidTotals: Record<number, string> = {};
         const askTotals: Record<number, string> = {};
         for (const bp of [1, 5, 25] as const) {
@@ -470,18 +443,16 @@ serve({
             for (const price of bidPrices) {
               if (price >= summary.price * (1 - bp / 10_000)) {
                 const remainingQuantity =
-                  await app.state.instruments[`${instrumentId}`].bids[
-                    `${price}`
-                  ].remainingQuantity;
+                  app.state.instruments[`${instrumentId}`].bids[`${price}`]
+                    .remainingQuantity;
                 bidTotal += remainingQuantity;
               }
             }
             for (const price of askPrices) {
               if (price <= summary.price * (1 + bp / 10_000)) {
                 const remainingQuantity =
-                  await app.state.instruments[`${instrumentId}`].asks[
-                    `${price}`
-                  ].remainingQuantity;
+                  app.state.instruments[`${instrumentId}`].asks[`${price}`]
+                    .remainingQuantity;
                 askTotal += remainingQuantity;
               }
             }
@@ -507,20 +478,18 @@ serve({
             { status: 400 },
           );
         }
-        const ticks = await Promise.all(
-          body.queries.map((query) =>
-            tickAt(
-              body.instrumentId as number,
-              query.side === "buy" ? "bids" : "asks",
-              Number(query.priceQ32),
-            ),
+        const ticks = body.queries.map((query) =>
+          tickAt(
+            body.instrumentId as number,
+            query.side === "buy" ? "bids" : "asks",
+            Number(query.priceQ32),
           ),
         );
         return json({ ticks });
       },
     },
     "/api/estimate-market-order": {
-      GET: async (req) => {
+      GET: (req) => {
         const url = new URL(req.url);
         const instrumentId = url.searchParams.get("instrumentId");
         const side = url.searchParams.get("side");
@@ -536,7 +505,7 @@ serve({
           );
         }
         const parsedInstrumentId = Number(instrumentId);
-        const prices = await getPrices(
+        const prices = getPrices(
           parsedInstrumentId,
           side === "buy" ? "asks" : "bids",
         );
@@ -547,7 +516,7 @@ serve({
         for (const price of prices) {
           if (remaining === 0n) break;
           const available =
-            await app.state.instruments[`${parsedInstrumentId}`][
+            app.state.instruments[`${parsedInstrumentId}`][
               side === "buy" ? "asks" : "bids"
             ][`${price}`].remainingQuantity;
           if (available === 0n) continue;
@@ -567,7 +536,7 @@ serve({
       },
     },
     "/api/estimate-fill-to-price": {
-      GET: async (req) => {
+      GET: (req) => {
         const url = new URL(req.url);
         const instrumentId = url.searchParams.get("instrumentId");
         const side = url.searchParams.get("side");
@@ -584,7 +553,7 @@ serve({
         }
         const parsedInstrumentId = Number(instrumentId);
         const limitPrice = Number(priceQ32);
-        const prices = await getPrices(
+        const prices = getPrices(
           parsedInstrumentId,
           side === "buy" ? "asks" : "bids",
         );
@@ -594,7 +563,7 @@ serve({
         for (const price of prices) {
           if (side === "buy" ? price > limitPrice : price < limitPrice) break;
           const remainingQuantity =
-            await app.state.instruments[`${parsedInstrumentId}`][
+            app.state.instruments[`${parsedInstrumentId}`][
               side === "buy" ? "asks" : "bids"
             ][`${price}`].remainingQuantity;
           if (remainingQuantity === 0n) continue;

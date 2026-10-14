@@ -15,7 +15,7 @@ const REVERTING_ADDR = "0x0000000000000000000000000000000000000bad" as const;
 const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 
 import { expect, test } from "bun:test";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Fiber, Scheduler } from "effect";
 import { Hex } from "ox";
 import { createStorageView } from "storage-layout";
 import { TEST_PUBLIC_CLIENT } from "../test/setup";
@@ -832,9 +832,9 @@ test("an interrupted execute does not desync subsequent calls", async () => {
 });
 
 test("concurrent execute submissions serialize into sequential journals", async () => {
-  // createEVM serializes calls through a semaphore, so executes submitted
-  // concurrently run one at a time and each opens the next sequential
-  // journal id rather than racing or interleaving.
+  // Each native call blocks the thread, so executes submitted concurrently
+  // run one at a time and each opens the next sequential journal id rather
+  // than racing or interleaving.
   const program = Effect.gen(function* () {
     const evm = yield* createEVM();
     yield* evm.init(initWithCounter);
@@ -851,4 +851,27 @@ test("concurrent execute submissions serialize into sequential journals", async 
   expect(results.every((r) => r.success)).toBe(true);
   const journalIds = results.map((r) => r.journal_id!).sort((a, b) => a - b);
   expect(journalIds).toEqual([1, 2, 3, 4, 5]);
+});
+
+test("runSync completes while another call is paused mid-call", async () => {
+  // A fiber can yield to the scheduler at any op. Nothing in a call may wait
+  // on another call, or runSync on a storage read fails with AsyncFiberError.
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM();
+    yield* evm.init(initWithCounter);
+    const read = evm.readStorage({ address: COUNTER_ADDR, slots: ["0x0"] });
+    // A budget below 3 yields before any progress, so the fiber never ends.
+    for (let ops = 3; ops <= 32; ops++) {
+      // Yield after `ops` ops so the forked call pauses at each point in it.
+      const fiber = Effect.runFork(
+        read.pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, ops)),
+      );
+      expect(Effect.runSync(read)).toEqual(
+        yield* Effect.promise(() => Effect.runPromise(read)),
+      );
+      yield* Fiber.join(fiber);
+    }
+  });
+
+  await Effect.runPromise(Effect.scoped(program));
 });

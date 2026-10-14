@@ -119,12 +119,12 @@ test("buildInternalApp constructs a serializable manifest", () => {
 
 test("Typewriter exposes each storage root at one property layer", () => {
   const app = createTypewriterTest<typeof STORAGE_LAYOUT, typeof MUTATIONS>();
-  type Root = StorageView<typeof STORAGE_LAYOUT, true>;
+  type Root = StorageView<typeof STORAGE_LAYOUT, false>;
 
   expectTypeOf(app.state).toEqualTypeOf<Root["state"]>();
   expectTypeOf(app.accounts).toEqualTypeOf<Root["accounts"]>();
-  expectTypeOf<Root["state"]["totalSupply"]>().toEqualTypeOf<Promise<bigint>>();
-  expectTypeOf<Root["accounts"][Hex.Hex]>().toEqualTypeOf<Promise<bigint>>();
+  expectTypeOf<Root["state"]["totalSupply"]>().toEqualTypeOf<bigint>();
+  expectTypeOf<Root["accounts"][Hex.Hex]>().toEqualTypeOf<bigint>();
 });
 
 test("Typewriter mutation input uses concrete authorization", () => {

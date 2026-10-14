@@ -31,7 +31,7 @@ type StorageRootProperty<
   storageConfig extends StorageConfig,
   name extends "accounts" | "state",
 > =
-  StorageView<storageConfig, true> extends infer root
+  StorageView<storageConfig, false> extends infer root
     ? name extends keyof root
       ? root[name]
       : never
@@ -84,8 +84,8 @@ export type RuntimeTypewriter<
 export type InternalRuntimeTypewriter<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
-  readonly state: StorageView<StorageConfig, true>[string];
-  readonly accounts: StorageView<StorageConfig, true>[string];
+  readonly state: StorageView<StorageConfig, false>[string];
+  readonly accounts: StorageView<StorageConfig, false>[string];
   readonly schema: TypewriterSchema;
   execute(submitted: {
     name: string;

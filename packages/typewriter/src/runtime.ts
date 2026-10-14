@@ -331,8 +331,8 @@ export function createRevmRevertError(
 export function createRuntimeState(app: InternalApp): Effect.Effect<
   {
     evm: EVM;
-    accounts: StorageView<StorageLayout, true>[string];
-    state: StorageView<StorageLayout, true>[string];
+    accounts: StorageView<StorageLayout, false>[string];
+    state: StorageView<StorageLayout, false>[string];
     /**
      * The keccak256 preimages the storage view enumerates mapping keys from.
      * Add the preimages of each accepted mutation.
@@ -407,10 +407,10 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
 
     const storageProxy = createStorageView(
       app.storageLayout,
-      async (slots) => {
+      (slots) => {
         const missingSlots = slots.filter((slot) => !slotCache.has(slot));
         if (missingSlots.length > 0) {
-          const fetched = await Effect.runPromise(
+          const fetched = Effect.runSync(
             evm.readStorage({ address: app.address, slots: missingSlots }),
           );
           for (const [slot, value] of Object.entries(fetched) as [
