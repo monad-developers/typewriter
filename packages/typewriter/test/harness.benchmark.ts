@@ -17,7 +17,10 @@ import {
   secp256k1PublicKey,
 } from "./utils";
 
-process.env.NODE_ENV = "production";
+Object.assign(process.env, {
+  NODE_ENV: "production",
+  TYPEWRITER_LOG_LEVEL: "info",
+});
 
 const LATENCY_MUTATION_COUNT = 1_000;
 const THROUGHPUT_MUTATION_COUNT = 10_000;
@@ -61,33 +64,21 @@ test("harness benchmark", async () => {
   const latencyMutations = mutations.slice(0, LATENCY_MUTATION_COUNT);
   const throughputMutations = mutations.slice(LATENCY_MUTATION_COUNT);
 
-  // Keep the cost of Debug log formatting, but do not print the lines.
-  const consoleLog = console.log;
-  const consoleDebug = console.debug;
-  console.log = () => {};
-  console.debug = () => {};
+  const typewriter = await createTypewriter(Harness, config);
+  await typewriter.execute(createAccount);
 
   const latenciesMs: number[] = [];
-  let throughputDurationMs: number;
-  try {
-    const typewriter = await createTypewriter(Harness, config);
-    await typewriter.execute(createAccount);
-
-    for (const mutation of latencyMutations) {
-      const start = performance.now();
-      await typewriter.execute(mutation);
-      latenciesMs.push(performance.now() - start);
-    }
-
+  for (const mutation of latencyMutations) {
     const start = performance.now();
-    await Promise.all(
-      throughputMutations.map((mutation) => typewriter.execute(mutation)),
-    );
-    throughputDurationMs = performance.now() - start;
-  } finally {
-    console.log = consoleLog;
-    console.debug = consoleDebug;
+    await typewriter.execute(mutation);
+    latenciesMs.push(performance.now() - start);
   }
+
+  const start = performance.now();
+  await Promise.all(
+    throughputMutations.map((mutation) => typewriter.execute(mutation)),
+  );
+  const throughputDurationMs = performance.now() - start;
 
   latenciesMs.sort((a, b) => a - b);
   const averageMs =

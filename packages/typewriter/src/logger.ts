@@ -1,4 +1,4 @@
-import { Layer, Logger, References } from "effect";
+import { Layer, Logger, type LogLevel, References } from "effect";
 
 const stringify: typeof JSON.stringify = (value, replacer, space) =>
   JSON.stringify(
@@ -14,12 +14,52 @@ const consoleJson = Logger.withConsoleLog(
   Logger.map(Logger.formatStructured, stringify),
 );
 
+const LOG_LEVELS = {
+  trace: "Trace",
+  debug: "Debug",
+  info: "Info",
+  warn: "Warn",
+  error: "Error",
+} as const satisfies Record<string, LogLevel.LogLevel>;
+
+const LOG_FORMATS = ["pretty", "json"] as const;
+
+function readEnv<const T extends string>(
+  name: string,
+  values: readonly T[],
+  fallback: T,
+): T {
+  const value = process.env[name];
+  if (value === undefined || value === "") return fallback;
+  if (!(values as readonly string[]).includes(value)) {
+    throw new Error(
+      `${name} must be one of ${values.map((v) => `"${v}"`).join(", ")}, got "${value}"`,
+    );
+  }
+  return value as T;
+}
+
+const logLevel =
+  LOG_LEVELS[
+    readEnv(
+      "TYPEWRITER_LOG_LEVEL",
+      Object.keys(LOG_LEVELS) as (keyof typeof LOG_LEVELS)[],
+      "info",
+    )
+  ];
+
+const logFormat = readEnv(
+  "TYPEWRITER_LOG_FORMAT",
+  LOG_FORMATS,
+  process.env.NODE_ENV === "production" ? "json" : "pretty",
+);
+
 export const logger =
-  process.env.NODE_ENV === "production" ? consoleJson : Logger.consolePretty();
+  logFormat === "json" ? consoleJson : Logger.consolePretty();
 
 export const loggerLayer = Layer.merge(
   Logger.layer([logger]),
-  Layer.succeed(References.MinimumLogLevel, "Debug"),
+  Layer.succeed(References.MinimumLogLevel, logLevel),
 );
 
 export function startTimer(): number {
