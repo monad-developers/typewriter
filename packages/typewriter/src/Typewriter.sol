@@ -194,7 +194,9 @@ abstract contract Typewriter {
                 revert LengthMismatch();
             }
             for (uint256 i; i < batch.mutations.length; i++) {
+                uint256 freeMemoryPointer = _getFreeMemoryPointer();
                 _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
+                _setFreeMemoryPointer(freeMemoryPointer);
                 executionIndex++;
             }
         }
@@ -205,10 +207,24 @@ abstract contract Typewriter {
 
             if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
 
+            uint256 freeMemoryPointer = _getFreeMemoryPointer();
             _execute(queued.mutation, queued.mutationData, queued.authorizationData);
+            _setFreeMemoryPointer(freeMemoryPointer);
             executionIndex++;
 
             delete queue[index];
+        }
+    }
+
+    function _getFreeMemoryPointer() private pure returns (uint256 pointer) {
+        assembly ("memory-safe") {
+            pointer := mload(0x40)
+        }
+    }
+
+    function _setFreeMemoryPointer(uint256 pointer) private pure {
+        assembly ("memory-safe") {
+            mstore(0x40, pointer)
         }
     }
 
