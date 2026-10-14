@@ -1,5 +1,5 @@
 import type { AbiParameter, AbiParameterToPrimitiveType } from "abitype";
-import { AbiParameters, Hash, Hex, TypedData } from "ox";
+import { AbiParameters, Address, Hash, Hex, TypedData } from "ox";
 import type { TypewriterManifest } from "./config";
 import { KeyType, packP256Signature } from "./signature";
 import type {
@@ -85,6 +85,22 @@ export function deriveAccountID(params: CreateAccountParams): Hex.Hex {
       [params.keyType, params.publicKey],
     ),
   );
+}
+
+/**
+ * Returns the key that identifies one deployment of a Typewriter app. The
+ * runtime uses it in the Postgres schema name, and clients use it to scope
+ * browser storage.
+ */
+export function deploymentKey(
+  chainId: number,
+  address: Address.Address,
+): string {
+  if (!Number.isSafeInteger(chainId) || chainId < 0) {
+    throw new Error(`Invalid chain id: ${chainId}`);
+  }
+  Address.assert(address, { strict: false });
+  return `${chainId}_${address.toLowerCase()}`;
 }
 
 export function incrementNonce(nonce: bigint): bigint {

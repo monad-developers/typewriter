@@ -1,7 +1,8 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import {
   authorizeMutation,
+  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   type TypedMutation,
@@ -12,21 +13,33 @@ import {
   Registration as ClientRegistration,
 } from "webauthx/client";
 import { Registration as ServerRegistration } from "webauthx/server";
-import { useAccountContext } from "../contexts/AccountContext";
-import { useManifestContext } from "../contexts/ManifestContext";
+import { saveStoredAccount } from "../lib/account-store";
 import { request } from "../lib/api";
-import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
 import { encodeWebAuthnSignature, RP_ID, RP_NAME } from "../lib/webauthn";
+import { useManifest } from "./useManifest";
+import { toAccount } from "./useStoredAccount";
 
 export function useSignUp() {
-  const { setAccount } = useAccountContext();
-  const { manifest } = useManifestContext();
+  const { data: manifest } = useManifest();
+  const storageKey =
+    manifest === undefined
+      ? undefined
+      : deploymentKey(manifest.chainId, manifest.address);
+  const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async () => {
-      const sessionKey = await generateSessionKey();
-      const sessionPublicKey = await exportPublicKey(sessionKey);
-      if (manifest === null) throw new Error("Missing manifest");
+      const keyPair = await crypto.subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign", "verify"],
+      );
+      const sessionPublicKey = bytesToHex(
+        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
+      );
+      if (manifest === undefined || storageKey === undefined) {
+        throw new Error("Missing manifest");
+      }
 
       const placeholderUserId = crypto.getRandomValues(new Uint8Array(32));
       const { options: createOptions } = ServerRegistration.getOptions({
@@ -95,7 +108,12 @@ export function useSignUp() {
         ),
       });
 
-      await setAccount({ accountId, keyId: 1, sessionKey });
+      const stored = { accountId, keyPair };
+      await saveStoredAccount(storageKey, stored);
+      return toAccount(stored);
+    },
+    onSuccess: (account) => {
+      queryClient.setQueryData(["storedAccount", storageKey], account);
     },
   });
 }

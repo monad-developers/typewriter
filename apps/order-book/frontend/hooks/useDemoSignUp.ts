@@ -1,19 +1,20 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import { Secp256k1, Signature } from "ox";
 import type * as HexNamespace from "ox/Hex";
 import {
   authorizeMutation,
+  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   type TypedMutation,
 } from "typewriter/client";
 import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { useAccountContext } from "../contexts/AccountContext";
-import { useManifestContext } from "../contexts/ManifestContext";
+import { saveStoredAccount } from "../lib/account-store";
 import { request } from "../lib/api";
-import { exportPublicKey, generateSessionKey } from "../lib/sessionKey";
+import { useManifest } from "./useManifest";
+import { toAccount } from "./useStoredAccount";
 
 function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
   const signature = Secp256k1.sign({
@@ -27,12 +28,18 @@ function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
 }
 
 export function useDemoSignUp() {
-  const { setAccount } = useAccountContext();
-  const { manifest } = useManifestContext();
+  const { data: manifest } = useManifest();
+  const storageKey =
+    manifest === undefined
+      ? undefined
+      : deploymentKey(manifest.chainId, manifest.address);
+  const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async () => {
-      if (manifest === null) throw new Error("Missing manifest");
+      if (manifest === undefined || storageKey === undefined) {
+        throw new Error("Missing manifest");
+      }
       const rootPrivateKey = generatePrivateKey();
       const rootAddress = privateKeyToAccount(rootPrivateKey).address;
       const rootPublicKey = encodeAbiParameters(
@@ -58,8 +65,14 @@ export function useDemoSignUp() {
       );
       await request("/api", { method: "POST", body: create });
 
-      const sessionKey = await generateSessionKey();
-      const sessionPublicKey = await exportPublicKey(sessionKey);
+      const keyPair = await crypto.subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign", "verify"],
+      );
+      const sessionPublicKey = bytesToHex(
+        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
+      );
       const addMutation = {
         name: "AddCredential",
         params: {
@@ -82,7 +95,12 @@ export function useDemoSignUp() {
         ),
       );
       await request("/api", { method: "POST", body: add });
-      await setAccount({ accountId, keyId: 1, sessionKey });
+      const stored = { accountId, keyPair };
+      await saveStoredAccount(storageKey, stored);
+      return toAccount(stored);
+    },
+    onSuccess: (account) => {
+      queryClient.setQueryData(["storedAccount", storageKey], account);
     },
   });
 }

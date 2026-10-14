@@ -1,10 +1,10 @@
 import { fromLots, INSTRUMENTS, q32ToPrice, TokenAmount } from "order-book-sdk";
 import { useState } from "react";
-import { useAccountContext } from "../contexts/AccountContext";
 import { useBalances } from "../hooks/useBalances";
 import { useDepth } from "../hooks/useDepth";
 import { useMarketOrderMutation } from "../hooks/useMarketOrderMutation";
 import { usePrice } from "../hooks/usePrice";
+import { useStoredAccount } from "../hooks/useStoredAccount";
 
 function lotAligned(raw: bigint, lotExp: number): bigint {
   const e = BigInt(lotExp);
@@ -33,7 +33,7 @@ const instruments = Object.entries(INSTRUMENTS) as [
 ][];
 
 export function OrderBook() {
-  const { account } = useAccountContext();
+  const { data: account } = useStoredAccount();
   const { data: balancesData } = useBalances(account?.accountId);
 
   return (

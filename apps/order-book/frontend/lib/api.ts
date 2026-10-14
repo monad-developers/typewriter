@@ -1,6 +1,6 @@
 import superjson from "superjson";
 
-type RequestParams = {
+export type RequestParams = {
   method?: "GET" | "POST";
   body?: unknown;
   cache?: RequestCache;
@@ -15,13 +15,23 @@ export class ApiError extends Error {
   }
 }
 
+// Servers send errors as superjson `{ error }` or as plain text.
+function errorMessage(text: string, path: string): string {
+  try {
+    const data = superjson.parse(text);
+    if (data !== null && typeof data === "object" && "error" in data) {
+      return String(data.error);
+    }
+  } catch {}
+  return text === "" ? `Request failed: ${path}` : text;
+}
+
 export async function request<T>(
   path: string,
   params: RequestParams = {},
 ): Promise<T> {
-  const method = params.method ?? "GET";
-  const res = await fetch(path, {
-    method,
+  const response = await fetch(path, {
+    method: params.method ?? "GET",
     cache: params.cache,
     headers:
       params.body === undefined
@@ -30,14 +40,9 @@ export async function request<T>(
     body:
       params.body === undefined ? undefined : superjson.stringify(params.body),
   });
-  const text = await res.text();
-  const data = text === "" ? undefined : superjson.parse(text);
-  if (!res.ok) {
-    const error =
-      data !== null && typeof data === "object" && "error" in data
-        ? String(data.error)
-        : `Request failed: ${path}`;
-    throw new ApiError(error, res.status);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new ApiError(errorMessage(text, path), response.status);
   }
-  return data as T;
+  return (text === "" ? undefined : superjson.parse(text)) as T;
 }

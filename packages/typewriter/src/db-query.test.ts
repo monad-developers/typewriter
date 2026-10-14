@@ -232,7 +232,7 @@ test("insertSlotWrites records raw slot writes", async () => {
       yield* db.transaction((tx) =>
         insertSlotWrites(tx, schema, { id: 42 }, [
           {
-            address: "0x000000000000000000000000000000000000typewriter",
+            address: "0x00000000000000000000000000000000000000ff",
             slot: "0x0000000000000000000000000000000000000000000000000000000000000001",
             prev_value:
               "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -240,7 +240,7 @@ test("insertSlotWrites records raw slot writes", async () => {
               "0x000000000000000000000000000000000000000000000000000000000000000a",
           },
           {
-            address: "0x000000000000000000000000000000000000typewriter",
+            address: "0x00000000000000000000000000000000000000ff",
             slot: "0x0000000000000000000000000000000000000000000000000000000000000002",
             prev_value:
               "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -286,7 +286,7 @@ test("selectAccountStorage replays latest slot writes", async () => {
       yield* db.transaction((tx) =>
         insertSlotWrites(tx, schema, { id: 1 }, [
           {
-            address: "0x000000000000000000000000000000000000typewriter",
+            address: "0x00000000000000000000000000000000000000ff",
             slot,
             prev_value:
               "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -298,7 +298,7 @@ test("selectAccountStorage replays latest slot writes", async () => {
       yield* db.transaction((tx) =>
         insertSlotWrites(tx, schema, { id: 2 }, [
           {
-            address: "0x000000000000000000000000000000000000typewriter",
+            address: "0x00000000000000000000000000000000000000ff",
             slot,
             prev_value:
               "0x000000000000000000000000000000000000000000000000000000000000000a",
@@ -323,7 +323,7 @@ test("selectAccountStorage uses slot writes after redeploy migration cleanup", a
   });
   const chainId = 31341;
   const address =
-    "0x000000000000000000000000000000000000typewriter" as Address.Address;
+    "0x00000000000000000000000000000000000000ff" as Address.Address;
   const schemaName = deploymentSchemaName(chainId, address);
   const slot =
     "0x0000000000000000000000000000000000000000000000000000000000000001";

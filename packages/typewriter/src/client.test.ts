@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { AbiParameters, Hex } from "ox";
 import {
   authorizeMutation,
+  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   incrementNonce,
@@ -167,4 +168,13 @@ test("normalizes high-s P256 signatures when packing", () => {
       packP256Signature(raw),
     ),
   ).toEqual([BigInt(`0x${"11".repeat(32)}`), p256N - (p256N / 2n + 1n)]);
+});
+
+test("derives a deployment key from the chain id and lowercase address", () => {
+  expect(
+    deploymentKey(10143, "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01"),
+  ).toBe("10143_0xabcdef0123456789abcdef0123456789abcdef01");
+  expect(() => deploymentKey(-1, manifest.address)).toThrow();
+  expect(() => deploymentKey(1.5, manifest.address)).toThrow();
+  expect(() => deploymentKey(1, "0x1234" as never)).toThrow();
 });

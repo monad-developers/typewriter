@@ -1,8 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { getNonce, useAccountContext } from "../contexts/AccountContext";
-import { useManifestContext } from "../contexts/ManifestContext";
+import { deploymentKey, incrementNonce } from "typewriter/client";
 import { request } from "../lib/api";
+import { useManifest } from "./useManifest";
 import { signMarketOrder } from "./useSign";
+import { useStoredAccount } from "./useStoredAccount";
 
 type MarketOrderParams = {
   instrumentId: number;
@@ -11,26 +12,25 @@ type MarketOrderParams = {
 };
 
 export function useMarketOrderMutation() {
-  const { account, incrementSeq } = useAccountContext();
-  const { manifest } = useManifestContext();
+  const { data: manifest } = useManifest();
+  const storageKey =
+    manifest === undefined
+      ? undefined
+      : deploymentKey(manifest.chainId, manifest.address);
+  const { data: account } = useStoredAccount();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ instrumentId, side, amount }: MarketOrderParams) => {
       if (!account) throw new Error("No account");
-      if (manifest === null) throw new Error("Missing manifest");
+      if (manifest === undefined) throw new Error("Missing manifest");
 
-      const signed = await signMarketOrder(
-        account,
-        manifest,
-        getNonce(account),
-        {
-          quantity: BigInt(amount),
-          minReceivedQuantity: 0n,
-          instrumentId,
-          bidOrAsk: side === "buy" ? 0 : 1,
-        },
-      );
+      const signed = await signMarketOrder(account, manifest, account.nonce, {
+        quantity: BigInt(amount),
+        minReceivedQuantity: 0n,
+        instrumentId,
+        bidOrAsk: side === "buy" ? 0 : 1,
+      });
 
       const start = performance.now();
       const result = await request("/api", {
@@ -41,10 +41,13 @@ export function useMarketOrderMutation() {
         `[tx-latency] market-order ${(performance.now() - start).toFixed(1)}ms`,
       );
 
-      return result;
+      return {
+        result,
+        account: { ...account, nonce: incrementNonce(account.nonce) },
+      };
     },
-    onSuccess: async () => {
-      incrementSeq();
+    onSuccess: async (result) => {
+      queryClient.setQueryData(["storedAccount", storageKey], result.account);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["balances"] }),
         queryClient.invalidateQueries({ queryKey: ["price"] }),

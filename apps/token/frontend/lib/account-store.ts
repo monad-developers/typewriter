@@ -1,9 +1,13 @@
-const DATABASE = "typewriter-token";
-const STORE = "p256-key-pairs";
+import type { Hex } from "viem";
+
+const DATABASE = "typewriter";
+const STORE = "account";
+
+export type StoredAccount = { accountId: Hex; keyPair: CryptoKeyPair };
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 1);
+    const request = indexedDB.open(DATABASE);
     request.onupgradeneeded = () => {
       request.result.createObjectStore(STORE);
     };
@@ -12,13 +16,15 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function loadKeyPair(id: string): Promise<CryptoKeyPair | null> {
+export async function loadStoredAccount(
+  id: string,
+): Promise<StoredAccount | null> {
   const database = await openDatabase();
   try {
     return await new Promise((resolve, reject) => {
       const request = database.transaction(STORE).objectStore(STORE).get(id);
       request.onsuccess = () =>
-        resolve((request.result as CryptoKeyPair | undefined) ?? null);
+        resolve((request.result as StoredAccount | undefined) ?? null);
       request.onerror = () => reject(request.error);
     });
   } finally {
@@ -26,15 +32,15 @@ export async function loadKeyPair(id: string): Promise<CryptoKeyPair | null> {
   }
 }
 
-export async function saveKeyPair(
+export async function saveStoredAccount(
   id: string,
-  keyPair: CryptoKeyPair,
+  account: StoredAccount,
 ): Promise<void> {
   const database = await openDatabase();
   try {
     await new Promise<void>((resolve, reject) => {
       const transaction = database.transaction(STORE, "readwrite");
-      transaction.objectStore(STORE).put(keyPair, id);
+      transaction.objectStore(STORE).put(account, id);
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error);

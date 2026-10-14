@@ -7,12 +7,12 @@ import {
 } from "typewriter/client";
 import { type Address, bytesToHex, type Hex, hexToBytes } from "viem";
 import type { SubmittedOrderBookMutation } from "../../src/app";
-import type { Account } from "../contexts/AccountContext";
+import type { Account } from "./useStoredAccount";
 
-async function signP256(sessionKey: CryptoKeyPair, payload: Hex): Promise<Hex> {
+async function signP256(keyPair: CryptoKeyPair, payload: Hex): Promise<Hex> {
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
-    sessionKey.privateKey,
+    keyPair.privateKey,
     hexToBytes(payload).buffer as ArrayBuffer,
   );
   return packP256Signature(bytesToHex(new Uint8Array(signature)));
@@ -29,12 +29,13 @@ async function signMutation<const name extends string>(params: {
     name: params.name,
     params: params.mutationParams,
     accountID: params.account.accountId,
-    credentialID: BigInt(params.account.keyId),
+    // Sign-up adds the session key after the root credential.
+    credentialID: 1n,
     nonce: params.nonce,
     expiration: 0n,
   } as unknown as TypedMutation<TypewriterManifest, name>;
   const signature = await signP256(
-    params.account.sessionKey,
+    params.account.keyPair,
     getAuthorizationPayload(params.manifest, mutation),
   );
   return authorizeMutation(
