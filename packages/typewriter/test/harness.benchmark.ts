@@ -1,10 +1,12 @@
 import { test } from "bun:test";
+import type { Hex } from "viem";
 import { anvil } from "viem/chains";
 import type { TypewriterConfig } from "../src";
 import Harness from "./contracts/src/Harness.sol";
 import {
   SCHEDULER_ACCOUNT,
   TEST_DB_URL,
+  TEST_PUBLIC_CLIENT,
   TEST_RPC_URL,
   USER_ACCOUNT,
   USER_PRIVATE_KEY,
@@ -23,7 +25,8 @@ Object.assign(process.env, {
 });
 
 const LATENCY_MUTATION_COUNT = 1_000;
-const THROUGHPUT_MUTATION_COUNT = 10_000;
+// Keep the throughput phase below Monad's 30M gas limit per transaction.
+const THROUGHPUT_MUTATION_COUNT = 500;
 
 test("harness benchmark", async () => {
   const { createTypewriter } = await import("../src");
@@ -65,6 +68,25 @@ test("harness benchmark", async () => {
   const throughputMutations = mutations.slice(LATENCY_MUTATION_COUNT);
 
   const typewriter = await createTypewriter(Harness, config);
+
+  // `execute` resolves when the runtime accepts a mutation. Wait for every
+  // mutation to be included before closing, so no settlement transaction is
+  // in flight when the test database is dropped.
+  const allIncluded = Promise.withResolvers<void>();
+  let pendingCount = 1 + mutations.length;
+  const unsubscribe = typewriter.on("mutation", (event) => {
+    if (event.status === "included" && --pendingCount === 0) {
+      allIncluded.resolve();
+    }
+  });
+
+  const settlementHashes: Hex[] = [];
+  const unsubscribeBlock = typewriter.on("block", (event) => {
+    if (event.status === "included") {
+      settlementHashes.push(event.transactionHash);
+    }
+  });
+
   await typewriter.execute(createAccount);
 
   const latenciesMs: number[] = [];
@@ -80,6 +102,22 @@ test("harness benchmark", async () => {
   );
   const throughputDurationMs = performance.now() - start;
 
+  await allIncluded.promise;
+  unsubscribe();
+  unsubscribeBlock();
+  await typewriter.close();
+
+  const receipts = await Promise.all(
+    settlementHashes.map((hash) =>
+      TEST_PUBLIC_CLIENT.getTransactionReceipt({ hash }),
+    ),
+  );
+  const totalGas = receipts.reduce(
+    (total, receipt) => total + receipt.gasUsed,
+    0n,
+  );
+  const meanGas = Number(totalGas) / (1 + mutations.length);
+
   latenciesMs.sort((a, b) => a - b);
   const averageMs =
     latenciesMs.reduce((total, latency) => total + latency, 0) /
@@ -94,5 +132,7 @@ Harness benchmark
 single user, ${LATENCY_MUTATION_COUNT.toLocaleString()} sequential mutations:
   average ${averageMs.toFixed(2)}ms, p50 ${p50Ms.toFixed(2)}ms, p99 ${p99Ms.toFixed(2)}ms
 max throughput, ${THROUGHPUT_MUTATION_COUNT.toLocaleString()} concurrent mutations:
-  ${Math.round(mutationsPerSecond).toLocaleString()} mutations/s`);
+  ${Math.round(mutationsPerSecond).toLocaleString()} mutations/s
+settlement gas:
+  ${Math.round(meanGas).toLocaleString()} per mutation`);
 }, 300_000);
