@@ -112,13 +112,11 @@ test("smoke: native accounts mint and transfer settle onchain", async () => {
     );
 
     expect(acceptedMutationIds).toHaveLength(4);
-    expect(await typewriter.state.totalSupply).toBe(100n);
-    expect(await typewriter.state.balances[user.accountID]).toBe(60n);
-    expect(await typewriter.state.balances[recipient.accountID]).toBe(40n);
-    expect(await typewriter.accounts[user.accountID].nonces["0"]).toBe(2n);
-    expect(await typewriter.accounts[user.accountID].activeCredentials).toBe(
-      1n,
-    );
+    expect(typewriter.state.totalSupply).toBe(100n);
+    expect(typewriter.state.balances[user.accountID]).toBe(60n);
+    expect(typewriter.state.balances[recipient.accountID]).toBe(40n);
+    expect(typewriter.accounts[user.accountID].nonces["0"]).toBe(2n);
+    expect(typewriter.accounts[user.accountID].activeCredentials).toBe(1n);
 
     const deadlineMs = Date.now() + 5_000;
     while (includedMutationIds.size < 4) {

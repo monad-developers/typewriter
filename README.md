@@ -572,10 +572,11 @@ typewriter.state: StorageView<State>;
 
 `typewriter.state` resolves the top-level Solidity `state` variable by one proxy
 layer. It reads the runtime's local revm-backed storage mirror, so accepted state
-is visible before onchain inclusion and leaf accesses return promises.
+is visible before onchain inclusion. Leaf accesses are synchronous and return
+values.
 
 ```ts
-const balance = await typewriter.state.balances[accountID];
+const balance = typewriter.state.balances[accountID];
 ```
 
 `typewriter.state` reflects locally accepted state, which can be ahead of what is `included` or `finalized` onchain.

@@ -59,10 +59,10 @@ const server = Bun.serve({
     },
     "/api/accountIds": () =>
       jsonResponse(Object.keys(typewriter.state.balances)),
-    "/api/account/:accountID": async (req) => {
+    "/api/account/:accountID": (req) => {
       const accountID = req.params.accountID as Hex;
       return jsonResponse({
-        balance: await typewriter.state.balances[accountID],
+        balance: typewriter.state.balances[accountID],
       });
     },
     "/api/mutation/:id/status": {
