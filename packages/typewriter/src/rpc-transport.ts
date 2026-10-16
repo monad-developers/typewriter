@@ -16,7 +16,7 @@ export type RpcResult<method extends RpcMethod> = Extract<
  * in-flight HTTP request.
  */
 export type RpcTransport = {
-  url: string;
+  origin: string;
   request: <request extends RpcRequest>(
     request: request,
   ) => Effect.Effect<RpcResult<request["method"]>, RpcTransportError>;
@@ -126,5 +126,5 @@ export function makeHttpTransport(url: string): RpcTransport {
       );
     });
 
-  return { url, request: request as RpcTransport["request"] };
+  return { origin, request: request as RpcTransport["request"] };
 }

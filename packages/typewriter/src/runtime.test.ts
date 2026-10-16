@@ -43,14 +43,15 @@ import {
 } from "./encoding";
 import type { InternalApp } from "./internal";
 import { deploymentSchemaName, migrate } from "./migrate";
-import { layerRpcLive } from "./rpc";
+import { layerRpc } from "./rpc";
+import { makeHttpTransport } from "./rpc-transport";
 import { createRuntimeEffect } from "./runtime";
 import { loadSolidityTypewriterApp } from "./sol-parse";
 import type { InternalRuntimeTypewriter } from "./typewriter";
 import { layerWatchLive } from "./watch";
 
 function layerRuntimeServices(address: Address) {
-  const rpcLayer = layerRpcLive({ rpcUrls: [TEST_RPC_URL] });
+  const rpcLayer = layerRpc([makeHttpTransport(TEST_RPC_URL)]);
   const dbLayer = layerDatabaseLive({ url: TEST_DB_URL, maxConnections: 1 });
   const forceInclusionEvent = getAbiItem({
     abi: TYPEWRITER_ABI,

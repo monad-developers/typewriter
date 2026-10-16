@@ -13,8 +13,9 @@ import type { TYPEWRITER_ABI } from "./encoding";
 import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
-import { layerRpc, RpcConfig } from "./rpc";
+import { layerRpc } from "./rpc";
 import { requestExecutionIndex } from "./rpc-request";
+import { makeHttpTransport, type RpcTransport } from "./rpc-transport";
 import { createRuntimeEffect } from "./runtime";
 import type { TypewriterSchema } from "./schema";
 import type {
@@ -112,8 +113,9 @@ export function createTypewriterEffect<
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) validate the fixed Typewriter entrypoints
 
-    const rpcLayer = layerRpc.pipe(
-      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrls: app.rpcUrls })),
+    // `config.ts` rejects an empty `rpcUrl` list.
+    const rpcLayer = layerRpc(
+      app.rpcUrls.map(makeHttpTransport) as [RpcTransport, ...RpcTransport[]],
     );
 
     const dbLayer = layerDatabase.pipe(

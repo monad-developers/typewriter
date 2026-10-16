@@ -15,7 +15,8 @@ import {
   encodeMutationCalldata,
   TYPEWRITER_ABI,
 } from "./encoding";
-import { layerRpcLive } from "./rpc";
+import { layerRpc } from "./rpc";
+import { makeHttpTransport } from "./rpc-transport";
 import { layerWatchLive, Watch, type WatchMessage } from "./watch";
 
 const POLL_INTERVAL_MS = 50;
@@ -24,7 +25,7 @@ const liveLayer = () =>
   layerWatchLive({
     pollIntervalMs: POLL_INTERVAL_MS,
     maxChainDepth: 16,
-  }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] })));
+  }).pipe(Layer.provide(layerRpc([makeHttpTransport(TEST_RPC_URL)])));
 
 const FORCE_INCLUSION_QUEUED_EVENT = parseAbiItem(
   "event ForceInclusionQueued(uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint256 enqueuedBlock)",
@@ -185,7 +186,7 @@ test("attaches matching force inclusion enqueue logs", async () => {
             address: counterAddress,
             selector: toEventSelector(FORCE_INCLUSION_QUEUED_EVENT),
           },
-        }).pipe(Layer.provide(layerRpcLive({ rpcUrls: [TEST_RPC_URL] }))),
+        }).pipe(Layer.provide(layerRpc([makeHttpTransport(TEST_RPC_URL)]))),
       ),
     ),
   );

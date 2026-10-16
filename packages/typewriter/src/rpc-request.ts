@@ -1,15 +1,14 @@
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { type Address, Hex } from "ox";
 import {
   type Block,
-  BlockNotFoundError,
   type BlockTag,
   encodeFunctionData,
   formatBlock,
   type Hash,
 } from "viem";
 import { TYPEWRITER_ABI } from "./encoding";
-import { Rpc } from "./rpc";
+import { Rpc, type RpcError } from "./rpc";
 
 export type BlockIdentifier = number | bigint | Hash;
 export type RequestedBlock<includeTransactions extends boolean = false> = Block<
@@ -18,34 +17,45 @@ export type RequestedBlock<includeTransactions extends boolean = false> = Block<
   Exclude<BlockTag, "pending">
 >;
 
+/** The provider returned `null` for the block. */
+export class BlockNotFoundError extends Data.TaggedError("BlockNotFoundError")<{
+  block: Hash | bigint;
+}> {}
+
+/** The call returned `0x`, for example because no contract is at `address`. */
+export class NoDataReturnedError extends Data.TaggedError(
+  "NoDataReturnedError",
+)<{
+  address: Address.Address;
+  functionName: string;
+}> {}
+
 export function requestBlock<includeTransactions extends boolean = false>(
   block: BlockIdentifier,
   includeTransactions: includeTransactions = false as includeTransactions,
-): Effect.Effect<RequestedBlock<includeTransactions>, unknown, Rpc> {
+): Effect.Effect<
+  RequestedBlock<includeTransactions>,
+  RpcError | BlockNotFoundError,
+  Rpc
+> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
 
-    if (typeof block === "string") {
-      const rpcBlock = yield* rpc.request({
-        method: "eth_getBlockByHash",
-        params: [block, includeTransactions],
-      });
-      if (rpcBlock === null) {
-        return yield* Effect.fail(new BlockNotFoundError({ blockHash: block }));
-      }
-      return formatBlock(
-        rpcBlock,
-        "requestBlock",
-      ) as RequestedBlock<includeTransactions>;
-    }
+    const id = typeof block === "string" ? block : BigInt(block);
+    const rpcBlock =
+      typeof id === "string"
+        ? yield* rpc.request({
+            method: "eth_getBlockByHash",
+            params: [id, includeTransactions],
+          })
+        : yield* rpc.request({
+            method: "eth_getBlockByNumber",
+            params: [Hex.fromNumber(id), includeTransactions],
+          });
 
-    const blockNumber = BigInt(block);
-    const rpcBlock = yield* rpc.request({
-      method: "eth_getBlockByNumber",
-      params: [`0x${blockNumber.toString(16)}`, includeTransactions],
-    });
     if (rpcBlock === null) {
-      return yield* Effect.fail(new BlockNotFoundError({ blockNumber }));
+      // TODO(kyle) retry `BlockNotFoundError` in `Rpc` service.
+      return yield* Effect.fail(new BlockNotFoundError({ block: id }));
     }
     return formatBlock(
       rpcBlock,
@@ -56,7 +66,7 @@ export function requestBlock<includeTransactions extends boolean = false>(
 
 export function requestExecutionIndex(
   address: Address.Address,
-): Effect.Effect<bigint, unknown, Rpc> {
+): Effect.Effect<bigint, RpcError | NoDataReturnedError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
     const result = yield* rpc.request({
@@ -74,8 +84,9 @@ export function requestExecutionIndex(
     });
 
     if (result === "0x") {
+      // TODO(kyle) retry `NoDataReturnedError` in `Rpc` service.
       return yield* Effect.fail(
-        new Error(`executionIndex() returned no data for ${address}`),
+        new NoDataReturnedError({ address, functionName: "executionIndex" }),
       );
     }
 

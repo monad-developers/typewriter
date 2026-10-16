@@ -898,7 +898,7 @@ export function createRuntimeEffect(
         }
 
         broadcastAttempted = true;
-        return yield* rpc.requestMultiplexed({
+        return yield* rpc.request({
           method: "eth_sendRawTransactionSync",
           params: [signed],
         });
