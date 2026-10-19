@@ -23,7 +23,6 @@
     "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": true,
 
-    "baseUrl": ".",
     "paths": {
       "abipg": ["../abipg/src/index.ts"],
       "typewriter-evm": ["../typewriter-evm/src/index.ts"],
