@@ -13,16 +13,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/sql-pg": "4.0.3",
     "abipg": "workspace:*",
     "abitype": "catalog:",
     "drizzle-kit": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
-    "typewriter-evm": "workspace:*",
     "ox": "catalog:",
-    "pg": "8.23.1",
     "storage-layout": "workspace:*",
+    "typewriter-evm": "workspace:*",
     "viem": "catalog:"
   },
   "devDependencies": {
