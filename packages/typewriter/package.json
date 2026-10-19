@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/sql-pg": "4.0.0-beta.58",
+    "@effect/sql-pg": "4.0.3",
     "abipg": "workspace:*",
     "abitype": "catalog:",
     "drizzle-kit": "catalog:",
@@ -26,6 +26,7 @@
     "viem": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-bun": "4.0.3",
     "@types/pg": "8.23.1",
     "prool": "catalog:"
   },
