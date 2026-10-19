@@ -18,8 +18,8 @@ export type Chain = {
   request: <request extends RpcRequest>(
     request: request,
   ) => Effect.Effect<RpcResult<request["method"]>>;
-  /** Mines one block, `blockTimeMs` after the previous block. */
-  mine: Effect.Effect<void>;
+  /** Mines one block at `timestamp`, in seconds. */
+  mine: (timestamp: number) => Effect.Effect<void>;
 };
 
 export function makeChain(): Effect.Effect<
@@ -77,22 +77,16 @@ export function makeChain(): Effect.Effect<
     const request = ((request: RpcRequest) =>
       lock.withPermits(1)(send(request))) as Chain["request"];
 
-    let elapsedMs = 0;
-    const mine = lock
-      .withPermits(1)(
-        Effect.suspend(() => {
-          elapsedMs += SIM.chain.blockTimeMs;
-          // Anvil takes whole seconds, so blocks in the same second share a timestamp.
-          const timestamp =
-            SIM.chain.genesisTimestamp + Math.floor(elapsedMs / 1000);
+    const mine = (timestamp: number) =>
+      lock
+        .withPermits(1)(
           // `PublicRpcSchema` does not include Anvil methods.
-          return send({
+          send({
             method: "evm_mine",
             params: [{ timestamp, blocks: 1 }],
-          } as unknown as RpcRequest);
-        }),
-      )
-      .pipe(Effect.asVoid);
+          } as unknown as RpcRequest),
+        )
+        .pipe(Effect.asVoid);
 
     return { request, mine };
   });

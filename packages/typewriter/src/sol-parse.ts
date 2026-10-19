@@ -212,6 +212,7 @@ async function findFoundryProject(entrypoint: string): Promise<FoundryProject> {
 }
 
 async function buildFoundryProject(project: FoundryProject): Promise<void> {
+  // TODO(kyle) Writes to the shared `out` directory, so parallel loads of one app can read a partial artifact.
   try {
     await $`forge build --ast --extra-output storageLayout --force`
       .cwd(project.root)
