@@ -417,6 +417,70 @@ test("selector types fall back for loose layouts", () => {
   >().toEqualTypeOf<unknown>();
 });
 
+test("loose layout selectors infer from a never contextual type", () => {
+  // A wrapper without `NoInfer`, passed to an overload that takes `never`
+  // first, like `expect`.
+  const read = <
+    layout extends StorageLayout,
+    variable extends ConcreteStorageVariable<layout>,
+  >(
+    _layout: layout,
+    _variable: variable,
+  ) => undefined as StorageVariableToPrimitiveType<layout, variable>;
+  function consume(actual?: never): undefined;
+  function consume<T>(actual: T): T;
+  function consume(actual?: unknown) {
+    return actual;
+  }
+
+  expectTypeOf(
+    consume(read(layout as StorageLayout, "state.total")),
+  ).toEqualTypeOf<unknown>();
+});
+
+type FixedArrayLayout<length extends string> = {
+  storage: readonly [
+    {
+      astId: 1;
+      contract: "src/Test.sol:Test";
+      label: "values";
+      offset: 0;
+      slot: "0";
+      type: "t_array";
+    },
+  ];
+  types: {
+    t_uint256: { encoding: "inplace"; label: "uint256"; numberOfBytes: "32" };
+    t_array: {
+      base: "t_uint256";
+      encoding: "inplace";
+      label: `uint256[${length}]`;
+      numberOfBytes: "32";
+    };
+  };
+};
+
+test("fixed arrays below 500 elements have literal types", () => {
+  type Layout = FixedArrayLayout<"499">;
+
+  expectTypeOf<
+    StorageVariableToPrimitiveType<Layout, "values">["length"]
+  >().toEqualTypeOf<499>();
+  expectTypeOf<"values[498]">().toExtend<ConcreteStorageVariable<Layout>>();
+  expectTypeOf<"values[499]">().not.toExtend<ConcreteStorageVariable<Layout>>();
+});
+
+test("fixed arrays of 500 or more elements fall back to number indexes", () => {
+  type Layout = FixedArrayLayout<"100000">;
+
+  expectTypeOf<
+    StorageVariableToPrimitiveType<Layout, "values">
+  >().toEqualTypeOf<readonly bigint[] & { readonly length: 100000 }>();
+  expectTypeOf<
+    ConcreteStorageVariable<Layout>
+  >().toEqualTypeOf<`values[${number}]`>();
+});
+
 test("mapping selector types", () => {
   expectTypeOf<MappingStorageVariable<typeof layout>>().toEqualTypeOf<
     "balances" | "allowances" | `allowances[${Hex.Hex}]`

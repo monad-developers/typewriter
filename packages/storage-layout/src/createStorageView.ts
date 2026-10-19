@@ -33,7 +33,11 @@ type StorageViewValue<T, isAsync extends boolean> = [T] extends [
     ? T extends readonly (infer Element)[]
       ? DynamicArrayView<Element, isAsync>
       : never
-    : { readonly [K in keyof T]: StorageViewValue<T[K], isAsync> }
+    : T extends readonly [] | readonly [unknown, ...unknown[]]
+      ? { readonly [K in keyof T]: StorageViewValue<T[K], isAsync> }
+      : T extends readonly (infer Element)[]
+        ? LargeFixedArrayView<Element, T["length"], isAsync>
+        : never
   : [T] extends [object]
     ? { readonly [K in keyof T]: StorageViewValue<T[K], isAsync> }
     : isAsync extends true
@@ -43,6 +47,11 @@ type StorageViewValue<T, isAsync extends boolean> = [T] extends [
 type DynamicArrayView<Element, isAsync extends boolean> = {
   readonly [index: number]: StorageViewValue<Element, isAsync>;
   readonly length: isAsync extends true ? Promise<number> : number;
+};
+
+type LargeFixedArrayView<Element, length, isAsync extends boolean> = {
+  readonly [index: number]: StorageViewValue<Element, isAsync>;
+  readonly length: length;
 };
 
 type UntypedStorageView = {

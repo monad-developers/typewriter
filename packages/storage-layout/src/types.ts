@@ -260,17 +260,36 @@ type MappingKeySelector<
           : never
     : never;
 
-/** Union of valid indexes `0 | 1 | ... | length - 1`. */
-type FixedArrayIndex<
+type Digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
+/** Whether a fixed array length is below 500, small enough for literal types. */
+type IsExactLength<length extends number> = number extends length
+  ? false
+  : `${length}` extends
+        | Digit
+        | `${Digit}${Digit}`
+        | `${"1" | "2" | "3" | "4"}${Digit}${Digit}`
+    ? true
+    : false;
+
+/** Union of valid indexes `0 | 1 | ... | length - 1`, or `number` for large arrays. */
+type FixedArrayIndex<length extends number> = [length] extends [never]
+  ? never
+  : IsExactLength<length> extends true
+    ? FixedArrayIndexUnion<length>
+    : number;
+
+type FixedArrayIndexUnion<
   length extends number,
   acc extends readonly unknown[] = [],
-> = [length] extends [never]
-  ? never
-  : number extends length
-    ? number
-    : acc["length"] extends length
-      ? never
-      : acc["length"] | FixedArrayIndex<length, readonly [...acc, unknown]>;
+  indexes extends number = never,
+> = acc["length"] extends length
+  ? indexes
+  : FixedArrayIndexUnion<
+      length,
+      readonly [...acc, unknown],
+      indexes | acc["length"]
+    >;
 
 /** Outermost length of a fixed array label, e.g. `3` for `uint128[2][3]`. */
 type FixedArrayLength<label extends string> =
@@ -287,9 +306,17 @@ type FixedArrayLength<label extends string> =
 // Selector parameters are not `extends string`: relating a generic selector to
 // `string` makes TypeScript expand every selector of a loose layout.
 
-type StorageTypeAtPath<
-  layout extends StorageLayout,
+// The non-distributive guard stops `bun check` from expanding the constraint
+// of a generic selector during return type inference.
+type StorageTypeAtPath<layout extends StorageLayout, variable> = [
   variable,
+] extends [string]
+  ? StorageTypeAtEachPath<layout, variable>
+  : never;
+
+type StorageTypeAtEachPath<
+  layout extends StorageLayout,
+  variable extends string,
 > = variable extends string
   ? ParseStoragePath<variable> extends {
       root: infer root;
@@ -393,12 +420,17 @@ type LabelToPrimitiveType<label extends string> = label extends `enum ${string}`
     ? AbiParameterToPrimitiveType<{ type: label }>
     : CustomTypeError<`Unsupported type '${label}'.`>;
 
-type FixedArray<
+/** Tuple of `length` elements, or a readonly array of `length` for large arrays. */
+type FixedArray<element, length extends number> = [length] extends [never]
+  ? CustomTypeError<"Fixed array type is missing its length.">
+  : IsExactLength<length> extends true
+    ? FixedArrayTuple<element, length>
+    : readonly element[] & { readonly length: length };
+
+type FixedArrayTuple<
   element,
   length extends number,
   acc extends readonly element[] = [],
-> = [length] extends [never]
-  ? CustomTypeError<"Fixed array type is missing its length.">
-  : acc["length"] extends length
-    ? acc
-    : FixedArray<element, length, readonly [...acc, element]>;
+> = acc["length"] extends length
+  ? acc
+  : FixedArrayTuple<element, length, readonly [...acc, element]>;

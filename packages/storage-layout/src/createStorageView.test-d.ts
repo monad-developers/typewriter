@@ -55,6 +55,39 @@ test("createStorageView follows sync and async getter shapes", () => {
   }>();
 });
 
+test("createStorageView keeps a sync length for large fixed arrays", () => {
+  const asyncGetter = async (
+    _slots: readonly Hex.Hex[],
+  ): Promise<Hex.Hex[]> => [];
+  const largeLayout = {
+    storage: [
+      {
+        astId: 1,
+        contract: "src/Test.sol:Test",
+        label: "values",
+        offset: 0,
+        slot: "0",
+        type: "t_array",
+      },
+    ],
+    types: {
+      t_uint256: { encoding: "inplace", label: "uint256", numberOfBytes: "32" },
+      t_array: {
+        base: "t_uint256",
+        encoding: "inplace",
+        label: "uint256[1000]",
+        numberOfBytes: "32000",
+      },
+    },
+  } as const;
+  const state = createStorageView(largeLayout, asyncGetter);
+
+  expectTypeOf(state.values).toEqualTypeOf<{
+    readonly [index: number]: Promise<bigint>;
+    readonly length: 1000;
+  }>();
+});
+
 test("createStorageView gracefully falls back for loose layouts", () => {
   const syncGetter = (_slots: readonly Hex.Hex[]): Hex.Hex[] => [];
   const asyncGetter = async (
