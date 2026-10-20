@@ -2,7 +2,7 @@ import { SQL } from "bun";
 import { DrizzleQueryError, type SQLWrapper } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { Data, Effect, Exit, Schedule, type Scope } from "effect";
+import { Data, Deferred, Effect, Exit, Schedule, type Scope } from "effect";
 
 export type DatabaseOptions = {
   url: string;
@@ -30,6 +30,14 @@ export type Db = {
   transaction: <a, e, r>(
     f: (tx: DbTransaction) => Effect.Effect<a, e, r>,
   ) => Effect.Effect<a, e | DbError, r>;
+  /**
+   * Hold the advisory lock `key` until the scope closes. The result fails when
+   * the lock is lost, so run it in a race with the work that needs the lock.
+   */
+  lock: (
+    key: bigint,
+    timeoutMs: number,
+  ) => Effect.Effect<Effect.Effect<never, DbError>, DbError, Scope.Scope>;
 };
 
 export class DbError extends Data.TaggedError("DbError")<{
@@ -40,6 +48,8 @@ export class DbError extends Data.TaggedError("DbError")<{
 }> {}
 
 const dialect = new PgDialect();
+
+const LOCK_SQL = "SELECT pg_advisory_lock($1::bigint)";
 
 export function statementSql(statement: SQLWrapper): string {
   return dialect.sqlToQuery(statement.getSQL()).sql;
@@ -259,6 +269,41 @@ export function makeDb(
         }),
       ).pipe(retry);
 
-    return { query: (build) => query(build).pipe(retry), transaction };
+    // The lock belongs to one session, so it has its own connection, which
+    // Bun must not close. Closing it ends the session and releases the lock.
+    const lock: Db["lock"] = (key, timeoutMs) =>
+      Effect.gen(function* () {
+        const lost = yield* Deferred.make<never, DbError>();
+        const client = yield* Effect.acquireRelease(
+          Effect.sync(
+            () =>
+              new SQL({
+                url: options.url,
+                max: 1,
+                prepare: false,
+                idleTimeout: 0,
+                maxLifetime: 0,
+                connection: { lock_timeout: `${timeoutMs}ms` },
+                onclose: (cause) =>
+                  Deferred.doneUnsafe(
+                    lost,
+                    Effect.fail(new DbError({ sql: LOCK_SQL, cause })),
+                  ),
+              }),
+          ),
+          (client) => Effect.promise(() => client.close()),
+        );
+        yield* Effect.tryPromise({
+          try: () => client`SELECT pg_advisory_lock(${key.toString()}::bigint)`,
+          catch: (cause) => new DbError({ sql: LOCK_SQL, cause }),
+        });
+        return Deferred.await(lost);
+      });
+
+    return {
+      query: (build) => query(build).pipe(retry),
+      transaction,
+      lock,
+    };
   });
 }
