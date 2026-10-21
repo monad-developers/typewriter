@@ -1,8 +1,10 @@
 import { type AbiParametersToColumns, abiParametersToColumns } from "abipg";
-import type { BuildColumns } from "drizzle-orm";
+import { type BuildColumns, sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   char,
+  check,
   integer,
   numeric,
   type PgColumnBuilderBase,
@@ -83,15 +85,23 @@ export function createTypewriterSchema(schemaName: string) {
     keccakPreimages: dbSchema.table("keccak_preimages", {
       preimage: char({ length: 130 }).$type<Hex.Hex>().notNull().primaryKey(),
     }),
-    typewriterMetadata: dbSchema.table("typewriter_metadata", {
-      schema_version: integer()
-        .notNull()
-        .$defaultFn(() => TYPEWRITER_SCHEMA_VERSION),
-      address: char({ length: 42 }).$type<Hex.Hex>().notNull(),
-      // TODO(kyle) assert in `config.ts` that chainId fits in JS integer and the schema name character limit.
-      chain_id: bigint({ mode: "number" }).notNull(),
-      code_hash: bytes32().notNull(),
-    }),
+    // Never rename this table or `schema_version`: every version reads them
+    // to find which migrations to run.
+    typewriterMetadata: dbSchema.table(
+      "typewriter_metadata",
+      {
+        // Always `true`, so the table can hold only one row.
+        id: boolean().primaryKey().default(true),
+        schema_version: integer()
+          .notNull()
+          .$defaultFn(() => TYPEWRITER_SCHEMA_VERSION),
+        address: char({ length: 42 }).$type<Hex.Hex>().notNull(),
+        // TODO(kyle) assert in `config.ts` that chainId fits in JS integer and the schema name character limit.
+        chain_id: bigint({ mode: "number" }).notNull(),
+        code_hash: bytes32().notNull(),
+      },
+      (table) => [check("typewriter_metadata_one_row", sql`${table.id}`)],
+    ),
   };
 }
 

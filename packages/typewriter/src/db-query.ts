@@ -1,5 +1,5 @@
 import { abiParametersToValues } from "abipg";
-import { desc } from "drizzle-orm";
+import { desc, getTableColumns, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { Hex } from "ox";
@@ -72,6 +72,32 @@ function mutationRow(mutation: IndexedMutation): Record<string, unknown> {
       mutation.params as Parameters<typeof abiParametersToValues>[1],
     ),
   };
+}
+
+/** The largest execution index over all mutation tables, or `undefined` if they are empty. */
+export function selectMaxExecutionIndex(
+  tx: DbTransaction,
+  schema: Record<string, PgTable>,
+): Effect.Effect<bigint | undefined, DbError> {
+  return Effect.gen(function* () {
+    const tables = Object.values(schema);
+    if (tables.length === 0) return undefined;
+
+    // One `max` per table, so each uses its primary key index.
+    const maxes = sql.join(
+      tables.map((table) => {
+        const { execution_index } = getTableColumns(table);
+        return sql`SELECT max(${execution_index}) AS max FROM ${table}`;
+      }),
+      sql` UNION ALL `,
+    );
+    const [{ max = null } = {}] = yield* tx.query((db) =>
+      db.execute<{ max: string | null }>(
+        sql`SELECT max(max) AS max FROM (${maxes}) AS mutations`,
+      ),
+    );
+    return max === null ? undefined : BigInt(max);
+  });
 }
 
 export function insertStorageSlots(
