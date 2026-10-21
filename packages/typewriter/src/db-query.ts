@@ -6,7 +6,7 @@ import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { ExecuteResult } from "typewriter-evm";
 import type { DbError, DbTransaction } from "./db";
-import { keccakPreimages, storageSlots } from "./db-schema";
+import type { createTypewriterSchema } from "./db-schema";
 import type { ExecutableMutation } from "./types";
 
 // TODO(kyle) fix mutation types
@@ -76,6 +76,7 @@ function mutationRow(mutation: IndexedMutation): Record<string, unknown> {
 
 export function insertStorageSlots(
   tx: DbTransaction,
+  { storageSlots }: ReturnType<typeof createTypewriterSchema>,
   mutationsWithResults: readonly {
     mutation: Pick<IndexedMutation, "executionIndex">;
     executeResult: Pick<ExecuteResult, "slot_writes">;
@@ -98,6 +99,7 @@ export function insertStorageSlots(
 
 export function insertKeccakPreimages(
   tx: DbTransaction,
+  { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
   preimages: readonly Hex.Hex[],
 ): Effect.Effect<void, DbError> {
   return Effect.gen(function* () {
@@ -112,6 +114,7 @@ export function insertKeccakPreimages(
 
 export function selectStorageSlots(
   tx: DbTransaction,
+  { storageSlots }: ReturnType<typeof createTypewriterSchema>,
 ): Effect.Effect<AccountStorage, DbError> {
   return Effect.gen(function* () {
     const rows = yield* tx.query((db) =>
@@ -134,6 +137,7 @@ export function selectStorageSlots(
 
 export function selectKeccakPreimages(
   tx: DbTransaction,
+  { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
 ): Effect.Effect<Hex.Hex[], DbError> {
   return Effect.gen(function* () {
     const rows = yield* tx.query((db) =>

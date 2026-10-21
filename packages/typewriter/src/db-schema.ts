@@ -7,7 +7,7 @@ import {
   numeric,
   type PgColumnBuilderBase,
   type PgTableWithColumns,
-  pgTable,
+  pgSchema,
   primaryKey,
   text,
   timestamp,
@@ -38,31 +38,22 @@ const authorizationColumns = () => ({
   authorization_signature: text().$type<Hex.Hex>().notNull(),
 });
 
-export const storageSlots = pgTable(
-  "storage_slots",
-  {
-    execution_index: bigint({ mode: "bigint" }).notNull(),
-    slot: bytes32().notNull(),
-    value: bytes32().notNull(),
-  },
-  // TODO(kyle) revisit indexes once db-query is finalized
-  (table) => [primaryKey({ columns: [table.slot, table.execution_index] })],
-);
-
-export const keccakPreimages = pgTable("keccak_preimages", {
-  preimage: char({ length: 130 }).$type<Hex.Hex>().notNull().primaryKey(),
-});
+export const TYPEWRITER_SCHEMA_VERSION = 1;
 
 export function createMutationSchema<
   const mutationsConfig extends MutationsConfig,
->(config: {
-  readonly mutations: mutationsConfig;
-}): TypewriterMutationSchema<mutationsConfig> {
+>(
+  schemaName: string,
+  config: {
+    readonly mutations: mutationsConfig;
+  },
+): TypewriterMutationSchema<mutationsConfig> {
+  const dbSchema = pgSchema(schemaName);
   const schema: Record<string, PgTable> = {};
 
   for (const [name, mutation] of Object.entries(config.mutations)) {
     const tableName = `${name.toLowerCase()}_mutations`;
-    schema[tableName] = pgTable(
+    schema[tableName] = dbSchema.table(
       tableName,
       mergeColumns(
         mutationColumns(),
@@ -73,6 +64,35 @@ export function createMutationSchema<
   }
 
   return schema as TypewriterMutationSchema<mutationsConfig>;
+}
+
+/** Tables that every deployment has, in the Postgres schema `schemaName`. */
+export function createTypewriterSchema(schemaName: string) {
+  const dbSchema = pgSchema(schemaName);
+  return {
+    storageSlots: dbSchema.table(
+      "storage_slots",
+      {
+        execution_index: bigint({ mode: "bigint" }).notNull(),
+        slot: bytes32().notNull(),
+        value: bytes32().notNull(),
+      },
+      // TODO(kyle) revisit indexes once db-query is finalized
+      (table) => [primaryKey({ columns: [table.slot, table.execution_index] })],
+    ),
+    keccakPreimages: dbSchema.table("keccak_preimages", {
+      preimage: char({ length: 130 }).$type<Hex.Hex>().notNull().primaryKey(),
+    }),
+    typewriterMetadata: dbSchema.table("typewriter_metadata", {
+      schema_version: integer()
+        .notNull()
+        .$defaultFn(() => TYPEWRITER_SCHEMA_VERSION),
+      address: char({ length: 42 }).$type<Hex.Hex>().notNull(),
+      // TODO(kyle) assert in `config.ts` that chainId fits in JS integer and the schema name character limit.
+      chain_id: bigint({ mode: "number" }).notNull(),
+      code_hash: bytes32().notNull(),
+    }),
+  };
 }
 
 function mergeColumns(...groups: readonly ColumnGroup[]): ColumnGroup {
@@ -116,7 +136,7 @@ type MutationTable<
   mutationConfig extends MutationsConfig[string],
 > = PgTableWithColumns<{
   name: tableName;
-  schema: undefined;
+  schema: string;
   columns: BuildColumns<tableName, MutationTableColumns<mutationConfig>, "pg">;
   dialect: "pg";
 }>;
