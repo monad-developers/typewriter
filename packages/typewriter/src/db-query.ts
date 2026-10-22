@@ -1,5 +1,5 @@
 import { abiParametersToValues } from "abipg";
-import { desc, getTableColumns, sql } from "drizzle-orm";
+import { desc, getTableColumns, inArray, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { Hex } from "ox";
@@ -7,10 +7,7 @@ import type { AccountStorage } from "storage-layout";
 import type { ExecuteResult } from "typewriter-evm";
 import type { DbError, DbTransaction } from "./db";
 import type { createTypewriterSchema } from "./db-schema";
-import type { ExecutableMutation } from "./types";
-
-// TODO(kyle) fix mutation types
-type IndexedMutation = ExecutableMutation & { executionIndex: bigint };
+import type { AcceptedMutation, Inclusion } from "./typewriter-types";
 
 /** Postgres protocol limit: 65535 bind parameters per query. */
 const MAX_PG_PARAMS = 65_535;
@@ -31,7 +28,7 @@ function chunkRows<T extends Record<string, unknown>>(
 export function insertMutations(
   tx: DbTransaction,
   schema: Record<string, PgTable>,
-  mutations: readonly IndexedMutation[],
+  mutations: readonly AcceptedMutation[],
 ): Effect.Effect<void, DbError> {
   return Effect.gen(function* () {
     if (mutations.length === 0) return;
@@ -58,7 +55,7 @@ export function insertMutations(
   });
 }
 
-function mutationRow(mutation: IndexedMutation): Record<string, unknown> {
+function mutationRow(mutation: AcceptedMutation): Record<string, unknown> {
   const { authorization } = mutation;
   return {
     execution_index: mutation.executionIndex,
@@ -72,6 +69,50 @@ function mutationRow(mutation: IndexedMutation): Record<string, unknown> {
       mutation.params as Parameters<typeof abiParametersToValues>[1],
     ),
   };
+}
+
+/**
+ * Set the `block_*` and `transaction_*` columns of mutations that one
+ * settlement transaction included. Running it again writes the same values.
+ */
+export function updateMutationInclusion(
+  tx: DbTransaction,
+  schema: Record<string, PgTable>,
+  mutations: readonly Pick<AcceptedMutation, "name" | "executionIndex">[],
+  inclusion: Inclusion,
+): Effect.Effect<void, DbError> {
+  return Effect.gen(function* () {
+    const indexesByTable = new Map<PgTable, bigint[]>();
+    for (const mutation of mutations) {
+      const table = getMutationTable(schema, mutation.name);
+      let indexes = indexesByTable.get(table);
+      if (indexes === undefined) {
+        indexes = [];
+        indexesByTable.set(table, indexes);
+      }
+      indexes.push(mutation.executionIndex);
+    }
+
+    const values = {
+      block_number: inclusion.blockNumber,
+      block_hash: inclusion.blockHash,
+      block_timestamp: inclusion.blockTimestamp,
+      transaction_hash: inclusion.transactionHash,
+      transaction_index: inclusion.transactionIndex,
+    };
+    // The `SET` values take bind parameters too.
+    const size = MAX_PG_PARAMS - Object.keys(values).length;
+
+    for (const [table, indexes] of indexesByTable) {
+      const { execution_index } = getTableColumns(table);
+      for (let i = 0; i < indexes.length; i += size) {
+        const batch = indexes.slice(i, i + size);
+        yield* tx.query((db) =>
+          db.update(table).set(values).where(inArray(execution_index!, batch)),
+        );
+      }
+    }
+  });
 }
 
 /** The largest execution index over all mutation tables, or `undefined` if they are empty. */
@@ -104,7 +145,7 @@ export function insertStorageSlots(
   tx: DbTransaction,
   { storageSlots }: ReturnType<typeof createTypewriterSchema>,
   mutationsWithResults: readonly {
-    mutation: Pick<IndexedMutation, "executionIndex">;
+    mutation: Pick<AcceptedMutation, "executionIndex">;
     executeResult: Pick<ExecuteResult, "slot_writes">;
   }[],
 ): Effect.Effect<void, DbError> {
