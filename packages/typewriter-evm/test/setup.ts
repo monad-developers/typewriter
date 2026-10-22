@@ -73,7 +73,8 @@ beforeAll(async () => {
   const server = Server.create({
     instance: Instance.anvil({
       chainId: 31337,
-      binary: `${import.meta.dir}/bin/anvil-monad`,
+      // prool forwards every key as an anvil flag, but its types omit `network`.
+      ...({ network: "monad" } as object),
     }),
     port,
   });
