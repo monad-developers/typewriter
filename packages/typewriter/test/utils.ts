@@ -1,12 +1,6 @@
 import { parseAbiParameters } from "abitype";
-import { type Abi, AbiParameters, Hex as OxHex, P256, Secp256k1 } from "ox";
+import { AbiParameters, Hex as OxHex, P256, Secp256k1 } from "ox";
 import { Authentication } from "ox/webauthn";
-import {
-  type ConcreteStorageVariable,
-  createStorageView,
-  type StorageLayout,
-  type StorageVariableToPrimitiveType,
-} from "storage-layout";
 import { type Address, encodeDeployData, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sendRawTransactionSync } from "viem/actions";
@@ -24,84 +18,7 @@ import type {
   TypewriterManifest,
 } from "../src/config";
 import { BUILTIN_MUTATIONS } from "../src/config";
-import type { KeyType as KeyTypeValue } from "../src/types";
-import {
-  SCHEDULER_ACCOUNT,
-  TEST_PUBLIC_CLIENT,
-  TEST_WALLET_CLIENT,
-} from "./setup";
-
-export const EMPTY_STORAGE_LAYOUT = {
-  storage: [],
-  types: {},
-} as const satisfies StorageLayout;
-
-export const STUB_TYPEWRITER_ABI = [
-  {
-    type: "function",
-    name: "execute",
-    inputs: [
-      {
-        name: "batches",
-        type: "tuple[]",
-        internalType: "struct Typewriter.Batch[]",
-        components: [
-          { name: "mutations", type: "uint8[]", internalType: "uint8[]" },
-          { name: "mutationData", type: "bytes[]", internalType: "bytes[]" },
-          {
-            name: "authorizationData",
-            type: "bytes[]",
-            internalType: "bytes[]",
-          },
-        ],
-      },
-      {
-        name: "forceExecuteIndexes",
-        type: "uint256[]",
-        internalType: "uint256[]",
-      },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "event",
-    name: "ForceInclusionQueued",
-    inputs: [
-      {
-        name: "index",
-        type: "uint256",
-        indexed: false,
-        internalType: "uint256",
-      },
-      {
-        name: "mutation",
-        type: "uint8",
-        indexed: false,
-        internalType: "uint8",
-      },
-      {
-        name: "mutationData",
-        type: "bytes",
-        indexed: false,
-        internalType: "bytes",
-      },
-      {
-        name: "authorizationData",
-        type: "bytes",
-        indexed: false,
-        internalType: "bytes",
-      },
-      {
-        name: "enqueuedBlock",
-        type: "uint256",
-        indexed: false,
-        internalType: "uint256",
-      },
-    ],
-    anonymous: false,
-  },
-] as const satisfies Abi.Abi;
+import { SCHEDULER_ACCOUNT, TEST_WALLET_CLIENT } from "./setup";
 
 async function deployContract(name: string): Promise<Address> {
   const artifact = await Bun.file(
@@ -132,32 +49,6 @@ async function deployContract(name: string): Promise<Address> {
 
 export const deployCounter = (): Promise<Address> => deployContract("Counter");
 export const deployHarness = (): Promise<Address> => deployContract("Harness");
-
-export async function readContractStorage<
-  layout extends StorageLayout,
-  variable extends ConcreteStorageVariable<layout>,
->(
-  layout: layout,
-  address: Address,
-  variable: variable,
-): Promise<StorageVariableToPrimitiveType<layout, variable>> {
-  const storage: { [key: string]: unknown } = createStorageView(
-    layout as StorageLayout,
-    (slots) =>
-      Promise.all(
-        slots.map(
-          async (slot) =>
-            (await TEST_PUBLIC_CLIENT.getStorageAt({ address, slot })) ?? "0x0",
-        ),
-      ),
-  );
-  // Walk the selector through the proxy: `a.b[c]` reads `storage.a.b[c]`.
-  let value: unknown = storage;
-  for (const key of variable.split(/[.[\]]+/)) {
-    if (key !== "") value = (value as { [key: string]: unknown })[key];
-  }
-  return value as Promise<StorageVariableToPrimitiveType<layout, variable>>;
-}
 
 export const COUNTER_MUTATIONS = {
   Add: {
@@ -441,43 +332,6 @@ export function prepareHarnessMutation(
     manifest,
     { name: "Credit", params: params.params, ...request },
     params.keyType,
-    params.privateKey,
-  );
-}
-
-export function prepareHarnessAddCredential(params: {
-  accountID: Hex;
-  credentialID?: bigint;
-  lane?: bigint;
-  sequence: bigint;
-  credentialKeyType: KeyTypeValue;
-  signerKeyType: number;
-  privateKey: Hex;
-  address: Address;
-  chainId: number;
-  expiration: bigint;
-  permissions: bigint;
-  publicKey: Hex;
-}) {
-  const manifest = fixtureManifest(
-    HARNESS_MUTATIONS,
-    params.address,
-    params.chainId,
-  );
-  const request = authorizationRequest(params);
-  return authorize(
-    manifest,
-    {
-      name: "AddCredential",
-      params: {
-        expiration: params.expiration,
-        keyType: params.credentialKeyType,
-        permissions: params.permissions,
-        publicKey: params.publicKey,
-      },
-      ...request,
-    },
-    params.signerKeyType,
     params.privateKey,
   );
 }
