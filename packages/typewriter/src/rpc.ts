@@ -31,10 +31,10 @@ export class Rpc extends Context.Service<
 
 const REQUEST_TIMEOUT = Duration.seconds(5);
 const RETRY_TIMES = 8;
-const RETRY_SCHEDULE = Schedule.exponential(Duration.millis(10)).pipe(
-  Schedule.either(Schedule.spaced(Duration.seconds(2))),
-  Schedule.jittered,
-);
+const RETRY_SCHEDULE = Schedule.min([
+  Schedule.exponential(Duration.millis(10)),
+  Schedule.spaced(Duration.seconds(2)),
+]).pipe(Schedule.jittered);
 
 function shouldRetry(_method: RpcMethod, _error: RpcError): boolean {
   // TODO(kyle) dynamically decide based on `error`
