@@ -33,7 +33,7 @@ cp .env.example.testnet .env
 | Variable | Used by | Description |
 |---|---|---|
 | `PRIVATE_KEY` | `bun dev`, `bun start`, `bun run deploy` | Funded deployer/backend wallet private key |
-| `DATABASE_URL` | `bun dev`, `bun start`, tests with Postgres | Postgres connection string |
+| `DATABASE_URL` | `bun dev`, `bun start` | Postgres connection string |
 | `ORDER_BOOK_ADDRESS` | Backend, scripts | Deployed `OrderBook` contract address |
 | `RPC_URL` | Backend, scripts, deploy | RPC endpoint. The backend accepts comma-separated failover URLs |
 | `CHAIN_ID` | Backend, scripts | Chain ID, for example `31337` for Anvil or `10143` for Monad testnet |
@@ -76,5 +76,4 @@ From the repo root:
 ```bash
 bun run lint
 bun run typecheck
-bun test
 ```
