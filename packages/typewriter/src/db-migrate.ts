@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS ${sql.identifier(schemaName)}.typewriter_metadata (
   schema_version integer NOT NULL,
   address char(42) NOT NULL,
   chain_id bigint NOT NULL,
-  code_hash char(66) NOT NULL,
+  code_hash char(66) NOT NULL
 )
   `),
         );
