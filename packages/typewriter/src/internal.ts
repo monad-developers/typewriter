@@ -11,7 +11,6 @@ export type InternalMutation = {
 };
 
 type InternalConfirmations = {
-  safeBlockDepth: number;
   finalizedBlockDepth: number;
 };
 
@@ -42,6 +41,5 @@ export type InternalApp = {
   schema: TypewriterSchema;
   blockPollingIntervalMs: number;
   confirmations: InternalConfirmations;
-  onFatalError: ((error: unknown) => void) | undefined;
   sequencing: InternalSequencing;
 };

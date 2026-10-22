@@ -44,7 +44,6 @@ export type Typewriter<
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Promise<TypewriterMutationResult>;
-  close: () => Promise<void>;
   on(event: "mutation", cb: MutationListener<mutationsConfig>): () => void;
   on(event: "batch", cb: BatchListener<mutationsConfig>): () => void;
   on(
@@ -129,6 +128,8 @@ export async function createTypewriter<
   >
 > {
   const app = await loadSolidityTypewriterApp(entrypoint, publicConfig);
+  // TODO(kyle) expose a way to close the scope. Until then the typewriter
+  // runs until the process exits.
   const scope = Effect.runSync(Scope.make());
   let closed = false;
 
@@ -174,7 +175,6 @@ export async function createTypewriter<
       >,
       manifest: typewriter.manifest,
       execute,
-      close: closeScope,
       on,
     };
   } catch (error) {

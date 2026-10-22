@@ -122,14 +122,6 @@ export function updateMutationToIncluded(
   return includedMutation;
 }
 
-export function updateMutationToSafe(
-  mutation: SubmittedMutation,
-): SubmittedMutation {
-  const safeMutation = mutation as SubmittedMutation;
-  safeMutation.status = "safe";
-  return safeMutation;
-}
-
 export function updateMutationToFinalized(
   mutation: SubmittedMutation,
 ): SubmittedMutation {
@@ -1029,19 +1021,11 @@ export function createRuntimeEffect(
               for (const batch of block.batches) {
                 batch.status = nextStatus;
                 for (const mutation of batch.mutations) {
-                  if (nextStatus === "safe") {
-                    updateMutationToSafe(mutation as SubmittedMutation);
-                  } else {
-                    updateMutationToFinalized(mutation as SubmittedMutation);
-                  }
+                  updateMutationToFinalized(mutation as SubmittedMutation);
                 }
               }
               for (const mutation of block.forceIncludedMutations) {
-                if (nextStatus === "safe") {
-                  updateMutationToSafe(mutation);
-                } else {
-                  updateMutationToFinalized(mutation);
-                }
+                updateMutationToFinalized(mutation);
               }
 
               const submittedMutations = [
@@ -1051,21 +1035,19 @@ export function createRuntimeEffect(
                 ...block.forceIncludedMutations,
               ];
 
-              if (nextStatus === "finalized") {
-                yield* evm.pruneJournals({
-                  journal_ids: submittedMutations.map(
-                    (mutation) => mutation.journalId,
-                  ),
-                });
-                for (const batch of block.batches) {
-                  batchesById.delete(batch.id);
-                  for (const mutation of batch.mutations) {
-                    mutationsById.delete(mutation.id);
-                  }
-                }
-                for (const mutation of block.forceIncludedMutations) {
+              yield* evm.pruneJournals({
+                journal_ids: submittedMutations.map(
+                  (mutation) => mutation.journalId,
+                ),
+              });
+              for (const batch of block.batches) {
+                batchesById.delete(batch.id);
+                for (const mutation of batch.mutations) {
                   mutationsById.delete(mutation.id);
                 }
+              }
+              for (const mutation of block.forceIncludedMutations) {
+                mutationsById.delete(mutation.id);
               }
 
               yield* db.transaction((tx) =>
@@ -1238,21 +1220,13 @@ export function nextBlockStatus(
   block: Pick<RuntimeBlock<"fifo" | "batch">, "number" | "status">,
   currentBlockNumber: bigint,
   confirmations: InternalApp["confirmations"],
-): "safe" | "finalized" | undefined {
+): "finalized" | undefined {
   const blockDepth = currentBlockNumber - block.number;
   if (
     blockDepth >= BigInt(confirmations.finalizedBlockDepth) &&
     block.status !== "finalized"
   ) {
     return "finalized";
-  }
-
-  if (
-    blockDepth >= BigInt(confirmations.safeBlockDepth) &&
-    block.status !== "safe" &&
-    block.status !== "finalized"
-  ) {
-    return "safe";
   }
 
   return undefined;

@@ -86,11 +86,10 @@ export type MutationStatus =
   | "accepted"
   | "rejected"
   | "included"
-  | "safe"
   | "finalized";
 
-export type BatchStatus = "accepted" | "included" | "safe" | "finalized";
-export type BlockStatus = "included" | "safe" | "finalized";
+export type BatchStatus = "accepted" | "included" | "finalized";
+export type BlockStatus = "included" | "finalized";
 
 type ForceInclusion =
   | {
@@ -130,7 +129,7 @@ export type RuntimeMutation =
       executionIndex?: bigint;
     } & ForceInclusion)
   | ({
-      status: "included" | "safe" | "finalized";
+      status: "included" | "finalized";
       id: number;
       name: string;
       params: unknown;
@@ -156,11 +155,11 @@ export type AcceptedMutation = Extract<RuntimeMutation, { status: "accepted" }>;
 export type EnqueuedMutation = Extract<RuntimeMutation, { status: "enqueued" }>;
 export type SubmittedMutation = Extract<
   RuntimeMutation,
-  { status: "included" | "safe" | "finalized" }
+  { status: "included" | "finalized" }
 >;
 export type ExecutableMutation = Extract<
   RuntimeMutation,
-  { status: "enqueued" | "accepted" | "included" | "safe" | "finalized" }
+  { status: "enqueued" | "accepted" | "included" | "finalized" }
 >;
 export type RejectedMutation = Extract<RuntimeMutation, { status: "rejected" }>;
 
@@ -171,7 +170,7 @@ export type RuntimeEnqueue = {
 };
 
 export type RuntimeBatch = {
-  status: "accepted" | "included" | "safe" | "finalized";
+  status: "accepted" | "included" | "finalized";
   id: number;
   position: number;
   mutations: (AcceptedMutation | SubmittedMutation)[];
@@ -225,7 +224,7 @@ export type MutationEventForConfig<
 export type BatchEventForConfig<
   mutationsConfig extends Record<string, MutationConfig>,
 > = {
-  status: "accepted" | "included" | "safe" | "finalized";
+  status: "accepted" | "included" | "finalized";
   id: number;
   position: number;
   mutations: Exclude<
@@ -292,7 +291,7 @@ export type MutationEvent<
       isForceInclusion: boolean;
     }
   | {
-      status: "included" | "safe" | "finalized";
+      status: "included" | "finalized";
       id: number;
       name: name;
       params: MutationParamsForName<name, mutationConfig>;
@@ -313,7 +312,7 @@ export type BatchEvent<
   name extends string = string,
   mutationConfig extends MutationConfig = MutationConfig,
 > = {
-  status: "accepted" | "included" | "safe" | "finalized";
+  status: "accepted" | "included" | "finalized";
   id: number;
   position: number;
   mutations: Exclude<

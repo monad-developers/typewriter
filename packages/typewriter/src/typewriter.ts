@@ -159,13 +159,9 @@ export function createTypewriterEffect<
             fatalError = { error };
             yield* Deferred.fail(fatalSignal, error);
             yield* Effect.sync(() => {
-              if (app.onFatalError !== undefined) {
-                app.onFatalError(error);
-              } else {
-                queueMicrotask(() => {
-                  throw error;
-                });
-              }
+              queueMicrotask(() => {
+                throw error;
+              });
             });
             yield* Effect.logError(error);
           }),

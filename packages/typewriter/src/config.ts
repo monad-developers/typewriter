@@ -78,14 +78,11 @@ export type TypewriterConfig<
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
   confirmations?: {
-    safeBlockDepth?: number;
     finalizedBlockDepth?: number;
   };
-  onFatalError?: (error: unknown) => void;
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
-const DEFAULT_SAFE_BLOCK_DEPTH = 1;
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
@@ -111,25 +108,10 @@ export function validateConfig(config: TypewriterConfig): void {
     "config.blockPollingIntervalMs",
   );
 
-  const safeBlockDepth =
-    config.confirmations?.safeBlockDepth ?? DEFAULT_SAFE_BLOCK_DEPTH;
-  const finalizedBlockDepth =
-    config.confirmations?.finalizedBlockDepth ?? DEFAULT_FINALIZED_BLOCK_DEPTH;
-
-  assertSafeNonNegativeInteger(
-    config.confirmations?.safeBlockDepth,
-    "config.confirmations.safeBlockDepth",
-  );
   assertSafeNonNegativeInteger(
     config.confirmations?.finalizedBlockDepth,
     "config.confirmations.finalizedBlockDepth",
   );
-
-  if (finalizedBlockDepth < safeBlockDepth) {
-    throw new Error(
-      "config.confirmations.finalizedBlockDepth must be greater than or equal to config.confirmations.safeBlockDepth",
-    );
-  }
 
   const hasBatchOrder =
     config.sequencing !== undefined && "batchOrder" in config.sequencing;
@@ -197,8 +179,6 @@ export function buildInternalApp(params: {
     ? config.rpcUrl
     : [config.rpcUrl];
   const confirmations = {
-    safeBlockDepth:
-      config.confirmations?.safeBlockDepth ?? DEFAULT_SAFE_BLOCK_DEPTH,
     finalizedBlockDepth:
       config.confirmations?.finalizedBlockDepth ??
       DEFAULT_FINALIZED_BLOCK_DEPTH,
@@ -243,7 +223,6 @@ export function buildInternalApp(params: {
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     confirmations,
-    onFatalError: config.onFatalError,
     sequencing,
   };
 }
