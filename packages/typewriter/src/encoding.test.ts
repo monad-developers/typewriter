@@ -10,11 +10,11 @@ import {
   encodeExecuteCalldata,
   encodeMutationCalldata,
 } from "./encoding";
-import type { Authorization, ExecutableMutation } from "./types";
 import {
   AUTHORIZATION_ABI_PARAMS,
   TYPEWRITER_ABI,
 } from "./typewriter-constants";
+import type { AcceptedMutation, Authorization } from "./typewriter-types";
 
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
@@ -32,16 +32,16 @@ const AUTHORIZATION = {
 } as const satisfies Authorization;
 
 function acceptedMutation(
-  config: ExecutableMutation["config"],
+  config: AcceptedMutation["config"],
   params: unknown,
   authorization: Authorization = AUTHORIZATION,
-): ExecutableMutation {
+): AcceptedMutation {
   return {
-    id: 0,
     status: "accepted",
     name: "test",
     params,
     authorization,
+    executionIndex: 0n,
     journalId: 0,
     isForceInclusion: false,
     config,
