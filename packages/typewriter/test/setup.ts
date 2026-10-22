@@ -87,9 +87,9 @@ export let TEST_CLIENT!: ReturnType<typeof createTestClient>;
 export let TEST_PUBLIC_CLIENT!: ReturnType<typeof createPublicClient>;
 export let TEST_WALLET_CLIENT!: ReturnType<typeof createWalletClient>;
 
-// packages/typewriter/bunfig.toml's `[test] preload` points at this file, so run
-// tests from this package or through `bun run --filter typewriter test`.
-// Each test deploys its own contracts via the helpers in ./utils.
+// Importing this file registers the hooks below, which start anvil and give each
+// test its own database. Each test deploys its own contracts via the helpers in
+// ./utils.
 
 let teardown!: () => Promise<void>;
 let snapshotId!: Hex;
