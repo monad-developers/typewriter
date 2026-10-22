@@ -285,6 +285,8 @@ function columnForInfo<Param extends AbiParameter>(
     case "integer":
       return integer();
     case "bigint":
+      // TODO(kyle) abitype gives (u)int33-48 values as number, but this column
+      // reads them back as bigint. Use `bigint({ mode: "number" })` for them.
       return bigint({ mode: "bigint" });
     case "numeric(78,0)":
       return numeric({ precision: 78, scale: 0, mode: "bigint" });
