@@ -14,16 +14,17 @@ type EncodableMutation = Pick<
 const EXECUTE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
 const ENQUEUE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "enqueue");
 
-function calldataStructParams(
-  params: readonly AbiParameters.Parameter[],
-): readonly AbiParameters.Parameter[] {
-  return [{ type: "tuple", components: params }];
+function calldataStructParams<
+  const params extends readonly AbiParameters.Parameter[],
+>(params: params) {
+  return [{ type: "tuple", components: params }] as const;
 }
 
 export function encodeMutationCalldata(mutation: EncodableMutation): Hex.Hex {
+  // `config.params` is only known at runtime, so its value type is too.
   return AbiParameters.encode(calldataStructParams(mutation.config.params), [
     mutation.params,
-  ]);
+  ] as never);
 }
 
 export function decodeMutationCalldata(
@@ -43,8 +44,9 @@ export function decodeMutationCalldata(
 export function encodeAuthorizationCalldata(
   authorization: Authorization,
 ): Hex.Hex {
+  // ox types `uint40` as a number.
   return AbiParameters.encode(calldataStructParams(AUTHORIZATION_ABI_PARAMS), [
-    authorization,
+    { ...authorization, expiration: Number(authorization.expiration) },
   ]);
 }
 
@@ -53,7 +55,7 @@ export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
     calldataStructParams(AUTHORIZATION_ABI_PARAMS),
     calldata,
     { checksumAddress: false },
-  ) as unknown as [Omit<Authorization, "expiration"> & { expiration: number }];
+  );
   // ox decodes `uint40` as a number.
   return { ...authorization, expiration: BigInt(authorization.expiration) };
 }
