@@ -18,7 +18,6 @@ import type {
 } from "../src/config";
 import {
   BUILTIN_MUTATIONS,
-  P256_PUBLIC_KEY_PARAMS,
   P256_SIGNATURE_PARAMS,
   SECP256K1_PUBLIC_KEY_PARAMS,
   SECP256K1_SIGNATURE_PARAMS,
@@ -88,14 +87,6 @@ function fixtureManifest<
 
 export function secp256k1PublicKey(address: Address): Hex {
   return AbiParameters.encode(SECP256K1_PUBLIC_KEY_PARAMS, [address]);
-}
-
-export function p256PublicKey(privateKey: Hex): Hex {
-  const publicKey = P256.getPublicKey({ privateKey });
-  return AbiParameters.encode(P256_PUBLIC_KEY_PARAMS, [
-    BigInt(publicKey.x),
-    BigInt(publicKey.y),
-  ]);
 }
 
 export function nativeAccountID(keyType: number, publicKey: Hex): Hex {
