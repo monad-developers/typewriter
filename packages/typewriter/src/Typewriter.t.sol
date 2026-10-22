@@ -209,7 +209,7 @@ contract AccountTest {
 
     function test_authorizationDigest_matchesFixedEip712Envelope() external view {
         require(
-            AUTHORIZATION_TYPEHASH == 0x5f92272600e6b6e2e16927f57bb0242c9554f04db37b30f3bda043f854d5d40d,
+            AUTHORIZATION_TYPEHASH == 0x1c6385e6c2f0b9e8999af339ea51493e8339f6d465a47a4e0635b97b15e73db3,
             "authorization typehash"
         );
 
@@ -527,7 +527,7 @@ contract AccountTest {
         bytes32 accountID,
         uint64 credentialID,
         uint256 nonce,
-        uint256 expiration,
+        uint40 expiration,
         uint8 mutation,
         bytes memory mutationData,
         uint256 privateKey
