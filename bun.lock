@@ -106,7 +106,6 @@
       "devDependencies": {
         "@effect/platform-bun": "4.0.3",
         "@types/pg": "8.23.1",
-        "prool": "catalog:",
       },
       "peerDependencies": {
         "typescript": "catalog:",

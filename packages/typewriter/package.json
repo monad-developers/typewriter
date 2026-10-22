@@ -8,7 +8,6 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "benchmark": "bun run --filter typewriter-evm build && bun test ./test/harness.benchmark.ts",
     "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit"
   },
@@ -25,8 +24,7 @@
   },
   "devDependencies": {
     "@effect/platform-bun": "4.0.3",
-    "@types/pg": "8.23.1",
-    "prool": "catalog:"
+    "@types/pg": "8.23.1"
   },
   "peerDependencies": {
     "typescript": "catalog:"
