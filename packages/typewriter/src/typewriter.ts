@@ -140,8 +140,9 @@ export function updateMutationToAccepted(
   },
 ): AcceptedMutation {
   const acceptedMutation = mutation as unknown as AcceptedMutation;
-  acceptedMutation.status = "accepted";
+  // `mutation` is the same object, so read its status before setting it.
   acceptedMutation.isForceInclusion = mutation.status === "enqueued";
+  acceptedMutation.status = "accepted";
   acceptedMutation.executionIndex = params.executionIndex;
   acceptedMutation.journalId = params.journalId;
   return acceptedMutation;
@@ -152,8 +153,9 @@ export function updateMutationToRejected(
   params: { error: unknown },
 ): RejectedMutation {
   const rejectedMutation = mutation as unknown as RejectedMutation;
-  rejectedMutation.status = "rejected";
+  // `mutation` is the same object, so read its status before setting it.
   rejectedMutation.isForceInclusion = mutation.status === "enqueued";
+  rejectedMutation.status = "rejected";
   rejectedMutation.error = params.error;
   return rejectedMutation;
 }
@@ -797,13 +799,23 @@ export function createTypewriterEffect<
             preimages: readonly Hex.Hex[];
           }[] = [];
           for (const enqueuedMutation of enqueuedMutations) {
-            acceptedEnqueuedMutations.push(
-              (yield* acceptMutation(enqueuedMutation)) as {
-                mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
-                executeResult: ExecuteResult;
-                preimages: readonly Hex.Hex[];
-              },
+            const result = yield* Effect.result(
+              acceptMutation(enqueuedMutation),
             );
+            if (Result.isSuccess(result)) {
+              acceptedEnqueuedMutations.push(
+                result.success as {
+                  mutation: Extract<
+                    AcceptedMutation,
+                    { isForceInclusion: true }
+                  >;
+                  executeResult: ExecuteResult;
+                  preimages: readonly Hex.Hex[];
+                },
+              );
+            } else {
+              // TODO(kyle) how to handle failed enqueue.
+            }
           }
 
           const acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
