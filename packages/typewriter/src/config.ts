@@ -5,6 +5,10 @@ import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
 import type { InternalApp } from "./internal";
 import { createMutationSchema } from "./schema";
+import {
+  BUILTIN_MUTATIONS,
+  FIRST_BUILTIN_MUTATION_ID,
+} from "./typewriter-constants";
 
 export type TypewriterDatabase = DatabaseClient;
 export type TypewriterDatabaseTransaction = Parameters<
@@ -49,29 +53,6 @@ export type TypewriterManifest<
     };
   };
 };
-
-export const BUILTIN_MUTATIONS = {
-  CreateAccount: {
-    id: 253,
-    params: [
-      { name: "keyType", type: "uint8" },
-      { name: "publicKey", type: "bytes" },
-    ],
-  },
-  AddCredential: {
-    id: 254,
-    params: [
-      { name: "expiration", type: "uint40" },
-      { name: "keyType", type: "uint8" },
-      { name: "permissions", type: "uint256" },
-      { name: "publicKey", type: "bytes" },
-    ],
-  },
-  RemoveCredential: {
-    id: 255,
-    params: [{ name: "credentialID", type: "uint64" }],
-  },
-} as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
 
 export type TypewriterSequencingConfig<
   sequencingConfig extends SequencingConfig,
@@ -181,9 +162,12 @@ function validateMutationDefinitions(mutations: {
     if (mutationIDs.has(mutation.id)) {
       throw new Error(`duplicate mutation ID: ${mutation.id}`);
     }
-    if (!Object.hasOwn(BUILTIN_MUTATIONS, name) && mutation.id >= 253) {
+    if (
+      !Object.hasOwn(BUILTIN_MUTATIONS, name) &&
+      mutation.id >= FIRST_BUILTIN_MUTATION_ID
+    ) {
       throw new Error(
-        `app mutation ID must be below 253: ${name}=${mutation.id}`,
+        `app mutation ID must be below ${FIRST_BUILTIN_MUTATION_ID}: ${name}=${mutation.id}`,
       );
     }
     mutationIDs.add(mutation.id);

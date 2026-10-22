@@ -1,4 +1,3 @@
-import { parseAbiParameters } from "abitype";
 import { AbiParameters, Hex as OxHex, P256, Secp256k1 } from "ox";
 import { Authentication } from "ox/webauthn";
 import { type Address, encodeDeployData, type Hex } from "viem";
@@ -17,7 +16,14 @@ import type {
   ResolvedTypewriterMutationConfig,
   TypewriterManifest,
 } from "../src/config";
-import { BUILTIN_MUTATIONS } from "../src/config";
+import {
+  BUILTIN_MUTATIONS,
+  P256_PUBLIC_KEY_PARAMS,
+  P256_SIGNATURE_PARAMS,
+  SECP256K1_PUBLIC_KEY_PARAMS,
+  SECP256K1_SIGNATURE_PARAMS,
+  WEBAUTHN_P256_SIGNATURE_PARAMS,
+} from "../src/typewriter-constants";
 import { SCHEDULER_ACCOUNT, TEST_WALLET_CLIENT } from "./setup";
 
 async function deployContract(name: string): Promise<Address> {
@@ -53,7 +59,7 @@ export const deployHarness = (): Promise<Address> => deployContract("Harness");
 export const COUNTER_MUTATIONS = {
   Add: {
     id: 0,
-    params: parseAbiParameters("uint256 amount"),
+    params: [{ name: "amount", type: "uint256" }],
   },
   ...BUILTIN_MUTATIONS,
 } as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
@@ -61,15 +67,15 @@ export const COUNTER_MUTATIONS = {
 export const HARNESS_MUTATIONS = {
   Credit: {
     id: 0,
-    params: parseAbiParameters("uint256 amount"),
+    params: [{ name: "amount", type: "uint256" }],
   },
   Debit: {
     id: 1,
-    params: parseAbiParameters("uint256 amount"),
+    params: [{ name: "amount", type: "uint256" }],
   },
   Assert: {
     id: 2,
-    params: parseAbiParameters("uint256 expected"),
+    params: [{ name: "expected", type: "uint256" }],
   },
   ...BUILTIN_MUTATIONS,
 } as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
@@ -81,12 +87,12 @@ function fixtureManifest<
 }
 
 export function secp256k1PublicKey(address: Address): Hex {
-  return AbiParameters.encode(parseAbiParameters("address"), [address]);
+  return AbiParameters.encode(SECP256K1_PUBLIC_KEY_PARAMS, [address]);
 }
 
 export function p256PublicKey(privateKey: Hex): Hex {
   const publicKey = P256.getPublicKey({ privateKey });
-  return AbiParameters.encode(parseAbiParameters("uint256 x, uint256 y"), [
+  return AbiParameters.encode(P256_PUBLIC_KEY_PARAMS, [
     BigInt(publicKey.x),
     BigInt(publicKey.y),
   ]);
@@ -101,7 +107,7 @@ export function nativeAccountID(keyType: number, publicKey: Hex): Hex {
 
 export function signP256Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = P256.sign({ payload: digest, privateKey, hash: true });
-  return AbiParameters.encode(parseAbiParameters("uint256 r, uint256 s"), [
+  return AbiParameters.encode(P256_SIGNATURE_PARAMS, [
     BigInt(signature.r),
     BigInt(signature.s),
   ]);
@@ -117,26 +123,22 @@ export function signWebAuthnP256Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = P256.sign({ payload, privateKey, hash: true });
   const challengeOffset =
     metadata.clientDataJSON.indexOf('"challenge":"') + '"challenge":"'.length;
-  return AbiParameters.encode(
-    parseAbiParameters(
-      "bytes authenticatorData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s",
-    ),
-    [
-      metadata.authenticatorData,
-      OxHex.fromString(metadata.clientDataJSON),
-      BigInt(challengeOffset),
-      BigInt(signature.r),
-      BigInt(signature.s),
-    ],
-  );
+  return AbiParameters.encode(WEBAUTHN_P256_SIGNATURE_PARAMS, [
+    metadata.authenticatorData,
+    OxHex.fromString(metadata.clientDataJSON),
+    BigInt(challengeOffset),
+    BigInt(signature.r),
+    BigInt(signature.s),
+  ]);
 }
 
 export function signSecp256k1Raw(digest: Hex, privateKey: Hex): Hex {
   const signature = Secp256k1.sign({ payload: digest, privateKey });
-  return AbiParameters.encode(
-    parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-    [signature.yParity + 27, signature.r, signature.s],
-  );
+  return AbiParameters.encode(SECP256K1_SIGNATURE_PARAMS, [
+    signature.yParity + 27,
+    signature.r,
+    signature.s,
+  ]);
 }
 
 type AuthorizationSigner = (digest: Hex) => Hex;

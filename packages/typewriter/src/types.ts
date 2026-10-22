@@ -2,8 +2,9 @@ import type { AbiParameter } from "abitype";
 import type { Hex } from "ox";
 import type { AbiParametersToValue, MutationConfig } from "./config";
 import type { InternalMutation } from "./internal";
+import type { KeyType } from "./typewriter-constants";
 
-export type KeyType = 0 | 1 | 2;
+export type { KeyType };
 
 export type Credential = {
   readonly expiration: bigint;

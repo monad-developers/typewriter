@@ -1,4 +1,3 @@
-import { parseAbiParameters } from "abitype";
 import {
   AbiParameters,
   Hash,
@@ -7,19 +6,15 @@ import {
   P256,
   Secp256k1,
 } from "ox";
+import {
+  KeyType,
+  P256_PUBLIC_KEY_PARAMS,
+  P256_SIGNATURE_PARAMS,
+  SECP256K1_PUBLIC_KEY_PARAMS,
+  SECP256K1_SIGNATURE_PARAMS,
+  WEBAUTHN_P256_SIGNATURE_PARAMS,
+} from "./typewriter-constants";
 
-export const KeyType = {
-  P256: 0,
-  WebAuthnP256: 1,
-  Secp256k1: 2,
-} as const;
-
-export type KeyType = (typeof KeyType)[keyof typeof KeyType];
-
-const P256_SIGNATURE_PARAMS = parseAbiParameters("uint256 r, uint256 s");
-const SECP256K1_SIGNATURE_PARAMS = parseAbiParameters(
-  "uint8 v, bytes32 r, bytes32 s",
-);
 const P256_N =
   0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 
@@ -49,11 +44,11 @@ export function verifySignature(
   publicKey: Hex.Hex,
   signature: Hex.Hex,
 ): void {
-  if (keyType === 0) {
+  if (keyType === KeyType.P256) {
     verifyP256(digest, publicKey, signature);
-  } else if (keyType === 1) {
+  } else if (keyType === KeyType.WebAuthnP256) {
     verifyWebAuthnP256(digest, publicKey, signature);
-  } else if (keyType === 2) {
+  } else if (keyType === KeyType.Secp256k1) {
     verifySecp256k1(digest, publicKey, signature);
   } else {
     throw invalidSignature(keyType);
@@ -66,13 +61,10 @@ function verifySecp256k1(
   signature: Hex.Hex,
 ): void {
   const [expected] = AbiParameters.decode(
-    parseAbiParameters("address"),
+    SECP256K1_PUBLIC_KEY_PARAMS,
     publicKey,
-  ) as readonly [string];
-  const [v, r, s] = AbiParameters.decode(
-    parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-    signature,
-  ) as readonly [number, Hex.Hex, Hex.Hex];
+  );
+  const [v, r, s] = AbiParameters.decode(SECP256K1_SIGNATURE_PARAMS, signature);
 
   const recovered = Secp256k1.recoverAddress({
     payload: digest,
@@ -83,7 +75,7 @@ function verifySecp256k1(
     }),
   });
   if (recovered.toLowerCase() !== expected.toLowerCase()) {
-    throw invalidSignature(2);
+    throw invalidSignature(KeyType.Secp256k1);
   }
 }
 
@@ -93,10 +85,7 @@ function verifyP256(
   signature: Hex.Hex,
 ): void {
   const { x, y } = decodeP256PublicKey(publicKey);
-  const [r, s] = AbiParameters.decode(
-    parseAbiParameters("uint256 r, uint256 s"),
-    signature,
-  ) as readonly [bigint, bigint];
+  const [r, s] = AbiParameters.decode(P256_SIGNATURE_PARAMS, signature);
 
   const ok = P256.verify({
     payload: digest,
@@ -104,7 +93,7 @@ function verifyP256(
     signature: { r: toWord(r), s: toWord(s) },
     hash: true,
   });
-  if (!ok) throw invalidSignature(0);
+  if (!ok) throw invalidSignature(KeyType.P256);
 }
 
 function verifyWebAuthnP256(
@@ -114,12 +103,7 @@ function verifyWebAuthnP256(
 ): void {
   const { x, y } = decodeP256PublicKey(publicKey);
   const [authenticatorData, clientDataJSON, challengeOffset, r, s] =
-    AbiParameters.decode(
-      parseAbiParameters(
-        "bytes authenticatorData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s",
-      ),
-      signature,
-    ) as readonly [Hex.Hex, Hex.Hex, bigint, bigint, bigint];
+    AbiParameters.decode(WEBAUTHN_P256_SIGNATURE_PARAMS, signature);
 
   verifyChallenge(clientDataJSON, Number(challengeOffset), digest);
 
@@ -131,7 +115,7 @@ function verifyWebAuthnP256(
     publicKey: { prefix: 4, x, y },
     signature: { r: toWord(r), s: toWord(s) },
   });
-  if (!ok) throw invalidSignature(1);
+  if (!ok) throw invalidSignature(KeyType.WebAuthnP256);
 }
 
 function decodeP256PublicKey(publicKey: Hex.Hex): { x: Hex.Hex; y: Hex.Hex } {
@@ -142,10 +126,7 @@ function decodeP256PublicKey(publicKey: Hex.Hex): { x: Hex.Hex; y: Hex.Hex } {
     };
   }
 
-  const [x, y] = AbiParameters.decode(
-    parseAbiParameters("uint256 x, uint256 y"),
-    publicKey,
-  ) as readonly [bigint, bigint];
+  const [x, y] = AbiParameters.decode(P256_PUBLIC_KEY_PARAMS, publicKey);
   return { x: toWord(x), y: toWord(y) };
 }
 
@@ -164,8 +145,12 @@ function verifyChallenge(
   const clientData = Hex.toBytes(clientDataJSON);
   const digestBytes = Hex.toBytes(digest);
 
-  if (digestBytes.length !== 32) throw invalidSignature(1);
-  if (offset + 43 > clientData.length) throw invalidSignature(1);
+  if (digestBytes.length !== 32) {
+    throw invalidSignature(KeyType.WebAuthnP256);
+  }
+  if (offset + 43 > clientData.length) {
+    throw invalidSignature(KeyType.WebAuthnP256);
+  }
 
   for (let i = 0; i < 32; ) {
     const a = digestBytes[i++]!;
@@ -174,16 +159,16 @@ function verifyChallenge(
     const triple = (a << 16) | (b << 8) | c;
 
     if (clientData[offset++] !== table[(triple >> 18) & 0x3f]!) {
-      throw invalidSignature(1);
+      throw invalidSignature(KeyType.WebAuthnP256);
     }
     if (clientData[offset++] !== table[(triple >> 12) & 0x3f]!) {
-      throw invalidSignature(1);
+      throw invalidSignature(KeyType.WebAuthnP256);
     }
     if (clientData[offset++] !== table[(triple >> 6) & 0x3f]!) {
-      throw invalidSignature(1);
+      throw invalidSignature(KeyType.WebAuthnP256);
     }
     if (i < 32 && clientData[offset++] !== table[triple & 0x3f]!) {
-      throw invalidSignature(1);
+      throw invalidSignature(KeyType.WebAuthnP256);
     }
   }
 }

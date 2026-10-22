@@ -1,9 +1,7 @@
 import { expect, test } from "bun:test";
-import { parseAbiParameters } from "abitype";
 import { AbiParameters } from "ox";
 import { encodeFunctionData } from "viem";
 import {
-  AUTHORIZATION_ABI_PARAMS,
   decodeAuthorizationCalldata,
   decodeMutationCalldata,
   encodeAuthorizationCalldata,
@@ -11,9 +9,12 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
   encodeMutationCalldata,
-  TYPEWRITER_ABI,
 } from "./encoding";
 import type { Authorization, ExecutableMutation } from "./types";
+import {
+  AUTHORIZATION_ABI_PARAMS,
+  TYPEWRITER_ABI,
+} from "./typewriter-constants";
 
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
@@ -50,7 +51,11 @@ function acceptedMutation(
 test("encodeMutationCalldata wraps params as one struct", () => {
   const mutation = {
     id: 0,
-    params: parseAbiParameters("address from, address to, uint256 amount"),
+    params: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
   };
   const params = {
     from: "0x0000000000000000000000000000000000000001",
@@ -68,7 +73,10 @@ test("encodeMutationCalldata wraps params as one struct", () => {
 test("encodeMutationCalldata wraps dynamic params as one struct", () => {
   const mutation = {
     id: 0,
-    params: parseAbiParameters("bytes32 account, bytes publicKey"),
+    params: [
+      { name: "account", type: "bytes32" },
+      { name: "publicKey", type: "bytes" },
+    ],
   };
   const params = {
     account:
@@ -86,7 +94,11 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
 test("decodeMutationCalldata round-trips params", () => {
   const mutation = {
     id: 0,
-    params: parseAbiParameters("address from, address to, uint256 amount"),
+    params: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
   };
   const params = {
     from: "0x0000000000000000000000000000000000000001",
@@ -129,7 +141,7 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
 test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
   const config = {
     id: 3,
-    params: parseAbiParameters("bytes data"),
+    params: [{ name: "data", type: "bytes" }],
   };
   const mutation = acceptedMutation(config, { data: "0x1234" });
   const mutationData = encodeMutationCalldata(mutation);
@@ -146,11 +158,15 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
 test("encodeBatchArg builds a structured batch value", () => {
   const transfer = {
     id: 0,
-    params: parseAbiParameters("address from, address to, uint256 amount"),
+    params: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
   };
   const market = {
     id: 1,
-    params: parseAbiParameters("uint256 size"),
+    params: [{ name: "size", type: "uint256" }],
   };
   const secondAuthorization = {
     ...AUTHORIZATION,

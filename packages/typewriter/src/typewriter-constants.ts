@@ -11,6 +11,42 @@ export const KeyType = {
 
 export type KeyType = (typeof KeyType)[keyof typeof KeyType];
 
+/** The `publicKey` of a `KeyType.Secp256k1` credential, in `verifySecp256k1`. */
+export const SECP256K1_PUBLIC_KEY_PARAMS = [
+  { name: "address", type: "address" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
+/** A `KeyType.Secp256k1` signature, in `verifySecp256k1`. */
+export const SECP256K1_SIGNATURE_PARAMS = [
+  { name: "v", type: "uint8" },
+  { name: "r", type: "bytes32" },
+  { name: "s", type: "bytes32" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
+/**
+ * The ABI-encoded `publicKey` of a P-256 credential, in `decodeP256PublicKey`.
+ * The contract also accepts a 65-byte uncompressed key.
+ */
+export const P256_PUBLIC_KEY_PARAMS = [
+  { name: "x", type: "uint256" },
+  { name: "y", type: "uint256" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
+/** A `KeyType.P256` signature, in `verifyP256`. */
+export const P256_SIGNATURE_PARAMS = [
+  { name: "r", type: "uint256" },
+  { name: "s", type: "uint256" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
+/** A `KeyType.WebAuthnP256` signature, in `verifyWebAuthnP256`. */
+export const WEBAUTHN_P256_SIGNATURE_PARAMS = [
+  { name: "authenticatorData", type: "bytes" },
+  { name: "clientDataJSON", type: "bytes" },
+  { name: "challengeOffset", type: "uint256" },
+  { name: "r", type: "uint256" },
+  { name: "s", type: "uint256" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
 /**
  * The built-in mutations: their IDs (`CREATE_ACCOUNT_MUTATION`, ...) and
  * params (`struct CreateAccount`, ...).

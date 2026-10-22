@@ -9,7 +9,6 @@ import type {
 } from "./config";
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
-import type { TYPEWRITER_ABI } from "./encoding";
 import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
@@ -26,6 +25,7 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./types";
+import { TYPEWRITER_ABI } from "./typewriter-constants";
 import { layerWatchLive } from "./watch";
 
 type StorageRootProperty<
@@ -123,7 +123,7 @@ export function createTypewriterEffect<
     );
 
     const forceInclusionEvent = getAbiItem({
-      abi: app.abi as typeof TYPEWRITER_ABI,
+      abi: TYPEWRITER_ABI,
       name: "ForceInclusionQueued",
     });
 

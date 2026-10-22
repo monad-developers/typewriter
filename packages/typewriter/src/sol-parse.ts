@@ -6,8 +6,12 @@ import type {
   StorageConfig,
   TypewriterConfig,
 } from "./config";
-import { BUILTIN_MUTATIONS, buildInternalApp } from "./config";
+import { buildInternalApp } from "./config";
 import type { InternalApp } from "./internal";
+import {
+  BUILTIN_MUTATIONS,
+  FIRST_BUILTIN_MUTATION_ID,
+} from "./typewriter-constants";
 
 type JsonObject = Record<string, unknown>;
 
@@ -565,9 +569,9 @@ function parseMutations(params: {
     if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
       throw new Error(`Mutation.${member.name} is reserved by Typewriter`);
     }
-    if (id >= 253) {
+    if (id >= FIRST_BUILTIN_MUTATION_ID) {
       throw new Error(
-        `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below 253`,
+        `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below ${FIRST_BUILTIN_MUTATION_ID}`,
       );
     }
     return { enumName: member.name, id };

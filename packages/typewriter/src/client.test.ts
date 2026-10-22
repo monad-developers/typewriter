@@ -10,6 +10,7 @@ import {
   packNonce,
   packP256Signature,
 } from "./client";
+import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 
 const manifest = {
   chainId: 10,
@@ -22,26 +23,7 @@ const manifest = {
         { name: "amount", type: "uint256" },
       ],
     },
-    CreateAccount: {
-      id: 253,
-      params: [
-        { name: "keyType", type: "uint8" },
-        { name: "publicKey", type: "bytes" },
-      ],
-    },
-    AddCredential: {
-      id: 254,
-      params: [
-        { name: "expiration", type: "uint40" },
-        { name: "keyType", type: "uint8" },
-        { name: "permissions", type: "uint256" },
-        { name: "publicKey", type: "bytes" },
-      ],
-    },
-    RemoveCredential: {
-      id: 255,
-      params: [{ name: "credentialID", type: "uint64" }],
-    },
+    ...BUILTIN_MUTATIONS,
   },
 } as const;
 
@@ -62,7 +44,7 @@ test("signs a generic authorization over the exact mutation calldata encoding", 
   const prepared = authorizeMutation(mutation, "0x1234");
 
   expect(payload).toBe(
-    "0x1b9eef7b369e28b2ea0b382634167ab48f5890b6319ca8bf8ab4ed705c98e958",
+    "0xe8f5c72c30afd05fc50d2abd8a2ea99004bddc737a74e5d3c98f3d19cb9155a9",
   );
   expect(prepared).toEqual({
     name: "Transfer",
@@ -99,7 +81,7 @@ test("signs CreateAccount calldata with the derived accountID", async () => {
     "0xd690045981ca381a50cc9ecab2e603d4ee6a72cd6f39a8c6525464851ddfaafe",
   );
   expect(payload).toBe(
-    "0x78ee499a8d098e18f91fe87b88a8012324ad1c54e119dc1b93815674e0f3d4fe",
+    "0x35bfe6638271883c23fe96c9209a967a351c2ab942f0b5c725cdc37ca978960c",
   );
   expect(prepared.authorization).toEqual({
     accountID:

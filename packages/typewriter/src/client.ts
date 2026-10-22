@@ -1,31 +1,32 @@
 import type { AbiParameter, AbiParameterToPrimitiveType } from "abitype";
 import { AbiParameters, Address, Hash, Hex, TypedData } from "ox";
 import type { TypewriterManifest } from "./config";
-import { KeyType, packP256Signature } from "./signature";
+import { packP256Signature } from "./signature";
 import type {
   AddCredentialParams,
   Authorization,
   CreateAccountParams,
   RemoveCredentialParams,
 } from "./types";
+import {
+  AUTHORIZATION_ABI_PARAMS,
+  AUTHORIZATION_EIP712_TYPES,
+  BUILTIN_MUTATIONS,
+  KeyType,
+  TYPEWRITER_EIP712_DOMAIN,
+} from "./typewriter-constants";
 
 export type { Authorization, CreateAccountParams };
-export { KeyType, packP256Signature };
+export {
+  AUTHORIZATION_ABI_PARAMS,
+  BUILTIN_MUTATIONS,
+  KeyType,
+  packP256Signature,
+};
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_UINT192 = (1n << 192n) - 1n;
 const MAX_UINT64 = (1n << 64n) - 1n;
-
-const AUTHORIZATION_TYPES = {
-  Authorization: [
-    { name: "accountID", type: "bytes32" },
-    { name: "credentialID", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "expiration", type: "uint256" },
-    { name: "mutation", type: "uint8" },
-    { name: "mutationData", type: "bytes" },
-  ],
-} as const;
 
 type MutationName<manifest extends TypewriterManifest> =
   keyof manifest["mutations"] & string;
@@ -77,13 +78,10 @@ export type AuthorizedMutation<
 
 export function deriveAccountID(params: CreateAccountParams): Hex.Hex {
   return Hash.keccak256(
-    AbiParameters.encode(
-      [
-        { name: "keyType", type: "uint8" },
-        { name: "publicKey", type: "bytes" },
-      ],
-      [params.keyType, params.publicKey],
-    ),
+    AbiParameters.encode(BUILTIN_MUTATIONS.CreateAccount.params, [
+      params.keyType,
+      params.publicKey,
+    ]),
   );
 }
 
@@ -143,18 +141,18 @@ export function getAuthorizationPayload<
   const mutationData = encodeMutationData(config.params, mutation.params);
   return TypedData.getSignPayload({
     domain: {
-      name: "Typewriter",
-      version: "1",
+      ...TYPEWRITER_EIP712_DOMAIN,
       chainId: manifest.chainId,
       verifyingContract: manifest.address,
     },
-    types: AUTHORIZATION_TYPES,
+    types: AUTHORIZATION_EIP712_TYPES,
     primaryType: "Authorization",
     message: {
       accountID: mutation.accountID,
       credentialID: mutation.credentialID,
       nonce: mutation.nonce,
-      expiration: mutation.expiration,
+      // ox types `uint40` as a number.
+      expiration: Number(mutation.expiration),
       mutation: config.id,
       mutationData,
     },

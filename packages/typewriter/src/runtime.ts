@@ -46,7 +46,6 @@ import {
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
-  type TYPEWRITER_ABI,
 } from "./encoding";
 import type { InternalApp } from "./internal";
 import { durationMs, loggerLayer, startTimer } from "./logger";
@@ -73,6 +72,7 @@ import type {
   InternalRuntimeTypewriter,
   MutationListener,
 } from "./typewriter";
+import { TYPEWRITER_ABI } from "./typewriter-constants";
 import type { LocalLog } from "./watch";
 import { Watch } from "./watch";
 
@@ -282,7 +282,7 @@ export function decodeEnqueuedMutation(params: {
   id: number;
 }): EnqueuedMutation {
   const forceInclusionLog = decodeEventLog({
-    abi: params.app.abi as typeof TYPEWRITER_ABI,
+    abi: TYPEWRITER_ABI,
     eventName: "ForceInclusionQueued",
     // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,

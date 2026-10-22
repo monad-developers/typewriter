@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseAbiParameters } from "abitype";
-import { AbiParameters, Hash, type Hex, P256, PublicKey, Secp256k1 } from "ox";
+import { AbiParameters, Hash, P256, PublicKey } from "ox";
 import {
   BOB_ACCOUNT,
   P256_PRIVATE_KEY,
@@ -11,9 +10,11 @@ import {
   p256PublicKey,
   secp256k1PublicKey,
   signP256Raw,
+  signSecp256k1Raw,
   signWebAuthnP256Raw,
 } from "../test/utils";
 import { verifySignature } from "./signature";
+import { WEBAUTHN_P256_SIGNATURE_PARAMS } from "./typewriter-constants";
 
 const DIGEST = Hash.keccak256("0x1234");
 
@@ -82,15 +83,12 @@ test("verifySignature accepts WebAuthn-P256 signatures", () => {
 });
 
 test("verifySignature rejects WebAuthn-P256 signatures with the wrong challenge offset", () => {
-  const params = parseAbiParameters(
-    "bytes authenticatorData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s",
-  );
   const [authenticatorData, clientDataJSON, challengeOffset, r, s] =
     AbiParameters.decode(
-      params,
+      WEBAUTHN_P256_SIGNATURE_PARAMS,
       signWebAuthnP256Raw(DIGEST, P256_PRIVATE_KEY),
-    ) as readonly [Hex.Hex, Hex.Hex, bigint, bigint, bigint];
-  const signature = AbiParameters.encode(params, [
+    );
+  const signature = AbiParameters.encode(WEBAUTHN_P256_SIGNATURE_PARAMS, [
     authenticatorData,
     clientDataJSON,
     challengeOffset + 1n,
@@ -108,11 +106,3 @@ test("verifySignature rejects unknown key types", () => {
     /InvalidSignature: keyType=3/,
   );
 });
-
-function signSecp256k1Raw(digest: Hex.Hex, privateKey: Hex.Hex): Hex.Hex {
-  const signature = Secp256k1.sign({ payload: digest, privateKey });
-  return AbiParameters.encode(
-    parseAbiParameters("uint8 v, bytes32 r, bytes32 s"),
-    [signature.yParity + 27, signature.r, signature.s],
-  );
-}

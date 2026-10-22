@@ -7,8 +7,8 @@ import {
   formatBlock,
   type Hash,
 } from "viem";
-import { TYPEWRITER_ABI } from "./encoding";
 import { Rpc, type RpcError } from "./rpc";
+import { TYPEWRITER_ABI } from "./typewriter-constants";
 
 export type BlockIdentifier = number | bigint | Hash;
 export type RequestedBlock<includeTransactions extends boolean = false> = Block<

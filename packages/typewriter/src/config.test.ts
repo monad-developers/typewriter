@@ -2,7 +2,6 @@ import { expect, expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type { StorageView } from "storage-layout";
 import {
-  BUILTIN_MUTATIONS,
   buildInternalApp,
   type MutationsConfig,
   type SequencingConfig,
@@ -14,6 +13,7 @@ import type {
   Typewriter,
   TypewriterMutationInput,
 } from "./index";
+import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 
 const STORAGE_LAYOUT = {
   storage: [
