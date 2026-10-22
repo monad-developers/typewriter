@@ -2,7 +2,16 @@ import { SQL } from "bun";
 import { DrizzleQueryError, type SQLWrapper } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { Data, Deferred, Effect, Exit, Schedule, type Scope } from "effect";
+import {
+  Context,
+  Data,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  Schedule,
+  type Scope,
+} from "effect";
 
 export type DatabaseOptions = {
   url: string;
@@ -39,6 +48,14 @@ export type Db = {
     timeoutMs: number,
   ) => Effect.Effect<Effect.Effect<never, DbError>, DbError, Scope.Scope>;
 };
+
+export class Database extends Context.Service<Database, Db>()(
+  "typewriter/Database",
+) {}
+
+export const layerDatabase = (
+  options: DatabaseOptions,
+): Layer.Layer<Database> => Layer.effect(Database, makeDb(options));
 
 export class DbError extends Data.TaggedError("DbError")<{
   sql: string;
