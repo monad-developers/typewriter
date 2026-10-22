@@ -2,7 +2,7 @@ import { expect, expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type { StorageView } from "storage-layout";
 import {
-  buildInternalApp,
+  createTypewriterApp,
   type MutationsConfig,
   type SequencingConfig,
   type StorageConfig,
@@ -102,8 +102,8 @@ const publicConfig = {
   database: { url: "postgres://postgres@localhost:5432/postgres" },
 } as const satisfies TypewriterConfig;
 
-test("buildInternalApp constructs a serializable manifest", () => {
-  const app = buildInternalApp({
+test("createTypewriterApp constructs a serializable manifest", () => {
+  const app = createTypewriterApp({
     config: publicConfig,
     abi: [],
     storageLayout: STORAGE_LAYOUT,
