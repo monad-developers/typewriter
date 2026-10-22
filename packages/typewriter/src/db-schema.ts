@@ -36,6 +36,7 @@ const authorizationColumns = () => ({
   authorization_account_id: bytes32().notNull(),
   authorization_credential_id: bigint({ mode: "bigint" }).notNull(),
   authorization_nonce: uint256().notNull(),
+  // TODO(kyle) `mode: "number"`, see `Credential` in `typewriter-types.ts`.
   authorization_expiration: bigint({ mode: "bigint" }).notNull(),
   authorization_signature: text().$type<Hex.Hex>().notNull(),
 });
@@ -96,7 +97,6 @@ export function createTypewriterSchema(schemaName: string) {
           .notNull()
           .$defaultFn(() => TYPEWRITER_SCHEMA_VERSION),
         address: char({ length: 42 }).$type<Hex.Hex>().notNull(),
-        // TODO(kyle) assert in `config.ts` that chainId fits in JS integer and the schema name character limit.
         chain_id: bigint({ mode: "number" }).notNull(),
         code_hash: bytes32().notNull(),
       },
@@ -104,6 +104,8 @@ export function createTypewriterSchema(schemaName: string) {
     ),
   };
 }
+
+export type TypewriterSchema = ReturnType<typeof createTypewriterSchema>;
 
 function mergeColumns(...groups: readonly ColumnGroup[]): ColumnGroup {
   const columns: Record<string, PgColumnBuilderBase> = {};

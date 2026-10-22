@@ -6,8 +6,7 @@ import type {
   StorageConfig,
   TypewriterConfig,
 } from "./config";
-import { buildInternalApp } from "./config";
-import type { InternalApp } from "./internal";
+import { createTypewriterApp, type TypewriterApp } from "./config";
 import {
   BUILTIN_MUTATIONS,
   FIRST_BUILTIN_MUTATION_ID,
@@ -622,7 +621,7 @@ function parseMutations(params: {
 function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
   baseConfig: TypewriterConfig<sequencingConfig>,
   metadata: ParsedSolidityMetadata,
-): InternalApp {
+): TypewriterApp {
   const mutations: Record<string, ResolvedTypewriterMutationConfig> = {};
 
   for (const mutation of metadata.mutations) {
@@ -632,7 +631,7 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
     };
   }
 
-  return buildInternalApp({
+  return createTypewriterApp({
     config: baseConfig,
     abi: metadata.abi,
     storageLayout: metadata.storageLayout,
@@ -771,7 +770,7 @@ export async function loadSolidityTypewriterApp<
 >(
   entrypoint: TypewriterSolidityEntrypoint,
   config: TypewriterConfig<sequencingConfig>,
-): Promise<InternalApp> {
+): Promise<TypewriterApp> {
   const metadata = await parseSolidityMetadata(entrypoint);
   const entrypointPath = await requireEntrypointPath(entrypoint);
   await maybeWriteAppSolidityDeclaration(entrypointPath, metadata);

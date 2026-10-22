@@ -1,19 +1,19 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
+import type { PgTable } from "drizzle-orm/pg-core";
 import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
-import type { DatabaseClient, DatabaseOptions } from "./db";
-import type { InternalApp } from "./internal";
-import { createMutationSchema } from "./schema";
+import { deploymentKey } from "./client";
+import type { DatabaseOptions } from "./db";
+import {
+  createMutationSchema,
+  createTypewriterSchema,
+  type TypewriterSchema,
+} from "./db-schema";
 import {
   BUILTIN_MUTATIONS,
   FIRST_BUILTIN_MUTATION_ID,
 } from "./typewriter-constants";
-
-export type TypewriterDatabase = DatabaseClient;
-export type TypewriterDatabaseTransaction = Parameters<
-  Parameters<DatabaseClient["transaction"]>[0]
->[0];
 
 export type StorageConfig = StorageLayout;
 export type MutationConfig = {
@@ -40,16 +40,16 @@ export type ResolvedTypewriterMutationConfig = MutationConfig & {
 export type TypewriterManifest<
   mutationsConfig extends MutationsConfig = MutationsConfig,
 > = {
-  readonly chainId: number;
-  readonly address: Address.Address;
-  readonly mutations: {
-    readonly [name in keyof mutationsConfig]: {
-      readonly id: mutationsConfig[name] extends {
-        readonly id: infer id extends number;
+  chainId: number;
+  address: Address.Address;
+  mutations: {
+    [name in keyof mutationsConfig]: {
+      id: mutationsConfig[name] extends {
+        id: infer id extends number;
       }
         ? id
         : number;
-      readonly params: mutationsConfig[name]["params"];
+      params: mutationsConfig[name]["params"];
     };
   };
 };
@@ -82,6 +82,41 @@ export type TypewriterConfig<
   };
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
+
+/** A resolved `TypewriterConfig`, merged with the app's Solidity metadata. */
+export type TypewriterApp = {
+  address: Address.Address;
+  abi: Abi;
+  manifest: TypewriterManifest;
+  storageLayout: StorageLayout;
+  account: PrivateKeyAccount;
+  chainId: number;
+  rpcUrls: [string, ...string[]];
+  database: DatabaseOptions;
+  mutations: { [name: string]: ResolvedTypewriterMutationConfig };
+  /** The Postgres schema that holds the deployment's tables. */
+  schemaName: string;
+  typewriterSchema: TypewriterSchema;
+  mutationSchema: Record<string, PgTable>;
+  blockPollingIntervalMs: number;
+  confirmations: {
+    finalizedBlockDepth: number;
+  };
+  sequencing:
+    | {
+        order: "fifo";
+        submitIntervalMs: number;
+      }
+    | {
+        order: "batch";
+        batchIntervalMs: number;
+        submitIntervalMs: number;
+        batchOrder: string[];
+      };
+};
+
+/** Postgres truncates longer identifiers. */
+const MAX_IDENTIFIER_LENGTH = 63;
 
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
@@ -165,19 +200,27 @@ function validateMutationDefinitions(mutations: {
   }
 }
 
-export function buildInternalApp(params: {
+export function createTypewriterApp(params: {
   config: TypewriterConfig;
   abi: Abi;
   storageLayout: StorageConfig;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
-}): InternalApp {
+}): TypewriterApp {
   const { abi, config, mutations, storageLayout } = params;
   validateConfig(config);
   validateMutationDefinitions(mutations);
 
-  const rpcUrls = Array.isArray(config.rpcUrl)
-    ? config.rpcUrl
-    : [config.rpcUrl];
+  // `validateConfig` rejects an empty `rpcUrl` list.
+  const rpcUrls = (
+    Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl]
+  ) as [string, ...string[]];
+
+  const schemaName = `typewriter_${deploymentKey(config.chainId, config.address)}`;
+  if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
+    throw new Error(
+      `config.chainId is too long for the Postgres schema name: ${schemaName}`,
+    );
+  }
   const confirmations = {
     finalizedBlockDepth:
       config.confirmations?.finalizedBlockDepth ??
@@ -218,8 +261,10 @@ export function buildInternalApp(params: {
     chainId: config.chainId,
     rpcUrls,
     database: config.database,
-    mutations: mutations as InternalApp["mutations"],
-    schema: createMutationSchema({ mutations }),
+    mutations,
+    schemaName,
+    typewriterSchema: createTypewriterSchema(schemaName),
+    mutationSchema: createMutationSchema(schemaName, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     confirmations,

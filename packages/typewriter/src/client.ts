@@ -8,12 +8,6 @@ import {
   TypedData,
 } from "ox";
 import type { TypewriterManifest } from "./config";
-import type {
-  AddCredentialParams,
-  Authorization,
-  CreateAccountParams,
-  RemoveCredentialParams,
-} from "./types";
 import {
   AUTHORIZATION_ABI_PARAMS,
   AUTHORIZATION_EIP712_TYPES,
@@ -23,6 +17,12 @@ import {
   SECP256K1_SIGNATURE_PARAMS,
   TYPEWRITER_EIP712_DOMAIN,
 } from "./typewriter-constants";
+import type {
+  AddCredentialParams,
+  Authorization,
+  CreateAccountParams,
+  RemoveCredentialParams,
+} from "./typewriter-types";
 
 export type { Authorization, CreateAccountParams };
 export { AUTHORIZATION_ABI_PARAMS, BUILTIN_MUTATIONS, KeyType };

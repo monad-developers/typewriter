@@ -1,24 +1,26 @@
 import { AbiFunction, AbiParameters, type Hex } from "ox";
-import type { Authorization, ExecutableMutation } from "./types";
 import {
   AUTHORIZATION_ABI_PARAMS,
   TYPEWRITER_ABI,
 } from "./typewriter-constants";
+import type { Authorization, RuntimeMutation } from "./typewriter-types";
 
-// Resolved once: looking up the ABI item and hashing its selector on each
-// call costs more than the encoding itself.
+/** The parts of a mutation that its calldata encodes. */
+type EncodableMutation = Pick<
+  RuntimeMutation,
+  "config" | "params" | "authorization"
+>;
+
 const EXECUTE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
 const ENQUEUE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "enqueue");
 
-// Contract calldata and EIP-712 mutationData encode params as one top-level
-// Solidity struct whose components are `mutation.params`.
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
 ): readonly AbiParameters.Parameter[] {
-  return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
+  return [{ type: "tuple", components: params }];
 }
 
-export function encodeMutationCalldata(mutation: ExecutableMutation): Hex.Hex {
+export function encodeMutationCalldata(mutation: EncodableMutation): Hex.Hex {
   return AbiParameters.encode(calldataStructParams(mutation.config.params), [
     mutation.params,
   ]);
@@ -56,8 +58,6 @@ export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
   return { ...authorization, expiration: BigInt(authorization.expiration) };
 }
 
-// Encode `execute(Batch[], uint256[])` calldata from structured batch values
-// and an optional list of force-inclusion queue indexes.
 export function encodeExecuteCalldata(
   batches: readonly {
     mutations: readonly number[];
@@ -72,7 +72,7 @@ export function encodeExecuteCalldata(
   ]);
 }
 
-export function encodeEnqueueCalldata(mutation: ExecutableMutation): Hex.Hex {
+export function encodeEnqueueCalldata(mutation: EncodableMutation): Hex.Hex {
   return AbiFunction.encodeData(ENQUEUE_FUNCTION, [
     mutation.config.id,
     encodeMutationCalldata(mutation),
@@ -80,8 +80,7 @@ export function encodeEnqueueCalldata(mutation: ExecutableMutation): Hex.Hex {
   ]);
 }
 
-// Build a structured Batch value from executable mutations.
-export function encodeBatchArg(mutations: ExecutableMutation[]): {
+export function encodeBatchArg(mutations: readonly EncodableMutation[]): {
   mutations: readonly number[];
   mutationData: readonly Hex.Hex[];
   authorizationData: readonly Hex.Hex[];

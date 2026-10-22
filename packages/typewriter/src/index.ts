@@ -1,55 +1,38 @@
-import { Effect, Exit, Scope } from "effect";
-import type { StorageView } from "storage-layout";
+import { Effect, Exit, Fiber, Layer, Scope } from "effect";
 import type {
   MutationConfig,
   MutationsConfig,
   SequencingConfig,
   StorageConfig,
   TypewriterConfig,
-  TypewriterManifest,
 } from "./config";
-import type { TypewriterSchema } from "./schema";
+import { layerDatabase } from "./db";
+import { layerRpc } from "./rpc";
+import { makeHttpTransport } from "./rpc-transport";
 import {
   loadSolidityTypewriterApp,
   type TypewriterSolidityEntrypoint,
 } from "./sol-parse";
+import { createTypewriterEffect, type TypewriterEffect } from "./typewriter";
 import type {
-  BatchListener,
-  BlockListener,
-  MutationListener,
+  On,
   TypewriterMutationInput,
   TypewriterMutationResult,
-} from "./types";
-import { createTypewriterEffect } from "./typewriter";
+} from "./typewriter-types";
 
-type StorageRootProperty<
-  storageConfig extends StorageConfig,
-  name extends "accounts" | "state",
-> =
-  StorageView<storageConfig, false> extends infer root
-    ? name extends keyof root
-      ? root[name]
-      : never
-    : never;
-
+/** A `TypewriterEffect` with Promise and callback APIs, already running. */
 export type Typewriter<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
-> = {
-  readonly state: StorageRootProperty<storageConfig, "state">;
-  readonly accounts: StorageRootProperty<storageConfig, "accounts">;
-  readonly schema: TypewriterSchema<mutationsConfig>;
-  readonly manifest: TypewriterManifest<mutationsConfig>;
+> = Omit<
+  TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>,
+  "execute" | "on" | "program"
+> & {
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Promise<TypewriterMutationResult>;
-  on(event: "mutation", cb: MutationListener<mutationsConfig>): () => void;
-  on(event: "batch", cb: BatchListener<mutationsConfig>): () => void;
-  on(
-    event: "block",
-    cb: BlockListener<sequencingConfig, mutationsConfig>,
-  ): () => void;
+  on: On<sequencingConfig, mutationsConfig, () => void>;
 };
 
 export type {
@@ -57,11 +40,7 @@ export type {
   TypewriterConfig,
   TypewriterManifest,
 } from "./config";
-export type {
-  TypewriterMutationSchema,
-  TypewriterSchema,
-  TypewriterStateSchema,
-} from "./schema";
+export type { TypewriterMutationSchema } from "./db-schema";
 export type { TypewriterSolidityEntrypoint } from "./sol-parse";
 export type {
   Account,
@@ -80,7 +59,7 @@ export type {
   TypewriterMutation,
   TypewriterMutationInput,
   TypewriterMutationResult,
-} from "./types";
+} from "./typewriter-types";
 
 type EntrypointMetadata<entrypoint> =
   entrypoint extends TypewriterSolidityEntrypoint<infer metadata>
@@ -113,72 +92,83 @@ export async function createTypewriter<
     EntrypointMutationsConfig<entrypoint>,
     sequencingConfig
   >
->;
-export async function createTypewriter<
-  const entrypoint extends TypewriterSolidityEntrypoint,
-  const sequencingConfig extends SequencingConfig = SequencingConfig,
->(
-  entrypoint: entrypoint,
-  publicConfig: TypewriterConfig<sequencingConfig>,
-): Promise<
-  Typewriter<
+> {
+  type Result = Typewriter<
     EntrypointStorageConfig<entrypoint>,
     EntrypointMutationsConfig<entrypoint>,
     sequencingConfig
-  >
-> {
-  const app = await loadSolidityTypewriterApp(entrypoint, publicConfig);
+  >;
+
+  const app = await loadSolidityTypewriterApp(entrypoint, config);
   // TODO(kyle) expose a way to close the scope. Until then the typewriter
   // runs until the process exits.
   const scope = Effect.runSync(Scope.make());
-  let closed = false;
-
-  async function closeScope() {
-    if (closed) return;
-    closed = true;
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-  }
 
   try {
-    const typewriter = await Effect.runPromise(
-      createTypewriterEffect<
-        EntrypointStorageConfig<entrypoint>,
-        EntrypointMutationsConfig<entrypoint>,
-        sequencingConfig
-      >(app).pipe(Effect.provideService(Scope.Scope, scope)),
+    const { typewriter, fiber } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const [rpcUrl, ...rpcUrls] = app.rpcUrls;
+        const services = yield* Layer.buildWithScope(
+          Layer.merge(
+            layerRpc([
+              makeHttpTransport(rpcUrl),
+              ...rpcUrls.map(makeHttpTransport),
+            ]),
+            layerDatabase(app.database),
+          ),
+          scope,
+        );
+        const typewriter = yield* createTypewriterEffect<
+          EntrypointStorageConfig<entrypoint>,
+          EntrypointMutationsConfig<entrypoint>,
+          sequencingConfig
+        >(app).pipe(
+          Effect.provide(services),
+          Effect.provideService(Scope.Scope, scope),
+        );
+        const fiber = yield* typewriter.program.pipe(
+          // A failed program can't accept mutations. Crash the process rather
+          // than serve stale state.
+          Effect.tapError((error) =>
+            Effect.sync(() =>
+              queueMicrotask(() => {
+                throw error;
+              }),
+            ),
+          ),
+          Effect.forkIn(scope),
+        );
+        return { typewriter, fiber };
+      }),
     );
+
+    // Fails once the program has failed, so `execute` doesn't wait forever.
+    const stopped = Fiber.join(fiber);
+
+    const execute = ((
+      submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
+    ) =>
+      Effect.runPromise(
+        typewriter.execute(submitted).pipe(Effect.raceFirst(stopped)),
+      )) as Result["execute"];
 
     const runtimeOn = typewriter.on as unknown as (
       event: "mutation" | "batch" | "block",
       cb: unknown,
     ) => Effect.Effect<() => void>;
-    const on = ((event, cb) =>
-      Effect.runSync(runtimeOn(event, cb))) as Typewriter<
-      EntrypointStorageConfig<entrypoint>,
-      EntrypointMutationsConfig<entrypoint>,
-      sequencingConfig
-    >["on"];
-
-    const execute = ((
-      submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
-    ) => Effect.runPromise(typewriter.execute(submitted))) as Typewriter<
-      EntrypointStorageConfig<entrypoint>,
-      EntrypointMutationsConfig<entrypoint>,
-      sequencingConfig
-    >["execute"];
+    const on = ((event: "mutation" | "batch" | "block", cb: unknown) =>
+      Effect.runSync(runtimeOn(event, cb))) as Result["on"];
 
     return {
       state: typewriter.state,
       accounts: typewriter.accounts,
-      schema: typewriter.schema as unknown as TypewriterSchema<
-        EntrypointMutationsConfig<entrypoint>
-      >,
+      schema: typewriter.schema,
       manifest: typewriter.manifest,
       execute,
       on,
-    };
+    } as Result;
   } catch (error) {
-    await closeScope();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
     throw error;
   }
 }
