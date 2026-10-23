@@ -1057,6 +1057,10 @@ export function createTypewriterEffect<
             });
 
             for (const log of message.block.logs) {
+              // TODO(kyle) check the log's queue index against the length of
+              // the queue in revm. A missed log shifts every later enqueued
+              // mutation, so `execute` runs a different queued mutation than
+              // the one revm accepted, and the settlement reverts onchain.
               const enqueuedMutation = decodeEnqueuedMutation({ app, log });
 
               const executeResult = yield* withSpeculativeStateLock(

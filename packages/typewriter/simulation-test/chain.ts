@@ -10,6 +10,7 @@ import { ChildProcess, type ChildProcessSpawner } from "effect/process";
 import {
   makeHttpTransport,
   type RpcRequest,
+  RpcResponseError,
   type RpcResult,
 } from "../src/rpc-transport";
 import { SIM } from "./index";
@@ -70,6 +71,7 @@ export function makeChain(): Effect.Effect<
         Effect.retry({
           schedule: Schedule.exponential("10 millis"),
           times: 5,
+          while: (error) => !(error instanceof RpcResponseError),
         }),
         Effect.orDie,
       );

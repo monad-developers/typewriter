@@ -1,26 +1,82 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Clock, Duration, Effect, type Exit, Layer, Random } from "effect";
-import { Hash, Hex } from "ox";
-import { privateKeyToAccount } from "viem/accounts";
-import { loadSolidityTypewriterApp } from "../src/sol-parse";
+import { SQL } from "bun";
 import {
-  APPS,
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  FiberSet,
+  Layer,
+  Random,
+  Scope,
+} from "effect";
+import { Hex } from "ox";
+import { privateKeyToAccount } from "viem/accounts";
+import { KeyType } from "../src/client";
+import type { TypewriterManifest } from "../src/config";
+import { Database, makeDb } from "../src/db";
+import { encodeEnqueueCalldata } from "../src/encoding";
+import { layerRpc } from "../src/rpc";
+import { loadSolidityTypewriterApp } from "../src/sol-parse";
+import { createTypewriterEffect } from "../src/typewriter";
+import type {
+  BatchEvent,
+  BlockEvent,
+  MutationEvent,
+} from "../src/typewriter-types";
+import {
+  createAccount,
   deploy,
-  entrypoint,
-  type Generator,
-  type Mutation,
-} from "./apps";
+  makePlan,
+  makeSigner,
+  mutationKey,
+  type Step,
+} from "./assessment";
+import {
+  ASSESSMENT_ENTRYPOINT,
+  type AssessmentMutations,
+  type AssessmentStorage,
+} from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
 import { int, makeRandom, pick } from "./random";
 import { makeSimScheduler } from "./scheduler";
+import { makeSimDb } from "./sim-db";
+import { makeSimTransport } from "./sim-rpc";
+import { validate } from "./validate";
 
 export type SIM = {
   seed: string;
-  app: string;
-  durationMs: number;
+  /** The run fails when the runtime emits no mutation event for this much virtual time. */
+  stallTimeoutMs: number;
+  /** How often the scheduler moves the clock to the next sleep before a pick, while tasks are ready. */
+  jumpRate: number;
+  /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
+  ioRate: number;
   chain: { blockTimeMs: number; genesisTimestamp: number };
-  generator: { accounts: number; intervalMs: [number, number] };
+  generator: {
+    /** The key type of each account. */
+    accounts: KeyType[];
+    mutations: number;
+    /** The delays between submissions that a step draws from. */
+    delaysMs: number[];
+    revertRate: number;
+    enqueueRate: number;
+  };
+  typewriter: {
+    submitIntervalMs: number;
+    blockPollingIntervalMs: number;
+    finalizedBlockDepth: number;
+    ordering:
+      | { order: "fifo" }
+      | {
+          order: "batch";
+          batchIntervalMs: number;
+          batchOrder: ["A", "B"] | ["B", "A"];
+        };
+  };
   transports: {
     latencyMs: [number, number];
     errorRate: number;
@@ -28,7 +84,6 @@ export type SIM = {
   }[];
   db: {
     latencyMs: [number, number];
-    errorRate: number;
   };
 };
 
@@ -36,10 +91,11 @@ export type SIM = {
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
 const SEED = process.env["SEED"] || Hex.random(32);
 
-const APP = process.argv[2];
-if (APP === undefined || APPS[APP] === undefined) {
+// biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
+const DATABASE_URL = process.env["DATABASE_URL"];
+if (DATABASE_URL === undefined || DATABASE_URL === "") {
   console.error(
-    `usage: bun simulation-test/index.ts <app>, where <app> is one of: ${Object.keys(APPS).join(", ")}`,
+    "usage: DATABASE_URL=<postgres url> bun simulation-test/index.ts",
   );
   process.exit(1);
 }
@@ -47,19 +103,60 @@ if (APP === undefined || APPS[APP] === undefined) {
 /** The configuration of a run. Each value is drawn from `SEED` and its path. */
 export const SIM: SIM = {
   seed: SEED,
-  app: APP,
-  durationMs: pick(SEED, "durationMs", [10_000, 60_000, 300_000]),
+  stallTimeoutMs: 300_000,
+  jumpRate: pick(SEED, "jumpRate", [0, 0.0001, 0.001]),
+  ioRate: pick(SEED, "ioRate", [0, 0.01, 0.1]),
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
   },
   generator: {
-    accounts: int(SEED, "generator.accounts", 2, 8),
-    intervalMs: pick(SEED, "generator.intervalMs", [
-      [1, 10],
-      [10, 100],
-      [100, 1_000],
-    ] as [number, number][]),
+    accounts: Array.from(
+      { length: int(SEED, "generator.accounts", 1, 6) },
+      (_, i) =>
+        pick(SEED, `generator.accounts.${i}`, [
+          KeyType.Secp256k1,
+          KeyType.P256,
+          KeyType.WebAuthnP256,
+        ]),
+    ),
+    mutations: int(SEED, "generator.mutations", 4, 1000),
+    delaysMs: pick(SEED, "generator.delaysMs", [
+      [0],
+      [0, 1, 10],
+      [0, 50, 500],
+      [10, 100, 1_000],
+    ]),
+    revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
+    enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
+  },
+  typewriter: {
+    submitIntervalMs: pick(
+      SEED,
+      "typewriter.submitIntervalMs",
+      [50, 300, 1_000],
+    ),
+    blockPollingIntervalMs: pick(
+      SEED,
+      "typewriter.blockPollingIntervalMs",
+      [50, 200, 1_000],
+    ),
+    finalizedBlockDepth: int(SEED, "typewriter.finalizedBlockDepth", 1, 5),
+    ordering:
+      pick(SEED, "typewriter.ordering", ["fifo", "batch"]) === "fifo"
+        ? { order: "fifo" }
+        : {
+            order: "batch",
+            batchIntervalMs: pick(
+              SEED,
+              "typewriter.ordering.batchIntervalMs",
+              [10, 50, 300],
+            ),
+            batchOrder: pick(SEED, "typewriter.ordering.batchOrder", [
+              ["A", "B"],
+              ["B", "A"],
+            ] as (["A", "B"] | ["B", "A"])[]),
+          },
   },
   transports: Array.from(
     { length: int(SEED, "transports.length", 1, 3) },
@@ -83,188 +180,305 @@ export const SIM: SIM = {
       [1, 10],
       [10, 100],
     ] as [number, number][]),
-    errorRate: pick(SEED, "db.errorRate", [0, 0.001, 0.005]),
   },
 };
 
-console.log(`simulation seed: ${SEED} (repeat with SEED=${SEED})`);
 console.log(JSON.stringify(SIM, null, 2));
-
-export const layerRandom = Layer.effect(
-  Random.Random,
-  makeRandom(SEED, "runtime"),
-);
-
-/** The program under test. */
-type Target = {
-  execute: (mutation: Mutation) => Effect.Effect<unknown, unknown>;
-};
-
-// TODO(sim) run the typewriter runtime here once it uses `Db` from `db.ts`.
-const target: Target = {
-  execute: () => Effect.succeed({ status: "unwired" }),
-};
-
-type TraceEntry = { t: number } & (
-  | { kind: "block"; timestamp: number }
-  | { kind: "submit"; id: number; name: string }
-  | { kind: "result"; id: number; exit: string }
-);
-
-type RunResult = {
-  trace: TraceEntry[];
-  traceHash: Hex.Hex;
-  steps: number;
-  virtualMs: number;
-  /** The exit of the simulation if it stopped before `SIM.durationMs`. */
-  exit: Exit.Exit<unknown, unknown> | undefined;
-};
-
-/** Runs the simulation for `SIM.durationMs` of virtual time. */
-async function run({
-  chain,
-  generator,
-}: {
-  chain: Chain;
-  generator: Generator;
-}): Promise<RunResult> {
-  const startMs = SIM.chain.genesisTimestamp * 1000;
-  const endMs = startMs + SIM.durationMs;
-  const scheduler = makeSimScheduler(
-    Effect.runSync(makeRandom(SIM.seed, "scheduler")),
-  );
-  const clock = makeSimClock(startMs, scheduler.schedule);
-  const generatorRandom = Effect.runSync(makeRandom(SIM.seed, "generator"));
-
-  // The chain runs outside the simulation.
-  const simChain: Chain = {
-    request: (request) => scheduler.io(chain.request(request)),
-    mine: (timestamp) => scheduler.io(chain.mine(timestamp)),
-  };
-
-  const trace: TraceEntry[] = [];
-  const record = (entry: Omit<TraceEntry, "t"> & Partial<TraceEntry>) =>
-    Effect.sync(() => {
-      trace.push({
-        t: clock.currentTimeMillisUnsafe() - startMs,
-        ...entry,
-      } as TraceEntry);
-    });
-
-  const between = ([min, max]: [number, number]) =>
-    Duration.millis(min + generatorRandom.nextDoubleUnsafe() * (max - min));
-
-  const miner = Effect.gen(function* () {
-    yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
-    // Anvil takes whole seconds, so blocks in the same second share a timestamp.
-    const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-    yield* simChain.mine(timestamp);
-    yield* record({ kind: "block", timestamp });
-  }).pipe(Effect.forever);
-
-  let nextId = 0;
-  const submitter = Effect.gen(function* () {
-    yield* Effect.sleep(between(SIM.generator.intervalMs));
-    const mutation = generator.next(
-      generatorRandom,
-      yield* Clock.currentTimeMillis,
-    );
-    const id = nextId++;
-    yield* record({ kind: "submit", id, name: mutation.name });
-    // Each mutation comes from its own client, so the submitter does not wait.
-    yield* target.execute(mutation).pipe(
-      Effect.exit,
-      Effect.flatMap((exit) =>
-        record({ kind: "result", id, exit: String(exit) }),
-      ),
-      Effect.forkChild,
-    );
-  }).pipe(Effect.forever);
-
-  const world = Effect.all([miner, submitter], {
-    concurrency: "unbounded",
-  }).pipe(
-    Effect.provideService(Clock.Clock, clock),
-    Effect.provide(layerRandom),
-  );
-
-  let exit: Exit.Exit<unknown, unknown> | undefined;
-  const fiber = Effect.runFork(world, { scheduler });
-  fiber.addObserver((result) => {
-    exit = result;
-  });
-
-  let steps = 0;
-  while (exit === undefined) {
-    await scheduler.runUntilIdle();
-    if (exit !== undefined) break;
-    const next = clock.nextWakeup();
-    if (next === undefined) {
-      throw new Error("deadlock: no fiber can run and no sleep is pending");
-    }
-    if (next > endMs) break;
-    clock.advanceTo(next);
-    steps++;
-  }
-
-  const early = exit;
-  if (early === undefined) {
-    fiber.interruptUnsafe();
-    await scheduler.runUntilIdle();
-  }
-
-  const json = JSON.stringify(trace, (_, value) =>
-    typeof value === "bigint" ? value.toString() : value,
-  );
-  return {
-    trace,
-    traceHash: Hash.keccak256(Hex.fromString(json)),
-    steps,
-    virtualMs: clock.currentTimeMillisUnsafe() - startMs,
-    exit: early,
-  };
-}
 
 /** The first Anvil account. */
 const SCHEDULER = privateKeyToAccount(
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
 );
 
+/** Sends `enqueue` transactions. The second Anvil account, so its nonces never meet the runtime's. */
+const CLIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
+/**
+ * The gas limit of an `enqueue` transaction, about three times what one uses.
+ * Monad's storage gas depends on state that can change between the estimate
+ * and the block, so an estimated limit can run out.
+ */
+const ENQUEUE_GAS = Hex.fromNumber(1_000_000);
+
+/** A database of its own for the run, dropped when the scope closes. */
+const makeDatabase = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const name = `typewriter_sim_${process.pid}_${Date.now()}`;
+    const admin = new SQL({ url: DATABASE_URL, max: 1 });
+    await admin.unsafe(`CREATE DATABASE "${name}"`);
+    await admin.close();
+    const url = new URL(DATABASE_URL);
+    url.pathname = `/${name}`;
+    return { name, url: url.toString() };
+  }),
+  ({ name }) =>
+    Effect.promise(async () => {
+      const admin = new SQL({ url: DATABASE_URL, max: 1 });
+      await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+      await admin.close();
+    }),
+);
+
 const program = Effect.gen(function* () {
-  const app = APPS[SIM.app]!;
   const chain = yield* makeChain();
-  const address = yield* deploy({ app, chain, deployer: SCHEDULER.address });
+  const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
-  const internal = yield* Effect.promise(() =>
-    loadSolidityTypewriterApp(entrypoint(app), {
+  const database = yield* makeDatabase;
+  const app = yield* Effect.promise(() =>
+    loadSolidityTypewriterApp(ASSESSMENT_ENTRYPOINT, {
       address,
       account: SCHEDULER,
       chainId,
-      rpcUrl: "sim-0",
-      database: { url: "unused" },
+      rpcUrl: SIM.transports.map((_, index) => `sim-${index}`) as [
+        string,
+        ...string[],
+      ],
+      database: { url: database.url },
+      blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
+      confirmations: {
+        finalizedBlockDepth: SIM.typewriter.finalizedBlockDepth,
+      },
+      sequencing: {
+        ...SIM.typewriter.ordering,
+        submitIntervalMs: SIM.typewriter.submitIntervalMs,
+      },
     }),
   );
+  const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
+  // One connection runs the statements in the order `io` starts them, so
+  // Postgres sees no race that depends on wall-clock time.
+  const db = yield* makeDb({ url: database.url, maxConnections: 1 });
 
-  const wallStart = performance.now();
-  const result = yield* Effect.promise(() =>
-    run({ chain, generator: app.makeGenerator(internal.manifest) }),
+  const signers = SIM.generator.accounts.map((keyType, i) =>
+    makeSigner(i, keyType),
   );
-  const count = (kind: string) =>
-    result.trace.filter((entry) => entry.kind === kind).length;
+  const plan = makePlan(
+    manifest,
+    signers,
+    yield* makeRandom(SIM.seed, "generator"),
+  );
+
+  // The simulation: a seeded scheduler, and a clock that moves when no fiber
+  // can run, or when the scheduler jumps it. Anvil and Postgres run outside
+  // it, through `io`.
+  const startMs = SIM.chain.genesisTimestamp * 1000;
+  const scheduler = makeSimScheduler(
+    yield* makeRandom(SIM.seed, "scheduler"),
+    SIM.jumpRate,
+    () => {
+      const next = clock.nextWakeup();
+      if (next !== undefined) clock.advanceTo(next);
+    },
+    SIM.ioRate,
+  );
+  const clock = makeSimClock(startMs, scheduler.schedule);
+  const simChain: Chain = {
+    request: (request) => scheduler.io(chain.request(request)),
+    mine: (timestamp) => scheduler.io(chain.mine(timestamp)),
+  };
+  const transports = SIM.transports.map((_, index) =>
+    makeSimTransport({ chain: simChain, index }),
+  ) as [
+    ReturnType<typeof makeSimTransport>,
+    ...ReturnType<typeof makeSimTransport>[],
+  ];
+
+  // What the runtime told the outside world, for `validate`.
+  /** The `executionIndex` that `execute` returned, by mutation key. */
+  const results = new Map<string, bigint>();
+  const mutationEvents: MutationEvent<AssessmentMutations>[] = [];
+  /** Emitted only with batch sequencing. */
+  const batchEvents: BatchEvent<AssessmentMutations>[] = [];
+  const blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[] = [];
+  // Every mutation ends finalized or rejected, once.
+  const settled = new Set<string>();
+  const mutations = signers.length + plan.length;
+  // The virtual time of the last mutation event.
+  let progressedAt = startMs;
+
+  // The world's scope outlives its fiber, so `validate` can read the runtime's
+  // views after the run. The runtime's fibers run on the simulated scheduler,
+  // so it runs their interruption.
+  const scope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+    Effect.promise(() => {
+      Effect.runFork(Scope.close(scope, Exit.void), { scheduler });
+      return scheduler.runUntilIdle();
+    }),
+  );
+  const world = Effect.gen(function* () {
+    // A failure of any fiber in the set fails the run.
+    const fibers = yield* FiberSet.make<void, unknown>();
+
+    const typewriter = yield* createTypewriterEffect<
+      AssessmentStorage,
+      AssessmentMutations,
+      "fifo" | "batch"
+    >(app);
+
+    const drained = yield* Deferred.make<void>();
+    yield* typewriter.on("mutation", (event) => {
+      mutationEvents.push(event);
+      progressedAt = clock.currentTimeMillisUnsafe();
+      if (event.status !== "finalized" && event.status !== "rejected") return;
+      settled.add(mutationKey(event.authorization));
+      if (settled.size === mutations) Deferred.doneUnsafe(drained, Effect.void);
+    });
+    yield* typewriter.on("batch", (event) => {
+      batchEvents.push(event);
+    });
+    yield* typewriter.on("block", (event) => {
+      blockEvents.push(event);
+    });
+
+    yield* FiberSet.run(fibers, typewriter.program);
+    yield* FiberSet.run(
+      fibers,
+      Effect.gen(function* () {
+        yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        // Anvil takes whole seconds, so blocks in the same second share a timestamp.
+        const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        yield* simChain.mine(timestamp);
+      }).pipe(Effect.forever),
+    );
+
+    /** Executes `step` and checks the result against `shouldRevert`. */
+    const execute = (step: Step) =>
+      Effect.gen(function* () {
+        const { mutation } = step;
+        const exit = yield* Effect.exit(typewriter.execute(mutation));
+        // TODO(kyle) use typed errors
+        const want = mutation.params.shouldRevert
+          ? `${mutation.name}Error`
+          : "success";
+        const got = Exit.isSuccess(exit)
+          ? "success"
+          : ((Cause.squash(exit.cause) as { data?: { errorName?: string } })
+              .data?.errorName ?? Cause.pretty(exit.cause));
+        if (got !== want) {
+          return yield* Effect.die(
+            `step ${step.index} (execute ${mutation.name}): got ${got}, want ${want}`,
+          );
+        }
+        if (Exit.isSuccess(exit)) {
+          results.set(
+            mutationKey(mutation.authorization),
+            exit.value.executionIndex,
+          );
+        }
+      });
+
+    /**
+     * Sends the `enqueue` of `step` from the client. Returns an effect that
+     * checks it lands.
+     */
+    const enqueue = (step: Step) =>
+      Effect.gen(function* () {
+        const { mutation } = step;
+        const data = encodeEnqueueCalldata({
+          config: app.mutations[mutation.name]!,
+          params: mutation.params,
+          authorization: mutation.authorization,
+        });
+        const hash = yield* simChain.request({
+          method: "eth_sendTransaction",
+          params: [{ from: CLIENT, to: app.address, data, gas: ENQUEUE_GAS }],
+        });
+        return Effect.gen(function* () {
+          while (true) {
+            const receipt = yield* simChain.request({
+              method: "eth_getTransactionReceipt",
+              params: [hash],
+            });
+            if (receipt?.status === "0x1") return;
+            if (receipt !== null) {
+              return yield* Effect.die(
+                `step ${step.index} (enqueue ${mutation.name}): transaction ${hash} reverted`,
+              );
+            }
+            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+          }
+        });
+      });
+
+    const client = Effect.gen(function* () {
+      for (const signer of signers) {
+        yield* typewriter
+          .execute(createAccount(manifest, signer))
+          .pipe(Effect.orDie);
+      }
+
+      // Each step comes from its own client, so a step does not wait for the
+      // one before it to settle.
+      for (const step of plan) {
+        yield* Effect.sleep(Duration.millis(step.delayMs));
+        yield* FiberSet.run(
+          fibers,
+          step.via === "execute" ? execute(step) : yield* enqueue(step),
+        );
+      }
+
+      yield* Deferred.await(drained);
+      return typewriter;
+    });
+
+    return yield* Effect.raceFirst(
+      client,
+      FiberSet.join(fibers).pipe(Effect.andThen(Effect.never)),
+    );
+  }).pipe(
+    Scope.provide(scope),
+    Effect.provideService(Database, makeSimDb({ db, io: scheduler.io })),
+    Effect.provide(layerRpc(transports)),
+    Effect.provideService(Clock.Clock, clock),
+    Effect.provide(
+      Layer.effect(Random.Random, makeRandom(SIM.seed, "runtime")),
+    ),
+  );
+
+  // The step loop: run every fiber that can run, then move the clock to the
+  // next sleep.
+  const wallStart = performance.now();
+  let exit: Exit.Exit<Effect.Success<typeof world>, unknown> | undefined;
+  const fiber = Effect.runFork(world, { scheduler });
+  fiber.addObserver((result) => {
+    exit = result;
+  });
+  while (exit === undefined) {
+    yield* Effect.promise(() => scheduler.runUntilIdle());
+    if (exit !== undefined) break;
+    const next = clock.nextWakeup();
+    if (next === undefined) {
+      return yield* Effect.die(
+        "deadlock: no fiber can run and no sleep is pending",
+      );
+    }
+    if (next - progressedAt > SIM.stallTimeoutMs) {
+      return yield* Effect.die(
+        `stalled for ${SIM.stallTimeoutMs}ms of virtual time`,
+      );
+    }
+    clock.advanceTo(next);
+  }
+
+  yield* validate({
+    app,
+    chain,
+    db,
+    signers,
+    plan,
+    results,
+    mutationEvents,
+    batchEvents,
+    blockEvents,
+    typewriter: yield* exit,
+    ordering: SIM.typewriter.ordering,
+  });
 
   console.log({
-    app: SIM.app,
-    address,
-    steps: result.steps,
-    blocks: count("block"),
-    mutations: count("submit"),
-    virtualMs: result.virtualMs,
+    mutations,
+    virtualMs: clock.currentTimeMillisUnsafe() - startMs,
     wallMs: Math.round(performance.now() - wallStart),
-    traceHash: result.traceHash,
   });
-  if (result.exit !== undefined) {
-    return yield* Effect.die(result.exit);
-  }
 });
 
 BunRuntime.runMain(

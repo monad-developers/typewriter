@@ -1,4 +1,5 @@
 import { Duration, Effect } from "effect";
+import { Hash } from "ox";
 import {
   RpcHttpError,
   RpcNetworkError,
@@ -30,6 +31,35 @@ export function makeSimTransport({
   } = SIM.transports[index]!;
 
   const occurrences = new Map<string, number>();
+
+  // Anvil answers `eth_sendRawTransactionSync` once the block is mined, and the
+  // simulation mines only between requests, so it sends and then polls. Like a
+  // node, it does not send a transaction it already has.
+  const send = (request: RpcRequest) =>
+    request.method !== "eth_sendRawTransactionSync"
+      ? chain.request(request)
+      : Effect.gen(function* () {
+          const [raw] = request.params;
+          const hash = Hash.keccak256(raw);
+          const known = yield* chain.request({
+            method: "eth_getTransactionByHash",
+            params: [hash],
+          });
+          if (known === null) {
+            yield* chain.request({
+              method: "eth_sendRawTransaction",
+              params: [raw],
+            });
+          }
+          while (true) {
+            const receipt = yield* chain.request({
+              method: "eth_getTransactionReceipt",
+              params: [hash],
+            });
+            if (receipt !== null) return receipt;
+            yield* Effect.sleep(Duration.millis(10));
+          }
+        });
 
   const request = (request: RpcRequest) =>
     Effect.gen(function* () {
@@ -76,7 +106,7 @@ export function makeSimTransport({
       yield* Effect.sleep(Duration.millis(latency));
 
       if (draw < errorRate) return yield* Effect.fail(injected());
-      const result = yield* chain.request(request);
+      const result = yield* send(request);
       if (draw < errorRate + applyThenErrorRate)
         return yield* Effect.fail(injected());
       return result;
