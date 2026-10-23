@@ -147,31 +147,35 @@ export async function createTypewriter<
       >(app).pipe(Effect.provideService(Scope.Scope, scope)),
     );
 
-    const runtimeOn = typewriter.on as unknown as (
-      event: "mutation" | "batch" | "block",
-      cb: unknown,
-    ) => Effect.Effect<() => void>;
-    const on = ((event, cb) =>
-      Effect.runSync(runtimeOn(event, cb))) as Typewriter<
+    type PublicTypewriter = Typewriter<
       EntrypointStorageConfig<entrypoint>,
       EntrypointMutationsConfig<entrypoint>,
       sequencingConfig
-    >["on"];
+    >;
+    type Mutations = EntrypointMutationsConfig<entrypoint>;
 
-    const execute = ((
-      submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
-    ) => Effect.runPromise(typewriter.execute(submitted))) as Typewriter<
-      EntrypointStorageConfig<entrypoint>,
-      EntrypointMutationsConfig<entrypoint>,
-      sequencingConfig
-    >["execute"];
+    const on: PublicTypewriter["on"] = (
+      event: "mutation" | "batch" | "block",
+      cb:
+        | MutationListener<Mutations>
+        | BatchListener<Mutations>
+        | BlockListener<sequencingConfig, Mutations>,
+    ) =>
+      Effect.runSync(
+        // @ts-expect-error each event is forwarded with its own listener type, but the runtime's overloads can't be called with the union.
+        typewriter.on(event, cb),
+      );
+
+    const execute: PublicTypewriter["execute"] = (submitted) =>
+      Effect.runPromise(
+        // @ts-expect-error `TypewriterMutationInput<M, name>` narrows `TypewriterMutationInput<M>`, but TS can't relate them for a generic `name`.
+        typewriter.execute(submitted),
+      );
 
     return {
       state: typewriter.state,
       accounts: typewriter.accounts,
-      schema: typewriter.schema as unknown as TypewriterSchema<
-        EntrypointMutationsConfig<entrypoint>
-      >,
+      schema: typewriter.schema,
       manifest: typewriter.manifest,
       execute,
       close: closeScope,

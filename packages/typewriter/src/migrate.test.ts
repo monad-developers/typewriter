@@ -6,10 +6,10 @@ import { TEST_DB_CONNECTION, TEST_DB_URL } from "../test/setup";
 import { HARNESS_MUTATIONS } from "../test/utils";
 import { layerDatabaseLive } from "./db";
 import { deploymentSchemaName, migrate } from "./migrate";
-import { createMutationSchema } from "./schema";
+import { createMutationSchema, type TypewriterSchema } from "./schema";
 
 const runMigrate = (
-  schema: Record<string, unknown>,
+  schema: TypewriterSchema,
   chainId: number,
   address: Address.Address,
   executionIndex: bigint,

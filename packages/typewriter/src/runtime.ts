@@ -1,5 +1,4 @@
 import {
-  Data,
   Deferred,
   Duration,
   Effect,
@@ -48,9 +47,19 @@ import {
   encodeExecuteCalldata,
   type TYPEWRITER_ABI,
 } from "./encoding";
+import {
+  type DatabaseError,
+  EncodeMutationError,
+  type ExecuteError,
+  type ExecutionIndexError,
+  type MutationRejectionError,
+  type RuntimeError,
+  SignTransactionError,
+  UnknownMutationError,
+} from "./errors";
 import type { InternalApp } from "./internal";
 import { durationMs, loggerLayer, startTimer } from "./logger";
-import { Rpc } from "./rpc";
+import { Rpc, type RpcRequestError } from "./rpc";
 import { requestBlock, requestExecutionIndex } from "./rpc-request";
 import type {
   AcceptedMutation,
@@ -105,7 +114,7 @@ export function updateMutationToAccepted(
 
 export function updateMutationToRejected(
   mutation: ReceivedMutation | EnqueuedMutation,
-  params: { error: unknown },
+  params: { error: MutationRejectionError },
 ): RejectedMutation {
   const rejectedMutation = mutation as unknown as RejectedMutation;
   rejectedMutation.status = "rejected";
@@ -125,17 +134,15 @@ export function updateMutationToIncluded(
 export function updateMutationToSafe(
   mutation: SubmittedMutation,
 ): SubmittedMutation {
-  const safeMutation = mutation as SubmittedMutation;
-  safeMutation.status = "safe";
-  return safeMutation;
+  mutation.status = "safe";
+  return mutation;
 }
 
 export function updateMutationToFinalized(
   mutation: SubmittedMutation,
 ): SubmittedMutation {
-  const finalizedMutation = mutation as SubmittedMutation;
-  finalizedMutation.status = "finalized";
-  return finalizedMutation;
+  mutation.status = "finalized";
+  return mutation;
 }
 
 export function mutationToEvent(mutation: RuntimeMutation): MutationEvent {
@@ -190,13 +197,6 @@ function mappingPreimages(executeResult: ExecuteResult): readonly Hex.Hex[] {
     .filter((preimage) => Hex.size(preimage) === 64);
 }
 
-export class EncodeMutationError extends Data.TaggedError(
-  "EncodeMutationError",
-)<{
-  readonly mutation: ReceivedMutation | EnqueuedMutation;
-  readonly cause: unknown;
-}> {}
-
 export function executeMutation(params: {
   app: InternalApp;
   evm: EVM;
@@ -206,7 +206,7 @@ export function executeMutation(params: {
     mutation: AcceptedMutation;
     executeResult: ExecuteResult;
   },
-  EncodeMutationError | EvmError | ContractFunctionRevertedError
+  MutationRejectionError
 > {
   return Effect.gen(function* () {
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
@@ -340,7 +340,7 @@ export function createRuntimeState(app: InternalApp): Effect.Effect<
     preimages: Set<Hex.Hex>;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
-  unknown,
+  DatabaseError | RpcRequestError | EvmError,
   Database | Rpc | Scope.Scope
 > {
   return Effect.gen(function* () {
@@ -456,32 +456,38 @@ function batchBlockToFifoBlock(
   };
 }
 
+type RuntimeSetupError =
+  | DatabaseError
+  | RpcRequestError
+  | ExecutionIndexError
+  | EvmError;
+
 export function createRuntimeEffect(
   app: InternalApp & { sequencing: { order: "fifo" } },
 ): Effect.Effect<
   InternalRuntimeTypewriter<"fifo">,
-  unknown,
+  RuntimeSetupError,
   Database | Rpc | Watch | Scope.Scope
 >;
 export function createRuntimeEffect(
   app: InternalApp & { sequencing: { order: "batch" } },
 ): Effect.Effect<
   InternalRuntimeTypewriter<"batch">,
-  unknown,
+  RuntimeSetupError,
   Database | Rpc | Watch | Scope.Scope
 >;
 export function createRuntimeEffect(
   app: InternalApp,
 ): Effect.Effect<
   InternalRuntimeTypewriter<"fifo" | "batch">,
-  unknown,
+  RuntimeSetupError,
   Database | Rpc | Watch | Scope.Scope
 >;
 export function createRuntimeEffect(
   app: InternalApp,
 ): Effect.Effect<
   InternalRuntimeTypewriter<"fifo" | "batch">,
-  unknown,
+  RuntimeSetupError,
   Database | Rpc | Watch | Scope.Scope
 > {
   return Effect.gen(function* () {
@@ -503,7 +509,7 @@ export function createRuntimeEffect(
     const batchesById = new Map<number, RuntimeBatch>();
     const receivedMutationQueue = yield* Queue.unbounded<{
       mutationId: number;
-      deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      deferred: Deferred.Deferred<AcceptedMutation, MutationRejectionError>;
     }>();
     const enqueuedMutationsQueue = yield* Queue.unbounded<number>();
     const acceptedBatchesQueue = yield* Queue.unbounded<number>();
@@ -589,7 +595,7 @@ export function createRuntimeEffect(
         /** Preimages first seen in this mutation, to persist. */
         preimages: readonly Hex.Hex[];
       },
-      unknown
+      MutationRejectionError
     > {
       return Effect.gen(function* () {
         const { executeResult, mutation: acceptedMutation } =
@@ -638,7 +644,7 @@ export function createRuntimeEffect(
     const acceptBatch = (
       submittedMutations: {
         mutationId: number;
-        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+        deferred: Deferred.Deferred<AcceptedMutation, MutationRejectionError>;
       }[],
     ) =>
       withSpeculativeStateLock(
@@ -668,7 +674,10 @@ export function createRuntimeEffect(
             mutation: AcceptedMutation;
             executeResult: ExecuteResult;
             preimages: readonly Hex.Hex[];
-            deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+            deferred: Deferred.Deferred<
+              AcceptedMutation,
+              MutationRejectionError
+            >;
           }[] = [];
 
           for (const { mutationId, deferred } of submittedMutations) {
@@ -883,7 +892,7 @@ export function createRuntimeEffect(
       delete transaction.yParity;
       const signed = yield* Effect.tryPromise({
         try: () => app.account.signTransaction(transaction),
-        catch: (error) => error as Error,
+        catch: (cause) => new SignTransactionError({ cause }),
       });
       const hash = Hash.keccak256(signed as Hex.Hex);
 
@@ -1120,19 +1129,18 @@ export function createRuntimeEffect(
       ),
     );
 
-    const program = Effect.all([batchProgram, submitProgram, watchProgram], {
-      concurrency: "unbounded",
-    });
+    const program: Effect.Effect<void, RuntimeError> = Effect.all(
+      [batchProgram, submitProgram, watchProgram],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.asVoid);
 
     function execute(
       mutation: RuntimeExecuteInput,
-    ): Effect.Effect<TypewriterMutationResult, unknown> {
+    ): Effect.Effect<TypewriterMutationResult, ExecuteError> {
       return Effect.gen(function* () {
         const resolvedMutation = resolveMutationConfig(app, mutation.name);
         if (resolvedMutation === undefined) {
-          return yield* Effect.fail(
-            new Error(`unknown mutation: ${mutation.name}`),
-          );
+          return yield* new UnknownMutationError({ mutationName: mutation.name });
         }
 
         const runtimeMutation = {
@@ -1156,7 +1164,10 @@ export function createRuntimeEffect(
 
         emitMutation(mutationToEvent(runtimeMutation));
 
-        const deferred = yield* Deferred.make<AcceptedMutation, unknown>();
+        const deferred = yield* Deferred.make<
+          AcceptedMutation,
+          MutationRejectionError
+        >();
         const acceptStartedAtMs = startTimer();
 
         yield* Queue.offer(receivedMutationQueue, {

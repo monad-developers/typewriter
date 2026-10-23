@@ -183,8 +183,8 @@ function makeRpc(rpcUrls: readonly string[]): {
 } {
   const providers = rpcUrls.map(makeRawHttpRequest);
 
-  const withTimeout = (
-    effect: Effect.Effect<unknown, RpcRequestError>,
+  const withTimeout = <A>(
+    effect: Effect.Effect<A, RpcRequestError>,
     method: string,
   ) =>
     effect.pipe(

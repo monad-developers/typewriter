@@ -3,6 +3,7 @@ import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { TypewriterManifest } from "./config";
 import type { DatabaseOptions } from "./db";
+import type { RuntimeError } from "./errors";
 import type { TypewriterSchema } from "./schema";
 
 export type InternalMutation = {
@@ -42,6 +43,6 @@ export type InternalApp = {
   schema: TypewriterSchema;
   blockPollingIntervalMs: number;
   confirmations: InternalConfirmations;
-  onFatalError: ((error: unknown) => void) | undefined;
+  onFatalError: ((error: RuntimeError) => void) | undefined;
   sequencing: InternalSequencing;
 };

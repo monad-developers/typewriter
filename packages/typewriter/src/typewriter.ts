@@ -10,6 +10,7 @@ import type {
 import { DatabaseConfig, layerDatabase } from "./db";
 import { scopedDeploymentLock } from "./deployment-lock";
 import type { TYPEWRITER_ABI } from "./encoding";
+import type { ExecuteError, RuntimeError, StartupError } from "./errors";
 import type { InternalApp } from "./internal";
 import { loggerLayer } from "./logger";
 import { deploymentLockKey, migrate } from "./migrate";
@@ -77,8 +78,8 @@ export type RuntimeTypewriter<
   readonly manifest: TypewriterManifest<mutationsConfig>;
   execute: (
     submitted: TypewriterMutationInput<mutationsConfig>,
-  ) => Effect.Effect<TypewriterMutationResult, unknown>;
-  program: Effect.Effect<unknown, unknown>;
+  ) => Effect.Effect<TypewriterMutationResult, ExecuteError | RuntimeError>;
+  program: Effect.Effect<void, RuntimeError>;
 } & RuntimeListeners<mutationsConfig, sequencingConfig>;
 
 export type InternalRuntimeTypewriter<
@@ -91,8 +92,8 @@ export type InternalRuntimeTypewriter<
     name: string;
     params: unknown;
     authorization: Authorization;
-  }): Effect.Effect<TypewriterMutationResult, unknown>;
-  program: Effect.Effect<unknown, unknown>;
+  }): Effect.Effect<TypewriterMutationResult, ExecuteError>;
+  program: Effect.Effect<void, RuntimeError>;
 } & RuntimeListeners<MutationsConfig, sequencingConfig>;
 
 export type { BatchListener, BlockListener, MutationListener } from "./types";
@@ -105,7 +106,7 @@ export function createTypewriterEffect<
   app: InternalApp,
 ): Effect.Effect<
   RuntimeTypewriter<storageConfig, mutationsConfig, sequencingConfig>,
-  unknown,
+  StartupError,
   Scope.Scope
 > {
   return Effect.gen(function* () {
@@ -148,8 +149,8 @@ export function createTypewriterEffect<
 
       const runtime = yield* createRuntimeEffect(app);
 
-      let fatalError: { readonly error: unknown } | undefined;
-      const fatalSignal = yield* Deferred.make<never, unknown>();
+      let fatalError: { readonly error: RuntimeError } | undefined;
+      const fatalSignal = yield* Deferred.make<never, RuntimeError>();
 
       yield* runtime.program.pipe(
         Effect.tapError((error) =>
@@ -171,6 +172,8 @@ export function createTypewriterEffect<
         Effect.forkScoped,
       );
 
+      // The runtime is built over the erased storage and mutation configs; this
+      // is where the caller's generics are reattached.
       return {
         ...runtime,
         execute: (mutation: TypewriterMutationInput<mutationsConfig>) =>
@@ -193,9 +196,5 @@ export function createTypewriterEffect<
   }).pipe(
     Effect.tapError((error) => Effect.logError(error)),
     Effect.provide(loggerLayer),
-  ) as Effect.Effect<
-    RuntimeTypewriter<storageConfig, mutationsConfig, sequencingConfig>,
-    unknown,
-    Scope.Scope
-  >;
+  );
 }

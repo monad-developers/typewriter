@@ -10,6 +10,7 @@ import {
   notInArray,
   sql,
 } from "drizzle-orm";
+import type { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { Hex } from "ox";
@@ -28,6 +29,16 @@ import type {
 const MAX_PG_PARAMS = 32_767;
 const SETTLED_MUTATION_STATUSES = ["included", "safe", "finalized"];
 
+/**
+ * Typewriter's generated tables are only known as `PgTable` here; their
+ * columns follow fixed naming conventions, so callers name the ones they use.
+ */
+function tableColumns<const name extends string>(
+  table: PgTable,
+): Record<name, PgColumn> {
+  return getColumns(table) as Record<name, PgColumn>;
+}
+
 function chunk<T>(array: readonly T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let i = 0; i < array.length; i += size) {
@@ -40,7 +51,7 @@ export function insertMutation(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutation: ExecutableMutation,
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
     yield* tx.insert(table).values(mutationRow(mutation));
@@ -54,7 +65,7 @@ export function insertMutations(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   mutations: readonly ExecutableMutation[],
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     if (mutations.length === 0) return;
 
@@ -99,7 +110,7 @@ function mutationRow(mutation: ExecutableMutation): Record<string, unknown> {
 
 export function selectNextMutationId(
   schema: Record<string, PgTable>,
-): Effect.Effect<number, unknown, Database> {
+): Effect.Effect<number, EffectDrizzleQueryError, Database> {
   return Effect.gen(function* () {
     const db = yield* Database;
     let maxMutationId = -1;
@@ -107,11 +118,10 @@ export function selectNextMutationId(
     for (const [tableName, table] of Object.entries(schema)) {
       if (!tableName.endsWith("_mutations")) continue;
 
-      // biome-ignore lint/suspicious/noExplicitAny: mutation tables share typewriter's id column by convention
-      const mutationTable = getColumns(table) as any;
+      const { id: idColumn } = tableColumns<"id">(table);
       const [row] = yield* db
         .select({
-          maxMutationId: sql<number>`coalesce(max(${mutationTable.id}), -1)`,
+          maxMutationId: sql<number>`coalesce(max(${idColumn}), -1)`,
         })
         .from(table);
       if (row !== undefined && row.maxMutationId > maxMutationId) {
@@ -128,11 +138,10 @@ export function updateMutationLifecycle(
   schema: Record<string, PgTable>,
   mutation: SubmittedMutation,
   block: RuntimeBlock<"fifo" | "batch">,
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     const table = getMutationTable(schema, mutation.name);
-    const columns = getColumns(table);
-    const idColumn = (columns as Record<"id", PgColumn>).id;
+    const { id: idColumn } = tableColumns<"id">(table);
 
     yield* tx
       .update(table)
@@ -150,7 +159,7 @@ export function updateMutationsLifecycle(
   schema: Record<string, PgTable>,
   mutations: readonly SubmittedMutation[],
   block: RuntimeBlock<"fifo" | "batch">,
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     if (mutations.length === 0) return;
 
@@ -173,8 +182,7 @@ export function updateMutationsLifecycle(
     }
 
     for (const { table, status, ids } of groups.values()) {
-      const columns = getColumns(table);
-      const idColumn = (columns as Record<"id", PgColumn>).id;
+      const { id: idColumn } = tableColumns<"id">(table);
       for (const batch of chunk(ids, 30_000)) {
         yield* tx
           .update(table)
@@ -189,14 +197,10 @@ export function recoverIncludedMutationsBeforeExecutionIndex(
   tx: DatabaseClient,
   table: PgTable,
   executionIndex: bigint,
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
-    const columns = getColumns(table) as unknown as Record<
-      "status" | "executionIndex",
-      PgColumn
-    >;
     const { status: statusColumn, executionIndex: executionIndexColumn } =
-      columns;
+      tableColumns<"status" | "executionIndex">(table);
 
     yield* tx
       .update(table)
@@ -214,24 +218,14 @@ export function deleteSlotWritesForUnsettledMutations(
   tx: DatabaseClient,
   schema: Record<string, PgTable>,
   mutationTable: PgTable,
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
-    const { slot_writes: slotWritesTable } = schema as Record<
-      "slot_writes",
-      PgTable
-    >;
-
-    const slotWritesColumns = getColumns(slotWritesTable) as unknown as Record<
-      "mutationId",
-      PgColumn
-    >;
-    const mutationIdColumn = slotWritesColumns.mutationId;
-
-    const mutationColumns = getColumns(mutationTable) as unknown as Record<
-      "id" | "status",
-      PgColumn
-    >;
-    const { id: idColumn, status: statusColumn } = mutationColumns;
+    const slotWritesTable = getTable(schema, "slot_writes");
+    const { mutationId: mutationIdColumn } =
+      tableColumns<"mutationId">(slotWritesTable);
+    const { id: idColumn, status: statusColumn } = tableColumns<
+      "id" | "status"
+    >(mutationTable);
 
     yield* tx
       .delete(slotWritesTable)
@@ -250,10 +244,9 @@ export function deleteSlotWritesForUnsettledMutations(
 export function deleteUnsettledMutationRows(
   tx: DatabaseClient,
   table: PgTable,
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
-    const columns = getColumns(table) as unknown as Record<"status", PgColumn>;
-    const { status: statusColumn } = columns;
+    const { status: statusColumn } = tableColumns<"status">(table);
 
     yield* tx
       .delete(table)
@@ -284,7 +277,7 @@ export function insertSlotWrites(
   schema: Record<string, PgTable>,
   mutation: Pick<RuntimeMutation, "id">,
   slotWrites: ExecuteResult["slot_writes"],
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     if (slotWrites.length === 0) return;
 
@@ -310,7 +303,7 @@ export function insertSlotWritesMany(
     mutation: Pick<RuntimeMutation, "id">;
     executeResult: Pick<ExecuteResult, "slot_writes">;
   }[],
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     const rows = mutationsWithResults.flatMap(({ mutation, executeResult }) =>
       executeResult.slot_writes.map((write) => ({
@@ -332,7 +325,7 @@ export function insertKeccakPreimages(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
   preimages: readonly Hex.Hex[],
-): Effect.Effect<void, unknown> {
+): Effect.Effect<void, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     if (preimages.length === 0) return;
 
@@ -349,11 +342,10 @@ export function insertKeccakPreimages(
 export function selectKeccakPreimages(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
-): Effect.Effect<Hex.Hex[], unknown> {
+): Effect.Effect<Hex.Hex[], EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     const table = getTable(schema, "keccak_preimages");
-    const columns = getColumns(table);
-    const preimageColumn = (columns as Record<"preimage", PgColumn>).preimage;
+    const { preimage: preimageColumn } = tableColumns<"preimage">(table);
 
     const rows = yield* tx.select({ preimage: preimageColumn }).from(table);
     return rows.map((row) => row.preimage as Hex.Hex);
@@ -363,14 +355,14 @@ export function selectKeccakPreimages(
 export function selectAccountStorage(
   tx: TypewriterDatabaseTransaction,
   schema: Record<string, PgTable>,
-): Effect.Effect<AccountStorage, unknown> {
+): Effect.Effect<AccountStorage, EffectDrizzleQueryError> {
   return Effect.gen(function* () {
     const table = getTable(schema, "slot_writes");
-    const columns = getColumns(table);
-    const dynamicColumns = columns as Record<"id" | "slot" | "value", PgColumn>;
-    const idColumn = dynamicColumns.id;
-    const slotColumn = dynamicColumns.slot;
-    const valueColumn = dynamicColumns.value;
+    const {
+      id: idColumn,
+      slot: slotColumn,
+      value: valueColumn,
+    } = tableColumns<"id" | "slot" | "value">(table);
 
     const rows = yield* tx
       .selectDistinctOn([slotColumn], {
@@ -421,7 +413,7 @@ function abiParameterValues(
 }
 
 function recordValue(value: unknown, key: string): unknown {
-  return (value as Record<string, unknown>)[key];
+  return isRecord(value) ? value[key] : undefined;
 }
 
 function serializeAbiValue(type: string, value: unknown): unknown {

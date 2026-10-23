@@ -129,7 +129,8 @@ function encodeMutationData(
 ): Hex.Hex {
   return AbiParameters.encode(
     [{ name: "value", type: "tuple", components: params }],
-    [value] as never,
+    // @ts-expect-error ox types an erased tuple's value as an array, but tuples with named components encode from objects.
+    [value],
   );
 }
 

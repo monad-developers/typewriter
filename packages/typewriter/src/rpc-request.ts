@@ -9,7 +9,8 @@ import {
   type Hash,
 } from "viem";
 import { TYPEWRITER_ABI } from "./encoding";
-import { Rpc } from "./rpc";
+import { ExecutionIndexError } from "./errors";
+import { Rpc, type RpcRequestError } from "./rpc";
 
 export type BlockIdentifier = number | bigint | Hash;
 export type RequestedBlock<includeTransactions extends boolean = false> = Block<
@@ -21,7 +22,11 @@ export type RequestedBlock<includeTransactions extends boolean = false> = Block<
 export function requestBlock<includeTransactions extends boolean = false>(
   block: BlockIdentifier,
   includeTransactions: includeTransactions = false as includeTransactions,
-): Effect.Effect<RequestedBlock<includeTransactions>, unknown, Rpc> {
+): Effect.Effect<
+  RequestedBlock<includeTransactions>,
+  RpcRequestError | BlockNotFoundError,
+  Rpc
+> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
 
@@ -56,7 +61,7 @@ export function requestBlock<includeTransactions extends boolean = false>(
 
 export function requestExecutionIndex(
   address: Address.Address,
-): Effect.Effect<bigint, unknown, Rpc> {
+): Effect.Effect<bigint, RpcRequestError | ExecutionIndexError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
     const result = yield* rpc.request({
@@ -74,9 +79,7 @@ export function requestExecutionIndex(
     });
 
     if (result === "0x") {
-      return yield* Effect.fail(
-        new Error(`executionIndex() returned no data for ${address}`),
-      );
+      return yield* new ExecutionIndexError({ address });
     }
 
     return Hex.toBigInt(result);

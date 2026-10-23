@@ -3,6 +3,7 @@ import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import type { DatabaseClient, DatabaseOptions } from "./db";
+import type { RuntimeError } from "./errors";
 import type { InternalApp } from "./internal";
 import { createMutationSchema } from "./schema";
 
@@ -100,7 +101,7 @@ export type TypewriterConfig<
     safeBlockDepth?: number;
     finalizedBlockDepth?: number;
   };
-  onFatalError?: (error: unknown) => void;
+  onFatalError?: (error: RuntimeError) => void;
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 

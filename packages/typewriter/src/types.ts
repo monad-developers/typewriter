@@ -1,6 +1,7 @@
 import type { AbiParameter } from "abitype";
 import type { Hex } from "ox";
 import type { AbiParametersToValue, MutationConfig } from "./config";
+import type { MutationRejectionError } from "./errors";
 import type { InternalMutation } from "./internal";
 
 export type KeyType = 0 | 1 | 2;
@@ -147,7 +148,7 @@ export type RuntimeMutation =
       authorization: Authorization;
       isForceInclusion: boolean;
       config: InternalMutation;
-      error: unknown;
+      error: MutationRejectionError;
     } & ForceInclusion);
 
 export type ReceivedMutation = Extract<RuntimeMutation, { status: "received" }>;
@@ -305,7 +306,7 @@ export type MutationEvent<
       params: MutationParamsForName<name, mutationConfig>;
       authorization: Authorization;
       isForceInclusion: boolean;
-      error: unknown;
+      error: MutationRejectionError;
     };
 
 export type BatchEvent<

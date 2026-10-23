@@ -17,7 +17,8 @@ import {
   deleteUnsettledMutationRows,
   recoverIncludedMutationsBeforeExecutionIndex,
 } from "./db-query";
-import { mutationStatusEnum } from "./schema";
+import type { DatabaseError } from "./errors";
+import { mutationStatusEnum, type TypewriterSchema } from "./schema";
 
 const schemaSymbol = Symbol.for("drizzle:Schema");
 
@@ -109,11 +110,11 @@ function doesSchemaExist(
 }
 
 export function migrate(
-  schema: Record<string, unknown>,
+  schema: TypewriterSchema,
   chainId: number,
   address: Address.Address,
   executionIndex: bigint,
-): Effect.Effect<string, unknown, Database> {
+): Effect.Effect<string, MigrationError | DatabaseError, Database> {
   return Effect.gen(function* () {
     const db = yield* Database;
     const sql = db.$client;
@@ -125,7 +126,7 @@ export function migrate(
           cause,
         }),
     });
-    updateSchema(schema as Record<string, PgTable>, schemaName);
+    updateSchema(schema, schemaName);
     const targetSchema = {
       mutationStatusEnum,
       ...schema,
@@ -176,8 +177,7 @@ export function migrate(
 
         // TODO(kyle) Update the status of any unfinalized mutations that may have finalized.
 
-        const typedSchema = schema as Record<string, PgTable>;
-        const mutationTables = Object.values(typedSchema).filter((table) => {
+        const mutationTables = Object.values(schema).filter((table) => {
           if (!isTable(table)) return false;
           const columns = getColumns(table);
           return "id" in columns && "status" in columns;
@@ -190,7 +190,7 @@ export function migrate(
             executionIndex,
           );
 
-          yield* deleteSlotWritesForUnsettledMutations(db, typedSchema, table);
+          yield* deleteSlotWritesForUnsettledMutations(db, schema, table);
           yield* deleteUnsettledMutationRows(db, table);
         }
       }),
