@@ -42,7 +42,7 @@ const PERMISSIONS = [
 
 const KEY_COLUMNS = ["type", "permissions", "expiry", "publicKey"];
 const BALANCE_COLUMNS = ["asset", "amount"];
-const MUTATION_COLUMNS = ["id", "block", "status", "description"];
+const MUTATION_COLUMNS = ["index", "block", "status", "description"];
 
 const linkClass = "text-blue-500 hover:underline";
 
@@ -203,22 +203,28 @@ export function AccountPage() {
               </tr>
             ) : (
               account?.mutations.map((m) => (
-                <tr key={m.id} className="border-b last:border-0">
+                <tr
+                  key={m.execution_index.toString()}
+                  className="border-b last:border-0"
+                >
                   <td className="py-2 pr-6">
                     <code>
-                      <Link to={`/mutation/${m.id}`} className={linkClass}>
-                        {m.id}
+                      <Link
+                        to={`/mutation/${m.execution_index}`}
+                        className={linkClass}
+                      >
+                        {m.execution_index.toString()}
                       </Link>
                     </code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>
-                      {m.blockNumber != null ? (
+                      {m.block_number != null ? (
                         <Link
-                          to={`/block/${m.blockNumber}`}
+                          to={`/block/${m.block_number}`}
                           className={linkClass}
                         >
-                          {m.blockNumber.toString()}
+                          {m.block_number.toString()}
                         </Link>
                       ) : (
                         "..."

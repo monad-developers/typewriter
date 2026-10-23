@@ -28,12 +28,12 @@ export async function selectBlock(
     const table = schema[mutationTableName];
     const [row] = await db
       .select({
-        blockNumber: table.blockNumber,
-        blockHash: table.blockHash,
-        blockTimestamp: table.blockTimestamp,
+        blockNumber: table.block_number,
+        blockHash: table.block_hash,
+        blockTimestamp: table.block_timestamp,
       })
       .from(table)
-      .where(eq(table.blockNumber, BigInt(blockNumber)))
+      .where(eq(table.block_number, BigInt(blockNumber)))
       .limit(1);
     if (
       row !== undefined &&
@@ -62,20 +62,26 @@ export async function selectMutationsByBlock(
       return await db
         .select()
         .from(table)
-        .where(eq(table.blockNumber, BigInt(blockNumber)));
+        .where(eq(table.block_number, BigInt(blockNumber)));
     }),
   );
-  return rows.flat().sort((a, b) => a.id - b.id);
+  return rows
+    .flat()
+    .sort((a, b) => compareBigInt(a.execution_index, b.execution_index));
 }
 
-export async function selectMutationById(
+export async function selectMutationByExecutionIndex(
   db: QueryDatabase,
   schema: OrderBookSchema,
-  id: number,
+  executionIndex: bigint,
 ) {
   for (const mutationTableName of mutationTableNames) {
     const table = schema[mutationTableName];
-    const rows = await db.select().from(table).where(eq(table.id, id)).limit(1);
+    const rows = await db
+      .select()
+      .from(table)
+      .where(eq(table.execution_index, executionIndex))
+      .limit(1);
     if (rows.length > 0) return rows[0];
   }
   return null;
@@ -94,13 +100,13 @@ export async function selectMutationsByAccount(
         .select()
         .from(table)
         .where(eq(table.authorization_account_id, account))
-        .orderBy(desc(table.id))
+        .orderBy(desc(table.execution_index))
         .limit(limit);
     }),
   );
   return rows
     .flat()
-    .sort((a, b) => b.id - a.id)
+    .sort((a, b) => compareBigInt(b.execution_index, a.execution_index))
     .slice(0, limit);
 }
 
@@ -115,9 +121,13 @@ export async function selectRecentMutationCount(
       const [row] = await db
         .select({ count: count() })
         .from(table)
-        .where(gte(table.acceptedAt, new Date(Date.now() - windowMs)));
+        .where(gte(table.accepted_at, new Date(Date.now() - windowMs)));
       return row?.count ?? 0;
     }),
   );
   return counts.reduce((total, value) => total + value, 0);
+}
+
+function compareBigInt(a: bigint, b: bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }

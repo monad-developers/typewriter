@@ -2,25 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import type { Hex } from "viem";
 import { request } from "../lib/api";
 
-export type MutationStatus =
-  | "submitted"
-  | "accepted"
-  | "included"
-  | "safe"
-  | "finalized";
+export type MutationStatus = "accepted" | "included" | "finalized";
 
+/** A mutation table row, plus the `status` the server derives for it. */
 export type ApiMutation = {
-  id: number;
-  executionIndex: bigint | null;
-  blockNumber: bigint | null;
-  blockHash: Hex | null;
-  blockTimestamp: bigint | null;
-  transactionHash: Hex | null;
+  execution_index: bigint;
+  accepted_at: Date;
+  block_number: bigint | null;
+  block_hash: Hex | null;
+  block_timestamp: bigint | null;
+  transaction_index: number | null;
+  transaction_hash: Hex | null;
   status: MutationStatus;
-  acceptedAt: Date;
-  includedAt: Date | null;
-  safeAt: Date | null;
-  finalizedAt: Date | null;
   authorization_account_id: Hex;
   authorization_credential_id: bigint;
   authorization_nonce: bigint;

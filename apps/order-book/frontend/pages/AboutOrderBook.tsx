@@ -307,7 +307,7 @@ struct Key {
             Message lifecycle
           </h3>
           <p className="leading-relaxed mb-4">
-            Every transaction moves through five states. The first two happen on
+            Every transaction moves through four states. The first two happen on
             the server in milliseconds; the rest unfold onchain as blocks and
             confirmations arrive.
           </p>
@@ -324,7 +324,7 @@ struct Key {
             </div>
             {[
               {
-                state: "submitted",
+                state: "received",
                 trigger: "received by the server",
                 toNext: "<50 ms",
               },
@@ -336,12 +336,7 @@ struct Key {
               {
                 state: "included",
                 trigger: "included in a block, executed onchain",
-                toNext: "~300 ms",
-              },
-              {
-                state: "safe",
-                trigger: "configured safe block depth",
-                toNext: "~300 ms",
+                toNext: "~600 ms",
               },
               {
                 state: "finalized",

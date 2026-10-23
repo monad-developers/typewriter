@@ -10,7 +10,7 @@ import { ORDER_BOOK_BATCH_ORDER } from "./app";
 import { CHAIN, ORDER_BOOK_ADDRESS, RPC_URLS } from "./constants";
 import {
   selectBlock,
-  selectMutationById,
+  selectMutationByExecutionIndex,
   selectMutationsByAccount,
   selectMutationsByBlock,
   selectRecentMutationCount,
@@ -45,6 +45,27 @@ const readerDb = drizzle({
 });
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 const TPS_WINDOW_MS = 10000;
+
+// The mutation tables have no status column; derive it from `block_number`
+// and the latest finalized block. Until a block finalizes after startup,
+// included mutations read as "included".
+let finalizedBlockNumber = -1n;
+app.on("block", (block) => {
+  if (block.status === "finalized" && block.number > finalizedBlockNumber) {
+    finalizedBlockNumber = block.number;
+  }
+});
+
+function withStatus(row: Record<string, unknown>) {
+  const blockNumber = row.block_number as bigint | null;
+  const status =
+    blockNumber === null
+      ? "accepted"
+      : blockNumber <= finalizedBlockNumber
+        ? "finalized"
+        : "included";
+  return { ...row, status };
+}
 
 function eventStream(event: "batch" | "block"): Response {
   const textEncoder = new TextEncoder();
@@ -258,7 +279,10 @@ serve({
         const result = await app.execute(
           body as Parameters<typeof app.execute>[0],
         );
-        return json({ id: result.id, status: "accepted" });
+        return json({
+          executionIndex: result.executionIndex,
+          status: "accepted",
+        });
       },
     },
     "/api/tps": {
@@ -300,30 +324,28 @@ serve({
           app.schema,
           block,
         );
-        return json(mutations);
+        return json(mutations.map(withStatus));
       },
     },
     "/api/mutation": {
       GET: async (req) => {
         const url = new URL(req.url);
-        const idParam = url.searchParams.get("id");
-        let mutation: Awaited<ReturnType<typeof selectMutationById>> = null;
-        if (idParam !== null) {
-          if (!/^\d+$/.test(idParam)) {
-            return json({ error: "Invalid id" }, { status: 400 });
-          }
-          mutation = await selectMutationById(
-            readerDb,
-            app.schema,
-            Number(idParam),
+        const executionIndex = url.searchParams.get("executionIndex");
+        if (executionIndex === null || !/^\d+$/.test(executionIndex)) {
+          return json(
+            { error: "executionIndex query parameter required (integer)" },
+            { status: 400 },
           );
-        } else {
-          return json({ error: "Query with id" }, { status: 400 });
         }
+        const mutation = await selectMutationByExecutionIndex(
+          readerDb,
+          app.schema,
+          BigInt(executionIndex),
+        );
         if (mutation === null) {
           return json({ error: "Mutation not found" }, { status: 404 });
         }
-        return json(mutation);
+        return json(withStatus(mutation));
       },
     },
     "/api/account/:id/orders": {
@@ -380,7 +402,7 @@ serve({
           nonces,
           orders,
           balances,
-          mutations,
+          mutations: mutations.map(withStatus),
         });
       },
     },

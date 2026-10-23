@@ -6,6 +6,7 @@ import * as Signature from "ox/Signature";
 import superjson from "superjson";
 import {
   authorizeMutation,
+  BUILTIN_MUTATIONS,
   deriveAccountID,
   getAuthorizationPayload,
   type TypedMutation,
@@ -72,26 +73,7 @@ const manifest = {
         { name: "amount", type: "uint256" },
       ],
     },
-    CreateAccount: {
-      id: 253,
-      params: [
-        { name: "keyType", type: "uint8" },
-        { name: "publicKey", type: "bytes" },
-      ],
-    },
-    AddCredential: {
-      id: 254,
-      params: [
-        { name: "expiration", type: "uint40" },
-        { name: "keyType", type: "uint8" },
-        { name: "permissions", type: "uint256" },
-        { name: "publicKey", type: "bytes" },
-      ],
-    },
-    RemoveCredential: {
-      id: 255,
-      params: [{ name: "credentialID", type: "uint64" }],
-    },
+    ...BUILTIN_MUTATIONS,
   },
 } as const;
 

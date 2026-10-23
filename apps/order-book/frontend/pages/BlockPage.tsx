@@ -3,7 +3,7 @@ import { useBlock } from "../hooks/useBlock";
 import { type ApiMutation, useMutations } from "../hooks/useMutations";
 import { Link, useMatch } from "../lib/router";
 
-const MUTATION_COLUMNS = ["id", "status", "account", "description"];
+const MUTATION_COLUMNS = ["index", "status", "account", "description"];
 
 const linkClass = "text-blue-500 hover:underline";
 
@@ -12,7 +12,7 @@ function shortAddr(addr: string) {
 }
 
 function dedupeTransactionHash(mutations: ApiMutation[]): string | null {
-  return mutations[0]?.transactionHash ?? null;
+  return mutations[0]?.transaction_hash ?? null;
 }
 
 export function BlockPage() {
@@ -91,11 +91,17 @@ export function BlockPage() {
               </tr>
             ) : (
               rows.map((m) => (
-                <tr key={m.id} className="border-b last:border-0">
+                <tr
+                  key={m.execution_index.toString()}
+                  className="border-b last:border-0"
+                >
                   <td className="py-2 pr-6">
                     <code>
-                      <Link to={`/mutation/${m.id}`} className={linkClass}>
-                        {m.id}
+                      <Link
+                        to={`/mutation/${m.execution_index}`}
+                        className={linkClass}
+                      >
+                        {m.execution_index.toString()}
                       </Link>
                     </code>
                   </td>

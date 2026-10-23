@@ -1,12 +1,6 @@
 import type { MutationStatus } from "../hooks/useMutations";
 
-const STAGES: MutationStatus[] = [
-  "submitted",
-  "accepted",
-  "included",
-  "safe",
-  "finalized",
-];
+const STAGES: MutationStatus[] = ["accepted", "included", "finalized"];
 
 export type StageTimestamps = Partial<Record<MutationStatus, string>>;
 
