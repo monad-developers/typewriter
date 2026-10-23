@@ -144,15 +144,13 @@ type TxResult = ExecutionResult<HaltReason>;
 // gas it could forward (EIP-150). Gas spent after either point is already in
 // gas_used, so each frame needs a reserve: 2,301 for its own SSTOREs, and
 // enough that 63/64 of its remaining gas covers each child's gas plus the
-// child's reserve. Monad has no refunds, so gas_used is the gas spent.
+// child's reserve. Monad has no refunds, so gas_used is the gas spent. A
+// halted frame uses all the gas it is given, which its need already counts.
 #[derive(Default)]
 struct HarnessInspector {
     keccak_preimages: Vec<[u8; 64]>,
     frame_reserves: Vec<u64>,
     gas_reserve: u64,
-    // A halted frame uses all the gas it gets, so its cost depends on the
-    // gas limit.
-    child_halted: bool,
 }
 
 impl HarnessInspector {
@@ -164,9 +162,6 @@ impl HarnessInspector {
         let Some(mut reserve) = self.frame_reserves.pop() else {
             return;
         };
-        if !result.result.is_ok_or_revert() {
-            self.child_halted |= !self.frame_reserves.is_empty();
-        }
         reserve = reserve.max(sstore_reserve);
         let need = gas_limit - result.gas.remaining() + reserve;
         match self.frame_reserves.last_mut() {
@@ -527,12 +522,8 @@ impl EvmHarness {
             .inspect_one_tx(tx.tx_env(access_list.clone()))
             .map_err(|e| format!("transact (simulate): {e:?}"))?;
         let outcome = tx_outcome(&result, &access_list);
-        let inspector = &self.evm.0.inspector;
-        if outcome.success && inspector.child_halted {
-            return Err("simulate: a call halted and used all its gas".into());
-        }
         let gas_limit = if outcome.success {
-            result.tx_gas_used() + inspector.gas_reserve
+            result.tx_gas_used() + self.evm.0.inspector.gas_reserve
         } else {
             result.tx_gas_used()
         };
@@ -856,11 +847,13 @@ mod tests {
     }
 
     #[test]
-    fn halted_call_is_an_error() {
+    fn reserve_covers_caught_halt() {
         // ecrecover with 1 gas halts; the caller ignores the failure.
         let mut code = call(STATICCALL, 0x01, &[0x60, 0x01]);
         code.push(0x00);
         let mut harness = harness(&[(CONTRACT, &code)]);
-        assert!(simulate(&mut harness).is_err());
+        let result = simulate(&mut harness).unwrap();
+        assert!(result.outcome.success);
+        assert!(succeeds_at(&mut harness, result.gas_limit));
     }
 }
