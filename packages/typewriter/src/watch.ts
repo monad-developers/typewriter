@@ -1,13 +1,22 @@
-import { Duration, Effect, Queue, Schedule, type Scope, Stream } from "effect";
+import {
+  Data,
+  Duration,
+  Effect,
+  Queue,
+  Schedule,
+  type Scope,
+  Stream,
+} from "effect";
 import { Bloom, Hex } from "ox";
 import type { RpcBlock } from "viem";
-import { Rpc } from "./rpc";
+import { Rpc, type RpcError } from "./rpc";
+import { BlockNotFoundError } from "./rpc-request";
 
 const ZERO_LOGS_BLOOM = `0x${"0".repeat(512)}` as Hex.Hex;
 
 export type LocalLog = {
   address: Hex.Hex;
-  topics: Hex.Hex[];
+  topics: [] | [signature: Hex.Hex, ...args: Hex.Hex[]];
   data: Hex.Hex;
   transactionHash: Hex.Hex;
   transactionIndex: number;
@@ -43,10 +52,31 @@ export type WatchConfig = {
   logFilter?: WatchLogFilter;
 };
 
+/** The provider returned a block or log without a field that a mined one has. */
+export class IncompleteBlockError extends Data.TaggedError(
+  "IncompleteBlockError",
+)<{
+  readonly message: string;
+}> {}
+
+/** The chain reorged deeper than the blocks the watch keeps. */
+export class UnrecoverableReorgError extends Data.TaggedError(
+  "UnrecoverableReorgError",
+)<{
+  readonly number: bigint;
+  readonly hash: Hex.Hex;
+}> {}
+
+export type WatchError =
+  | RpcError
+  | BlockNotFoundError
+  | IncompleteBlockError
+  | UnrecoverableReorgError;
+
 export type Watch = {
   messages: Stream.Stream<WatchMessage>;
   /** Polls the chain and publishes to `messages`. Runs until it fails. */
-  program: Effect.Effect<never, Error>;
+  program: Effect.Effect<never, WatchError>;
 };
 
 const appendTip = (
@@ -91,7 +121,11 @@ export function makeWatch(
           block.hash === null ||
           block.logsBloom === null
         ) {
-          return yield* Effect.fail(new Error("block missing number or hash"));
+          return yield* Effect.fail(
+            new IncompleteBlockError({
+              message: "block missing number or hash",
+            }),
+          );
         }
 
         let logs: LocalLog[] = [];
@@ -123,13 +157,15 @@ export function makeWatch(
                   log.logIndex === null
                 ) {
                   return yield* Effect.fail(
-                    new Error("log missing transaction hash or index"),
+                    new IncompleteBlockError({
+                      message: "log missing transaction hash or index",
+                    }),
                   );
                 }
 
                 return {
                   address: log.address,
-                  topics: [...log.topics],
+                  topics: log.topics,
                   data: log.data,
                   transactionHash: log.transactionHash,
                   transactionIndex: Hex.toNumber(log.transactionIndex),
@@ -160,7 +196,7 @@ export function makeWatch(
         });
         if (block === null) {
           return yield* Effect.fail(
-            new Error(`block not found: hash=${blockHash}`),
+            new BlockNotFoundError({ block: blockHash }),
           );
         }
         return yield* getLocalBlockWithLogs(block);
@@ -174,13 +210,15 @@ export function makeWatch(
         });
         if (block === null) {
           return yield* Effect.fail(
-            new Error(`block not found: number=${blockNumber}`),
+            new BlockNotFoundError({ block: blockNumber }),
           );
         }
         return yield* getLocalBlockWithLogs(block);
       });
 
-    const reconcileReorg = (block: LocalBlock): Effect.Effect<void, Error> =>
+    const reconcileReorg = (
+      block: LocalBlock,
+    ): Effect.Effect<void, WatchError> =>
       Effect.gen(function* () {
         const originalChain = localChain;
         let reorgedBlocks = localChain.filter((b) => b.number >= block.number);
@@ -201,9 +239,10 @@ export function makeWatch(
           if (localChain.length === 0) {
             localChain = originalChain;
             return yield* Effect.fail(
-              new Error(
-                `unrecoverable reorg beyond local chain: number=${block.number} hash=${block.hash}`,
-              ),
+              new UnrecoverableReorgError({
+                number: block.number,
+                hash: block.hash,
+              }),
             );
           }
 
@@ -226,7 +265,9 @@ export function makeWatch(
         });
       });
 
-    const reconcileBlock = (newBlock: LocalBlock): Effect.Effect<void, Error> =>
+    const reconcileBlock = (
+      newBlock: LocalBlock,
+    ): Effect.Effect<void, WatchError> =>
       Effect.gen(function* () {
         const current = localChain[localChain.length - 1];
 
@@ -272,7 +313,9 @@ export function makeWatch(
           params: ["latest", false],
         });
         if (block === null) {
-          return yield* Effect.fail(new Error("latest block not found"));
+          return yield* Effect.fail(
+            new BlockNotFoundError({ block: "latest" }),
+          );
         }
         return yield* getLocalBlockWithLogs(block);
       });

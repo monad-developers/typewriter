@@ -19,7 +19,7 @@ export type RequestedBlock<includeTransactions extends boolean = false> = Block<
 
 /** The provider returned `null` for the block. */
 export class BlockNotFoundError extends Data.TaggedError("BlockNotFoundError")<{
-  block: Hash | bigint;
+  block: Hash | bigint | "latest";
 }> {}
 
 /** The call returned `0x`, for example because no contract is at `address`. */
