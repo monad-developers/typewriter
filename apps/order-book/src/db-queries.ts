@@ -1,5 +1,5 @@
 import { count, desc, eq, gte } from "drizzle-orm";
-import type { BunSQLDatabase } from "drizzle-orm/bun-sql/postgres";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
 import type { Hex } from "viem";
 
 // biome-ignore lint/suspicious/noExplicitAny: generated Solidity schema types will replace this temporary dynamic schema access

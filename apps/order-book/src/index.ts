@@ -1,5 +1,5 @@
 import { serve } from "bun";
-import { drizzle } from "drizzle-orm/bun-sql/postgres";
+import { drizzle } from "drizzle-orm/bun-sql";
 import superjson from "superjson";
 import { createTypewriter } from "typewriter";
 import type { Address, Hex } from "viem";
