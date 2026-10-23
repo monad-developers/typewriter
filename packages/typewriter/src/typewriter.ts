@@ -60,6 +60,7 @@ import {
 import { durationMs, loggerLayer, startTimer } from "./logger";
 import { Rpc, type RpcError } from "./rpc";
 import {
+  type BlockNotFoundError,
   type NoDataReturnedError,
   requestBlock,
   requestExecutionIndex,
@@ -86,7 +87,12 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
-import { type LocalLog, makeWatch, type WatchError } from "./watch";
+import {
+  type IncompleteBlockError,
+  type LocalLog,
+  makeWatch,
+  type WatchError,
+} from "./watch";
 
 export type StorageRootProperty<
   storageConfig extends StorageConfig,
@@ -217,6 +223,8 @@ export type ProgramError =
 export type CreateTypewriterError =
   | DbError
   | RpcError
+  | BlockNotFoundError
+  | IncompleteBlockError
   | NoDataReturnedError
   | MigrationError
   | EvmError;
@@ -640,11 +648,17 @@ export function createTypewriterEffect<
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
 
+    // The runtime starts from this block, and watches the blocks after it.
+    // Read it by hash, so each read sees the same block on any provider.
+    const startBlock = yield* requestBlock("latest");
     const code = yield* rpc.request({
       method: "eth_getCode",
-      params: [app.address, "latest"],
+      params: [app.address, { blockHash: startBlock.hash }],
     });
-    let nextExecutionIndex = yield* requestExecutionIndex(app.address);
+    let nextExecutionIndex = yield* requestExecutionIndex(
+      app.address,
+      startBlock.hash,
+    );
     yield* migrate(
       db,
       app.schemaName,
@@ -662,6 +676,7 @@ export function createTypewriterEffect<
       yield* createRuntimeState(app, db, code);
 
     const watch = yield* makeWatch({
+      fromBlock: startBlock.hash,
       pollIntervalMs: app.blockPollingIntervalMs,
       maxChainDepth: app.confirmations.finalizedBlockDepth,
       logFilter: {
