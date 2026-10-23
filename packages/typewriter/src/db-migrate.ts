@@ -1,7 +1,6 @@
 import { generateDrizzleJson, generateMigration } from "drizzle-kit/api";
 import { sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core/table";
-import { isTable } from "drizzle-orm/table";
 import { Data, Effect } from "effect";
 import { type Address, Hash, Hex } from "ox";
 import { deploymentKey } from "./client";
@@ -63,9 +62,6 @@ export function migrate(
   executionIndex: bigint,
 ): Effect.Effect<void, MigrationError | DbError> {
   return Effect.gen(function* () {
-    const mutationTables = Object.values(mutationSchema).filter((table) =>
-      isTable(table),
-    );
     const { typewriterMetadata: _, ...rest } = typewriterSchema;
     const createStatements = yield* createTablesStatements({
       ...rest,
