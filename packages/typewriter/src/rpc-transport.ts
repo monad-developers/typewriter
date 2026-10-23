@@ -1,12 +1,14 @@
 import { Data, Effect } from "effect";
-import type { EIP1193Parameters, PublicRpcSchema } from "viem";
+import type { EIP1193Parameters, PublicRpcSchema, WalletRpcSchema } from "viem";
 
-export type RpcRequest = EIP1193Parameters<PublicRpcSchema>;
+type RpcSchema = [...PublicRpcSchema, ...WalletRpcSchema];
+
+export type RpcRequest = EIP1193Parameters<RpcSchema>;
 
 export type RpcMethod = RpcRequest["method"];
 
 export type RpcResult<method extends RpcMethod> = Extract<
-  PublicRpcSchema[number],
+  RpcSchema[number],
   { Method: method }
 >["ReturnType"];
 
