@@ -8,7 +8,7 @@ use revm::{
     bytecode::opcode,
     context::TxEnv,
     context_interface::{
-        result::{ExecutionResult, HaltReason, Output},
+        result::{ExecutionResult, HaltReason},
         transaction::{AccessList, AccessListItem},
         Host, JournalTr,
     },
@@ -19,7 +19,7 @@ use revm::{
         interpreter_types::{Jumps, MemoryTr},
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult,
     },
-    primitives::{keccak256, Address, AddressSet, Bytes, TxKind, B256, U256},
+    primitives::{Address, AddressSet, Bytes, TxKind, B256, U256},
     state::{AccountInfo, Bytecode, EvmState},
     DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
@@ -31,7 +31,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase")]
 enum Request {
-    Init { id: u64, params: InitParams },
     SetBlockContext { id: u64, params: BlockParams },
     Execute { id: u64, params: ExecuteParams },
     Simulate { id: u64, params: SimulateParams },
@@ -94,9 +93,7 @@ struct JournalIdsParams {
 struct TxOutcome {
     success: bool,
     gas_used: u64,
-    output: String,
     access_list: Vec<AccessListEntry>,
-    keccak_preimages: Vec<KeccakPreimageEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
 }
@@ -108,7 +105,10 @@ struct ExecuteOk {
     outcome: TxOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     journal_id: Option<u64>,
+    // Writes to the called contract.
     slot_writes: Vec<SlotWriteEntry>,
+    // The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
+    keccak_preimages: Vec<String>,
 }
 
 // gas_used is with the access list warm, as the chain charges it.
@@ -128,16 +128,8 @@ struct AccessListEntry {
 
 #[derive(Serialize)]
 struct SlotWriteEntry {
-    address: String,
     slot: String,
-    prev_value: String,
-    new_value: String,
-}
-
-#[derive(Serialize)]
-struct KeccakPreimageEntry {
-    hash: String,
-    preimage: String,
+    value: String,
 }
 
 // -----------------------------------------------------------------------------
@@ -155,7 +147,7 @@ type TxResult = ExecutionResult<HaltReason>;
 // child's reserve. Monad has no refunds, so gas_used is the gas spent.
 #[derive(Default)]
 struct HarnessInspector {
-    keccak_preimages: Vec<(B256, Vec<u8>)>,
+    keccak_preimages: Vec<[u8; 64]>,
     frame_reserves: Vec<u64>,
     gas_reserve: u64,
     // A halted frame uses all the gas it gets, so its cost depends on the
@@ -192,20 +184,18 @@ impl Inspector<MonadCtx> for HarnessInspector {
         let [.., len, offset] = interp.stack.data().as_slice() else {
             return;
         };
-        let (Ok(offset), Ok(len)) = (usize::try_from(*offset), usize::try_from(*len)) else {
+        // Only a mapping slot hashes 64 bytes: the key and the mapping's slot.
+        let (Ok(offset), Ok(64)) = (usize::try_from(*offset), usize::try_from(*len)) else {
             return;
         };
-        if len != 32 && len != 64 {
-            return;
-        }
         // Memory past its current size reads as zeros.
-        let mut preimage = vec![0; len];
+        let mut preimage = [0; 64];
         let memory_size = interp.memory.size();
         if offset < memory_size {
-            let copied = (memory_size - offset).min(len);
+            let copied = (memory_size - offset).min(64);
             preimage[..copied].copy_from_slice(&interp.memory.slice_len(offset, copied));
         }
-        self.keccak_preimages.push((keccak256(&preimage), preimage));
+        self.keccak_preimages.push(preimage);
     }
 
     fn call(&mut self, _context: &mut MonadCtx, _inputs: &mut CallInputs) -> Option<CallOutcome> {
@@ -322,31 +312,27 @@ pub struct EvmHarness {
     evm: Evm,
     journals: HashMap<u64, Journal>,
     next_journal_id: u64,
-    initialized: bool,
-}
-
-impl Default for EvmHarness {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl EvmHarness {
-    pub fn new() -> Self {
+    pub fn from_json(params_json: &str) -> Result<Self, String> {
+        let params = serde_json::from_str(params_json).map_err(|e| format!("parse error: {e}"))?;
+        Self::new(&params)
+    }
+
+    fn new(params: &InitParams) -> Result<Self, String> {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
-        Self {
+        let mut harness = Self {
             evm: ctx.build_monad_with_inspector(HarnessInspector::default()),
             journals: HashMap::new(),
             next_journal_id: 1,
-            initialized: false,
-        }
+        };
+        harness.init(params)?;
+        Ok(harness)
     }
 
     fn init(&mut self, params: &InitParams) -> Result<(), String> {
-        if self.initialized {
-            return Err("init already called".into());
-        }
         if let Some(spec) = params.spec.as_deref() {
             let spec = parse_spec(spec).ok_or_else(|| format!("unknown spec: {spec}"))?;
             let mut cfg = MonadCfgEnv::new_with_spec(spec);
@@ -358,7 +344,7 @@ impl EvmHarness {
             self.evm.0.ctx.cfg.0.chain_id = chain_id;
         }
         if let Some(block) = &params.block {
-            self.apply_block_params(block)?;
+            self.set_block_context(block)?;
         }
         let db = self.evm.0.ctx.journaled_state.db_mut();
         for (address, account) in params.accounts.iter().flatten() {
@@ -380,16 +366,10 @@ impl EvmHarness {
                     .map_err(|e| format!("insert_account_storage: {e:?}"))?;
             }
         }
-        self.initialized = true;
         Ok(())
     }
 
     fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
-        self.ensure_initialized()?;
-        self.apply_block_params(params)
-    }
-
-    fn apply_block_params(&mut self, params: &BlockParams) -> Result<(), String> {
         let block = &mut self.evm.0.ctx.block;
         if let Some(number) = &params.number {
             block.number = parse_u256(number)?;
@@ -424,7 +404,6 @@ impl EvmHarness {
     }
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
-        self.ensure_initialized()?;
         let tx = TxRequest::parse(params, self.evm.0.ctx.cfg.0.chain_id)?;
         let (result, access_list) = match self.discovery_pass(&tx) {
             Ok(pass) => pass,
@@ -433,18 +412,27 @@ impl EvmHarness {
                 return Err(error);
             }
         };
-        let outcome = self.tx_outcome(&result, &access_list);
+        let outcome = tx_outcome(&result, &access_list);
+        let keccak_preimages = self
+            .evm
+            .0
+            .inspector
+            .keccak_preimages
+            .iter()
+            .map(|preimage| format_bytes(preimage))
+            .collect();
         if !outcome.success {
             let _ = self.evm.finalize();
             return Ok(ExecuteOk {
                 outcome,
                 journal_id: None,
                 slot_writes: Vec::new(),
+                keccak_preimages,
             });
         }
 
         let state = self.evm.0.ctx.journaled_state.evm_state();
-        let slot_writes = collect_slot_writes(state);
+        let slot_writes = collect_slot_writes(state, tx.to);
         let journal = Journal::from_state(state, access_list);
         let state = self.evm.finalize();
         self.evm.commit(state);
@@ -455,6 +443,7 @@ impl EvmHarness {
             outcome,
             journal_id: Some(journal_id),
             slot_writes,
+            keccak_preimages,
         })
     }
 
@@ -489,16 +478,7 @@ impl EvmHarness {
             .collect()
     }
 
-    fn ensure_initialized(&self) -> Result<(), String> {
-        if self.initialized {
-            Ok(())
-        } else {
-            Err("not initialized".into())
-        }
-    }
-
     fn ensure_journal_ids(&self, journal_ids: &[u64]) -> Result<(), String> {
-        self.ensure_initialized()?;
         match journal_ids
             .iter()
             .find(|id| !self.journals.contains_key(id))
@@ -546,7 +526,7 @@ impl EvmHarness {
             .evm
             .inspect_one_tx(tx.tx_env(access_list.clone()))
             .map_err(|e| format!("transact (simulate): {e:?}"))?;
-        let outcome = self.tx_outcome(&result, &access_list);
+        let outcome = tx_outcome(&result, &access_list);
         let inspector = &self.evm.0.inspector;
         if outcome.success && inspector.child_halted {
             return Err("simulate: a call halted and used all its gas".into());
@@ -557,39 +537,6 @@ impl EvmHarness {
             result.tx_gas_used()
         };
         Ok(SimulateOk { outcome, gas_limit })
-    }
-
-    fn tx_outcome(&self, result: &TxResult, access_list: &AccessList) -> TxOutcome {
-        let (success, output, revert_data) = match result {
-            ExecutionResult::Success { output, .. } => {
-                let (Output::Call(bytes) | Output::Create(bytes, _)) = output;
-                (true, format_bytes(bytes), None)
-            }
-            ExecutionResult::Revert { output, .. } => {
-                (false, format_bytes(output), Some(format_bytes(output)))
-            }
-            ExecutionResult::Halt { reason, .. } => {
-                (false, "0x".into(), Some(format!("halt: {reason:?}")))
-            }
-        };
-        TxOutcome {
-            success,
-            gas_used: result.tx_gas_used(),
-            output,
-            access_list: encode_access_list(access_list),
-            keccak_preimages: self
-                .evm
-                .0
-                .inspector
-                .keccak_preimages
-                .iter()
-                .map(|(hash, preimage)| KeccakPreimageEntry {
-                    hash: format_bytes(hash.as_slice()),
-                    preimage: format_bytes(preimage),
-                })
-                .collect(),
-            revert_data,
-        }
     }
 
     fn merge_journal_access_lists(&self, journal_ids: &[u64]) -> Option<AccessList> {
@@ -619,6 +566,20 @@ impl EvmHarness {
 
 // -----------------------------------------------------------------------------
 // Conversion helpers
+
+fn tx_outcome(result: &TxResult, access_list: &AccessList) -> TxOutcome {
+    let (success, revert_data) = match result {
+        ExecutionResult::Success { .. } => (true, None),
+        ExecutionResult::Revert { output, .. } => (false, Some(format_bytes(output))),
+        ExecutionResult::Halt { reason, .. } => (false, Some(format!("halt: {reason:?}"))),
+    };
+    TxOutcome {
+        success,
+        gas_used: result.tx_gas_used(),
+        access_list: encode_access_list(access_list),
+        revert_data,
+    }
+}
 
 fn discovered_access_list(
     state: &EvmState,
@@ -669,23 +630,20 @@ fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
     entries
 }
 
-fn collect_slot_writes(state: &EvmState) -> Vec<SlotWriteEntry> {
-    let mut writes: Vec<SlotWriteEntry> = state
+fn collect_slot_writes(state: &EvmState, address: Address) -> Vec<SlotWriteEntry> {
+    let Some(account) = state.get(&address) else {
+        return Vec::new();
+    };
+    let mut writes: Vec<SlotWriteEntry> = account
+        .storage
         .iter()
-        .flat_map(|(address, account)| {
-            account
-                .storage
-                .iter()
-                .filter(|(_, value)| value.original_value() != value.present_value())
-                .map(move |(slot, value)| SlotWriteEntry {
-                    address: format!("{address:#x}"),
-                    slot: format_u256(*slot),
-                    prev_value: format_u256(value.original_value()),
-                    new_value: format_u256(value.present_value()),
-                })
+        .filter(|(_, value)| value.original_value() != value.present_value())
+        .map(|(slot, value)| SlotWriteEntry {
+            slot: format_u256(*slot),
+            value: format_u256(value.present_value()),
         })
         .collect();
-    writes.sort_by(|a, b| a.address.cmp(&b.address).then(a.slot.cmp(&b.slot)));
+    writes.sort_by(|a, b| a.slot.cmp(&b.slot));
     writes
 }
 
@@ -759,7 +717,6 @@ pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
     };
     let empty = |result: Result<(), String>| result.map(|()| EmptyResult {});
     match request {
-        Request::Init { id, params } => respond(id, empty(harness.init(&params))),
         Request::SetBlockContext { id, params } => {
             respond(id, empty(harness.set_block_context(&params)))
         }
@@ -839,9 +796,7 @@ mod tests {
             })
             .collect();
         let params = serde_json::from_value(serde_json::json!({ "accounts": accounts })).unwrap();
-        let mut harness = EvmHarness::new();
-        harness.init(&params).unwrap();
-        harness
+        EvmHarness::new(&params).unwrap()
     }
 
     fn tx(harness: &EvmHarness) -> TxRequest {

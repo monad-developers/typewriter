@@ -24,8 +24,7 @@ function formatMs(durationMs: number): string {
 
 test(`typewriter-evm execute accepts ${MUTATION_COUNT.toLocaleString()} calls`, async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({
+    const evm = yield* createEVM({
       accounts: {
         [COUNTER_ADDR]: { code: COUNTER_CODE },
       },
