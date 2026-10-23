@@ -39,8 +39,8 @@ import type {
   TypewriterApp,
   TypewriterManifest,
 } from "./config";
-import { Database, type Db } from "./db";
-import { deploymentLockKey, migrate } from "./db-migrate";
+import { Database, type Db, type DbError } from "./db";
+import { deploymentLockKey, type MigrationError, migrate } from "./db-migrate";
 import {
   insertKeccakPreimages,
   insertMutations,
@@ -58,8 +58,12 @@ import {
   encodeExecuteCalldata,
 } from "./encoding";
 import { durationMs, loggerLayer, startTimer } from "./logger";
-import { Rpc } from "./rpc";
-import { requestBlock, requestExecutionIndex } from "./rpc-request";
+import { Rpc, type RpcError } from "./rpc";
+import {
+  type NoDataReturnedError,
+  requestBlock,
+  requestExecutionIndex,
+} from "./rpc-request";
 import { TYPEWRITER_ABI } from "./typewriter-constants";
 import type {
   AcceptedMutation,
@@ -82,7 +86,7 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
-import { type LocalLog, makeWatch } from "./watch";
+import { type LocalLog, makeWatch, type WatchError } from "./watch";
 
 export type StorageRootProperty<
   storageConfig extends StorageConfig,
@@ -105,14 +109,14 @@ export type TypewriterEffect<
   manifest: TypewriterManifest<mutationsConfig>;
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: TypewriterMutationInput<mutationsConfig, name>,
-  ) => Effect.Effect<TypewriterMutationResult, unknown>;
+  ) => Effect.Effect<TypewriterMutationResult, ExecuteError>;
   on: On<sequencingConfig, mutationsConfig, Effect.Effect<() => void>>;
   /**
    * Accepts, submits and watches for blocks. It fails when the typewriter
    * can't continue, for example when it loses the deployment lock. Run it for
    * as long as the typewriter is in use.
    */
-  program: Effect.Effect<never, unknown>;
+  program: Effect.Effect<never, ProgramError>;
 };
 
 // TODO(kyle) choose a timeout. It bounds how long startup waits for another
@@ -127,9 +131,57 @@ type RuntimeExecuteInput = {
   authorization: Authorization;
 };
 
+/** `execute` got a mutation name that the app does not define. */
+export class UnknownMutationError extends Data.TaggedError(
+  "UnknownMutationError",
+)<{
+  readonly mutation: string;
+}> {}
+
+export class SignTransactionError extends Data.TaggedError(
+  "SignTransactionError",
+)<{
+  readonly cause: unknown;
+}> {}
+
+/** Each part of the program runs forever, so it stops only on a bug. */
+export class ProgramStoppedError extends Data.TaggedError(
+  "ProgramStoppedError",
+) {}
+
+/** Why `execute` did not accept a mutation. */
+export type ExecuteError = UnknownMutationError | ExecuteMutationError;
+
+export type ProgramError =
+  | WatchError
+  | DbError
+  | EvmError
+  | ContractFunctionRevertedError
+  | SignTransactionError
+  | ProgramStoppedError;
+
+export type CreateTypewriterError =
+  | DbError
+  | RpcError
+  | NoDataReturnedError
+  | MigrationError
+  | EvmError;
+
 function resolveMutationConfig(app: TypewriterApp, name: string) {
   const config = app.mutations[name];
   return config === undefined ? undefined : { name, config };
+}
+
+/**
+ * Moves `mutation` to the `to` status in place, so the batches and blocks
+ * that hold it see the change. `fields` are the fields that `to` adds.
+ */
+function updateMutation<
+  from extends RuntimeMutation,
+  to extends RuntimeMutation,
+>(mutation: from, fields: Omit<to, Exclude<keyof from, "status">>): to {
+  // @ts-expect-error `from` and `to` have different statuses, and `fields` sets it.
+  return Object.assign(mutation, fields);
 }
 
 export function updateMutationToAccepted(
@@ -139,37 +191,39 @@ export function updateMutationToAccepted(
     journalId: number;
   },
 ): AcceptedMutation {
-  const acceptedMutation = mutation as unknown as AcceptedMutation;
-  // `mutation` is the same object, so read its status before setting it.
-  acceptedMutation.isForceInclusion = mutation.status === "enqueued";
-  acceptedMutation.status = "accepted";
-  acceptedMutation.executionIndex = params.executionIndex;
-  acceptedMutation.journalId = params.journalId;
-  return acceptedMutation;
+  return updateMutation<ReceivedMutation | EnqueuedMutation, AcceptedMutation>(
+    mutation,
+    {
+      status: "accepted",
+      isForceInclusion: mutation.status === "enqueued",
+      executionIndex: params.executionIndex,
+      journalId: params.journalId,
+    },
+  );
 }
 
 export function updateMutationToRejected(
   mutation: ReceivedMutation | EnqueuedMutation,
-  params: { error: unknown },
+  params: { error: ExecuteMutationError },
 ): RejectedMutation {
-  const rejectedMutation = mutation as unknown as RejectedMutation;
-  // `mutation` is the same object, so read its status before setting it.
-  rejectedMutation.isForceInclusion = mutation.status === "enqueued";
-  rejectedMutation.status = "rejected";
-  rejectedMutation.error = params.error;
-  return rejectedMutation;
+  return updateMutation<ReceivedMutation | EnqueuedMutation, RejectedMutation>(
+    mutation,
+    {
+      status: "rejected",
+      isForceInclusion: mutation.status === "enqueued",
+      error: params.error,
+    },
+  );
 }
 
 export function updateMutationToIncluded(
   mutation: AcceptedMutation,
   inclusion: Inclusion,
 ): IncludedMutation {
-  const includedMutation = Object.assign(
-    mutation,
-    inclusion,
-  ) as unknown as IncludedMutation;
-  includedMutation.status = "included";
-  return includedMutation;
+  return updateMutation<AcceptedMutation, IncludedMutation>(mutation, {
+    ...inclusion,
+    status: "included",
+  });
 }
 
 export function updateMutationToFinalized(
@@ -237,6 +291,11 @@ export class EncodeMutationError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
+export type ExecuteMutationError =
+  | EncodeMutationError
+  | EvmError
+  | ContractFunctionRevertedError;
+
 export function executeMutation(params: {
   app: TypewriterApp;
   evm: EVM;
@@ -248,7 +307,7 @@ export function executeMutation(params: {
     mutation: AcceptedMutation;
     executeResult: ExecuteResult;
   },
-  EncodeMutationError | EvmError | ContractFunctionRevertedError
+  ExecuteMutationError
 > {
   return Effect.gen(function* () {
     // TODO: Validate the fixed Authorization against the mirrored account
@@ -323,7 +382,6 @@ export function decodeEnqueuedMutation(params: {
   const forceInclusionLog = decodeEventLog({
     abi: TYPEWRITER_ABI,
     eventName: "ForceInclusionQueued",
-    // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
     topics: params.log.topics,
     data: params.log.data,
     strict: true,
@@ -382,7 +440,7 @@ function createRuntimeState(
     preimages: Set<Hex.Hex>;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
-  unknown,
+  DbError | EvmError,
   Scope.Scope
 > {
   return Effect.gen(function* () {
@@ -502,7 +560,7 @@ export function createTypewriterEffect<
   app: TypewriterApp,
 ): Effect.Effect<
   TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>,
-  unknown,
+  CreateTypewriterError,
   Database | Rpc | Scope.Scope
 > {
   return Effect.gen(function* () {
@@ -555,7 +613,7 @@ export function createTypewriterEffect<
     const batchesById = new Map<number, RuntimeBatch>();
     const receivedMutationQueue = yield* Queue.unbounded<{
       mutation: ReceivedMutation;
-      deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      deferred: Deferred.Deferred<AcceptedMutation, ExecuteMutationError>;
     }>();
     const enqueuedMutationsQueue = yield* Queue.unbounded<EnqueuedMutation>();
     const acceptedBatchesQueue = yield* Queue.unbounded<number>();
@@ -641,7 +699,7 @@ export function createTypewriterEffect<
         /** Preimages first seen in this mutation, to persist. */
         preimages: readonly Hex.Hex[];
       },
-      unknown
+      ExecuteMutationError
     > {
       return Effect.gen(function* () {
         const { executeResult, mutation: acceptedMutation } =
@@ -688,7 +746,7 @@ export function createTypewriterEffect<
     const acceptBatch = (
       submittedMutations: {
         mutation: ReceivedMutation;
-        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+        deferred: Deferred.Deferred<AcceptedMutation, ExecuteMutationError>;
       }[],
     ) =>
       withSpeculativeStateLock(
@@ -711,7 +769,7 @@ export function createTypewriterEffect<
             mutation: AcceptedMutation;
             executeResult: ExecuteResult;
             preimages: readonly Hex.Hex[];
-            deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+            deferred: Deferred.Deferred<AcceptedMutation, ExecuteMutationError>;
           }[] = [];
 
           for (const { mutation, deferred } of submittedMutations) {
@@ -938,7 +996,7 @@ export function createTypewriterEffect<
       delete transaction.yParity;
       const signed = yield* Effect.tryPromise({
         try: () => app.account.signTransaction(transaction),
-        catch: (error) => error as Error,
+        catch: (cause) => new SignTransactionError({ cause }),
       });
       const hash = Hash.keccak256(signed as Hex.Hex);
 
@@ -1168,19 +1226,19 @@ export function createTypewriterEffect<
       [batchProgram, submitProgram, watchProgram, watch.program],
       { concurrency: "unbounded" },
     ).pipe(
-      Effect.andThen(Effect.fail(new Error("typewriter program stopped"))),
+      Effect.andThen(Effect.fail(new ProgramStoppedError())),
       Effect.raceFirst(lockLost),
       Effect.provide(loggerLayer),
     );
 
     function execute(
       mutation: RuntimeExecuteInput,
-    ): Effect.Effect<TypewriterMutationResult, unknown> {
+    ): Effect.Effect<TypewriterMutationResult, ExecuteError> {
       return Effect.gen(function* () {
         const resolvedMutation = resolveMutationConfig(app, mutation.name);
         if (resolvedMutation === undefined) {
           return yield* Effect.fail(
-            new Error(`unknown mutation: ${mutation.name}`),
+            new UnknownMutationError({ mutation: mutation.name }),
           );
         }
 
@@ -1201,7 +1259,10 @@ export function createTypewriterEffect<
 
         emitMutation(mutationToEvent(runtimeMutation));
 
-        const deferred = yield* Deferred.make<AcceptedMutation, unknown>();
+        const deferred = yield* Deferred.make<
+          AcceptedMutation,
+          ExecuteMutationError
+        >();
         const acceptStartedAtMs = startTimer();
 
         yield* Queue.offer(receivedMutationQueue, {
@@ -1273,11 +1334,7 @@ export function createTypewriterEffect<
       execute,
       on,
       program,
-    } as unknown as TypewriterEffect<
-      storageConfig,
-      mutationsConfig,
-      sequencingConfig
-    >;
+    } as TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>;
   }).pipe(
     Effect.tapError((error) => Effect.logError(error)),
     Effect.provide(loggerLayer),

@@ -7,6 +7,7 @@ import type {
   ResolvedTypewriterMutationConfig,
   SequencingConfig,
 } from "./config";
+import type { ExecuteMutationError } from "./typewriter";
 import type { KeyType } from "./typewriter-constants";
 
 export type { KeyType };
@@ -144,7 +145,7 @@ export type IncludedMutation = MutationBase &
   Execution &
   Inclusion & { status: "included" | "finalized" };
 export type RejectedMutation = MutationBase &
-  ForceInclusion & { status: "rejected"; error: unknown };
+  ForceInclusion & { status: "rejected"; error: ExecuteMutationError };
 
 export type RuntimeMutation =
   | ReceivedMutation

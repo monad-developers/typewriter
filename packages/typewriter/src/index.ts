@@ -15,6 +15,9 @@ import {
 } from "./sol-parse";
 import { createTypewriterEffect, type TypewriterEffect } from "./typewriter";
 import type {
+  BatchListener,
+  BlockListener,
+  MutationListener,
   On,
   TypewriterMutationInput,
   TypewriterMutationResult,
@@ -42,6 +45,11 @@ export type {
 } from "./config";
 export type { TypewriterMutationSchema } from "./db-schema";
 export type { TypewriterSolidityEntrypoint } from "./sol-parse";
+export type {
+  ExecuteError,
+  ExecuteMutationError,
+  ProgramError,
+} from "./typewriter";
 export type {
   Account,
   AddCredentialParams,
@@ -152,12 +160,20 @@ export async function createTypewriter<
         typewriter.execute(submitted).pipe(Effect.raceFirst(stopped)),
       )) as Result["execute"];
 
-    const runtimeOn = typewriter.on as unknown as (
+    const on = ((
       event: "mutation" | "batch" | "block",
-      cb: unknown,
-    ) => Effect.Effect<() => void>;
-    const on = ((event: "mutation" | "batch" | "block", cb: unknown) =>
-      Effect.runSync(runtimeOn(event, cb))) as Result["on"];
+      cb:
+        | MutationListener<EntrypointMutationsConfig<entrypoint>>
+        | BatchListener<EntrypointMutationsConfig<entrypoint>>
+        | BlockListener<
+            sequencingConfig,
+            EntrypointMutationsConfig<entrypoint>
+          >,
+    ) =>
+      Effect.runSync(
+        // @ts-expect-error `on` is overloaded per event, and this forwards whichever event and listener the caller passed.
+        typewriter.on(event, cb),
+      )) as Result["on"];
 
     return {
       state: typewriter.state,
