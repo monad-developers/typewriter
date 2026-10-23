@@ -200,23 +200,36 @@ const CLIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
  */
 const ENQUEUE_GAS = Hex.fromNumber(1_000_000);
 
-/** A database of its own for the run, dropped when the scope closes. */
+/**
+ * A database of its own for the run. It is dropped when the run passes, and
+ * kept for inspection when it fails or is interrupted.
+ */
 const makeDatabase = Effect.acquireRelease(
   Effect.promise(async () => {
     const name = `typewriter_sim_${process.pid}_${Date.now()}`;
     const admin = new SQL({ url: DATABASE_URL, max: 1 });
     await admin.unsafe(`CREATE DATABASE "${name}"`);
+    // The run never survives a Postgres crash, so commits need not wait for
+    // the WAL flush.
+    await admin.unsafe(`ALTER DATABASE "${name}" SET synchronous_commit = off`);
     await admin.close();
     const url = new URL(DATABASE_URL);
     url.pathname = `/${name}`;
     return { name, url: url.toString() };
   }),
-  ({ name }) =>
-    Effect.promise(async () => {
-      const admin = new SQL({ url: DATABASE_URL, max: 1 });
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-      await admin.close();
-    }),
+  ({ name, url }, exit) =>
+    Exit.isSuccess(exit)
+      ? Effect.promise(async () => {
+          const admin = new SQL({ url: DATABASE_URL, max: 1 });
+          await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+          await admin.close();
+        })
+      : Effect.sync(() => {
+          console.error(
+            `kept database ${name} for seed ${SIM.seed}: psql ${url}\n` +
+              `drop it with: DROP DATABASE "${name}" WITH (FORCE)`,
+          );
+        }),
 );
 
 const program = Effect.gen(function* () {
