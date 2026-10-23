@@ -121,6 +121,11 @@ CREATE TABLE IF NOT EXISTS ${sql.identifier(schemaName)}.typewriter_metadata (
         const max = yield* selectMaxExecutionIndex(tx, mutationSchema);
         const nextExecutionIndex = max === undefined ? 0n : max + 1n;
 
+        // TODO(kyle) check the length of the force-inclusion queue in storage
+        // against the queue onchain at the startup block, as well as the
+        // execution index. A missing or extra entry shifts every later
+        // enqueued mutation, so `execute` runs a different queued mutation
+        // onchain than the one revm accepted.
         if (nextExecutionIndex < executionIndex) {
           // TODO(kyle) catch up from calldata and `ForceInclusionQueued` logs
           // instead of failing.
