@@ -39,7 +39,7 @@ type NativeEvmHandle = {
 };
 
 type NativeAddon = {
-  readonly NativeEvm: new () => NativeEvmHandle;
+  readonly NativeEvm: new (paramsJson: string) => NativeEvmHandle;
 };
 
 // -----------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export class EvmCrashed extends Data.TaggedError("EvmCrashed")<{
 }> {}
 
 export class EvmCallError extends Data.TaggedError("EvmCallError")<{
-  readonly method: Request["method"];
+  readonly method: Request["method"] | "init";
   readonly message: string;
   readonly cause: string;
 }> {}
@@ -67,7 +67,6 @@ export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
 // Public API
 
 export type EVM = {
-  readonly init: (params: InitParams) => Effect.Effect<void, EvmError>;
   readonly setBlockContext: (
     params: BlockParams,
   ) => Effect.Effect<void, EvmError>;
@@ -106,10 +105,23 @@ function loadNativeAddon(): NativeAddon {
 // sees one request at a time without a lock. Nothing in a call suspends, so
 // `Effect.runSync` on a call always completes. Keep native methods synchronous:
 // an async native method needs calls to be serialized again.
-export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
+export const createEVM = (
+  initParams: InitParams,
+): Effect.Effect<EVM, EvmCallError, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.gen(function* () {
-      const native = new (loadNativeAddon().NativeEvm)();
+      const NativeEvm = loadNativeAddon().NativeEvm;
+      const native = yield* Effect.try({
+        try: () => new NativeEvm(JSON.stringify(initParams)),
+        catch: (e) => {
+          const cause = e instanceof Error ? e.message : String(e);
+          return new EvmCallError({
+            method: "init",
+            message: `init failed: ${cause}`,
+            cause,
+          });
+        },
+      });
       const idCounterRef = yield* Ref.make(1);
 
       const call = <T>(
@@ -157,10 +169,6 @@ export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
         });
 
       const evm: EVM = {
-        init: (params) =>
-          call<unknown>("init", (id) => ({ method: "init", id, params })).pipe(
-            Effect.asVoid,
-          ),
         setBlockContext: (params) =>
           call<unknown>("setBlockContext", (id) => ({
             method: "setBlockContext",

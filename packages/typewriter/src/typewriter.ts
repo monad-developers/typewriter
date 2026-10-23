@@ -219,17 +219,6 @@ export function batchBlockToEvent(
   } as BlockEvent<"batch">;
 }
 
-/**
- * The 64-byte keccak256 preimages of an execution: the inputs that hash a
- * mapping key with its slot. Shorter preimages give dynamic array data slots,
- * which enumeration does not need. The EVM writes them as lowercase hex.
- */
-function mappingPreimages(executeResult: ExecuteResult): readonly Hex.Hex[] {
-  return executeResult.keccak_preimages
-    .map(({ preimage }) => preimage)
-    .filter((preimage) => Hex.size(preimage) === 64);
-}
-
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
 )<{
@@ -304,6 +293,8 @@ export function enqueueMutation(params: {
   mutation: EnqueuedMutation;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
+    // TODO(kyle) prune the enqueue's journal. Nothing reverts or replays it,
+    // so it stays in the EVM's journal map for the life of the process.
     const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
 
     return yield* params.evm.execute({
@@ -404,32 +395,21 @@ function createRuntimeState(
       }),
     );
 
-    const evm = yield* createEVM();
-
     if (code === "0x") {
       yield* Effect.logWarning(
         `no contract code at app.address=${app.address}; ` +
           "revm code load skipped - runtime will continue but revm has no contract bytecode",
       );
-      yield* evm.init({
-        chain_id: app.chainId,
-        accounts: {
-          [app.address]: {
-            storage: initialAccountStorage,
-          },
-        },
-      });
-    } else {
-      yield* evm.init({
-        chain_id: app.chainId,
-        accounts: {
-          [app.address]: {
-            code,
-            storage: initialAccountStorage,
-          },
-        },
-      });
     }
+    const evm = yield* createEVM({
+      chain_id: app.chainId,
+      accounts: {
+        [app.address]: {
+          code: code === "0x" ? undefined : code,
+          storage: initialAccountStorage,
+        },
+      },
+    });
 
     const slotCache = new Map<Hex.Hex, Hex.Hex>();
     const invalidateStorageCache = (slots?: readonly Hex.Hex[]) => {
@@ -669,7 +649,7 @@ export function createTypewriterEffect<
         );
 
         const newPreimages: Hex.Hex[] = [];
-        for (const preimage of mappingPreimages(executeResult)) {
+        for (const preimage of executeResult.keccak_preimages) {
           if (preimages.has(preimage)) continue;
           preimages.add(preimage);
           newPreimages.push(preimage);

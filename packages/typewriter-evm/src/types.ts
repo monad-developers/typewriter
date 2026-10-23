@@ -44,21 +44,17 @@ export type SimulateParams = ExecuteParams & {
 type TxResult = {
   success: boolean;
   gas_used: number;
-  output: Hex.Hex;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
-  keccak_preimages: { hash: Hex.Hex; preimage: Hex.Hex }[];
   revert_data?: Hex.Hex;
 };
 
 // gas_used is the gas with cold access. Execute does not warm an access list.
 export type ExecuteResult = TxResult & {
   journal_id?: number;
-  slot_writes: {
-    address: Address.Address;
-    slot: Hex.Hex;
-    prev_value: Hex.Hex;
-    new_value: Hex.Hex;
-  }[];
+  // Writes to the called contract.
+  slot_writes: { slot: Hex.Hex; value: Hex.Hex }[];
+  // The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
+  keccak_preimages: Hex.Hex[];
 };
 
 // gas_used is the gas with the access list warm, as the chain charges it.
@@ -80,7 +76,6 @@ export type JournalIdsParams = {
 };
 
 export type Request =
-  | { method: "init"; id: number; params: InitParams }
   | { method: "setBlockContext"; id: number; params: BlockParams }
   | { method: "execute"; id: number; params: ExecuteParams }
   | { method: "simulate"; id: number; params: SimulateParams }

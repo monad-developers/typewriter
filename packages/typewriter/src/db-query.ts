@@ -154,7 +154,7 @@ export function insertStorageSlots(
       executeResult.slot_writes.map((write) => ({
         execution_index: mutation.executionIndex,
         slot: write.slot,
-        value: write.new_value,
+        value: write.value,
       })),
     );
 
