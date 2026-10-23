@@ -10,7 +10,7 @@
     "benchmark": "bun run build && bun test ./test/*.benchmark.ts",
     "build": "napi build --release --output-dir native",
     "build:debug": "napi build --output-dir native",
-    "test": "bun run build:debug && bun test --timeout 30000",
+    "test": "cargo test --lib && bun run build:debug && bun test --timeout 30000",
     "typecheck": "tsc --noEmit",
     "lint": "cargo fmt --check && cargo clippy -- -D warnings && forge fmt --check test/contracts"
   },

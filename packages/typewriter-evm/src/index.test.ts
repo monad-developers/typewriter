@@ -13,20 +13,23 @@ const COUNTER_ADDR = "0x0000000000000000000000000000000000000c01" as const;
 const PAGE_WRITES_ADDR = "0x0000000000000000000000000000000000000c02" as const;
 const REVERTING_ADDR = "0x0000000000000000000000000000000000000bad" as const;
 const CALLER = "0x000000000000000000000000000000000000ca11" as const;
+const P256_VERIFIER = "0x0000000000000000000000000000000000000100" as const;
 
 import { expect, test } from "bun:test";
 import { Effect, Exit, Fiber, Scheduler } from "effect";
-import { Hex } from "ox";
+import { Hash, Hex } from "ox";
 import { createStorageView } from "storage-layout";
 import { TEST_PUBLIC_CLIENT } from "../test/setup";
 import {
   BALANCE_OF_SLOT,
   callBurnData,
+  callPrecompileData,
   deployArtifact,
   deployTestToken,
   INITIAL_SUPPLY,
   loadCallGasCallee,
   loadCallGasCaller,
+  loadPrecompileCaller,
   loadTestToken,
   mappingSlot,
   normalizeAccessRecord,
@@ -41,7 +44,7 @@ import {
   transferData,
   USER_ADDR,
 } from "../test/utils";
-import { createEVM } from "./index";
+import { createEVM, EvmCallError, type Spec } from "./index";
 
 const initWithCounter = {
   accounts: {
@@ -51,8 +54,7 @@ const initWithCounter = {
 
 const runSamePageWrites = (spec?: "MonadNine" | "MonadTen") =>
   Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({
+    const evm = yield* createEVM({
       spec,
       accounts: {
         [PAGE_WRITES_ADDR]: { code: SAME_PAGE_WRITES_CODE },
@@ -80,8 +82,7 @@ test("default spec enables MonadTen MIP-8 page storage gas", async () => {
 
 test("execute against counter succeeds and returns a journal id", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
@@ -98,11 +99,8 @@ test("execute against counter succeeds and returns a journal id", async () => {
   expect(exec).not.toHaveProperty("gas_limit");
   expect(exec.slot_writes).toEqual([
     {
-      address: COUNTER_ADDR,
       slot: "0x0000000000000000000000000000000000000000000000000000000000000000",
-      prev_value:
-        "0x0000000000000000000000000000000000000000000000000000000000000000",
-      new_value:
+      value:
         "0x0000000000000000000000000000000000000000000000000000000000000001",
     },
   ]);
@@ -110,8 +108,7 @@ test("execute against counter succeeds and returns a journal id", async () => {
 
 test("two executes create sequential journals", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     const first = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
@@ -134,8 +131,7 @@ test("two executes create sequential journals", async () => {
 
 test("revertJournals drops writes; next journal starts from pre-revert state", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     // Journal 1: increment, revert.
     const reverted = yield* evm.execute({
@@ -160,8 +156,7 @@ test("revertJournals drops writes; next journal starts from pre-revert state", a
 
 test("sequential journals keep local state", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
 
@@ -179,8 +174,7 @@ test("sequential journals keep local state", async () => {
 
 test("execute opens a journal automatically", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     return yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
@@ -195,8 +189,7 @@ test("execute opens a journal automatically", async () => {
 
 test("failed execute discards journal writes", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({
+    const evm = yield* createEVM({
       accounts: {
         [REVERTING_ADDR]: { code: WRITE_THEN_REVERT_CODE },
       },
@@ -216,8 +209,7 @@ test("failed execute discards journal writes", async () => {
 
 test("execute returns access_list with the counter address + slot 0", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     return yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
   });
 
@@ -234,8 +226,7 @@ test("execute returns access_list with the counter address + slot 0", async () =
 
 test("simulate does not mutate state — counter stays at 0 after simulate", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     // simulate has no journal requirement and no persistence.
     const sim = yield* evm.simulate({
@@ -258,8 +249,7 @@ test("simulate rewinds and re-applies selected journals", async () => {
   // Two optimistic journals each increment. After both, slot is at 2.
   // simulate must un-apply the provided journals, run, then re-apply them.
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     const first = yield* evm.execute({
       from: CALLER,
@@ -291,8 +281,7 @@ test("simulate only rewinds the provided journal ids", async () => {
   // First journal: slot 0 -> 1. Second journal: slot 1 -> 2.
   // simulate receives only the second id, so it runs against slot value 1.
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     yield* evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" });
 
@@ -318,8 +307,7 @@ test("simulate only rewinds the provided journal ids", async () => {
 
 test("revertJournals works on a journal", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     const accepted = yield* evm.execute({
       from: CALLER,
@@ -345,8 +333,7 @@ test("revertJournals works on a journal", async () => {
 
 test("revertJournals reverts multiple journals", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     const first = yield* evm.execute({
       from: CALLER,
@@ -384,8 +371,7 @@ test("revertJournals reverts multiple journals", async () => {
 
 test("revertJournals with an unknown journal id fails", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     return yield* evm.revertJournals({ journal_ids: [5] });
   });
 
@@ -395,8 +381,7 @@ test("revertJournals with an unknown journal id fails", async () => {
 
 test("pruneJournals drops selected journals", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     const first = yield* evm.execute({
       from: CALLER,
@@ -429,8 +414,7 @@ test("pruneJournals drops selected journals", async () => {
 
 test("pruneJournals with an unknown journal id fails", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     return yield* evm.pruneJournals({ journal_ids: [1] });
   });
 
@@ -440,8 +424,7 @@ test("pruneJournals with an unknown journal id fails", async () => {
 
 test("setBlockContext updates block parameters", async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({
+    const evm = yield* createEVM({
       block: {
         number: "0x1",
         timestamp: "0x64",
@@ -476,8 +459,7 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
   const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
 
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(params);
+    const evm = yield* createEVM(params);
     const exec = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
@@ -523,8 +505,7 @@ test("execute reports mapping keccak preimages for touched slots", async () => {
   const userBalanceSlot = mappingSlot(USER_ADDR, BALANCE_OF_SLOT);
 
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(params);
+    const evm = yield* createEVM(params);
     return yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
@@ -534,20 +515,18 @@ test("execute reports mapping keccak preimages for touched slots", async () => {
 
   const exec = await Effect.runPromise(Effect.scoped(program));
 
-  expect(exec.keccak_preimages).toContainEqual({
-    hash: schedulerBalanceSlot,
-    preimage: Hex.concat(
-      Hex.padLeft(SCHEDULER_ADDR, 32),
-      Hex.fromNumber(BALANCE_OF_SLOT, { size: 32 }),
-    ).toLowerCase() as Hex.Hex,
-  });
-  expect(exec.keccak_preimages).toContainEqual({
-    hash: userBalanceSlot,
-    preimage: Hex.concat(
+  // Each preimage hashes to the mapping slot it names.
+  const slots = exec.keccak_preimages.map((preimage) =>
+    Hash.keccak256(preimage),
+  );
+  expect(slots).toContain(schedulerBalanceSlot);
+  expect(slots).toContain(userBalanceSlot);
+  expect(exec.keccak_preimages).toContain(
+    Hex.concat(
       Hex.padLeft(USER_ADDR, 32),
       Hex.fromNumber(BALANCE_OF_SLOT, { size: 32 }),
     ).toLowerCase() as Hex.Hex,
-  });
+  );
 });
 
 test("readStorage decodes committed token state through storage proxy", async () => {
@@ -556,8 +535,7 @@ test("readStorage decodes committed token state through storage proxy", async ()
   const data = transferData(USER_ADDR, TRANSFER_AMOUNT);
 
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(params);
+    const evm = yield* createEVM(params);
     const exec = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
@@ -608,8 +586,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
   const recipientBalanceSlot = mappingSlot(RECIPIENT_ADDR, BALANCE_OF_SLOT);
 
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(params);
+    const evm = yield* createEVM(params);
     const optimistic = yield* evm.execute({
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
@@ -685,8 +662,7 @@ test("harness access list matches eth_createAccessList for Solmate ERC20 transfe
 
   const { params } = tokenInit(artifact, tokenAddr);
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(params);
+    const evm = yield* createEVM(params);
     return yield* evm.simulate({
       from: SCHEDULER_ADDR,
       to: tokenAddr,
@@ -722,8 +698,7 @@ test("harness gas_limit is sufficient for Solmate ERC20 transfer", async () => {
 
   const { params } = tokenInit(artifact, tokenAddr);
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(params);
+    const evm = yield* createEVM(params);
     return yield* evm.simulate({
       from: SCHEDULER_ADDR,
       to: tokenAddr,
@@ -760,8 +735,7 @@ test("harness gas_limit includes EIP-150 call headroom", async () => {
   });
 
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({
+    const evm = yield* createEVM({
       chain_id: 31337,
       accounts: {
         [calleeAddr]: { code: calleeArtifact.deployedBytecode.object },
@@ -780,19 +754,74 @@ test("harness gas_limit includes EIP-150 call headroom", async () => {
   expect(normalizeAccessRecord(harness.access_list)).toEqual(
     normalizeAccessRecord(rpcAccessList),
   );
-  expect(BigInt(harness.gas_limit)).toEqual(rpcGasEstimate);
+  expect(BigInt(harness.gas_limit)).toBeGreaterThanOrEqual(rpcGasEstimate);
   expect(harness.gas_used).toBeLessThan(harness.gas_limit);
 });
 
-test("init twice fails", async () => {
-  const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({});
-    yield* evm.init({});
+test("access list leaves out the P-256 precompile at 0x100", async () => {
+  const artifact = await loadPrecompileCaller();
+  const callerAddr = await deployArtifact(artifact);
+  // An invalid signature: the precompile charges its gas and returns no data.
+  const data = callPrecompileData(P256_VERIFIER, Hex.padLeft("0x", 160));
+
+  const { accessList: rpcAccessList } =
+    await TEST_PUBLIC_CLIENT.createAccessList({
+      account: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+    });
+  const rpcGasEstimate = await TEST_PUBLIC_CLIENT.estimateGas({
+    account: SCHEDULER_ADDR,
+    to: callerAddr,
+    data,
+    accessList: rpcAccessList,
   });
 
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM({
+      chain_id: 31337,
+      accounts: {
+        [callerAddr]: { code: artifact.deployedBytecode.object },
+      },
+    });
+    const executed = yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+    });
+    const simulated = yield* evm.simulate({
+      from: SCHEDULER_ADDR,
+      to: callerAddr,
+      data,
+      journal_ids: [],
+    });
+    return { executed, simulated };
+  });
+  const { executed, simulated } = await Effect.runPromise(
+    Effect.scoped(program),
+  );
+
+  expect(executed.success).toBe(true);
+  expect(simulated.success).toBe(true);
+  expect(rpcAccessList).toEqual([]);
+  expect(executed.access_list).toEqual([]);
+  expect(simulated.access_list).toEqual([]);
+  expect(BigInt(simulated.gas_limit)).toBeGreaterThanOrEqual(rpcGasEstimate);
+});
+
+test("createEVM fails with an unknown spec", async () => {
+  const program = createEVM({ spec: "MonadZero" as Spec });
+
   const exit = await Effect.runPromiseExit(Effect.scoped(program));
-  expect(Exit.isFailure(exit)).toBe(true);
+  expect(exit).toEqual(
+    Exit.fail(
+      new EvmCallError({
+        method: "init",
+        message: "init failed: unknown spec: MonadZero",
+        cause: "unknown spec: MonadZero",
+      }),
+    ),
+  );
 });
 
 test("an interrupted execute does not desync subsequent calls", async () => {
@@ -805,8 +834,7 @@ test("an interrupted execute does not desync subsequent calls", async () => {
   // We hammer many zero-timeout calls so at least one is interrupted in that
   // window, then assert a normal execute still succeeds.
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
 
     for (let i = 0; i < 100; i++) {
       yield* Effect.ignore(
@@ -836,8 +864,7 @@ test("concurrent execute submissions serialize into sequential journals", async 
   // run one at a time and each opens the next sequential journal id rather
   // than racing or interleaving.
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     return yield* Effect.all(
       Array.from({ length: 5 }, () =>
         evm.execute({ from: CALLER, to: COUNTER_ADDR, data: "0x" }),
@@ -857,8 +884,7 @@ test("runSync completes while another call is paused mid-call", async () => {
   // A fiber can yield to the scheduler at any op. Nothing in a call may wait
   // on another call, or runSync on a storage read fails with AsyncFiberError.
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init(initWithCounter);
+    const evm = yield* createEVM(initWithCounter);
     const read = evm.readStorage({ address: COUNTER_ADDR, slots: ["0x0"] });
     // A budget below 3 yields before any progress, so the fiber never ends.
     for (let ops = 3; ops <= 32; ops++) {

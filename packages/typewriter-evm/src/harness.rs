@@ -1,41 +1,26 @@
-// Shared EVM harness: wire types, the `EvmHarness` over monad-revm, request
-// dispatch, and conversion helpers. The native addon (`lib.rs`) is the only
-// caller; it owns one `EvmHarness` per instance and forwards JSON through
-// `dispatch_json`.
-//
-// Operations:
-//   init           — one-shot setup: spec, chain id, block context, accounts.
-//   setBlockContext— update block number, timestamp, basefee, coinbase.
-//   execute        — run one tx and store its successful state transition as a
-//                    journal identified by a numeric id.
-//   simulate       — temporarily undo the given journal ids, run one tx, then
-//                    re-apply the journals; does not create/modify journals.
-//   readStorage    — read raw account storage slots from the in-memory DB.
-//   revertJournals — revert and delete the given journal ids.
-//   pruneJournals  — delete the given journal ids without touching state.
-
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use monad_revm::{
     api::{builder::MonadBuilder, default_ctx::monad_context_with_db},
     MonadCfgEnv, MonadHardfork,
 };
 use revm::{
+    bytecode::opcode,
     context::TxEnv,
     context_interface::{
-        result::{ExecutionResult, Output},
+        result::{ExecutionResult, HaltReason},
         transaction::{AccessList, AccessListItem},
-        JournalTr,
+        Host, JournalTr,
     },
     database::InMemoryDB,
     inspector::InspectEvm,
     interpreter::{
         interpreter::EthInterpreter,
         interpreter_types::{Jumps, MemoryTr},
-        Interpreter,
+        CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult,
     },
-    primitives::{Address, Bytes, TxKind, B256, U256},
-    state::{AccountInfo, Bytecode},
+    primitives::{Address, AddressSet, Bytes, TxKind, B256, U256},
+    state::{AccountInfo, Bytecode, EvmState},
     DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
 use serde::{Deserialize, Serialize};
@@ -46,7 +31,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase")]
 enum Request {
-    Init { id: u64, params: InitParams },
     SetBlockContext { id: u64, params: BlockParams },
     Execute { id: u64, params: ExecuteParams },
     Simulate { id: u64, params: SimulateParams },
@@ -89,22 +73,9 @@ struct ExecuteParams {
 
 #[derive(Deserialize)]
 struct SimulateParams {
-    from: String,
-    to: String,
-    data: String,
-    value: Option<String>,
+    #[serde(flatten)]
+    tx: ExecuteParams,
     journal_ids: Vec<u64>,
-}
-
-impl SimulateParams {
-    fn as_execute_params(&self) -> ExecuteParams {
-        ExecuteParams {
-            from: self.from.clone(),
-            to: self.to.clone(),
-            data: self.data.clone(),
-            value: self.value.clone(),
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -119,47 +90,33 @@ struct JournalIdsParams {
 }
 
 #[derive(Serialize)]
-struct OkResponse<T: Serialize> {
-    id: u64,
-    ok: bool,
-    result: T,
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
-    id: u64,
-    ok: bool,
-    error: String,
-}
-
-#[derive(Serialize)]
-struct EmptyResult {}
-
-const EMPTY_RESULT: EmptyResult = EmptyResult {};
-
-const RESPONSE_SERIALIZE_ERROR: &str = r#"{"id":0,"ok":false,"error":"response serialize error"}"#;
-
-fn serialize_response<T: Serialize>(response: &T) -> String {
-    serde_json::to_string(response).unwrap_or_else(|_| RESPONSE_SERIALIZE_ERROR.into())
-}
-
-#[derive(Serialize)]
-struct ExecuteOk {
+struct TxOutcome {
     success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    journal_id: Option<u64>,
     gas_used: u64,
-    // Only simulate estimates a gas limit; execute leaves it unset.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gas_limit: Option<u64>,
-    output: String,
     access_list: Vec<AccessListEntry>,
-    slot_writes: Vec<SlotWriteEntry>,
-    keccak_preimages: Vec<KeccakPreimageEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     revert_data: Option<String>,
-    #[serde(skip_serializing)]
-    tx_access_list: AccessList,
+}
+
+// gas_used is with cold access: execute warms no access list.
+#[derive(Serialize)]
+struct ExecuteOk {
+    #[serde(flatten)]
+    outcome: TxOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_id: Option<u64>,
+    // Writes to the called contract.
+    slot_writes: Vec<SlotWriteEntry>,
+    // The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
+    keccak_preimages: Vec<String>,
+}
+
+// gas_used is with the access list warm, as the chain charges it.
+#[derive(Serialize)]
+struct SimulateOk {
+    #[serde(flatten)]
+    outcome: TxOutcome,
+    gas_limit: u64,
 }
 
 #[derive(Serialize)]
@@ -171,102 +128,111 @@ struct AccessListEntry {
 
 #[derive(Serialize)]
 struct SlotWriteEntry {
-    address: String,
     slot: String,
-    prev_value: String,
-    new_value: String,
+    value: String,
 }
 
-#[derive(Serialize)]
-struct KeccakPreimageEntry {
-    hash: String,
-    preimage: String,
+// -----------------------------------------------------------------------------
+// Inspector
+
+type MonadCtx = monad_revm::api::default_ctx::MonadContext<InMemoryDB>;
+type Evm = monad_revm::api::builder::DefaultMonadEvm<MonadCtx, HarnessInspector>;
+type TxResult = ExecutionResult<HaltReason>;
+
+// The gas limit must exceed gas_used in two places: SSTORE needs more than
+// the call stipend left (EIP-2200), and a call or create keeps 1/64 of the
+// gas it could forward (EIP-150). Gas spent after either point is already in
+// gas_used, so each frame needs a reserve: 2,301 for its own SSTOREs, and
+// enough that 63/64 of its remaining gas covers each child's gas plus the
+// child's reserve. Monad has no refunds, so gas_used is the gas spent. A
+// halted frame uses all the gas it is given, which its need already counts.
+#[derive(Default)]
+struct HarnessInspector {
+    keccak_preimages: Vec<[u8; 64]>,
+    frame_reserves: Vec<u64>,
+    gas_reserve: u64,
+}
+
+impl HarnessInspector {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn frame_end(&mut self, gas_limit: u64, result: &InterpreterResult, sstore_reserve: u64) {
+        let Some(mut reserve) = self.frame_reserves.pop() else {
+            return;
+        };
+        reserve = reserve.max(sstore_reserve);
+        let need = gas_limit - result.gas.remaining() + reserve;
+        match self.frame_reserves.last_mut() {
+            Some(parent) => *parent = (*parent).max(reserve + need.div_ceil(63) + 1),
+            None => self.gas_reserve = reserve,
+        }
+    }
+}
+
+impl Inspector<MonadCtx> for HarnessInspector {
+    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, _context: &mut MonadCtx) {
+        if interp.bytecode.opcode() != opcode::KECCAK256 {
+            return;
+        }
+        let [.., len, offset] = interp.stack.data().as_slice() else {
+            return;
+        };
+        // Only a mapping slot hashes 64 bytes: the key and the mapping's slot.
+        let (Ok(offset), Ok(64)) = (usize::try_from(*offset), usize::try_from(*len)) else {
+            return;
+        };
+        // Memory past its current size reads as zeros.
+        let mut preimage = [0; 64];
+        let memory_size = interp.memory.size();
+        if offset < memory_size {
+            let copied = (memory_size - offset).min(64);
+            preimage[..copied].copy_from_slice(&interp.memory.slice_len(offset, copied));
+        }
+        self.keccak_preimages.push(preimage);
+    }
+
+    fn call(&mut self, _context: &mut MonadCtx, _inputs: &mut CallInputs) -> Option<CallOutcome> {
+        self.frame_reserves.push(0);
+        None
+    }
+
+    fn call_end(&mut self, context: &mut MonadCtx, inputs: &CallInputs, outcome: &mut CallOutcome) {
+        // Precompiles have fixed costs and no SSTORE.
+        let sstore_reserve = if outcome.was_precompile_called {
+            0
+        } else {
+            context.gas_params().call_stipend() + 1
+        };
+        self.frame_end(inputs.gas_limit, &outcome.result, sstore_reserve);
+    }
+
+    fn create(
+        &mut self,
+        _context: &mut MonadCtx,
+        _inputs: &mut CreateInputs,
+    ) -> Option<CreateOutcome> {
+        self.frame_reserves.push(0);
+        None
+    }
+
+    fn create_end(
+        &mut self,
+        context: &mut MonadCtx,
+        inputs: &CreateInputs,
+        outcome: &mut CreateOutcome,
+    ) {
+        let sstore_reserve = context.gas_params().call_stipend() + 1;
+        self.frame_end(inputs.gas_limit(), &outcome.result, sstore_reserve);
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Harness
 
-type Evm = monad_revm::api::builder::DefaultMonadEvm<
-    monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
-    MappingRecoveryInspector,
->;
-
-#[derive(Default)]
-struct MappingRecoveryInspector {
-    keccak_preimages: Vec<RawKeccakPreimage>,
-}
-
-struct RawKeccakPreimage {
-    hash: B256,
-    preimage: Vec<u8>,
-}
-
-impl MappingRecoveryInspector {
-    fn clear(&mut self) {
-        self.keccak_preimages.clear();
-    }
-
-    fn wire_preimages(&self) -> Vec<KeccakPreimageEntry> {
-        self.keccak_preimages
-            .iter()
-            .map(|entry| KeccakPreimageEntry {
-                hash: format!("0x{}", hex::encode(entry.hash.as_slice())),
-                preimage: format!("0x{}", hex::encode(&entry.preimage)),
-            })
-            .collect()
-    }
-}
-
-impl Inspector<monad_revm::api::default_ctx::MonadContext<InMemoryDB>>
-    for MappingRecoveryInspector
-{
-    fn step(
-        &mut self,
-        interp: &mut Interpreter<EthInterpreter>,
-        _context: &mut monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
-    ) {
-        if interp.bytecode.opcode() != 0x20 {
-            return;
-        }
-
-        let stack = interp.stack.data();
-        if stack.len() < 2 {
-            return;
-        }
-        let offset = stack[stack.len() - 1];
-        let len = stack[stack.len() - 2];
-        if len != U256::from(32) && len != U256::from(64) {
-            return;
-        }
-
-        let offset = match usize::try_from(offset) {
-            Ok(offset) => offset,
-            Err(_) => return,
-        };
-        let len = usize::try_from(len).expect("len checked above");
-        let Some(end) = offset.checked_add(len) else {
-            return;
-        };
-
-        let mut preimage = vec![0; len];
-        let memory_size = interp.memory.size();
-        if offset < memory_size {
-            let copied = memory_size.min(end) - offset;
-            preimage[..copied].copy_from_slice(&interp.memory.slice_len(offset, copied));
-        }
-
-        self.keccak_preimages.push(RawKeccakPreimage {
-            hash: revm::primitives::keccak256(&preimage),
-            preimage,
-        });
-    }
-}
-
-// Per-journal pre/post-image record. REVM's transaction execution clears its
-// internal journal log on success, so cross-tx isolation has to live in
-// userland: we capture pre-images on first touch within a journal, post-
-// images each time. revertJournals writes pre-images back; simulate
-// un-applies uncommitted journals, runs the simulation, re-applies them.
+// revm clears its own journal when a tx succeeds, so each tx's pre/post images
+// are kept here to revert or temporarily undo it later.
 #[derive(Default)]
 struct Journal {
     accounts: HashMap<Address, (AccountInfo, AccountInfo)>,
@@ -274,111 +240,157 @@ struct Journal {
     access_list: AccessList,
 }
 
+impl Journal {
+    fn from_state(state: &EvmState, access_list: AccessList) -> Self {
+        let mut journal = Journal {
+            access_list,
+            ..Default::default()
+        };
+        for (address, account) in state {
+            journal
+                .accounts
+                .insert(*address, (account.original_info(), account.info.clone()));
+            for (slot, value) in &account.storage {
+                journal.storage.insert(
+                    (*address, *slot),
+                    (value.original_value(), value.present_value()),
+                );
+            }
+        }
+        journal
+    }
+
+    fn write(&self, db: &mut InMemoryDB, post: bool) {
+        for (address, (pre, after)) in &self.accounts {
+            db.insert_account_info(*address, if post { after } else { pre }.clone());
+        }
+        for ((address, slot), (pre, after)) in &self.storage {
+            let _ = db.insert_account_storage(*address, *slot, if post { *after } else { *pre });
+        }
+    }
+}
+
+struct TxRequest {
+    from: Address,
+    to: Address,
+    data: Bytes,
+    value: U256,
+    chain_id: u64,
+}
+
+impl TxRequest {
+    fn parse(params: &ExecuteParams, chain_id: u64) -> Result<Self, String> {
+        Ok(Self {
+            from: parse_address(&params.from)?,
+            to: parse_address(&params.to)?,
+            data: parse_bytes(&params.data)?,
+            value: params.value.as_deref().map_or(Ok(U256::ZERO), parse_u256)?,
+            chain_id,
+        })
+    }
+
+    fn tx_env(&self, access_list: AccessList) -> TxEnv {
+        TxEnv::builder()
+            .caller(self.from)
+            .chain_id(Some(self.chain_id))
+            .kind(TxKind::Call(self.to))
+            .gas_limit(u64::MAX)
+            .gas_price(0)
+            .value(self.value)
+            .data(self.data.clone())
+            .access_list(access_list)
+            .build_fill()
+    }
+}
+
 pub struct EvmHarness {
     evm: Evm,
     journals: HashMap<u64, Journal>,
     next_journal_id: u64,
-    initialized: bool,
 }
 
 impl EvmHarness {
-    pub fn new() -> Self {
+    pub fn from_json(params_json: &str) -> Result<Self, String> {
+        let params = serde_json::from_str(params_json).map_err(|e| format!("parse error: {e}"))?;
+        Self::new(&params)
+    }
+
+    fn new(params: &InitParams) -> Result<Self, String> {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
-        let evm = ctx.build_monad_with_inspector(MappingRecoveryInspector::default());
-        Self {
-            evm,
+        let mut harness = Self {
+            evm: ctx.build_monad_with_inspector(HarnessInspector::default()),
             journals: HashMap::new(),
             next_journal_id: 1,
-            initialized: false,
-        }
+        };
+        harness.init(params)?;
+        Ok(harness)
     }
 
     fn init(&mut self, params: &InitParams) -> Result<(), String> {
-        if self.initialized {
-            return Err("init already called".into());
-        }
         if let Some(spec) = params.spec.as_deref() {
-            let s = parse_spec(spec).ok_or_else(|| format!("unknown spec: {spec}"))?;
-            let mut cfg = MonadCfgEnv::new_with_spec(s);
+            let spec = parse_spec(spec).ok_or_else(|| format!("unknown spec: {spec}"))?;
+            let mut cfg = MonadCfgEnv::new_with_spec(spec);
             relax_cfg(&mut cfg);
             self.evm.0.ctx.cfg = cfg;
-            self.evm.0.ctx.journaled_state.set_spec_id(s.into());
+            self.evm.0.ctx.journaled_state.set_spec_id(spec.into());
         }
-        if let Some(id) = params.chain_id {
-            self.evm.0.ctx.cfg.0.chain_id = id;
+        if let Some(chain_id) = params.chain_id {
+            self.evm.0.ctx.cfg.0.chain_id = chain_id;
         }
         if let Some(block) = &params.block {
-            self.apply_block_params(block)?;
+            self.set_block_context(block)?;
         }
-        if let Some(accounts) = &params.accounts {
-            let db = self.evm.0.ctx.journaled_state.db_mut();
-            for (addr_str, acc) in accounts {
-                let address = parse_address(addr_str)?;
-                let mut info = AccountInfo {
-                    balance: match acc.balance.as_deref() {
-                        Some(b) => parse_u256(b)?,
-                        None => U256::ZERO,
-                    },
-                    nonce: acc.nonce.unwrap_or(0),
-                    ..Default::default()
-                };
-                if let Some(code_hex) = acc.code.as_deref() {
-                    info = info.with_code(Bytecode::new_raw(parse_bytes(code_hex)?));
-                }
-                db.insert_account_info(address, info);
-                if let Some(storage) = &acc.storage {
-                    for (slot_str, value_str) in storage {
-                        let slot = parse_u256(slot_str)?;
-                        let value = parse_u256(value_str)?;
-                        db.insert_account_storage(address, slot, value)
-                            .map_err(|e| format!("insert_account_storage: {e:?}"))?;
-                    }
-                }
+        let db = self.evm.0.ctx.journaled_state.db_mut();
+        for (address, account) in params.accounts.iter().flatten() {
+            let address = parse_address(address)?;
+            let mut info = AccountInfo {
+                balance: account
+                    .balance
+                    .as_deref()
+                    .map_or(Ok(U256::ZERO), parse_u256)?,
+                nonce: account.nonce.unwrap_or(0),
+                ..Default::default()
+            };
+            if let Some(code) = account.code.as_deref() {
+                info = info.with_code(Bytecode::new_raw(parse_bytes(code)?));
+            }
+            db.insert_account_info(address, info);
+            for (slot, value) in account.storage.iter().flatten() {
+                db.insert_account_storage(address, parse_u256(slot)?, parse_u256(value)?)
+                    .map_err(|e| format!("insert_account_storage: {e:?}"))?;
             }
         }
-        self.initialized = true;
         Ok(())
     }
 
     fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
-        self.ensure_initialized()?;
-        self.apply_block_params(params)
-    }
-
-    fn apply_block_params(&mut self, block: &BlockParams) -> Result<(), String> {
-        let b = &mut self.evm.0.ctx.block;
-        if let Some(n) = &block.number {
-            b.number = parse_u256(n)?;
+        let block = &mut self.evm.0.ctx.block;
+        if let Some(number) = &params.number {
+            block.number = parse_u256(number)?;
         }
-        if let Some(t) = &block.timestamp {
-            b.timestamp = parse_u256(t)?;
+        if let Some(timestamp) = &params.timestamp {
+            block.timestamp = parse_u256(timestamp)?;
         }
-        if let Some(f) = &block.basefee {
-            b.basefee = parse_u256(f)?.to::<u64>();
+        if let Some(basefee) = &params.basefee {
+            block.basefee = parse_u256(basefee)?.to::<u64>();
         }
-        if let Some(c) = &block.coinbase {
-            b.beneficiary = parse_address(c)?;
+        if let Some(coinbase) = &params.coinbase {
+            block.beneficiary = parse_address(coinbase)?;
         }
         Ok(())
     }
 
     fn revert_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
-        self.ensure_initialized()?;
         self.ensure_journal_ids(&params.journal_ids)?;
-        let db = self.evm.0.ctx.journaled_state.db_mut();
         for journal_id in params.journal_ids.iter().rev() {
-            let journal = self
-                .journals
-                .remove(journal_id)
-                .expect("journal ids validated above");
-            rewind(db, &journal);
+            let journal = self.journals.remove(journal_id).expect("validated above");
+            journal.write(self.evm.0.ctx.journaled_state.db_mut(), false);
         }
         Ok(())
     }
 
     fn prune_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
-        self.ensure_initialized()?;
         self.ensure_journal_ids(&params.journal_ids)?;
         for journal_id in &params.journal_ids {
             self.journals.remove(journal_id);
@@ -387,509 +399,274 @@ impl EvmHarness {
     }
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
-        self.ensure_initialized()?;
-        let mut result = match self.run_two_pass(params, None, false) {
-            Ok(result) => result,
+        let tx = TxRequest::parse(params, self.evm.0.ctx.cfg.0.chain_id)?;
+        let (result, access_list) = match self.discovery_pass(&tx) {
+            Ok(pass) => pass,
             Err(error) => {
                 let _ = self.evm.finalize();
                 return Err(error);
             }
         };
-        if result.success {
-            result.slot_writes = collect_slot_writes(self.evm.0.ctx.journaled_state.evm_state());
-            let mut journal = Journal::default();
-            self.record_into_journal(&mut journal);
-            journal.access_list = result.tx_access_list.clone();
-            // Commit the journaled state into the DB so future reads and
-            // writes see the post-tx state.
-            self.flush_journal_to_db();
-            let journal_id = self.next_journal_id;
-            self.next_journal_id += 1;
-            self.journals.insert(journal_id, journal);
-            result.journal_id = Some(journal_id);
-        } else {
-            // A failed tx is observable as a rejection, not as local state.
-            // Drain and discard any journal state left by revm.
+        let outcome = tx_outcome(&result, &access_list);
+        let keccak_preimages = self
+            .evm
+            .0
+            .inspector
+            .keccak_preimages
+            .iter()
+            .map(|preimage| format_bytes(preimage))
+            .collect();
+        if !outcome.success {
             let _ = self.evm.finalize();
+            return Ok(ExecuteOk {
+                outcome,
+                journal_id: None,
+                slot_writes: Vec::new(),
+                keccak_preimages,
+            });
         }
-        Ok(result)
+
+        let state = self.evm.0.ctx.journaled_state.evm_state();
+        let slot_writes = collect_slot_writes(state, tx.to);
+        let journal = Journal::from_state(state, access_list);
+        let state = self.evm.finalize();
+        self.evm.commit(state);
+        let journal_id = self.next_journal_id;
+        self.next_journal_id += 1;
+        self.journals.insert(journal_id, journal);
+        Ok(ExecuteOk {
+            outcome,
+            journal_id: Some(journal_id),
+            slot_writes,
+            keccak_preimages,
+        })
     }
 
-    fn simulate(&mut self, params: &SimulateParams) -> Result<ExecuteOk, String> {
-        self.ensure_initialized()?;
+    fn simulate(&mut self, params: &SimulateParams) -> Result<SimulateOk, String> {
         self.ensure_journal_ids(&params.journal_ids)?;
-
-        {
-            let db = self.evm.0.ctx.journaled_state.db_mut();
-            for journal_id in params.journal_ids.iter().rev() {
-                let journal = self
-                    .journals
-                    .get(journal_id)
-                    .expect("journal ids validated above");
-                rewind(db, journal);
-            }
+        let tx = TxRequest::parse(&params.tx, self.evm.0.ctx.cfg.0.chain_id)?;
+        for journal_id in params.journal_ids.iter().rev() {
+            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), false);
         }
-
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
-        let result = self.run_two_pass(&params.as_execute_params(), cached_access_list, true);
-
-        // Drop pass 2's journal-state writes so they never reach the DB.
+        let result = self.run_simulate(&tx, cached_access_list);
         let _ = self.evm.finalize();
-
-        // Re-apply post-images in caller-provided occurrence order regardless
-        // of simulate's success — logical state must be restored.
-        {
-            let db = self.evm.0.ctx.journaled_state.db_mut();
-            for journal_id in &params.journal_ids {
-                let journal = self
-                    .journals
-                    .get(journal_id)
-                    .expect("journal ids validated above");
-                replay(db, journal);
-            }
+        for journal_id in &params.journal_ids {
+            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), true);
         }
-
         result
     }
 
     fn read_storage(&self, params: &ReadStorageParams) -> Result<BTreeMap<String, String>, String> {
         let address = parse_address(&params.address)?;
         let db = self.evm.0.ctx.journaled_state.db();
-        let mut out = BTreeMap::new();
-        for slot_str in &params.slots {
-            let slot = parse_u256(slot_str)?;
-            let value = db
-                .storage_ref(address, slot)
-                .map_err(|e| format!("storage_ref: {e:?}"))?;
-            out.insert(format_u256(slot), format_u256(value));
-        }
-        Ok(out)
-    }
-
-    // Walk the journal's post-tx state and merge it into the output journal:
-    //   - record (pre, post) on first sighting of an account/slot
-    //   - update only `post` on subsequent sightings (`pre` is already
-    //     the journal's earliest-known pre-image).
-    fn record_into_journal(&mut self, journal: &mut Journal) {
-        let state = self.evm.0.ctx.journaled_state.evm_state();
-        for (addr, account) in state.iter() {
-            let post_info = account.info.clone();
-            let pre_info = account.original_info();
-            journal
-                .accounts
-                .entry(*addr)
-                .and_modify(|(_, post)| *post = post_info.clone())
-                .or_insert((pre_info, post_info));
-
-            for (slot, slot_state) in account.storage.iter() {
-                let pre = slot_state.original_value();
-                let post = slot_state.present_value();
-                journal
-                    .storage
-                    .entry((*addr, *slot))
-                    .and_modify(|(_, p)| *p = post)
-                    .or_insert((pre, post));
-            }
-        }
-    }
-
-    fn flush_journal_to_db(&mut self) {
-        let state = self.evm.finalize();
-        self.evm.commit(state);
-    }
-
-    fn ensure_initialized(&self) -> Result<(), String> {
-        if self.initialized {
-            Ok(())
-        } else {
-            Err("not initialized".into())
-        }
+        params
+            .slots
+            .iter()
+            .map(|slot| {
+                let slot = parse_u256(slot)?;
+                let value = db
+                    .storage_ref(address, slot)
+                    .map_err(|e| format!("storage_ref: {e:?}"))?;
+                Ok((format_u256(slot), format_u256(value)))
+            })
+            .collect()
     }
 
     fn ensure_journal_ids(&self, journal_ids: &[u64]) -> Result<(), String> {
-        for journal_id in journal_ids {
-            if !self.journals.contains_key(journal_id) {
-                return Err(format!("unknown journal id: {journal_id}"));
-            }
+        match journal_ids
+            .iter()
+            .find(|id| !self.journals.contains_key(id))
+        {
+            Some(id) => Err(format!("unknown journal id: {id}")),
+            None => Ok(()),
         }
-        Ok(())
     }
 
-    // Two-pass execution. Pass 1 discovers the access list; pass 2 runs with
-    // those addresses/slots pre-warmed so the metered gas matches what the
-    // chain will charge for a tx broadcast with the discovered access list.
-    //
-    // With `estimate_gas`, a successful pass 2 is followed by a gas-limit
-    // search and a final pass at that limit. Only simulate needs this: it
-    // builds the transaction that goes onchain. Execute only accepts the
-    // mutation into local state, so it skips the search (about 15 extra runs).
-    //
-    // After pass 1, finalize drains the journal state and we discard it so
-    // pass 2 starts from the same DB state. The alternative —
-    // checkpoint_revert — doesn't work because transact_one calls commit_tx
-    // after success, which clears the revertable journal log.
-    fn run_two_pass(
+    // Leaves the post-state live for the caller to commit or drop. Passes
+    // drop state with finalize, not checkpoint_revert: transact_one commits
+    // the tx on success, which clears revm's revert log.
+    fn discovery_pass(&mut self, tx: &TxRequest) -> Result<(TxResult, AccessList), String> {
+        self.evm.0.inspector.clear();
+        let result = self
+            .evm
+            .inspect_one_tx(tx.tx_env(AccessList::default()))
+            .map_err(|e| format!("transact (discovery): {e:?}"))?;
+        let journaled_state = &self.evm.0.ctx.journaled_state;
+        let access_list = discovered_access_list(
+            journaled_state.evm_state(),
+            journaled_state.precompile_addresses(),
+            tx,
+            self.evm.0.ctx.block.beneficiary,
+        );
+        Ok((result, access_list))
+    }
+
+    fn run_simulate(
         &mut self,
-        params: &ExecuteParams,
+        tx: &TxRequest,
         cached_access_list: Option<AccessList>,
-        estimate_gas: bool,
-    ) -> Result<ExecuteOk, String> {
-        let from = parse_address(&params.from)?;
-        let to = parse_address(&params.to)?;
-        let data = parse_bytes(&params.data)?;
-        let value = match params.value.as_deref() {
-            Some(v) => parse_u256(v)?,
-            None => U256::ZERO,
-        };
-        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
-        let coinbase = self.evm.0.ctx.block.beneficiary;
-
-        let build_tx = |access_list: AccessList, gas_limit: u64| {
-            TxEnv::builder()
-                .caller(from)
-                .chain_id(Some(chain_id))
-                .kind(TxKind::Call(to))
-                .gas_limit(gas_limit)
-                .gas_price(0)
-                .value(value)
-                .data(data.clone())
-                .access_list(access_list)
-                .build_fill()
-        };
-
-        let tx_access_list = match cached_access_list {
+    ) -> Result<SimulateOk, String> {
+        let access_list = match cached_access_list {
             Some(access_list) => access_list,
             None => {
-                // Pass 1 — discover the access list from touched accounts/slots.
-                self.evm.0.inspector.clear();
-                let _ = self
-                    .evm
-                    .inspect_one_tx(build_tx(AccessList::default(), u64::MAX))
-                    .map_err(|e| format!("transact (pass 1): {e:?}"))?;
-                let touched = collect_access_list(self.evm.0.ctx.journaled_state.evm_state());
-                self.evm.0.inspector.clear();
-                // Drain pass 1's journal state without committing it.
+                let (_, access_list) = self.discovery_pass(tx)?;
                 let _ = self.evm.finalize();
-
-                // collect_access_list includes every account touched during execution.
-                // Keep address-only entries for cold callees, but drop addresses that
-                // are already warm at transaction start.
-                AccessList(
-                    touched
-                        .0
-                        .iter()
-                        .filter(|item| {
-                            !item.storage_keys.is_empty()
-                                || (!is_intrinsically_warm(item.address, from, to, coinbase)
-                                    && !is_precompile(item.address))
-                        })
-                        .cloned()
-                        .collect(),
-                )
+                access_list
             }
         };
-
-        // Measure with pre-warmed access list.
 
         self.evm.0.inspector.clear();
-        let mut result = self
+        let result = self
             .evm
-            .inspect_one_tx(build_tx(tx_access_list.clone(), u64::MAX))
-            .map_err(|e| format!("transact (pass 2): {e:?}"))?;
-
-        let gas_limit = match &result {
-            ExecutionResult::Success { .. } if !estimate_gas => None,
-            ExecutionResult::Success { .. } => {
-                self.evm.0.inspector.clear();
-                let _ = self.evm.finalize();
-                let gas_limit =
-                    self.estimate_gas_limit(params, tx_access_list.clone(), result.tx_gas_used())?;
-
-                // The estimate attempts finalize their own state, so rerun the
-                // successful pass and leave its journal state live for execute().
-                self.evm.0.inspector.clear();
-                result = self
-                    .evm
-                    .inspect_one_tx(build_tx(tx_access_list.clone(), gas_limit))
-                    .map_err(|e| format!("transact (final pass): {e:?}"))?;
-                Some(gas_limit)
-            }
-            ExecutionResult::Revert { .. } | ExecutionResult::Halt { .. } => {
-                estimate_gas.then(|| result.tx_gas_used())
-            }
+            .inspect_one_tx(tx.tx_env(access_list.clone()))
+            .map_err(|e| format!("transact (simulate): {e:?}"))?;
+        let outcome = tx_outcome(&result, &access_list);
+        let gas_limit = if outcome.success {
+            result.tx_gas_used() + self.evm.0.inspector.gas_reserve
+        } else {
+            result.tx_gas_used()
         };
-
-        let (success, gas_used, output, revert_data) = match &result {
-            ExecutionResult::Success { output, .. } => {
-                let bytes = match output {
-                    Output::Call(b) => b.clone(),
-                    Output::Create(b, _) => b.clone(),
-                };
-                (
-                    true,
-                    result.tx_gas_used(),
-                    format!("0x{}", hex::encode(&bytes)),
-                    None,
-                )
-            }
-            ExecutionResult::Revert { output, .. } => (
-                false,
-                result.tx_gas_used(),
-                format!("0x{}", hex::encode(output)),
-                Some(format!("0x{}", hex::encode(output))),
-            ),
-            ExecutionResult::Halt { reason, .. } => (
-                false,
-                result.tx_gas_used(),
-                "0x".into(),
-                Some(format!("halt: {reason:?}")),
-            ),
-        };
-
-        let access_list_wire = encode_access_list(&tx_access_list);
-        let keccak_preimages = self.evm.0.inspector.wire_preimages();
-
-        Ok(ExecuteOk {
-            success,
-            journal_id: None,
-            gas_used,
-            gas_limit,
-            output,
-            access_list: access_list_wire,
-            slot_writes: Vec::new(),
-            keccak_preimages,
-            revert_data,
-            tx_access_list,
-        })
+        Ok(SimulateOk { outcome, gas_limit })
     }
 
     fn merge_journal_access_lists(&self, journal_ids: &[u64]) -> Option<AccessList> {
         if journal_ids.is_empty() {
             return None;
         }
-
-        let mut items: Vec<AccessListItem> = Vec::new();
+        let mut merged: BTreeMap<Address, BTreeSet<B256>> = BTreeMap::new();
         for journal_id in journal_ids {
-            let journal = self
-                .journals
-                .get(journal_id)
-                .expect("journal ids validated above");
-            for item in &journal.access_list.0 {
-                match items
-                    .iter_mut()
-                    .find(|merged| merged.address == item.address)
-                {
-                    Some(merged) => {
-                        for key in &item.storage_keys {
-                            if !merged.storage_keys.contains(key) {
-                                merged.storage_keys.push(*key);
-                            }
-                        }
-                    }
-                    None => items.push(item.clone()),
-                }
+            for item in &self.journals[journal_id].access_list.0 {
+                merged
+                    .entry(item.address)
+                    .or_default()
+                    .extend(&item.storage_keys);
             }
         }
-
-        Some(AccessList(items))
-    }
-
-    fn estimate_gas_limit(
-        &mut self,
-        params: &ExecuteParams,
-        access_list: AccessList,
-        gas_used: u64,
-    ) -> Result<u64, String> {
-        let mut high = gas_used.max(21_000);
-        while !self.succeeds_with_gas_limit(params, access_list.clone(), high)? {
-            high = high
-                .checked_add((high / 64).max(1_000))
-                .ok_or_else(|| "gas estimate overflow".to_string())?;
-        }
-
-        let mut low = gas_used.saturating_sub(1);
-        while low + 1 < high {
-            let mid = low + (high - low) / 2;
-            if self.succeeds_with_gas_limit(params, access_list.clone(), mid)? {
-                high = mid;
-            } else {
-                low = mid;
-            }
-        }
-
-        Ok(high)
-    }
-
-    fn succeeds_with_gas_limit(
-        &mut self,
-        params: &ExecuteParams,
-        access_list: AccessList,
-        gas_limit: u64,
-    ) -> Result<bool, String> {
-        let from = parse_address(&params.from)?;
-        let to = parse_address(&params.to)?;
-        let data = parse_bytes(&params.data)?;
-        let value = match params.value.as_deref() {
-            Some(v) => parse_u256(v)?,
-            None => U256::ZERO,
-        };
-        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
-
-        let tx = TxEnv::builder()
-            .caller(from)
-            .chain_id(Some(chain_id))
-            .kind(TxKind::Call(to))
-            .gas_limit(gas_limit)
-            .gas_price(0)
-            .value(value)
-            .data(data)
-            .access_list(access_list)
-            .build_fill();
-
-        self.evm.0.inspector.clear();
-        let result = self
-            .evm
-            .inspect_one_tx(tx)
-            .map_err(|e| format!("transact (estimate): {e:?}"))?;
-        let success = matches!(result, ExecutionResult::Success { .. });
-        let _ = self.evm.finalize();
-        self.evm.0.inspector.clear();
-        Ok(success)
-    }
-}
-
-impl Default for EvmHarness {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn rewind(db: &mut InMemoryDB, journal: &Journal) {
-    for (addr, (pre, _post)) in journal.accounts.iter() {
-        db.insert_account_info(*addr, pre.clone());
-    }
-    for ((addr, slot), (pre, _post)) in journal.storage.iter() {
-        let _ = db.insert_account_storage(*addr, *slot, *pre);
-    }
-}
-
-fn replay(db: &mut InMemoryDB, journal: &Journal) {
-    for (addr, (_pre, post)) in journal.accounts.iter() {
-        db.insert_account_info(*addr, post.clone());
-    }
-    for ((addr, slot), (_pre, post)) in journal.storage.iter() {
-        let _ = db.insert_account_storage(*addr, *slot, *post);
+        Some(AccessList(
+            merged
+                .into_iter()
+                .map(|(address, keys)| AccessListItem {
+                    address,
+                    storage_keys: keys.into_iter().collect(),
+                })
+                .collect(),
+        ))
     }
 }
 
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-// Walk the journal's post-tx state, collecting every account that was
-// touched and the storage slots that were loaded for it. This is what we
-// pass to pass 2 as the access list, and what we serialize back to TS.
-fn collect_access_list(state: &revm::state::EvmState) -> AccessList {
-    let mut items: Vec<AccessListItem> = Vec::new();
-    for (address, account) in state.iter() {
-        let storage_keys: Vec<B256> = account
-            .storage
-            .keys()
-            .map(|slot| B256::from(slot.to_be_bytes()))
-            .collect();
-        items.push(AccessListItem {
-            address: *address,
-            storage_keys,
-        });
+fn tx_outcome(result: &TxResult, access_list: &AccessList) -> TxOutcome {
+    let (success, revert_data) = match result {
+        ExecutionResult::Success { .. } => (true, None),
+        ExecutionResult::Revert { output, .. } => (false, Some(format_bytes(output))),
+        ExecutionResult::Halt { reason, .. } => (false, Some(format!("halt: {reason:?}"))),
+    };
+    TxOutcome {
+        success,
+        gas_used: result.tx_gas_used(),
+        access_list: encode_access_list(access_list),
+        revert_data,
     }
-    AccessList(items)
+}
+
+fn discovered_access_list(
+    state: &EvmState,
+    precompiles: &AddressSet,
+    tx: &TxRequest,
+    coinbase: Address,
+) -> AccessList {
+    let is_warm = |address: &Address| {
+        *address == tx.from
+            || *address == tx.to
+            || *address == coinbase
+            || precompiles.contains(address)
+    };
+    AccessList(
+        state
+            .iter()
+            .filter(|(address, account)| !account.storage.is_empty() || !is_warm(address))
+            .map(|(address, account)| AccessListItem {
+                address: *address,
+                storage_keys: account
+                    .storage
+                    .keys()
+                    .map(|slot| B256::from(slot.to_be_bytes()))
+                    .collect(),
+            })
+            .collect(),
+    )
 }
 
 fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
-    let mut out: Vec<AccessListEntry> = Vec::new();
-    for item in &list.0 {
-        let keys: Vec<String> = item
-            .storage_keys
-            .iter()
-            .map(|k| format!("0x{}", hex::encode(k.as_slice())))
-            .collect();
-        let mut keys = keys;
-        keys.sort();
-        out.push(AccessListEntry {
-            address: format!("0x{:x}", item.address),
-            storage_keys: keys,
-        });
-    }
-    out.sort_by(|a, b| a.address.cmp(&b.address));
-    out
+    let mut entries: Vec<AccessListEntry> = list
+        .0
+        .iter()
+        .map(|item| {
+            let mut storage_keys: Vec<String> = item
+                .storage_keys
+                .iter()
+                .map(|key| format_bytes(key.as_slice()))
+                .collect();
+            storage_keys.sort();
+            AccessListEntry {
+                address: format!("{:#x}", item.address),
+                storage_keys,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.address.cmp(&b.address));
+    entries
 }
 
-fn collect_slot_writes(state: &revm::state::EvmState) -> Vec<SlotWriteEntry> {
-    let mut writes: Vec<SlotWriteEntry> = Vec::new();
-    for (address, account) in state.iter() {
-        for (slot, slot_state) in account.storage.iter() {
-            let pre = slot_state.original_value();
-            let post = slot_state.present_value();
-            if pre == post {
-                continue;
-            }
-            writes.push(SlotWriteEntry {
-                address: format!("0x{:x}", address),
-                slot: format_u256(*slot),
-                prev_value: format_u256(pre),
-                new_value: format_u256(post),
-            });
-        }
-    }
-    writes.sort_by(|a, b| a.address.cmp(&b.address).then(a.slot.cmp(&b.slot)));
+fn collect_slot_writes(state: &EvmState, address: Address) -> Vec<SlotWriteEntry> {
+    let Some(account) = state.get(&address) else {
+        return Vec::new();
+    };
+    let mut writes: Vec<SlotWriteEntry> = account
+        .storage
+        .iter()
+        .filter(|(_, value)| value.original_value() != value.present_value())
+        .map(|(slot, value)| SlotWriteEntry {
+            slot: format_u256(*slot),
+            value: format_u256(value.present_value()),
+        })
+        .collect();
+    writes.sort_by(|a, b| a.slot.cmp(&b.slot));
     writes
 }
 
-fn is_intrinsically_warm(
-    address: Address,
-    caller: Address,
-    to: Address,
-    coinbase: Address,
-) -> bool {
-    address == caller || address == to || address == coinbase
-}
-
-fn is_precompile(address: Address) -> bool {
-    let bytes = address.as_slice();
-    bytes[..19].iter().all(|byte| *byte == 0) && (1..=10).contains(&bytes[19])
-}
-
 fn parse_address(s: &str) -> Result<Address, String> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(s).map_err(|e| format!("bad address: {e}"))?;
-    if bytes.len() != 20 {
-        return Err(format!("bad address length: {}", bytes.len()));
-    }
-    let mut arr = [0u8; 20];
-    arr.copy_from_slice(&bytes);
-    Ok(Address::from(arr))
+    let bytes =
+        hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("bad address: {e}"))?;
+    Address::try_from(bytes.as_slice()).map_err(|_| format!("bad address length: {}", bytes.len()))
 }
 
 fn parse_bytes(s: &str) -> Result<Bytes, String> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let bytes = hex::decode(s).map_err(|e| format!("bad bytes: {e}"))?;
-    Ok(Bytes::from(bytes))
+    hex::decode(s.strip_prefix("0x").unwrap_or(s))
+        .map(Bytes::from)
+        .map_err(|e| format!("bad bytes: {e}"))
 }
 
 fn parse_u256(s: &str) -> Result<U256, String> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    if s.is_empty() {
-        return Ok(U256::ZERO);
+    match s.strip_prefix("0x").unwrap_or(s) {
+        "" => Ok(U256::ZERO),
+        digits => U256::from_str_radix(digits, 16).map_err(|e| format!("bad u256: {e}")),
     }
-    U256::from_str_radix(s, 16).map_err(|e| format!("bad u256: {e}"))
 }
 
 fn format_u256(value: U256) -> String {
-    format!("0x{}", hex::encode(value.to_be_bytes::<32>()))
+    format_bytes(&value.to_be_bytes::<32>())
 }
 
-// typewriter handles sequencing, gas, and balance accounting upstream — the harness
-// just executes bytecode. Disable revm's tx-level checks so we don't have to
-// stage them in to make every execute go through.
+fn format_bytes(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
+}
+
+// The runtime orders txs and accounts for gas and balances itself, so these
+// checks would only reject txs it has already accepted.
 fn relax_cfg(cfg: &mut MonadCfgEnv) {
     cfg.0.disable_nonce_check = true;
     cfg.0.disable_balance_check = true;
@@ -910,62 +687,173 @@ fn parse_spec(s: &str) -> Option<MonadHardfork> {
 // -----------------------------------------------------------------------------
 // Dispatch
 
-// Parse one JSON request, run it against the harness, and serialize the
-// response back to JSON. This is the single entry point the native addon
-// calls; it never returns `Err` so the FFI boundary stays infallible and the
-// protocol (id-correlated ok/error envelopes) is owned entirely in Rust.
+#[derive(Serialize)]
+struct Response<T: Serialize> {
+    id: u64,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct EmptyResult {}
+
+// Never fails, so the FFI boundary stays infallible.
 pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
-    match serde_json::from_str::<Request>(request_json) {
-        Ok(req) => dispatch(harness, req),
-        Err(e) => err(0, format!("parse error: {e}")),
+    let request = match serde_json::from_str::<Request>(request_json) {
+        Ok(request) => request,
+        Err(e) => return respond::<EmptyResult>(0, Err(format!("parse error: {e}"))),
+    };
+    let empty = |result: Result<(), String>| result.map(|()| EmptyResult {});
+    match request {
+        Request::SetBlockContext { id, params } => {
+            respond(id, empty(harness.set_block_context(&params)))
+        }
+        Request::Execute { id, params } => respond(id, harness.execute(&params)),
+        Request::Simulate { id, params } => respond(id, harness.simulate(&params)),
+        Request::ReadStorage { id, params } => respond(id, harness.read_storage(&params)),
+        Request::RevertJournals { id, params } => {
+            respond(id, empty(harness.revert_journals(&params)))
+        }
+        Request::PruneJournals { id, params } => {
+            respond(id, empty(harness.prune_journals(&params)))
+        }
     }
 }
 
-fn dispatch(harness: &mut EvmHarness, req: Request) -> String {
-    match req {
-        Request::Init { id, params } => match harness.init(&params) {
-            Ok(()) => ok(id, &EMPTY_RESULT),
-            Err(e) => err(id, e),
-        },
-        Request::SetBlockContext { id, params } => match harness.set_block_context(&params) {
-            Ok(()) => ok(id, &EMPTY_RESULT),
-            Err(e) => err(id, e),
-        },
-        Request::Execute { id, params } => match harness.execute(&params) {
-            Ok(r) => ok(id, &r),
-            Err(e) => err(id, e),
-        },
-        Request::Simulate { id, params } => match harness.simulate(&params) {
-            Ok(r) => ok(id, &r),
-            Err(e) => err(id, e),
-        },
-        Request::ReadStorage { id, params } => match harness.read_storage(&params) {
-            Ok(r) => ok(id, &r),
-            Err(e) => err(id, e),
-        },
-        Request::RevertJournals { id, params } => match harness.revert_journals(&params) {
-            Ok(()) => ok(id, &EMPTY_RESULT),
-            Err(e) => err(id, e),
-        },
-        Request::PruneJournals { id, params } => match harness.prune_journals(&params) {
-            Ok(()) => ok(id, &EMPTY_RESULT),
-            Err(e) => err(id, e),
-        },
-    }
-}
-
-fn ok<T: Serialize>(id: u64, result: &T) -> String {
-    serialize_response(&OkResponse {
+fn respond<T: Serialize>(id: u64, result: Result<T, String>) -> String {
+    let (result, error) = match result {
+        Ok(result) => (Some(result), None),
+        Err(error) => (None, Some(error)),
+    };
+    let response = Response {
         id,
-        ok: true,
+        ok: error.is_none(),
         result,
-    })
+        error,
+    };
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"id":0,"ok":false,"error":"response serialize error"}"#.into())
 }
 
-fn err(id: u64, error: String) -> String {
-    serialize_response(&ErrorResponse {
-        id,
-        ok: false,
-        error,
-    })
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CALLER: u16 = 0xca11;
+    const CONTRACT: u16 = 0x0c01;
+    const CALLEE: u16 = 0x0c02;
+    const INNER: u16 = 0x0c03;
+
+    // PUSH1 0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE STOP.
+    const COUNTER: &[u8] = &[0x60, 0x00, 0x80, 0x54, 0x60, 0x01, 0x01, 0x90, 0x55, 0x00];
+    const CALL: u8 = 0xf1;
+    const STATICCALL: u8 = 0xfa;
+    const GAS: &[u8] = &[0x5a];
+
+    fn address(n: u16) -> Address {
+        let mut bytes = [0u8; 20];
+        bytes[18..].copy_from_slice(&n.to_be_bytes());
+        Address::from(bytes)
+    }
+
+    // Calls `target` with no calldata and the `gas` operand.
+    fn call(op: u8, target: u16, gas: &[u8]) -> Vec<u8> {
+        let mut code = [0x60, 0x00].repeat(if op == CALL { 5 } else { 4 });
+        code.push(0x73);
+        code.extend_from_slice(address(target).as_slice());
+        code.extend_from_slice(gas);
+        code.push(op);
+        code
+    }
+
+    // Reverts unless the call succeeded, then stops.
+    fn require_success(mut code: Vec<u8>) -> Vec<u8> {
+        let revert = u8::try_from(code.len() + 5).unwrap();
+        code.extend_from_slice(&[0x15, 0x60, revert, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x80, 0xfd]);
+        code
+    }
+
+    fn harness(accounts: &[(u16, &[u8])]) -> EvmHarness {
+        let accounts: serde_json::Map<String, serde_json::Value> = accounts
+            .iter()
+            .map(|(account, code)| {
+                (
+                    format!("{:#x}", address(*account)),
+                    serde_json::json!({ "code": format_bytes(code) }),
+                )
+            })
+            .collect();
+        let params = serde_json::from_value(serde_json::json!({ "accounts": accounts })).unwrap();
+        EvmHarness::new(&params).unwrap()
+    }
+
+    fn tx(harness: &EvmHarness) -> TxRequest {
+        TxRequest {
+            from: address(CALLER),
+            to: address(CONTRACT),
+            data: Bytes::new(),
+            value: U256::ZERO,
+            chain_id: harness.evm.0.ctx.cfg.0.chain_id,
+        }
+    }
+
+    fn simulate(harness: &mut EvmHarness) -> Result<SimulateOk, String> {
+        let tx = tx(harness);
+        let result = harness.run_simulate(&tx, Some(AccessList::default()));
+        let _ = harness.evm.finalize();
+        result
+    }
+
+    fn succeeds_at(harness: &mut EvmHarness, gas_limit: u64) -> bool {
+        let mut tx_env = tx(harness).tx_env(AccessList::default());
+        tx_env.gas_limit = gas_limit;
+        let result = harness.evm.inspect_one_tx(tx_env).unwrap();
+        let _ = harness.evm.finalize();
+        matches!(result, ExecutionResult::Success { .. })
+    }
+
+    // The tx fails at gas_used and succeeds at the simulated limit.
+    fn assert_reserve_needed(accounts: &[(u16, &[u8])]) {
+        let mut harness = harness(accounts);
+        let result = simulate(&mut harness).unwrap();
+        assert!(result.outcome.success);
+        assert!(!succeeds_at(&mut harness, result.outcome.gas_used));
+        assert!(succeeds_at(&mut harness, result.gas_limit));
+    }
+
+    #[test]
+    fn reserve_covers_sstore_sentry() {
+        // PUSH1 0 SLOAD PUSH1 0 SSTORE STOP: the warm no-op SSTORE costs less
+        // than the 2,301 gas that must remain before it.
+        assert_reserve_needed(&[(CONTRACT, &[0x60, 0x00, 0x54, 0x60, 0x00, 0x55, 0x00])]);
+    }
+
+    #[test]
+    fn reserve_covers_precompile_calls() {
+        for precompile in [0x01, 0x100] {
+            let code = require_success(call(STATICCALL, precompile, GAS));
+            assert_reserve_needed(&[(CONTRACT, &code)]);
+        }
+    }
+
+    #[test]
+    fn reserve_covers_nested_calls() {
+        let outer = require_success(call(CALL, CALLEE, GAS));
+        let middle = require_success(call(CALL, INNER, GAS));
+        assert_reserve_needed(&[(CONTRACT, &outer), (CALLEE, &middle), (INNER, COUNTER)]);
+    }
+
+    #[test]
+    fn reserve_covers_caught_halt() {
+        // ecrecover with 1 gas halts; the caller ignores the failure.
+        let mut code = call(STATICCALL, 0x01, &[0x60, 0x01]);
+        code.push(0x00);
+        let mut harness = harness(&[(CONTRACT, &code)]);
+        let result = simulate(&mut harness).unwrap();
+        assert!(result.outcome.success);
+        assert!(succeeds_at(&mut harness, result.gas_limit));
+    }
 }
