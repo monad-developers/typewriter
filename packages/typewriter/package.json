@@ -8,26 +8,22 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "benchmark": "bun run --filter typewriter-evm build && bun test ./test/harness.benchmark.ts",
     "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/sql-pg": "4.0.0-beta.58",
     "abipg": "workspace:*",
     "abitype": "catalog:",
     "drizzle-kit": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
-    "typewriter-evm": "workspace:*",
     "ox": "catalog:",
-    "pg": "8.23.1",
     "storage-layout": "workspace:*",
+    "typewriter-evm": "workspace:*",
     "viem": "catalog:"
   },
   "devDependencies": {
-    "@types/pg": "8.23.1",
-    "prool": "catalog:"
+    "@effect/platform-bun": "4.0.3"
   },
   "peerDependencies": {
     "typescript": "catalog:"

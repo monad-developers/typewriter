@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { TypewriterManifest } from "typewriter";
+import type { TypewriterManifest, TypewriterMutationResult } from "typewriter";
 import {
   authorizeMutation,
+  BUILTIN_MUTATIONS,
   deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
@@ -25,16 +26,9 @@ import { saveStoredAccount } from "./lib/account-store";
 import { type RequestParams, request } from "./lib/api";
 
 type AccountInfo = { balance: bigint };
-type TxStatus =
-  | "received"
-  | "enqueued"
-  | "accepted"
-  | "included"
-  | "safe"
-  | "finalized"
-  | "rejected";
+type TxStatus = "accepted" | "included" | "finalized";
 type Tx = {
-  id: number;
+  executionIndex: bigint;
   status: TxStatus;
   amount: bigint;
   to: Hex;
@@ -63,26 +57,7 @@ const TOKEN_MUTATIONS = {
     id: 1,
     params: [{ name: "amount", type: "uint256" }],
   },
-  CreateAccount: {
-    id: 253,
-    params: [
-      { name: "keyType", type: "uint8" },
-      { name: "publicKey", type: "bytes" },
-    ],
-  },
-  AddCredential: {
-    id: 254,
-    params: [
-      { name: "expiration", type: "uint40" },
-      { name: "keyType", type: "uint8" },
-      { name: "permissions", type: "uint256" },
-      { name: "publicKey", type: "bytes" },
-    ],
-  },
-  RemoveCredential: {
-    id: 255,
-    params: [{ name: "credentialID", type: "uint64" }],
-  },
+  ...BUILTIN_MUTATIONS,
 } as const;
 
 export type TokenManifest = TypewriterManifest<typeof TOKEN_MUTATIONS>;
@@ -185,14 +160,16 @@ export function App() {
     });
   }, [recipients]);
 
-  function watchStatus(id: number) {
-    const events = new EventSource(`/api/mutation/${id}/status`);
+  function watchStatus(executionIndex: bigint) {
+    const events = new EventSource(`/api/mutation/${executionIndex}/status`);
     events.onmessage = (event) => {
       const { status } = JSON.parse(event.data) as { status: TxStatus };
       setTxs((previous) =>
-        previous.map((tx) => (tx.id === id ? { ...tx, status } : tx)),
+        previous.map((tx) =>
+          tx.executionIndex === executionIndex ? { ...tx, status } : tx,
+        ),
       );
-      if (status === "finalized" || status === "rejected") events.close();
+      if (status === "finalized") events.close();
     };
     events.onerror = () => events.close();
   }
@@ -225,7 +202,10 @@ export function App() {
         getAuthorizationPayload(manifest, createMutation),
       );
       const create = authorizeMutation(createMutation, createSignature);
-      await request<{ id: number }>("/api", { method: "POST", body: create });
+      await request<TypewriterMutationResult>("/api", {
+        method: "POST",
+        body: create,
+      });
       const stored = { accountId, keyPair };
       await saveStoredAccount(storageKey, stored);
 
@@ -243,13 +223,13 @@ export function App() {
       );
       const mint = authorizeMutation(mintMutation, mintSignature);
       const startedAt = performance.now();
-      const result = await loggedRequest<{ id: number }>("/api", {
+      const result = await loggedRequest<TypewriterMutationResult>("/api", {
         method: "POST",
         body: mint,
       });
       return {
         account: toAccount(stored),
-        mutationId: result.id,
+        executionIndex: result.executionIndex,
         submissionLatency: performance.now() - startedAt,
       };
     },
@@ -262,7 +242,7 @@ export function App() {
       });
       setTxs((previous) => [
         {
-          id: result.mutationId,
+          executionIndex: result.executionIndex,
           status: "accepted",
           amount: 1_000n,
           to: result.account.accountId,
@@ -271,7 +251,7 @@ export function App() {
         },
         ...previous,
       ]);
-      watchStatus(result.mutationId);
+      watchStatus(result.executionIndex);
     },
     onError: (cause) =>
       setError(cause instanceof Error ? cause.message : String(cause)),
@@ -297,12 +277,12 @@ export function App() {
       );
       const transfer = authorizeMutation(transferMutation, transferSignature);
       const startedAt = performance.now();
-      const result = await loggedRequest<{ id: number }>("/api", {
+      const result = await loggedRequest<TypewriterMutationResult>("/api", {
         method: "POST",
         body: transfer,
       });
       return {
-        id: result.id,
+        executionIndex: result.executionIndex,
         amount: amountUnits,
         to,
         account: { ...account, nonce: incrementNonce(account.nonce) },
@@ -315,7 +295,7 @@ export function App() {
       queryClient.setQueryData(["storedAccount", storageKey], result.account);
       setTxs((previous) => [
         {
-          id: result.id,
+          executionIndex: result.executionIndex,
           status: "accepted",
           amount: result.amount,
           to: result.to,
@@ -328,7 +308,7 @@ export function App() {
         queryKey: ["account", account.accountId],
       });
       await queryClient.invalidateQueries({ queryKey: ["accountIDs"] });
-      watchStatus(result.id);
+      watchStatus(result.executionIndex);
     },
     onError: (cause) =>
       setError(cause instanceof Error ? cause.message : String(cause)),
@@ -470,7 +450,10 @@ export function App() {
               </thead>
               <tbody>
                 {txs.map((tx) => (
-                  <tr key={tx.id} className="border-b last:border-0">
+                  <tr
+                    key={tx.executionIndex.toString()}
+                    className="border-b last:border-0"
+                  >
                     <td className="py-2 pr-6">
                       <code>{tx.status}</code>
                     </td>

@@ -34,10 +34,14 @@ const typewriter = await createTypewriter(Token, {
   sequencing: { order: "fifo" },
 });
 
-const mutations = new Map<number, MutationEvent>();
+// Keyed by execution index, which mutations get once accepted. Accepted
+// mutations are never rejected, so the status stream ends at "finalized".
+const mutations = new Map<bigint, MutationEvent>();
 
 typewriter.on("mutation", (mutation) => {
-  mutations.set(mutation.id, mutation);
+  if ("executionIndex" in mutation) {
+    mutations.set(mutation.executionIndex, mutation);
+  }
 });
 
 function sse(value: unknown): string {
@@ -65,23 +69,23 @@ const server = Bun.serve({
         balance: typewriter.state.balances[accountID],
       });
     },
-    "/api/mutation/:id/status": {
+    "/api/mutation/:executionIndex/status": {
       GET: (req) => {
-        const id = Number(req.params.id);
-        if (!Number.isInteger(id)) {
+        if (!/^\d+$/.test(req.params.executionIndex)) {
           return new Response("Bad Request", { status: 400 });
         }
+        const executionIndex = BigInt(req.params.executionIndex);
 
         const stream = new ReadableStream({
           async start(controller) {
             let last: MutationStatus | undefined;
             while (true) {
-              const mutation = mutations.get(id);
+              const mutation = mutations.get(executionIndex);
               if (mutation !== undefined && mutation.status !== last) {
                 last = mutation.status;
                 controller.enqueue(sse({ status: mutation.status }));
               }
-              if (last === "finalized" || last === "rejected") break;
+              if (last === "finalized") break;
               await new Promise((resolve) => setTimeout(resolve, 25));
             }
             controller.close();

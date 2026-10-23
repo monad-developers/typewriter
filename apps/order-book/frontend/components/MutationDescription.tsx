@@ -185,5 +185,5 @@ export function MutationDescription({ mutation }: { mutation: ApiMutation }) {
     );
   }
 
-  return <>mutation #{mutation.id}</>;
+  return <>mutation #{mutation.execution_index.toString()}</>;
 }

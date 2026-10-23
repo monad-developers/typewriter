@@ -1,33 +1,90 @@
-import { Deferred, Effect, Layer, Scope } from "effect";
-import type { StorageView } from "storage-layout";
-import { getAbiItem, toEventSelector } from "viem";
+import {
+  Data,
+  Deferred,
+  Duration,
+  Effect,
+  Queue,
+  Result,
+  Schedule,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
+import { Hash, Hex } from "ox";
+import {
+  createStorageView,
+  type StorageLayout,
+  type StorageView,
+} from "storage-layout";
+import {
+  createEVM,
+  type EVM,
+  type EvmError,
+  type ExecuteResult,
+} from "typewriter-evm";
+import {
+  type Abi,
+  ContractFunctionRevertedError,
+  decodeEventLog,
+  formatTransactionReceipt,
+  getAbiItem,
+  parseTransaction,
+  RawContractError,
+  toEventSelector,
+} from "viem";
 import type {
   MutationsConfig,
   SequencingConfig,
   StorageConfig,
+  TypewriterApp,
   TypewriterManifest,
 } from "./config";
-import { DatabaseConfig, layerDatabase } from "./db";
-import { scopedDeploymentLock } from "./deployment-lock";
-import type { TYPEWRITER_ABI } from "./encoding";
-import type { InternalApp } from "./internal";
-import { loggerLayer } from "./logger";
-import { deploymentLockKey, migrate } from "./migrate";
-import { layerRpc, RpcConfig } from "./rpc";
-import { requestExecutionIndex } from "./rpc-request";
-import { createRuntimeEffect } from "./runtime";
-import type { TypewriterSchema } from "./schema";
+import { Database, type Db } from "./db";
+import { deploymentLockKey, migrate } from "./db-migrate";
+import {
+  insertKeccakPreimages,
+  insertMutations,
+  insertStorageSlots,
+  selectKeccakPreimages,
+  selectStorageSlots,
+  updateMutationInclusion,
+} from "./db-query";
+import type { TypewriterMutationSchema } from "./db-schema";
+import {
+  decodeAuthorizationCalldata,
+  decodeMutationCalldata,
+  encodeBatchArg,
+  encodeEnqueueCalldata,
+  encodeExecuteCalldata,
+} from "./encoding";
+import { durationMs, loggerLayer, startTimer } from "./logger";
+import { Rpc } from "./rpc";
+import { requestBlock, requestExecutionIndex } from "./rpc-request";
+import { TYPEWRITER_ABI } from "./typewriter-constants";
 import type {
+  AcceptedMutation,
   Authorization,
+  BatchEvent,
   BatchListener,
+  BlockEvent,
   BlockListener,
+  EnqueuedMutation,
+  IncludedMutation,
+  Inclusion,
+  MutationEvent,
   MutationListener,
+  On,
+  ReceivedMutation,
+  RejectedMutation,
+  RuntimeBatch,
+  RuntimeBlock,
+  RuntimeMutation,
   TypewriterMutationInput,
   TypewriterMutationResult,
-} from "./types";
-import { layerWatchLive } from "./watch";
+} from "./typewriter-types";
+import { type LocalLog, makeWatch } from "./watch";
 
-type StorageRootProperty<
+export type StorageRootProperty<
   storageConfig extends StorageConfig,
   name extends "accounts" | "state",
 > =
@@ -37,165 +94,1208 @@ type StorageRootProperty<
       : never
     : never;
 
-type RuntimeListeners<
-  mutationsConfig extends MutationsConfig,
-  sequencingConfig extends SequencingConfig,
-> = sequencingConfig extends "fifo"
-  ? {
-      on(
-        event: "mutation",
-        cb: MutationListener<mutationsConfig>,
-      ): Effect.Effect<() => void>;
-      on(
-        event: "block",
-        cb: BlockListener<sequencingConfig, mutationsConfig>,
-      ): Effect.Effect<() => void>;
-    }
-  : {
-      on(
-        event: "mutation",
-        cb: MutationListener<mutationsConfig>,
-      ): Effect.Effect<() => void>;
-      on(
-        event: "batch",
-        cb: BatchListener<mutationsConfig>,
-      ): Effect.Effect<() => void>;
-      on(
-        event: "block",
-        cb: BlockListener<sequencingConfig, mutationsConfig>,
-      ): Effect.Effect<() => void>;
-    };
-
-export type RuntimeTypewriter<
+export type TypewriterEffect<
   storageConfig extends StorageConfig = StorageConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
-  readonly state: StorageRootProperty<storageConfig, "state">;
-  readonly accounts: StorageRootProperty<storageConfig, "accounts">;
-  readonly schema: TypewriterSchema<mutationsConfig>;
-  readonly manifest: TypewriterManifest<mutationsConfig>;
-  execute: (
-    submitted: TypewriterMutationInput<mutationsConfig>,
+  state: StorageRootProperty<storageConfig, "state">;
+  accounts: StorageRootProperty<storageConfig, "accounts">;
+  schema: TypewriterMutationSchema<mutationsConfig>;
+  manifest: TypewriterManifest<mutationsConfig>;
+  execute: <const name extends keyof mutationsConfig & string>(
+    submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Effect.Effect<TypewriterMutationResult, unknown>;
-  program: Effect.Effect<unknown, unknown>;
-} & RuntimeListeners<mutationsConfig, sequencingConfig>;
+  on: On<sequencingConfig, mutationsConfig, Effect.Effect<() => void>>;
+  /**
+   * Accepts, submits and watches for blocks. It fails when the typewriter
+   * can't continue, for example when it loses the deployment lock. Run it for
+   * as long as the typewriter is in use.
+   */
+  program: Effect.Effect<never, unknown>;
+};
 
-export type InternalRuntimeTypewriter<
-  sequencingConfig extends SequencingConfig = SequencingConfig,
-> = {
-  readonly state: StorageView<StorageConfig, false>[string];
-  readonly accounts: StorageView<StorageConfig, false>[string];
-  readonly schema: TypewriterSchema;
-  execute(submitted: {
-    name: string;
-    params: unknown;
-    authorization: Authorization;
-  }): Effect.Effect<TypewriterMutationResult, unknown>;
-  program: Effect.Effect<unknown, unknown>;
-} & RuntimeListeners<MutationsConfig, sequencingConfig>;
+// TODO(kyle) choose a timeout. It bounds how long startup waits for another
+// process to release the deployment.
+const DEPLOYMENT_LOCK_TIMEOUT_MS = 10_000;
 
-export type { BatchListener, BlockListener, MutationListener } from "./types";
+const SUBMIT_RETRY_TIMES = 5;
+
+type RuntimeExecuteInput = {
+  name: string;
+  params: unknown;
+  authorization: Authorization;
+};
+
+function resolveMutationConfig(app: TypewriterApp, name: string) {
+  const config = app.mutations[name];
+  return config === undefined ? undefined : { name, config };
+}
+
+export function updateMutationToAccepted(
+  mutation: ReceivedMutation | EnqueuedMutation,
+  params: {
+    executionIndex: bigint;
+    journalId: number;
+  },
+): AcceptedMutation {
+  const acceptedMutation = mutation as unknown as AcceptedMutation;
+  // `mutation` is the same object, so read its status before setting it.
+  acceptedMutation.isForceInclusion = mutation.status === "enqueued";
+  acceptedMutation.status = "accepted";
+  acceptedMutation.executionIndex = params.executionIndex;
+  acceptedMutation.journalId = params.journalId;
+  return acceptedMutation;
+}
+
+export function updateMutationToRejected(
+  mutation: ReceivedMutation | EnqueuedMutation,
+  params: { error: unknown },
+): RejectedMutation {
+  const rejectedMutation = mutation as unknown as RejectedMutation;
+  // `mutation` is the same object, so read its status before setting it.
+  rejectedMutation.isForceInclusion = mutation.status === "enqueued";
+  rejectedMutation.status = "rejected";
+  rejectedMutation.error = params.error;
+  return rejectedMutation;
+}
+
+export function updateMutationToIncluded(
+  mutation: AcceptedMutation,
+  inclusion: Inclusion,
+): IncludedMutation {
+  const includedMutation = Object.assign(
+    mutation,
+    inclusion,
+  ) as unknown as IncludedMutation;
+  includedMutation.status = "included";
+  return includedMutation;
+}
+
+export function updateMutationToFinalized(
+  mutation: IncludedMutation,
+): IncludedMutation {
+  mutation.status = "finalized";
+  return mutation;
+}
+
+export function mutationToEvent(mutation: RuntimeMutation): MutationEvent {
+  const {
+    config: _config,
+    journalId: _journalId,
+    ...event
+  } = mutation as RuntimeMutation & { journalId?: number };
+  return event as MutationEvent;
+}
+
+export function batchToEvent(batch: RuntimeBatch): BatchEvent {
+  return {
+    ...batch,
+    mutations: batch.mutations.map(mutationToEvent),
+  } as BatchEvent;
+}
+
+export function fifoBlockToEvent(
+  block: RuntimeBlock<"fifo">,
+): BlockEvent<"fifo"> {
+  const { mutations, ...rest } = block;
+  return {
+    ...rest,
+    mutations: mutations.map(mutationToEvent),
+  } as BlockEvent<"fifo">;
+}
+
+export function batchBlockToEvent(
+  block: RuntimeBlock<"batch">,
+): BlockEvent<"batch"> {
+  return {
+    status: block.status,
+    number: block.number,
+    hash: block.hash,
+    timestamp: block.timestamp,
+    transactionHash: block.transactionHash,
+    batches: block.batches.map(batchToEvent),
+    forceIncludedMutations: block.forceIncludedMutations.map(mutationToEvent),
+  } as BlockEvent<"batch">;
+}
+
+/**
+ * The 64-byte keccak256 preimages of an execution: the inputs that hash a
+ * mapping key with its slot. Shorter preimages give dynamic array data slots,
+ * which enumeration does not need. The EVM writes them as lowercase hex.
+ */
+function mappingPreimages(executeResult: ExecuteResult): readonly Hex.Hex[] {
+  return executeResult.keccak_preimages
+    .map(({ preimage }) => preimage)
+    .filter((preimage) => Hex.size(preimage) === 64);
+}
+
+export class EncodeMutationError extends Data.TaggedError(
+  "EncodeMutationError",
+)<{
+  readonly mutation: ReceivedMutation | EnqueuedMutation;
+  readonly cause: unknown;
+}> {}
+
+export function executeMutation(params: {
+  app: TypewriterApp;
+  evm: EVM;
+  mutation: ReceivedMutation | EnqueuedMutation;
+  /** The index the mutation takes if it executes. */
+  executionIndex: bigint;
+}): Effect.Effect<
+  {
+    mutation: AcceptedMutation;
+    executeResult: ExecuteResult;
+  },
+  EncodeMutationError | EvmError | ContractFunctionRevertedError
+> {
+  return Effect.gen(function* () {
+    // TODO: Validate the fixed Authorization against the mirrored account
+    // state before entering revm, then retain contract execution as the final
+    // authority. The static wire shape makes this a future fast-rejection path.
+    const mutationCalldata = yield* Effect.try({
+      try: () =>
+        params.mutation.status === "enqueued"
+          ? encodeExecuteCalldata([], [params.mutation.queueIndex])
+          : encodeExecuteCalldata([encodeBatchArg([params.mutation])], []),
+      catch: (cause) =>
+        new EncodeMutationError({ mutation: params.mutation, cause }),
+    });
+
+    const executeStartedAtMs = startTimer();
+    const executeResult = yield* params.evm.execute({
+      from: params.app.account.address,
+      to: params.app.address,
+      data: mutationCalldata,
+    });
+
+    if (executeResult.success === false) {
+      return yield* Effect.fail(
+        createRevmRevertError(params.app.abi, executeResult.revert_data),
+      );
+    }
+
+    const acceptedMutation = updateMutationToAccepted(params.mutation, {
+      executionIndex: params.executionIndex,
+      journalId: executeResult.journal_id!,
+    });
+
+    yield* Effect.logDebug("executed mutation").pipe(
+      Effect.annotateLogs({
+        executionIndex: acceptedMutation.executionIndex,
+        name: acceptedMutation.name,
+        success: executeResult.success,
+        slotWriteCount: executeResult.slot_writes.length,
+        duration: durationMs(executeStartedAtMs),
+      }),
+    );
+
+    return {
+      mutation: acceptedMutation,
+      executeResult,
+    };
+  });
+}
+
+export function enqueueMutation(params: {
+  app: TypewriterApp;
+  evm: EVM;
+  mutation: EnqueuedMutation;
+}): Effect.Effect<ExecuteResult, EvmError> {
+  return Effect.gen(function* () {
+    const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
+
+    return yield* params.evm.execute({
+      from: "0x0000000000000000000000000000000000000000",
+      to: params.app.address,
+      data: enqueueCalldata,
+    });
+  });
+}
+
+const SLOT_CACHE_MAX_ENTRIES = 200_000;
+
+export function decodeEnqueuedMutation(params: {
+  app: TypewriterApp;
+  log: LocalLog;
+}): EnqueuedMutation {
+  const forceInclusionLog = decodeEventLog({
+    abi: TYPEWRITER_ABI,
+    eventName: "ForceInclusionQueued",
+    // @ts-expect-error viem's decoded log topic tuple type is narrower than LocalLog's runtime topics.
+    topics: params.log.topics,
+    data: params.log.data,
+    strict: true,
+  }).args;
+
+  const mutationEntry = Object.entries(params.app.mutations).find(
+    ([_, mutationConfig]) => mutationConfig.id === forceInclusionLog.mutation,
+  );
+  if (mutationEntry === undefined) {
+    throw new Error(
+      `unknown mutation tag in ForceInclusionQueued event: ${forceInclusionLog.mutation}`,
+    );
+  }
+  const [mutationName, mutationConfig] = mutationEntry;
+
+  return {
+    status: "enqueued",
+    name: mutationName,
+    config: mutationConfig,
+    authorization: decodeAuthorizationCalldata(
+      forceInclusionLog.authorizationData,
+    ),
+    isForceInclusion: true,
+    queueIndex: forceInclusionLog.index,
+    ...decodeMutationCalldata(mutationConfig, forceInclusionLog.mutationData),
+  };
+}
+
+export function createRevmRevertError(
+  abi: Abi,
+  data: Hex.Hex | undefined,
+  message = "revm execute reverted",
+): ContractFunctionRevertedError {
+  return new ContractFunctionRevertedError({
+    abi,
+    data,
+    functionName: "execute",
+    message,
+    cause: new RawContractError({ data, message }),
+  });
+}
+
+function createRuntimeState(
+  app: TypewriterApp,
+  db: Db,
+  code: Hex.Hex,
+): Effect.Effect<
+  {
+    evm: EVM;
+    accounts: StorageView<StorageLayout, false>[string];
+    state: StorageView<StorageLayout, false>[string];
+    /**
+     * The keccak256 preimages the storage view enumerates mapping keys from.
+     * Add the preimages of each accepted mutation.
+     */
+    preimages: Set<Hex.Hex>;
+    invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
+  },
+  unknown,
+  Scope.Scope
+> {
+  return Effect.gen(function* () {
+    const { initialAccountStorage, preimages } = yield* db.transaction((tx) =>
+      Effect.gen(function* () {
+        const preimages = yield* selectKeccakPreimages(
+          tx,
+          app.typewriterSchema,
+        );
+        const initialAccountStorage = yield* selectStorageSlots(
+          tx,
+          app.typewriterSchema,
+        );
+
+        return {
+          preimages: new Set(preimages),
+          initialAccountStorage,
+        };
+      }),
+    );
+
+    const evm = yield* createEVM();
+
+    if (code === "0x") {
+      yield* Effect.logWarning(
+        `no contract code at app.address=${app.address}; ` +
+          "revm code load skipped - runtime will continue but revm has no contract bytecode",
+      );
+      yield* evm.init({
+        chain_id: app.chainId,
+        accounts: {
+          [app.address]: {
+            storage: initialAccountStorage,
+          },
+        },
+      });
+    } else {
+      yield* evm.init({
+        chain_id: app.chainId,
+        accounts: {
+          [app.address]: {
+            code,
+            storage: initialAccountStorage,
+          },
+        },
+      });
+    }
+
+    const slotCache = new Map<Hex.Hex, Hex.Hex>();
+    const invalidateStorageCache = (slots?: readonly Hex.Hex[]) => {
+      if (slots === undefined) {
+        slotCache.clear();
+        return;
+      }
+
+      for (const slot of slots) {
+        slotCache.delete(slot);
+      }
+    };
+
+    const storageProxy = createStorageView(
+      app.storageLayout,
+      (slots) => {
+        const missingSlots = slots.filter((slot) => !slotCache.has(slot));
+        if (missingSlots.length > 0) {
+          const fetched = Effect.runSync(
+            evm.readStorage({ address: app.address, slots: missingSlots }),
+          );
+          for (const [slot, value] of Object.entries(fetched) as [
+            Hex.Hex,
+            Hex.Hex,
+          ][]) {
+            slotCache.set(slot, value);
+          }
+
+          while (slotCache.size > SLOT_CACHE_MAX_ENTRIES) {
+            const oldestSlot = slotCache.keys().next().value;
+            slotCache.delete(oldestSlot!);
+          }
+        }
+
+        return slots.map((slot) => slotCache.get(slot)!);
+      },
+      preimages,
+    );
+
+    return {
+      evm,
+      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
+      accounts: storageProxy["accounts"],
+      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
+      state: storageProxy["state"],
+      preimages,
+      invalidateStorageCache,
+    };
+  });
+}
+
+function batchBlockToFifoBlock(
+  block: RuntimeBlock<"batch">,
+): RuntimeBlock<"fifo"> {
+  const { batches, forceIncludedMutations, ...rest } = block;
+  return {
+    ...rest,
+    mutations: [
+      ...batches.flatMap((batch) => batch.mutations as IncludedMutation[]),
+      ...forceIncludedMutations,
+    ],
+  };
+}
 
 export function createTypewriterEffect<
   const storageConfig extends StorageConfig,
   const mutationsConfig extends MutationsConfig,
   const sequencingConfig extends SequencingConfig,
 >(
-  app: InternalApp,
+  app: TypewriterApp,
 ): Effect.Effect<
-  RuntimeTypewriter<storageConfig, mutationsConfig, sequencingConfig>,
+  TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>,
   unknown,
-  Scope.Scope
+  Database | Rpc | Scope.Scope
 > {
   return Effect.gen(function* () {
     // TODO(kyle) check mutation names against sequencing order if applicable
     // TODO(kyle) validate the fixed Typewriter entrypoints
 
-    const rpcLayer = layerRpc.pipe(
-      Layer.provide(Layer.succeed(RpcConfig)({ rpcUrls: app.rpcUrls })),
+    const db = yield* Database;
+    const rpc = yield* Rpc;
+    const scope = yield* Scope.Scope;
+
+    const lockLost = yield* db.lock(
+      deploymentLockKey(app.chainId, app.address),
+      DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
 
-    const dbLayer = layerDatabase.pipe(
-      Layer.provide(Layer.succeed(DatabaseConfig)(app.database)),
-    );
-
-    const forceInclusionEvent = getAbiItem({
-      abi: app.abi as typeof TYPEWRITER_ABI,
-      name: "ForceInclusionQueued",
+    const code = yield* rpc.request({
+      method: "eth_getCode",
+      params: [app.address, "latest"],
     });
+    let nextExecutionIndex = yield* requestExecutionIndex(app.address);
+    yield* migrate(
+      db,
+      app.schemaName,
+      app.typewriterSchema,
+      app.mutationSchema,
+      {
+        chainId: app.chainId,
+        address: app.address,
+        codeHash: Hash.keccak256(code),
+      },
+      nextExecutionIndex,
+    );
 
-    const logFilter = {
-      address: app.address,
-      selector: toEventSelector(forceInclusionEvent),
-    };
-    const watchLayer = layerWatchLive({
+    const { evm, accounts, state, preimages, invalidateStorageCache } =
+      yield* createRuntimeState(app, db, code);
+
+    const watch = yield* makeWatch({
       pollIntervalMs: app.blockPollingIntervalMs,
       maxChainDepth: app.confirmations.finalizedBlockDepth,
-      logFilter,
-    }).pipe(Layer.provide(rpcLayer));
-    const services = rpcLayer.pipe(
-      Layer.merge(dbLayer),
-      Layer.merge(watchLayer),
-    );
-    const scope = yield* Scope.Scope;
-    const servicesContext = yield* Layer.buildWithScope(services, scope);
-
-    return yield* Effect.gen(function* () {
-      yield* scopedDeploymentLock(deploymentLockKey(app.chainId, app.address));
-      const executionIndex = yield* requestExecutionIndex(app.address);
-      yield* migrate(app.schema, app.chainId, app.address, executionIndex);
-
-      const runtime = yield* createRuntimeEffect(app);
-
-      let fatalError: { readonly error: unknown } | undefined;
-      const fatalSignal = yield* Deferred.make<never, unknown>();
-
-      yield* runtime.program.pipe(
-        Effect.tapError((error) =>
-          Effect.gen(function* () {
-            fatalError = { error };
-            yield* Deferred.fail(fatalSignal, error);
-            yield* Effect.sync(() => {
-              if (app.onFatalError !== undefined) {
-                app.onFatalError(error);
-              } else {
-                queueMicrotask(() => {
-                  throw error;
-                });
-              }
-            });
-            yield* Effect.logError(error);
-          }),
+      logFilter: {
+        address: app.address,
+        selector: toEventSelector(
+          getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
         ),
-        Effect.forkScoped,
+      },
+    });
+    let batchId = 0;
+    let batchPosition = 0;
+
+    const batchesById = new Map<number, RuntimeBatch>();
+    const receivedMutationQueue = yield* Queue.unbounded<{
+      mutation: ReceivedMutation;
+      deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+    }>();
+    const enqueuedMutationsQueue = yield* Queue.unbounded<EnqueuedMutation>();
+    const acceptedBatchesQueue = yield* Queue.unbounded<number>();
+    yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
+    yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedMutationsQueue));
+    yield* Scope.addFinalizer(scope, Queue.shutdown(acceptedBatchesQueue));
+
+    const withSpeculativeStateLock = Semaphore.withPermits(
+      Semaphore.makeUnsafe(1),
+      1,
+    );
+    const withSubmitLock = Semaphore.withPermits(Semaphore.makeUnsafe(1), 1);
+
+    const builtInMutationOrder = [
+      "CreateAccount",
+      "AddCredential",
+      "RemoveCredential",
+    ];
+    const batchOrder =
+      app.sequencing.order === "batch"
+        ? [
+            ...builtInMutationOrder,
+            ...app.sequencing.batchOrder.filter(
+              (name) => !builtInMutationOrder.includes(name),
+            ),
+          ]
+        : [];
+    const batchOrderByName = new Map(
+      batchOrder.map((name, position) => [name, position]),
+    );
+
+    let nonce = yield* rpc
+      .request({
+        method: "eth_getTransactionCount",
+        params: [app.account.address, "latest"],
+      })
+      .pipe(Effect.map(Hex.toNumber));
+
+    let unfinalizedBlocks: RuntimeBlock<"batch">[] = [];
+    const mutationListeners = new Set<MutationListener>();
+    const batchListeners = new Set<BatchListener>();
+    const blockListeners = new Set<BlockListener<"fifo" | "batch">>();
+
+    const emitMutation = (event: MutationEvent) => {
+      for (const cb of mutationListeners) {
+        try {
+          cb(event);
+        } catch {}
+      }
+    };
+
+    const emitBatch = (event: BatchEvent) => {
+      if (app.sequencing.order !== "batch") return;
+      for (const cb of batchListeners) {
+        try {
+          cb(event);
+        } catch {}
+      }
+    };
+
+    const emitBlock = (block: RuntimeBlock<"batch">) => {
+      const event =
+        app.sequencing.order === "fifo"
+          ? fifoBlockToEvent(batchBlockToFifoBlock(block))
+          : batchBlockToEvent(block);
+      for (const cb of blockListeners) {
+        try {
+          cb(event as BlockEvent<"fifo" | "batch">);
+        } catch {}
+      }
+    };
+
+    // Executes a mutation against speculative state and updates in-memory
+    // bookkeeping, but performs no database writes. Persistence is batched by
+    // the caller (`acceptBatch`, `submit`, and `watch`) so many mutations share
+    // a single set of insert statements.
+    function acceptMutation(
+      mutation: ReceivedMutation | EnqueuedMutation,
+    ): Effect.Effect<
+      {
+        mutation: AcceptedMutation;
+        executeResult: ExecuteResult;
+        /** Preimages first seen in this mutation, to persist. */
+        preimages: readonly Hex.Hex[];
+      },
+      unknown
+    > {
+      return Effect.gen(function* () {
+        const { executeResult, mutation: acceptedMutation } =
+          yield* executeMutation({
+            app,
+            evm,
+            mutation,
+            executionIndex: nextExecutionIndex,
+          }).pipe(
+            Effect.tapError((error) => {
+              const rejectedMutation = updateMutationToRejected(mutation, {
+                error,
+              });
+
+              emitMutation(mutationToEvent(rejectedMutation));
+
+              return Effect.void;
+            }),
+          );
+
+        nextExecutionIndex++;
+
+        invalidateStorageCache(
+          executeResult.slot_writes.map((write) => write.slot),
+        );
+
+        const newPreimages: Hex.Hex[] = [];
+        for (const preimage of mappingPreimages(executeResult)) {
+          if (preimages.has(preimage)) continue;
+          preimages.add(preimage);
+          newPreimages.push(preimage);
+        }
+
+        emitMutation(mutationToEvent(acceptedMutation));
+
+        return {
+          mutation: acceptedMutation,
+          executeResult,
+          preimages: newPreimages,
+        };
+      });
+    }
+
+    const acceptBatch = (
+      submittedMutations: {
+        mutation: ReceivedMutation;
+        deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+      }[],
+    ) =>
+      withSpeculativeStateLock(
+        Effect.gen(function* () {
+          const batchStartedAtMs = startTimer();
+
+          if (submittedMutations.length === 0) {
+            return;
+          }
+
+          if (batchOrder.length > 0) {
+            submittedMutations.sort(
+              (a, b) =>
+                (batchOrderByName.get(a.mutation.name) ?? batchOrder.length) -
+                (batchOrderByName.get(b.mutation.name) ?? batchOrder.length),
+            );
+          }
+
+          const acceptedMutations: {
+            mutation: AcceptedMutation;
+            executeResult: ExecuteResult;
+            preimages: readonly Hex.Hex[];
+            deferred: Deferred.Deferred<AcceptedMutation, unknown>;
+          }[] = [];
+
+          for (const { mutation, deferred } of submittedMutations) {
+            const result = yield* Effect.result(acceptMutation(mutation));
+            if (Result.isSuccess(result)) {
+              acceptedMutations.push({ ...result.success, deferred });
+            } else {
+              yield* Deferred.fail(deferred, result.failure);
+            }
+          }
+
+          if (acceptedMutations.length === 0) {
+            return;
+          }
+
+          const batch: RuntimeBatch = {
+            status: "accepted",
+            id: batchId++,
+            position: batchPosition++,
+            mutations: acceptedMutations.map(({ mutation }) => mutation),
+          };
+
+          yield* Effect.logDebug("batched mutations").pipe(
+            Effect.annotateLogs({
+              id: batch.id,
+              mutationCount: batch.mutations.length,
+              duration: durationMs(batchStartedAtMs),
+            }),
+          );
+
+          batchesById.set(batch.id, batch);
+
+          emitBatch(batchToEvent(batch));
+
+          const persistStartedAtMs = startTimer();
+          yield* db.transaction((tx) =>
+            Effect.gen(function* () {
+              yield* insertMutations(
+                tx,
+                app.mutationSchema,
+                acceptedMutations.map((entry) => entry.mutation),
+              );
+              yield* insertStorageSlots(
+                tx,
+                app.typewriterSchema,
+                acceptedMutations,
+              );
+              yield* insertKeccakPreimages(
+                tx,
+                app.typewriterSchema,
+                acceptedMutations.flatMap(({ preimages }) => preimages),
+              );
+            }),
+          );
+
+          for (const { mutation, deferred } of acceptedMutations) {
+            yield* Deferred.succeed(deferred, mutation);
+          }
+
+          yield* Effect.logDebug("persisted accepted mutations").pipe(
+            Effect.annotateLogs({
+              mutationCount: acceptedMutations.length,
+              duration: durationMs(persistStartedAtMs),
+            }),
+          );
+
+          yield* Queue.offer(acceptedBatchesQueue, batch.id);
+        }),
       );
 
-      return {
-        ...runtime,
-        execute: (mutation: TypewriterMutationInput<mutationsConfig>) =>
-          fatalError === undefined
-            ? runtime
-                .execute({
-                  name: mutation.name,
-                  params: mutation.params,
-                  authorization: mutation.authorization,
-                })
-                .pipe(Effect.raceFirst(Deferred.await(fatalSignal)))
-            : Effect.fail(fatalError.error),
-        manifest: app.manifest,
-      } as unknown as RuntimeTypewriter<
-        storageConfig,
-        mutationsConfig,
-        sequencingConfig
-      >;
-    }).pipe(Effect.provide(servicesContext));
+    const submit = Effect.gen(function* () {
+      const simulation = yield* withSpeculativeStateLock(
+        Effect.gen(function* () {
+          const batchIds = yield* Queue.clear(acceptedBatchesQueue);
+          const enqueuedMutations = yield* Queue.clear(enqueuedMutationsQueue);
+          if (batchIds.length === 0 && enqueuedMutations.length === 0) {
+            return undefined;
+          }
+
+          const batches = batchIds.map((id) => batchesById.get(id)!);
+
+          const acceptedEnqueuedMutations: {
+            mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
+            executeResult: ExecuteResult;
+            preimages: readonly Hex.Hex[];
+          }[] = [];
+          for (const enqueuedMutation of enqueuedMutations) {
+            const result = yield* Effect.result(
+              acceptMutation(enqueuedMutation),
+            );
+            if (Result.isSuccess(result)) {
+              acceptedEnqueuedMutations.push(
+                result.success as {
+                  mutation: Extract<
+                    AcceptedMutation,
+                    { isForceInclusion: true }
+                  >;
+                  executeResult: ExecuteResult;
+                  preimages: readonly Hex.Hex[];
+                },
+              );
+            } else {
+              // TODO(kyle) how to handle failed enqueue.
+            }
+          }
+
+          const acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
+            ({ mutation }) => mutation,
+          );
+
+          if (acceptedEnqueuedMutations.length > 0) {
+            yield* db.transaction((tx) =>
+              Effect.gen(function* () {
+                yield* insertMutations(
+                  tx,
+                  app.mutationSchema,
+                  acceptedEnqueuedMutations.map((entry) => entry.mutation),
+                );
+                yield* insertStorageSlots(
+                  tx,
+                  app.typewriterSchema,
+                  acceptedEnqueuedMutations,
+                );
+                yield* insertKeccakPreimages(
+                  tx,
+                  app.typewriterSchema,
+                  acceptedEnqueuedMutations.flatMap((entry) => entry.preimages),
+                );
+              }),
+            );
+          }
+
+          const speculativeJournalIds = batches
+            .flatMap((batch) => batch.mutations)
+            .map((mutation) => mutation.journalId)
+            .concat(
+              acceptedForceIncludedMutations.map(
+                (mutation) => mutation.journalId,
+              ),
+            );
+
+          // TODO(kyle) cap a submission at the block gas limit. Every pending
+          // batch and enqueued mutation goes into one transaction, so after a
+          // backlog the node rejects it ("intrinsic gas too high") and the
+          // retries fail the program.
+          const calldata = encodeExecuteCalldata(
+            batches.map((batch) => encodeBatchArg(batch.mutations)),
+            acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
+          );
+
+          const simulationStartedAtMs = startTimer();
+          const simulateResult = yield* evm.simulate({
+            from: app.account.address,
+            to: app.address,
+            data: calldata,
+            journal_ids: speculativeJournalIds,
+          });
+          const duration = durationMs(simulationStartedAtMs);
+          if (simulateResult.success === false) {
+            return yield* Effect.fail(
+              createRevmRevertError(
+                app.abi,
+                simulateResult.revert_data,
+                "revm simulate reverted",
+              ),
+            );
+          }
+
+          yield* Effect.logDebug("simulated transaction submission").pipe(
+            Effect.annotateLogs({
+              nonce,
+              gasLimit: simulateResult.gas_limit,
+              batchCount: batches.length,
+              mutationCount: speculativeJournalIds.length,
+              duration,
+            }),
+          );
+
+          return {
+            batches,
+            acceptedForceIncludedMutations,
+            calldata,
+            simulateResult,
+          };
+        }),
+      );
+
+      if (simulation === undefined) return;
+
+      const {
+        batches,
+        acceptedForceIncludedMutations,
+        calldata,
+        simulateResult,
+      } = simulation;
+
+      const transactionStartedAtMs = startTimer();
+
+      const filled = yield* rpc.request({
+        method: "eth_fillTransaction",
+        params: [
+          {
+            from: app.account.address,
+            to: app.address,
+            data: calldata,
+            gas: Hex.fromNumber(simulateResult.gas_limit),
+            nonce: Hex.fromNumber(nonce),
+            accessList: simulateResult.access_list,
+          },
+        ],
+      });
+
+      // `eth_fillTransaction` returns an already-signed `raw`; strip its
+      // signature fields so the account re-signs over the correct payload.
+      const transaction = parseTransaction(filled.raw);
+      // The RPC backing `eth_fillTransaction` can be out of sync with the one
+      // backing the send, so the nonce it fills may be stale and override our
+      // clamp. Force our locally reconciled nonce onto the transaction so the
+      // broadcast nonce is exactly the value we tracked, independent of fill's
+      // view of the pending pool.
+      delete transaction.r;
+      delete transaction.s;
+      delete transaction.v;
+      delete transaction.yParity;
+      const signed = yield* Effect.tryPromise({
+        try: () => app.account.signTransaction(transaction),
+        catch: (error) => error as Error,
+      });
+      const hash = Hash.keccak256(signed as Hex.Hex);
+
+      let broadcastAttempted = false;
+      const receipt = yield* Effect.gen(function* () {
+        if (broadcastAttempted) {
+          const receipt = yield* rpc.request({
+            method: "eth_getTransactionReceipt",
+            params: [hash],
+          });
+          if (receipt !== null) return receipt;
+        }
+
+        broadcastAttempted = true;
+        return yield* rpc.request({
+          method: "eth_sendRawTransactionSync",
+          params: [signed],
+        });
+      }).pipe(
+        Effect.retry({ times: SUBMIT_RETRY_TIMES }),
+        Effect.map(formatTransactionReceipt),
+      );
+
+      nonce += 1;
+
+      if (receipt.status === "reverted") {
+        return yield* Effect.fail(
+          createRevmRevertError(
+            app.abi,
+            undefined,
+            `settlement transaction reverted onchain: ${receipt.transactionHash}`,
+          ),
+        );
+      }
+      const duration = durationMs(transactionStartedAtMs);
+
+      yield* Effect.logDebug("submitted transaction").pipe(
+        Effect.annotateLogs({
+          transactionHash: receipt.transactionHash,
+          blockHash: receipt.blockHash,
+          blockNumber: receipt.blockNumber,
+          duration,
+        }),
+      );
+
+      const block = yield* requestBlock(receipt.blockHash).pipe(
+        Effect.provideService(Rpc, rpc),
+      );
+
+      const inclusion: Inclusion = {
+        blockNumber: block.number,
+        blockHash: block.hash,
+        blockTimestamp: block.timestamp,
+        transactionHash: receipt.transactionHash,
+        transactionIndex: receipt.transactionIndex,
+      };
+
+      for (const batch of batches) {
+        batch.status = "included";
+        for (const mutation of batch.mutations) {
+          updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
+        }
+      }
+
+      const forceIncludedMutations = acceptedForceIncludedMutations.map(
+        (mutation) => updateMutationToIncluded(mutation, inclusion),
+      );
+
+      const runtimeBlock: RuntimeBlock<"batch"> = {
+        status: "included",
+        number: block.number,
+        hash: block.hash,
+        timestamp: block.timestamp,
+        transactionHash: receipt.transactionHash,
+        batches,
+        forceIncludedMutations,
+      };
+
+      yield* db.transaction((tx) =>
+        updateMutationInclusion(
+          tx,
+          app.mutationSchema,
+          [
+            ...batches.flatMap((batch) => batch.mutations),
+            ...forceIncludedMutations,
+          ],
+          inclusion,
+        ),
+      );
+
+      emitBlock(runtimeBlock);
+      for (const batch of batches) {
+        emitBatch(batchToEvent(batch));
+        for (const mutation of batch.mutations) {
+          emitMutation(mutationToEvent(mutation));
+        }
+      }
+      for (const mutation of forceIncludedMutations) {
+        emitMutation(mutationToEvent(mutation));
+      }
+
+      unfinalizedBlocks.push(runtimeBlock);
+    });
+
+    const watchProgram = Effect.gen(function* () {
+      yield* watch.messages.pipe(
+        Stream.runForEach((message) =>
+          Effect.gen(function* () {
+            if (message._tag === "Reorged") {
+              return;
+            }
+
+            yield* evm.setBlockContext({
+              number: Hex.fromNumber(message.block.number),
+              timestamp: Hex.fromNumber(message.block.timestamp),
+            });
+
+            for (const log of message.block.logs) {
+              // TODO(kyle) check the log's queue index against the length of
+              // the queue in revm. A missed log shifts every later enqueued
+              // mutation, so `execute` runs a different queued mutation than
+              // the one revm accepted, and the settlement reverts onchain.
+              const enqueuedMutation = decodeEnqueuedMutation({ app, log });
+
+              const executeResult = yield* withSpeculativeStateLock(
+                enqueueMutation({ app, evm, mutation: enqueuedMutation }),
+              );
+
+              if (executeResult.success === false) {
+                continue;
+              }
+
+              invalidateStorageCache(
+                executeResult.slot_writes.map((write) => write.slot),
+              );
+
+              yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation);
+            }
+
+            for (const block of unfinalizedBlocks.filter(
+              (block) => block.number < message.block.number,
+            )) {
+              const nextStatus = nextBlockStatus(
+                block,
+                message.block.number,
+                app.confirmations,
+              );
+              if (nextStatus === undefined) continue;
+
+              block.status = nextStatus;
+
+              for (const batch of block.batches) {
+                batch.status = nextStatus;
+                for (const mutation of batch.mutations) {
+                  updateMutationToFinalized(mutation as IncludedMutation);
+                }
+              }
+              for (const mutation of block.forceIncludedMutations) {
+                updateMutationToFinalized(mutation);
+              }
+
+              const submittedMutations = [
+                ...block.batches.flatMap(
+                  (batch) => batch.mutations as IncludedMutation[],
+                ),
+                ...block.forceIncludedMutations,
+              ];
+
+              yield* evm.pruneJournals({
+                journal_ids: submittedMutations.map(
+                  (mutation) => mutation.journalId,
+                ),
+              });
+              for (const batch of block.batches) {
+                batchesById.delete(batch.id);
+              }
+
+              emitBlock(block);
+
+              for (const batch of block.batches) {
+                emitBatch(batchToEvent(batch));
+                for (const mutation of batch.mutations) {
+                  emitMutation(mutationToEvent(mutation));
+                }
+              }
+              for (const mutation of block.forceIncludedMutations) {
+                emitMutation(mutationToEvent(mutation));
+              }
+            }
+            unfinalizedBlocks = unfinalizedBlocks.filter(
+              (block) => block.status !== "finalized",
+            );
+          }),
+        ),
+      );
+    }).pipe(Effect.withLogSpan("watch"));
+
+    const submitIntervalMs = app.sequencing.submitIntervalMs;
+
+    const batchProgram =
+      app.sequencing.order === "batch"
+        ? Effect.sleep(Duration.millis(app.sequencing.batchIntervalMs)).pipe(
+            Effect.andThen(
+              Effect.repeat(
+                Queue.clear(receivedMutationQueue).pipe(
+                  Effect.flatMap(acceptBatch),
+                ),
+                Schedule.fixed(Duration.millis(app.sequencing.batchIntervalMs)),
+              ),
+            ),
+          )
+        : Effect.forever(
+            Queue.takeAll(receivedMutationQueue).pipe(
+              Effect.flatMap(acceptBatch),
+            ),
+          );
+    const submitProgram = Effect.sleep(Duration.millis(submitIntervalMs)).pipe(
+      Effect.andThen(
+        Effect.repeat(
+          withSubmitLock(submit),
+          Schedule.fixed(Duration.millis(submitIntervalMs)),
+        ),
+      ),
+    );
+
+    const program = Effect.all(
+      [batchProgram, submitProgram, watchProgram, watch.program],
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.andThen(Effect.fail(new Error("typewriter program stopped"))),
+      Effect.raceFirst(lockLost),
+      Effect.provide(loggerLayer),
+    );
+
+    function execute(
+      mutation: RuntimeExecuteInput,
+    ): Effect.Effect<TypewriterMutationResult, unknown> {
+      return Effect.gen(function* () {
+        const resolvedMutation = resolveMutationConfig(app, mutation.name);
+        if (resolvedMutation === undefined) {
+          return yield* Effect.fail(
+            new Error(`unknown mutation: ${mutation.name}`),
+          );
+        }
+
+        const runtimeMutation = {
+          name: resolvedMutation.name,
+          params: mutation.params,
+          authorization: mutation.authorization,
+          status: "received",
+          config: resolvedMutation.config,
+        } as const satisfies ReceivedMutation;
+
+        yield* Effect.logDebug("received mutation").pipe(
+          Effect.annotateLogs({
+            name: runtimeMutation.name,
+            params: runtimeMutation.params,
+          }),
+        );
+
+        emitMutation(mutationToEvent(runtimeMutation));
+
+        const deferred = yield* Deferred.make<AcceptedMutation, unknown>();
+        const acceptStartedAtMs = startTimer();
+
+        yield* Queue.offer(receivedMutationQueue, {
+          mutation: runtimeMutation,
+          deferred,
+        });
+
+        const acceptedMutation = yield* Deferred.await(deferred).pipe(
+          Effect.tapError((error) =>
+            Effect.logError(error).pipe(
+              Effect.annotateLogs({
+                message: "rejected mutation",
+                name: runtimeMutation.name,
+                params: runtimeMutation.params,
+              }),
+            ),
+          ),
+        );
+
+        yield* Effect.logDebug("accepted mutation").pipe(
+          Effect.annotateLogs({
+            executionIndex: acceptedMutation.executionIndex,
+            name: runtimeMutation.name,
+            params: runtimeMutation.params,
+            duration: durationMs(acceptStartedAtMs),
+          }),
+        );
+
+        return { executionIndex: acceptedMutation.executionIndex };
+      }).pipe(Effect.provide(loggerLayer));
+    }
+
+    function on(
+      event: "mutation",
+      cb: MutationListener,
+    ): Effect.Effect<() => void>;
+    function on(event: "batch", cb: BatchListener): Effect.Effect<() => void>;
+    function on(
+      event: "block",
+      cb: BlockListener<"fifo" | "batch">,
+    ): Effect.Effect<() => void>;
+    function on(
+      event: "mutation" | "batch" | "block",
+      cb: MutationListener | BatchListener | BlockListener<"fifo" | "batch">,
+    ): Effect.Effect<() => void> {
+      return Effect.sync(() => {
+        if (event === "mutation") {
+          const listener = cb as MutationListener;
+          mutationListeners.add(listener);
+          return () => mutationListeners.delete(listener);
+        }
+        if (event === "batch") {
+          const listener = cb as BatchListener;
+          batchListeners.add(listener);
+          return () => batchListeners.delete(listener);
+        }
+
+        const listener = cb as BlockListener<"fifo" | "batch">;
+        blockListeners.add(listener);
+        return () => blockListeners.delete(listener);
+      });
+    }
+
+    return {
+      accounts,
+      state,
+      schema: app.mutationSchema,
+      manifest: app.manifest,
+      execute,
+      on,
+      program,
+    } as unknown as TypewriterEffect<
+      storageConfig,
+      mutationsConfig,
+      sequencingConfig
+    >;
   }).pipe(
     Effect.tapError((error) => Effect.logError(error)),
     Effect.provide(loggerLayer),
-  ) as Effect.Effect<
-    RuntimeTypewriter<storageConfig, mutationsConfig, sequencingConfig>,
-    unknown,
-    Scope.Scope
-  >;
+  );
+}
+
+export function nextBlockStatus(
+  block: Pick<RuntimeBlock<"fifo" | "batch">, "number" | "status">,
+  currentBlockNumber: bigint,
+  confirmations: TypewriterApp["confirmations"],
+): "finalized" | undefined {
+  const blockDepth = currentBlockNumber - block.number;
+  if (
+    blockDepth >= BigInt(confirmations.finalizedBlockDepth) &&
+    block.status !== "finalized"
+  ) {
+    return "finalized";
+  }
+
+  return undefined;
 }

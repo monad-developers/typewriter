@@ -15,7 +15,8 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
-    "drizzle-kit": "catalog:"
+    "drizzle-kit": "catalog:",
+    "ox": "catalog:"
   },
   "peerDependencies": {
     "typescript": "catalog:"

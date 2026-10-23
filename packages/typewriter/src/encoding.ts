@@ -1,92 +1,30 @@
 import { AbiFunction, AbiParameters, type Hex } from "ox";
-import type { Abi } from "viem";
-import type { Authorization, ExecutableMutation } from "./types";
+import {
+  AUTHORIZATION_ABI_PARAMS,
+  TYPEWRITER_ABI,
+} from "./typewriter-constants";
+import type { Authorization, RuntimeMutation } from "./typewriter-types";
 
-export const AUTHORIZATION_ABI_PARAMS = [
-  { name: "accountID", type: "bytes32" },
-  { name: "credentialID", type: "uint64" },
-  { name: "nonce", type: "uint256" },
-  { name: "expiration", type: "uint256" },
-  { name: "signature", type: "bytes" },
-] as const satisfies readonly AbiParameters.Parameter[];
+/** The parts of a mutation that its calldata encodes. */
+type EncodableMutation = Pick<
+  RuntimeMutation,
+  "config" | "params" | "authorization"
+>;
 
-export const TYPEWRITER_ABI = [
-  {
-    type: "function",
-    name: "execute",
-    inputs: [
-      {
-        name: "batches",
-        type: "tuple[]",
-        components: [
-          { name: "mutations", type: "uint8[]" },
-          { name: "mutationData", type: "bytes[]" },
-          { name: "authorizationData", type: "bytes[]" },
-        ],
-      },
-      { name: "forceExecuteIndexes", type: "uint256[]" },
-    ],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "enqueue",
-    inputs: [
-      { name: "mutation", type: "uint8" },
-      { name: "mutationData", type: "bytes" },
-      { name: "authorizationData", type: "bytes" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "forceExecute",
-    inputs: [{ name: "index", type: "uint256" }],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "executionIndex",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-  },
-  {
-    type: "event",
-    name: "ForceInclusionQueued",
-    inputs: [
-      { name: "index", type: "uint256", indexed: false },
-      { name: "mutation", type: "uint8", indexed: false },
-      { name: "mutationData", type: "bytes", indexed: false },
-      { name: "authorizationData", type: "bytes", indexed: false },
-      { name: "enqueuedBlock", type: "uint256", indexed: false },
-    ],
-    anonymous: false,
-  },
-] as const satisfies Abi;
-
-export type TypewriterAbi = typeof TYPEWRITER_ABI;
-
-// Resolved once: looking up the ABI item and hashing its selector on each
-// call costs more than the encoding itself.
 const EXECUTE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
 const ENQUEUE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "enqueue");
 
-// Contract calldata and EIP-712 mutationData encode params as one top-level
-// Solidity struct whose components are `mutation.params`.
-function calldataStructParams(
-  params: readonly AbiParameters.Parameter[],
-): readonly AbiParameters.Parameter[] {
-  return [{ type: "tuple", components: params as AbiParameters.Parameter[] }];
+function calldataStructParams<
+  const params extends readonly AbiParameters.Parameter[],
+>(params: params) {
+  return [{ type: "tuple", components: params }] as const;
 }
 
-export function encodeMutationCalldata(mutation: ExecutableMutation): Hex.Hex {
+export function encodeMutationCalldata(mutation: EncodableMutation): Hex.Hex {
+  // `config.params` is only known at runtime, so its value type is too.
   return AbiParameters.encode(calldataStructParams(mutation.config.params), [
     mutation.params,
-  ]);
+  ] as never);
 }
 
 export function decodeMutationCalldata(
@@ -106,8 +44,9 @@ export function decodeMutationCalldata(
 export function encodeAuthorizationCalldata(
   authorization: Authorization,
 ): Hex.Hex {
+  // ox types `uint40` as a number.
   return AbiParameters.encode(calldataStructParams(AUTHORIZATION_ABI_PARAMS), [
-    authorization,
+    { ...authorization, expiration: Number(authorization.expiration) },
   ]);
 }
 
@@ -117,11 +56,10 @@ export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
     calldata,
     { checksumAddress: false },
   );
-  return authorization as Authorization;
+  // ox decodes `uint40` as a number.
+  return { ...authorization, expiration: BigInt(authorization.expiration) };
 }
 
-// Encode `execute(Batch[], uint256[])` calldata from structured batch values
-// and an optional list of force-inclusion queue indexes.
 export function encodeExecuteCalldata(
   batches: readonly {
     mutations: readonly number[];
@@ -136,7 +74,7 @@ export function encodeExecuteCalldata(
   ]);
 }
 
-export function encodeEnqueueCalldata(mutation: ExecutableMutation): Hex.Hex {
+export function encodeEnqueueCalldata(mutation: EncodableMutation): Hex.Hex {
   return AbiFunction.encodeData(ENQUEUE_FUNCTION, [
     mutation.config.id,
     encodeMutationCalldata(mutation),
@@ -144,8 +82,7 @@ export function encodeEnqueueCalldata(mutation: ExecutableMutation): Hex.Hex {
   ]);
 }
 
-// Build a structured Batch value from executable mutations.
-export function encodeBatchArg(mutations: ExecutableMutation[]): {
+export function encodeBatchArg(mutations: readonly EncodableMutation[]): {
   mutations: readonly number[];
   mutationData: readonly Hex.Hex[];
   authorizationData: readonly Hex.Hex[];

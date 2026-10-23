@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "bun --hot src/index.ts",
     "start": "NODE_ENV=production bun src/index.ts",
-    "test": "bun test --timeout 60000",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "contracts:build": "forge build --root contracts --force",
@@ -27,7 +26,6 @@
     "@types/react-dom": "catalog:",
     "bun-plugin-tailwind": "0.1.2",
     "forge-std": "github:foundry-rs/forge-std#620536f",
-    "prool": "catalog:",
     "tailwindcss": "4.3.3",
     "tw-animate-css": "1.4.0"
   }

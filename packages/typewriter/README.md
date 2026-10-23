@@ -66,12 +66,11 @@ The lifecycle of a mutation is as follows:
 - **received**. The server has received the mutation.
 - **accepted**. The server has ordered and executed the mutation locally.
 - **included**. The server submitted the mutation onchain and it has been included in a block.
-- **safe**. The block that contains the mutation has been marked "safe" by consensus. (See JSON-RPC "safe" tag).
-- **finalized**. The block that contains the mutation has been marked "finalized" by consensus. (See JSON-RPC "finalized" tag).
+- **finalized**. The block that contains the mutation is `confirmations.finalizedBlockDepth` blocks deep.
 
 `createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
+`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, and `sequencing`.
 
 ```ts
 import { createTypewriter } from "typewriter";
@@ -85,7 +84,6 @@ const typewriter = await createTypewriter(Token, {
   rpcUrl,
   database: { url: databaseUrl },
   confirmations: {
-    safeBlockDepth: 1,
     finalizedBlockDepth: 5,
   },
   blockPollingIntervalMs: 200,
@@ -170,9 +168,9 @@ A mutation can be included in a block and later removed by a [chain reorganizati
 
 Reorgs are detected on the server by requesting new blocks with JSON-RPC requests and reconciling them into the local view of the chain. The specific algorithm used to detect reorgs is inspired by [Ponder](https://github.com/ponder-sh/ponder), where it has been used in production for millions of hours, cumulatively.
 
-When a reorg is detected, mutations may move backwards in the mutation lifecycle (submitted => accepted => included => safe => finalized). They are re-processed against the new canonical chain and re-emitted with their updated lifecycle status.
+When a reorg is detected, mutations may move backwards in the mutation lifecycle (accepted => included => finalized). They are re-processed against the new canonical chain and re-emitted with their updated lifecycle status.
 
-> Coming soon: As a protection against exposing user-facing data that may be reorged, apps can choose to use later lifecycle stages, such as `"included"`, `"safe"`, or `"finalized"`, to serve read requests.
+> Coming soon: As a protection against exposing user-facing data that may be reorged, apps can choose to use later lifecycle stages, such as `"included"` or `"finalized"`, to serve read requests.
 
 ### Force inclusion
 
@@ -504,7 +502,7 @@ Starts the runtime and resolves to the `Typewriter` handle (see the [Server runt
 - `rpcUrl` — `string | string[]`.
 - `database` — `{ url, maxConnections? }` (Postgres).
 
-Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ safeBlockDepth?, finalizedBlockDepth? }`, defaults `1` / `5`), `onFatalError` (`(error) => void`; without it a fatal runtime error is rethrown), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
+Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ finalizedBlockDepth? }`, default `5`), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
 The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives app mutation IDs, params, and typed storage from the contract.
 
@@ -554,13 +552,15 @@ const submitted = authorizeMutation(mutation, signature);
 #### `typewriter.execute()`
 
 ```ts
-typewriter.execute(input: { name, params, authorization }): Promise<{ id }>;
+typewriter.execute(input: { name, params, authorization }): Promise<{ executionIndex }>;
 ```
 
 Submits an authorized mutation. `name` is the exact Solidity `Mutation` enum
 member (or built-in mutation name), `params` matches its struct, and
 `authorization` has the fixed native shape. It resolves once accepted and
-rejects if contract execution reverts.
+rejects if contract execution reverts. `executionIndex` (`bigint`) is the
+mutation's position in the onchain execution order and the primary key of its
+row in the mutation tables.
 
 ```ts
 const accepted = await typewriter.execute({
@@ -568,7 +568,7 @@ const accepted = await typewriter.execute({
   params,
   authorization,
 });
-// accepted.id
+// accepted.executionIndex
 ```
 
 #### `typewriter.state`
@@ -603,28 +603,24 @@ const sequence = await account.nonces[lane];
 #### `typewriter.schema`
 
 ```ts
-typewriter.schema: TypewriterSchema;
+typewriter.schema: TypewriterMutationSchema;
 ```
 
 The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. typewriter owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
 
-One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted` and updated as it advances; `received` and `rejected` mutations are not persisted here.
+One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted`, and its block columns are set when it is `included`; `received` and `rejected` mutations are not persisted here. A mutation is finalized once its `block_number` is `confirmations.finalizedBlockDepth` blocks behind the chain head. The tables live in the Postgres schema `typewriter_<chainId>_<address>`.
 
 Every mutation table starts with the same **lifecycle columns**:
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | `integer`, primary key | mutation id; matches the `typewriter.execute()` result and event `id` |
-| `status` | `mutation_status` enum | one of `accepted`, `included`, `safe`, `finalized` |
-| `executionIndex` | `numeric(78,0)` bigint | speculative onchain execution index; assigned and persisted at acceptance |
-| `blockNumber` | `numeric(78,0)` bigint | inclusion block; null until included |
-| `blockHash` | `char(66)` (hex) | null until included |
-| `blockTimestamp` | `numeric(78,0)` bigint | null until included |
-| `transactionHash` | `char(66)` (hex) | the settlement transaction; null until included |
-| `acceptedAt` | `timestamp`, defaults to now | |
-| `includedAt` | `timestamp` | null until included |
-| `safeAt` | `timestamp` | null until safe |
-| `finalizedAt` | `timestamp` | null until finalized |
+| `execution_index` | `bigint`, primary key | the mutation's position in the onchain execution order; matches the `typewriter.execute()` result and event `executionIndex` |
+| `accepted_at` | `timestamp with time zone`, defaults to now | |
+| `block_number` | `bigint` | inclusion block; null until included |
+| `block_hash` | `char(66)` (hex) | null until included |
+| `block_timestamp` | `bigint` | null until included |
+| `transaction_index` | `integer` | null until included |
+| `transaction_hash` | `char(66)` (hex) | the settlement transaction; null until included |
 
 Then two groups of payload columns:
 
@@ -660,7 +656,7 @@ import { desc } from "drizzle-orm";
 const recent = await db
   .select()
   .from(typewriter.schema.transfer_mutations)
-  .orderBy(desc(typewriter.schema.transfer_mutations.id))
+  .orderBy(desc(typewriter.schema.transfer_mutations.execution_index))
   .limit(20);
 ```
 
@@ -672,29 +668,28 @@ typewriter.on(event, callback): () => void;
 
 Subscribes to runtime events; returns an unsubscribe function. There are three events, each with its own payload type.
 
-**`"mutation"` → `MutationEvent`** — fires every time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `id` (number), `name` (the mutation name), `params`, and `authorization` (including `authorization.signature`); the rest depends on `status`:
+**`"mutation"` → `MutationEvent`** — fires every time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `name` (the mutation name), `params`, and `authorization` (including `authorization.signature`); the rest depends on `status`:
 
 | `status` | Additional fields |
 | --- | --- |
 | `"received"` | — |
-| `"enqueued"` | — |
-| `"accepted"` | `isForceInclusion` |
-| `"included"` / `"safe"` / `"finalized"` | `isForceInclusion` |
+| `"enqueued"` | `isForceInclusion` (`true`), `queueIndex` |
+| `"accepted"` | `isForceInclusion`, `executionIndex` |
+| `"included"` / `"finalized"` | `isForceInclusion`, `executionIndex`, `blockNumber`, `blockHash`, `blockTimestamp`, `transactionHash`, `transactionIndex` |
 | `"rejected"` | `isForceInclusion`, `error` |
 
-This status set is wider than the happy-path lifecycle in [Server runtime](#server-runtime): `enqueued` occurs for force-included mutations — those a user submits directly onchain via `enqueue()` (see [Force inclusion](#force-inclusion)) — once the runtime detects and reconciles them, and `rejected` (carrying the rejection `error`) when a mutation fails. `isForceInclusion` marks mutations that entered through the force-inclusion queue.
+This status set is wider than the happy-path lifecycle in [Server runtime](#server-runtime): `enqueued` occurs for force-included mutations — those a user submits directly onchain via `enqueue()` (see [Force inclusion](#force-inclusion)) — once the runtime detects and reconciles them, and `rejected` (carrying the rejection `error`) when a mutation fails. `isForceInclusion` marks mutations that entered through the force-inclusion queue; those also carry their `queueIndex`. `executionIndex` and the block fields match the `execution_index`, `block_*` and `transaction_*` columns of the mutation's row.
 
 **`"batch"` → `BatchEvent`** — fires when a batch changes status; batch sequencing only. Fields:
 
-- `status` — `"accepted" | "included" | "safe" | "finalized"`
+- `status` — `"accepted" | "included" | "finalized"`
 - `id` — number
 - `position` — the batch's position in submission order
-- `mutations` — the batch's `MutationEvent`s (`accepted` and later; never `enqueued`/`rejected`)
-- `forceIncludedMutations?` — force-included mutations settled alongside the batch
+- `mutations` — the batch's `MutationEvent`s, with the same `status` as the batch
 
 **`"block"` → `BlockEvent`** — fires when a submitted block reaches a confirmation depth. Common fields:
 
-- `status` — `"included" | "safe" | "finalized"` (block events never fire for `accepted`, which is pre-block)
+- `status` — `"included" | "finalized"` (block events never fire for `accepted`, which is pre-block)
 - `number` — block number (`bigint`)
 - `hash` — block hash
 - `timestamp` — block timestamp (`bigint`)
@@ -705,9 +700,11 @@ The remaining fields depend on sequencing:
 - FIFO — `mutations`: the block's `MutationEvent`s.
 - batch — `batches`: the block's `BatchEvent`s (excluding `accepted`); and `forceIncludedMutations`.
 
+With FIFO sequencing, `on("batch", ...)` is a type error.
+
 ```ts
 const unsubscribe = typewriter.on("mutation", (mutation) => {
-  console.log(mutation.id, mutation.status);
+  console.log(mutation.name, mutation.status);
 });
 ```
 

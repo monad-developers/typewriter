@@ -1,15 +1,19 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
+import type { PgTable } from "drizzle-orm/pg-core";
 import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
-import type { DatabaseClient, DatabaseOptions } from "./db";
-import type { InternalApp } from "./internal";
-import { createMutationSchema } from "./schema";
-
-export type TypewriterDatabase = DatabaseClient;
-export type TypewriterDatabaseTransaction = Parameters<
-  Parameters<DatabaseClient["transaction"]>[0]
->[0];
+import { deploymentKey } from "./client";
+import type { DatabaseOptions } from "./db";
+import {
+  createMutationSchema,
+  createTypewriterSchema,
+  type TypewriterSchema,
+} from "./db-schema";
+import {
+  BUILTIN_MUTATIONS,
+  FIRST_BUILTIN_MUTATION_ID,
+} from "./typewriter-constants";
 
 export type StorageConfig = StorageLayout;
 export type MutationConfig = {
@@ -36,42 +40,19 @@ export type ResolvedTypewriterMutationConfig = MutationConfig & {
 export type TypewriterManifest<
   mutationsConfig extends MutationsConfig = MutationsConfig,
 > = {
-  readonly chainId: number;
-  readonly address: Address.Address;
-  readonly mutations: {
-    readonly [name in keyof mutationsConfig]: {
-      readonly id: mutationsConfig[name] extends {
-        readonly id: infer id extends number;
+  chainId: number;
+  address: Address.Address;
+  mutations: {
+    [name in keyof mutationsConfig]: {
+      id: mutationsConfig[name] extends {
+        id: infer id extends number;
       }
         ? id
         : number;
-      readonly params: mutationsConfig[name]["params"];
+      params: mutationsConfig[name]["params"];
     };
   };
 };
-
-export const BUILTIN_MUTATIONS = {
-  CreateAccount: {
-    id: 253,
-    params: [
-      { name: "keyType", type: "uint8" },
-      { name: "publicKey", type: "bytes" },
-    ],
-  },
-  AddCredential: {
-    id: 254,
-    params: [
-      { name: "expiration", type: "uint40" },
-      { name: "keyType", type: "uint8" },
-      { name: "permissions", type: "uint256" },
-      { name: "publicKey", type: "bytes" },
-    ],
-  },
-  RemoveCredential: {
-    id: 255,
-    params: [{ name: "credentialID", type: "uint64" }],
-  },
-} as const satisfies Record<string, ResolvedTypewriterMutationConfig>;
 
 export type TypewriterSequencingConfig<
   sequencingConfig extends SequencingConfig,
@@ -97,14 +78,46 @@ export type TypewriterConfig<
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
   confirmations?: {
-    safeBlockDepth?: number;
     finalizedBlockDepth?: number;
   };
-  onFatalError?: (error: unknown) => void;
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
-const DEFAULT_SAFE_BLOCK_DEPTH = 1;
+/** A resolved `TypewriterConfig`, merged with the app's Solidity metadata. */
+export type TypewriterApp = {
+  address: Address.Address;
+  abi: Abi;
+  manifest: TypewriterManifest;
+  storageLayout: StorageLayout;
+  account: PrivateKeyAccount;
+  chainId: number;
+  rpcUrls: [string, ...string[]];
+  database: DatabaseOptions;
+  mutations: { [name: string]: ResolvedTypewriterMutationConfig };
+  /** The Postgres schema that holds the deployment's tables. */
+  schemaName: string;
+  typewriterSchema: TypewriterSchema;
+  mutationSchema: Record<string, PgTable>;
+  blockPollingIntervalMs: number;
+  confirmations: {
+    finalizedBlockDepth: number;
+  };
+  sequencing:
+    | {
+        order: "fifo";
+        submitIntervalMs: number;
+      }
+    | {
+        order: "batch";
+        batchIntervalMs: number;
+        submitIntervalMs: number;
+        batchOrder: string[];
+      };
+};
+
+/** Postgres truncates longer identifiers. */
+const MAX_IDENTIFIER_LENGTH = 63;
+
 const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
@@ -130,25 +143,10 @@ export function validateConfig(config: TypewriterConfig): void {
     "config.blockPollingIntervalMs",
   );
 
-  const safeBlockDepth =
-    config.confirmations?.safeBlockDepth ?? DEFAULT_SAFE_BLOCK_DEPTH;
-  const finalizedBlockDepth =
-    config.confirmations?.finalizedBlockDepth ?? DEFAULT_FINALIZED_BLOCK_DEPTH;
-
-  assertSafeNonNegativeInteger(
-    config.confirmations?.safeBlockDepth,
-    "config.confirmations.safeBlockDepth",
-  );
   assertSafeNonNegativeInteger(
     config.confirmations?.finalizedBlockDepth,
     "config.confirmations.finalizedBlockDepth",
   );
-
-  if (finalizedBlockDepth < safeBlockDepth) {
-    throw new Error(
-      "config.confirmations.finalizedBlockDepth must be greater than or equal to config.confirmations.safeBlockDepth",
-    );
-  }
 
   const hasBatchOrder =
     config.sequencing !== undefined && "batchOrder" in config.sequencing;
@@ -181,9 +179,12 @@ function validateMutationDefinitions(mutations: {
     if (mutationIDs.has(mutation.id)) {
       throw new Error(`duplicate mutation ID: ${mutation.id}`);
     }
-    if (!Object.hasOwn(BUILTIN_MUTATIONS, name) && mutation.id >= 253) {
+    if (
+      !Object.hasOwn(BUILTIN_MUTATIONS, name) &&
+      mutation.id >= FIRST_BUILTIN_MUTATION_ID
+    ) {
       throw new Error(
-        `app mutation ID must be below 253: ${name}=${mutation.id}`,
+        `app mutation ID must be below ${FIRST_BUILTIN_MUTATION_ID}: ${name}=${mutation.id}`,
       );
     }
     mutationIDs.add(mutation.id);
@@ -199,22 +200,28 @@ function validateMutationDefinitions(mutations: {
   }
 }
 
-export function buildInternalApp(params: {
+export function createTypewriterApp(params: {
   config: TypewriterConfig;
   abi: Abi;
   storageLayout: StorageConfig;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
-}): InternalApp {
+}): TypewriterApp {
   const { abi, config, mutations, storageLayout } = params;
   validateConfig(config);
   validateMutationDefinitions(mutations);
 
-  const rpcUrls = Array.isArray(config.rpcUrl)
-    ? config.rpcUrl
-    : [config.rpcUrl];
+  // `validateConfig` rejects an empty `rpcUrl` list.
+  const rpcUrls = (
+    Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl]
+  ) as [string, ...string[]];
+
+  const schemaName = `typewriter_${deploymentKey(config.chainId, config.address)}`;
+  if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
+    throw new Error(
+      `config.chainId is too long for the Postgres schema name: ${schemaName}`,
+    );
+  }
   const confirmations = {
-    safeBlockDepth:
-      config.confirmations?.safeBlockDepth ?? DEFAULT_SAFE_BLOCK_DEPTH,
     finalizedBlockDepth:
       config.confirmations?.finalizedBlockDepth ??
       DEFAULT_FINALIZED_BLOCK_DEPTH,
@@ -254,12 +261,13 @@ export function buildInternalApp(params: {
     chainId: config.chainId,
     rpcUrls,
     database: config.database,
-    mutations: mutations as InternalApp["mutations"],
-    schema: createMutationSchema({ mutations }),
+    mutations,
+    schemaName,
+    typewriterSchema: createTypewriterSchema(schemaName),
+    mutationSchema: createMutationSchema(schemaName, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
     confirmations,
-    onFatalError: config.onFatalError,
     sequencing,
   };
 }

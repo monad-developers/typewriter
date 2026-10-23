@@ -6,6 +6,7 @@ import {
   priceToQ32,
   TokenAmount,
 } from "order-book-sdk";
+import { AUTHORIZATION_ABI_PARAMS } from "typewriter/client";
 import type { Abi, Hex } from "viem";
 import {
   createPublicClient,
@@ -231,16 +232,11 @@ function encodeAuthorization(authorization: {
     [
       {
         type: "tuple",
-        components: [
-          { type: "bytes32", name: "accountID" },
-          { type: "uint64", name: "credentialID" },
-          { type: "uint256", name: "nonce" },
-          { type: "uint256", name: "expiration" },
-          { type: "bytes", name: "signature" },
-        ],
+        components: AUTHORIZATION_ABI_PARAMS,
       },
     ],
-    [authorization],
+    // viem types `uint40` as a number.
+    [{ ...authorization, expiration: Number(authorization.expiration) }],
   );
 }
 

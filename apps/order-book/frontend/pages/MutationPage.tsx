@@ -12,10 +12,12 @@ const KEY_TYPE_LABELS = ["P256", "WebAuthnP256", "Secp256k1"] as const;
 
 function stageTimestamps(mutation: ApiMutation): StageTimestamps {
   const out: StageTimestamps = {};
-  if (mutation.acceptedAt) out.accepted = mutation.acceptedAt.toISOString();
-  if (mutation.includedAt) out.included = mutation.includedAt.toISOString();
-  if (mutation.safeAt) out.safe = mutation.safeAt.toISOString();
-  if (mutation.finalizedAt) out.finalized = mutation.finalizedAt.toISOString();
+  out.accepted = mutation.accepted_at.toISOString();
+  if (mutation.block_timestamp !== null) {
+    out.included = new Date(
+      Number(mutation.block_timestamp) * 1000,
+    ).toISOString();
+  }
   return out;
 }
 
@@ -45,9 +47,8 @@ function mutationKind(mutation: ApiMutation | undefined) {
 }
 
 export function MutationPage() {
-  const match = useMatch<"id">("/mutation/:id");
-  const id = match?.params.id;
-  const query = useMutation(id);
+  const match = useMatch<"executionIndex">("/mutation/:executionIndex");
+  const query = useMutation(match?.params.executionIndex);
 
   const mutation = query.data;
 
@@ -64,15 +65,14 @@ export function MutationPage() {
     <div className="min-h-screen w-full flex flex-col">
       <section className="w-full border-b p-4 flex flex-col gap-2">
         <h2 className="text-2xl font-bold">Message</h2>
-        <code>id: {mutation?.id ?? "..."}</code>
         <code>
-          execution index: {mutation?.executionIndex?.toString() ?? "..."}
+          execution index: {mutation?.execution_index.toString() ?? "..."}
         </code>
         <code>
           block:{" "}
-          {mutation?.blockNumber != null ? (
-            <Link to={`/block/${mutation.blockNumber}`} className={linkClass}>
-              {mutation.blockNumber.toString()}
+          {mutation?.block_number != null ? (
+            <Link to={`/block/${mutation.block_number}`} className={linkClass}>
+              {mutation.block_number.toString()}
             </Link>
           ) : (
             "..."

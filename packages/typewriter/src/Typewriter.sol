@@ -24,7 +24,7 @@ struct Authorization {
     bytes32 accountID;
     uint64 credentialID;
     uint256 nonce;
-    uint256 expiration;
+    uint40 expiration;
     bytes signature;
 }
 
@@ -47,7 +47,7 @@ struct RemoveCredential {
 bytes32 constant EIP712_DOMAIN_TYPEHASH =
     keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 bytes32 constant AUTHORIZATION_TYPEHASH = keccak256(
-    "Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint256 expiration,uint8 mutation,bytes mutationData)"
+    "Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint40 expiration,uint8 mutation,bytes mutationData)"
 );
 string constant TYPEWRITER_DOMAIN_NAME = "Typewriter";
 string constant TYPEWRITER_DOMAIN_VERSION = "1";
@@ -65,7 +65,7 @@ error AccountNotFound(bytes32 accountID);
 error CredentialNotFound(bytes32 accountID, uint64 credentialID);
 error EmptyPublicKey();
 error InvalidCreateAuthorization();
-error AuthorizationExpired(uint256 expiration);
+error AuthorizationExpired(uint40 expiration);
 error CredentialExpired(uint40 expiration);
 error PermissionDenied(bytes32 accountID, uint64 credentialID, uint8 mutation);
 error InvalidNonce(bytes32 accountID, uint192 lane, uint64 expected, uint64 received);

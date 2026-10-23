@@ -6,8 +6,11 @@ import type {
   StorageConfig,
   TypewriterConfig,
 } from "./config";
-import { BUILTIN_MUTATIONS, buildInternalApp } from "./config";
-import type { InternalApp } from "./internal";
+import { createTypewriterApp, type TypewriterApp } from "./config";
+import {
+  BUILTIN_MUTATIONS,
+  FIRST_BUILTIN_MUTATION_ID,
+} from "./typewriter-constants";
 
 type JsonObject = Record<string, unknown>;
 
@@ -212,6 +215,7 @@ async function findFoundryProject(entrypoint: string): Promise<FoundryProject> {
 }
 
 async function buildFoundryProject(project: FoundryProject): Promise<void> {
+  // TODO(kyle) Writes to the shared `out` directory, so parallel loads of one app can read a partial artifact.
   try {
     await $`forge build --ast --extra-output storageLayout --force`
       .cwd(project.root)
@@ -564,9 +568,9 @@ function parseMutations(params: {
     if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
       throw new Error(`Mutation.${member.name} is reserved by Typewriter`);
     }
-    if (id >= 253) {
+    if (id >= FIRST_BUILTIN_MUTATION_ID) {
       throw new Error(
-        `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below 253`,
+        `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below ${FIRST_BUILTIN_MUTATION_ID}`,
       );
     }
     return { enumName: member.name, id };
@@ -617,7 +621,7 @@ function parseMutations(params: {
 function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
   baseConfig: TypewriterConfig<sequencingConfig>,
   metadata: ParsedSolidityMetadata,
-): InternalApp {
+): TypewriterApp {
   const mutations: Record<string, ResolvedTypewriterMutationConfig> = {};
 
   for (const mutation of metadata.mutations) {
@@ -627,7 +631,7 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
     };
   }
 
-  return buildInternalApp({
+  return createTypewriterApp({
     config: baseConfig,
     abi: metadata.abi,
     storageLayout: metadata.storageLayout,
@@ -766,7 +770,7 @@ export async function loadSolidityTypewriterApp<
 >(
   entrypoint: TypewriterSolidityEntrypoint,
   config: TypewriterConfig<sequencingConfig>,
-): Promise<InternalApp> {
+): Promise<TypewriterApp> {
   const metadata = await parseSolidityMetadata(entrypoint);
   const entrypointPath = await requireEntrypointPath(entrypoint);
   await maybeWriteAppSolidityDeclaration(entrypointPath, metadata);

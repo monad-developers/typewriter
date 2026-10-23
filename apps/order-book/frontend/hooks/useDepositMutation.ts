@@ -31,7 +31,7 @@ export function useDepositMutation() {
       });
 
       const start = performance.now();
-      const result = await request<{ id: number }>("/api", {
+      const result = await request<{ executionIndex: bigint }>("/api", {
         method: "POST",
         body: signed,
       });
@@ -40,7 +40,7 @@ export function useDepositMutation() {
       );
 
       return {
-        id: result.id,
+        executionIndex: result.executionIndex,
         account: { ...account, nonce: incrementNonce(account.nonce) },
       };
     },

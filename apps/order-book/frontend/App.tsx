@@ -101,7 +101,7 @@ function Shell({
 function Routes() {
   const path = useRoute();
   const blockMatch = useMatch("/block/:number");
-  const mutationMatch = useMatch("/mutation/:id");
+  const mutationMatch = useMatch("/mutation/:executionIndex");
   const accountMatch = useMatch("/account/:id");
   if (blockMatch)
     return (

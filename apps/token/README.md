@@ -56,10 +56,7 @@ The latest Foundry release includes Monad support, so no separate category-labs 
 | Variable | Used by | Description |
 |---|---|---|
 | `RPC_URL` | App runtime, deploy script | RPC endpoint for the token app and deployment command |
-| `DATABASE_URL` | App runtime, tests | Postgres connection string used by Typewriter |
+| `DATABASE_URL` | App runtime | Postgres connection string used by Typewriter |
 | `CHAIN_ID` | App runtime | Chain ID included in the Typewriter manifest and authorization domain |
 | `TOKEN_ADDRESS` | App runtime | Deployed token contract address |
 | `PRIVATE_KEY` | App runtime, deploy script | Private key used by the scheduler account and Foundry broadcast |
-
-Tests use `DATABASE_URL` for the administrative connection. Each test creates
-and removes its own temporary Postgres database.

@@ -1,31 +1,35 @@
 import type { AbiParameter, AbiParameterToPrimitiveType } from "abitype";
-import { AbiParameters, Address, Hash, Hex, TypedData } from "ox";
+import {
+  AbiParameters,
+  Address,
+  Hash,
+  Hex,
+  Signature as OxSignature,
+  TypedData,
+} from "ox";
 import type { TypewriterManifest } from "./config";
-import { KeyType, packP256Signature } from "./signature";
+import {
+  AUTHORIZATION_ABI_PARAMS,
+  AUTHORIZATION_EIP712_TYPES,
+  BUILTIN_MUTATIONS,
+  KeyType,
+  P256_SIGNATURE_PARAMS,
+  SECP256K1_SIGNATURE_PARAMS,
+  TYPEWRITER_EIP712_DOMAIN,
+} from "./typewriter-constants";
 import type {
   AddCredentialParams,
   Authorization,
   CreateAccountParams,
   RemoveCredentialParams,
-} from "./types";
+} from "./typewriter-types";
 
 export type { Authorization, CreateAccountParams };
-export { KeyType, packP256Signature };
+export { AUTHORIZATION_ABI_PARAMS, BUILTIN_MUTATIONS, KeyType };
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_UINT192 = (1n << 192n) - 1n;
 const MAX_UINT64 = (1n << 64n) - 1n;
-
-const AUTHORIZATION_TYPES = {
-  Authorization: [
-    { name: "accountID", type: "bytes32" },
-    { name: "credentialID", type: "uint64" },
-    { name: "nonce", type: "uint256" },
-    { name: "expiration", type: "uint256" },
-    { name: "mutation", type: "uint8" },
-    { name: "mutationData", type: "bytes" },
-  ],
-} as const;
 
 type MutationName<manifest extends TypewriterManifest> =
   keyof manifest["mutations"] & string;
@@ -77,13 +81,10 @@ export type AuthorizedMutation<
 
 export function deriveAccountID(params: CreateAccountParams): Hex.Hex {
   return Hash.keccak256(
-    AbiParameters.encode(
-      [
-        { name: "keyType", type: "uint8" },
-        { name: "publicKey", type: "bytes" },
-      ],
-      [params.keyType, params.publicKey],
-    ),
+    AbiParameters.encode(BUILTIN_MUTATIONS.CreateAccount.params, [
+      params.keyType,
+      params.publicKey,
+    ]),
   );
 }
 
@@ -143,18 +144,18 @@ export function getAuthorizationPayload<
   const mutationData = encodeMutationData(config.params, mutation.params);
   return TypedData.getSignPayload({
     domain: {
-      name: "Typewriter",
-      version: "1",
+      ...TYPEWRITER_EIP712_DOMAIN,
       chainId: manifest.chainId,
       verifyingContract: manifest.address,
     },
-    types: AUTHORIZATION_TYPES,
+    types: AUTHORIZATION_EIP712_TYPES,
     primaryType: "Authorization",
     message: {
       accountID: mutation.accountID,
       credentialID: mutation.credentialID,
       nonce: mutation.nonce,
-      expiration: mutation.expiration,
+      // ox types `uint40` as a number.
+      expiration: Number(mutation.expiration),
       mutation: config.id,
       mutationData,
     },
@@ -182,4 +183,40 @@ export function authorizeMutation<
       signature,
     },
   };
+}
+
+const P256_N =
+  0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
+export function packP256Signature(signature: Hex.Hex): Hex.Hex {
+  assertSignatureSize(signature, 64, "P256");
+  const r = BigInt(Hex.slice(signature, 0, 32));
+  const s = BigInt(Hex.slice(signature, 32, 64));
+  return AbiParameters.encode(P256_SIGNATURE_PARAMS, [
+    r,
+    s > P256_N / 2n ? P256_N - s : s,
+  ]);
+}
+
+export function packSecp256k1Signature(signature: Hex.Hex): Hex.Hex {
+  assertSignatureSize(signature, 65, "secp256k1");
+  const v = Number(BigInt(Hex.slice(signature, 64, 65)));
+  return AbiParameters.encode(SECP256K1_SIGNATURE_PARAMS, [
+    OxSignature.vToYParity(v) + 27,
+    Hex.slice(signature, 0, 32),
+    Hex.slice(signature, 32, 64),
+  ]);
+}
+
+function assertSignatureSize(
+  signature: Hex.Hex,
+  expected: number,
+  name: string,
+): void {
+  if (
+    !Hex.validate(signature, { strict: true }) ||
+    Hex.size(signature) !== expected
+  ) {
+    throw new Error(`${name} signature must be ${expected} bytes`);
+  }
 }
