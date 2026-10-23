@@ -15,7 +15,7 @@
   "dependencies": {
     "@tanstack/react-query": "catalog:",
     "clsx": "2.1.1",
-    "drizzle-orm": "1.0.0-rc.1",
+    "drizzle-orm": "catalog:",
     "effect": "catalog:",
     "typewriter": "workspace:*",
     "ox": "catalog:",

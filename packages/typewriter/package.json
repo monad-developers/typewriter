@@ -23,8 +23,7 @@
     "viem": "catalog:"
   },
   "devDependencies": {
-    "@effect/platform-bun": "4.0.3",
-    "@types/pg": "8.23.1"
+    "@effect/platform-bun": "4.0.3"
   },
   "peerDependencies": {
     "typescript": "catalog:"
