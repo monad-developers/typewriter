@@ -853,6 +853,10 @@ export function createTypewriterEffect<
               ),
             );
 
+          // TODO(kyle) cap a submission at the block gas limit. Every pending
+          // batch and enqueued mutation goes into one transaction, so after a
+          // backlog the node rejects it ("intrinsic gas too high") and the
+          // retries fail the program.
           const calldata = encodeExecuteCalldata(
             batches.map((batch) => encodeBatchArg(batch.mutations)),
             acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
