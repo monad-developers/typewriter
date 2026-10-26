@@ -57,7 +57,7 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
 } from "./encoding";
-import { durationMs, loggerLayer, startTimer } from "./logger";
+import { durationMs, startTimer } from "./logger";
 import { Rpc, type RpcError } from "./rpc";
 import {
   type BlockNotFoundError,
@@ -150,25 +150,37 @@ export class UnknownMutationError extends Data.TaggedError(
   "UnknownMutationError",
 )<{
   mutation: string;
-}> {}
+}> {
+  override get message() {
+    return `Unknown mutation '${this.mutation}'`;
+  }
+}
 
 export class SignTransactionError extends Data.TaggedError(
   "SignTransactionError",
 )<{
   cause: unknown;
-}> {}
+}> {
+  override get message() {
+    return "Failed to sign settlement transaction";
+  }
+}
 
 /** Each part of the program runs forever, so it stops only on a bug. */
 export class ProgramStoppedError extends Data.TaggedError(
   "ProgramStoppedError",
-) {}
+) {
+  override get message() {
+    return "Typewriter program stopped unexpectedly";
+  }
+}
 
 /** A settlement transaction reverted when simulated in revm. */
 export class SettlementSimulationRevertedError extends Data.TaggedError(
   "SettlementSimulationRevertedError",
 )<Revert> {
   override get message() {
-    return revertMessage("revm simulate reverted", this.errorName);
+    return revertMessage("Settlement transaction reverted in revm", this);
   }
 }
 
@@ -179,7 +191,7 @@ export class SettlementSimulationHaltedError extends Data.TaggedError(
   reason: string;
 }> {
   override get message() {
-    return `revm simulate halted: ${this.reason}`;
+    return `Settlement transaction halted in revm: ${this.reason}`;
   }
 }
 
@@ -188,7 +200,7 @@ export class EnqueueRevertedError extends Data.TaggedError(
   "EnqueueRevertedError",
 )<Revert> {
   override get message() {
-    return revertMessage("revm enqueue reverted", this.errorName);
+    return revertMessage("Enqueued mutation reverted", this);
   }
 }
 
@@ -197,7 +209,7 @@ export class EnqueueHaltedError extends Data.TaggedError("EnqueueHaltedError")<{
   reason: string;
 }> {
   override get message() {
-    return `revm enqueue halted: ${this.reason}`;
+    return `Enqueued mutation halted: ${this.reason}`;
   }
 }
 
@@ -208,7 +220,7 @@ export class SettlementRevertedError extends Data.TaggedError(
   transactionHash: Hex.Hex;
 }> {
   override get message() {
-    return `settlement transaction reverted onchain: ${this.transactionHash}`;
+    return `Settlement transaction ${this.transactionHash} reverted onchain`;
   }
 }
 
@@ -220,7 +232,11 @@ export class TypewriterStoppedError extends Data.TaggedError(
   "TypewriterStoppedError",
 )<{
   cause: Cause.Cause<ProgramError>;
-}> {}
+}> {
+  override get message() {
+    return "Typewriter stopped";
+  }
+}
 
 /** Why `execute` did not accept a mutation. */
 export type ExecuteError =
@@ -360,14 +376,18 @@ export class EncodeMutationError extends Data.TaggedError(
 )<{
   mutation: ReceivedMutation | EnqueuedMutation;
   cause: unknown;
-}> {}
+}> {
+  override get message() {
+    return `Failed to encode '${this.mutation.name}' mutation`;
+  }
+}
 
 /** A mutation reverted when executed in revm. */
 export class MutationRevertedError extends Data.TaggedError(
   "MutationRevertedError",
 )<Revert> {
   override get message() {
-    return revertMessage("revm execute reverted", this.errorName);
+    return revertMessage("Mutation reverted", this);
   }
 }
 
@@ -378,7 +398,7 @@ export class MutationHaltedError extends Data.TaggedError(
   reason: string;
 }> {
   override get message() {
-    return `revm execute halted: ${this.reason}`;
+    return `Mutation halted: ${this.reason}`;
   }
 }
 
@@ -435,11 +455,11 @@ export function executeMutation(params: {
       journalId: executeResult.journal_id,
     });
 
-    yield* Effect.logDebug("executed mutation").pipe(
+    yield* Effect.logDebug("Executed mutation").pipe(
       Effect.annotateLogs({
-        executionIndex: acceptedMutation.executionIndex,
-        name: acceptedMutation.name,
-        slotWriteCount: executeResult.slot_writes.length,
+        mutation: acceptedMutation.name,
+        execution_index: acceptedMutation.executionIndex,
+        slot_write_count: executeResult.slot_writes.length,
         duration: durationMs(executeStartedAtMs),
       }),
     );
@@ -531,8 +551,13 @@ function decodeRevert(abi: Abi, data: Hex.Hex): Revert {
   }
 }
 
-function revertMessage(prefix: string, errorName: string | undefined) {
-  return errorName === undefined ? prefix : `${prefix}: ${errorName}`;
+/** `prefix`, and the decoded error with its arguments, like `Error("reason")`. */
+function revertMessage(prefix: string, revert: Revert) {
+  if (revert.errorName === undefined) return prefix;
+  const args = (revert.args ?? [])
+    .map((arg) => (typeof arg === "string" ? JSON.stringify(arg) : String(arg)))
+    .join(", ");
+  return `${prefix} with ${revert.errorName}(${args})`;
 }
 
 function createRuntimeState(
@@ -574,9 +599,8 @@ function createRuntimeState(
 
     if (code === "0x") {
       yield* Effect.logWarning(
-        `no contract code at app.address=${app.address}; ` +
-          "revm code load skipped - runtime will continue but revm has no contract bytecode",
-      );
+        "Detected no contract code at the typewriter address. Mutations will execute without contract code.",
+      ).pipe(Effect.annotateLogs({ address: app.address }));
     }
     const evm = yield* createEVM({
       chain_id: app.chainId,
@@ -916,10 +940,10 @@ export function createTypewriterEffect<
             mutations: acceptedMutations.map(({ mutation }) => mutation),
           };
 
-          yield* Effect.logDebug("batched mutations").pipe(
+          yield* Effect.logDebug("Created batch").pipe(
             Effect.annotateLogs({
-              id: batch.id,
-              mutationCount: batch.mutations.length,
+              batch_id: batch.id,
+              mutation_count: batch.mutations.length,
               duration: durationMs(batchStartedAtMs),
             }),
           );
@@ -1071,12 +1095,12 @@ export function createTypewriterEffect<
             });
           }
 
-          yield* Effect.logDebug("simulated transaction submission").pipe(
+          yield* Effect.logDebug("Simulated settlement transaction").pipe(
             Effect.annotateLogs({
               nonce,
-              gasLimit: simulateResult.gas_limit,
-              batchCount: batches.length,
-              mutationCount: speculativeJournalIds.length,
+              gas_limit: simulateResult.gas_limit,
+              batch_count: batches.length,
+              mutation_count: speculativeJournalIds.length,
               duration,
             }),
           );
@@ -1166,11 +1190,10 @@ export function createTypewriterEffect<
       }
       const duration = durationMs(transactionStartedAtMs);
 
-      yield* Effect.logDebug("submitted transaction").pipe(
+      yield* Effect.logDebug("Submitted settlement transaction").pipe(
         Effect.annotateLogs({
-          transactionHash: receipt.transactionHash,
-          blockHash: receipt.blockHash,
-          blockNumber: receipt.blockNumber,
+          transaction_hash: receipt.transactionHash,
+          block_number: receipt.blockNumber,
           duration,
         }),
       );
@@ -1328,7 +1351,7 @@ export function createTypewriterEffect<
           }),
         ),
       );
-    }).pipe(Effect.withLogSpan("watch"));
+    });
 
     const submitIntervalMs = app.sequencing.submitIntervalMs;
 
@@ -1369,9 +1392,9 @@ export function createTypewriterEffect<
           yield* Deferred.succeed(committed, undefined);
         }
 
-        yield* Effect.logDebug("persisted runtime writes").pipe(
+        yield* Effect.logDebug("Persisted runtime writes").pipe(
           Effect.annotateLogs({
-            jobCount: jobs.length,
+            job_count: jobs.length,
             duration: durationMs(persistStartedAtMs),
           }),
         );
@@ -1394,7 +1417,6 @@ export function createTypewriterEffect<
       Effect.onError((cause) =>
         Deferred.fail(stopped, new TypewriterStoppedError({ cause })),
       ),
-      Effect.provide(loggerLayer),
     );
 
     function execute(
@@ -1414,9 +1436,9 @@ export function createTypewriterEffect<
           config: resolvedMutation.config,
         } as const satisfies ReceivedMutation;
 
-        yield* Effect.logDebug("received mutation").pipe(
+        yield* Effect.logDebug("Received mutation").pipe(
           Effect.annotateLogs({
-            name: runtimeMutation.name,
+            mutation: runtimeMutation.name,
             params: runtimeMutation.params,
           }),
         );
@@ -1436,11 +1458,12 @@ export function createTypewriterEffect<
 
         const acceptedMutation = yield* Effect.gen(function* () {
           const { mutation, committed } = yield* Deferred.await(deferred).pipe(
+            // The caller gets the error, and a failure that stops the runtime is
+            // logged when it stops, so a rejection is only a debug log.
             Effect.tapError((error) =>
-              Effect.logError(error).pipe(
+              Effect.logDebug("Rejected mutation", error).pipe(
                 Effect.annotateLogs({
-                  message: "rejected mutation",
-                  name: runtimeMutation.name,
+                  mutation: runtimeMutation.name,
                   params: runtimeMutation.params,
                 }),
               ),
@@ -1450,17 +1473,16 @@ export function createTypewriterEffect<
           return mutation;
         }).pipe(Effect.raceFirst(Deferred.await(stopped)));
 
-        yield* Effect.logDebug("accepted mutation").pipe(
+        yield* Effect.logDebug("Accepted mutation").pipe(
           Effect.annotateLogs({
-            executionIndex: acceptedMutation.executionIndex,
-            name: runtimeMutation.name,
-            params: runtimeMutation.params,
+            mutation: runtimeMutation.name,
+            execution_index: acceptedMutation.executionIndex,
             duration: durationMs(acceptStartedAtMs),
           }),
         );
 
         return { executionIndex: acceptedMutation.executionIndex };
-      }).pipe(Effect.provide(loggerLayer));
+      });
     }
 
     function on(
@@ -1503,10 +1525,7 @@ export function createTypewriterEffect<
       on,
       program,
     } as TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>;
-  }).pipe(
-    Effect.tapError((error) => Effect.logError(error)),
-    Effect.provide(loggerLayer),
-  );
+  });
 }
 
 export function nextBlockStatus(

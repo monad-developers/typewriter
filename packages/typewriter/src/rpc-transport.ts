@@ -29,7 +29,11 @@ export class RpcNetworkError extends Data.TaggedError("RpcNetworkError")<{
   method: RpcMethod;
   origin: string;
   cause: unknown;
-}> {}
+}> {
+  override get message() {
+    return `Failed '${this.method}' request to ${this.origin}`;
+  }
+}
 
 /**
  * The provider replied, but not with a JSON-RPC result or error for the
@@ -41,7 +45,13 @@ export class RpcHttpError extends Data.TaggedError("RpcHttpError")<{
   status: number;
   body: string;
   cause?: unknown;
-}> {}
+}> {
+  override get message() {
+    const body =
+      this.body.length > 200 ? `${this.body.slice(0, 200)}...` : this.body;
+    return `Failed '${this.method}' request to ${this.origin} with HTTP ${this.status}${body === "" ? "" : `: ${body}`}`;
+  }
+}
 
 /** The provider replied with a JSON-RPC error object. */
 export class RpcResponseError extends Data.TaggedError("RpcResponseError")<{
@@ -49,7 +59,11 @@ export class RpcResponseError extends Data.TaggedError("RpcResponseError")<{
   origin: string;
   status: number;
   error: { code: number; message: unknown; data?: unknown };
-}> {}
+}> {
+  override get message() {
+    return `Failed '${this.method}' request to ${this.origin}: ${String(this.error.message)} (code ${this.error.code})`;
+  }
+}
 
 export type RpcTransportError =
   | RpcNetworkError

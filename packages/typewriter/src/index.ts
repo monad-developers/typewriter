@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, Scope } from "effect";
+import { Cause, Effect, Exit, Layer, Scope } from "effect";
 import type {
   MutationConfig,
   MutationsConfig,
@@ -7,6 +7,7 @@ import type {
   TypewriterConfig,
 } from "./config";
 import { layerDatabase } from "./db";
+import { loggerLayer } from "./logger";
 import { layerRpc } from "./rpc";
 import { makeHttpTransport } from "./rpc-transport";
 import {
@@ -96,6 +97,15 @@ export {
   type WatchError,
 } from "./watch";
 
+/**
+ * Logs `cause` and exits the process. A typewriter that failed to start or
+ * stopped can't accept mutations, so it crashes rather than serve stale state.
+ */
+function exit(msg: string, cause: Cause.Cause<unknown>): never {
+  Effect.runSync(Effect.logError(msg, cause).pipe(Effect.provide(loggerLayer)));
+  process.exit(1);
+}
+
 type EntrypointMetadata<entrypoint> =
   entrypoint extends TypewriterSolidityEntrypoint<infer metadata>
     ? metadata
@@ -134,17 +144,20 @@ export async function createTypewriter<
     sequencingConfig
   >;
 
-  const app = await loadSolidityTypewriterApp(entrypoint, config);
+  const app = await loadSolidityTypewriterApp(entrypoint, config).catch(
+    (error: unknown) => exit("Failed to start typewriter", Cause.fail(error)),
+  );
   // TODO(kyle) expose a way to close the scope. Until then the typewriter
   // runs until the process exits.
   const scope = Effect.runSync(Scope.make());
 
   try {
-    const typewriter = await Effect.runPromise(
+    const { typewriter, services } = await Effect.runPromise(
       Effect.gen(function* () {
         const [rpcUrl, ...rpcUrls] = app.rpcUrls;
         const services = yield* Layer.buildWithScope(
-          Layer.merge(
+          Layer.mergeAll(
+            loggerLayer,
             layerRpc([
               makeHttpTransport(rpcUrl),
               ...rpcUrls.map(makeHttpTransport),
@@ -162,24 +175,24 @@ export async function createTypewriter<
           Effect.provideService(Scope.Scope, scope),
         );
         yield* typewriter.program.pipe(
-          // A failed program can't accept mutations. Crash the process rather
-          // than serve stale state.
-          Effect.tapError((error) =>
-            Effect.sync(() =>
-              queueMicrotask(() => {
-                throw error;
-              }),
-            ),
+          Effect.provide(services),
+          Effect.tapCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : Effect.sync(() => exit("Stopped typewriter", cause)),
           ),
           Effect.forkIn(scope),
         );
-        return typewriter;
+        return { typewriter, services };
       }),
     );
 
     const execute = ((
       submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
-    ) => Effect.runPromise(typewriter.execute(submitted))) as Result["execute"];
+    ) =>
+      Effect.runPromise(
+        typewriter.execute(submitted).pipe(Effect.provide(services)),
+      )) as Result["execute"];
 
     const on = ((
       event: "mutation" | "batch" | "block",
@@ -206,6 +219,6 @@ export async function createTypewriter<
     } as Result;
   } catch (error) {
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    throw error;
+    exit("Failed to start typewriter", Cause.fail(error));
   }
 }

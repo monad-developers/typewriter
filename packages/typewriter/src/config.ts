@@ -1,5 +1,6 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { PgTable } from "drizzle-orm/pg-core";
+import { Data } from "effect";
 import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
@@ -14,6 +15,12 @@ import {
   BUILTIN_MUTATIONS,
   FIRST_BUILTIN_MUTATION_ID,
 } from "./typewriter-constants";
+
+/** An invalid typewriter config or Solidity entrypoint. */
+export class ConfigError extends Data.TaggedError("ConfigError")<{
+  message: string;
+  cause?: unknown;
+}> {}
 
 export type StorageConfig = StorageLayout;
 export type MutationConfig = {
@@ -129,13 +136,15 @@ function assertSafeNonNegativeInteger(
 ): void {
   if (value === undefined) return;
   if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${name} must be a safe non-negative integer`);
+    throw new ConfigError({
+      message: `${name} must be a safe non-negative integer`,
+    });
   }
 }
 
 export function validateConfig(config: TypewriterConfig): void {
   if (Array.isArray(config.rpcUrl) && config.rpcUrl.length === 0) {
-    throw new Error("At least one RPC URL is required");
+    throw new ConfigError({ message: "At least one RPC URL is required" });
   }
 
   assertSafeNonNegativeInteger(
@@ -152,15 +161,15 @@ export function validateConfig(config: TypewriterConfig): void {
     config.sequencing !== undefined && "batchOrder" in config.sequencing;
 
   if (config.sequencing?.order === "batch" && hasBatchOrder === false) {
-    throw new Error(
-      "config.sequencing.batchOrder is required for batch ordering",
-    );
+    throw new ConfigError({
+      message: "config.sequencing.batchOrder is required for batch ordering",
+    });
   }
 
   if (config.sequencing?.order === "fifo" && hasBatchOrder) {
-    throw new Error(
-      "config.sequencing.batchOrder is only valid for batch ordering",
-    );
+    throw new ConfigError({
+      message: "config.sequencing.batchOrder is only valid for batch ordering",
+    });
   }
 }
 
@@ -174,18 +183,22 @@ function validateMutationDefinitions(mutations: {
       mutation.id < 0 ||
       mutation.id > 255
     ) {
-      throw new Error(`mutation ID must be a uint8: ${mutation.id}`);
+      throw new ConfigError({
+        message: `mutation ID must be a uint8: ${mutation.id}`,
+      });
     }
     if (mutationIDs.has(mutation.id)) {
-      throw new Error(`duplicate mutation ID: ${mutation.id}`);
+      throw new ConfigError({
+        message: `duplicate mutation ID: ${mutation.id}`,
+      });
     }
     if (
       !Object.hasOwn(BUILTIN_MUTATIONS, name) &&
       mutation.id >= FIRST_BUILTIN_MUTATION_ID
     ) {
-      throw new Error(
-        `app mutation ID must be below ${FIRST_BUILTIN_MUTATION_ID}: ${name}=${mutation.id}`,
-      );
+      throw new ConfigError({
+        message: `app mutation ID must be below ${FIRST_BUILTIN_MUTATION_ID}: ${name}=${mutation.id}`,
+      });
     }
     mutationIDs.add(mutation.id);
   }
@@ -193,9 +206,9 @@ function validateMutationDefinitions(mutations: {
   for (const [name, builtin] of Object.entries(BUILTIN_MUTATIONS)) {
     const mutation = mutations[name];
     if (mutation === undefined || mutation.id !== builtin.id) {
-      throw new Error(
-        `missing built-in mutation ${name} with ID ${builtin.id}`,
-      );
+      throw new ConfigError({
+        message: `missing built-in mutation ${name} with ID ${builtin.id}`,
+      });
     }
   }
 }
@@ -217,9 +230,9 @@ export function createTypewriterApp(params: {
 
   const schemaName = `typewriter_${deploymentKey(config.chainId, config.address)}`;
   if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
-    throw new Error(
-      `config.chainId is too long for the Postgres schema name: ${schemaName}`,
-    );
+    throw new ConfigError({
+      message: `config.chainId is too long for the Postgres schema name: ${schemaName}`,
+    });
   }
   const confirmations = {
     finalizedBlockDepth:

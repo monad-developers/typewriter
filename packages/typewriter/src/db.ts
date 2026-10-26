@@ -62,7 +62,12 @@ export class DbError extends Data.TaggedError("DbError")<{
   cause: unknown;
   /** Set when the work is known to have not applied, so a retry is safe. */
   notApplied?: boolean;
-}> {}
+}> {
+  override get message() {
+    const sql = this.sql.replaceAll(/\s+/g, " ").trim();
+    return `Failed database query: ${sql.length > 120 ? `${sql.slice(0, 120)}...` : sql}`;
+  }
+}
 
 const dialect = new PgDialect();
 

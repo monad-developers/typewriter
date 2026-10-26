@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { $ } from "bun";
+import { Predicate } from "effect";
 import type { Abi, AbiParameter } from "viem";
 import type {
   ResolvedTypewriterMutationConfig,
@@ -8,7 +9,7 @@ import type {
   StorageConfig,
   TypewriterConfig,
 } from "./config";
-import { createTypewriterApp, type TypewriterApp } from "./config";
+import { ConfigError, createTypewriterApp, type TypewriterApp } from "./config";
 import {
   BUILTIN_MUTATIONS,
   FIRST_BUILTIN_MUTATION_ID,
@@ -85,14 +86,15 @@ function isObject(value: unknown): value is AstNode {
 }
 
 function requireObject(value: unknown, name: string): AstNode {
-  if (!isObject(value)) throw new Error(`${name} must be an object`);
+  if (!isObject(value))
+    throw new ConfigError({ message: `${name} must be an object` });
   return value;
 }
 
 function asAstNode(value: unknown, name: string): AstNode {
   const node = requireObject(value, name) as AstNode;
   if (typeof node.nodeType !== "string") {
-    throw new Error(`${name} is missing nodeType`);
+    throw new ConfigError({ message: `${name} is missing nodeType` });
   }
   return node;
 }
@@ -176,9 +178,9 @@ async function findFoundryProject(entrypoint: string): Promise<FoundryProject> {
 
     const next = dirname(current);
     if (next === current || current === "") {
-      throw new Error(
-        `Could not find foundry.toml for Solidity entrypoint ${displayPath(entrypoint)}`,
-      );
+      throw new ConfigError({
+        message: `Could not find foundry.toml for Solidity entrypoint ${displayPath(entrypoint)}`,
+      });
     }
     current = next;
   }
@@ -199,7 +201,16 @@ async function buildFoundryProject(
       .cwd(project.root)
       .quiet();
   } catch (cause) {
-    throw new Error(`forge build failed for ${project.root}`, { cause });
+    // forge reports compiler errors on stdout and its own errors on stderr.
+    const output =
+      Predicate.hasProperty(cause, "stdout") &&
+      Predicate.hasProperty(cause, "stderr")
+        ? `${cause.stdout}${cause.stderr}`.trim()
+        : "";
+    throw new ConfigError({
+      message: `Failed to build Foundry project ${project.root}${output === "" ? "" : `\n${output}`}`,
+      cause,
+    });
   }
   return out;
 }
@@ -211,7 +222,7 @@ async function readArtifact(path: string): Promise<SolidityArtifact> {
 
 function requireArtifactAbi(artifact: SolidityArtifact, path: string): Abi {
   if (!Array.isArray(artifact.abi)) {
-    throw new Error(`missing ABI in artifact ${path}`);
+    throw new ConfigError({ message: `missing ABI in artifact ${path}` });
   }
   return artifact.abi as Abi;
 }
@@ -227,7 +238,9 @@ async function readEntrypointAst(
     if (artifact.ast !== undefined)
       return asAstNode(artifact.ast, "artifact ast");
   }
-  throw new Error(`missing compiler AST for ${displayPath(entrypoint)}`);
+  throw new ConfigError({
+    message: `missing compiler AST for ${displayPath(entrypoint)}`,
+  });
 }
 
 async function readAllSourceAsts(out: string): Promise<readonly AstNode[]> {
@@ -290,16 +303,16 @@ function findEntrypointContract(entrypoint: string, ast: AstNode): AstNode {
   });
 
   if (typewriterContracts.length === 0) {
-    throw new Error(
-      `${basename(entrypoint)} does not contain a contract inheriting Typewriter`,
-    );
+    throw new ConfigError({
+      message: `${basename(entrypoint)} does not contain a contract inheriting Typewriter`,
+    });
   }
   if (typewriterContracts.length > 1) {
-    throw new Error(
-      `${basename(entrypoint)} contains multiple contracts inheriting Typewriter: ${typewriterContracts
+    throw new ConfigError({
+      message: `${basename(entrypoint)} contains multiple contracts inheriting Typewriter: ${typewriterContracts
         .map((contract) => contract.name)
         .join(", ")}`,
-    );
+    });
   }
   return typewriterContracts[0]!;
 }
@@ -324,9 +337,9 @@ function findContractNode(
     (node) => node.nodeType === nodeType && node.name === name,
   );
   if (matches.length !== 1) {
-    throw new Error(
-      `${contract.name ?? "entrypoint"} must define exactly one ${name} ${nodeType}`,
-    );
+    throw new ConfigError({
+      message: `${contract.name ?? "entrypoint"} must define exactly one ${name} ${nodeType}`,
+    });
   }
   return matches[0]!;
 }
@@ -335,7 +348,7 @@ function abiTypeFromTypeName(typeName: unknown): string {
   const node = asAstNode(typeName, "typeName");
   if (node.nodeType === "ElementaryTypeName") {
     if (typeof node.name !== "string")
-      throw new Error("elementary type missing name");
+      throw new ConfigError({ message: "elementary type missing name" });
     return node.name;
   }
   if (node.nodeType === "UserDefinedTypeName") {
@@ -345,7 +358,7 @@ function abiTypeFromTypeName(typeName: unknown): string {
     );
     const typeString = typeDescriptions.typeString;
     if (typeof typeString !== "string")
-      throw new Error("type missing typeString");
+      throw new ConfigError({ message: "type missing typeString" });
     if (typeString.startsWith("enum ")) return "uint8";
   }
   if (node.nodeType === "ArrayTypeName") {
@@ -356,17 +369,17 @@ function abiTypeFromTypeName(typeName: unknown): string {
         : "";
     return `${baseType}[${length}]`;
   }
-  throw new Error(
-    `unsupported Solidity type at ${node.src ?? "unknown source"}`,
-  );
+  throw new ConfigError({
+    message: `unsupported Solidity type at ${node.src ?? "unknown source"}`,
+  });
 }
 
 function structToAbiParameters(struct: AstNode): readonly AbiParameter[] {
   return asAstNodes(struct.members).map((member) => {
     if (typeof member.name !== "string") {
-      throw new Error(
-        `struct member missing name at ${member.src ?? "unknown source"}`,
-      );
+      throw new ConfigError({
+        message: `struct member missing name at ${member.src ?? "unknown source"}`,
+      });
     }
     return {
       name: member.name,
@@ -379,9 +392,9 @@ function validateRootStorageLayout(layout: StorageLayout): StorageLayout {
   for (const label of ["accounts", "state"] as const) {
     const roots = layout.storage.filter((entry) => entry.label === label);
     if (roots.length !== 1) {
-      throw new Error(
-        `storage layout must contain exactly one top-level ${label} variable`,
-      );
+      throw new ConfigError({
+        message: `storage layout must contain exactly one top-level ${label} variable`,
+      });
     }
 
     const type = layout.types[roots[0]!.type] as StorageType | undefined;
@@ -391,13 +404,17 @@ function validateRootStorageLayout(layout: StorageLayout): StorageLayout {
         typeof type.key !== "string" ||
         typeof type.value !== "string")
     ) {
-      throw new Error("top-level accounts storage variable must be a mapping");
+      throw new ConfigError({
+        message: "top-level accounts storage variable must be a mapping",
+      });
     }
     if (
       label === "state" &&
       (type === undefined || !Array.isArray(type.members))
     ) {
-      throw new Error("top-level state storage variable must be a struct");
+      throw new ConfigError({
+        message: "top-level state storage variable must be a struct",
+      });
     }
   }
 
@@ -537,17 +554,19 @@ function parseMutations(params: {
   );
   const enumMembers = asAstNodes(mutationEnum.members).map((member, id) => {
     if (typeof member.name !== "string") {
-      throw new Error(
-        `Mutation enum member missing name at ${member.src ?? "unknown source"}`,
-      );
+      throw new ConfigError({
+        message: `Mutation enum member missing name at ${member.src ?? "unknown source"}`,
+      });
     }
     if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
-      throw new Error(`Mutation.${member.name} is reserved by Typewriter`);
+      throw new ConfigError({
+        message: `Mutation.${member.name} is reserved by Typewriter`,
+      });
     }
     if (id >= FIRST_BUILTIN_MUTATION_ID) {
-      throw new Error(
-        `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below ${FIRST_BUILTIN_MUTATION_ID}`,
-      );
+      throw new ConfigError({
+        message: `Mutation.${member.name} has reserved mutation ID ${id}; app mutation IDs must be below ${FIRST_BUILTIN_MUTATION_ID}`,
+      });
     }
     return { enumName: member.name, id };
   });
@@ -559,7 +578,9 @@ function parseMutations(params: {
   const body = asAstNode(dispatch.body, "dispatch body");
   const firstStatement = asAstNodes(body.statements)[0];
   if (firstStatement === undefined)
-    throw new Error("dispatch must contain mutation branches");
+    throw new ConfigError({
+      message: "dispatch must contain mutation branches",
+    });
   const branches = new Map(
     flattenDispatchBranches(firstStatement).map((branch) => [
       branch.name,
@@ -570,21 +591,21 @@ function parseMutations(params: {
   return enumMembers.map((member) => {
     const branch = branches.get(member.enumName);
     if (branch === undefined) {
-      throw new Error(
-        `dispatch missing branch for Mutation.${member.enumName}`,
-      );
+      throw new ConfigError({
+        message: `dispatch missing branch for Mutation.${member.enumName}`,
+      });
     }
     const mutationStructIds = findDecodeStructIds(branch, "mutationData");
     if (mutationStructIds.length !== 1) {
-      throw new Error(
-        `Mutation.${member.enumName} must decode mutationData exactly once`,
-      );
+      throw new ConfigError({
+        message: `Mutation.${member.enumName} must decode mutationData exactly once`,
+      });
     }
     const mutationStruct = params.declarations.get(mutationStructIds[0]!);
     if (mutationStruct?.nodeType !== "StructDefinition") {
-      throw new Error(
-        `Mutation.${member.enumName} decode target is not a struct`,
-      );
+      throw new ConfigError({
+        message: `Mutation.${member.enumName} decode target is not a struct`,
+      });
     }
     return {
       enumName: member.enumName,
@@ -685,14 +706,15 @@ async function requireEntrypointPath(
   // around the Solidity import, so the type guarantee can be gone at runtime.
   const value = entrypoint as unknown;
   if (typeof value !== "string" || value.length === 0) {
-    throw new Error(
-      "Typewriter entrypoint must be a Solidity file path string; import the contract's .sol file and pass it as the first argument",
-    );
+    throw new ConfigError({
+      message:
+        "Typewriter entrypoint must be a Solidity file path string; import the contract's .sol file and pass it as the first argument",
+    });
   }
   if (!(await fileExists(value))) {
-    throw new Error(
-      `Typewriter entrypoint file does not exist: ${displayPath(value)}`,
-    );
+    throw new ConfigError({
+      message: `Typewriter entrypoint file does not exist: ${displayPath(value)}`,
+    });
   }
   return value;
 }
@@ -718,7 +740,7 @@ async function readSolidityMetadata(
   const entrypointAst = await readEntrypointAst(out, entrypoint);
   const contract = findEntrypointContract(entrypoint, entrypointAst);
   if (typeof contract.name !== "string")
-    throw new Error("entrypoint contract missing name");
+    throw new ConfigError({ message: "entrypoint contract missing name" });
 
   const artifactPath = joinPath(
     out,
@@ -728,9 +750,9 @@ async function readSolidityMetadata(
   const artifact = await readArtifact(artifactPath);
   const abi = requireArtifactAbi(artifact, artifactPath);
   if (artifact.storageLayout === undefined) {
-    throw new Error(
-      `missing storage layout for ${contract.name}; ensure the Foundry profile emits storageLayout`,
-    );
+    throw new ConfigError({
+      message: `missing storage layout for ${contract.name}; ensure the Foundry profile emits storageLayout`,
+    });
   }
 
   const asts = await readReachableSourceAsts(out, entrypointAst);

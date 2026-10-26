@@ -11,7 +11,11 @@ import type {
 export class RpcTimeoutError extends Data.TaggedError("RpcTimeoutError")<{
   method: RpcMethod;
   origin: string;
-}> {}
+}> {
+  override get message() {
+    return `Failed '${this.method}' request to ${this.origin}: timed out after ${Duration.format(REQUEST_TIMEOUT)}`;
+  }
+}
 
 export type RpcError = RpcTransportError | RpcTimeoutError;
 
@@ -66,13 +70,8 @@ function makeRpc(
             ),
         }),
         Effect.tapError((error) =>
-          Effect.logDebug("rpc request failed").pipe(
-            Effect.annotateLogs({
-              method,
-              origin: transport.origin,
-              attempt,
-              error,
-            }),
+          Effect.logDebug("Failed RPC request", error).pipe(
+            Effect.annotateLogs({ method, attempt }),
           ),
         ),
       );

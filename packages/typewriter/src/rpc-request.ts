@@ -20,7 +20,11 @@ export type RequestedBlock<includeTransactions extends boolean = false> = Block<
 /** The provider returned `null` for the block. */
 export class BlockNotFoundError extends Data.TaggedError("BlockNotFoundError")<{
   block: Hash | bigint | "latest";
-}> {}
+}> {
+  override get message() {
+    return `Block ${this.block} not found`;
+  }
+}
 
 /** The call returned `0x`, for example because no contract is at `address`. */
 export class NoDataReturnedError extends Data.TaggedError(
@@ -28,7 +32,11 @@ export class NoDataReturnedError extends Data.TaggedError(
 )<{
   address: Address.Address;
   functionName: string;
-}> {}
+}> {
+  override get message() {
+    return `Failed '${this.functionName}' call to ${this.address}: no data returned. Is a contract deployed at the address?`;
+  }
+}
 
 export function requestBlock<includeTransactions extends boolean = false>(
   block: BlockIdentifier,

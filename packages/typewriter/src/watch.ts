@@ -70,7 +70,11 @@ export class UnrecoverableReorgError extends Data.TaggedError(
 )<{
   number: bigint;
   hash: Hex.Hex;
-}> {}
+}> {
+  override get message() {
+    return `Detected unrecoverable reorg deeper than the local chain at block ${this.number} (${this.hash})`;
+  }
+}
 
 export type WatchError =
   | RpcError
@@ -129,7 +133,7 @@ export function makeWatch(
           block.logsBloom === null
         ) {
           return yield* new IncompleteBlockError({
-            message: "block missing number or hash",
+            message: "Received block without a number or hash",
           });
         }
 
@@ -163,7 +167,7 @@ export function makeWatch(
                   log.logIndex === null
                 ) {
                   return yield* new IncompleteBlockError({
-                    message: "log missing transaction hash or index",
+                    message: "Received log without a transaction hash or index",
                   });
                 }
 
@@ -335,7 +339,7 @@ export function makeWatch(
         return yield* getLocalBlockWithLogs(block);
       });
       yield* reconcileBlock(latestBlock);
-    }).pipe(Effect.withLogSpan("watch"));
+    });
 
     return {
       messages: Stream.fromQueue(queue),
