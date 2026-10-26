@@ -39,7 +39,7 @@ import type {
   TypewriterApp,
   TypewriterManifest,
 } from "./config";
-import { Database, type Db, type DbError } from "./db";
+import { Database, type Db, type DbError, type DbTransaction } from "./db";
 import { deploymentLockKey, type MigrationError, migrate } from "./db-migrate";
 import {
   insertKeccakPreimages,
@@ -130,6 +130,14 @@ type RuntimeExecuteInput = {
   params: unknown;
   authorization: Authorization;
 };
+
+/**
+ * Resolves once a mutation executes. Its batch commits later, at `committed`.
+ */
+type AcceptDeferred = Deferred.Deferred<
+  { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
+  ExecuteMutationError
+>;
 
 /** `execute` got a mutation name that the app does not define. */
 export class UnknownMutationError extends Data.TaggedError(
@@ -665,14 +673,21 @@ export function createTypewriterEffect<
     const batchesById = new Map<number, RuntimeBatch>();
     const receivedMutationQueue = yield* Queue.unbounded<{
       mutation: ReceivedMutation;
-      deferred: Deferred.Deferred<AcceptedMutation, ExecuteMutationError>;
+      deferred: AcceptDeferred;
     }>();
     const enqueuedMutationsQueue = yield* Queue.unbounded<EnqueuedMutation>();
-    const acceptedBatchesQueue = yield* Queue.unbounded<number>();
+    const acceptedBatchesQueue = yield* Queue.unbounded<{
+      id: number;
+      committed: Deferred.Deferred<void>;
+    }>();
+    const persistQueue = yield* Queue.unbounded<{
+      write: (tx: DbTransaction) => Effect.Effect<void, DbError>;
+      committed: Deferred.Deferred<void>;
+    }>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedMutationsQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptedBatchesQueue));
-    // Fails when `program` stops.
+    yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
     const stopped = yield* Deferred.make<never, TypewriterStoppedError>();
 
     const withSpeculativeStateLock = Semaphore.withPermits(
@@ -797,10 +812,19 @@ export function createTypewriterEffect<
       });
     }
 
+    const persist = (
+      write: (tx: DbTransaction) => Effect.Effect<void, DbError>,
+    ) =>
+      Effect.gen(function* () {
+        const committed = yield* Deferred.make<void>();
+        yield* Queue.offer(persistQueue, { write, committed });
+        return committed;
+      });
+
     const acceptBatch = (
       submittedMutations: {
         mutation: ReceivedMutation;
-        deferred: Deferred.Deferred<AcceptedMutation, ExecuteMutationError>;
+        deferred: AcceptDeferred;
       }[],
     ) =>
       withSpeculativeStateLock(
@@ -823,7 +847,7 @@ export function createTypewriterEffect<
             mutation: AcceptedMutation;
             executeResult: ExecuteResult;
             preimages: readonly Hex.Hex[];
-            deferred: Deferred.Deferred<AcceptedMutation, ExecuteMutationError>;
+            deferred: AcceptDeferred;
           }[] = [];
 
           for (const { mutation, deferred } of submittedMutations) {
@@ -858,8 +882,7 @@ export function createTypewriterEffect<
 
           emitBatch(batchToEvent(batch));
 
-          const persistStartedAtMs = startTimer();
-          yield* db.transaction((tx) =>
+          const committed = yield* persist((tx) =>
             Effect.gen(function* () {
               yield* insertMutations(
                 tx,
@@ -878,32 +901,24 @@ export function createTypewriterEffect<
               );
             }),
           );
-
+          yield* Queue.offer(acceptedBatchesQueue, { id: batch.id, committed });
           for (const { mutation, deferred } of acceptedMutations) {
-            yield* Deferred.succeed(deferred, mutation);
+            yield* Deferred.succeed(deferred, { mutation, committed });
           }
-
-          yield* Effect.logDebug("persisted accepted mutations").pipe(
-            Effect.annotateLogs({
-              mutationCount: acceptedMutations.length,
-              duration: durationMs(persistStartedAtMs),
-            }),
-          );
-
-          yield* Queue.offer(acceptedBatchesQueue, batch.id);
         }),
       );
 
     const submit = Effect.gen(function* () {
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
-          const batchIds = yield* Queue.clear(acceptedBatchesQueue);
+          const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
           const enqueuedMutations = yield* Queue.clear(enqueuedMutationsQueue);
-          if (batchIds.length === 0 && enqueuedMutations.length === 0) {
+          if (acceptedBatches.length === 0 && enqueuedMutations.length === 0) {
             return undefined;
           }
 
-          const batches = batchIds.map((id) => batchesById.get(id)!);
+          const batches = acceptedBatches.map(({ id }) => batchesById.get(id)!);
+          const commits = acceptedBatches.map(({ committed }) => committed);
 
           const acceptedEnqueuedMutations: {
             mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
@@ -935,24 +950,28 @@ export function createTypewriterEffect<
           );
 
           if (acceptedEnqueuedMutations.length > 0) {
-            yield* db.transaction((tx) =>
-              Effect.gen(function* () {
-                yield* insertMutations(
-                  tx,
-                  app.mutationSchema,
-                  acceptedEnqueuedMutations.map((entry) => entry.mutation),
-                );
-                yield* insertStorageSlots(
-                  tx,
-                  app.typewriterSchema,
-                  acceptedEnqueuedMutations,
-                );
-                yield* insertKeccakPreimages(
-                  tx,
-                  app.typewriterSchema,
-                  acceptedEnqueuedMutations.flatMap((entry) => entry.preimages),
-                );
-              }),
+            commits.push(
+              yield* persist((tx) =>
+                Effect.gen(function* () {
+                  yield* insertMutations(
+                    tx,
+                    app.mutationSchema,
+                    acceptedEnqueuedMutations.map((entry) => entry.mutation),
+                  );
+                  yield* insertStorageSlots(
+                    tx,
+                    app.typewriterSchema,
+                    acceptedEnqueuedMutations,
+                  );
+                  yield* insertKeccakPreimages(
+                    tx,
+                    app.typewriterSchema,
+                    acceptedEnqueuedMutations.flatMap(
+                      ({ preimages }) => preimages,
+                    ),
+                  );
+                }),
+              ),
             );
           }
 
@@ -1003,6 +1022,7 @@ export function createTypewriterEffect<
             acceptedForceIncludedMutations,
             calldata,
             simulateResult,
+            commits,
           };
         }),
       );
@@ -1014,7 +1034,10 @@ export function createTypewriterEffect<
         acceptedForceIncludedMutations,
         calldata,
         simulateResult,
+        commits,
       } = simulation;
+
+      yield* Effect.forEach(commits, Deferred.await, { discard: true });
 
       const transactionStartedAtMs = startTimer();
 
@@ -1121,7 +1144,7 @@ export function createTypewriterEffect<
         forceIncludedMutations,
       };
 
-      yield* db.transaction((tx) =>
+      yield* persist((tx) =>
         updateMutationInclusion(
           tx,
           app.mutationSchema,
@@ -1268,8 +1291,34 @@ export function createTypewriterEffect<
       ),
     );
 
+    const persistProgram = Effect.forever(
+      Effect.gen(function* () {
+        const jobs = yield* Queue.takeAll(persistQueue);
+        const persistStartedAtMs = startTimer();
+        yield* db.transaction((tx) =>
+          Effect.forEach(jobs, ({ write }) => write(tx), { discard: true }),
+        );
+        for (const { committed } of jobs) {
+          yield* Deferred.succeed(committed, undefined);
+        }
+
+        yield* Effect.logDebug("persisted runtime writes").pipe(
+          Effect.annotateLogs({
+            jobCount: jobs.length,
+            duration: durationMs(persistStartedAtMs),
+          }),
+        );
+      }),
+    );
+
     const program = Effect.all(
-      [batchProgram, submitProgram, watchProgram, watch.program],
+      [
+        batchProgram,
+        submitProgram,
+        persistProgram,
+        watchProgram,
+        watch.program,
+      ],
       { concurrency: "unbounded" },
     ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
@@ -1308,7 +1357,7 @@ export function createTypewriterEffect<
         emitMutation(mutationToEvent(runtimeMutation));
 
         const deferred = yield* Deferred.make<
-          AcceptedMutation,
+          { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
           ExecuteMutationError
         >();
         const acceptStartedAtMs = startTimer();
@@ -1318,18 +1367,21 @@ export function createTypewriterEffect<
           deferred,
         });
 
-        const acceptedMutation = yield* Deferred.await(deferred).pipe(
-          Effect.tapError((error) =>
-            Effect.logError(error).pipe(
-              Effect.annotateLogs({
-                message: "rejected mutation",
-                name: runtimeMutation.name,
-                params: runtimeMutation.params,
-              }),
+        const acceptedMutation = yield* Effect.gen(function* () {
+          const { mutation, committed } = yield* Deferred.await(deferred).pipe(
+            Effect.tapError((error) =>
+              Effect.logError(error).pipe(
+                Effect.annotateLogs({
+                  message: "rejected mutation",
+                  name: runtimeMutation.name,
+                  params: runtimeMutation.params,
+                }),
+              ),
             ),
-          ),
-          Effect.raceFirst(Deferred.await(stopped)),
-        );
+          );
+          yield* Deferred.await(committed);
+          return mutation;
+        }).pipe(Effect.raceFirst(Deferred.await(stopped)));
 
         yield* Effect.logDebug("accepted mutation").pipe(
           Effect.annotateLogs({
