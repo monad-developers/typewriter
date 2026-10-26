@@ -14,6 +14,9 @@ import { BlockNotFoundError } from "./rpc-request";
 
 const ZERO_LOGS_BLOOM = `0x${"0".repeat(512)}` as Hex.Hex;
 
+/** How many missing blocks the watch requests at once when it falls behind. */
+const CATCH_UP_CONCURRENCY = 16;
+
 export type LocalLog = {
   address: Hex.Hex;
   topics: [] | [signature: Hex.Hex, ...args: Hex.Hex[]];
@@ -278,12 +281,26 @@ export function makeWatch(
         }
 
         if (current.number + 1n < newBlock.number) {
+          // Request the missing blocks in parallel, so the watch keeps up when
+          // a block takes less time than a request.
           for (
-            let number = current.number + 1n;
-            number < newBlock.number;
-            number++
+            let start = current.number + 1n;
+            start < newBlock.number;
+            start += BigInt(CATCH_UP_CONCURRENCY)
           ) {
-            yield* reconcileBlock(yield* getBlockByNumber(number));
+            const numbers: bigint[] = [];
+            for (
+              let number = start;
+              number < newBlock.number &&
+              number < start + BigInt(CATCH_UP_CONCURRENCY);
+              number++
+            ) {
+              numbers.push(number);
+            }
+            const blocks = yield* Effect.forEach(numbers, getBlockByNumber, {
+              concurrency: "unbounded",
+            });
+            for (const block of blocks) yield* reconcileBlock(block);
           }
           yield* reconcileBlock(newBlock);
           return;
