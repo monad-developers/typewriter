@@ -493,8 +493,7 @@ function createRuntimeState(
     preimages: Set<Hex.Hex>;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
-  DbError | EvmError,
-  Scope.Scope
+  DbError | EvmError
 > {
   return Effect.gen(function* () {
     const { initialAccountStorage, preimages } = yield* db.transaction((tx) =>
