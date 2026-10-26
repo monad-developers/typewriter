@@ -280,13 +280,28 @@ impl Journal {
         journal
     }
 
-    fn write(&self, db: &mut InMemoryDB, post: bool) {
-        for (address, (pre, after)) in &self.accounts {
-            db.insert_account_info(*address, if post { after } else { pre }.clone());
+    fn write(&self, db: &mut InMemoryDB, image: Image) {
+        for (address, images) in &self.accounts {
+            db.insert_account_info(*address, image.pick(images).clone());
         }
-        for ((address, slot), (pre, after)) in &self.storage {
-            let Ok(()) =
-                db.insert_account_storage(*address, *slot, if post { *after } else { *pre });
+        for ((address, slot), images) in &self.storage {
+            let Ok(()) = db.insert_account_storage(*address, *slot, *image.pick(images));
+        }
+    }
+}
+
+// Which side of a tx a journal writes: Pre undoes the tx, Post redoes it.
+#[derive(Clone, Copy)]
+enum Image {
+    Pre,
+    Post,
+}
+
+impl Image {
+    fn pick<T>(self, (pre, post): &(T, T)) -> &T {
+        match self {
+            Image::Pre => pre,
+            Image::Post => post,
         }
     }
 }
@@ -407,7 +422,7 @@ impl EvmHarness {
         self.ensure_journal_ids(&params.journal_ids)?;
         for journal_id in params.journal_ids.iter().rev() {
             let journal = self.journals.remove(journal_id).expect("validated above");
-            journal.write(self.evm.0.ctx.journaled_state.db_mut(), false);
+            journal.write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
         }
         Ok(())
     }
@@ -460,12 +475,12 @@ impl EvmHarness {
         self.ensure_journal_ids(&params.journal_ids)?;
         let tx = TxRequest::parse(&params.tx, self.evm.0.ctx.cfg.0.chain_id)?;
         for journal_id in params.journal_ids.iter().rev() {
-            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), false);
+            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
         }
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
         let result = self.run_simulate(&tx, cached_access_list);
         for journal_id in &params.journal_ids {
-            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), true);
+            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Post);
         }
         result
     }
