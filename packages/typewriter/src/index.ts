@@ -38,17 +38,33 @@ export type Typewriter<
   on: On<sequencingConfig, mutationsConfig, () => void>;
 };
 
+export type { EvmError } from "typewriter-evm";
 export type {
   ResolvedTypewriterMutationConfig,
   TypewriterConfig,
   TypewriterManifest,
 } from "./config";
+export { DbError } from "./db";
+export { MigrationError } from "./db-migrate";
 export type { TypewriterMutationSchema } from "./db-schema";
+export { type RpcError, RpcTimeoutError } from "./rpc";
+export { BlockNotFoundError, NoDataReturnedError } from "./rpc-request";
+export {
+  RpcHttpError,
+  RpcNetworkError,
+  RpcResponseError,
+  type RpcTransportError,
+} from "./rpc-transport";
 export type { TypewriterSolidityEntrypoint } from "./sol-parse";
-export type {
-  ExecuteError,
-  ExecuteMutationError,
-  ProgramError,
+export {
+  type CreateTypewriterError,
+  EncodeMutationError,
+  type ExecuteError,
+  type ExecuteMutationError,
+  type ProgramError,
+  ProgramStoppedError,
+  SignTransactionError,
+  UnknownMutationError,
 } from "./typewriter";
 export type {
   Account,
@@ -68,6 +84,11 @@ export type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
+export {
+  IncompleteBlockError,
+  UnrecoverableReorgError,
+  type WatchError,
+} from "./watch";
 
 type EntrypointMetadata<entrypoint> =
   entrypoint extends TypewriterSolidityEntrypoint<infer metadata>
