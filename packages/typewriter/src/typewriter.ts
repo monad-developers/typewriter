@@ -457,15 +457,22 @@ export function enqueueMutation(params: {
   mutation: EnqueuedMutation;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
-    // TODO(kyle) prune the enqueue's journal. Nothing reverts or replays it,
-    // so it stays in the EVM's journal map for the life of the process.
     const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
 
-    return yield* params.evm.execute({
+    const executeResult = yield* params.evm.execute({
       from: "0x0000000000000000000000000000000000000000",
       to: params.app.address,
       data: enqueueCalldata,
     });
+
+    // The enqueue is already onchain, so a settlement never rewinds it.
+    if (executeResult.status === "success") {
+      yield* params.evm.pruneJournals({
+        journal_ids: [executeResult.journal_id],
+      });
+    }
+
+    return executeResult;
   });
 }
 
