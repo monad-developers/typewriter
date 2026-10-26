@@ -46,19 +46,19 @@ type NativeAddon = {
 // Errors
 
 export class EvmCrashed extends Data.TaggedError("EvmCrashed")<{
-  readonly message: string;
-  readonly cause?: unknown;
+  message: string;
+  cause?: unknown;
 }> {}
 
 export class EvmCallError extends Data.TaggedError("EvmCallError")<{
-  readonly method: Request["method"];
-  readonly message: string;
-  readonly cause: string;
+  method: Request["method"];
+  message: string;
+  cause: string;
 }> {}
 
 export class EvmProtocolError extends Data.TaggedError("EvmProtocolError")<{
-  readonly message: string;
-  readonly cause?: unknown;
+  message: string;
+  cause?: unknown;
 }> {}
 
 export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
