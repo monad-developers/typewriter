@@ -1,4 +1,4 @@
-import { Effect, Exit, Fiber, Layer, Scope } from "effect";
+import { Effect, Exit, Layer, Scope } from "effect";
 import type {
   MutationConfig,
   MutationsConfig,
@@ -67,6 +67,7 @@ export {
   SettlementRevertedError,
   SettlementSimulationRevertedError,
   SignTransactionError,
+  TypewriterStoppedError,
   UnknownMutationError,
 } from "./typewriter";
 export type {
@@ -137,7 +138,7 @@ export async function createTypewriter<
   const scope = Effect.runSync(Scope.make());
 
   try {
-    const { typewriter, fiber } = await Effect.runPromise(
+    const typewriter = await Effect.runPromise(
       Effect.gen(function* () {
         const [rpcUrl, ...rpcUrls] = app.rpcUrls;
         const services = yield* Layer.buildWithScope(
@@ -158,7 +159,7 @@ export async function createTypewriter<
           Effect.provide(services),
           Effect.provideService(Scope.Scope, scope),
         );
-        const fiber = yield* typewriter.program.pipe(
+        yield* typewriter.program.pipe(
           // A failed program can't accept mutations. Crash the process rather
           // than serve stale state.
           Effect.tapError((error) =>
@@ -170,19 +171,13 @@ export async function createTypewriter<
           ),
           Effect.forkIn(scope),
         );
-        return { typewriter, fiber };
+        return typewriter;
       }),
     );
 
-    // Fails once the program has failed, so `execute` doesn't wait forever.
-    const stopped = Fiber.join(fiber);
-
     const execute = ((
       submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
-    ) =>
-      Effect.runPromise(
-        typewriter.execute(submitted).pipe(Effect.raceFirst(stopped)),
-      )) as Result["execute"];
+    ) => Effect.runPromise(typewriter.execute(submitted))) as Result["execute"];
 
     const on = ((
       event: "mutation" | "batch" | "block",
