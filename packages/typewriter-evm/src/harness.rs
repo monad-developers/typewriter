@@ -103,8 +103,8 @@ impl TxOutcome {
     }
 }
 
-// A halt is a failure other than REVERT, such as out of gas or an invalid
-// opcode. It returns no data and uses all the gas the frame was given.
+/// A halt is a failure other than REVERT, such as out of gas or an invalid
+/// opcode. It returns no data and uses all the gas the frame was given.
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum TxStatus {
@@ -113,20 +113,20 @@ enum TxStatus {
     Halt { reason: String },
 }
 
-// gas_used is with cold access: execute warms no access list.
+/// gas_used is with cold access: execute warms no access list.
 #[derive(Serialize)]
 struct ExecuteOk {
     #[serde(flatten)]
     outcome: TxOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     journal_id: Option<u64>,
-    // Writes to the called contract.
+    /// Writes to the called contract.
     slot_writes: Vec<SlotWriteEntry>,
-    // The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
+    /// The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
     keccak_preimages: Vec<String>,
 }
 
-// gas_used is with the access list warm, as the chain charges it.
+/// gas_used is with the access list warm, as the chain charges it.
 #[derive(Serialize)]
 struct SimulateOk {
     #[serde(flatten)]
@@ -154,18 +154,18 @@ type MonadCtx = monad_revm::api::default_ctx::MonadContext<InMemoryDB>;
 type Evm = monad_revm::api::builder::DefaultMonadEvm<MonadCtx, HarnessInspector>;
 type TxResult = ExecutionResult<HaltReason>;
 
-// The gas limit must exceed gas_used in two places: SSTORE needs more than
-// the call stipend left (EIP-2200), and a call or create keeps 1/64 of the
-// gas it could forward (EIP-150). Gas spent after either point is already in
-// gas_used, so each frame needs a reserve: 2,301 for its own SSTOREs, and
-// enough that 63/64 of its remaining gas covers each child's gas plus the
-// child's reserve. Monad has no refunds, so gas_used is the gas spent. A
-// halted frame uses all the gas it is given, which its need already counts.
-//
-// Typewriter contracts never catch a halt in a nested call: a failed call
-// reverts the tx. The limit relies on this. Simulate runs at u64::MAX gas, so
-// a caught halt in a call that forwards all its gas burns nearly all of it,
-// and gas_limit comes out near u64::MAX, which the node rejects.
+/// The gas limit must exceed gas_used in two places: SSTORE needs more than
+/// the call stipend left (EIP-2200), and a call or create keeps 1/64 of the
+/// gas it could forward (EIP-150). Gas spent after either point is already in
+/// gas_used, so each frame needs a reserve: 2,301 for its own SSTOREs, and
+/// enough that 63/64 of its remaining gas covers each child's gas plus the
+/// child's reserve. Monad has no refunds, so gas_used is the gas spent. A
+/// halted frame uses all the gas it is given, which its need already counts.
+///
+/// Typewriter contracts never catch a halt in a nested call: a failed call
+/// reverts the tx. The limit relies on this. Simulate runs at u64::MAX gas, so
+/// a caught halt in a call that forwards all its gas burns nearly all of it,
+/// and gas_limit comes out near u64::MAX, which the node rejects.
 #[derive(Default)]
 struct HarnessInspector {
     keccak_preimages: Vec<[u8; 64]>,
@@ -178,14 +178,19 @@ impl HarnessInspector {
         *self = Self::default();
     }
 
+    /// Ends a call or create frame and raises its caller's reserve to cover it.
     fn frame_end(&mut self, gas_limit: u64, result: &InterpreterResult, sstore_reserve: u64) {
         let Some(mut reserve) = self.frame_reserves.pop() else {
             return;
         };
         reserve = reserve.max(sstore_reserve);
+        // The gas this frame needs to be given: what it spent plus its reserve.
         let need = gas_limit - result.gas.remaining() + reserve;
         match self.frame_reserves.last_mut() {
+            // The caller keeps 1/64 of its gas back from the call, so to give
+            // `need` it must hold this frame's reserve plus about need/63 more.
             Some(parent) => *parent = (*parent).max(reserve + need.div_ceil(63) + 1),
+            // The top frame's reserve is the tx's.
             None => self.gas_reserve = reserve,
         }
     }
@@ -251,8 +256,8 @@ impl Inspector<MonadCtx> for HarnessInspector {
 // -----------------------------------------------------------------------------
 // Harness
 
-// revm clears its own journal when a tx succeeds, so each tx's pre/post images
-// are kept here to revert or temporarily undo it later.
+/// revm clears its own journal when a tx succeeds, so each tx's pre/post images
+/// are kept here to revert or temporarily undo it later.
 #[derive(Default)]
 struct Journal {
     accounts: HashMap<Address, (AccountInfo, AccountInfo)>,
@@ -290,7 +295,7 @@ impl Journal {
     }
 }
 
-// Which side of a tx a journal writes: Pre undoes the tx, Post redoes it.
+/// Which side of a tx a journal writes: Pre undoes the tx, Post redoes it.
 #[derive(Clone, Copy)]
 enum Image {
     Pre,
@@ -501,6 +506,8 @@ impl EvmHarness {
             .collect()
     }
 
+    /// Checks every id before a request changes anything, so a request with an
+    /// unknown id has no effect.
     fn ensure_journal_ids(&self, journal_ids: &[u64]) -> Result<(), String> {
         match journal_ids
             .iter()
@@ -511,11 +518,11 @@ impl EvmHarness {
         }
     }
 
-    // Runs the tx and takes its post-state out of revm's journal, even when
-    // the run fails, so no run leaves state behind for the next one. Execute
-    // commits the state it gets back; every other run drops it. finalize is
-    // the only way to drop it: transact_one commits the tx on success, which
-    // clears revm's revert log.
+    /// Runs the tx and takes its post-state out of revm's journal, even when
+    /// the run fails, so no run leaves state behind for the next one. Execute
+    /// commits the state it gets back; every other run drops it. finalize is
+    /// the only way to drop it: transact_one commits the tx on success, which
+    /// clears revm's revert log.
     fn run_tx(
         &mut self,
         tx: &TxRequest,
@@ -528,9 +535,9 @@ impl EvmHarness {
         Ok((result, state))
     }
 
-    // Lists the accounts and slots the tx touched, leaving out accounts the
-    // chain already warms: the sender, the recipient, the coinbase, and
-    // precompiles.
+    /// Lists the accounts and slots the tx touched, leaving out accounts the
+    /// chain already warms: the sender, the recipient, the coinbase, and
+    /// precompiles.
     fn discovered_access_list(&self, tx: &TxRequest, state: &EvmState) -> AccessList {
         let precompiles = self.evm.0.ctx.journaled_state.precompile_addresses();
         let coinbase = self.evm.0.ctx.block.beneficiary;
@@ -689,8 +696,8 @@ fn format_bytes(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-// The runtime orders txs and accounts for gas and balances itself, so these
-// checks would only reject txs it has already accepted.
+/// The runtime orders txs and accounts for gas and balances itself, so these
+/// checks would only reject txs it has already accepted.
 fn relax_cfg(cfg: &mut MonadCfgEnv) {
     cfg.0.disable_nonce_check = true;
     cfg.0.disable_balance_check = true;
@@ -724,7 +731,7 @@ struct Response<T: Serialize> {
 #[derive(Serialize)]
 struct EmptyResult {}
 
-// Never fails, so the FFI boundary stays infallible.
+/// Never fails, so the FFI boundary stays infallible.
 pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
     let request = match serde_json::from_str::<Request>(request_json) {
         Ok(request) => request,
@@ -771,7 +778,7 @@ mod tests {
     const CALLEE: u16 = 0x0c02;
     const INNER: u16 = 0x0c03;
 
-    // PUSH1 0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE STOP.
+    /// PUSH1 0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE STOP.
     const COUNTER: &[u8] = &[0x60, 0x00, 0x80, 0x54, 0x60, 0x01, 0x01, 0x90, 0x55, 0x00];
     const CALL: u8 = 0xf1;
     const STATICCALL: u8 = 0xfa;
@@ -783,7 +790,7 @@ mod tests {
         Address::from(bytes)
     }
 
-    // Calls `target` with no calldata and the `gas` operand.
+    /// Calls `target` with no calldata and the `gas` operand.
     fn call(op: u8, target: u16, gas: &[u8]) -> Vec<u8> {
         let mut code = [0x60, 0x00].repeat(if op == CALL { 5 } else { 4 });
         code.push(0x73);
@@ -793,7 +800,7 @@ mod tests {
         code
     }
 
-    // Reverts unless the call succeeded, then stops.
+    /// Reverts unless the call succeeded, then stops.
     fn require_success(mut code: Vec<u8>) -> Vec<u8> {
         let revert = u8::try_from(code.len() + 5).unwrap();
         code.extend_from_slice(&[0x15, 0x60, revert, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x80, 0xfd]);
@@ -837,7 +844,7 @@ mod tests {
         matches!(result, ExecutionResult::Success { .. })
     }
 
-    // The tx fails at gas_used and succeeds at the simulated limit.
+    /// The tx fails at gas_used and succeeds at the simulated limit.
     fn assert_reserve_needed(accounts: &[(u16, &[u8])]) {
         let mut harness = harness(accounts);
         let result = simulate(&mut harness).unwrap();
