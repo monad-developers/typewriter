@@ -10,7 +10,7 @@ import {
 import { Rpc, type RpcError } from "./rpc";
 import { TYPEWRITER_ABI } from "./typewriter-constants";
 
-export type BlockIdentifier = number | bigint | Hash;
+export type BlockIdentifier = number | bigint | Hash | "latest";
 export type RequestedBlock<includeTransactions extends boolean = false> = Block<
   bigint,
   includeTransactions,
@@ -41,16 +41,19 @@ export function requestBlock<includeTransactions extends boolean = false>(
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
 
-    const id = typeof block === "string" ? block : BigInt(block);
+    const id = typeof block === "number" ? BigInt(block) : block;
     const rpcBlock =
-      typeof id === "string"
+      typeof id === "string" && id !== "latest"
         ? yield* rpc.request({
             method: "eth_getBlockByHash",
             params: [id, includeTransactions],
           })
         : yield* rpc.request({
             method: "eth_getBlockByNumber",
-            params: [Hex.fromNumber(id), includeTransactions],
+            params: [
+              id === "latest" ? id : Hex.fromNumber(id),
+              includeTransactions,
+            ],
           });
 
     if (rpcBlock === null) {
@@ -66,6 +69,7 @@ export function requestBlock<includeTransactions extends boolean = false>(
 
 export function requestExecutionIndex(
   address: Address.Address,
+  blockHash: Hash,
 ): Effect.Effect<bigint, RpcError | NoDataReturnedError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
@@ -79,7 +83,7 @@ export function requestExecutionIndex(
             functionName: "executionIndex",
           }),
         },
-        "latest",
+        { blockHash },
       ],
     });
 

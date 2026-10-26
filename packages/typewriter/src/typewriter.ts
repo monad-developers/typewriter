@@ -60,6 +60,7 @@ import {
 import { durationMs, loggerLayer, startTimer } from "./logger";
 import { Rpc, type RpcError } from "./rpc";
 import {
+  type BlockNotFoundError,
   type NoDataReturnedError,
   requestBlock,
   requestExecutionIndex,
@@ -86,7 +87,12 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
-import { type LocalLog, makeWatch, type WatchError } from "./watch";
+import {
+  type IncompleteBlockError,
+  type LocalLog,
+  makeWatch,
+  type WatchError,
+} from "./watch";
 
 export type StorageRootProperty<
   storageConfig extends StorageConfig,
@@ -177,6 +183,24 @@ export class SettlementSimulationHaltedError extends Data.TaggedError(
   }
 }
 
+/** A mutation that was enqueued onchain reverted when enqueued in revm. */
+export class EnqueueRevertedError extends Data.TaggedError(
+  "EnqueueRevertedError",
+)<Revert> {
+  override get message() {
+    return revertMessage("revm enqueue reverted", this.errorName);
+  }
+}
+
+/** A mutation that was enqueued onchain halted when enqueued in revm. */
+export class EnqueueHaltedError extends Data.TaggedError("EnqueueHaltedError")<{
+  reason: string;
+}> {
+  override get message() {
+    return `revm enqueue halted: ${this.reason}`;
+  }
+}
+
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
@@ -211,12 +235,16 @@ export type ProgramError =
   | SettlementSimulationRevertedError
   | SettlementSimulationHaltedError
   | SettlementRevertedError
+  | EnqueueRevertedError
+  | EnqueueHaltedError
   | SignTransactionError
   | ProgramStoppedError;
 
 export type CreateTypewriterError =
   | DbError
   | RpcError
+  | BlockNotFoundError
+  | IncompleteBlockError
   | NoDataReturnedError
   | MigrationError
   | EvmError;
@@ -640,11 +668,17 @@ export function createTypewriterEffect<
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
 
+    // The runtime starts from this block, and watches the blocks after it.
+    // Read it by hash, so each read sees the same block on any provider.
+    const startBlock = yield* requestBlock("latest");
     const code = yield* rpc.request({
       method: "eth_getCode",
-      params: [app.address, "latest"],
+      params: [app.address, { blockHash: startBlock.hash }],
     });
-    let nextExecutionIndex = yield* requestExecutionIndex(app.address);
+    let nextExecutionIndex = yield* requestExecutionIndex(
+      app.address,
+      startBlock.hash,
+    );
     yield* migrate(
       db,
       app.schemaName,
@@ -662,6 +696,7 @@ export function createTypewriterEffect<
       yield* createRuntimeState(app, db, code);
 
     const watch = yield* makeWatch({
+      fromBlock: startBlock.hash,
       pollIntervalMs: app.blockPollingIntervalMs,
       maxChainDepth: app.confirmations.finalizedBlockDepth,
       logFilter: {
@@ -946,6 +981,12 @@ export function createTypewriterEffect<
               );
             } else {
               // TODO(kyle) how to handle failed enqueue.
+              // TODO(kyle) the discarded mutation stays in the queue onchain,
+              // and anyone can `forceExecute` it after FORCE_INCLUSION_DELAY.
+              // It can succeed then, for example once its nonce is next, and
+              // change state and `executionIndex` outside revm. The watch only
+              // sees `ForceInclusionQueued` logs and `forceExecute` emits no
+              // event, so revm would not see it.
             }
           }
 
@@ -1193,18 +1234,21 @@ export function createTypewriterEffect<
             });
 
             for (const log of message.block.logs) {
-              // TODO(kyle) check the log's queue index against the length of
-              // the queue in revm. A missed log shifts every later enqueued
-              // mutation, so `execute` runs a different queued mutation than
-              // the one revm accepted, and the settlement reverts onchain.
               const enqueuedMutation = decodeEnqueuedMutation({ app, log });
 
               const executeResult = yield* withSpeculativeStateLock(
                 enqueueMutation({ app, evm, mutation: enqueuedMutation }),
               );
 
-              if (executeResult.status !== "success") {
-                continue;
+              if (executeResult.status === "revert") {
+                return yield* new EnqueueRevertedError(
+                  decodeRevert(app.abi, executeResult.data),
+                );
+              }
+              if (executeResult.status === "halt") {
+                return yield* new EnqueueHaltedError({
+                  reason: executeResult.reason,
+                });
               }
 
               invalidateStorageCache(

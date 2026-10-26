@@ -50,6 +50,8 @@ export type WatchMessage =
     };
 
 export type WatchConfig = {
+  /** The last block the caller has seen. The watch emits each block after it. */
+  fromBlock: Hex.Hex;
   maxChainDepth: number;
   pollIntervalMs: number;
   logFilter?: WatchLogFilter;
@@ -105,7 +107,11 @@ const quantity = (value: bigint): Hex.Hex => `0x${value.toString(16)}`;
 
 export function makeWatch(
   config: WatchConfig,
-): Effect.Effect<Watch, never, Rpc | Scope.Scope> {
+): Effect.Effect<
+  Watch,
+  IncompleteBlockError | RpcError | BlockNotFoundError,
+  Rpc | Scope.Scope
+> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
 
@@ -113,9 +119,6 @@ export function makeWatch(
       Queue.unbounded<WatchMessage>(),
       (q) => Queue.shutdown(q),
     );
-
-    // oldest first; tip is last. capped at maxChainDepth.
-    let localChain: readonly LocalBlock[] = [];
 
     const getLocalBlockWithLogs = (block: RpcBlock) =>
       Effect.gen(function* () {
@@ -212,6 +215,11 @@ export function makeWatch(
         }
         return yield* getLocalBlockWithLogs(block);
       });
+
+    // oldest first; tip is last. capped at maxChainDepth.
+    let localChain: readonly LocalBlock[] = [
+      yield* getBlockByHash(config.fromBlock),
+    ];
 
     const reconcileReorg = (
       block: LocalBlock,
