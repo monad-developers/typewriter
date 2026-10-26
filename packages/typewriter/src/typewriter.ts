@@ -166,6 +166,17 @@ export class SettlementSimulationRevertedError extends Data.TaggedError(
   }
 }
 
+/** A settlement transaction halted when simulated in revm. */
+export class SettlementSimulationHaltedError extends Data.TaggedError(
+  "SettlementSimulationHaltedError",
+)<{
+  reason: string;
+}> {
+  override get message() {
+    return `revm simulate halted: ${this.reason}`;
+  }
+}
+
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
@@ -198,6 +209,7 @@ export type ProgramError =
   | DbError
   | EvmError
   | SettlementSimulationRevertedError
+  | SettlementSimulationHaltedError
   | SettlementRevertedError
   | SignTransactionError
   | ProgramStoppedError;
@@ -315,17 +327,6 @@ export function batchBlockToEvent(
   } as BlockEvent<"batch">;
 }
 
-/**
- * The 64-byte keccak256 preimages of an execution: the inputs that hash a
- * mapping key with its slot. Shorter preimages give dynamic array data slots,
- * which enumeration does not need. The EVM writes them as lowercase hex.
- */
-function mappingPreimages(executeResult: ExecuteResult): readonly Hex.Hex[] {
-  return executeResult.keccak_preimages
-    .map(({ preimage }) => preimage)
-    .filter((preimage) => Hex.size(preimage) === 64);
-}
-
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
 )<{
@@ -342,10 +343,22 @@ export class MutationRevertedError extends Data.TaggedError(
   }
 }
 
+/** A mutation halted when executed in revm, e.g. on an invalid opcode. */
+export class MutationHaltedError extends Data.TaggedError(
+  "MutationHaltedError",
+)<{
+  reason: string;
+}> {
+  override get message() {
+    return `revm execute halted: ${this.reason}`;
+  }
+}
+
 export type ExecuteMutationError =
   | EncodeMutationError
   | EvmError
-  | MutationRevertedError;
+  | MutationRevertedError
+  | MutationHaltedError;
 
 export function executeMutation(params: {
   app: TypewriterApp;
@@ -380,22 +393,24 @@ export function executeMutation(params: {
       data: mutationCalldata,
     });
 
-    if (executeResult.success === false) {
+    if (executeResult.status === "revert") {
       return yield* new MutationRevertedError(
-        decodeRevert(params.app.abi, executeResult.revert_data),
+        decodeRevert(params.app.abi, executeResult.data),
       );
+    }
+    if (executeResult.status === "halt") {
+      return yield* new MutationHaltedError({ reason: executeResult.reason });
     }
 
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
       executionIndex: params.executionIndex,
-      journalId: executeResult.journal_id!,
+      journalId: executeResult.journal_id,
     });
 
     yield* Effect.logDebug("executed mutation").pipe(
       Effect.annotateLogs({
         executionIndex: acceptedMutation.executionIndex,
         name: acceptedMutation.name,
-        success: executeResult.success,
         slotWriteCount: executeResult.slot_writes.length,
         duration: durationMs(executeStartedAtMs),
       }),
@@ -414,6 +429,8 @@ export function enqueueMutation(params: {
   mutation: EnqueuedMutation;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
+    // TODO(kyle) prune the enqueue's journal. Nothing reverts or replays it,
+    // so it stays in the EVM's journal map for the life of the process.
     const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
 
     return yield* params.evm.execute({
@@ -463,20 +480,18 @@ export function decodeEnqueuedMutation(params: {
 
 /** Revert data from revm, decoded against the app's ABI when it matches. */
 type Revert = {
-  data: Hex.Hex | undefined;
+  data: Hex.Hex;
   /** The custom error's name, or `Error`/`Panic` for the built-in ones. */
   errorName: string | undefined;
   args: readonly unknown[] | undefined;
 };
 
-function decodeRevert(abi: Abi, data: Hex.Hex | undefined): Revert {
-  if (data === undefined)
-    return { data, errorName: undefined, args: undefined };
+function decodeRevert(abi: Abi, data: Hex.Hex): Revert {
   try {
     const { errorName, args } = decodeErrorResult({ abi, data });
     return { data, errorName, args };
   } catch {
-    // Empty data, a selector missing from the ABI, or a halt reason.
+    // Empty revert data, or a selector that isn't in the ABI.
     return { data, errorName: undefined, args: undefined };
   }
 }
@@ -522,32 +537,21 @@ function createRuntimeState(
       }),
     );
 
-    const evm = yield* createEVM();
-
     if (code === "0x") {
       yield* Effect.logWarning(
         `no contract code at app.address=${app.address}; ` +
           "revm code load skipped - runtime will continue but revm has no contract bytecode",
       );
-      yield* evm.init({
-        chain_id: app.chainId,
-        accounts: {
-          [app.address]: {
-            storage: initialAccountStorage,
-          },
-        },
-      });
-    } else {
-      yield* evm.init({
-        chain_id: app.chainId,
-        accounts: {
-          [app.address]: {
-            code,
-            storage: initialAccountStorage,
-          },
-        },
-      });
     }
+    const evm = yield* createEVM({
+      chain_id: app.chainId,
+      accounts: {
+        [app.address]: {
+          code: code === "0x" ? undefined : code,
+          storage: initialAccountStorage,
+        },
+      },
+    });
 
     const slotCache = new Map<Hex.Hex, Hex.Hex>();
     const invalidateStorageCache = (slots?: readonly Hex.Hex[]) => {
@@ -796,7 +800,7 @@ export function createTypewriterEffect<
         );
 
         const newPreimages: Hex.Hex[] = [];
-        for (const preimage of mappingPreimages(executeResult)) {
+        for (const preimage of executeResult.keccak_preimages) {
           if (preimages.has(preimage)) continue;
           preimages.add(preimage);
           newPreimages.push(preimage);
@@ -1001,10 +1005,15 @@ export function createTypewriterEffect<
             journal_ids: speculativeJournalIds,
           });
           const duration = durationMs(simulationStartedAtMs);
-          if (simulateResult.success === false) {
+          if (simulateResult.status === "revert") {
             return yield* new SettlementSimulationRevertedError(
-              decodeRevert(app.abi, simulateResult.revert_data),
+              decodeRevert(app.abi, simulateResult.data),
             );
+          }
+          if (simulateResult.status === "halt") {
+            return yield* new SettlementSimulationHaltedError({
+              reason: simulateResult.reason,
+            });
           }
 
           yield* Effect.logDebug("simulated transaction submission").pipe(
@@ -1194,7 +1203,7 @@ export function createTypewriterEffect<
                 enqueueMutation({ app, evm, mutation: enqueuedMutation }),
               );
 
-              if (executeResult.success === false) {
+              if (executeResult.status !== "success") {
                 continue;
               }
 

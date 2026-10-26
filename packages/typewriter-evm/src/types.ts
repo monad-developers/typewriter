@@ -40,27 +40,29 @@ export type SimulateParams = ExecuteParams & {
   journal_ids: number[];
 };
 
-export type ExecuteResult = {
-  success: boolean;
-  journal_id?: number;
+type TxResult = {
   gas_used: number;
-  output: Hex.Hex;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
-  slot_writes: {
-    address: Address.Address;
-    slot: Hex.Hex;
-    prev_value: Hex.Hex;
-    new_value: Hex.Hex;
-  }[];
-  keccak_preimages: { hash: Hex.Hex; preimage: Hex.Hex }[];
-  revert_data?: Hex.Hex;
 };
 
-// Simulate also estimates the smallest gas limit that lets the call succeed.
-// Execute skips that search because accepting a mutation does not need it.
-export type SimulateResult = ExecuteResult & {
+type Revert = { status: "revert"; data: Hex.Hex };
+// A failure other than REVERT, such as out of gas or an invalid opcode.
+type Halt = { status: "halt"; reason: string };
+
+export type ExecuteResult = TxResult & {
+  // Writes to the called contract.
+  slot_writes: { slot: Hex.Hex; value: Hex.Hex }[];
+  // The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
+  keccak_preimages: Hex.Hex[];
+} & ({ status: "success"; journal_id: number } | Revert | Halt);
+
+// gas_used is the gas with the access list warm, as the chain charges it.
+// gas_limit is gas_used plus a reserve for the SSTORE sentry and the 1/64
+// that each call keeps, so the call takes the same path as at max gas. It
+// assumes no nested call halts and is caught (see harness.rs).
+export type SimulateResult = TxResult & {
   gas_limit: number;
-};
+} & ({ status: "success" } | Revert | Halt);
 
 export type ReadStorageParams = {
   address: Address.Address;
@@ -74,7 +76,6 @@ export type JournalIdsParams = {
 };
 
 export type Request =
-  | { method: "init"; id: number; params: InitParams }
   | { method: "setBlockContext"; id: number; params: BlockParams }
   | { method: "execute"; id: number; params: ExecuteParams }
   | { method: "simulate"; id: number; params: SimulateParams }

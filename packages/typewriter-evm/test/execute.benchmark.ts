@@ -24,8 +24,7 @@ function formatMs(durationMs: number): string {
 
 test(`typewriter-evm execute accepts ${MUTATION_COUNT.toLocaleString()} calls`, async () => {
   const program = Effect.gen(function* () {
-    const evm = yield* createEVM();
-    yield* evm.init({
+    const evm = yield* createEVM({
       accounts: {
         [COUNTER_ADDR]: { code: COUNTER_CODE },
       },
@@ -41,7 +40,7 @@ test(`typewriter-evm execute accepts ${MUTATION_COUNT.toLocaleString()} calls`, 
         to: COUNTER_ADDR,
         data: "0x",
       });
-      if (result.success !== true) {
+      if (result.status !== "success") {
         throw new Error("execute failed during benchmark");
       }
       mutationDurationsMs[index] = performance.now() - mutationStart;
