@@ -97,18 +97,16 @@ export function makeHttpTransport(url: string): RpcTransport {
         (payload?.id === body.id || payload?.id === null) &&
         typeof error?.code === "number"
       ) {
-        return yield* Effect.fail(
-          new RpcResponseError({
-            method,
-            origin,
-            status: response.status,
-            error: {
-              code: error.code,
-              message: error.message,
-              data: error.data,
-            },
-          }),
-        );
+        return yield* new RpcResponseError({
+          method,
+          origin,
+          status: response.status,
+          error: {
+            code: error.code,
+            message: error.message,
+            data: error.data,
+          },
+        });
       }
 
       // `result` can be `null` (for example, an unknown block), so check for
@@ -117,15 +115,13 @@ export function makeHttpTransport(url: string): RpcTransport {
         return payload.result;
       }
 
-      return yield* Effect.fail(
-        new RpcHttpError({
-          method,
-          origin,
-          status: response.status,
-          body: text,
-          cause,
-        }),
-      );
+      return yield* new RpcHttpError({
+        method,
+        origin,
+        status: response.status,
+        body: text,
+        cause,
+      });
     });
 
   return { origin, request: request as RpcTransport["request"] };

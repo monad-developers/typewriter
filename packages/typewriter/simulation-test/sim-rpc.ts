@@ -105,10 +105,9 @@ export function makeSimTransport({
       const latency = between(latencyMin, latencyMax);
       yield* Effect.sleep(Duration.millis(latency));
 
-      if (draw < errorRate) return yield* Effect.fail(injected());
+      if (draw < errorRate) return yield* injected();
       const result = yield* send(request);
-      if (draw < errorRate + applyThenErrorRate)
-        return yield* Effect.fail(injected());
+      if (draw < errorRate + applyThenErrorRate) return yield* injected();
       return result;
     });
 

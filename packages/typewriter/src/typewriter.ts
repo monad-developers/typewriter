@@ -763,15 +763,15 @@ export function createTypewriterEffect<
             mutation,
             executionIndex: nextExecutionIndex,
           }).pipe(
-            Effect.tapError((error) => {
-              const rejectedMutation = updateMutationToRejected(mutation, {
-                error,
-              });
+            Effect.tapError((error) =>
+              Effect.sync(() => {
+                const rejectedMutation = updateMutationToRejected(mutation, {
+                  error,
+                });
 
-              emitMutation(mutationToEvent(rejectedMutation));
-
-              return Effect.void;
-            }),
+                emitMutation(mutationToEvent(rejectedMutation));
+              }),
+            ),
           );
 
         nextExecutionIndex++;
@@ -1287,9 +1287,7 @@ export function createTypewriterEffect<
       return Effect.gen(function* () {
         const resolvedMutation = resolveMutationConfig(app, mutation.name);
         if (resolvedMutation === undefined) {
-          return yield* Effect.fail(
-            new UnknownMutationError({ mutation: mutation.name }),
-          );
+          return yield* new UnknownMutationError({ mutation: mutation.name });
         }
 
         const runtimeMutation = {
