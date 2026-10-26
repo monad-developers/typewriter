@@ -9,6 +9,7 @@ import {
   Exit,
   FiberSet,
   Layer,
+  type LogLevel,
   Random,
   Scope,
 } from "effect";
@@ -18,6 +19,7 @@ import { KeyType } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
 import { Database, makeDb } from "../src/db";
 import { encodeEnqueueCalldata } from "../src/encoding";
+import { loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import { loadSolidityTypewriterApp } from "../src/sol-parse";
 import { createTypewriterEffect } from "../src/typewriter";
@@ -183,8 +185,6 @@ export const SIM: SIM = {
   },
 };
 
-console.log(JSON.stringify(SIM, null, 2));
-
 /** The first Anvil account. */
 const SCHEDULER = privateKeyToAccount(
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -199,6 +199,12 @@ const CLIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
  * and the block, so an estimated limit can run out.
  */
 const ENQUEUE_GAS = Hex.fromNumber(1_000_000);
+
+/**
+ * Logs a lifecycle event of the run. `None` is the one level that no minimum
+ * level filters out, so these print at every `TYPEWRITER_LOG_LEVEL`.
+ */
+const logSim = Effect.logWithLevel("None" as LogLevel.Severity);
 
 /**
  * A database of its own for the run. It is dropped when the run passes, and
@@ -223,20 +229,37 @@ const makeDatabase = Effect.acquireRelease(
           const admin = new SQL({ url: DATABASE_URL, max: 1 });
           await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
           await admin.close();
-        })
-      : Effect.sync(() => {
-          console.error(
-            `kept database ${name} for seed ${SIM.seed}: psql ${url}\n` +
-              `drop it with: DROP DATABASE "${name}" WITH (FORCE)`,
-          );
-        }),
+        }).pipe(
+          Effect.andThen(
+            logSim("dropped database").pipe(
+              Effect.annotateLogs({ database: name }),
+            ),
+          ),
+        )
+      : logSim("kept database").pipe(
+          Effect.annotateLogs({
+            database: name,
+            seed: SIM.seed,
+            psql: `psql ${url}`,
+            drop: `DROP DATABASE "${name}" WITH (FORCE)`,
+          }),
+        ),
 );
 
 const program = Effect.gen(function* () {
+  yield* logSim("starting simulation").pipe(
+    Effect.annotateLogs({ seed: SIM.seed, config: SIM }),
+  );
   const chain = yield* makeChain();
   const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
+  yield* logSim("deployed contract").pipe(
+    Effect.annotateLogs({ address, chainId }),
+  );
   const database = yield* makeDatabase;
+  yield* logSim("created database").pipe(
+    Effect.annotateLogs({ database: database.name }),
+  );
   const app = yield* Effect.promise(() =>
     loadSolidityTypewriterApp(ASSESSMENT_ENTRYPOINT, {
       address,
@@ -448,6 +471,14 @@ const program = Effect.gen(function* () {
     ),
   );
 
+  yield* logSim("running world").pipe(
+    Effect.annotateLogs({
+      accounts: signers.length,
+      steps: plan.length,
+      transports: transports.length,
+    }),
+  );
+
   // The step loop: run every fiber that can run, then move the clock to the
   // next sleep.
   const wallStart = performance.now();
@@ -472,6 +503,14 @@ const program = Effect.gen(function* () {
     }
     clock.advanceTo(next);
   }
+  const typewriter = yield* exit;
+  yield* logSim("settled mutations").pipe(
+    Effect.annotateLogs({
+      mutations,
+      virtualMs: clock.currentTimeMillisUnsafe() - startMs,
+      wallMs: Math.round(performance.now() - wallStart),
+    }),
+  );
 
   yield* validate({
     app,
@@ -483,17 +522,25 @@ const program = Effect.gen(function* () {
     mutationEvents,
     batchEvents,
     blockEvents,
-    typewriter: yield* exit,
+    typewriter,
     ordering: SIM.typewriter.ordering,
   });
 
-  console.log({
-    mutations,
-    virtualMs: clock.currentTimeMillisUnsafe() - startMs,
-    wallMs: Math.round(performance.now() - wallStart),
-  });
+  yield* logSim("validated run").pipe(
+    Effect.annotateLogs({
+      mutations,
+      blocks: blockEvents.length,
+      batches: batchEvents.length,
+      wallMs: Math.round(performance.now() - wallStart),
+    }),
+  );
 });
 
 BunRuntime.runMain(
-  program.pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  program.pipe(
+    Effect.scoped,
+    Effect.annotateLogs({ category: "sim" }),
+    Effect.provide(loggerLayer),
+    Effect.provide(BunServices.layer),
+  ),
 );
