@@ -1,3 +1,5 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { $ } from "bun";
 import type { Abi, AbiParameter } from "viem";
 import type {
@@ -63,7 +65,6 @@ type SolidityArtifact = {
 
 type FoundryProject = {
   readonly root: string;
-  readonly out: string;
 };
 
 type ParsedMutation = {
@@ -167,42 +168,11 @@ async function fileExists(path: string): Promise<boolean> {
   return await Bun.file(path).exists();
 }
 
-function outForProfile(contents: string, profile: string): string | undefined {
-  let inProfile = false;
-  for (const rawLine of contents.split("\n")) {
-    const sectionMatch = rawLine.match(/^\s*\[([^\]]+)\]/);
-    if (sectionMatch !== null) {
-      inProfile = sectionMatch[1]?.trim() === `profile.${profile}`;
-      continue;
-    }
-    if (!inProfile) continue;
-    const outMatch = rawLine.match(/^\s*out\s*=\s*"([^"]+)"\s*$/);
-    if (outMatch !== null) return outMatch[1];
-  }
-  return undefined;
-}
-
-function foundryOutDir(contents: string): string {
-  // Foundry resolves config from the active profile, falling back to the
-  // default profile and finally Foundry's built-in `out`. Match that order so
-  // a non-default profile declaring `out` first in the file isn't picked up.
-  // biome-ignore lint/complexity/useLiteralKeys: noPropertyAccessFromIndexSignature requires bracket access.
-  const activeProfile = process.env["FOUNDRY_PROFILE"] ?? "default";
-  return (
-    outForProfile(contents, activeProfile) ??
-    outForProfile(contents, "default") ??
-    "out"
-  );
-}
-
 async function findFoundryProject(entrypoint: string): Promise<FoundryProject> {
   let current = dirname(entrypoint);
   while (true) {
     const configPath = joinPath(current, "foundry.toml");
-    if (await fileExists(configPath)) {
-      const contents = await Bun.file(configPath).text();
-      return { root: current, out: foundryOutDir(contents) };
-    }
+    if (await fileExists(configPath)) return { root: current };
 
     const next = dirname(current);
     if (next === current || current === "") {
@@ -214,15 +184,24 @@ async function findFoundryProject(entrypoint: string): Promise<FoundryProject> {
   }
 }
 
-async function buildFoundryProject(project: FoundryProject): Promise<void> {
-  // TODO(kyle) Writes to the shared `out` directory, so parallel loads of one app can read a partial artifact.
+/**
+ * Builds `project` into a new directory, so parallel loads of one app do not
+ * read each other's partial artifacts. Returns the artifact directory. The
+ * caller removes `dir`.
+ */
+async function buildFoundryProject(
+  project: FoundryProject,
+  dir: string,
+): Promise<string> {
+  const out = joinPath(dir, "out");
   try {
-    await $`forge build --ast --extra-output storageLayout --force`
+    await $`forge build --ast --extra-output storageLayout --out ${out} --cache-path ${joinPath(dir, "cache")}`
       .cwd(project.root)
       .quiet();
   } catch (cause) {
     throw new Error(`forge build failed for ${project.root}`, { cause });
   }
+  return out;
 }
 
 async function readArtifact(path: string): Promise<SolidityArtifact> {
@@ -238,10 +217,10 @@ function requireArtifactAbi(artifact: SolidityArtifact, path: string): Abi {
 }
 
 async function readEntrypointAst(
-  project: FoundryProject,
+  out: string,
   entrypoint: string,
 ): Promise<AstNode> {
-  const artifactDir = joinPath(project.root, project.out, basename(entrypoint));
+  const artifactDir = joinPath(out, basename(entrypoint));
   const glob = new Bun.Glob("*.json");
   for await (const artifactName of glob.scan({ cwd: artifactDir })) {
     const artifact = await readArtifact(joinPath(artifactDir, artifactName));
@@ -251,14 +230,11 @@ async function readEntrypointAst(
   throw new Error(`missing compiler AST for ${displayPath(entrypoint)}`);
 }
 
-async function readAllSourceAsts(
-  project: FoundryProject,
-): Promise<readonly AstNode[]> {
-  const outDir = joinPath(project.root, project.out);
+async function readAllSourceAsts(out: string): Promise<readonly AstNode[]> {
   const glob = new Bun.Glob("**/*.json");
   const asts = new Map<string, AstNode>();
-  for await (const artifactName of glob.scan({ cwd: outDir })) {
-    const artifact = await readArtifact(joinPath(outDir, artifactName));
+  for await (const artifactName of glob.scan({ cwd: out })) {
+    const artifact = await readArtifact(joinPath(out, artifactName));
     if (artifact.ast === undefined) continue;
     const ast = asAstNode(artifact.ast, "artifact ast");
     const absolutePath = ast.absolutePath;
@@ -268,10 +244,10 @@ async function readAllSourceAsts(
 }
 
 async function readReachableSourceAsts(
-  project: FoundryProject,
+  out: string,
   entrypointAst: AstNode,
 ): Promise<readonly AstNode[]> {
-  const allAsts = await readAllSourceAsts(project);
+  const allAsts = await readAllSourceAsts(out);
   const byPath = new Map(
     allAsts.flatMap((ast) =>
       typeof ast.absolutePath === "string"
@@ -726,15 +702,26 @@ export async function parseSolidityMetadata(
 ): Promise<ParsedSolidityMetadata> {
   const entrypoint = await requireEntrypointPath(rawEntrypoint);
   const project = await findFoundryProject(entrypoint);
-  await buildFoundryProject(project);
-  const entrypointAst = await readEntrypointAst(project, entrypoint);
+  const dir = await mkdtemp(joinPath(tmpdir(), "typewriter-forge-"));
+  try {
+    const out = await buildFoundryProject(project, dir);
+    return await readSolidityMetadata(out, entrypoint);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function readSolidityMetadata(
+  out: string,
+  entrypoint: string,
+): Promise<ParsedSolidityMetadata> {
+  const entrypointAst = await readEntrypointAst(out, entrypoint);
   const contract = findEntrypointContract(entrypoint, entrypointAst);
   if (typeof contract.name !== "string")
     throw new Error("entrypoint contract missing name");
 
   const artifactPath = joinPath(
-    project.root,
-    project.out,
+    out,
     basename(entrypoint),
     `${contract.name}.json`,
   );
@@ -746,7 +733,7 @@ export async function parseSolidityMetadata(
     );
   }
 
-  const asts = await readReachableSourceAsts(project, entrypointAst);
+  const asts = await readReachableSourceAsts(out, entrypointAst);
   const declarations = collectDeclarations(asts);
   const appMutations = parseMutations({ contract, declarations });
   const builtinMutations = Object.entries(BUILTIN_MUTATIONS).map(
