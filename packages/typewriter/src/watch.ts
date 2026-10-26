@@ -116,6 +116,7 @@ export function makeWatch(
 
     const getLocalBlockWithLogs = (block: RpcBlock) =>
       Effect.gen(function* () {
+        // TODO(kyle) write RPC response normalizers
         if (
           block.number === null ||
           block.hash === null ||
@@ -128,6 +129,7 @@ export function makeWatch(
 
         let logs: LocalLog[] = [];
         const filter = config.logFilter;
+        // TODO(kyle) don't rely on logsBloom, it breaks on async execution chains
         if (
           filter !== undefined &&
           block.logsBloom !== ZERO_LOGS_BLOOM &&
