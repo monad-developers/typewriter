@@ -54,8 +54,17 @@ const logFormat = readEnv(
   process.env.NODE_ENV === "production" ? "json" : "pretty",
 );
 
-export const logger =
-  logFormat === "json" ? consoleJson : Logger.consolePretty();
+const output = logFormat === "json" ? consoleJson : Logger.consolePretty();
+
+/**
+ * Logs at `None` show as debug logs. The simulation test logs at `None`, the
+ * one level that no minimum level filters out, so its logs always print.
+ */
+export const logger = Logger.make((options) =>
+  output.log(
+    options.logLevel === "None" ? { ...options, logLevel: "Debug" } : options,
+  ),
+);
 
 export const loggerLayer = Layer.merge(
   Logger.layer([logger]),
