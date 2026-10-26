@@ -62,6 +62,8 @@ export type ExecuteResult = TxResult & {
 // assumes no nested call halts and is caught (see harness.rs).
 export type SimulateResult = TxResult & {
   gas_limit: number;
+  // Writes to the called contract.
+  slot_writes: { slot: Hex.Hex; value: Hex.Hex }[];
 } & ({ status: "success" } | Revert | Halt);
 
 export type ReadStorageParams = {

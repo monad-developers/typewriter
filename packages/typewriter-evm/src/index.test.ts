@@ -334,6 +334,13 @@ test("simulate only rewinds the provided journal ids", async () => {
 
   const sim = await Effect.runPromise(Effect.scoped(program));
   expect(sim.status).toBe("success");
+  expect(sim.slot_writes).toEqual([
+    {
+      slot: "0x0000000000000000000000000000000000000000000000000000000000000000",
+      value:
+        "0x0000000000000000000000000000000000000000000000000000000000000002",
+    },
+  ]);
 });
 
 test("revertJournals works on a journal", async () => {

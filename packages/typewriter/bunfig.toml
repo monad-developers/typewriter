@@ -1,2 +1,7 @@
 [test]
 timeout = 30000
+
+# Tests and the simulation run with the runtime's assertions. `bun run build`
+# defines it false. See `src/debug.ts`.
+[define]
+"globalThis.DEBUG" = "true"

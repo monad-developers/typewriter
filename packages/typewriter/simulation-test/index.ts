@@ -103,6 +103,14 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   process.exit(1);
 }
 
+// The simulation checks the runtime's assertions, which `bunfig.toml` turns on.
+if (globalThis.DEBUG !== true) {
+  console.error(
+    "DEBUG is not defined: run the simulation from packages/typewriter so that its bunfig.toml applies",
+  );
+  process.exit(1);
+}
+
 /** The configuration of a run. Each value is drawn from `SEED` and its path. */
 export const SIM: SIM = {
   seed: SEED,

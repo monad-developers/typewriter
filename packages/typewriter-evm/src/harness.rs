@@ -164,6 +164,8 @@ struct SimulateOk {
     #[serde(flatten)]
     outcome: TxOutcome,
     gas_limit: u64,
+    /// Writes to the called contract, sorted by slot.
+    slot_writes: Vec<SlotWrite>,
 }
 
 #[derive(Serialize)]
@@ -549,14 +551,21 @@ impl EvmHarness {
             }
         };
 
-        let (result, _) = self.run_tx(tx, access_list.clone())?;
+        let (result, state) = self.run_tx(tx, access_list.clone())?;
         let outcome = tx_outcome(&result, access_list);
-        let gas_limit = if outcome.success() {
-            result.tx_gas_used() + self.evm.0.inspector.gas_reserve
+        let (gas_limit, slot_writes) = if outcome.success() {
+            (
+                result.tx_gas_used() + self.evm.0.inspector.gas_reserve,
+                collect_slot_writes(&state, tx.to),
+            )
         } else {
-            result.tx_gas_used()
+            (result.tx_gas_used(), Vec::new())
         };
-        Ok(SimulateOk { outcome, gas_limit })
+        Ok(SimulateOk {
+            outcome,
+            gas_limit,
+            slot_writes,
+        })
     }
 
     fn merge_journal_access_lists(&self, journal_ids: &[u64]) -> Option<AccessList> {

@@ -50,6 +50,7 @@ import {
   updateMutationInclusion,
 } from "./db-query";
 import type { TypewriterMutationSchema } from "./db-schema";
+import { assert } from "./debug";
 import {
   decodeAuthorizationCalldata,
   decodeMutationCalldata,
@@ -457,15 +458,22 @@ export function enqueueMutation(params: {
   mutation: EnqueuedMutation;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
-    // TODO(kyle) prune the enqueue's journal. Nothing reverts or replays it,
-    // so it stays in the EVM's journal map for the life of the process.
     const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
 
-    return yield* params.evm.execute({
+    const executeResult = yield* params.evm.execute({
       from: "0x0000000000000000000000000000000000000000",
       to: params.app.address,
       data: enqueueCalldata,
     });
+
+    // The enqueue is already onchain, so a settlement never rewinds it.
+    if (executeResult.status === "success") {
+      yield* params.evm.pruneJournals({
+        journal_ids: [executeResult.journal_id],
+      });
+    }
+
+    return executeResult;
   });
 }
 
@@ -526,6 +534,35 @@ function decodeRevert(abi: Abi, data: Hex.Hex): Revert {
 
 function revertMessage(prefix: string, errorName: string | undefined) {
   return errorName === undefined ? prefix : `${prefix}: ${errorName}`;
+}
+
+/**
+ * `evm`, but it adds the journal of each successful `execute` to `journalIds`
+ * and removes the journals that `pruneJournals` and `revertJournals` drop, so
+ * `journalIds` holds the journals revm holds.
+ */
+function trackJournals(evm: EVM, journalIds: Set<number>): EVM {
+  const drop = ({ journal_ids }: { journal_ids: number[] }) =>
+    Effect.sync(() => {
+      for (const journalId of journal_ids) journalIds.delete(journalId);
+    });
+  return {
+    ...evm,
+    execute: (params) =>
+      evm.execute(params).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (result.status === "success") {
+              journalIds.add(result.journal_id);
+            }
+          }),
+        ),
+      ),
+    pruneJournals: (params) =>
+      evm.pruneJournals(params).pipe(Effect.tap(() => drop(params))),
+    revertJournals: (params) =>
+      evm.revertJournals(params).pipe(Effect.tap(() => drop(params))),
+  };
 }
 
 function createRuntimeState(
@@ -692,8 +729,16 @@ export function createTypewriterEffect<
       nextExecutionIndex,
     );
 
-    const { evm, accounts, state, preimages, invalidateStorageCache } =
-      yield* createRuntimeState(app, db, code);
+    const runtimeState = yield* createRuntimeState(app, db, code);
+    const { accounts, state, preimages, invalidateStorageCache } = runtimeState;
+
+    // Debug builds check that revm holds a journal for each accepted mutation
+    // that is not finalized, and for nothing else.
+    const journalIds = new Set<number>();
+    const journalMutations = new Map<number, RuntimeMutation>();
+    const evm = globalThis.DEBUG
+      ? trackJournals(runtimeState.evm, journalIds)
+      : runtimeState.evm;
 
     const watch = yield* makeWatch({
       fromBlock: startBlock.hash,
@@ -829,6 +874,10 @@ export function createTypewriterEffect<
           );
 
         nextExecutionIndex++;
+
+        if (globalThis.DEBUG) {
+          journalMutations.set(acceptedMutation.journalId, acceptedMutation);
+        }
 
         invalidateStorageCache(
           executeResult.slot_writes.map((write) => write.slot),
@@ -1055,6 +1104,23 @@ export function createTypewriterEffect<
             return yield* new SettlementSimulationHaltedError({
               reason: simulateResult.reason,
             });
+          }
+
+          if (globalThis.DEBUG) {
+            // The settlement, run from the state before its mutations, must
+            // leave the state that accepting them left, since that is the
+            // state `execute` callers and `state` readers were shown.
+            const speculative = yield* evm.readStorage({
+              address: app.address,
+              slots: simulateResult.slot_writes.map(({ slot }) => slot),
+            });
+            for (const { slot, value } of simulateResult.slot_writes) {
+              assert(
+                speculative[slot] === value,
+                () =>
+                  `settlement writes ${value} to slot ${slot}, but the accepted mutations left ${speculative[slot]}`,
+              );
+            }
           }
 
           yield* Effect.logDebug("simulated transaction submission").pipe(
@@ -1311,6 +1377,31 @@ export function createTypewriterEffect<
             unfinalizedBlocks = unfinalizedBlocks.filter(
               (block) => block.status !== "finalized",
             );
+
+            if (globalThis.DEBUG) {
+              // Under the lock, so no mutation is between revm and the map.
+              yield* withSpeculativeStateLock(
+                Effect.sync(() => {
+                  for (const journalId of journalIds) {
+                    const mutation = journalMutations.get(journalId);
+                    assert(
+                      mutation !== undefined && mutation.status !== "finalized",
+                      () =>
+                        `revm holds journal ${journalId}, which belongs to ${mutation === undefined ? "no mutation" : `a finalized mutation (${mutation.name})`}`,
+                    );
+                  }
+                  for (const [journalId, mutation] of journalMutations) {
+                    if (journalIds.has(journalId)) continue;
+                    assert(
+                      mutation.status === "finalized",
+                      () =>
+                        `revm dropped journal ${journalId} of a mutation that is ${mutation.status} (${mutation.name})`,
+                    );
+                    journalMutations.delete(journalId);
+                  }
+                }),
+              );
+            }
           }),
         ),
       );
