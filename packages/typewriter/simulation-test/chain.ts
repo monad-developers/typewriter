@@ -40,6 +40,11 @@ export function makeChain(): Effect.Effect<
         "--no-mining",
         "--timestamp",
         String(SIM.chain.genesisTimestamp),
+        // TODO(kyle) remove once typewriter caps a settlement's gas. It
+        // settles a whole backlog in one transaction, which can go over the
+        // 30M block gas limit and fail with "intrinsic gas too high".
+        "--gas-limit",
+        "1000000000",
       ],
       { stderr: "inherit" },
     ).pipe(Effect.orDie);
