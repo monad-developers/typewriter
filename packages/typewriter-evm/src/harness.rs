@@ -19,7 +19,7 @@ use revm::{
         interpreter_types::{Jumps, MemoryTr},
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult,
     },
-    primitives::{Address, AddressSet, Bytes, TxKind, B256, U256},
+    primitives::{Address, Bytes, TxKind, B256, U256},
     state::{AccountInfo, Bytecode, EvmState},
     DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
@@ -420,13 +420,8 @@ impl EvmHarness {
 
     fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
         let tx = TxRequest::parse(params, self.evm.0.ctx.cfg.0.chain_id)?;
-        let (result, access_list) = match self.discovery_pass(&tx) {
-            Ok(pass) => pass,
-            Err(error) => {
-                let _ = self.evm.finalize();
-                return Err(error);
-            }
-        };
+        let (result, state) = self.run_tx(&tx, AccessList::default())?;
+        let access_list = self.discovered_access_list(&tx, &state);
         let outcome = tx_outcome(&result, &access_list);
         let keccak_preimages = self
             .evm
@@ -437,7 +432,6 @@ impl EvmHarness {
             .map(|preimage| format_bytes(preimage))
             .collect();
         if !outcome.success() {
-            let _ = self.evm.finalize();
             return Ok(ExecuteOk {
                 outcome,
                 journal_id: None,
@@ -446,10 +440,8 @@ impl EvmHarness {
             });
         }
 
-        let state = self.evm.0.ctx.journaled_state.evm_state();
-        let slot_writes = collect_slot_writes(state, tx.to);
-        let journal = Journal::from_state(state, access_list);
-        let state = self.evm.finalize();
+        let slot_writes = collect_slot_writes(&state, tx.to);
+        let journal = Journal::from_state(&state, access_list);
         self.evm.commit(state);
         let journal_id = self.next_journal_id;
         self.next_journal_id += 1;
@@ -470,7 +462,6 @@ impl EvmHarness {
         }
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
         let result = self.run_simulate(&tx, cached_access_list);
-        let _ = self.evm.finalize();
         for journal_id in &params.journal_ids {
             self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), true);
         }
@@ -503,23 +494,49 @@ impl EvmHarness {
         }
     }
 
-    // Leaves the post-state live for the caller to commit or drop. Passes
-    // drop state with finalize, not checkpoint_revert: transact_one commits
-    // the tx on success, which clears revm's revert log.
-    fn discovery_pass(&mut self, tx: &TxRequest) -> Result<(TxResult, AccessList), String> {
+    // Runs the tx and takes its post-state out of revm's journal, even when
+    // the run fails, so no run leaves state behind for the next one. Execute
+    // commits the state it gets back; every other run drops it. finalize is
+    // the only way to drop it: transact_one commits the tx on success, which
+    // clears revm's revert log.
+    fn run_tx(
+        &mut self,
+        tx: &TxRequest,
+        access_list: AccessList,
+    ) -> Result<(TxResult, EvmState), String> {
         self.evm.0.inspector.clear();
-        let result = self
-            .evm
-            .inspect_one_tx(tx.tx_env(AccessList::default()))
-            .map_err(|e| format!("transact (discovery): {e:?}"))?;
-        let journaled_state = &self.evm.0.ctx.journaled_state;
-        let access_list = discovered_access_list(
-            journaled_state.evm_state(),
-            journaled_state.precompile_addresses(),
-            tx,
-            self.evm.0.ctx.block.beneficiary,
-        );
-        Ok((result, access_list))
+        let result = self.evm.inspect_one_tx(tx.tx_env(access_list));
+        let state = self.evm.finalize();
+        let result = result.map_err(|e| format!("transact: {e:?}"))?;
+        Ok((result, state))
+    }
+
+    // Lists the accounts and slots the tx touched, leaving out accounts the
+    // chain already warms: the sender, the recipient, the coinbase, and
+    // precompiles.
+    fn discovered_access_list(&self, tx: &TxRequest, state: &EvmState) -> AccessList {
+        let precompiles = self.evm.0.ctx.journaled_state.precompile_addresses();
+        let coinbase = self.evm.0.ctx.block.beneficiary;
+        let is_warm = |address: &Address| {
+            *address == tx.from
+                || *address == tx.to
+                || *address == coinbase
+                || precompiles.contains(address)
+        };
+        AccessList(
+            state
+                .iter()
+                .filter(|(address, account)| !account.storage.is_empty() || !is_warm(address))
+                .map(|(address, account)| AccessListItem {
+                    address: *address,
+                    storage_keys: account
+                        .storage
+                        .keys()
+                        .map(|slot| B256::from(slot.to_be_bytes()))
+                        .collect(),
+                })
+                .collect(),
+        )
     }
 
     fn run_simulate(
@@ -530,17 +547,12 @@ impl EvmHarness {
         let access_list = match cached_access_list {
             Some(access_list) => access_list,
             None => {
-                let (_, access_list) = self.discovery_pass(tx)?;
-                let _ = self.evm.finalize();
-                access_list
+                let (_, state) = self.run_tx(tx, AccessList::default())?;
+                self.discovered_access_list(tx, &state)
             }
         };
 
-        self.evm.0.inspector.clear();
-        let result = self
-            .evm
-            .inspect_one_tx(tx.tx_env(access_list.clone()))
-            .map_err(|e| format!("transact (simulate): {e:?}"))?;
+        let (result, _) = self.run_tx(tx, access_list.clone())?;
         let outcome = tx_outcome(&result, &access_list);
         let gas_limit = if outcome.success() {
             result.tx_gas_used() + self.evm.0.inspector.gas_reserve
@@ -593,34 +605,6 @@ fn tx_outcome(result: &TxResult, access_list: &AccessList) -> TxOutcome {
         gas_used: result.tx_gas_used(),
         access_list: encode_access_list(access_list),
     }
-}
-
-fn discovered_access_list(
-    state: &EvmState,
-    precompiles: &AddressSet,
-    tx: &TxRequest,
-    coinbase: Address,
-) -> AccessList {
-    let is_warm = |address: &Address| {
-        *address == tx.from
-            || *address == tx.to
-            || *address == coinbase
-            || precompiles.contains(address)
-    };
-    AccessList(
-        state
-            .iter()
-            .filter(|(address, account)| !account.storage.is_empty() || !is_warm(address))
-            .map(|(address, account)| AccessListItem {
-                address: *address,
-                storage_keys: account
-                    .storage
-                    .keys()
-                    .map(|slot| B256::from(slot.to_be_bytes()))
-                    .collect(),
-            })
-            .collect(),
-    )
 }
 
 fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
@@ -825,9 +809,7 @@ mod tests {
 
     fn simulate(harness: &mut EvmHarness) -> Result<SimulateOk, String> {
         let tx = tx(harness);
-        let result = harness.run_simulate(&tx, Some(AccessList::default()));
-        let _ = harness.evm.finalize();
-        result
+        harness.run_simulate(&tx, Some(AccessList::default()))
     }
 
     fn succeeds_at(harness: &mut EvmHarness, gas_limit: u64) -> bool {
