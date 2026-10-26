@@ -14,8 +14,8 @@ import {
 type TypewriterSchema = ReturnType<typeof createTypewriterSchema>;
 
 export class MigrationError extends Data.TaggedError("MigrationError")<{
-  readonly message: string;
-  readonly cause?: unknown;
+  message: string;
+  cause?: unknown;
 }> {}
 
 export function deploymentLockKey(

@@ -135,13 +135,13 @@ type RuntimeExecuteInput = {
 export class UnknownMutationError extends Data.TaggedError(
   "UnknownMutationError",
 )<{
-  readonly mutation: string;
+  mutation: string;
 }> {}
 
 export class SignTransactionError extends Data.TaggedError(
   "SignTransactionError",
 )<{
-  readonly cause: unknown;
+  cause: unknown;
 }> {}
 
 /** Each part of the program runs forever, so it stops only on a bug. */
@@ -158,8 +158,8 @@ export class SettlementSimulationRevertedError extends Data.TaggedError(
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
 )<{
-  readonly message: string;
-  readonly transactionHash: Hex.Hex;
+  message: string;
+  transactionHash: Hex.Hex;
 }> {}
 
 /** Why `execute` did not accept a mutation. */
@@ -301,8 +301,8 @@ function mappingPreimages(executeResult: ExecuteResult): readonly Hex.Hex[] {
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
 )<{
-  readonly mutation: ReceivedMutation | EnqueuedMutation;
-  readonly cause: unknown;
+  mutation: ReceivedMutation | EnqueuedMutation;
+  cause: unknown;
 }> {}
 
 /** A mutation reverted when executed in revm. */
@@ -435,12 +435,12 @@ export function decodeEnqueuedMutation(params: {
 
 /** Revert data from revm, decoded against the app's ABI when it matches. */
 type Revert = {
-  readonly message: string;
-  readonly data: Hex.Hex | undefined;
+  message: string;
+  data: Hex.Hex | undefined;
   /** The custom error's name, or `Error`/`Panic` for the built-in ones. */
-  readonly errorName: string | undefined;
-  readonly args: readonly unknown[] | undefined;
-  readonly cause: ContractFunctionRevertedError;
+  errorName: string | undefined;
+  args: readonly unknown[] | undefined;
+  cause: ContractFunctionRevertedError;
 };
 
 function decodeRevert(

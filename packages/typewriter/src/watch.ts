@@ -56,15 +56,15 @@ export type WatchConfig = {
 export class IncompleteBlockError extends Data.TaggedError(
   "IncompleteBlockError",
 )<{
-  readonly message: string;
+  message: string;
 }> {}
 
 /** The chain reorged deeper than the blocks the watch keeps. */
 export class UnrecoverableReorgError extends Data.TaggedError(
   "UnrecoverableReorgError",
 )<{
-  readonly number: bigint;
-  readonly hash: Hex.Hex;
+  number: bigint;
+  hash: Hex.Hex;
 }> {}
 
 export type WatchError =
