@@ -166,6 +166,17 @@ export class SettlementSimulationRevertedError extends Data.TaggedError(
   }
 }
 
+/** A settlement transaction halted when simulated in revm. */
+export class SettlementSimulationHaltedError extends Data.TaggedError(
+  "SettlementSimulationHaltedError",
+)<{
+  reason: string;
+}> {
+  override get message() {
+    return `revm simulate halted: ${this.reason}`;
+  }
+}
+
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
@@ -198,6 +209,7 @@ export type ProgramError =
   | DbError
   | EvmError
   | SettlementSimulationRevertedError
+  | SettlementSimulationHaltedError
   | SettlementRevertedError
   | SignTransactionError
   | ProgramStoppedError;
@@ -331,10 +343,22 @@ export class MutationRevertedError extends Data.TaggedError(
   }
 }
 
+/** A mutation halted when executed in revm, e.g. on an invalid opcode. */
+export class MutationHaltedError extends Data.TaggedError(
+  "MutationHaltedError",
+)<{
+  reason: string;
+}> {
+  override get message() {
+    return `revm execute halted: ${this.reason}`;
+  }
+}
+
 export type ExecuteMutationError =
   | EncodeMutationError
   | EvmError
-  | MutationRevertedError;
+  | MutationRevertedError
+  | MutationHaltedError;
 
 export function executeMutation(params: {
   app: TypewriterApp;
@@ -369,22 +393,24 @@ export function executeMutation(params: {
       data: mutationCalldata,
     });
 
-    if (executeResult.success === false) {
+    if (executeResult.status === "revert") {
       return yield* new MutationRevertedError(
-        decodeRevert(params.app.abi, executeResult.revert_data),
+        decodeRevert(params.app.abi, executeResult.data),
       );
+    }
+    if (executeResult.status === "halt") {
+      return yield* new MutationHaltedError({ reason: executeResult.reason });
     }
 
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
       executionIndex: params.executionIndex,
-      journalId: executeResult.journal_id!,
+      journalId: executeResult.journal_id,
     });
 
     yield* Effect.logDebug("executed mutation").pipe(
       Effect.annotateLogs({
         executionIndex: acceptedMutation.executionIndex,
         name: acceptedMutation.name,
-        success: executeResult.success,
         slotWriteCount: executeResult.slot_writes.length,
         duration: durationMs(executeStartedAtMs),
       }),
@@ -454,20 +480,18 @@ export function decodeEnqueuedMutation(params: {
 
 /** Revert data from revm, decoded against the app's ABI when it matches. */
 type Revert = {
-  data: Hex.Hex | undefined;
+  data: Hex.Hex;
   /** The custom error's name, or `Error`/`Panic` for the built-in ones. */
   errorName: string | undefined;
   args: readonly unknown[] | undefined;
 };
 
-function decodeRevert(abi: Abi, data: Hex.Hex | undefined): Revert {
-  if (data === undefined)
-    return { data, errorName: undefined, args: undefined };
+function decodeRevert(abi: Abi, data: Hex.Hex): Revert {
   try {
     const { errorName, args } = decodeErrorResult({ abi, data });
     return { data, errorName, args };
   } catch {
-    // Empty data, a selector missing from the ABI, or a halt reason.
+    // Empty revert data, or a selector that isn't in the ABI.
     return { data, errorName: undefined, args: undefined };
   }
 }
@@ -981,10 +1005,15 @@ export function createTypewriterEffect<
             journal_ids: speculativeJournalIds,
           });
           const duration = durationMs(simulationStartedAtMs);
-          if (simulateResult.success === false) {
+          if (simulateResult.status === "revert") {
             return yield* new SettlementSimulationRevertedError(
-              decodeRevert(app.abi, simulateResult.revert_data),
+              decodeRevert(app.abi, simulateResult.data),
             );
+          }
+          if (simulateResult.status === "halt") {
+            return yield* new SettlementSimulationHaltedError({
+              reason: simulateResult.reason,
+            });
           }
 
           yield* Effect.logDebug("simulated transaction submission").pipe(
@@ -1174,7 +1203,7 @@ export function createTypewriterEffect<
                 enqueueMutation({ app, evm, mutation: enqueuedMutation }),
               );
 
-              if (executeResult.success === false) {
+              if (executeResult.status !== "success") {
                 continue;
               }
 

@@ -8,10 +8,13 @@ const COUNTER_CODE = "0x60008054600101905500" as const;
 const SAME_PAGE_WRITES_CODE = "0x6001600055600160015500" as const;
 // Writes slot 0, then reverts. Failed executions must not persist writes.
 const WRITE_THEN_REVERT_CODE = "0x600160005560006000fd" as const;
+// Runs INVALID (0xfe), which halts rather than reverts.
+const HALT_CODE = "0xfe" as const;
 
 const COUNTER_ADDR = "0x0000000000000000000000000000000000000c01" as const;
 const PAGE_WRITES_ADDR = "0x0000000000000000000000000000000000000c02" as const;
 const REVERTING_ADDR = "0x0000000000000000000000000000000000000bad" as const;
+const HALTING_ADDR = "0x0000000000000000000000000000000000000ba1" as const;
 const CALLER = "0x000000000000000000000000000000000000ca11" as const;
 const P256_VERIFIER = "0x0000000000000000000000000000000000000100" as const;
 
@@ -44,7 +47,19 @@ import {
   transferData,
   USER_ADDR,
 } from "../test/utils";
-import { createEVM, EvmCallError, type Spec } from "./index";
+import {
+  createEVM,
+  EvmCallError,
+  type ExecuteResult,
+  type Spec,
+} from "./index";
+
+function journalId(result: ExecuteResult): number {
+  if (result.status !== "success") {
+    throw new Error(`expected success, got ${result.status}`);
+  }
+  return result.journal_id;
+}
 
 const initWithCounter = {
   accounts: {
@@ -74,8 +89,8 @@ test("default spec enables MonadTen MIP-8 page storage gas", async () => {
     Effect.runPromise(Effect.scoped(runSamePageWrites())),
   ]);
 
-  expect(monadTen.success).toBe(true);
-  expect(defaultSpec.success).toBe(true);
+  expect(monadTen.status).toBe("success");
+  expect(defaultSpec.status).toBe("success");
   expect(defaultSpec.gas_used).toBe(monadTen.gas_used);
   expect(monadTen.gas_used).toBeLessThan(monadNine.gas_used);
 });
@@ -92,9 +107,8 @@ test("execute against counter succeeds and returns a journal id", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
-  expect(exec.journal_id).toBe(1);
-  expect(exec.revert_data).toBeUndefined();
+  expect(exec.status).toBe("success");
+  expect(journalId(exec)).toBe(1);
   // Only simulate estimates a gas limit.
   expect(exec).not.toHaveProperty("gas_limit");
   expect(exec.slot_writes).toEqual([
@@ -123,10 +137,10 @@ test("two executes create sequential journals", async () => {
   });
 
   const { first, second } = await Effect.runPromise(Effect.scoped(program));
-  expect(first.success).toBe(true);
-  expect(first.journal_id).toBe(1);
-  expect(second.success).toBe(true);
-  expect(second.journal_id).toBe(2);
+  expect(first.status).toBe("success");
+  expect(journalId(first)).toBe(1);
+  expect(second.status).toBe("success");
+  expect(journalId(second)).toBe(2);
 });
 
 test("revertJournals drops writes; next journal starts from pre-revert state", async () => {
@@ -139,7 +153,7 @@ test("revertJournals drops writes; next journal starts from pre-revert state", a
       to: COUNTER_ADDR,
       data: "0x",
     });
-    yield* evm.revertJournals({ journal_ids: [reverted.journal_id!] });
+    yield* evm.revertJournals({ journal_ids: [journalId(reverted)] });
 
     // Journal 2: increment, commit. Slot should go 0 -> 1, not 1 -> 2.
     const exec = yield* evm.execute({
@@ -151,7 +165,7 @@ test("revertJournals drops writes; next journal starts from pre-revert state", a
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("sequential journals keep local state", async () => {
@@ -169,7 +183,7 @@ test("sequential journals keep local state", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("execute opens a journal automatically", async () => {
@@ -183,8 +197,8 @@ test("execute opens a journal automatically", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
-  expect(exec.journal_id).toBe(1);
+  expect(exec.status).toBe("success");
+  expect(journalId(exec)).toBe(1);
 });
 
 test("failed execute discards journal writes", async () => {
@@ -203,8 +217,25 @@ test("failed execute discards journal writes", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(false);
-  expect(exec.revert_data).toBe("0x");
+  expect(exec).toMatchObject({ status: "revert", data: "0x" });
+});
+
+test("execute reports a halt separately from a revert", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM({
+      accounts: {
+        [HALTING_ADDR]: { code: HALT_CODE },
+      },
+    });
+    return yield* evm.execute({
+      from: CALLER,
+      to: HALTING_ADDR,
+      data: "0x",
+    });
+  });
+
+  const exec = await Effect.runPromise(Effect.scoped(program));
+  expect(exec).toMatchObject({ status: "halt", reason: "InvalidFEOpcode" });
 });
 
 test("execute returns access_list with the counter address + slot 0", async () => {
@@ -242,7 +273,7 @@ test("simulate does not mutate state — counter stays at 0 after simulate", asy
   });
 
   const sim = await Effect.runPromise(Effect.scoped(program));
-  expect(sim.success).toBe(true);
+  expect(sim.status).toBe("success");
 });
 
 test("simulate rewinds and re-applies selected journals", async () => {
@@ -267,14 +298,14 @@ test("simulate rewinds and re-applies selected journals", async () => {
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
-      journal_ids: [first.journal_id!, second.journal_id!],
+      journal_ids: [journalId(first), journalId(second)],
     });
 
     return sim;
   });
 
   const sim = await Effect.runPromise(Effect.scoped(program));
-  expect(sim.success).toBe(true);
+  expect(sim.status).toBe("success");
 });
 
 test("simulate only rewinds the provided journal ids", async () => {
@@ -295,14 +326,14 @@ test("simulate only rewinds the provided journal ids", async () => {
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
-      journal_ids: [second.journal_id!],
+      journal_ids: [journalId(second)],
     });
 
     return sim;
   });
 
   const sim = await Effect.runPromise(Effect.scoped(program));
-  expect(sim.success).toBe(true);
+  expect(sim.status).toBe("success");
 });
 
 test("revertJournals works on a journal", async () => {
@@ -316,7 +347,7 @@ test("revertJournals works on a journal", async () => {
     });
 
     // Reverting the journal should restore slot to 0.
-    yield* evm.revertJournals({ journal_ids: [accepted.journal_id!] });
+    yield* evm.revertJournals({ journal_ids: [journalId(accepted)] });
 
     // Start a new journal and increment; should go 0 -> 1.
     const exec = yield* evm.execute({
@@ -328,7 +359,7 @@ test("revertJournals works on a journal", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("revertJournals reverts multiple journals", async () => {
@@ -354,7 +385,7 @@ test("revertJournals reverts multiple journals", async () => {
     });
 
     yield* evm.revertJournals({
-      journal_ids: [first.journal_id!, second.journal_id!, third.journal_id!],
+      journal_ids: [journalId(first), journalId(second), journalId(third)],
     });
 
     const exec = yield* evm.execute({
@@ -366,7 +397,7 @@ test("revertJournals reverts multiple journals", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("revertJournals with an unknown journal id fails", async () => {
@@ -395,10 +426,10 @@ test("pruneJournals drops selected journals", async () => {
       data: "0x",
     });
 
-    yield* evm.pruneJournals({ journal_ids: [first.journal_id!] });
+    yield* evm.pruneJournals({ journal_ids: [journalId(first)] });
 
     // Reverting the remaining journal should restore slot to 1.
-    yield* evm.revertJournals({ journal_ids: [second.journal_id!] });
+    yield* evm.revertJournals({ journal_ids: [journalId(second)] });
 
     const exec = yield* evm.execute({
       from: CALLER,
@@ -409,7 +440,7 @@ test("pruneJournals drops selected journals", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("pruneJournals with an unknown journal id fails", async () => {
@@ -449,7 +480,7 @@ test("setBlockContext updates block parameters", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
@@ -472,7 +503,7 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
 
   expect({
     accessList: normalizeAccessRecord(exec.access_list),
-    success: exec.success,
+    status: exec.status,
     slots: {
       schedulerBalanceSlot,
       totalSupplySlot: TOTAL_SUPPLY_SLOT,
@@ -494,7 +525,7 @@ test("execute e2e with compiled Solmate ERC20 bytecode", async () => {
         "totalSupplySlot": "0x0000000000000000000000000000000000000000000000000000000000000002",
         "userBalanceSlot": "0x9c35da83f88043b3115f30d93beacec49ca14b6238430bdff196a249c29baa80",
       },
-      "success": true,
+      "status": "success",
     }
   `);
 });
@@ -571,7 +602,7 @@ test("readStorage decodes committed token state through storage proxy", async ()
   const result = await Effect.runPromise(Effect.scoped(program));
 
   expect(result).toEqual({
-    exec: expect.objectContaining({ success: true }),
+    exec: expect.objectContaining({ status: "success" }),
     recipientBalance: 0n,
     schedulerBalance: INITIAL_SUPPLY - TRANSFER_AMOUNT,
     totalSupply: INITIAL_SUPPLY,
@@ -596,7 +627,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
       from: SCHEDULER_ADDR,
       to: TOKEN_ADDR,
       data: transferData(RECIPIENT_ADDR, SIMULATE_AMOUNT),
-      journal_ids: [optimistic.journal_id!],
+      journal_ids: [journalId(optimistic)],
     });
     return { optimistic, simulated };
   });
@@ -607,9 +638,9 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
 
   expect({
     optimisticAccessList: normalizeAccessRecord(optimistic.access_list),
-    optimisticSuccess: optimistic.success,
+    optimisticStatus: optimistic.status,
     simulatedAccessList: normalizeAccessRecord(simulated.access_list),
-    simulatedSuccess: simulated.success,
+    simulatedStatus: simulated.status,
     slots: {
       recipientBalanceSlot,
       schedulerBalanceSlot,
@@ -626,7 +657,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
           ],
         },
       ],
-      "optimisticSuccess": true,
+      "optimisticStatus": "success",
       "simulatedAccessList": [
         {
           "address": "0x0000000000000000000000000000000000000e20",
@@ -636,7 +667,7 @@ test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async
           ],
         },
       ],
-      "simulatedSuccess": true,
+      "simulatedStatus": "success",
       "slots": {
         "recipientBalanceSlot": "0x961ec03a078fec1e350bb1ca3bff1afa4bae5fb83d9d8382550c2fd26a7d7527",
         "schedulerBalanceSlot": "0xc651ee22c6951bb8b5bd29e8210fb394645a94315fe10eff2cc73de1aa75c137",
@@ -801,8 +832,8 @@ test("access list leaves out the P-256 precompile at 0x100", async () => {
     Effect.scoped(program),
   );
 
-  expect(executed.success).toBe(true);
-  expect(simulated.success).toBe(true);
+  expect(executed.status).toBe("success");
+  expect(simulated.status).toBe("success");
   expect(rpcAccessList).toEqual([]);
   expect(executed.access_list).toEqual([]);
   expect(simulated.access_list).toEqual([]);
@@ -856,7 +887,7 @@ test("an interrupted execute does not desync subsequent calls", async () => {
   });
 
   const exec = await Effect.runPromise(Effect.scoped(program));
-  expect(exec.success).toBe(true);
+  expect(exec.status).toBe("success");
 });
 
 test("concurrent execute submissions serialize into sequential journals", async () => {
@@ -875,8 +906,8 @@ test("concurrent execute submissions serialize into sequential journals", async 
 
   const results = await Effect.runPromise(Effect.scoped(program));
   expect(results.length).toBe(5);
-  expect(results.every((r) => r.success)).toBe(true);
-  const journalIds = results.map((r) => r.journal_id!).sort((a, b) => a - b);
+  expect(results.every((r) => r.status === "success")).toBe(true);
+  const journalIds = results.map((r) => journalId(r)).sort((a, b) => a - b);
   expect(journalIds).toEqual([1, 2, 3, 4, 5]);
 });
 

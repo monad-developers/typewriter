@@ -40,29 +40,29 @@ export type SimulateParams = ExecuteParams & {
   journal_ids: number[];
 };
 
-// Fields that execute and simulate both return.
 type TxResult = {
-  success: boolean;
   gas_used: number;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
-  revert_data?: Hex.Hex;
 };
 
-// gas_used is the gas with cold access. Execute does not warm an access list.
+type Revert = { status: "revert"; data: Hex.Hex };
+// A failure other than REVERT, such as out of gas or an invalid opcode.
+type Halt = { status: "halt"; reason: string };
+
 export type ExecuteResult = TxResult & {
-  journal_id?: number;
   // Writes to the called contract.
   slot_writes: { slot: Hex.Hex; value: Hex.Hex }[];
   // The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
   keccak_preimages: Hex.Hex[];
-};
+} & ({ status: "success"; journal_id: number } | Revert | Halt);
 
 // gas_used is the gas with the access list warm, as the chain charges it.
 // gas_limit is gas_used plus a reserve for the SSTORE sentry and the 1/64
-// that each call keeps, so the call takes the same path as at max gas.
+// that each call keeps, so the call takes the same path as at max gas. It
+// assumes no nested call halts and is caught (see harness.rs).
 export type SimulateResult = TxResult & {
   gas_limit: number;
-};
+} & ({ status: "success" } | Revert | Halt);
 
 export type ReadStorageParams = {
   address: Address.Address;

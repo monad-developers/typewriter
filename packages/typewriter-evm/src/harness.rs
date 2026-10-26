@@ -91,11 +91,26 @@ struct JournalIdsParams {
 
 #[derive(Serialize)]
 struct TxOutcome {
-    success: bool,
+    #[serde(flatten)]
+    status: TxStatus,
     gas_used: u64,
     access_list: Vec<AccessListEntry>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    revert_data: Option<String>,
+}
+
+impl TxOutcome {
+    fn success(&self) -> bool {
+        matches!(self.status, TxStatus::Success)
+    }
+}
+
+// A halt is a failure other than REVERT, such as out of gas or an invalid
+// opcode. It returns no data and uses all the gas the frame was given.
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum TxStatus {
+    Success,
+    Revert { data: String },
+    Halt { reason: String },
 }
 
 // gas_used is with cold access: execute warms no access list.
@@ -146,6 +161,11 @@ type TxResult = ExecutionResult<HaltReason>;
 // enough that 63/64 of its remaining gas covers each child's gas plus the
 // child's reserve. Monad has no refunds, so gas_used is the gas spent. A
 // halted frame uses all the gas it is given, which its need already counts.
+//
+// Typewriter contracts never catch a halt in a nested call: a failed call
+// reverts the tx. The limit relies on this. Simulate runs at u64::MAX gas, so
+// a caught halt in a call that forwards all its gas burns nearly all of it,
+// and gas_limit comes out near u64::MAX, which the node rejects.
 #[derive(Default)]
 struct HarnessInspector {
     keccak_preimages: Vec<[u8; 64]>,
@@ -416,7 +436,7 @@ impl EvmHarness {
             .iter()
             .map(|preimage| format_bytes(preimage))
             .collect();
-        if !outcome.success {
+        if !outcome.success() {
             let _ = self.evm.finalize();
             return Ok(ExecuteOk {
                 outcome,
@@ -522,7 +542,7 @@ impl EvmHarness {
             .inspect_one_tx(tx.tx_env(access_list.clone()))
             .map_err(|e| format!("transact (simulate): {e:?}"))?;
         let outcome = tx_outcome(&result, &access_list);
-        let gas_limit = if outcome.success {
+        let gas_limit = if outcome.success() {
             result.tx_gas_used() + self.evm.0.inspector.gas_reserve
         } else {
             result.tx_gas_used()
@@ -559,16 +579,19 @@ impl EvmHarness {
 // Conversion helpers
 
 fn tx_outcome(result: &TxResult, access_list: &AccessList) -> TxOutcome {
-    let (success, revert_data) = match result {
-        ExecutionResult::Success { .. } => (true, None),
-        ExecutionResult::Revert { output, .. } => (false, Some(format_bytes(output))),
-        ExecutionResult::Halt { reason, .. } => (false, Some(format!("halt: {reason:?}"))),
+    let status = match result {
+        ExecutionResult::Success { .. } => TxStatus::Success,
+        ExecutionResult::Revert { output, .. } => TxStatus::Revert {
+            data: format_bytes(output),
+        },
+        ExecutionResult::Halt { reason, .. } => TxStatus::Halt {
+            reason: format!("{reason:?}"),
+        },
     };
     TxOutcome {
-        success,
+        status,
         gas_used: result.tx_gas_used(),
         access_list: encode_access_list(access_list),
-        revert_data,
     }
 }
 
@@ -819,7 +842,7 @@ mod tests {
     fn assert_reserve_needed(accounts: &[(u16, &[u8])]) {
         let mut harness = harness(accounts);
         let result = simulate(&mut harness).unwrap();
-        assert!(result.outcome.success);
+        assert!(result.outcome.success());
         assert!(!succeeds_at(&mut harness, result.outcome.gas_used));
         assert!(succeeds_at(&mut harness, result.gas_limit));
     }
@@ -853,7 +876,7 @@ mod tests {
         code.push(0x00);
         let mut harness = harness(&[(CONTRACT, &code)]);
         let result = simulate(&mut harness).unwrap();
-        assert!(result.outcome.success);
+        assert!(result.outcome.success());
         assert!(succeeds_at(&mut harness, result.gas_limit));
     }
 }

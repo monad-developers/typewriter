@@ -83,7 +83,7 @@ test("typewriter-evm simulate scales with optimistic journal count", async () =>
         to: SLOT_WRITER_ADDR,
         data: writeSlotData(index),
       });
-      if (result.success !== true || result.journal_id === undefined) {
+      if (result.status !== "success") {
         throw new Error("execute failed while preparing simulate benchmark");
       }
       journalIds.push(result.journal_id);
@@ -106,7 +106,7 @@ test("typewriter-evm simulate scales with optimistic journal count", async () =>
           data: writeSlotData(JOURNAL_COUNT + iteration),
           journal_ids: selectedJournalIds,
         });
-        if (result.success !== true) {
+        if (result.status !== "success") {
           throw new Error("simulate failed during benchmark");
         }
         durationsMs.push(performance.now() - startedAtMs);
@@ -171,7 +171,7 @@ test("typewriter-evm simulate scales with EVM workload", async () => {
         to: CALL_BURN_CALLER_ADDR,
         data: callBurnLargeData(burnCount),
       });
-      if (result.success !== true || result.journal_id === undefined) {
+      if (result.status !== "success") {
         throw new Error("callBurn execute failed while preparing benchmark");
       }
       journalIdsByBurnCount.set(burnCount, result.journal_id);
@@ -194,7 +194,7 @@ test("typewriter-evm simulate scales with EVM workload", async () => {
             journal_ids:
               mode === "cached" ? [journalIdsByBurnCount.get(burnCount)!] : [],
           });
-          if (result.success !== true) {
+          if (result.status !== "success") {
             throw new Error("callBurn simulate failed during benchmark");
           }
           durationsMs.push(performance.now() - startedAtMs);
