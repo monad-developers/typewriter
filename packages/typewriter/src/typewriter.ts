@@ -24,12 +24,11 @@ import {
 } from "typewriter-evm";
 import {
   type Abi,
-  ContractFunctionRevertedError,
+  decodeErrorResult,
   decodeEventLog,
   formatTransactionReceipt,
   getAbiItem,
   parseTransaction,
-  RawContractError,
   toEventSelector,
 } from "viem";
 import type {
@@ -152,15 +151,22 @@ export class ProgramStoppedError extends Data.TaggedError(
 /** A settlement transaction reverted when simulated in revm. */
 export class SettlementSimulationRevertedError extends Data.TaggedError(
   "SettlementSimulationRevertedError",
-)<Revert> {}
+)<Revert> {
+  override get message() {
+    return revertMessage("revm simulate reverted", this.errorName);
+  }
+}
 
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
 )<{
-  message: string;
   transactionHash: Hex.Hex;
-}> {}
+}> {
+  override get message() {
+    return `settlement transaction reverted onchain: ${this.transactionHash}`;
+  }
+}
 
 /** Why `execute` did not accept a mutation. */
 export type ExecuteError = UnknownMutationError | ExecuteMutationError;
@@ -308,7 +314,11 @@ export class EncodeMutationError extends Data.TaggedError(
 /** A mutation reverted when executed in revm. */
 export class MutationRevertedError extends Data.TaggedError(
   "MutationRevertedError",
-)<Revert> {}
+)<Revert> {
+  override get message() {
+    return revertMessage("revm execute reverted", this.errorName);
+  }
+}
 
 export type ExecuteMutationError =
   | EncodeMutationError
@@ -350,11 +360,7 @@ export function executeMutation(params: {
 
     if (executeResult.success === false) {
       return yield* new MutationRevertedError(
-        decodeRevert(
-          params.app.abi,
-          executeResult.revert_data,
-          "revm execute reverted",
-        ),
+        decodeRevert(params.app.abi, executeResult.revert_data),
       );
     }
 
@@ -435,34 +441,26 @@ export function decodeEnqueuedMutation(params: {
 
 /** Revert data from revm, decoded against the app's ABI when it matches. */
 type Revert = {
-  message: string;
   data: Hex.Hex | undefined;
   /** The custom error's name, or `Error`/`Panic` for the built-in ones. */
   errorName: string | undefined;
   args: readonly unknown[] | undefined;
-  cause: ContractFunctionRevertedError;
 };
 
-function decodeRevert(
-  abi: Abi,
-  data: Hex.Hex | undefined,
-  message: string,
-): Revert {
-  const cause = new ContractFunctionRevertedError({
-    abi,
-    data,
-    functionName: "execute",
-    message,
-    cause: new RawContractError({ data, message }),
-  });
-  const errorName = cause.data?.errorName;
-  return {
-    message: errorName === undefined ? message : `${message}: ${errorName}`,
-    data,
-    errorName,
-    args: cause.data?.args,
-    cause,
-  };
+function decodeRevert(abi: Abi, data: Hex.Hex | undefined): Revert {
+  if (data === undefined)
+    return { data, errorName: undefined, args: undefined };
+  try {
+    const { errorName, args } = decodeErrorResult({ abi, data });
+    return { data, errorName, args };
+  } catch {
+    // Empty data, a selector missing from the ABI, or a halt reason.
+    return { data, errorName: undefined, args: undefined };
+  }
+}
+
+function revertMessage(prefix: string, errorName: string | undefined) {
+  return errorName === undefined ? prefix : `${prefix}: ${errorName}`;
 }
 
 function createRuntimeState(
@@ -971,11 +969,7 @@ export function createTypewriterEffect<
           const duration = durationMs(simulationStartedAtMs);
           if (simulateResult.success === false) {
             return yield* new SettlementSimulationRevertedError(
-              decodeRevert(
-                app.abi,
-                simulateResult.revert_data,
-                "revm simulate reverted",
-              ),
+              decodeRevert(app.abi, simulateResult.revert_data),
             );
           }
 
@@ -1065,7 +1059,6 @@ export function createTypewriterEffect<
 
       if (receipt.status === "reverted") {
         return yield* new SettlementRevertedError({
-          message: `settlement transaction reverted onchain: ${receipt.transactionHash}`,
           transactionHash: receipt.transactionHash,
         });
       }
