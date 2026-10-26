@@ -797,6 +797,53 @@ export function createTypewriterEffect<
       });
     }
 
+    const insertAcceptedMutations = (
+      acceptedMutations: readonly {
+        mutation: AcceptedMutation;
+        executeResult: ExecuteResult;
+        preimages: readonly Hex.Hex[];
+      }[],
+    ) =>
+      db.transaction((tx) =>
+        Effect.gen(function* () {
+          yield* insertMutations(
+            tx,
+            app.mutationSchema,
+            acceptedMutations.map((entry) => entry.mutation),
+          );
+          yield* insertStorageSlots(
+            tx,
+            app.typewriterSchema,
+            acceptedMutations,
+          );
+          yield* insertKeccakPreimages(
+            tx,
+            app.typewriterSchema,
+            acceptedMutations.flatMap(({ preimages }) => preimages),
+          );
+        }),
+      );
+
+    // Accepted mutations commit outside the speculative-state lock, so
+    // execution never waits on Postgres. Commits still run one at a time in
+    // execution order: restart resumes after the highest committed execution
+    // index, so a later commit must not land before an earlier one.
+    let lastCommit: Deferred.Deferred<void> | undefined;
+
+    // Call under the speculative-state lock, so commits are ordered like
+    // executions. Returns the commit, to run after the lock is released.
+    const sequenceCommit = <e>(commit: Effect.Effect<void, e>) =>
+      Effect.gen(function* () {
+        const previous = lastCommit;
+        const done = yield* Deferred.make<void>();
+        lastCommit = done;
+        return Effect.gen(function* () {
+          if (previous !== undefined) yield* Deferred.await(previous);
+          yield* commit;
+          yield* Deferred.succeed(done, undefined);
+        });
+      });
+
     const acceptBatch = (
       submittedMutations: {
         mutation: ReceivedMutation;
@@ -858,40 +905,36 @@ export function createTypewriterEffect<
 
           emitBatch(batchToEvent(batch));
 
-          const persistStartedAtMs = startTimer();
-          yield* db.transaction((tx) =>
-            Effect.gen(function* () {
-              yield* insertMutations(
-                tx,
-                app.mutationSchema,
-                acceptedMutations.map((entry) => entry.mutation),
-              );
-              yield* insertStorageSlots(
-                tx,
-                app.typewriterSchema,
-                acceptedMutations,
-              );
-              yield* insertKeccakPreimages(
-                tx,
-                app.typewriterSchema,
-                acceptedMutations.flatMap(({ preimages }) => preimages),
-              );
-            }),
-          );
-
-          for (const { mutation, deferred } of acceptedMutations) {
-            yield* Deferred.succeed(deferred, mutation);
-          }
-
-          yield* Effect.logDebug("persisted accepted mutations").pipe(
-            Effect.annotateLogs({
-              mutationCount: acceptedMutations.length,
-              duration: durationMs(persistStartedAtMs),
-            }),
-          );
-
           yield* Queue.offer(acceptedBatchesQueue, batch.id);
+
+          return {
+            acceptedMutations,
+            commit: yield* sequenceCommit(
+              insertAcceptedMutations(acceptedMutations),
+            ),
+          };
         }),
+      ).pipe(
+        Effect.flatMap((accepted) =>
+          Effect.gen(function* () {
+            if (accepted === undefined) return;
+            const { acceptedMutations, commit } = accepted;
+
+            const persistStartedAtMs = startTimer();
+            yield* commit;
+
+            for (const { mutation, deferred } of acceptedMutations) {
+              yield* Deferred.succeed(deferred, mutation);
+            }
+
+            yield* Effect.logDebug("persisted accepted mutations").pipe(
+              Effect.annotateLogs({
+                mutationCount: acceptedMutations.length,
+                duration: durationMs(persistStartedAtMs),
+              }),
+            );
+          }),
+        ),
       );
 
     const submit = Effect.gen(function* () {
@@ -934,27 +977,15 @@ export function createTypewriterEffect<
             ({ mutation }) => mutation,
           );
 
-          if (acceptedEnqueuedMutations.length > 0) {
-            yield* db.transaction((tx) =>
-              Effect.gen(function* () {
-                yield* insertMutations(
-                  tx,
-                  app.mutationSchema,
-                  acceptedEnqueuedMutations.map((entry) => entry.mutation),
-                );
-                yield* insertStorageSlots(
-                  tx,
-                  app.typewriterSchema,
-                  acceptedEnqueuedMutations,
-                );
-                yield* insertKeccakPreimages(
-                  tx,
-                  app.typewriterSchema,
-                  acceptedEnqueuedMutations.flatMap((entry) => entry.preimages),
-                );
-              }),
-            );
-          }
+          const commitEnqueuedMutations =
+            acceptedEnqueuedMutations.length > 0
+              ? yield* sequenceCommit(
+                  insertAcceptedMutations(acceptedEnqueuedMutations),
+                )
+              : undefined;
+          // Commits are ordered, so this covers every mutation in the
+          // submission.
+          const committed = lastCommit;
 
           const speculativeJournalIds = batches
             .flatMap((batch) => batch.mutations)
@@ -1003,6 +1034,8 @@ export function createTypewriterEffect<
             acceptedForceIncludedMutations,
             calldata,
             simulateResult,
+            commitEnqueuedMutations,
+            committed,
           };
         }),
       );
@@ -1014,7 +1047,15 @@ export function createTypewriterEffect<
         acceptedForceIncludedMutations,
         calldata,
         simulateResult,
+        commitEnqueuedMutations,
+        committed,
       } = simulation;
+
+      // Settle only committed mutations.
+      if (commitEnqueuedMutations !== undefined) {
+        yield* commitEnqueuedMutations;
+      }
+      if (committed !== undefined) yield* Deferred.await(committed);
 
       const transactionStartedAtMs = startTimer();
 
