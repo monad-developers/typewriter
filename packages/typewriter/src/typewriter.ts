@@ -1,4 +1,5 @@
 import {
+  type Cause,
   Data,
   Deferred,
   Duration,
@@ -168,8 +169,21 @@ export class SettlementRevertedError extends Data.TaggedError(
   }
 }
 
+/**
+ * `program` stopped, so a waiting `execute` will never get an answer. `cause`
+ * is how the program exited: a {@link ProgramError}, or an interruption.
+ */
+export class TypewriterStoppedError extends Data.TaggedError(
+  "TypewriterStoppedError",
+)<{
+  cause: Cause.Cause<ProgramError>;
+}> {}
+
 /** Why `execute` did not accept a mutation. */
-export type ExecuteError = UnknownMutationError | ExecuteMutationError;
+export type ExecuteError =
+  | UnknownMutationError
+  | ExecuteMutationError
+  | TypewriterStoppedError;
 
 export type ProgramError =
   | WatchError
@@ -479,8 +493,7 @@ function createRuntimeState(
     preimages: Set<Hex.Hex>;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
-  DbError | EvmError,
-  Scope.Scope
+  DbError | EvmError
 > {
   return Effect.gen(function* () {
     const { initialAccountStorage, preimages } = yield* db.transaction((tx) =>
@@ -659,12 +672,14 @@ export function createTypewriterEffect<
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedMutationsQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptedBatchesQueue));
+    // Fails when `program` stops.
+    const stopped = yield* Deferred.make<never, TypewriterStoppedError>();
 
     const withSpeculativeStateLock = Semaphore.withPermits(
-      Semaphore.makeUnsafe(1),
+      yield* Semaphore.make(1),
       1,
     );
-    const withSubmitLock = Semaphore.withPermits(Semaphore.makeUnsafe(1), 1);
+    const withSubmitLock = Semaphore.withPermits(yield* Semaphore.make(1), 1);
 
     const builtInMutationOrder = [
       "CreateAccount",
@@ -748,15 +763,15 @@ export function createTypewriterEffect<
             mutation,
             executionIndex: nextExecutionIndex,
           }).pipe(
-            Effect.tapError((error) => {
-              const rejectedMutation = updateMutationToRejected(mutation, {
-                error,
-              });
+            Effect.tapError((error) =>
+              Effect.sync(() => {
+                const rejectedMutation = updateMutationToRejected(mutation, {
+                  error,
+                });
 
-              emitMutation(mutationToEvent(rejectedMutation));
-
-              return Effect.void;
-            }),
+                emitMutation(mutationToEvent(rejectedMutation));
+              }),
+            ),
           );
 
         nextExecutionIndex++;
@@ -1259,6 +1274,10 @@ export function createTypewriterEffect<
     ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
       Effect.raceFirst(lockLost),
+      // Mutations waiting for the program would otherwise wait forever.
+      Effect.onError((cause) =>
+        Deferred.fail(stopped, new TypewriterStoppedError({ cause })),
+      ),
       Effect.provide(loggerLayer),
     );
 
@@ -1268,9 +1287,7 @@ export function createTypewriterEffect<
       return Effect.gen(function* () {
         const resolvedMutation = resolveMutationConfig(app, mutation.name);
         if (resolvedMutation === undefined) {
-          return yield* Effect.fail(
-            new UnknownMutationError({ mutation: mutation.name }),
-          );
+          return yield* new UnknownMutationError({ mutation: mutation.name });
         }
 
         const runtimeMutation = {
@@ -1311,6 +1328,7 @@ export function createTypewriterEffect<
               }),
             ),
           ),
+          Effect.raceFirst(Deferred.await(stopped)),
         );
 
         yield* Effect.logDebug("accepted mutation").pipe(

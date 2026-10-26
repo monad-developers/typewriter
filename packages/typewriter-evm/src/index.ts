@@ -1,4 +1,4 @@
-import { Data, Effect, Ref, type Scope } from "effect";
+import { Data, Effect, Ref } from "effect";
 import type {
   BlockParams,
   ExecuteParams,
@@ -105,101 +105,99 @@ function loadNativeAddon(): NativeAddon {
 // synchronous native call, which blocks the thread, so the harness only ever
 // sees one request at a time without a lock. Nothing in a call suspends, so
 // `Effect.runSync` on a call always completes. Keep native methods synchronous:
-// an async native method needs calls to be serialized again.
-export const createEVM = (): Effect.Effect<EVM, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.gen(function* () {
-      const native = new (loadNativeAddon().NativeEvm)();
-      const idCounterRef = yield* Ref.make(1);
+// an async native method needs calls to be serialized again. The native harness
+// is freed when the handle is garbage collected.
+export const createEVM = (): Effect.Effect<EVM> =>
+  Effect.gen(function* () {
+    const native = new (loadNativeAddon().NativeEvm)();
+    const idCounterRef = yield* Ref.make(1);
 
-      const call = <T>(
-        method: Request["method"],
-        build: (id: number) => Request,
-      ): Effect.Effect<T, EvmError> =>
-        Effect.gen(function* () {
-          const id = yield* Ref.getAndUpdate(idCounterRef, (n) => n + 1);
-          const req = build(id);
+    const call = <T>(
+      method: Request["method"],
+      build: (id: number) => Request,
+    ): Effect.Effect<T, EvmError> =>
+      Effect.gen(function* () {
+        const id = yield* Ref.getAndUpdate(idCounterRef, (n) => n + 1);
+        const req = build(id);
 
-          const responseJson = yield* Effect.try({
-            try: () => native.call(JSON.stringify(req)),
-            catch: (e) =>
-              new EvmCrashed({ message: "native call failed", cause: e }),
-          });
-
-          const res = yield* Effect.try({
-            try: () => JSON.parse(responseJson) as Response,
-            catch: (e) =>
-              new EvmProtocolError({
-                message: `invalid response JSON: ${responseJson}`,
-                cause: e,
-              }),
-          });
-          if (res.id !== id) {
-            const responseError = res.ok ? undefined : res.error;
-            // Mismatches often mean the TypeScript client and native addon
-            // are out of sync.
-            return yield* new EvmProtocolError({
-              message:
-                `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
-                (responseError === undefined
-                  ? ""
-                  : `; response error: ${responseError}`),
-            });
-          }
-          if (!res.ok) {
-            return yield* new EvmCallError({
-              method,
-              message: `${method} failed: ${res.error}`,
-              cause: res.error,
-            });
-          }
-          return res.result as T;
+        const responseJson = yield* Effect.try({
+          try: () => native.call(JSON.stringify(req)),
+          catch: (e) =>
+            new EvmCrashed({ message: "native call failed", cause: e }),
         });
 
-      const evm: EVM = {
-        init: (params) =>
-          call<unknown>("init", (id) => ({ method: "init", id, params })).pipe(
-            Effect.asVoid,
-          ),
-        setBlockContext: (params) =>
-          call<unknown>("setBlockContext", (id) => ({
-            method: "setBlockContext",
-            id,
-            params,
-          })).pipe(Effect.asVoid),
-        execute: (params) =>
-          call<ExecuteResult>("execute", (id) => ({
-            method: "execute",
-            id,
-            params,
-          })),
-        simulate: (params) =>
-          call<SimulateResult>("simulate", (id) => ({
-            method: "simulate",
-            id,
-            params,
-          })),
-        readStorage: (params) =>
-          call<ReadStorageResult>("readStorage", (id) => ({
-            method: "readStorage",
-            id,
-            params,
-          })),
-        revertJournals: (params) =>
-          call<unknown>("revertJournals", (id) => ({
-            method: "revertJournals",
-            id,
-            params,
-          })).pipe(Effect.asVoid),
-        pruneJournals: (params) =>
-          call<unknown>("pruneJournals", (id) => ({
-            method: "pruneJournals",
-            id,
-            params,
-          })).pipe(Effect.asVoid),
-      };
+        const res = yield* Effect.try({
+          try: () => JSON.parse(responseJson) as Response,
+          catch: (e) =>
+            new EvmProtocolError({
+              message: `invalid response JSON: ${responseJson}`,
+              cause: e,
+            }),
+        });
+        if (res.id !== id) {
+          const responseError = res.ok ? undefined : res.error;
+          // Mismatches often mean the TypeScript client and native addon
+          // are out of sync.
+          return yield* new EvmProtocolError({
+            message:
+              `response id mismatch for ${method}: expected ${id}, got ${res.id}` +
+              (responseError === undefined
+                ? ""
+                : `; response error: ${responseError}`),
+          });
+        }
+        if (!res.ok) {
+          return yield* new EvmCallError({
+            method,
+            message: `${method} failed: ${res.error}`,
+            cause: res.error,
+          });
+        }
+        return res.result as T;
+      });
 
-      return evm;
-    }),
-    () => Effect.void,
-  );
+    const evm: EVM = {
+      init: (params) =>
+        call<unknown>("init", (id) => ({ method: "init", id, params })).pipe(
+          Effect.asVoid,
+        ),
+      setBlockContext: (params) =>
+        call<unknown>("setBlockContext", (id) => ({
+          method: "setBlockContext",
+          id,
+          params,
+        })).pipe(Effect.asVoid),
+      execute: (params) =>
+        call<ExecuteResult>("execute", (id) => ({
+          method: "execute",
+          id,
+          params,
+        })),
+      simulate: (params) =>
+        call<SimulateResult>("simulate", (id) => ({
+          method: "simulate",
+          id,
+          params,
+        })),
+      readStorage: (params) =>
+        call<ReadStorageResult>("readStorage", (id) => ({
+          method: "readStorage",
+          id,
+          params,
+        })),
+      revertJournals: (params) =>
+        call<unknown>("revertJournals", (id) => ({
+          method: "revertJournals",
+          id,
+          params,
+        })).pipe(Effect.asVoid),
+      pruneJournals: (params) =>
+        call<unknown>("pruneJournals", (id) => ({
+          method: "pruneJournals",
+          id,
+          params,
+        })).pipe(Effect.asVoid),
+    };
+
+    return evm;
+  });

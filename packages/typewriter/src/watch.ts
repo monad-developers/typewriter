@@ -116,20 +116,20 @@ export function makeWatch(
 
     const getLocalBlockWithLogs = (block: RpcBlock) =>
       Effect.gen(function* () {
+        // TODO(kyle) write RPC response normalizers
         if (
           block.number === null ||
           block.hash === null ||
           block.logsBloom === null
         ) {
-          return yield* Effect.fail(
-            new IncompleteBlockError({
-              message: "block missing number or hash",
-            }),
-          );
+          return yield* new IncompleteBlockError({
+            message: "block missing number or hash",
+          });
         }
 
         let logs: LocalLog[] = [];
         const filter = config.logFilter;
+        // TODO(kyle) don't rely on logsBloom, it breaks on async execution chains
         if (
           filter !== undefined &&
           block.logsBloom !== ZERO_LOGS_BLOOM &&
@@ -156,11 +156,9 @@ export function makeWatch(
                   log.transactionIndex === null ||
                   log.logIndex === null
                 ) {
-                  return yield* Effect.fail(
-                    new IncompleteBlockError({
-                      message: "log missing transaction hash or index",
-                    }),
-                  );
+                  return yield* new IncompleteBlockError({
+                    message: "log missing transaction hash or index",
+                  });
                 }
 
                 return {
@@ -195,9 +193,7 @@ export function makeWatch(
           params: [blockHash, false],
         });
         if (block === null) {
-          return yield* Effect.fail(
-            new BlockNotFoundError({ block: blockHash }),
-          );
+          return yield* new BlockNotFoundError({ block: blockHash });
         }
         return yield* getLocalBlockWithLogs(block);
       });
@@ -209,9 +205,7 @@ export function makeWatch(
           params: [quantity(blockNumber), false],
         });
         if (block === null) {
-          return yield* Effect.fail(
-            new BlockNotFoundError({ block: blockNumber }),
-          );
+          return yield* new BlockNotFoundError({ block: blockNumber });
         }
         return yield* getLocalBlockWithLogs(block);
       });
@@ -238,12 +232,10 @@ export function makeWatch(
 
           if (localChain.length === 0) {
             localChain = originalChain;
-            return yield* Effect.fail(
-              new UnrecoverableReorgError({
-                number: block.number,
-                hash: block.hash,
-              }),
-            );
+            return yield* new UnrecoverableReorgError({
+              number: block.number,
+              hash: block.hash,
+            });
           }
 
           remoteBlock = yield* getBlockByHash(remoteBlock.parentHash);
@@ -313,9 +305,7 @@ export function makeWatch(
           params: ["latest", false],
         });
         if (block === null) {
-          return yield* Effect.fail(
-            new BlockNotFoundError({ block: "latest" }),
-          );
+          return yield* new BlockNotFoundError({ block: "latest" });
         }
         return yield* getLocalBlockWithLogs(block);
       });

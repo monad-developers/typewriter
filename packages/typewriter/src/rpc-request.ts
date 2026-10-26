@@ -55,7 +55,7 @@ export function requestBlock<includeTransactions extends boolean = false>(
 
     if (rpcBlock === null) {
       // TODO(kyle) retry `BlockNotFoundError` in `Rpc` service.
-      return yield* Effect.fail(new BlockNotFoundError({ block: id }));
+      return yield* new BlockNotFoundError({ block: id });
     }
     return formatBlock(
       rpcBlock,
@@ -85,9 +85,10 @@ export function requestExecutionIndex(
 
     if (result === "0x") {
       // TODO(kyle) retry `NoDataReturnedError` in `Rpc` service.
-      return yield* Effect.fail(
-        new NoDataReturnedError({ address, functionName: "executionIndex" }),
-      );
+      return yield* new NoDataReturnedError({
+        address,
+        functionName: "executionIndex",
+      });
     }
 
     return Hex.toBigInt(result);

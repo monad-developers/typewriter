@@ -67,6 +67,10 @@ export class DbError extends Data.TaggedError("DbError")<{
 const dialect = new PgDialect();
 
 const LOCK_SQL = "SELECT pg_advisory_lock($1::bigint)";
+const COMMIT_STATUS_SQL = "select pg_xact_status($1::xid8) as status";
+
+/** The transaction's `COMMIT` hasn't finished, so check its status again. */
+class CommitInProgressError extends Data.TaggedError("CommitInProgressError") {}
 
 export function statementSql(statement: SQLWrapper): string {
   return dialect.sqlToQuery(statement.getSQL()).sql;
@@ -167,17 +171,17 @@ export function makeDb(
           () => new SQL({ url: options.url, max: 1, prepare: false }),
         ),
         (checker) =>
-          Effect.tryPromise(
-            () => checker`select pg_xact_status(${xid}::xid8) as status`,
-          ).pipe(
+          Effect.gen(function* () {
+            const [row] = yield* Effect.tryPromise({
+              try: () => checker`select pg_xact_status(${xid}::xid8) as status`,
+              catch: (cause) => new DbError({ sql: COMMIT_STATUS_SQL, cause }),
+            });
             // Postgres aborts a transaction whose session ends before `COMMIT`.
-            Effect.flatMap(([row]) =>
-              row?.status === "in progress"
-                ? Effect.fail("in progress")
-                : Effect.succeed(row?.status as string | null | undefined),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("100 millis") }),
-          ),
+            if (row?.status === "in progress") {
+              return yield* new CommitInProgressError();
+            }
+            return row?.status as string | null | undefined;
+          }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis") })),
         (checker) => Effect.promise(() => checker.close()),
       ).pipe(
         Effect.timeout(idleInTransactionTimeoutMs + 5_000),
