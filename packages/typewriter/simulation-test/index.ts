@@ -14,7 +14,6 @@ import {
   Scope,
 } from "effect";
 import { Hex } from "ox";
-import { ContractFunctionRevertedError } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
@@ -369,9 +368,9 @@ const program = Effect.gen(function* () {
           : undefined;
         const got = Exit.isSuccess(exit)
           ? "success"
-          : error instanceof ContractFunctionRevertedError &&
-              error.data?.errorName !== undefined
-            ? error.data.errorName
+          : error?._tag === "MutationRevertedError" &&
+              error.errorName !== undefined
+            ? error.errorName
             : Cause.pretty(exit.cause);
         if (got !== want) {
           return yield* Effect.die(

@@ -149,6 +149,19 @@ export class ProgramStoppedError extends Data.TaggedError(
   "ProgramStoppedError",
 ) {}
 
+/** A settlement transaction reverted when simulated in revm. */
+export class SettlementSimulationRevertedError extends Data.TaggedError(
+  "SettlementSimulationRevertedError",
+)<Revert> {}
+
+/** A settlement transaction was mined but reverted onchain. */
+export class SettlementRevertedError extends Data.TaggedError(
+  "SettlementRevertedError",
+)<{
+  readonly message: string;
+  readonly transactionHash: Hex.Hex;
+}> {}
+
 /** Why `execute` did not accept a mutation. */
 export type ExecuteError = UnknownMutationError | ExecuteMutationError;
 
@@ -156,7 +169,8 @@ export type ProgramError =
   | WatchError
   | DbError
   | EvmError
-  | ContractFunctionRevertedError
+  | SettlementSimulationRevertedError
+  | SettlementRevertedError
   | SignTransactionError
   | ProgramStoppedError;
 
@@ -291,10 +305,15 @@ export class EncodeMutationError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
+/** A mutation reverted when executed in revm. */
+export class MutationRevertedError extends Data.TaggedError(
+  "MutationRevertedError",
+)<Revert> {}
+
 export type ExecuteMutationError =
   | EncodeMutationError
   | EvmError
-  | ContractFunctionRevertedError;
+  | MutationRevertedError;
 
 export function executeMutation(params: {
   app: TypewriterApp;
@@ -330,8 +349,12 @@ export function executeMutation(params: {
     });
 
     if (executeResult.success === false) {
-      return yield* Effect.fail(
-        createRevmRevertError(params.app.abi, executeResult.revert_data),
+      return yield* new MutationRevertedError(
+        decodeRevert(
+          params.app.abi,
+          executeResult.revert_data,
+          "revm execute reverted",
+        ),
       );
     }
 
@@ -410,18 +433,36 @@ export function decodeEnqueuedMutation(params: {
   };
 }
 
-export function createRevmRevertError(
+/** Revert data from revm, decoded against the app's ABI when it matches. */
+type Revert = {
+  readonly message: string;
+  readonly data: Hex.Hex | undefined;
+  /** The custom error's name, or `Error`/`Panic` for the built-in ones. */
+  readonly errorName: string | undefined;
+  readonly args: readonly unknown[] | undefined;
+  readonly cause: ContractFunctionRevertedError;
+};
+
+function decodeRevert(
   abi: Abi,
   data: Hex.Hex | undefined,
-  message = "revm execute reverted",
-): ContractFunctionRevertedError {
-  return new ContractFunctionRevertedError({
+  message: string,
+): Revert {
+  const cause = new ContractFunctionRevertedError({
     abi,
     data,
     functionName: "execute",
     message,
     cause: new RawContractError({ data, message }),
   });
+  const errorName = cause.data?.errorName;
+  return {
+    message: errorName === undefined ? message : `${message}: ${errorName}`,
+    data,
+    errorName,
+    args: cause.data?.args,
+    cause,
+  };
 }
 
 function createRuntimeState(
@@ -929,8 +970,8 @@ export function createTypewriterEffect<
           });
           const duration = durationMs(simulationStartedAtMs);
           if (simulateResult.success === false) {
-            return yield* Effect.fail(
-              createRevmRevertError(
+            return yield* new SettlementSimulationRevertedError(
+              decodeRevert(
                 app.abi,
                 simulateResult.revert_data,
                 "revm simulate reverted",
@@ -1023,13 +1064,10 @@ export function createTypewriterEffect<
       nonce += 1;
 
       if (receipt.status === "reverted") {
-        return yield* Effect.fail(
-          createRevmRevertError(
-            app.abi,
-            undefined,
-            `settlement transaction reverted onchain: ${receipt.transactionHash}`,
-          ),
-        );
+        return yield* new SettlementRevertedError({
+          message: `settlement transaction reverted onchain: ${receipt.transactionHash}`,
+          transactionHash: receipt.transactionHash,
+        });
       }
       const duration = durationMs(transactionStartedAtMs);
 

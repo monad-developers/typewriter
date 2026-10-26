@@ -61,8 +61,11 @@ export {
   EncodeMutationError,
   type ExecuteError,
   type ExecuteMutationError,
+  MutationRevertedError,
   type ProgramError,
   ProgramStoppedError,
+  SettlementRevertedError,
+  SettlementSimulationRevertedError,
   SignTransactionError,
   UnknownMutationError,
 } from "./typewriter";
