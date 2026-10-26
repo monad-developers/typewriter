@@ -285,7 +285,8 @@ impl Journal {
             db.insert_account_info(*address, if post { after } else { pre }.clone());
         }
         for ((address, slot), (pre, after)) in &self.storage {
-            let _ = db.insert_account_storage(*address, *slot, if post { *after } else { *pre });
+            let Ok(()) =
+                db.insert_account_storage(*address, *slot, if post { *after } else { *pre });
         }
     }
 }
@@ -377,8 +378,8 @@ impl EvmHarness {
             }
             db.insert_account_info(address, info);
             for (slot, value) in account.storage.iter().flatten() {
-                db.insert_account_storage(address, parse_u256(slot)?, parse_u256(value)?)
-                    .map_err(|e| format!("insert_account_storage: {e:?}"))?;
+                let Ok(()) =
+                    db.insert_account_storage(address, parse_u256(slot)?, parse_u256(value)?);
             }
         }
         Ok(())
@@ -393,7 +394,8 @@ impl EvmHarness {
             block.timestamp = parse_u256(timestamp)?;
         }
         if let Some(basefee) = &params.basefee {
-            block.basefee = parse_u256(basefee)?.to::<u64>();
+            block.basefee = u64::try_from(parse_u256(basefee)?)
+                .map_err(|_| format!("basefee does not fit in u64: {basefee}"))?;
         }
         if let Some(coinbase) = &params.coinbase {
             block.beneficiary = parse_address(coinbase)?;
@@ -827,6 +829,17 @@ mod tests {
         assert!(result.outcome.success());
         assert!(!succeeds_at(&mut harness, result.outcome.gas_used));
         assert!(succeeds_at(&mut harness, result.gas_limit));
+    }
+
+    #[test]
+    fn basefee_past_u64_is_an_error() {
+        let params = BlockParams {
+            number: None,
+            timestamp: None,
+            basefee: Some(format!("{:#x}", U256::MAX)),
+            coinbase: None,
+        };
+        assert!(harness(&[]).set_block_context(&params).is_err());
     }
 
     #[test]
