@@ -15,6 +15,9 @@ import {
 } from "./sol-parse";
 import { createTypewriterEffect, type TypewriterEffect } from "./typewriter";
 import type {
+  BatchListener,
+  BlockListener,
+  MutationListener,
   On,
   TypewriterMutationInput,
   TypewriterMutationResult,
@@ -35,13 +38,37 @@ export type Typewriter<
   on: On<sequencingConfig, mutationsConfig, () => void>;
 };
 
+export type { EvmError } from "typewriter-evm";
 export type {
   ResolvedTypewriterMutationConfig,
   TypewriterConfig,
   TypewriterManifest,
 } from "./config";
+export { DbError } from "./db";
+export { MigrationError } from "./db-migrate";
 export type { TypewriterMutationSchema } from "./db-schema";
+export { type RpcError, RpcTimeoutError } from "./rpc";
+export { BlockNotFoundError, NoDataReturnedError } from "./rpc-request";
+export {
+  RpcHttpError,
+  RpcNetworkError,
+  RpcResponseError,
+  type RpcTransportError,
+} from "./rpc-transport";
 export type { TypewriterSolidityEntrypoint } from "./sol-parse";
+export {
+  type CreateTypewriterError,
+  EncodeMutationError,
+  type ExecuteError,
+  type ExecuteMutationError,
+  MutationRevertedError,
+  type ProgramError,
+  ProgramStoppedError,
+  SettlementRevertedError,
+  SettlementSimulationRevertedError,
+  SignTransactionError,
+  UnknownMutationError,
+} from "./typewriter";
 export type {
   Account,
   AddCredentialParams,
@@ -60,6 +87,11 @@ export type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
+export {
+  IncompleteBlockError,
+  UnrecoverableReorgError,
+  type WatchError,
+} from "./watch";
 
 type EntrypointMetadata<entrypoint> =
   entrypoint extends TypewriterSolidityEntrypoint<infer metadata>
@@ -152,12 +184,20 @@ export async function createTypewriter<
         typewriter.execute(submitted).pipe(Effect.raceFirst(stopped)),
       )) as Result["execute"];
 
-    const runtimeOn = typewriter.on as unknown as (
+    const on = ((
       event: "mutation" | "batch" | "block",
-      cb: unknown,
-    ) => Effect.Effect<() => void>;
-    const on = ((event: "mutation" | "batch" | "block", cb: unknown) =>
-      Effect.runSync(runtimeOn(event, cb))) as Result["on"];
+      cb:
+        | MutationListener<EntrypointMutationsConfig<entrypoint>>
+        | BatchListener<EntrypointMutationsConfig<entrypoint>>
+        | BlockListener<
+            sequencingConfig,
+            EntrypointMutationsConfig<entrypoint>
+          >,
+    ) =>
+      Effect.runSync(
+        // @ts-expect-error `on` is overloaded per event, and this forwards whichever event and listener the caller passed.
+        typewriter.on(event, cb),
+      )) as Result["on"];
 
     return {
       state: typewriter.state,

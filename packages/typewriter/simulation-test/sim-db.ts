@@ -94,11 +94,10 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
   // `f` runs inside `io`, outside the fiber. It cannot have the simulated
   // clock, which moves only between `io` calls, so it has one that ends the
   // run instead of one that differs between runs.
-  const transaction = (<a, e>(
-    f: (tx: { query: DbQuery }) => Effect.Effect<a, e>,
-  ) => {
+  const transaction: Db["transaction"] = (f) => {
     let statements: DbStatement<unknown>[] = [];
     return gate(
+      // @ts-expect-error `gate` runs `f` outside the fiber, so it can't provide services. The runtime's transactions need none.
       db.transaction((tx) => {
         // `db` runs `f` again from the start on each retry.
         statements = [];
@@ -116,7 +115,7 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
       }),
       () => statements,
     );
-  }) as unknown as Db["transaction"];
+  };
 
   // One runtime runs per simulation, so the lock is never contended.
   const lock: Db["lock"] = () => Effect.succeed(Effect.never);

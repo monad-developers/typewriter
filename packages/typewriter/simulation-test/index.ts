@@ -10,6 +10,7 @@ import {
   FiberSet,
   Layer,
   type LogLevel,
+  Option,
   Random,
   Scope,
 } from "effect";
@@ -22,7 +23,7 @@ import { encodeEnqueueCalldata } from "../src/encoding";
 import { loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import { loadSolidityTypewriterApp } from "../src/sol-parse";
-import { createTypewriterEffect } from "../src/typewriter";
+import { createTypewriterEffect, type ProgramError } from "../src/typewriter";
 import type {
   BatchEvent,
   BlockEvent,
@@ -343,7 +344,7 @@ const program = Effect.gen(function* () {
   );
   const world = Effect.gen(function* () {
     // A failure of any fiber in the set fails the run.
-    const fibers = yield* FiberSet.make<void, unknown>();
+    const fibers = yield* FiberSet.make<void, ProgramError>();
 
     const typewriter = yield* createTypewriterEffect<
       AssessmentStorage,
@@ -382,14 +383,18 @@ const program = Effect.gen(function* () {
       Effect.gen(function* () {
         const { mutation } = step;
         const exit = yield* Effect.exit(typewriter.execute(mutation));
-        // TODO(kyle) use typed errors
         const want = mutation.params.shouldRevert
           ? `${mutation.name}Error`
           : "success";
+        const error = Exit.isFailure(exit)
+          ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+          : undefined;
         const got = Exit.isSuccess(exit)
           ? "success"
-          : ((Cause.squash(exit.cause) as { data?: { errorName?: string } })
-              .data?.errorName ?? Cause.pretty(exit.cause));
+          : error?._tag === "MutationRevertedError" &&
+              error.errorName !== undefined
+            ? error.errorName
+            : Cause.pretty(exit.cause);
         if (got !== want) {
           return yield* Effect.die(
             `step ${step.index} (execute ${mutation.name}): got ${got}, want ${want}`,
@@ -482,7 +487,9 @@ const program = Effect.gen(function* () {
   // The step loop: run every fiber that can run, then move the clock to the
   // next sleep.
   const wallStart = performance.now();
-  let exit: Exit.Exit<Effect.Success<typeof world>, unknown> | undefined;
+  let exit:
+    | Exit.Exit<Effect.Success<typeof world>, Effect.Error<typeof world>>
+    | undefined;
   const fiber = Effect.runFork(world, { scheduler });
   fiber.addObserver((result) => {
     exit = result;

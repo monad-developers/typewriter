@@ -2,7 +2,7 @@ import { asc } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { Hash, Hex } from "ox";
-import { createStorageView } from "storage-layout";
+import { createStorageView, type StorageView } from "storage-layout";
 import { BUILTIN_MUTATIONS } from "../src/client";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
@@ -21,7 +21,10 @@ import {
   type Signer,
   type Step,
 } from "./assessment";
-import type { AssessmentMutations } from "./assessment-constants";
+import type {
+  AssessmentMutations,
+  AssessmentStorage,
+} from "./assessment-constants";
 import type { Chain } from "./chain";
 import type { SIM } from "./index";
 
@@ -41,30 +44,28 @@ type Views = {
  * Reads `state` and `accounts` of a storage view into plain values. Mapping
  * keys come from the view's preimages. Leaves may be promises.
  */
-async function snapshot(
-  // biome-ignore lint/suspicious/noExplicitAny: an untyped storage view.
-  state: any,
-  // biome-ignore lint/suspicious/noExplicitAny: an untyped storage view.
-  accounts: any,
+async function snapshot<isAsync extends boolean>(
+  state: StorageView<AssessmentStorage, isAsync>["state"],
+  accounts: StorageView<AssessmentStorage, isAsync>["accounts"],
 ): Promise<Views> {
   const slots: Record<string, Hex.Hex> = {};
-  for (const key of Object.keys(state.slots)) {
-    slots[key] = await state.slots[key];
+  for (const [key, value] of Object.entries(state.slots)) {
+    slots[key] = await value;
   }
 
   const result: Views["accounts"] = {};
-  for (const accountID of Object.keys(accounts)) {
-    const account = accounts[accountID];
+  for (const [accountID, account] of Object.entries(accounts)) {
     const nonces: Record<string, bigint> = {};
-    for (const lane of Object.keys(account.nonces)) {
-      nonces[lane] = await account.nonces[lane];
+    for (const [lane, nonce] of Object.entries(account.nonces)) {
+      nonces[lane] = await nonce;
     }
     const credentials: Views["accounts"][string]["credentials"] = [];
     const length = await account.credentials.length;
     for (let i = 0; i < length; i++) {
+      const credential = account.credentials[i]!;
       credentials.push({
-        keyType: Number(await account.credentials[i].keyType),
-        publicKey: await account.credentials[i].publicKey,
+        keyType: Number(await credential.keyType),
+        publicKey: await credential.publicKey,
       });
     }
     result[accountID] = { nonces, credentials };
@@ -207,7 +208,7 @@ export function validate({
   batchEvents: BatchEvent<AssessmentMutations>[];
   blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[];
   /** The runtime, still alive after the drain, to read its views. */
-  typewriter: { state: unknown; accounts: unknown };
+  typewriter: Pick<StorageView<AssessmentStorage, false>, "state" | "accounts">;
   ordering: SIM["typewriter"]["ordering"];
 }): Effect.Effect<void> {
   return Effect.gen(function* () {
