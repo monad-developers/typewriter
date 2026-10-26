@@ -19,7 +19,10 @@ use revm::{
         interpreter_types::{Jumps, MemoryTr},
         CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult,
     },
-    primitives::{Address, Bytes, TxKind, B256, U256},
+    primitives::{
+        alloy_primitives::{B512, U64},
+        Address, Bytes, TxKind, B256, U256,
+    },
     state::{AccountInfo, Bytecode, EvmState},
     DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
@@ -41,34 +44,54 @@ enum Request {
 
 #[derive(Deserialize)]
 struct InitParams {
-    spec: Option<String>,
+    spec: Option<MonadHardfork>,
     chain_id: Option<u64>,
     block: Option<BlockParams>,
-    accounts: Option<BTreeMap<String, AccountParams>>,
+    #[serde(default)]
+    accounts: BTreeMap<Address, AccountParams>,
 }
 
 #[derive(Deserialize)]
 struct BlockParams {
-    number: Option<String>,
-    timestamp: Option<String>,
-    basefee: Option<String>,
-    coinbase: Option<String>,
+    number: Option<U256>,
+    timestamp: Option<U256>,
+    basefee: Option<U64>,
+    coinbase: Option<Address>,
 }
 
 #[derive(Deserialize)]
 struct AccountParams {
-    balance: Option<String>,
-    nonce: Option<u64>,
-    code: Option<String>,
-    storage: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    balance: U256,
+    #[serde(default)]
+    nonce: u64,
+    code: Option<Bytes>,
+    #[serde(default)]
+    storage: BTreeMap<U256, U256>,
 }
 
 #[derive(Deserialize)]
 struct ExecuteParams {
-    from: String,
-    to: String,
-    data: String,
-    value: Option<String>,
+    from: Address,
+    to: Address,
+    data: Bytes,
+    #[serde(default)]
+    value: U256,
+}
+
+impl ExecuteParams {
+    fn tx_env(&self, chain_id: u64, access_list: AccessList) -> TxEnv {
+        TxEnv::builder()
+            .caller(self.from)
+            .chain_id(Some(chain_id))
+            .kind(TxKind::Call(self.to))
+            .gas_limit(u64::MAX)
+            .gas_price(0)
+            .value(self.value)
+            .data(self.data.clone())
+            .access_list(access_list)
+            .build_fill()
+    }
 }
 
 #[derive(Deserialize)]
@@ -80,8 +103,8 @@ struct SimulateParams {
 
 #[derive(Deserialize)]
 struct ReadStorageParams {
-    address: String,
-    slots: Vec<String>,
+    address: Address,
+    slots: Vec<U256>,
 }
 
 #[derive(Deserialize)]
@@ -89,12 +112,15 @@ struct JournalIdsParams {
     journal_ids: Vec<u64>,
 }
 
+/// Slots and values are B256, not U256: U256 serializes without leading
+/// zeros, and the runtime matches slots as 32-byte hex.
 #[derive(Serialize)]
 struct TxOutcome {
     #[serde(flatten)]
     status: TxStatus,
     gas_used: u64,
-    access_list: Vec<AccessListEntry>,
+    /// Sorted by address, then storage key.
+    access_list: AccessList,
 }
 
 impl TxOutcome {
@@ -109,8 +135,14 @@ impl TxOutcome {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum TxStatus {
     Success,
-    Revert { data: String },
-    Halt { reason: String },
+    Revert {
+        data: Bytes,
+    },
+    /// The HaltReason's Debug name, e.g. `InvalidFEOpcode`. HaltReason's own
+    /// serde form is an object for some reasons, such as out of gas.
+    Halt {
+        reason: String,
+    },
 }
 
 /// gas_used is with cold access: execute warms no access list.
@@ -120,10 +152,10 @@ struct ExecuteOk {
     outcome: TxOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     journal_id: Option<u64>,
-    /// Writes to the called contract.
-    slot_writes: Vec<SlotWriteEntry>,
+    /// Writes to the called contract, sorted by slot.
+    slot_writes: Vec<SlotWrite>,
     /// The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
-    keccak_preimages: Vec<String>,
+    keccak_preimages: Vec<B512>,
 }
 
 /// gas_used is with the access list warm, as the chain charges it.
@@ -135,16 +167,9 @@ struct SimulateOk {
 }
 
 #[derive(Serialize)]
-struct AccessListEntry {
-    address: String,
-    #[serde(rename = "storageKeys")]
-    storage_keys: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct SlotWriteEntry {
-    slot: String,
-    value: String,
+struct SlotWrite {
+    slot: B256,
+    value: B256,
 }
 
 // -----------------------------------------------------------------------------
@@ -168,7 +193,7 @@ type TxResult = ExecutionResult<HaltReason>;
 /// and gas_limit comes out near u64::MAX, which the node rejects.
 #[derive(Default)]
 struct HarnessInspector {
-    keccak_preimages: Vec<[u8; 64]>,
+    keccak_preimages: Vec<B512>,
     frame_reserves: Vec<u64>,
     gas_reserve: u64,
 }
@@ -209,7 +234,7 @@ impl Inspector<MonadCtx> for HarnessInspector {
             return;
         };
         // Memory past its current size reads as zeros.
-        let mut preimage = [0; 64];
+        let mut preimage = B512::ZERO;
         let memory_size = interp.memory.size();
         if offset < memory_size {
             let copied = (memory_size - offset).min(64);
@@ -311,39 +336,6 @@ impl Image {
     }
 }
 
-struct TxRequest {
-    from: Address,
-    to: Address,
-    data: Bytes,
-    value: U256,
-    chain_id: u64,
-}
-
-impl TxRequest {
-    fn parse(params: &ExecuteParams, chain_id: u64) -> Result<Self, String> {
-        Ok(Self {
-            from: parse_address(&params.from)?,
-            to: parse_address(&params.to)?,
-            data: parse_bytes(&params.data)?,
-            value: params.value.as_deref().map_or(Ok(U256::ZERO), parse_u256)?,
-            chain_id,
-        })
-    }
-
-    fn tx_env(&self, access_list: AccessList) -> TxEnv {
-        TxEnv::builder()
-            .caller(self.from)
-            .chain_id(Some(self.chain_id))
-            .kind(TxKind::Call(self.to))
-            .gas_limit(u64::MAX)
-            .gas_price(0)
-            .value(self.value)
-            .data(self.data.clone())
-            .access_list(access_list)
-            .build_fill()
-    }
-}
-
 pub struct EvmHarness {
     evm: Evm,
     journals: HashMap<u64, Journal>,
@@ -353,10 +345,10 @@ pub struct EvmHarness {
 impl EvmHarness {
     pub fn from_json(params_json: &str) -> Result<Self, String> {
         let params = serde_json::from_str(params_json).map_err(|e| format!("parse error: {e}"))?;
-        Self::new(&params)
+        Ok(Self::new(&params))
     }
 
-    fn new(params: &InitParams) -> Result<Self, String> {
+    fn new(params: &InitParams) -> Self {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
         let mut harness = Self {
@@ -364,13 +356,12 @@ impl EvmHarness {
             journals: HashMap::new(),
             next_journal_id: 1,
         };
-        harness.init(params)?;
-        Ok(harness)
+        harness.init(params);
+        harness
     }
 
-    fn init(&mut self, params: &InitParams) -> Result<(), String> {
-        if let Some(spec) = params.spec.as_deref() {
-            let spec = parse_spec(spec).ok_or_else(|| format!("unknown spec: {spec}"))?;
+    fn init(&mut self, params: &InitParams) {
+        if let Some(spec) = params.spec {
             let mut cfg = MonadCfgEnv::new_with_spec(spec);
             relax_cfg(&mut cfg);
             self.evm.0.ctx.cfg = cfg;
@@ -380,47 +371,39 @@ impl EvmHarness {
             self.evm.0.ctx.cfg.0.chain_id = chain_id;
         }
         if let Some(block) = &params.block {
-            self.set_block_context(block)?;
+            self.set_block_context(block);
         }
         let db = self.evm.0.ctx.journaled_state.db_mut();
-        for (address, account) in params.accounts.iter().flatten() {
-            let address = parse_address(address)?;
+        for (&address, account) in &params.accounts {
             let mut info = AccountInfo {
-                balance: account
-                    .balance
-                    .as_deref()
-                    .map_or(Ok(U256::ZERO), parse_u256)?,
-                nonce: account.nonce.unwrap_or(0),
+                balance: account.balance,
+                nonce: account.nonce,
                 ..Default::default()
             };
-            if let Some(code) = account.code.as_deref() {
-                info = info.with_code(Bytecode::new_raw(parse_bytes(code)?));
+            if let Some(code) = &account.code {
+                info = info.with_code(Bytecode::new_raw(code.clone()));
             }
             db.insert_account_info(address, info);
-            for (slot, value) in account.storage.iter().flatten() {
-                let Ok(()) =
-                    db.insert_account_storage(address, parse_u256(slot)?, parse_u256(value)?);
+            for (&slot, &value) in &account.storage {
+                let Ok(()) = db.insert_account_storage(address, slot, value);
             }
         }
-        Ok(())
     }
 
-    fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
+    fn set_block_context(&mut self, params: &BlockParams) {
         let block = &mut self.evm.0.ctx.block;
-        if let Some(number) = &params.number {
-            block.number = parse_u256(number)?;
+        if let Some(number) = params.number {
+            block.number = number;
         }
-        if let Some(timestamp) = &params.timestamp {
-            block.timestamp = parse_u256(timestamp)?;
+        if let Some(timestamp) = params.timestamp {
+            block.timestamp = timestamp;
         }
-        if let Some(basefee) = &params.basefee {
-            block.basefee = u64::try_from(parse_u256(basefee)?)
-                .map_err(|_| format!("basefee does not fit in u64: {basefee}"))?;
+        if let Some(basefee) = params.basefee {
+            block.basefee = basefee.to();
         }
-        if let Some(coinbase) = &params.coinbase {
-            block.beneficiary = parse_address(coinbase)?;
+        if let Some(coinbase) = params.coinbase {
+            block.beneficiary = coinbase;
         }
-        Ok(())
     }
 
     fn revert_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
@@ -440,19 +423,11 @@ impl EvmHarness {
         Ok(())
     }
 
-    fn execute(&mut self, params: &ExecuteParams) -> Result<ExecuteOk, String> {
-        let tx = TxRequest::parse(params, self.evm.0.ctx.cfg.0.chain_id)?;
-        let (result, state) = self.run_tx(&tx, AccessList::default())?;
-        let access_list = self.discovered_access_list(&tx, &state);
-        let outcome = tx_outcome(&result, &access_list);
-        let keccak_preimages = self
-            .evm
-            .0
-            .inspector
-            .keccak_preimages
-            .iter()
-            .map(|preimage| format_bytes(preimage))
-            .collect();
+    fn execute(&mut self, tx: &ExecuteParams) -> Result<ExecuteOk, String> {
+        let (result, state) = self.run_tx(tx, AccessList::default())?;
+        let access_list = self.discovered_access_list(tx, &state);
+        let outcome = tx_outcome(&result, access_list.clone());
+        let keccak_preimages = std::mem::take(&mut self.evm.0.inspector.keccak_preimages);
         if !outcome.success() {
             return Ok(ExecuteOk {
                 outcome,
@@ -478,30 +453,25 @@ impl EvmHarness {
 
     fn simulate(&mut self, params: &SimulateParams) -> Result<SimulateOk, String> {
         self.ensure_journal_ids(&params.journal_ids)?;
-        let tx = TxRequest::parse(&params.tx, self.evm.0.ctx.cfg.0.chain_id)?;
         for journal_id in params.journal_ids.iter().rev() {
             self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
         }
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
-        let result = self.run_simulate(&tx, cached_access_list);
+        let result = self.run_simulate(&params.tx, cached_access_list);
         for journal_id in &params.journal_ids {
             self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Post);
         }
         result
     }
 
-    fn read_storage(&self, params: &ReadStorageParams) -> Result<BTreeMap<String, String>, String> {
-        let address = parse_address(&params.address)?;
+    fn read_storage(&self, params: &ReadStorageParams) -> BTreeMap<B256, B256> {
         let db = self.evm.0.ctx.journaled_state.db();
         params
             .slots
             .iter()
-            .map(|slot| {
-                let slot = parse_u256(slot)?;
-                let value = db
-                    .storage_ref(address, slot)
-                    .map_err(|e| format!("storage_ref: {e:?}"))?;
-                Ok((format_u256(slot), format_u256(value)))
+            .map(|&slot| {
+                let Ok(value) = db.storage_ref(params.address, slot);
+                (slot.into(), value.into())
             })
             .collect()
     }
@@ -525,11 +495,12 @@ impl EvmHarness {
     /// clears revm's revert log.
     fn run_tx(
         &mut self,
-        tx: &TxRequest,
+        tx: &ExecuteParams,
         access_list: AccessList,
     ) -> Result<(TxResult, EvmState), String> {
         self.evm.0.inspector.clear();
-        let result = self.evm.inspect_one_tx(tx.tx_env(access_list));
+        let tx_env = tx.tx_env(self.evm.0.ctx.cfg.0.chain_id, access_list);
+        let result = self.evm.inspect_one_tx(tx_env);
         let state = self.evm.finalize();
         let result = result.map_err(|e| format!("transact: {e:?}"))?;
         Ok((result, state))
@@ -538,7 +509,7 @@ impl EvmHarness {
     /// Lists the accounts and slots the tx touched, leaving out accounts the
     /// chain already warms: the sender, the recipient, the coinbase, and
     /// precompiles.
-    fn discovered_access_list(&self, tx: &TxRequest, state: &EvmState) -> AccessList {
+    fn discovered_access_list(&self, tx: &ExecuteParams, state: &EvmState) -> AccessList {
         let precompiles = self.evm.0.ctx.journaled_state.precompile_addresses();
         let coinbase = self.evm.0.ctx.block.beneficiary;
         let is_warm = |address: &Address| {
@@ -547,25 +518,27 @@ impl EvmHarness {
                 || *address == coinbase
                 || precompiles.contains(address)
         };
-        AccessList(
-            state
-                .iter()
-                .filter(|(address, account)| !account.storage.is_empty() || !is_warm(address))
-                .map(|(address, account)| AccessListItem {
-                    address: *address,
-                    storage_keys: account
-                        .storage
-                        .keys()
-                        .map(|slot| B256::from(slot.to_be_bytes()))
-                        .collect(),
-                })
-                .collect(),
-        )
+        // EvmState is a HashMap, so sort for a stable order.
+        let mut items: Vec<AccessListItem> = state
+            .iter()
+            .filter(|(address, account)| !account.storage.is_empty() || !is_warm(address))
+            .map(|(&address, account)| {
+                let mut storage_keys: Vec<B256> =
+                    account.storage.keys().map(|&slot| slot.into()).collect();
+                storage_keys.sort();
+                AccessListItem {
+                    address,
+                    storage_keys,
+                }
+            })
+            .collect();
+        items.sort_by_key(|item| item.address);
+        AccessList(items)
     }
 
     fn run_simulate(
         &mut self,
-        tx: &TxRequest,
+        tx: &ExecuteParams,
         cached_access_list: Option<AccessList>,
     ) -> Result<SimulateOk, String> {
         let access_list = match cached_access_list {
@@ -577,7 +550,7 @@ impl EvmHarness {
         };
 
         let (result, _) = self.run_tx(tx, access_list.clone())?;
-        let outcome = tx_outcome(&result, &access_list);
+        let outcome = tx_outcome(&result, access_list);
         let gas_limit = if outcome.success() {
             result.tx_gas_used() + self.evm.0.inspector.gas_reserve
         } else {
@@ -614,11 +587,11 @@ impl EvmHarness {
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-fn tx_outcome(result: &TxResult, access_list: &AccessList) -> TxOutcome {
+fn tx_outcome(result: &TxResult, access_list: AccessList) -> TxOutcome {
     let status = match result {
         ExecutionResult::Success { .. } => TxStatus::Success,
         ExecutionResult::Revert { output, .. } => TxStatus::Revert {
-            data: format_bytes(output),
+            data: output.clone(),
         },
         ExecutionResult::Halt { reason, .. } => TxStatus::Halt {
             reason: format!("{reason:?}"),
@@ -627,73 +600,25 @@ fn tx_outcome(result: &TxResult, access_list: &AccessList) -> TxOutcome {
     TxOutcome {
         status,
         gas_used: result.tx_gas_used(),
-        access_list: encode_access_list(access_list),
+        access_list,
     }
 }
 
-fn encode_access_list(list: &AccessList) -> Vec<AccessListEntry> {
-    let mut entries: Vec<AccessListEntry> = list
-        .0
-        .iter()
-        .map(|item| {
-            let mut storage_keys: Vec<String> = item
-                .storage_keys
-                .iter()
-                .map(|key| format_bytes(key.as_slice()))
-                .collect();
-            storage_keys.sort();
-            AccessListEntry {
-                address: format!("{:#x}", item.address),
-                storage_keys,
-            }
-        })
-        .collect();
-    entries.sort_by(|a, b| a.address.cmp(&b.address));
-    entries
-}
-
-fn collect_slot_writes(state: &EvmState, address: Address) -> Vec<SlotWriteEntry> {
+fn collect_slot_writes(state: &EvmState, address: Address) -> Vec<SlotWrite> {
     let Some(account) = state.get(&address) else {
         return Vec::new();
     };
-    let mut writes: Vec<SlotWriteEntry> = account
+    let mut writes: Vec<SlotWrite> = account
         .storage
         .iter()
         .filter(|(_, value)| value.original_value() != value.present_value())
-        .map(|(slot, value)| SlotWriteEntry {
-            slot: format_u256(*slot),
-            value: format_u256(value.present_value()),
+        .map(|(&slot, value)| SlotWrite {
+            slot: slot.into(),
+            value: value.present_value().into(),
         })
         .collect();
-    writes.sort_by(|a, b| a.slot.cmp(&b.slot));
+    writes.sort_by_key(|write| write.slot);
     writes
-}
-
-fn parse_address(s: &str) -> Result<Address, String> {
-    let bytes =
-        hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("bad address: {e}"))?;
-    Address::try_from(bytes.as_slice()).map_err(|_| format!("bad address length: {}", bytes.len()))
-}
-
-fn parse_bytes(s: &str) -> Result<Bytes, String> {
-    hex::decode(s.strip_prefix("0x").unwrap_or(s))
-        .map(Bytes::from)
-        .map_err(|e| format!("bad bytes: {e}"))
-}
-
-fn parse_u256(s: &str) -> Result<U256, String> {
-    match s.strip_prefix("0x").unwrap_or(s) {
-        "" => Ok(U256::ZERO),
-        digits => U256::from_str_radix(digits, 16).map_err(|e| format!("bad u256: {e}")),
-    }
-}
-
-fn format_u256(value: U256) -> String {
-    format_bytes(&value.to_be_bytes::<32>())
-}
-
-fn format_bytes(bytes: &[u8]) -> String {
-    format!("0x{}", hex::encode(bytes))
 }
 
 /// The runtime orders txs and accounts for gas and balances itself, so these
@@ -703,16 +628,6 @@ fn relax_cfg(cfg: &mut MonadCfgEnv) {
     cfg.0.disable_balance_check = true;
     cfg.0.disable_base_fee = true;
     cfg.0.tx_gas_limit_cap = Some(u64::MAX);
-}
-
-fn parse_spec(s: &str) -> Option<MonadHardfork> {
-    match s {
-        "MonadEight" => Some(MonadHardfork::MonadEight),
-        "MonadNine" => Some(MonadHardfork::MonadNine),
-        "MonadTen" => Some(MonadHardfork::MonadTen),
-        "MonadNext" => Some(MonadHardfork::MonadNext),
-        _ => None,
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -731,20 +646,32 @@ struct Response<T: Serialize> {
 #[derive(Serialize)]
 struct EmptyResult {}
 
+#[derive(Deserialize)]
+struct RequestId {
+    id: u64,
+}
+
 /// Never fails, so the FFI boundary stays infallible.
 pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
     let request = match serde_json::from_str::<Request>(request_json) {
         Ok(request) => request,
-        Err(e) => return respond::<EmptyResult>(0, Err(format!("parse error: {e}"))),
+        Err(e) => {
+            // Bad params fail the whole parse. Answer with the request's id
+            // when it has one, so the caller can match the error to its call.
+            let id =
+                serde_json::from_str::<RequestId>(request_json).map_or(0, |request| request.id);
+            return respond::<EmptyResult>(id, Err(format!("parse error: {e}")));
+        }
     };
     let empty = |result: Result<(), String>| result.map(|()| EmptyResult {});
     match request {
         Request::SetBlockContext { id, params } => {
-            respond(id, empty(harness.set_block_context(&params)))
+            harness.set_block_context(&params);
+            respond(id, Ok(EmptyResult {}))
         }
         Request::Execute { id, params } => respond(id, harness.execute(&params)),
         Request::Simulate { id, params } => respond(id, harness.simulate(&params)),
-        Request::ReadStorage { id, params } => respond(id, harness.read_storage(&params)),
+        Request::ReadStorage { id, params } => respond(id, Ok(harness.read_storage(&params))),
         Request::RevertJournals { id, params } => {
             respond(id, empty(harness.revert_journals(&params)))
         }
@@ -808,36 +735,42 @@ mod tests {
     }
 
     fn harness(accounts: &[(u16, &[u8])]) -> EvmHarness {
-        let accounts: serde_json::Map<String, serde_json::Value> = accounts
+        let accounts = accounts
             .iter()
-            .map(|(account, code)| {
-                (
-                    format!("{:#x}", address(*account)),
-                    serde_json::json!({ "code": format_bytes(code) }),
-                )
+            .map(|&(account, code)| {
+                let account_params = AccountParams {
+                    balance: U256::ZERO,
+                    nonce: 0,
+                    code: Some(Bytes::copy_from_slice(code)),
+                    storage: BTreeMap::new(),
+                };
+                (address(account), account_params)
             })
             .collect();
-        let params = serde_json::from_value(serde_json::json!({ "accounts": accounts })).unwrap();
-        EvmHarness::new(&params).unwrap()
+        EvmHarness::new(&InitParams {
+            spec: None,
+            chain_id: None,
+            block: None,
+            accounts,
+        })
     }
 
-    fn tx(harness: &EvmHarness) -> TxRequest {
-        TxRequest {
+    fn tx() -> ExecuteParams {
+        ExecuteParams {
             from: address(CALLER),
             to: address(CONTRACT),
             data: Bytes::new(),
             value: U256::ZERO,
-            chain_id: harness.evm.0.ctx.cfg.0.chain_id,
         }
     }
 
     fn simulate(harness: &mut EvmHarness) -> Result<SimulateOk, String> {
-        let tx = tx(harness);
-        harness.run_simulate(&tx, Some(AccessList::default()))
+        harness.run_simulate(&tx(), Some(AccessList::default()))
     }
 
     fn succeeds_at(harness: &mut EvmHarness, gas_limit: u64) -> bool {
-        let mut tx_env = tx(harness).tx_env(AccessList::default());
+        let chain_id = harness.evm.0.ctx.cfg.0.chain_id;
+        let mut tx_env = tx().tx_env(chain_id, AccessList::default());
         tx_env.gas_limit = gas_limit;
         let result = harness.evm.inspect_one_tx(tx_env).unwrap();
         let _ = harness.evm.finalize();
@@ -854,14 +787,12 @@ mod tests {
     }
 
     #[test]
-    fn basefee_past_u64_is_an_error() {
-        let params = BlockParams {
-            number: None,
-            timestamp: None,
-            basefee: Some(format!("{:#x}", U256::MAX)),
-            coinbase: None,
-        };
-        assert!(harness(&[]).set_block_context(&params).is_err());
+    fn bad_params_answer_with_the_request_id() {
+        let request = r#"{"method":"readStorage","id":7,"params":{"address":"0x12","slots":[]}}"#;
+        let response: serde_json::Value =
+            serde_json::from_str(&dispatch_json(&mut harness(&[]), request)).unwrap();
+        assert_eq!(response["id"], 7);
+        assert_eq!(response["ok"], false);
     }
 
     #[test]

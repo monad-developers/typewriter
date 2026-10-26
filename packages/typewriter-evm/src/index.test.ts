@@ -848,8 +848,10 @@ test("createEVM fails with an unknown spec", async () => {
     Exit.fail(
       new EvmCallError({
         method: "init",
-        message: "init failed: unknown spec: MonadZero",
-        cause: "unknown spec: MonadZero",
+        message:
+          "init failed: parse error: unknown variant `MonadZero`, expected one of `MonadEight`, `MonadNine`, `MonadTen`, `MonadNext` at line 1 column 19",
+        cause:
+          "parse error: unknown variant `MonadZero`, expected one of `MonadEight`, `MonadNine`, `MonadTen`, `MonadNext` at line 1 column 19",
       }),
     ),
   );
