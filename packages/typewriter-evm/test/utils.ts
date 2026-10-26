@@ -1,12 +1,8 @@
 import { AbiFunction, AbiParameters, type Address, Hash, Hex } from "ox";
 import type { StorageLayout } from "storage-layout";
-import type { Abi, Hex as ViemHex } from "viem";
+import { type Abi, encodeDeployData, type Hex as ViemHex } from "viem";
 import { anvil } from "viem/chains";
-import {
-  SCHEDULER_ACCOUNT,
-  TEST_PUBLIC_CLIENT,
-  TEST_WALLET_CLIENT,
-} from "./setup";
+import { SCHEDULER_ACCOUNT, TEST_WALLET_CLIENT } from "./setup";
 
 export const TOKEN_ADDR = "0x0000000000000000000000000000000000000e20" as const;
 export const SCHEDULER_ADDR = SCHEDULER_ACCOUNT.address;
@@ -143,16 +139,22 @@ export function callBurnData(target: Address.Address, count: bigint): Hex.Hex {
   return AbiFunction.encodeData(callBurn, [target, count]);
 }
 
+// eth_sendRawTransactionSync returns the receipt once the tx is mined. Anvil
+// replies to eth_sendRawTransaction before the receipt exists, and viem then
+// polls for it every 4s.
 export async function deployArtifact(
   artifact: ForgeArtifact,
+  args: readonly unknown[] = [],
 ): Promise<Address.Address> {
-  const hash = await TEST_WALLET_CLIENT.deployContract({
-    abi: artifact.abi,
-    bytecode: artifact.bytecode.object,
+  const receipt = await TEST_WALLET_CLIENT.sendTransactionSync({
+    data: encodeDeployData({
+      abi: artifact.abi,
+      bytecode: artifact.bytecode.object,
+      args,
+    }),
     account: SCHEDULER_ACCOUNT,
     chain: anvil,
   });
-  const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
   if (
     receipt.contractAddress === null ||
     receipt.contractAddress === undefined
@@ -162,22 +164,8 @@ export async function deployArtifact(
   return receipt.contractAddress;
 }
 
-export async function deployTestToken(
+export function deployTestToken(
   artifact: ForgeArtifact,
 ): Promise<Address.Address> {
-  const hash = await TEST_WALLET_CLIENT.deployContract({
-    abi: artifact.abi,
-    bytecode: artifact.bytecode.object,
-    args: [SCHEDULER_ADDR, INITIAL_SUPPLY],
-    account: SCHEDULER_ACCOUNT,
-    chain: anvil,
-  });
-  const receipt = await TEST_PUBLIC_CLIENT.waitForTransactionReceipt({ hash });
-  if (
-    receipt.contractAddress === null ||
-    receipt.contractAddress === undefined
-  ) {
-    throw new Error("missing contract address");
-  }
-  return receipt.contractAddress;
+  return deployArtifact(artifact, [SCHEDULER_ADDR, INITIAL_SUPPLY]);
 }
