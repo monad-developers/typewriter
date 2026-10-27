@@ -135,8 +135,8 @@ export async function createTypewriter<
   >;
 
   const app = await loadSolidityTypewriterApp(entrypoint, config);
-  // TODO(kyle) expose a way to close the scope. Until then the typewriter
-  // runs until the process exits.
+  // Closed by SIGINT or SIGTERM. Until then the typewriter runs until the
+  // process exits.
   const scope = Effect.runSync(Scope.make());
 
   try {
@@ -176,6 +176,22 @@ export async function createTypewriter<
         return typewriter;
       }),
     );
+
+    // A listener for a signal replaces Node's default, which exits without
+    // closing the scope. Close it, then raise the signal again for the
+    // default exit, unless the host listens for it and decides how to exit.
+    // A second signal finds no listener, so it exits at once.
+    const shutdown = (signal: NodeJS.Signals) => {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      Effect.runPromise(Scope.close(scope, Exit.void)).then(() => {
+        if (process.listenerCount(signal) === 0) {
+          process.kill(process.pid, signal);
+        }
+      });
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
 
     const execute = ((
       submitted: TypewriterMutationInput<EntrypointMutationsConfig<entrypoint>>,
