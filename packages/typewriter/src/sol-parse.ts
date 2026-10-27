@@ -87,14 +87,14 @@ function isObject(value: unknown): value is AstNode {
 
 function requireObject(value: unknown, name: string): AstNode {
   if (!isObject(value))
-    throw new ConfigError({ message: `${name} must be an object` });
+    throw new ConfigError({ message: `Expected ${name} to be an object` });
   return value;
 }
 
 function asAstNode(value: unknown, name: string): AstNode {
   const node = requireObject(value, name) as AstNode;
   if (typeof node.nodeType !== "string") {
-    throw new ConfigError({ message: `${name} is missing nodeType` });
+    throw new ConfigError({ message: `Expected ${name} to have a nodeType` });
   }
   return node;
 }
@@ -222,7 +222,9 @@ async function readArtifact(path: string): Promise<SolidityArtifact> {
 
 function requireArtifactAbi(artifact: SolidityArtifact, path: string): Abi {
   if (!Array.isArray(artifact.abi)) {
-    throw new ConfigError({ message: `missing ABI in artifact ${path}` });
+    throw new ConfigError({
+      message: `Could not find ABI in artifact ${path}`,
+    });
   }
   return artifact.abi as Abi;
 }
@@ -239,7 +241,7 @@ async function readEntrypointAst(
       return asAstNode(artifact.ast, "artifact ast");
   }
   throw new ConfigError({
-    message: `missing compiler AST for ${displayPath(entrypoint)}`,
+    message: `Could not find compiler AST for ${displayPath(entrypoint)}`,
   });
 }
 
@@ -348,7 +350,9 @@ function abiTypeFromTypeName(typeName: unknown): string {
   const node = asAstNode(typeName, "typeName");
   if (node.nodeType === "ElementaryTypeName") {
     if (typeof node.name !== "string")
-      throw new ConfigError({ message: "elementary type missing name" });
+      throw new ConfigError({
+        message: "Expected elementary type to have a name",
+      });
     return node.name;
   }
   if (node.nodeType === "UserDefinedTypeName") {
@@ -358,7 +362,7 @@ function abiTypeFromTypeName(typeName: unknown): string {
     );
     const typeString = typeDescriptions.typeString;
     if (typeof typeString !== "string")
-      throw new ConfigError({ message: "type missing typeString" });
+      throw new ConfigError({ message: "Expected type to have a typeString" });
     if (typeString.startsWith("enum ")) return "uint8";
   }
   if (node.nodeType === "ArrayTypeName") {
@@ -370,7 +374,7 @@ function abiTypeFromTypeName(typeName: unknown): string {
     return `${baseType}[${length}]`;
   }
   throw new ConfigError({
-    message: `unsupported Solidity type at ${node.src ?? "unknown source"}`,
+    message: `Unsupported Solidity type at ${node.src ?? "unknown source"}`,
   });
 }
 
@@ -378,7 +382,7 @@ function structToAbiParameters(struct: AstNode): readonly AbiParameter[] {
   return asAstNodes(struct.members).map((member) => {
     if (typeof member.name !== "string") {
       throw new ConfigError({
-        message: `struct member missing name at ${member.src ?? "unknown source"}`,
+        message: `Expected struct member at ${member.src ?? "unknown source"} to have a name`,
       });
     }
     return {
@@ -393,7 +397,7 @@ function validateRootStorageLayout(layout: StorageLayout): StorageLayout {
     const roots = layout.storage.filter((entry) => entry.label === label);
     if (roots.length !== 1) {
       throw new ConfigError({
-        message: `storage layout must contain exactly one top-level ${label} variable`,
+        message: `Storage layout must contain exactly one top-level ${label} variable`,
       });
     }
 
@@ -405,7 +409,7 @@ function validateRootStorageLayout(layout: StorageLayout): StorageLayout {
         typeof type.value !== "string")
     ) {
       throw new ConfigError({
-        message: "top-level accounts storage variable must be a mapping",
+        message: "Top-level accounts storage variable must be a mapping",
       });
     }
     if (
@@ -413,7 +417,7 @@ function validateRootStorageLayout(layout: StorageLayout): StorageLayout {
       (type === undefined || !Array.isArray(type.members))
     ) {
       throw new ConfigError({
-        message: "top-level state storage variable must be a struct",
+        message: "Top-level state storage variable must be a struct",
       });
     }
   }
@@ -555,7 +559,7 @@ function parseMutations(params: {
   const enumMembers = asAstNodes(mutationEnum.members).map((member, id) => {
     if (typeof member.name !== "string") {
       throw new ConfigError({
-        message: `Mutation enum member missing name at ${member.src ?? "unknown source"}`,
+        message: `Expected Mutation enum member at ${member.src ?? "unknown source"} to have a name`,
       });
     }
     if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
@@ -579,7 +583,7 @@ function parseMutations(params: {
   const firstStatement = asAstNodes(body.statements)[0];
   if (firstStatement === undefined)
     throw new ConfigError({
-      message: "dispatch must contain mutation branches",
+      message: "Expected dispatch to contain mutation branches",
     });
   const branches = new Map(
     flattenDispatchBranches(firstStatement).map((branch) => [
@@ -592,7 +596,7 @@ function parseMutations(params: {
     const branch = branches.get(member.enumName);
     if (branch === undefined) {
       throw new ConfigError({
-        message: `dispatch missing branch for Mutation.${member.enumName}`,
+        message: `Could not find dispatch branch for Mutation.${member.enumName}`,
       });
     }
     const mutationStructIds = findDecodeStructIds(branch, "mutationData");
@@ -740,7 +744,9 @@ async function readSolidityMetadata(
   const entrypointAst = await readEntrypointAst(out, entrypoint);
   const contract = findEntrypointContract(entrypoint, entrypointAst);
   if (typeof contract.name !== "string")
-    throw new ConfigError({ message: "entrypoint contract missing name" });
+    throw new ConfigError({
+      message: "Expected entrypoint contract to have a name",
+    });
 
   const artifactPath = joinPath(
     out,
@@ -751,7 +757,7 @@ async function readSolidityMetadata(
   const abi = requireArtifactAbi(artifact, artifactPath);
   if (artifact.storageLayout === undefined) {
     throw new ConfigError({
-      message: `missing storage layout for ${contract.name}; ensure the Foundry profile emits storageLayout`,
+      message: `Could not find storage layout for ${contract.name}; ensure the Foundry profile emits storageLayout`,
     });
   }
 

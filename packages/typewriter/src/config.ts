@@ -184,12 +184,12 @@ function validateMutationDefinitions(mutations: {
       mutation.id > 255
     ) {
       throw new ConfigError({
-        message: `mutation ID must be a uint8: ${mutation.id}`,
+        message: `Mutation ${name} has ID ${mutation.id}; mutation IDs must be uint8s`,
       });
     }
     if (mutationIDs.has(mutation.id)) {
       throw new ConfigError({
-        message: `duplicate mutation ID: ${mutation.id}`,
+        message: `Mutation ${name} reuses mutation ID ${mutation.id}`,
       });
     }
     if (
@@ -197,7 +197,7 @@ function validateMutationDefinitions(mutations: {
       mutation.id >= FIRST_BUILTIN_MUTATION_ID
     ) {
       throw new ConfigError({
-        message: `app mutation ID must be below ${FIRST_BUILTIN_MUTATION_ID}: ${name}=${mutation.id}`,
+        message: `Mutation ${name} has reserved mutation ID ${mutation.id}; app mutation IDs must be below ${FIRST_BUILTIN_MUTATION_ID}`,
       });
     }
     mutationIDs.add(mutation.id);
@@ -207,7 +207,7 @@ function validateMutationDefinitions(mutations: {
     const mutation = mutations[name];
     if (mutation === undefined || mutation.id !== builtin.id) {
       throw new ConfigError({
-        message: `missing built-in mutation ${name} with ID ${builtin.id}`,
+        message: `Could not find built-in mutation ${name} with ID ${builtin.id}`,
       });
     }
   }

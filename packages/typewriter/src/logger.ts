@@ -1,5 +1,7 @@
 import {
   Cause,
+  Clock,
+  Effect,
   Layer,
   Logger,
   type LogLevel,
@@ -275,10 +277,12 @@ export const loggerLayer = Layer.merge(
   Layer.succeed(References.MinimumLogLevel, logLevel),
 );
 
-export function startTimer(): number {
-  return performance.now();
-}
+/** The `Clock`'s monotonic time in nanoseconds, which a simulation controls. */
+export const startTimer: Effect.Effect<bigint> = Clock.clockWith(
+  (clock) => clock.monotonicTimeNanos,
+);
 
-export function durationMs(startMs: number): number {
-  return Math.round((performance.now() - startMs) * 100) / 100;
+/** The milliseconds since `start`, to two decimal places. */
+export function durationMs(start: bigint): Effect.Effect<number> {
+  return Effect.map(startTimer, (now) => Number((now - start) / 10_000n) / 100);
 }

@@ -191,7 +191,7 @@ export class SettlementSimulationHaltedError extends Data.TaggedError(
   reason: string;
 }> {
   override get message() {
-    return `Settlement transaction halted in revm: ${this.reason}`;
+    return `Settlement transaction halted in revm with ${this.reason}`;
   }
 }
 
@@ -209,7 +209,7 @@ export class EnqueueHaltedError extends Data.TaggedError("EnqueueHaltedError")<{
   reason: string;
 }> {
   override get message() {
-    return `Enqueued mutation halted: ${this.reason}`;
+    return `Enqueued mutation halted with ${this.reason}`;
   }
 }
 
@@ -398,7 +398,7 @@ export class MutationHaltedError extends Data.TaggedError(
   reason: string;
 }> {
   override get message() {
-    return `Mutation halted: ${this.reason}`;
+    return `Mutation halted with ${this.reason}`;
   }
 }
 
@@ -434,7 +434,7 @@ export function executeMutation(params: {
         new EncodeMutationError({ mutation: params.mutation, cause }),
     });
 
-    const executeStartedAtMs = startTimer();
+    const executeStartedAt = yield* startTimer;
     const executeResult = yield* params.evm.execute({
       from: params.app.account.address,
       to: params.app.address,
@@ -460,7 +460,7 @@ export function executeMutation(params: {
         mutation: acceptedMutation.name,
         execution_index: acceptedMutation.executionIndex,
         slot_write_count: executeResult.slot_writes.length,
-        duration: durationMs(executeStartedAtMs),
+        duration: yield* durationMs(executeStartedAt),
       }),
     );
 
@@ -515,7 +515,7 @@ export function decodeEnqueuedMutation(params: {
   );
   if (mutationEntry === undefined) {
     throw new Error(
-      `unknown mutation tag in ForceInclusionQueued event: ${forceInclusionLog.mutation}`,
+      `Unknown mutation ID ${forceInclusionLog.mutation} in ForceInclusionQueued event`,
     );
   }
   const [mutationName, mutationConfig] = mutationEntry;
@@ -599,7 +599,7 @@ function createRuntimeState(
 
     if (code === "0x") {
       yield* Effect.logWarning(
-        "Detected no contract code at the typewriter address. Mutations will execute without contract code.",
+        "Detected no contract code at the typewriter address; mutations will execute without it",
       ).pipe(Effect.annotateLogs({ address: app.address }));
     }
     const evm = yield* createEVM({
@@ -899,7 +899,7 @@ export function createTypewriterEffect<
     ) =>
       withSpeculativeStateLock(
         Effect.gen(function* () {
-          const batchStartedAtMs = startTimer();
+          const batchStartedAt = yield* startTimer;
 
           if (submittedMutations.length === 0) {
             return;
@@ -944,7 +944,7 @@ export function createTypewriterEffect<
             Effect.annotateLogs({
               batch_id: batch.id,
               mutation_count: batch.mutations.length,
-              duration: durationMs(batchStartedAtMs),
+              duration: yield* durationMs(batchStartedAt),
             }),
           );
 
@@ -1076,14 +1076,14 @@ export function createTypewriterEffect<
             acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
           );
 
-          const simulationStartedAtMs = startTimer();
+          const simulationStartedAt = yield* startTimer;
           const simulateResult = yield* evm.simulate({
             from: app.account.address,
             to: app.address,
             data: calldata,
             journal_ids: speculativeJournalIds,
           });
-          const duration = durationMs(simulationStartedAtMs);
+          const duration = yield* durationMs(simulationStartedAt);
           if (simulateResult.status === "revert") {
             return yield* new SettlementSimulationRevertedError(
               decodeRevert(app.abi, simulateResult.data),
@@ -1127,7 +1127,7 @@ export function createTypewriterEffect<
 
       yield* Effect.forEach(commits, Deferred.await, { discard: true });
 
-      const transactionStartedAtMs = startTimer();
+      const transactionStartedAt = yield* startTimer;
 
       const filled = yield* rpc.request({
         method: "eth_fillTransaction",
@@ -1188,7 +1188,7 @@ export function createTypewriterEffect<
           transactionHash: receipt.transactionHash,
         });
       }
-      const duration = durationMs(transactionStartedAtMs);
+      const duration = yield* durationMs(transactionStartedAt);
 
       yield* Effect.logDebug("Submitted settlement transaction").pipe(
         Effect.annotateLogs({
@@ -1384,7 +1384,7 @@ export function createTypewriterEffect<
     const persistProgram = Effect.forever(
       Effect.gen(function* () {
         const jobs = yield* Queue.takeAll(persistQueue);
-        const persistStartedAtMs = startTimer();
+        const persistStartedAt = yield* startTimer;
         yield* db.transaction((tx) =>
           Effect.forEach(jobs, ({ write }) => write(tx), { discard: true }),
         );
@@ -1395,7 +1395,7 @@ export function createTypewriterEffect<
         yield* Effect.logDebug("Persisted runtime writes").pipe(
           Effect.annotateLogs({
             job_count: jobs.length,
-            duration: durationMs(persistStartedAtMs),
+            duration: yield* durationMs(persistStartedAt),
           }),
         );
       }),
@@ -1449,7 +1449,7 @@ export function createTypewriterEffect<
           { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
           ExecuteMutationError
         >();
-        const acceptStartedAtMs = startTimer();
+        const acceptStartedAt = yield* startTimer;
 
         yield* Queue.offer(receivedMutationQueue, {
           mutation: runtimeMutation,
@@ -1477,7 +1477,7 @@ export function createTypewriterEffect<
           Effect.annotateLogs({
             mutation: runtimeMutation.name,
             execution_index: acceptedMutation.executionIndex,
-            duration: durationMs(acceptStartedAtMs),
+            duration: yield* durationMs(acceptStartedAt),
           }),
         );
 
