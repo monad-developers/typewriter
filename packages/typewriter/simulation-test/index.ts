@@ -7,6 +7,7 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   FiberSet,
   Layer,
   type LogLevel,
@@ -67,6 +68,8 @@ export type SIM = {
     delaysMs: number[];
     revertRate: number;
     enqueueRate: number;
+    /** How often an executed step is executed again as soon as it is received. */
+    resubmitRate: number;
   };
   typewriter: {
     submitIntervalMs: number;
@@ -132,6 +135,7 @@ export const SIM: SIM = {
     ]),
     revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
+    resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -327,9 +331,11 @@ const program = Effect.gen(function* () {
   /** Emitted only with batch sequencing. */
   const batchEvents: BatchEvent<AssessmentMutations>[] = [];
   const blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[] = [];
-  // Every mutation ends finalized or rejected, once.
-  const settled = new Set<string>();
+  // Every mutation ends finalized or rejected, once, and every resubmission
+  // ends rejected.
+  let settlements = 0;
   const mutations = signers.length + plan.length;
+  const resubmissions = plan.filter((step) => step.resubmit).length;
   // The virtual time of the last mutation event.
   let progressedAt = startMs;
 
@@ -357,8 +363,10 @@ const program = Effect.gen(function* () {
       mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
       if (event.status !== "finalized" && event.status !== "rejected") return;
-      settled.add(mutationKey(event.authorization));
-      if (settled.size === mutations) Deferred.doneUnsafe(drained, Effect.void);
+      settlements++;
+      if (settlements === mutations + resubmissions) {
+        Deferred.doneUnsafe(drained, Effect.void);
+      }
     });
     yield* typewriter.on("batch", (event) => {
       batchEvents.push(event);
@@ -378,14 +386,11 @@ const program = Effect.gen(function* () {
       }).pipe(Effect.forever),
     );
 
-    /** Executes `step` and checks the result against `shouldRevert`. */
-    const execute = (step: Step) =>
+    /** Executes the mutation of `step` and checks the result against `want`. */
+    const submit = (step: Step, what: string, want: string) =>
       Effect.gen(function* () {
         const { mutation } = step;
         const exit = yield* Effect.exit(typewriter.execute(mutation));
-        const want = mutation.params.shouldRevert
-          ? `${mutation.name}Error`
-          : "success";
         const error = Exit.isFailure(exit)
           ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
           : undefined;
@@ -397,9 +402,32 @@ const program = Effect.gen(function* () {
             : Cause.pretty(exit.cause);
         if (got !== want) {
           return yield* Effect.die(
-            `step ${step.index} (execute ${mutation.name}): got ${got}, want ${want}`,
+            `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want}`,
           );
         }
+        return exit;
+      });
+
+    /**
+     * Executes `step` and checks the result against `shouldRevert`. A
+     * resubmission is a second, concurrent `execute` of the same mutation. It
+     * fails: on the nonce the first one used, or on the same revert.
+     */
+    const execute = (step: Step) =>
+      Effect.gen(function* () {
+        const { mutation } = step;
+        const fail = `${mutation.name}Error`;
+        const shouldRevert = mutation.params.shouldRevert;
+        // The first submission runs here, not on the scheduler, until it waits
+        // on its result, so it is queued before the resubmission starts.
+        const first = yield* Effect.forkChild(
+          submit(step, "execute", shouldRevert ? fail : "success"),
+          { startImmediately: true },
+        );
+        if (step.resubmit) {
+          yield* submit(step, "resubmit", shouldRevert ? fail : "InvalidNonce");
+        }
+        const exit = yield* Fiber.join(first);
         if (Exit.isSuccess(exit)) {
           results.set(
             mutationKey(mutation.authorization),

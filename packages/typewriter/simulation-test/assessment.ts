@@ -53,6 +53,8 @@ export type Step = {
   index: number;
   delayMs: number;
   via: "execute" | "enqueue";
+  /** Executes the mutation again as soon as it is received. The second `execute` fails. */
+  resubmit: boolean;
   signer: Signer;
   mutation: Mutation<AppMutationName>;
 };
@@ -266,7 +268,8 @@ export function makePlan(
   signers: readonly Signer[],
   random: Random.Random,
 ): Step[] {
-  const { mutations, delaysMs, revertRate, enqueueRate } = SIM.generator;
+  const { mutations, delaysMs, revertRate, enqueueRate, resubmitRate } =
+    SIM.generator;
   return Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
     const name: AppMutationName = random.nextDoubleUnsafe() < 0.5 ? "A" : "B";
@@ -277,10 +280,13 @@ export function makePlan(
       value: BigInt(below(random, 1_000_000)),
       shouldRevert: random.nextDoubleUnsafe() < revertRate,
     };
+    const resubmit =
+      random.nextDoubleUnsafe() < resubmitRate && via === "execute";
     return {
       index,
       delayMs,
       via,
+      resubmit,
       signer,
       mutation: authorize(manifest, signer, {
         name,
