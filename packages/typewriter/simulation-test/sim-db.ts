@@ -117,7 +117,9 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
     );
   };
 
-  // One runtime runs per simulation, so the lock is never contended.
+  // One runtime runs at a time, so the lock is never contended.
+  // TODO(kyle) shutdowns: model the lock, so a runtime whose process is gone
+  // but whose session lives on (a partition) holds it.
   const lock: Db["lock"] = () => Effect.succeed(Effect.never);
 
   return { query, transaction, lock };
