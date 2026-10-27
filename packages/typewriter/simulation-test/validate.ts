@@ -246,7 +246,23 @@ export function validate({
     const queueIndexes = new Map<string, bigint>();
     const inclusions = new Map<string, Inclusion>();
     for (const want of all) {
-      const seen = events.get(want.key) ?? [];
+      let seen = events.get(want.key) ?? [];
+      // A resubmission shares its key: its events are the second `received`
+      // and the last `rejected`.
+      if (want.step?.resubmit) {
+        const second = seen.findIndex(
+          (event, i) =>
+            event.status === "received" &&
+            seen.findIndex((other) => other.status === "received") < i,
+        );
+        const last = seen.findLastIndex((event) => event.status === "rejected");
+        equal(
+          [seen[second]?.status, seen[last]?.status],
+          ["received", "rejected"],
+          `${want.label} resubmission event statuses`,
+        );
+        seen = seen.filter((_, i) => i !== second && i !== last);
+      }
       equal(
         seen.map((event) => event.status),
         want.statuses,
@@ -329,14 +345,19 @@ export function validate({
     // executes them in that order. Batch takes runs of arrivals as batches
     // and orders each batch by `batchOrder`, keeping arrival order within a
     // name.
-    const arrivals = mutationEvents
-      .filter(
-        (event) =>
-          event.status === "received" &&
-          byKey.get(mutationKey(event.authorization))?.step !== undefined,
-      )
-      .map((event) => byKey.get(mutationKey(event.authorization))!)
-      .filter((want) => !want.reverts);
+    // A resubmission arrives after its first submission, so only the first
+    // `received` of a key counts.
+    const arrivals = [
+      ...new Set(
+        mutationEvents
+          .filter(
+            (event) =>
+              event.status === "received" &&
+              byKey.get(mutationKey(event.authorization))?.step !== undefined,
+          )
+          .map((event) => byKey.get(mutationKey(event.authorization))!),
+      ),
+    ].filter((want) => !want.reverts);
     const executions = order.filter((want) => want.step?.via === "execute");
     if (ordering.order === "fifo") {
       equal(
