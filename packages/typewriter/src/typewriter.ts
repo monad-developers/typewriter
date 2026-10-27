@@ -1001,6 +1001,13 @@ export function createTypewriterEffect<
             ({ mutation }) => mutation,
           );
 
+          if (
+            batches.length === 0 &&
+            acceptedForceIncludedMutations.length === 0
+          ) {
+            return undefined;
+          }
+
           if (acceptedEnqueuedMutations.length > 0) {
             commits.push(
               yield* persist((tx) =>
