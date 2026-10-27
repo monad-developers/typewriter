@@ -1001,8 +1001,6 @@ export function createTypewriterEffect<
             ({ mutation }) => mutation,
           );
 
-          // Every enqueued mutation was rejected and there is no batch, so a
-          // settlement would carry nothing.
           if (
             batches.length === 0 &&
             acceptedForceIncludedMutations.length === 0
