@@ -13,6 +13,7 @@ import {
 } from "effect";
 import { Hash, Hex } from "ox";
 import {
+  type AccountStorage,
   createStorageView,
   type StorageLayout,
   type StorageView,
@@ -65,6 +66,7 @@ import {
   type RequestedBlock,
   requestBlock,
   requestExecutionIndex,
+  requestQueueStorage,
 } from "./rpc-request";
 import { TYPEWRITER_ABI } from "./typewriter-constants";
 import type {
@@ -541,6 +543,8 @@ function createRuntimeState(
   db: Db,
   code: Hex.Hex,
   startBlock: Pick<RequestedBlock, "number" | "timestamp">,
+  /** Storage from the chain, which takes precedence over the database's. */
+  chainStorage: AccountStorage,
 ): Effect.Effect<
   {
     evm: EVM;
@@ -569,7 +573,7 @@ function createRuntimeState(
 
         return {
           preimages: new Set(preimages),
-          initialAccountStorage,
+          initialAccountStorage: { ...initialAccountStorage, ...chainStorage },
         };
       }),
     );
@@ -709,7 +713,22 @@ export function createTypewriterEffect<
     );
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
-      yield* createRuntimeState(app, db, code, startBlock);
+      yield* createRuntimeState(
+        app,
+        db,
+        code,
+        startBlock,
+        // Revm runs `enqueue` for each ForceInclusionQueued log, which the
+        // database does not record, so the queue comes from the chain.
+        yield* requestQueueStorage(
+          app.address,
+          BigInt(
+            app.storageLayout.storage.find(({ label }) => label === "queue")!
+              .slot,
+          ),
+          startBlock.hash,
+        ),
+      );
 
     const watch = yield* makeWatch({
       fromBlock: startBlock.hash,
