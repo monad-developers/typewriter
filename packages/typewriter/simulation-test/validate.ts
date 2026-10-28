@@ -123,14 +123,21 @@ type Want = {
   params: Record<string, unknown>;
   signer: Signer;
   nonce: bigint;
+  expiration: bigint;
   /** Unset for an account creation. */
   step: Step | undefined;
+  /** Reverts on `shouldRevert`, or on an expired authorization. */
   reverts: boolean;
   statuses: MutationStatus[];
   isForceInclusion: boolean;
 };
 
-function wants(signers: readonly Signer[], plan: readonly Step[]): Want[] {
+/** `expired` holds the keys of the steps whose authorization expired. */
+function wants(
+  signers: readonly Signer[],
+  plan: readonly Step[],
+  expired: ReadonlySet<string>,
+): Want[] {
   const executed: MutationStatus[] = [
     "received",
     "accepted",
@@ -145,6 +152,7 @@ function wants(signers: readonly Signer[], plan: readonly Step[]): Want[] {
       params: { keyType: signer.keyType, publicKey: signer.publicKey },
       signer,
       nonce: 0n,
+      expiration: 0n,
       step: undefined,
       reverts: false,
       statuses: executed,
@@ -153,7 +161,8 @@ function wants(signers: readonly Signer[], plan: readonly Step[]): Want[] {
   );
   const steps = plan.map((step): Want => {
     const { mutation } = step;
-    const reverts = mutation.params.shouldRevert;
+    const key = mutationKey(mutation.authorization);
+    const reverts = mutation.params.shouldRevert || expired.has(key);
     const statuses: MutationStatus[] =
       step.via === "execute"
         ? reverts
@@ -163,12 +172,13 @@ function wants(signers: readonly Signer[], plan: readonly Step[]): Want[] {
           ? ["rejected"]
           : ["accepted", "included", "finalized"];
     return {
-      key: mutationKey(mutation.authorization),
+      key,
       label: `step ${step.index} (${step.via} ${mutation.name})`,
       name: mutation.name,
       params: mutation.params,
       signer: step.signer,
       nonce: mutation.authorization.nonce,
+      expiration: mutation.authorization.expiration,
       step,
       reverts,
       statuses,
@@ -219,7 +229,37 @@ export function validate({
       }
     };
 
-    const all = wants(signers, plan);
+    // Whether a finite authorization expires depends on the block it is
+    // simulated against, so a step expired when it was rejected on
+    // `AuthorizationExpired` and never accepted. A rejection of its
+    // resubmission alone does not count.
+    const expired = new Set<string>();
+    const accepted = new Set<string>();
+    for (const event of mutationEvents) {
+      const key = mutationKey(event.authorization);
+      if (event.status === "accepted") accepted.add(key);
+      if (
+        event.status === "rejected" &&
+        event.error._tag === "MutationRevertedError" &&
+        event.error.errorName === "AuthorizationExpired"
+      ) {
+        expired.add(key);
+      }
+    }
+    for (const key of accepted) expired.delete(key);
+
+    const all = wants(signers, plan, expired);
+    // A negative `expiresInS` always expires, and an infinite one, like an
+    // account creation's, never does.
+    for (const want of all) {
+      const expiresInS = want.step?.expiresInS ?? Infinity;
+      if (expiresInS >= 0 && Number.isFinite(expiresInS)) continue;
+      equal(
+        expired.has(want.key),
+        expiresInS < 0,
+        `${want.label} authorization expired (expiresInS ${expiresInS})`,
+      );
+    }
     const byKey = new Map(all.map((want) => [want.key, want]));
 
     // The statuses of each mutation, in order, and where it executed.
@@ -585,11 +625,23 @@ export function validate({
           accountID: want.signer.accountID,
           credentialID: 0n,
           nonce: want.nonce,
-          expiration: 0n,
+          expiration: want.expiration,
           ...want.params,
         },
         `${want.label} row`,
       );
+      // The contract accepts an authorization up to and including the second
+      // of its expiration.
+      const blockTimestamp = inclusions.get(want.key)?.blockTimestamp;
+      if (
+        want.expiration !== 0n &&
+        blockTimestamp !== undefined &&
+        blockTimestamp > want.expiration
+      ) {
+        errors.push(
+          `${want.label} included at ${blockTimestamp}, after its expiration ${want.expiration}`,
+        );
+      }
       equal(
         {
           blockNumber: row.block_number,
