@@ -52,8 +52,8 @@ const logFormat = readEnv(
 /**
  * An error that typewriter raises on purpose: an Effect tagged error that it
  * failed with. Its message says what went wrong, so its stack, which points
- * into typewriter, is noise. Any other error, or a defect, is a bug, and keeps
- * its stack.
+ * into typewriter, is noise in a JSON log. Any other error, or a defect, is a
+ * bug, and keeps its stack.
  */
 function isKnownError({ error, defect }: LogError): boolean {
   return !defect && Predicate.isString((error as { _tag?: unknown })._tag);
@@ -150,28 +150,17 @@ function formatValue(value: unknown): string {
 }
 
 /**
- * `Name: message` for each error in the cause chain, or the stack of an
- * unknown top-level error. The stack of a cause points into the library that
- * threw it, so it is left out.
+ * The error as Effect's runtime prints it: `Name: message`, the stack, and each
+ * `[cause]` with its own stack.
  */
-function formatErrorLines(error: LogError): string[] {
-  const lines: string[] = [];
-  let current: unknown = error.error;
-  for (let depth = 0; current !== undefined && depth < 10; depth++) {
-    const prefix = depth === 0 ? "" : "  cause: ";
-    if (!(current instanceof Error)) {
-      lines.push(`${prefix}${formatValue(current)}`);
-      break;
-    }
-    const text = `${current.name}: ${current.message}`;
-    lines.push(`${prefix}${text.replaceAll("\n", "\n    ")}`);
-    // The stack's own header can predate the message, as a tagged error's does.
-    if (depth === 0 && !isKnownError(error) && current.stack) {
-      lines.push(...current.stack.split("\n").filter((l) => /^\s+at /.test(l)));
-    }
-    current = errorCause(current);
-  }
-  return lines;
+function formatError({ error, defect }: LogError): string {
+  // `Cause.pretty` prints an Effect `Cause` in `cause` as one line, so it gets
+  // the cause's first error instead.
+  const view =
+    error instanceof Error && Cause.isCause(error.cause)
+      ? Object.create(error, { cause: { value: errorCause(error) } })
+      : error;
+  return Cause.pretty(defect ? Cause.die(view) : Cause.fail(view));
 }
 
 function formatPretty(options: Logger.Options<unknown>): string {
@@ -198,7 +187,7 @@ function formatPretty(options: Logger.Options<unknown>): string {
   const lines = [
     `${dim(time)} ${PRETTY_LEVELS[options.logLevel]} ${msg}${dim(keys)}${duration}`,
   ];
-  for (const error of errors) lines.push(...formatErrorLines(error));
+  for (const error of errors) lines.push(formatError(error));
   return lines.join("\n");
 }
 
