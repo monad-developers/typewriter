@@ -7,6 +7,7 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   FiberSet,
   Layer,
   Logger,
@@ -36,6 +37,7 @@ import {
   makeSigner,
   mutationKey,
   type Step,
+  signAtSubmission,
 } from "./assessment";
 import {
   ASSESSMENT_ENTRYPOINT,
@@ -58,7 +60,12 @@ export type SIM = {
   jumpRate: number;
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
   ioRate: number;
-  chain: { blockTimeMs: number; genesisTimestamp: number };
+  chain: {
+    blockTimeMs: number;
+    genesisTimestamp: number;
+    /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
+    reorgRate: number;
+  };
   generator: {
     /** The key type of each account. */
     accounts: KeyType[];
@@ -67,6 +74,15 @@ export type SIM = {
     delaysMs: number[];
     revertRate: number;
     enqueueRate: number;
+    /** How often an executed step is executed again as soon as it is received. */
+    resubmitRate: number;
+    /**
+     * The seconds from a step's submission to its authorization's expiration
+     * that a step draws from. `-1` expires before genesis, so it always fails,
+     * `0` and the intermediate ones expire around the step's inclusion, and
+     * `Infinity` never expires. `Infinity` repeats so most steps draw it.
+     */
+    expirationsS: number[];
   };
   typewriter: {
     submitIntervalMs: number;
@@ -112,6 +128,7 @@ export const SIM: SIM = {
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
+    reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
   },
   generator: {
     accounts: Array.from(
@@ -132,6 +149,8 @@ export const SIM: SIM = {
     ]),
     revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
+    resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
+    expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -283,11 +302,7 @@ const program = Effect.gen(function* () {
   const signers = SIM.generator.accounts.map((keyType, i) =>
     makeSigner(i, keyType),
   );
-  const plan = makePlan(
-    manifest,
-    signers,
-    yield* makeRandom(SIM.seed, "generator"),
-  );
+  const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
@@ -306,7 +321,10 @@ const program = Effect.gen(function* () {
   const simChain: Chain = {
     request: (request) => scheduler.io(chain.request(request)),
     mine: (timestamp) => scheduler.io(chain.mine(timestamp)),
+    reorg: (depth, timestamp) => scheduler.io(chain.reorg(depth, timestamp)),
   };
+  const chainRandom = yield* makeRandom(SIM.seed, "chain");
+  let reorgs = 0;
   const transports = SIM.transports.map((_, index) =>
     makeSimTransport({ chain: simChain, index }),
   ) as [
@@ -321,9 +339,11 @@ const program = Effect.gen(function* () {
   /** Emitted only with batch sequencing. */
   const batchEvents: BatchEvent<AssessmentMutations>[] = [];
   const blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[] = [];
-  // Every mutation ends finalized or rejected, once.
-  const settled = new Set<string>();
+  // Every mutation ends finalized or rejected, once, and every resubmission
+  // ends rejected.
+  let settlements = 0;
   const mutations = signers.length + plan.length;
+  const resubmissions = plan.filter((step) => step.resubmit).length;
   // The virtual time of the last mutation event.
   let progressedAt = startMs;
 
@@ -351,8 +371,10 @@ const program = Effect.gen(function* () {
       mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
       if (event.status !== "finalized" && event.status !== "rejected") return;
-      settled.add(mutationKey(event.authorization));
-      if (settled.size === mutations) Deferred.doneUnsafe(drained, Effect.void);
+      settlements++;
+      if (settlements === mutations + resubmissions) {
+        Deferred.doneUnsafe(drained, Effect.void);
+      }
     });
     yield* typewriter.on("batch", (event) => {
       batchEvents.push(event);
@@ -368,18 +390,30 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
         // Anvil takes whole seconds, so blocks in the same second share a timestamp.
         const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-        yield* simChain.mine(timestamp);
+        if (chainRandom.nextDoubleUnsafe() >= SIM.chain.reorgRate) {
+          yield* simChain.mine(timestamp);
+          return;
+        }
+        // A reorg of at most `finalizedBlockDepth` replaces no finalized block.
+        const depth =
+          1 +
+          Math.floor(
+            chainRandom.nextDoubleUnsafe() * SIM.typewriter.finalizedBlockDepth,
+          );
+        const replaced = yield* simChain.reorg(depth, timestamp);
+        if (replaced === 0) return;
+        reorgs++;
+        yield* Effect.logInfo("Reorged simulation chain").pipe(
+          Effect.annotateLogs({ depth: replaced, timestamp }),
+        );
       }).pipe(Effect.forever),
     );
 
-    /** Executes `step` and checks the result against `shouldRevert`. */
-    const execute = (step: Step) =>
+    /** Executes the mutation of `step` and checks the result is one of `want`. */
+    const submit = (step: Step, what: string, want: string[]) =>
       Effect.gen(function* () {
         const { mutation } = step;
         const exit = yield* Effect.exit(typewriter.execute(mutation));
-        const want = mutation.params.shouldRevert
-          ? `${mutation.name}Error`
-          : "success";
         const error = Exit.isFailure(exit)
           ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
           : undefined;
@@ -389,11 +423,50 @@ const program = Effect.gen(function* () {
               error.errorName !== undefined
             ? error.errorName
             : Cause.pretty(exit.cause);
-        if (got !== want) {
+        if (!want.includes(got)) {
           return yield* Effect.die(
-            `step ${step.index} (execute ${mutation.name}): got ${got}, want ${want}`,
+            `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want.join(" or ")}`,
           );
         }
+        return exit;
+      });
+
+    /**
+     * Executes `step` and checks the result against `shouldRevert` and
+     * `expiresInS`. A resubmission is a second, concurrent `execute` of the
+     * same mutation. It fails: on the nonce the first one used, or on the same
+     * revert. An expired authorization fails both before either check, and a
+     * finite one may expire before either submission is simulated.
+     */
+    const execute = (step: Step) =>
+      Effect.gen(function* () {
+        const { mutation, expiresInS } = step;
+        const fail = `${mutation.name}Error`;
+        const shouldRevert = mutation.params.shouldRevert;
+        const unlessExpired = (want: string) =>
+          expiresInS < 0
+            ? ["AuthorizationExpired"]
+            : Number.isFinite(expiresInS)
+              ? [want, "AuthorizationExpired"]
+              : [want];
+        // The first submission runs here, not on the scheduler, until it waits
+        // on its result, so it is queued before the resubmission starts.
+        const first = yield* Effect.forkChild(
+          submit(
+            step,
+            "execute",
+            unlessExpired(shouldRevert ? fail : "success"),
+          ),
+          { startImmediately: true },
+        );
+        if (step.resubmit) {
+          yield* submit(
+            step,
+            "resubmit",
+            unlessExpired(shouldRevert ? fail : "InvalidNonce"),
+          );
+        }
+        const exit = yield* Fiber.join(first);
         if (Exit.isSuccess(exit)) {
           results.set(
             mutationKey(mutation.authorization),
@@ -446,6 +519,11 @@ const program = Effect.gen(function* () {
       // one before it to settle.
       for (const step of plan) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
+        step.mutation = signAtSubmission(
+          manifest,
+          step,
+          yield* Clock.currentTimeMillis,
+        );
         yield* FiberSet.run(
           fibers,
           step.via === "execute" ? execute(step) : yield* enqueue(step),
@@ -535,6 +613,7 @@ const program = Effect.gen(function* () {
       mutations,
       blocks: blockEvents.length,
       batches: batchEvents.length,
+      reorgs,
       wall_ms: Math.round(performance.now() - wallStart),
     }),
   );

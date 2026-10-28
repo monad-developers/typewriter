@@ -53,7 +53,12 @@ export type Step = {
   index: number;
   delayMs: number;
   via: "execute" | "enqueue";
+  /** Executes the mutation again as soon as it is received. The second `execute` fails. */
+  resubmit: boolean;
+  /** Drawn from `SIM.generator.expirationsS`. See {@link signAtSubmission}. */
+  expiresInS: number;
   signer: Signer;
+  /** Unsigned, with a `0x` signature, until {@link signAtSubmission} signs it. */
   mutation: Mutation<AppMutationName>;
 };
 
@@ -223,17 +228,36 @@ export function makeSigner(index: number, keyType: KeyType): Signer {
   }
 }
 
-function authorize<const name extends keyof AssessmentMutations & string>(
-  manifest: TypewriterManifest<AssessmentMutations>,
-  signer: Signer,
-  mutation: Pick<Mutation<name>, "name" | "params"> & { nonce: bigint },
-): Mutation<name> {
-  const unsigned = {
+type Unsigned<name extends keyof AssessmentMutations & string> = Pick<
+  Mutation<name>,
+  "name" | "params"
+> & { nonce: bigint; expiration?: bigint };
+
+function unsignedMutation<
+  const name extends keyof AssessmentMutations & string,
+>(signer: Signer, mutation: Unsigned<name>) {
+  return {
+    expiration: 0n,
     ...mutation,
     accountID: signer.accountID,
     credentialID: 0n,
-    expiration: 0n,
   };
+}
+
+/** The mutation with a `0x` signature, to sign later. */
+function unsigned<const name extends keyof AssessmentMutations & string>(
+  signer: Signer,
+  mutation: Unsigned<name>,
+): Mutation<name> {
+  return authorizeMutation(unsignedMutation(signer, mutation), "0x");
+}
+
+function authorize<const name extends keyof AssessmentMutations & string>(
+  manifest: TypewriterManifest<AssessmentMutations>,
+  signer: Signer,
+  mutation: Unsigned<name>,
+): Mutation<name> {
+  const unsigned = unsignedMutation(signer, mutation);
   return authorizeMutation(
     unsigned,
     signer.sign(getAuthorizationPayload(manifest, unsigned)),
@@ -256,17 +280,48 @@ export function stepNonce(index: number): bigint {
   return packNonce(BigInt(index + 1), 0n);
 }
 
+/**
+ * Signs the mutation of `step`, submitted at `nowMs`. It expires
+ * `expiresInS` after the second of `nowMs`, in the whole seconds of
+ * `block.timestamp`. A negative `expiresInS` expires before genesis, so
+ * before every block, and an infinite one never expires.
+ */
+export function signAtSubmission(
+  manifest: TypewriterManifest<AssessmentMutations>,
+  step: Step,
+  nowMs: number,
+): Mutation<AppMutationName> {
+  const { name, params, authorization } = step.mutation;
+  const expiration = !Number.isFinite(step.expiresInS)
+    ? 0
+    : step.expiresInS < 0
+      ? SIM.chain.genesisTimestamp - 1
+      : Math.floor(nowMs / 1000) + step.expiresInS;
+  return authorize<AppMutationName>(manifest, step.signer, {
+    name,
+    params,
+    nonce: authorization.nonce,
+    expiration: BigInt(expiration),
+  });
+}
+
 function below(random: Random.Random, length: number): number {
   return Math.floor(random.nextDoubleUnsafe() * length);
 }
 
 /** Draws the plan of `SIM.generator.mutations` steps. */
 export function makePlan(
-  manifest: TypewriterManifest<AssessmentMutations>,
   signers: readonly Signer[],
   random: Random.Random,
 ): Step[] {
-  const { mutations, delaysMs, revertRate, enqueueRate } = SIM.generator;
+  const {
+    mutations,
+    delaysMs,
+    revertRate,
+    enqueueRate,
+    resubmitRate,
+    expirationsS,
+  } = SIM.generator;
   return Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
     const name: AppMutationName = random.nextDoubleUnsafe() < 0.5 ? "A" : "B";
@@ -277,16 +332,17 @@ export function makePlan(
       value: BigInt(below(random, 1_000_000)),
       shouldRevert: random.nextDoubleUnsafe() < revertRate,
     };
+    const resubmit =
+      random.nextDoubleUnsafe() < resubmitRate && via === "execute";
+    const expiresInS = expirationsS[below(random, expirationsS.length)]!;
     return {
       index,
       delayMs,
       via,
+      resubmit,
+      expiresInS,
       signer,
-      mutation: authorize(manifest, signer, {
-        name,
-        params,
-        nonce: stepNonce(index),
-      }),
+      mutation: unsigned(signer, { name, params, nonce: stepNonce(index) }),
     };
   });
 }
