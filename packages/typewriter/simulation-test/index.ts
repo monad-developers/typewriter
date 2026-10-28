@@ -59,7 +59,12 @@ export type SIM = {
   jumpRate: number;
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
   ioRate: number;
-  chain: { blockTimeMs: number; genesisTimestamp: number };
+  chain: {
+    blockTimeMs: number;
+    genesisTimestamp: number;
+    /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
+    reorgRate: number;
+  };
   generator: {
     /** The key type of each account. */
     accounts: KeyType[];
@@ -115,6 +120,7 @@ export const SIM: SIM = {
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
+    reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
   },
   generator: {
     accounts: Array.from(
@@ -316,7 +322,10 @@ const program = Effect.gen(function* () {
   const simChain: Chain = {
     request: (request) => scheduler.io(chain.request(request)),
     mine: (timestamp) => scheduler.io(chain.mine(timestamp)),
+    reorg: (depth, timestamp) => scheduler.io(chain.reorg(depth, timestamp)),
   };
+  const chainRandom = yield* makeRandom(SIM.seed, "chain");
+  let reorgs = 0;
   const transports = SIM.transports.map((_, index) =>
     makeSimTransport({ chain: simChain, index }),
   ) as [
@@ -382,7 +391,22 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
         // Anvil takes whole seconds, so blocks in the same second share a timestamp.
         const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-        yield* simChain.mine(timestamp);
+        if (chainRandom.nextDoubleUnsafe() >= SIM.chain.reorgRate) {
+          yield* simChain.mine(timestamp);
+          return;
+        }
+        // A reorg of at most `finalizedBlockDepth` replaces no finalized block.
+        const depth =
+          1 +
+          Math.floor(
+            chainRandom.nextDoubleUnsafe() * SIM.typewriter.finalizedBlockDepth,
+          );
+        const replaced = yield* simChain.reorg(depth, timestamp);
+        if (replaced === 0) return;
+        reorgs++;
+        yield* logSim("reorged chain").pipe(
+          Effect.annotateLogs({ depth: replaced, timestamp }),
+        );
       }).pipe(Effect.forever),
     );
 
@@ -566,6 +590,7 @@ const program = Effect.gen(function* () {
       mutations,
       blocks: blockEvents.length,
       batches: batchEvents.length,
+      reorgs,
       wallMs: Math.round(performance.now() - wallStart),
     }),
   );

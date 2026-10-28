@@ -7,6 +7,7 @@ import {
   Stream,
 } from "effect";
 import { ChildProcess, type ChildProcessSpawner } from "effect/process";
+import { Hex } from "ox";
 import {
   makeHttpTransport,
   type RpcRequest,
@@ -21,7 +22,19 @@ export type Chain = {
   ) => Effect.Effect<RpcResult<request["method"]>>;
   /** Mines one block at `timestamp`, in seconds. */
   mine: (timestamp: number) => Effect.Effect<void>;
+  /**
+   * Replaces the last `depth` blocks with as many new ones at `timestamp`, in
+   * seconds. Block 1, where the contract is deployed, stays. Returns the depth
+   * it replaced.
+   */
+  reorg: (depth: number, timestamp: number) => Effect.Effect<number>;
 };
+
+/**
+ * The third Anvil account. It sends one transaction in the first block of each
+ * reorg, so the new blocks never hash the same as the ones they replace.
+ */
+const REORG = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 
 export function makeChain(): Effect.Effect<
   Chain,
@@ -95,6 +108,57 @@ export function makeChain(): Effect.Effect<
         )
         .pipe(Effect.asVoid);
 
-    return { request, mine };
+    // A node puts the transactions of dropped blocks back in its pool. Anvil
+    // drops them, and evicts any pool transaction whose nonce they precede
+    // once it mines a block, so they are sent again before the first new block.
+    const reorg = (depth: number, timestamp: number) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          const head = Number(yield* send({ method: "eth_blockNumber" }));
+          const replaced = Math.min(depth, head - 1);
+          if (replaced <= 0) return 0;
+
+          const raws: unknown[] = [];
+          for (let number = head - replaced + 1; number <= head; number++) {
+            const block = (yield* send({
+              method: "eth_getBlockByNumber",
+              params: [Hex.fromNumber(number), false],
+            })) as { transactions: Hex.Hex[] };
+            for (const hash of block.transactions) {
+              raws.push(
+                yield* send({
+                  method: "eth_getRawTransactionByHash",
+                  params: [hash],
+                } as unknown as RpcRequest),
+              );
+            }
+          }
+
+          // `PublicRpcSchema` does not include Anvil methods.
+          yield* send({
+            method: "anvil_rollback",
+            params: [replaced],
+          } as unknown as RpcRequest);
+          for (const raw of raws) {
+            yield* send({
+              method: "eth_sendRawTransaction",
+              params: [raw as Hex.Hex],
+            });
+          }
+          yield* send({
+            method: "eth_sendTransaction",
+            params: [{ from: REORG, to: REORG }],
+          });
+          for (let i = 0; i < replaced; i++) {
+            yield* send({
+              method: "evm_mine",
+              params: [{ timestamp, blocks: 1 }],
+            } as unknown as RpcRequest);
+          }
+          return replaced;
+        }),
+      );
+
+    return { request, mine, reorg };
   });
 }
