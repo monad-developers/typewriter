@@ -65,6 +65,7 @@ export {
   MutationRevertedError,
   type ProgramError,
   ProgramStoppedError,
+  SettlementReorgedError,
   SettlementRevertedError,
   SettlementSimulationHaltedError,
   SettlementSimulationRevertedError,

@@ -213,6 +213,22 @@ export class SettlementRevertedError extends Data.TaggedError(
 }
 
 /**
+ * A reorg replaced the block of a settlement transaction before it finalized.
+ * The runtime does not follow a settlement to a new block.
+ */
+export class SettlementReorgedError extends Data.TaggedError(
+  "SettlementReorgedError",
+)<{
+  blockNumber: bigint;
+  blockHash: Hex.Hex;
+  transactionHash: Hex.Hex;
+}> {
+  override get message() {
+    return `settlement block ${this.blockNumber} was reorged out: ${this.blockHash}`;
+  }
+}
+
+/**
  * `program` stopped, so a waiting `execute` will never get an answer. `cause`
  * is how the program exited: a {@link ProgramError}, or an interruption.
  */
@@ -235,6 +251,7 @@ export type ProgramError =
   | SettlementSimulationRevertedError
   | SettlementSimulationHaltedError
   | SettlementRevertedError
+  | SettlementReorgedError
   | EnqueueRevertedError
   | EnqueueHaltedError
   | SignTransactionError
@@ -1234,13 +1251,32 @@ export function createTypewriterEffect<
       unfinalizedBlocks.push(runtimeBlock);
     });
 
+    // The hash of each block the watch emitted, by number, until it is final.
+    // A settlement's block finalizes only if it is still the block at its
+    // number. A settlement can land in a block the watch already pruned, so
+    // that block is requested instead.
+    const canonicalHashes = new Map<bigint, Hex.Hex>();
+    const canonicalHash = (number: bigint) => {
+      const hash = canonicalHashes.get(number);
+      return hash !== undefined
+        ? Effect.succeed(hash)
+        : requestBlock(number).pipe(
+            Effect.map((block) => block.hash),
+            Effect.provideService(Rpc, rpc),
+          );
+    };
+
     const watchProgram = Effect.gen(function* () {
       yield* watch.messages.pipe(
         Stream.runForEach((message) =>
           Effect.gen(function* () {
             if (message._tag === "Reorged") {
+              for (const block of message.newBlocks) {
+                canonicalHashes.set(block.number, block.hash);
+              }
               return;
             }
+            canonicalHashes.set(message.block.number, message.block.hash);
 
             yield* evm.setBlockContext({
               number: Hex.fromNumber(message.block.number),
@@ -1281,6 +1317,14 @@ export function createTypewriterEffect<
                 app.confirmations,
               );
               if (nextStatus === undefined) continue;
+
+              if ((yield* canonicalHash(block.number)) !== block.hash) {
+                return yield* new SettlementReorgedError({
+                  blockNumber: block.number,
+                  blockHash: block.hash,
+                  transactionHash: block.transactionHash,
+                });
+              }
 
               block.status = nextStatus;
 
@@ -1325,6 +1369,14 @@ export function createTypewriterEffect<
             unfinalizedBlocks = unfinalizedBlocks.filter(
               (block) => block.status !== "finalized",
             );
+            for (const number of canonicalHashes.keys()) {
+              if (
+                message.block.number - number >=
+                BigInt(app.confirmations.finalizedBlockDepth)
+              ) {
+                canonicalHashes.delete(number);
+              }
+            }
           }),
         ),
       );
