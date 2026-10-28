@@ -3,6 +3,7 @@ import {
   Duration,
   Effect,
   Queue,
+  Result,
   Schedule,
   type Scope,
   Stream,
@@ -142,16 +143,30 @@ export function makeWatch(
           Bloom.contains(block.logsBloom, filter.address) &&
           Bloom.contains(block.logsBloom, filter.selector)
         ) {
-          const matchingLogs = yield* rpc.request({
-            method: "eth_getLogs",
-            params: [
-              {
-                blockHash: block.hash,
-                address: filter.address,
-                topics: [filter.selector],
-              },
-            ],
-          });
+          const result = yield* Effect.result(
+            rpc.request({
+              method: "eth_getLogs",
+              params: [
+                {
+                  blockHash: block.hash,
+                  address: filter.address,
+                  topics: [filter.selector],
+                },
+              ],
+            }),
+          );
+          if (Result.isFailure(result)) {
+            // A node fails `eth_getLogs` for a block hash it no longer has, so
+            // the failure is a missing block if the block left the chain.
+            const current = yield* rpc.request({
+              method: "eth_getBlockByHash",
+              params: [block.hash, false],
+            });
+            return yield* current === null
+              ? new BlockNotFoundError({ block: block.hash })
+              : result.failure;
+          }
+          const matchingLogs = result.success;
 
           logs = yield* Effect.forEach(
             matchingLogs.filter((log) => log.topics[0] === filter.selector),
@@ -225,15 +240,16 @@ export function makeWatch(
       block: LocalBlock,
     ): Effect.Effect<void, WatchError> =>
       Effect.gen(function* () {
-        const originalChain = localChain;
+        // `localChain` changes only once the walk finds the common ancestor,
+        // so a failed walk leaves it as it was.
         let reorgedBlocks = localChain.filter((b) => b.number >= block.number);
         let remoteBlock = block;
         const newBlocks = [block];
 
-        localChain = localChain.filter((b) => b.number < block.number);
+        let chain = localChain.filter((b) => b.number < block.number);
 
         while (true) {
-          const parentBlock = localChain[localChain.length - 1];
+          const parentBlock = chain[chain.length - 1];
           if (
             parentBlock !== undefined &&
             parentBlock.hash === remoteBlock.parentHash
@@ -241,8 +257,7 @@ export function makeWatch(
             break;
           }
 
-          if (localChain.length === 0) {
-            localChain = originalChain;
+          if (chain.length === 0) {
             return yield* new UnrecoverableReorgError({
               number: block.number,
               hash: block.hash,
@@ -251,15 +266,12 @@ export function makeWatch(
 
           remoteBlock = yield* getBlockByHash(remoteBlock.parentHash);
           newBlocks.unshift(remoteBlock);
-          reorgedBlocks = [
-            localChain[localChain.length - 1]!,
-            ...reorgedBlocks,
-          ];
-          localChain = localChain.slice(0, -1);
+          reorgedBlocks = [chain[chain.length - 1]!, ...reorgedBlocks];
+          chain = chain.slice(0, -1);
         }
 
-        const commonAncestor = localChain[localChain.length - 1];
-        localChain = appendBlocks(localChain, newBlocks, config.maxChainDepth);
+        const commonAncestor = chain[chain.length - 1];
+        localChain = appendBlocks(chain, newBlocks, config.maxChainDepth);
         yield* Queue.offer(queue, {
           _tag: "Reorged",
           commonAncestor,
@@ -334,7 +346,15 @@ export function makeWatch(
         }
         return yield* getLocalBlockWithLogs(block);
       });
-      yield* reconcileBlock(latestBlock);
+      // A block can leave the chain between two requests, when the chain
+      // reorgs. The next poll starts again from the new latest block.
+      yield* reconcileBlock(latestBlock).pipe(
+        Effect.catchTag("BlockNotFoundError", (error) =>
+          Effect.logDebug("block left the chain").pipe(
+            Effect.annotateLogs({ block: error.block }),
+          ),
+        ),
+      );
     }).pipe(Effect.withLogSpan("watch"));
 
     return {
