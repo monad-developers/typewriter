@@ -4,6 +4,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Predicate,
   Queue,
   Result,
   Schedule,
@@ -805,34 +806,55 @@ export function createTypewriterEffect<
     const batchListeners = new Set<BatchListener>();
     const blockListeners = new Set<BlockListener<"fifo" | "batch">>();
 
-    const emitMutation = (event: MutationEvent) => {
-      for (const cb of mutationListeners) {
-        try {
-          cb(event);
-        } catch {}
-      }
-    };
+    // A listener is the caller's code, so its error can't stop the runtime.
+    // Nothing else sees the error, so it is a warning. A listener typed to
+    // return `void` can still be async, and its rejection would otherwise
+    // crash the process.
+    const emit = <event>(
+      name: "mutation" | "batch" | "block",
+      listeners: ReadonlySet<(event: event) => void>,
+      event: event,
+    ) =>
+      Effect.gen(function* () {
+        const context = yield* Effect.context<never>();
+        const warn = (error: unknown) =>
+          Effect.logWarning("Failed event listener", error).pipe(
+            Effect.annotateLogs({ event: name }),
+          );
+        yield* Effect.forEach(
+          listeners,
+          (cb) =>
+            Effect.try({
+              try: () => {
+                const result: unknown = cb(event);
+                if (Predicate.isPromise(result)) {
+                  result.catch((error) =>
+                    Effect.runForkWith(context)(warn(error)),
+                  );
+                }
+              },
+              catch: (error) => error,
+            }).pipe(Effect.catch(warn)),
+          { discard: true },
+        );
+      });
 
-    const emitBatch = (event: BatchEvent) => {
-      if (app.sequencing.order !== "batch") return;
-      for (const cb of batchListeners) {
-        try {
-          cb(event);
-        } catch {}
-      }
-    };
+    const emitMutation = (event: MutationEvent) =>
+      emit("mutation", mutationListeners, event);
 
-    const emitBlock = (block: RuntimeBlock<"batch">) => {
-      const event =
-        app.sequencing.order === "fifo"
+    const emitBatch = (event: BatchEvent) =>
+      app.sequencing.order === "batch"
+        ? emit("batch", batchListeners, event)
+        : Effect.void;
+
+    const emitBlock = (block: RuntimeBlock<"batch">) =>
+      emit(
+        "block",
+        blockListeners,
+        (app.sequencing.order === "fifo"
           ? fifoBlockToEvent(batchBlockToFifoBlock(block))
-          : batchBlockToEvent(block);
-      for (const cb of blockListeners) {
-        try {
-          cb(event as BlockEvent<"fifo" | "batch">);
-        } catch {}
-      }
-    };
+          : batchBlockToEvent(block)) as BlockEvent<"fifo" | "batch">,
+      );
 
     // Executes a mutation against speculative state and updates in-memory
     // bookkeeping, but performs no database writes. Persistence is batched by
@@ -858,12 +880,12 @@ export function createTypewriterEffect<
             executionIndex: nextExecutionIndex,
           }).pipe(
             Effect.tapError((error) =>
-              Effect.sync(() => {
+              Effect.suspend(() => {
                 const rejectedMutation = updateMutationToRejected(mutation, {
                   error,
                 });
 
-                emitMutation(mutationToEvent(rejectedMutation));
+                return emitMutation(mutationToEvent(rejectedMutation));
               }),
             ),
           );
@@ -881,7 +903,7 @@ export function createTypewriterEffect<
           newPreimages.push(preimage);
         }
 
-        emitMutation(mutationToEvent(acceptedMutation));
+        yield* emitMutation(mutationToEvent(acceptedMutation));
 
         return {
           mutation: acceptedMutation,
@@ -959,7 +981,7 @@ export function createTypewriterEffect<
 
           batchesById.set(batch.id, batch);
 
-          emitBatch(batchToEvent(batch));
+          yield* emitBatch(batchToEvent(batch));
 
           const committed = yield* persist((tx) =>
             Effect.gen(function* () {
@@ -1267,15 +1289,15 @@ export function createTypewriterEffect<
         ),
       );
 
-      emitBlock(runtimeBlock);
+      yield* emitBlock(runtimeBlock);
       for (const batch of batches) {
-        emitBatch(batchToEvent(batch));
+        yield* emitBatch(batchToEvent(batch));
         for (const mutation of batch.mutations) {
-          emitMutation(mutationToEvent(mutation));
+          yield* emitMutation(mutationToEvent(mutation));
         }
       }
       for (const mutation of forceIncludedMutations) {
-        emitMutation(mutationToEvent(mutation));
+        yield* emitMutation(mutationToEvent(mutation));
       }
 
       unfinalizedBlocks.push(runtimeBlock);
@@ -1357,16 +1379,16 @@ export function createTypewriterEffect<
                 batchesById.delete(batch.id);
               }
 
-              emitBlock(block);
+              yield* emitBlock(block);
 
               for (const batch of block.batches) {
-                emitBatch(batchToEvent(batch));
+                yield* emitBatch(batchToEvent(batch));
                 for (const mutation of batch.mutations) {
-                  emitMutation(mutationToEvent(mutation));
+                  yield* emitMutation(mutationToEvent(mutation));
                 }
               }
               for (const mutation of block.forceIncludedMutations) {
-                emitMutation(mutationToEvent(mutation));
+                yield* emitMutation(mutationToEvent(mutation));
               }
             }
             unfinalizedBlocks = unfinalizedBlocks.filter(
@@ -1467,7 +1489,7 @@ export function createTypewriterEffect<
           }),
         );
 
-        emitMutation(mutationToEvent(runtimeMutation));
+        yield* emitMutation(mutationToEvent(runtimeMutation));
 
         const deferred = yield* Deferred.make<
           { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
