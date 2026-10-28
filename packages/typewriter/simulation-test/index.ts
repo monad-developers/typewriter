@@ -35,9 +35,9 @@ import {
   deploy,
   makePlan,
   makeSigner,
-  mutationKey,
   type Step,
   signAtSubmission,
+  stepKey,
 } from "./assessment";
 import {
   ASSESSMENT_ENTRYPOINT,
@@ -46,6 +46,7 @@ import {
 } from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
+import { encodeEnqueue, type Malformation } from "./malformations";
 import { int, makeRandom, pick } from "./random";
 import { makeSimScheduler } from "./scheduler";
 import { makeSimDb } from "./sim-db";
@@ -83,6 +84,8 @@ export type SIM = {
      * `Infinity` never expires. `Infinity` repeats so most steps draw it.
      */
     expirationsS: number[];
+    /** How often a step submits a malformed mutation. See `malformations.ts`. */
+    malformedRate: number;
   };
   typewriter: {
     submitIntervalMs: number;
@@ -151,6 +154,7 @@ export const SIM: SIM = {
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
     expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
+    malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -305,6 +309,13 @@ const program = Effect.gen(function* () {
     makeSigner(i, keyType),
   );
   const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
+  /** Signers of each key type with no account, for malformed signatures. */
+  const strangers = new Map(
+    [KeyType.Secp256k1, KeyType.P256, KeyType.WebAuthnP256].map((keyType) => [
+      keyType,
+      makeSigner(-1, keyType),
+    ]),
+  );
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
@@ -342,9 +353,17 @@ const program = Effect.gen(function* () {
   const batchEvents: BatchEvent<AssessmentMutations>[] = [];
   const blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[] = [];
   // Every mutation ends finalized or rejected, once, and every resubmission
-  // ends rejected.
+  // ends rejected. A malformed step may end with no mutation event.
   let settlements = 0;
-  const mutations = signers.length + plan.length;
+  const mutations =
+    signers.length +
+    plan.filter(
+      (step) =>
+        step.malformation === undefined ||
+        step.malformation.outcomes.some(
+          (outcome) => outcome === "executed" || outcome === "rejected",
+        ),
+    ).length;
   const resubmissions = plan.filter((step) => step.resubmit).length;
   // The virtual time of the last mutation event.
   let progressedAt = startMs;
@@ -411,27 +430,51 @@ const program = Effect.gen(function* () {
       }).pipe(Effect.forever),
     );
 
-    /** Executes the mutation of `step` and checks the result is one of `want`. */
-    const submit = (step: Step, what: string, want: string[]) =>
+    /**
+     * Executes `mutation`, the mutation of `step` or a malformed one, and
+     * checks the result is one of `want`.
+     */
+    const submit = (
+      step: Step,
+      what: string,
+      want: string[],
+      mutation: { name: unknown } = step.mutation,
+    ) =>
       Effect.gen(function* () {
-        const { mutation } = step;
-        const exit = yield* Effect.exit(typewriter.execute(mutation));
+        const exit = yield* Effect.exit(
+          typewriter.execute(mutation as Step["mutation"]),
+        );
         const error = Exit.isFailure(exit)
           ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
           : undefined;
         const got = Exit.isSuccess(exit)
           ? "success"
-          : error?._tag === "MutationRevertedError" &&
-              error.errorName !== undefined
-            ? error.errorName
-            : Cause.pretty(exit.cause);
+          : error?._tag === "MutationRevertedError"
+            ? (error.errorName ?? error._tag)
+            : error?._tag === "EncodeMutationError" ||
+                error?._tag === "UnknownMutationError" ||
+                error?._tag === "MutationHaltedError"
+              ? error._tag
+              : Cause.pretty(exit.cause);
         if (!want.includes(got)) {
           return yield* Effect.die(
-            `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want.join(" or ")}`,
+            `step ${step.index} (${what} ${String(mutation.name)}): got ${got}, want ${want.join(" or ")}`,
           );
         }
         return exit;
       });
+
+    /** The results of `execute` that `malformation` allows, as `submit` names them. */
+    const allowed = (malformation: Malformation) =>
+      malformation.outcomes.flatMap((outcome) =>
+        outcome === "executed"
+          ? ["success"]
+          : outcome === "unknown"
+            ? ["UnknownMutationError"]
+            : outcome === "rejected"
+              ? malformation.errors
+              : [],
+      );
 
     /**
      * Executes `step` and checks the result against `shouldRevert` and
@@ -442,7 +485,19 @@ const program = Effect.gen(function* () {
      */
     const execute = (step: Step) =>
       Effect.gen(function* () {
-        const { mutation, expiresInS } = step;
+        const { mutation, expiresInS, malformation, submission } = step;
+        if (malformation !== undefined && submission?.via === "execute") {
+          const exit = yield* submit(
+            step,
+            `execute ${malformation.kind}`,
+            allowed(malformation),
+            submission.mutation,
+          );
+          if (Exit.isSuccess(exit)) {
+            results.set(stepKey(step), exit.value.executionIndex);
+          }
+          return;
+        }
         const fail = `${mutation.name}Error`;
         const shouldRevert = mutation.params.shouldRevert;
         const unlessExpired = (want: string) =>
@@ -470,10 +525,7 @@ const program = Effect.gen(function* () {
         }
         const exit = yield* Fiber.join(first);
         if (Exit.isSuccess(exit)) {
-          results.set(
-            mutationKey(mutation.authorization),
-            exit.value.executionIndex,
-          );
+          results.set(stepKey(step), exit.value.executionIndex);
         }
       });
 
@@ -483,12 +535,15 @@ const program = Effect.gen(function* () {
      */
     const enqueue = (step: Step) =>
       Effect.gen(function* () {
-        const { mutation } = step;
-        const data = encodeEnqueueCalldata({
-          config: app.mutations[mutation.name]!,
-          params: mutation.params,
-          authorization: mutation.authorization,
-        });
+        const { mutation, submission } = step;
+        const data =
+          submission?.via === "enqueue"
+            ? encodeEnqueue(submission)
+            : encodeEnqueueCalldata({
+                config: app.mutations[mutation.name]!,
+                params: mutation.params,
+                authorization: mutation.authorization,
+              });
         const hash = yield* simChain.request({
           method: "eth_sendTransaction",
           params: [{ from: CLIENT, to: app.address, data, gas: ENQUEUE_GAS }],
@@ -521,11 +576,20 @@ const program = Effect.gen(function* () {
       // one before it to settle.
       for (const step of plan) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
-        step.mutation = signAtSubmission(
-          manifest,
-          step,
-          yield* Clock.currentTimeMillis,
-        );
+        if (step.malformation === undefined) {
+          step.mutation = signAtSubmission(
+            manifest,
+            step,
+            yield* Clock.currentTimeMillis,
+          );
+        } else {
+          step.submission = step.malformation.build({
+            manifest,
+            signer: step.signer,
+            stranger: strangers.get(step.signer.keyType)!,
+            mutation: step.mutation,
+          });
+        }
         yield* FiberSet.run(
           fibers,
           step.via === "execute" ? execute(step) : yield* enqueue(step),

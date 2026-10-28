@@ -28,6 +28,12 @@ import {
 } from "./assessment-constants";
 import type { Chain } from "./chain";
 import { SIM } from "./index";
+import {
+  drawMalformation,
+  type Malformation,
+  type Submission,
+  submissionAuthorization,
+} from "./malformations";
 
 /** The mutations of `Assessment.sol`, without the built-in ones. */
 export type AppMutationName = "A" | "B";
@@ -60,7 +66,20 @@ export type Step = {
   signer: Signer;
   /** Unsigned, with a `0x` signature, until {@link signAtSubmission} signs it. */
   mutation: Mutation<AppMutationName>;
+  /** Submits a malformed version of `mutation` instead. */
+  malformation: Malformation | undefined;
+  /** What the client submitted for `malformation`. */
+  submission: Submission | undefined;
 };
+
+/** The key of the mutation events of `step`, which a malformation can change. */
+export function stepKey(step: Step): string {
+  return mutationKey(
+    step.submission === undefined
+      ? step.mutation.authorization
+      : submissionAuthorization(step.submission),
+  );
+}
 
 /** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
 export function deploy({
@@ -321,8 +340,9 @@ export function makePlan(
     enqueueRate,
     resubmitRate,
     expirationsS,
+    malformedRate,
   } = SIM.generator;
-  return Array.from({ length: mutations }, (_, index): Step => {
+  const plan = Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
     const name: AppMutationName = random.nextDoubleUnsafe() < 0.5 ? "A" : "B";
     const via = random.nextDoubleUnsafe() < enqueueRate ? "enqueue" : "execute";
@@ -335,16 +355,69 @@ export function makePlan(
     const resubmit =
       random.nextDoubleUnsafe() < resubmitRate && via === "execute";
     const expiresInS = expirationsS[below(random, expirationsS.length)]!;
-    return {
-      index,
-      delayMs,
-      via,
-      resubmit,
-      expiresInS,
-      signer,
-      mutation: unsigned(signer, { name, params, nonce: stepNonce(index) }),
-    };
+    const malformation =
+      random.nextDoubleUnsafe() < malformedRate
+        ? drawMalformation(random)
+        : undefined;
+    const mutation = unsigned(signer, {
+      name,
+      params,
+      nonce: stepNonce(index),
+    });
+    // A malformation decides how the step is submitted and how it fails, so
+    // it is the well-formed mutation it starts from that neither reverts nor
+    // expires.
+    return malformation === undefined
+      ? {
+          index,
+          delayMs,
+          via,
+          resubmit,
+          expiresInS,
+          signer,
+          mutation,
+          malformation,
+          submission: undefined,
+        }
+      : {
+          index,
+          delayMs,
+          via: malformation.via,
+          resubmit: false,
+          expiresInS: Infinity,
+          signer,
+          mutation: {
+            ...mutation,
+            params: { ...mutation.params, shouldRevert: false },
+          },
+          malformation,
+          submission: undefined,
+        };
   });
+
+  // A malformed enqueue may have no mutation event, so nothing shows the
+  // runtime read its log. A well-formed enqueue after it does: the runtime
+  // reads logs in block order.
+  if (plan.some((step) => step.malformation?.via === "enqueue")) {
+    const index = plan.length;
+    const signer = signers[below(random, signers.length)]!;
+    plan.push({
+      index,
+      delayMs: 0,
+      via: "enqueue",
+      resubmit: false,
+      expiresInS: Infinity,
+      signer,
+      mutation: unsigned(signer, {
+        name: "A",
+        params: { slot: 0n, value: BigInt(index), shouldRevert: false },
+        nonce: stepNonce(index),
+      }),
+      malformation: undefined,
+      submission: undefined,
+    });
+  }
+  return plan;
 }
 
 /** Replays `order`, the steps that execute in execution order, as `Assessment.sol` executes them. */

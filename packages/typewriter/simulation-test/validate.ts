@@ -20,6 +20,7 @@ import {
   replay,
   type Signer,
   type Step,
+  stepKey,
 } from "./assessment";
 import type {
   AssessmentMutations,
@@ -132,11 +133,19 @@ type Want = {
   isForceInclusion: boolean;
 };
 
-/** `expired` holds the keys of the steps whose authorization expired. */
+/** How a mutation ended, from its events. */
+type Settled = "executed" | "rejected" | "none";
+
+/**
+ * `expired` holds the keys of the steps whose authorization expired, and
+ * `settled` how each mutation ended, which decides a malformed step's
+ * statuses.
+ */
 function wants(
   signers: readonly Signer[],
   plan: readonly Step[],
   expired: ReadonlySet<string>,
+  settled: ReadonlyMap<string, Settled>,
 ): Want[] {
   const executed: MutationStatus[] = [
     "received",
@@ -160,20 +169,28 @@ function wants(
     }),
   );
   const steps = plan.map((step): Want => {
-    const { mutation } = step;
-    const key = mutationKey(mutation.authorization);
-    const reverts = mutation.params.shouldRevert || expired.has(key);
+    const { mutation, malformation } = step;
+    const key = stepKey(step);
+    const outcome: Settled =
+      malformation === undefined
+        ? mutation.params.shouldRevert || expired.has(key)
+          ? "rejected"
+          : "executed"
+        : (settled.get(key) ?? "none");
+    const reverts = outcome !== "executed";
     const statuses: MutationStatus[] =
-      step.via === "execute"
-        ? reverts
-          ? ["received", "rejected"]
-          : executed
-        : reverts
-          ? ["rejected"]
-          : ["accepted", "included", "finalized"];
+      outcome === "none"
+        ? []
+        : step.via === "execute"
+          ? reverts
+            ? ["received", "rejected"]
+            : executed
+          : reverts
+            ? ["rejected"]
+            : ["accepted", "included", "finalized"];
     return {
       key,
-      label: `step ${step.index} (${step.via} ${mutation.name})`,
+      label: stepLabel(step),
       name: mutation.name,
       params: mutation.params,
       signer: step.signer,
@@ -186,6 +203,13 @@ function wants(
     };
   });
   return [...creations, ...steps];
+}
+
+function stepLabel(step: Step): string {
+  const { index, via, mutation, malformation } = step;
+  return malformation === undefined
+    ? `step ${index} (${via} ${mutation.name})`
+    : `step ${index} (${via} ${mutation.name}, ${malformation.kind})`;
 }
 
 /**
@@ -248,7 +272,50 @@ export function validate({
     }
     for (const key of accepted) expired.delete(key);
 
-    const all = wants(signers, plan, expired);
+    // How each mutation ended. A malformed step must end one of the ways its
+    // malformation allows: `unknown` and `ignored` with no events.
+    const settled = new Map<string, Settled>();
+    const rejections = new Map<string, string>();
+    for (const event of mutationEvents) {
+      const key = mutationKey(event.authorization);
+      if (event.status === "accepted") settled.set(key, "executed");
+      if (event.status === "rejected" && settled.get(key) !== "executed") {
+        settled.set(key, "rejected");
+        rejections.set(
+          key,
+          event.error._tag === "MutationRevertedError"
+            ? (event.error.errorName ?? event.error._tag)
+            : event.error._tag,
+        );
+      }
+    }
+    for (const step of plan) {
+      const { malformation } = step;
+      if (malformation === undefined) continue;
+      const key = stepKey(step);
+      const got = settled.get(key) ?? "none";
+      const want = [
+        ...new Set(
+          malformation.outcomes.map((outcome) =>
+            outcome === "unknown" || outcome === "ignored" ? "none" : outcome,
+          ),
+        ),
+      ];
+      const error = rejections.get(key);
+      if (!want.includes(got)) {
+        errors.push(
+          got === "rejected"
+            ? `${stepLabel(step)}: got rejected with ${error}, want ${want.join(" or ")}`
+            : `${stepLabel(step)}: got ${got}, want ${want.join(" or ")}`,
+        );
+      } else if (got === "rejected" && !malformation.errors.includes(error!)) {
+        errors.push(
+          `${stepLabel(step)}: rejected with ${error}, want ${malformation.errors.join(" or ")}`,
+        );
+      }
+    }
+
+    const all = wants(signers, plan, expired, settled);
     // A negative `expiresInS` always expires, and an infinite one, like an
     // account creation's, never does.
     for (const want of all) {
@@ -368,11 +435,16 @@ export function validate({
     );
 
     // Enqueued mutations take queue indexes in plan order, since the client
-    // sends one transaction at a time, and execute in queue order.
+    // sends one transaction at a time, and execute in queue order. A
+    // malformed enqueue takes one too, even with no events to show it.
     const enqueues = all.filter((want) => want.step?.via === "enqueue");
     equal(
-      enqueues.map((want) => queueIndexes.get(want.key)),
-      enqueues.map((_, i) => BigInt(i)),
+      enqueues.flatMap((want) =>
+        want.statuses.length === 0 ? [] : [queueIndexes.get(want.key)],
+      ),
+      enqueues.flatMap((want, i) =>
+        want.statuses.length === 0 ? [] : [BigInt(i)],
+      ),
       "queue indexes",
     );
     equal(
