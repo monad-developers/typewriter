@@ -133,6 +133,9 @@ function makeQuery(db: DbClient, inTransaction: boolean): DbQuery {
 
 function retry<a, e, r>(effect: Effect.Effect<a, e, r>) {
   return effect.pipe(
+    // A failure that stops the runtime is logged when it stops, so an attempt
+    // is only a debug log.
+    Effect.tapError((error) => Effect.logDebug("Failed database query", error)),
     Effect.retry({
       schedule: Schedule.exponential("10 millis").pipe(Schedule.jittered),
       times: 4,

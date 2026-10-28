@@ -1020,6 +1020,16 @@ export function createTypewriterEffect<
                 },
               );
             } else {
+              // No caller gets this error, and the runtime keeps running.
+              yield* Effect.logWarning(
+                "Discarded enqueued mutation",
+                result.failure,
+              ).pipe(
+                Effect.annotateLogs({
+                  mutation: enqueuedMutation.name,
+                  queue_index: enqueuedMutation.queueIndex,
+                }),
+              );
               // TODO(kyle) how to handle failed enqueue.
               // TODO(kyle) the discarded mutation stays in the queue onchain,
               // and anyone can `forceExecute` it after FORCE_INCLUSION_DELAY.
@@ -1186,6 +1196,11 @@ export function createTypewriterEffect<
           params: [signed],
         });
       }).pipe(
+        Effect.tapError((error) =>
+          Effect.logDebug("Failed settlement submission", error).pipe(
+            Effect.annotateLogs({ transaction_hash: hash }),
+          ),
+        ),
         Effect.retry({ times: SUBMIT_RETRY_TIMES }),
         Effect.map(formatTransactionReceipt),
       );

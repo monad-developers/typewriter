@@ -67,7 +67,10 @@ function errorCause(error: Error): unknown {
 /** An error a log is about, and whether it reached the log as a defect. */
 type LogError = { error: unknown; defect: boolean };
 
-/** The errors a log is about, from its message and its cause. */
+/**
+ * The errors a log is about, from its message and its cause. An interrupt is
+ * a cancellation, not an error, so it is left out.
+ */
 function logErrors(
   message: readonly unknown[],
   cause: Cause.Cause<unknown>,
@@ -80,8 +83,6 @@ function logErrors(
       errors.push({ error: reason.error, defect: false });
     } else if (Cause.isDieReason(reason)) {
       errors.push({ error: reason.defect, defect: true });
-    } else {
-      errors.push({ error: "Interrupted", defect: false });
     }
   }
   return errors;
