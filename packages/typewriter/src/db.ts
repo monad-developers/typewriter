@@ -62,7 +62,12 @@ export class DbError extends Data.TaggedError("DbError")<{
   cause: unknown;
   /** Set when the work is known to have not applied, so a retry is safe. */
   notApplied?: boolean;
-}> {}
+}> {
+  override get message() {
+    const sql = this.sql.replaceAll(/\s+/g, " ").trim();
+    return `Failed database query: ${sql.length > 120 ? `${sql.slice(0, 120)}...` : sql}`;
+  }
+}
 
 const dialect = new PgDialect();
 
@@ -128,6 +133,9 @@ function makeQuery(db: DbClient, inTransaction: boolean): DbQuery {
 
 function retry<a, e, r>(effect: Effect.Effect<a, e, r>) {
   return effect.pipe(
+    // A failure that stops the runtime is logged when it stops, so an attempt
+    // is only a debug log.
+    Effect.tapError((error) => Effect.logDebug("Failed database query", error)),
     Effect.retry({
       schedule: Schedule.exponential("10 millis").pipe(Schedule.jittered),
       times: 4,

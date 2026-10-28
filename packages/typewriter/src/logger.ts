@@ -1,18 +1,13 @@
-import { Layer, Logger, type LogLevel, References } from "effect";
-
-const stringify: typeof JSON.stringify = (value, replacer, space) =>
-  JSON.stringify(
-    value,
-    (key, value_) => {
-      const value = typeof value_ === "bigint" ? value_.toString() : value_;
-      return typeof replacer === "function" ? replacer(key, value) : value;
-    },
-    space,
-  );
-
-const consoleJson = Logger.withConsoleLog(
-  Logger.map(Logger.formatStructured, stringify),
-);
+import {
+  Cause,
+  Clock,
+  Effect,
+  Layer,
+  Logger,
+  type LogLevel,
+  Predicate,
+  References,
+} from "effect";
 
 const LOG_LEVELS = {
   trace: "Trace",
@@ -54,27 +49,257 @@ const logFormat = readEnv(
   process.env.NODE_ENV === "production" ? "json" : "pretty",
 );
 
-const output = logFormat === "json" ? consoleJson : Logger.consolePretty();
+/**
+ * An error that typewriter raises on purpose: an Effect tagged error that it
+ * failed with. Its message says what went wrong, so its stack, which points
+ * into typewriter, is noise. Any other error, or a defect, is a bug, and keeps
+ * its stack.
+ */
+function isKnownError({ error, defect }: LogError): boolean {
+  return !defect && Predicate.isString((error as { _tag?: unknown })._tag);
+}
+
+/** An error's `cause`, with an Effect `Cause` reduced to its first error. */
+function errorCause(error: Error): unknown {
+  return Cause.isCause(error.cause) ? Cause.squash(error.cause) : error.cause;
+}
+
+/** An error a log is about, and whether it reached the log as a defect. */
+type LogError = { error: unknown; defect: boolean };
 
 /**
- * Logs at `None` show as debug logs. The simulation test logs at `None`, the
- * one level that no minimum level filters out, so its logs always print.
+ * The errors a log is about, from its message and its cause. An interrupt is
+ * a cancellation, not an error, so it is left out.
  */
-export const logger = Logger.make((options) =>
-  output.log(
-    options.logLevel === "None" ? { ...options, logLevel: "Debug" } : options,
-  ),
-);
+function logErrors(
+  message: readonly unknown[],
+  cause: Cause.Cause<unknown>,
+): LogError[] {
+  const errors: LogError[] = message
+    .filter((m) => m instanceof Error)
+    .map((error) => ({ error, defect: false }));
+  for (const reason of cause.reasons) {
+    if (Cause.isFailReason(reason)) {
+      errors.push({ error: reason.error, defect: false });
+    } else if (Cause.isDieReason(reason)) {
+      errors.push({ error: reason.defect, defect: true });
+    }
+  }
+  return errors;
+}
+
+// -----------------------------------------------------------------------------
+// Pretty
+
+const { NO_COLOR, FORCE_COLOR } = process.env;
+const useColor =
+  process.stdout.isTTY === true &&
+  NO_COLOR === undefined &&
+  FORCE_COLOR !== "0";
+
+const ansi =
+  (open: number, close: number) =>
+  (text: string): string =>
+    useColor ? `\x1b[${open}m${text}\x1b[${close}m` : text;
+const dim = ansi(2, 22);
+const red = ansi(31, 39);
+const green = ansi(32, 39);
+const yellow = ansi(33, 39);
+const blue = ansi(34, 39);
+const gray = ansi(90, 39);
+
+const PRETTY_LEVELS: Record<LogLevel.LogLevel, string> = {
+  All: gray("TRACE"),
+  Trace: gray("TRACE"),
+  Debug: blue("DEBUG"),
+  Info: green("INFO "),
+  Warn: yellow("WARN "),
+  Error: red("ERROR"),
+  Fatal: red("FATAL"),
+  None: "",
+};
+
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  fractionalSecondDigits: 3,
+  hour12: false,
+});
+
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = Math.floor(ms / 1000);
+
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds - h * 3600) / 60);
+  const s = seconds - h * 3600 - m * 60;
+
+  const hstr = h > 0 ? `${h}h ` : "";
+  const mstr = m > 0 || h > 0 ? `${m < 10 && h > 0 ? "0" : ""}${m}m ` : "";
+  const sstr = s > 0 || m > 0 ? `${s < 10 && m > 0 ? "0" : ""}${s}s` : "";
+
+  return `${hstr}${mstr}${sstr}`;
+}
+
+function formatValue(value: unknown): string {
+  if (Predicate.isString(value)) return value;
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  if (Predicate.isObject(value)) return stringify(value);
+  return String(value);
+}
+
+/** `error` and its causes with no stack frames, for `Cause.pretty`. */
+function withoutStacks(error: unknown, depth = 0): unknown {
+  if (!(error instanceof Error) || depth >= 10) return error;
+  return {
+    name: error.name,
+    message: error.message,
+    stack: `${error.name}: ${error.message}`,
+    cause: withoutStacks(errorCause(error), depth + 1),
+  };
+}
+
+/**
+ * The error as Effect's runtime prints it: `Name: message`, the stack, and each
+ * `[cause]`. A known error's stack points into typewriter and its causes'
+ * into the libraries it calls, so they are left out.
+ */
+function formatError(logError: LogError): string {
+  const { error, defect } = logError;
+  // `Cause.pretty` prints an Effect `Cause` in `cause` as one line, so it gets
+  // the cause's first error instead.
+  const view = isKnownError(logError)
+    ? withoutStacks(error)
+    : error instanceof Error && Cause.isCause(error.cause)
+      ? Object.create(error, { cause: { value: errorCause(error) } })
+      : error;
+  return Cause.pretty(defect ? Cause.die(view) : Cause.fail(view));
+}
+
+function formatPretty(options: Logger.Options<unknown>): string {
+  const message = Array.isArray(options.message)
+    ? options.message
+    : [options.message];
+  const annotations = options.fiber.getRef(References.CurrentLogAnnotations);
+  const msg = message.filter(Predicate.isString).join(" ");
+
+  let keys = "";
+  let duration = "";
+  const errors = logErrors(message, options.cause);
+  for (const [key, value] of Object.entries(annotations)) {
+    if (key === "duration" && Predicate.isNumber(value)) {
+      duration = ` ${gray(`(${formatDuration(value)})`)}`;
+    } else if (key === "error") {
+      errors.unshift({ error: value, defect: false });
+    } else {
+      keys += ` ${key}=${formatValue(value)}`;
+    }
+  }
+
+  const time = timeFormatter.format(options.date);
+  const lines = [
+    `${dim(time)} ${PRETTY_LEVELS[options.logLevel]} ${msg}${dim(keys)}${duration}`,
+  ];
+  for (const error of errors) lines.push(formatError(error));
+  return lines.join("\n");
+}
+
+// -----------------------------------------------------------------------------
+// JSON
+
+function stringify(value: unknown): string {
+  return JSON.stringify(value, (_, v) =>
+    typeof v === "bigint" ? v.toString() : v,
+  );
+}
+
+/**
+ * `name`, `message`, the error's own fields, the serialized `cause`, and the
+ * stack of an unknown top-level error.
+ */
+function serializeError(error: unknown, known: boolean, depth = 0): unknown {
+  if (!(error instanceof Error)) return error;
+  const serialized: {
+    name: string;
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    [key: string]: unknown;
+  } = {
+    name: error.name,
+    message: error.message,
+  };
+  for (const [key, value] of Object.entries(error)) {
+    if (key === "_tag" || key === "cause" || key === "message") continue;
+    serialized[key] = value;
+  }
+  if (depth === 0 && !known && error.stack) {
+    serialized.stack = error.stack;
+  }
+  const cause = errorCause(error);
+  if (cause !== undefined && depth < 10) {
+    serialized.cause = serializeError(cause, known, depth + 1);
+  }
+  return serialized;
+}
+
+const JSON_RESERVED_KEYS = new Set(["level", "time", "msg", "error"]);
+
+function formatJson(options: Logger.Options<unknown>): string {
+  const message = Array.isArray(options.message)
+    ? options.message
+    : [options.message];
+  const annotations = options.fiber.getRef(References.CurrentLogAnnotations);
+  const log: {
+    level: string;
+    time: string;
+    msg: string;
+    error?: unknown;
+    [key: string]: unknown;
+  } = {
+    level: options.logLevel.toLowerCase(),
+    time: options.date.toISOString(),
+    msg: message.filter(Predicate.isString).join(" "),
+  };
+  const errors = logErrors(message, options.cause);
+  for (const [key, value] of Object.entries(annotations)) {
+    if (key === "error") errors.unshift({ error: value, defect: false });
+    else if (!JSON_RESERVED_KEYS.has(key)) log[key] = value;
+  }
+  const serialized = errors.map((e) =>
+    serializeError(e.error, isKnownError(e)),
+  );
+  if (serialized.length === 1) log.error = serialized[0];
+  else if (serialized.length > 1) log.error = serialized;
+  return stringify(log);
+}
+
+// -----------------------------------------------------------------------------
+// Logger
+
+/**
+ * Prints one log per line in the format of `TYPEWRITER_LOG_FORMAT`. A string
+ * message is the log's message, and an error message, an `error` annotation,
+ * or the cause is printed as its error.
+ */
+export const logger = Logger.make((options) => {
+  console.log(
+    logFormat === "json" ? formatJson(options) : formatPretty(options),
+  );
+});
 
 export const loggerLayer = Layer.merge(
   Logger.layer([logger]),
   Layer.succeed(References.MinimumLogLevel, logLevel),
 );
 
-export function startTimer(): number {
-  return performance.now();
-}
+/** The `Clock`'s monotonic time in nanoseconds, which a simulation controls. */
+export const startTimer: Effect.Effect<bigint> = Clock.clockWith(
+  (clock) => clock.monotonicTimeNanos,
+);
 
-export function durationMs(startMs: number): number {
-  return Math.round((performance.now() - startMs) * 100) / 100;
+/** The milliseconds since `start`, to two decimal places. */
+export function durationMs(start: bigint): Effect.Effect<number> {
+  return Effect.map(startTimer, (now) => Number((now - start) / 10_000n) / 100);
 }

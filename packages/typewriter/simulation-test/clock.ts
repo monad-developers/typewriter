@@ -51,7 +51,7 @@ export function makeSimClock(
       });
     });
 
-  const nanos = () => BigInt(now) * 1_000_000n;
+  const nanos = () => BigInt(Math.round(now * 1_000_000));
 
   return {
     currentTimeMillisUnsafe: () => now,

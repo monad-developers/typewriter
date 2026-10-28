@@ -243,6 +243,6 @@ test("parseSolidityMetadata errors when the entrypoint file does not exist", asy
 
 test("parseSolidityMetadata rejects nested struct mutation params", async () => {
   await expect(parseSolidityMetadata(NestedParam)).rejects.toThrow(
-    "unsupported Solidity type",
+    "Unsupported Solidity type",
   );
 });
