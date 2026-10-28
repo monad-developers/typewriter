@@ -62,6 +62,7 @@ import { Rpc, type RpcError } from "./rpc";
 import {
   type BlockNotFoundError,
   type NoDataReturnedError,
+  type RequestedBlock,
   requestBlock,
   requestExecutionIndex,
 } from "./rpc-request";
@@ -539,6 +540,7 @@ function createRuntimeState(
   app: TypewriterApp,
   db: Db,
   code: Hex.Hex,
+  startBlock: Pick<RequestedBlock, "number" | "timestamp">,
 ): Effect.Effect<
   {
     evm: EVM;
@@ -580,6 +582,13 @@ function createRuntimeState(
     }
     const evm = yield* createEVM({
       chain_id: app.chainId,
+      // Until the watch reports the next block, mutations execute in the
+      // start block, so checks against `block.timestamp`, such as
+      // authorization expiry, see a real time.
+      block: {
+        number: Hex.fromNumber(startBlock.number),
+        timestamp: Hex.fromNumber(startBlock.timestamp),
+      },
       accounts: {
         [app.address]: {
           code: code === "0x" ? undefined : code,
@@ -700,7 +709,7 @@ export function createTypewriterEffect<
     );
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
-      yield* createRuntimeState(app, db, code);
+      yield* createRuntimeState(app, db, code, startBlock);
 
     const watch = yield* makeWatch({
       fromBlock: startBlock.hash,
