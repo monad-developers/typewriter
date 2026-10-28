@@ -48,17 +48,6 @@ export function mutationKey(authorization: {
   return `${authorization.accountID}:${authorization.nonce}`;
 }
 
-/** When the authorization of a step expires, relative to its submission. */
-export type Expiry = {
-  /**
-   * `expired` expires before the latest block the runtime simulates against,
-   * `live` after the run, and `near` within a few blocks, so the mutation may
-   * land on either side of it.
-   */
-  kind: "expired" | "near" | "live";
-  inMs: number;
-};
-
 /** One entry of the plan. */
 export type Step = {
   index: number;
@@ -66,10 +55,13 @@ export type Step = {
   via: "execute" | "enqueue";
   /** Executes the mutation again as soon as it is received. The second `execute` fails. */
   resubmit: boolean;
-  /** Unset for an authorization that never expires. */
-  expiry: Expiry | undefined;
+  /** Drawn from `SIM.generator.expirationsS`. See {@link signAtSubmission}. */
+  expiresInS: number;
   signer: Signer;
-  /** Signed again by {@link signAtSubmission} when `expiry` is set. */
+  /**
+   * Unsigned, with a `0x` signature, until {@link signAtSubmission} signs it,
+   * unless `expiresInS` is infinite.
+   */
   mutation: Mutation<AppMutationName>;
 };
 
@@ -239,20 +231,36 @@ export function makeSigner(index: number, keyType: KeyType): Signer {
   }
 }
 
-function authorize<const name extends keyof AssessmentMutations & string>(
-  manifest: TypewriterManifest<AssessmentMutations>,
-  signer: Signer,
-  mutation: Pick<Mutation<name>, "name" | "params"> & {
-    nonce: bigint;
-    expiration?: bigint;
-  },
-): Mutation<name> {
-  const unsigned = {
+type Unsigned<name extends keyof AssessmentMutations & string> = Pick<
+  Mutation<name>,
+  "name" | "params"
+> & { nonce: bigint; expiration?: bigint };
+
+function unsignedMutation<
+  const name extends keyof AssessmentMutations & string,
+>(signer: Signer, mutation: Unsigned<name>) {
+  return {
     expiration: 0n,
     ...mutation,
     accountID: signer.accountID,
     credentialID: 0n,
   };
+}
+
+/** The mutation with a `0x` signature, to sign later. */
+function unsigned<const name extends keyof AssessmentMutations & string>(
+  signer: Signer,
+  mutation: Unsigned<name>,
+): Mutation<name> {
+  return authorizeMutation(unsignedMutation(signer, mutation), "0x");
+}
+
+function authorize<const name extends keyof AssessmentMutations & string>(
+  manifest: TypewriterManifest<AssessmentMutations>,
+  signer: Signer,
+  mutation: Unsigned<name>,
+): Mutation<name> {
+  const unsigned = unsignedMutation(signer, mutation);
   return authorizeMutation(
     unsigned,
     signer.sign(getAuthorizationPayload(manifest, unsigned)),
@@ -276,41 +284,28 @@ export function stepNonce(index: number): bigint {
 }
 
 /**
- * Signs the mutation of `step` again with an expiration `step.expiry.inMs`
- * after `nowMs`, in the whole seconds of `block.timestamp`.
+ * Signs the mutation of `step`, submitted at `nowMs`, when `expiresInS` is
+ * finite. It expires `expiresInS` after the second of `nowMs`, in the whole
+ * seconds of `block.timestamp`, or before genesis, so before every block,
+ * when `expiresInS` is negative.
  */
 export function signAtSubmission(
   manifest: TypewriterManifest<AssessmentMutations>,
   step: Step,
   nowMs: number,
 ): Mutation<AppMutationName> {
-  if (step.expiry === undefined) return step.mutation;
+  if (!Number.isFinite(step.expiresInS)) return step.mutation;
   const { name, params, authorization } = step.mutation;
+  const expiration =
+    step.expiresInS < 0
+      ? SIM.chain.genesisTimestamp - 1
+      : Math.floor(nowMs / 1000) + step.expiresInS;
   return authorize<AppMutationName>(manifest, step.signer, {
     name,
     params,
     nonce: authorization.nonce,
-    expiration: BigInt(Math.floor((nowMs + step.expiry.inMs) / 1000)),
+    expiration: BigInt(expiration),
   });
-}
-
-/** The offsets of a `near` expiry, from the submission. */
-const NEAR_EXPIRIES_MS = [0, 1_000, 2_000, 5_000];
-
-function drawExpiry(random: Random.Random): Expiry {
-  const kinds = ["expired", "near", "live"] as const;
-  const kind = kinds[below(random, kinds.length)]!;
-  switch (kind) {
-    case "expired":
-      return { kind, inMs: -60_000 };
-    case "near":
-      return {
-        kind,
-        inMs: NEAR_EXPIRIES_MS[below(random, NEAR_EXPIRIES_MS.length)]!,
-      };
-    case "live":
-      return { kind, inMs: 24 * 60 * 60 * 1000 };
-  }
 }
 
 function below(random: Random.Random, length: number): number {
@@ -329,7 +324,7 @@ export function makePlan(
     revertRate,
     enqueueRate,
     resubmitRate,
-    expiryRate,
+    expirationsS,
   } = SIM.generator;
   return Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
@@ -343,20 +338,18 @@ export function makePlan(
     };
     const resubmit =
       random.nextDoubleUnsafe() < resubmitRate && via === "execute";
-    const expiry =
-      random.nextDoubleUnsafe() < expiryRate ? drawExpiry(random) : undefined;
+    const expiresInS = expirationsS[below(random, expirationsS.length)]!;
+    const mutation = { name, params, nonce: stepNonce(index) };
     return {
       index,
       delayMs,
       via,
       resubmit,
-      expiry,
+      expiresInS,
       signer,
-      mutation: authorize(manifest, signer, {
-        name,
-        params,
-        nonce: stepNonce(index),
-      }),
+      mutation: Number.isFinite(expiresInS)
+        ? unsigned(signer, mutation)
+        : authorize(manifest, signer, mutation),
     };
   });
 }

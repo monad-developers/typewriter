@@ -71,8 +71,13 @@ export type SIM = {
     enqueueRate: number;
     /** How often an executed step is executed again as soon as it is received. */
     resubmitRate: number;
-    /** How often a step's authorization expires. */
-    expiryRate: number;
+    /**
+     * The seconds from a step's submission to its authorization's expiration
+     * that a step draws from. `-1` expires before genesis, so it always fails,
+     * `0` and the intermediate ones expire around the step's inclusion, and
+     * `Infinity` never expires. `Infinity` repeats so most steps draw it.
+     */
+    expirationsS: number[];
   };
   typewriter: {
     submitIntervalMs: number;
@@ -139,7 +144,7 @@ export const SIM: SIM = {
     revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
-    expiryRate: pick(SEED, "generator.expiryRate", [0, 0.01, 0.1, 0.5]),
+    expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -414,20 +419,20 @@ const program = Effect.gen(function* () {
 
     /**
      * Executes `step` and checks the result against `shouldRevert` and
-     * `expiry`. A resubmission is a second, concurrent `execute` of the same
-     * mutation. It fails: on the nonce the first one used, or on the same
+     * `expiresInS`. A resubmission is a second, concurrent `execute` of the
+     * same mutation. It fails: on the nonce the first one used, or on the same
      * revert. An expired authorization fails both before either check, and a
-     * `near` one may expire before either submission is simulated.
+     * finite one may expire before either submission is simulated.
      */
     const execute = (step: Step) =>
       Effect.gen(function* () {
-        const { mutation } = step;
+        const { mutation, expiresInS } = step;
         const fail = `${mutation.name}Error`;
         const shouldRevert = mutation.params.shouldRevert;
         const unlessExpired = (want: string) =>
-          step.expiry?.kind === "expired"
+          expiresInS < 0
             ? ["AuthorizationExpired"]
-            : step.expiry?.kind === "near"
+            : Number.isFinite(expiresInS)
               ? [want, "AuthorizationExpired"]
               : [want];
         // The first submission runs here, not on the scheduler, until it waits

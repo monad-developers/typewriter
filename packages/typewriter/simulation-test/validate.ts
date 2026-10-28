@@ -229,7 +229,7 @@ export function validate({
       }
     };
 
-    // Whether a `near` authorization expires depends on the block it is
+    // Whether a finite authorization expires depends on the block it is
     // simulated against, so a step expired when it was rejected on
     // `AuthorizationExpired` and never accepted. A rejection of its
     // resubmission alone does not count.
@@ -249,15 +249,16 @@ export function validate({
     for (const key of accepted) expired.delete(key);
 
     const all = wants(signers, plan, expired);
+    // A negative `expiresInS` always expires, and an infinite one, like an
+    // account creation's, never does.
     for (const want of all) {
-      const kind = want.step?.expiry?.kind;
-      if (kind === "expired" || kind === "live") {
-        equal(
-          expired.has(want.key),
-          kind === "expired",
-          `${want.label} ${kind} authorization expired`,
-        );
-      }
+      const expiresInS = want.step?.expiresInS ?? Infinity;
+      if (expiresInS >= 0 && Number.isFinite(expiresInS)) continue;
+      equal(
+        expired.has(want.key),
+        expiresInS < 0,
+        `${want.label} authorization expired (expiresInS ${expiresInS})`,
+      );
     }
     const byKey = new Map(all.map((want) => [want.key, want]));
 
