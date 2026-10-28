@@ -52,8 +52,8 @@ const logFormat = readEnv(
 /**
  * An error that typewriter raises on purpose: an Effect tagged error that it
  * failed with. Its message says what went wrong, so its stack, which points
- * into typewriter, is noise in a JSON log. Any other error, or a defect, is a
- * bug, and keeps its stack.
+ * into typewriter, is noise. Any other error, or a defect, is a bug, and keeps
+ * its stack.
  */
 function isKnownError({ error, defect }: LogError): boolean {
   return !defect && Predicate.isString((error as { _tag?: unknown })._tag);
@@ -149,15 +149,29 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+/** `error` and its causes with no stack frames, for `Cause.pretty`. */
+function withoutStacks(error: unknown, depth = 0): unknown {
+  if (!(error instanceof Error) || depth >= 10) return error;
+  return {
+    name: error.name,
+    message: error.message,
+    stack: `${error.name}: ${error.message}`,
+    cause: withoutStacks(errorCause(error), depth + 1),
+  };
+}
+
 /**
  * The error as Effect's runtime prints it: `Name: message`, the stack, and each
- * `[cause]` with its own stack.
+ * `[cause]`. A known error's stack points into typewriter and its causes'
+ * into the libraries it calls, so they are left out.
  */
-function formatError({ error, defect }: LogError): string {
+function formatError(logError: LogError): string {
+  const { error, defect } = logError;
   // `Cause.pretty` prints an Effect `Cause` in `cause` as one line, so it gets
   // the cause's first error instead.
-  const view =
-    error instanceof Error && Cause.isCause(error.cause)
+  const view = isKnownError(logError)
+    ? withoutStacks(error)
+    : error instanceof Error && Cause.isCause(error.cause)
       ? Object.create(error, { cause: { value: errorCause(error) } })
       : error;
   return Cause.pretty(defect ? Cause.die(view) : Cause.fail(view));
