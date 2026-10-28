@@ -724,8 +724,9 @@ const program = Effect.gen(function* () {
             : Number.isFinite(expiresInS)
               ? [want, "AuthorizationExpired"]
               : [want];
-        // Both submissions go to the same runtime, so the resubmission cannot
-        // reach a later runtime first.
+        // Wait for a runtime once, before either submission. While none is up,
+        // two waits would wake in a seeded order, and the resubmission could
+        // be queued first.
         const up = yield* runtimeUp;
         // The first submission runs here, not on the scheduler, until it waits
         // on its result, so it is queued before the resubmission starts.
