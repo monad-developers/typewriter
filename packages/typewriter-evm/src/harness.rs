@@ -338,6 +338,9 @@ impl Image {
 
 pub struct EvmHarness {
     evm: Evm,
+    /// The caller's hardfork. Without one, the hardfork follows the chain's
+    /// schedule at the block timestamp.
+    pinned_spec: Option<MonadHardfork>,
     journals: HashMap<u64, Journal>,
     next_journal_id: u64,
 }
@@ -345,33 +348,29 @@ pub struct EvmHarness {
 impl EvmHarness {
     pub fn from_json(params_json: &str) -> Result<Self, String> {
         let params = serde_json::from_str(params_json).map_err(|e| format!("parse error: {e}"))?;
-        Ok(Self::new(&params))
+        Self::new(&params)
     }
 
-    fn new(params: &InitParams) -> Self {
+    fn new(params: &InitParams) -> Result<Self, String> {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
         relax_cfg(&mut ctx.cfg);
         let mut harness = Self {
             evm: ctx.build_monad_with_inspector(HarnessInspector::default()),
+            pinned_spec: params.spec,
             journals: HashMap::new(),
             next_journal_id: 1,
         };
-        harness.init(params);
-        harness
+        harness.init(params)?;
+        Ok(harness)
     }
 
-    fn init(&mut self, params: &InitParams) {
-        if let Some(spec) = params.spec {
-            let mut cfg = MonadCfgEnv::new_with_spec(spec);
-            relax_cfg(&mut cfg);
-            self.evm.0.ctx.cfg = cfg;
-            self.evm.0.ctx.journaled_state.set_spec_id(spec.into());
-        }
+    fn init(&mut self, params: &InitParams) -> Result<(), String> {
         if let Some(chain_id) = params.chain_id {
             self.evm.0.ctx.cfg.0.chain_id = chain_id;
         }
-        if let Some(block) = &params.block {
-            self.set_block_context(block);
+        match &params.block {
+            Some(block) => self.set_block_context(block)?,
+            None => self.update_spec()?,
         }
         let db = self.evm.0.ctx.journaled_state.db_mut();
         for (&address, account) in &params.accounts {
@@ -388,9 +387,10 @@ impl EvmHarness {
                 let Ok(()) = db.insert_account_storage(address, slot, value);
             }
         }
+        Ok(())
     }
 
-    fn set_block_context(&mut self, params: &BlockParams) {
+    fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
         let block = &mut self.evm.0.ctx.block;
         if let Some(number) = params.number {
             block.number = number;
@@ -404,6 +404,33 @@ impl EvmHarness {
         if let Some(coinbase) = params.coinbase {
             block.beneficiary = coinbase;
         }
+        self.update_spec()
+    }
+
+    /// Switches to the pinned hardfork, or else to the chain's hardfork at the
+    /// block timestamp. Fails on a chain without a known schedule, so a
+    /// non-Monad chain never runs with Monad's gas and precompiles.
+    fn update_spec(&mut self) -> Result<(), String> {
+        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
+        let spec = match self.pinned_spec {
+            Some(spec) => spec,
+            None => {
+                let timestamp = self.evm.0.ctx.block.timestamp.saturating_to();
+                MonadHardfork::from_chain_and_timestamp(chain_id, timestamp).ok_or_else(|| {
+                    format!("chain {chain_id} has no known Monad hardfork schedule; pass a spec")
+                })?
+            }
+        };
+        if spec == self.evm.0.ctx.cfg.0.spec {
+            return Ok(());
+        }
+        // MonadEvm reads the spec from the cfg on every frame, so replacing the
+        // cfg also switches its instructions and precompiles.
+        let mut cfg = MonadCfgEnv::new_with_spec(spec).with_chain_id(chain_id);
+        relax_cfg(&mut cfg);
+        self.evm.0.ctx.cfg = cfg;
+        self.evm.0.ctx.journaled_state.set_spec_id(spec.into());
+        Ok(())
     }
 
     fn revert_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
@@ -666,8 +693,7 @@ pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
     let empty = |result: Result<(), String>| result.map(|()| EmptyResult {});
     match request {
         Request::SetBlockContext { id, params } => {
-            harness.set_block_context(&params);
-            respond(id, Ok(EmptyResult {}))
+            respond(id, empty(harness.set_block_context(&params)))
         }
         Request::Execute { id, params } => respond(id, harness.execute(&params)),
         Request::Simulate { id, params } => respond(id, harness.simulate(&params)),
@@ -748,11 +774,12 @@ mod tests {
             })
             .collect();
         EvmHarness::new(&InitParams {
-            spec: None,
+            spec: Some(MonadHardfork::MonadTen),
             chain_id: None,
             block: None,
             accounts,
         })
+        .unwrap()
     }
 
     fn tx() -> ExecuteParams {

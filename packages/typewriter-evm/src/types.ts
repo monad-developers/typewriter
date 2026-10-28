@@ -23,6 +23,11 @@ export type AccountParams = {
 };
 
 export type InitParams = {
+  /**
+   * Pins the hardfork. Without it, the hardfork follows the schedule of
+   * `chain_id` (Monad mainnet or testnet) at the block timestamp, and init
+   * fails on any other chain.
+   */
   spec?: Spec;
   chain_id?: number;
   block?: BlockParams;

@@ -39,7 +39,7 @@ export type Typewriter<
   on: On<sequencingConfig, mutationsConfig, () => void>;
 };
 
-export type { EvmError } from "typewriter-evm";
+export type { EvmError, Spec } from "typewriter-evm";
 export type {
   ResolvedTypewriterMutationConfig,
   TypewriterConfig,
@@ -58,6 +58,7 @@ export {
 } from "./rpc-transport";
 export type { TypewriterSolidityEntrypoint } from "./sol-parse";
 export {
+  ChainIdMismatchError,
   type CreateTypewriterError,
   EncodeMutationError,
   type ExecuteError,

@@ -48,9 +48,11 @@ import {
   USER_ADDR,
 } from "../test/utils";
 import {
+  type BlockParams,
   createEVM,
   EvmCallError,
   type ExecuteResult,
+  type InitParams,
   type Spec,
 } from "./index";
 
@@ -62,19 +64,27 @@ function journalId(result: ExecuteResult): number {
 }
 
 const initWithCounter = {
+  spec: "MonadTen",
   accounts: {
     [COUNTER_ADDR]: { code: COUNTER_CODE },
   },
 } as const;
 
-const runSamePageWrites = (spec?: "MonadNine" | "MonadTen") =>
+const MONAD_MAINNET_CHAIN_ID = 143;
+const MONAD_TEN_MAINNET_TIMESTAMP = 1_788_359_400;
+
+const runSamePageWrites = (
+  init: Pick<InitParams, "spec" | "chain_id" | "block">,
+  block?: BlockParams,
+) =>
   Effect.gen(function* () {
     const evm = yield* createEVM({
-      spec,
+      ...init,
       accounts: {
         [PAGE_WRITES_ADDR]: { code: SAME_PAGE_WRITES_CODE },
       },
     });
+    if (block !== undefined) yield* evm.setBlockContext(block);
     return yield* evm.execute({
       from: CALLER,
       to: PAGE_WRITES_ADDR,
@@ -82,17 +92,89 @@ const runSamePageWrites = (spec?: "MonadNine" | "MonadTen") =>
     });
   });
 
-test("default spec enables MonadTen MIP-8 page storage gas", async () => {
-  const [monadNine, monadTen, defaultSpec] = await Promise.all([
-    Effect.runPromise(Effect.scoped(runSamePageWrites("MonadNine"))),
-    Effect.runPromise(Effect.scoped(runSamePageWrites("MonadTen"))),
-    Effect.runPromise(Effect.scoped(runSamePageWrites())),
+const samePageWritesGas = (
+  init: Pick<InitParams, "spec" | "chain_id" | "block">,
+  block?: BlockParams,
+) =>
+  Effect.runPromise(Effect.scoped(runSamePageWrites(init, block))).then(
+    (result) => result.gas_used,
+  );
+
+const beforeMonadTen = {
+  timestamp: Hex.fromNumber(MONAD_TEN_MAINNET_TIMESTAMP - 1),
+};
+const atMonadTen = { timestamp: Hex.fromNumber(MONAD_TEN_MAINNET_TIMESTAMP) };
+
+test("MonadTen enables MIP-8 page storage gas", async () => {
+  const [monadNine, monadTen] = await Promise.all([
+    samePageWritesGas({ spec: "MonadNine" }),
+    samePageWritesGas({ spec: "MonadTen" }),
   ]);
 
-  expect(monadTen.status).toBe("success");
-  expect(defaultSpec.status).toBe("success");
-  expect(defaultSpec.gas_used).toBe(monadTen.gas_used);
-  expect(monadTen.gas_used).toBeLessThan(monadNine.gas_used);
+  expect(monadTen).toBeLessThan(monadNine);
+});
+
+test("the hardfork follows the chain's schedule at the block timestamp", async () => {
+  const [monadNine, monadTen, before, at] = await Promise.all([
+    samePageWritesGas({ spec: "MonadNine" }),
+    samePageWritesGas({ spec: "MonadTen" }),
+    samePageWritesGas({
+      chain_id: MONAD_MAINNET_CHAIN_ID,
+      block: beforeMonadTen,
+    }),
+    samePageWritesGas({ chain_id: MONAD_MAINNET_CHAIN_ID, block: atMonadTen }),
+  ]);
+
+  expect(before).toBe(monadNine);
+  expect(at).toBe(monadTen);
+});
+
+test("setBlockContext switches the hardfork across an activation", async () => {
+  const [monadNine, monadTen, forward, backward] = await Promise.all([
+    samePageWritesGas({ spec: "MonadNine" }),
+    samePageWritesGas({ spec: "MonadTen" }),
+    samePageWritesGas(
+      { chain_id: MONAD_MAINNET_CHAIN_ID, block: beforeMonadTen },
+      atMonadTen,
+    ),
+    // A reorg can move the block timestamp back across an activation.
+    samePageWritesGas(
+      { chain_id: MONAD_MAINNET_CHAIN_ID, block: atMonadTen },
+      beforeMonadTen,
+    ),
+  ]);
+
+  expect(forward).toBe(monadTen);
+  expect(backward).toBe(monadNine);
+});
+
+test("a pinned spec ignores the chain's schedule", async () => {
+  const [monadNine, pinned] = await Promise.all([
+    samePageWritesGas({ spec: "MonadNine" }),
+    samePageWritesGas({
+      spec: "MonadNine",
+      chain_id: MONAD_MAINNET_CHAIN_ID,
+      block: atMonadTen,
+    }),
+  ]);
+
+  expect(pinned).toBe(monadNine);
+});
+
+test("createEVM fails on a chain without a Monad hardfork schedule", async () => {
+  const program = createEVM({ chain_id: 1 });
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(program));
+  expect(exit).toEqual(
+    Exit.fail(
+      new EvmCallError({
+        method: "init",
+        message:
+          "init failed: chain 1 has no known Monad hardfork schedule; pass a spec",
+        cause: "chain 1 has no known Monad hardfork schedule; pass a spec",
+      }),
+    ),
+  );
 });
 
 test("execute against counter succeeds and returns a journal id", async () => {
@@ -204,6 +286,7 @@ test("execute opens a journal automatically", async () => {
 test("failed execute discards journal writes", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       accounts: {
         [REVERTING_ADDR]: { code: WRITE_THEN_REVERT_CODE },
       },
@@ -223,6 +306,7 @@ test("failed execute discards journal writes", async () => {
 test("execute reports a halt separately from a revert", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       accounts: {
         [HALTING_ADDR]: { code: HALT_CODE },
       },
@@ -456,6 +540,7 @@ test("pruneJournals with an unknown journal id fails", async () => {
 test("setBlockContext updates block parameters", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       block: {
         number: "0x1",
         timestamp: "0x64",
@@ -767,6 +852,7 @@ test("harness gas_limit includes EIP-150 call headroom", async () => {
 
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       chain_id: 31337,
       accounts: {
         [calleeAddr]: { code: calleeArtifact.deployedBytecode.object },
@@ -810,6 +896,7 @@ test("access list leaves out the P-256 precompile at 0x100", async () => {
 
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       chain_id: 31337,
       accounts: {
         [callerAddr]: { code: artifact.deployedBytecode.object },

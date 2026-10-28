@@ -215,6 +215,19 @@ export class EnqueueHaltedError extends Data.TaggedError("EnqueueHaltedError")<{
   }
 }
 
+/** An RPC provider serves a different chain than `config.chainId`. */
+export class ChainIdMismatchError extends Data.TaggedError(
+  "ChainIdMismatchError",
+)<{
+  origin: string;
+  expected: number;
+  actual: number;
+}> {
+  override get message() {
+    return `RPC ${this.origin} serves chain ${this.actual}, but config.chainId is ${this.expected}`;
+  }
+}
+
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
@@ -265,6 +278,7 @@ export type CreateTypewriterError =
   | IncompleteBlockError
   | NoDataReturnedError
   | MigrationError
+  | ChainIdMismatchError
   | EvmError;
 
 function resolveMutationConfig(app: TypewriterApp, name: string) {
@@ -606,6 +620,7 @@ function createRuntimeState(
       ).pipe(Effect.annotateLogs({ address: app.address }));
     }
     const evm = yield* createEVM({
+      spec: app.hardfork,
       chain_id: app.chainId,
       // Until the watch reports the next block, mutations execute in the
       // start block, so checks against `block.timestamp`, such as
@@ -703,6 +718,20 @@ export function createTypewriterEffect<
     const db = yield* Database;
     const rpc = yield* Rpc;
     const scope = yield* Scope.Scope;
+
+    // revm picks its hardfork from `app.chainId`, so every provider must serve
+    // that chain.
+    const chainIds = yield* rpc.requestEach({ method: "eth_chainId" });
+    for (const { origin, result } of chainIds) {
+      const actual = Hex.toNumber(result);
+      if (actual !== app.chainId) {
+        return yield* new ChainIdMismatchError({
+          origin,
+          expected: app.chainId,
+          actual,
+        });
+      }
+    }
 
     const lockLost = yield* db.lock(
       deploymentLockKey(app.chainId, app.address),
