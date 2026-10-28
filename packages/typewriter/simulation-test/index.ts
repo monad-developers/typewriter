@@ -279,6 +279,8 @@ const program = Effect.gen(function* () {
       address,
       account: SCHEDULER,
       chainId,
+      // Anvil's chain has no Monad hardfork schedule.
+      hardfork: "MonadTen",
       rpcUrl: SIM.transports.map((_, index) => `sim-${index}`) as [
         string,
         ...string[],

@@ -30,6 +30,16 @@ export class Rpc extends Context.Service<
     request: <request extends RpcRequest>(
       request: request,
     ) => Effect.Effect<RpcResult<request["method"]>, RpcError>;
+    /**
+     * Sends `request` to every provider, retrying each on its own, for checks
+     * that must hold on all of them.
+     */
+    requestEach: <request extends RpcRequest>(
+      request: request,
+    ) => Effect.Effect<
+      { origin: string; result: RpcResult<request["method"]> }[],
+      RpcError
+    >;
   }
 >()("typewriter/Rpc") {}
 
@@ -53,40 +63,66 @@ function makeRpc(
   // retries rotate onto the next provider.
   let cursor = 0;
 
-  const request = (request: RpcRequest) => {
+  const send = (
+    transport: RpcTransport,
+    request: RpcRequest,
+    attempt: number,
+  ) => {
     const { method } = request;
-    let attempt = 0;
-
-    const send = Effect.suspend(() => {
-      const transport = transports[cursor % transports.length]!;
-      cursor += 1;
-      attempt += 1;
-      return transport.request(request).pipe(
-        Effect.timeoutOrElse({
-          duration: REQUEST_TIMEOUT,
-          orElse: () =>
-            Effect.fail(
-              new RpcTimeoutError({ method, origin: transport.origin }),
-            ),
-        }),
-        Effect.tapError((error) =>
-          Effect.logDebug("Failed RPC request", error).pipe(
-            Effect.annotateLogs({ method, attempt }),
+    return transport.request(request).pipe(
+      Effect.timeoutOrElse({
+        duration: REQUEST_TIMEOUT,
+        orElse: () =>
+          Effect.fail(
+            new RpcTimeoutError({ method, origin: transport.origin }),
           ),
+      }),
+      Effect.tapError((error) =>
+        Effect.logDebug("Failed RPC request", error).pipe(
+          Effect.annotateLogs({ method, attempt }),
         ),
-      );
-    });
+      ),
+    );
+  };
 
-    return send.pipe(
+  const retry = <A>(method: RpcMethod, effect: Effect.Effect<A, RpcError>) =>
+    effect.pipe(
       Effect.retry({
         schedule: RETRY_SCHEDULE,
         times: RETRY_TIMES,
         while: (error) => shouldRetry(method, error),
       }),
     );
+
+  const request = (request: RpcRequest) => {
+    let attempt = 0;
+    return retry(
+      request.method,
+      Effect.suspend(() => {
+        const transport = transports[cursor % transports.length]!;
+        cursor += 1;
+        attempt += 1;
+        return send(transport, request, attempt);
+      }),
+    );
   };
 
-  return Rpc.of({ request: request as Rpc["Service"]["request"] });
+  const requestEach = (request: RpcRequest) =>
+    Effect.forEach(transports, (transport) => {
+      let attempt = 0;
+      return retry(
+        request.method,
+        Effect.suspend(() => {
+          attempt += 1;
+          return send(transport, request, attempt);
+        }),
+      ).pipe(Effect.map((result) => ({ origin: transport.origin, result })));
+    });
+
+  return Rpc.of({
+    request: request as Rpc["Service"]["request"],
+    requestEach: requestEach as Rpc["Service"]["requestEach"],
+  });
 }
 
 export const layerRpc = (

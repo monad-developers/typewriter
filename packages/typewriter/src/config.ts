@@ -3,6 +3,7 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import { Data } from "effect";
 import type { Address } from "ox";
 import type { StorageLayout } from "storage-layout";
+import type { Spec } from "typewriter-evm";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
 import { deploymentKey } from "./client";
 import type { DatabaseOptions } from "./db";
@@ -81,6 +82,12 @@ export type TypewriterConfig<
   address: Address.Address;
   account: PrivateKeyAccount;
   chainId: number;
+  /**
+   * Pins the EVM hardfork that mutations execute under. By default it follows
+   * the Monad mainnet or testnet schedule for `chainId`, so it is required on
+   * any other chain, such as a local Anvil started with `--network monad`.
+   */
+  hardfork?: Spec;
   rpcUrl: string | string[];
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
@@ -98,6 +105,7 @@ export type TypewriterApp = {
   storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;
+  hardfork: Spec | undefined;
   rpcUrls: [string, ...string[]];
   database: DatabaseOptions;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
@@ -272,6 +280,7 @@ export function createTypewriterApp(params: {
     storageLayout,
     account: config.account,
     chainId: config.chainId,
+    hardfork: config.hardfork,
     rpcUrls,
     database: config.database,
     mutations,

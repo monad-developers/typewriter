@@ -71,6 +71,7 @@ function callBurnLargeData(burnCount: bigint): Hex.Hex {
 test("typewriter-evm simulate scales with optimistic journal count", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       accounts: {
         [SLOT_WRITER_ADDR]: { code: SLOT_WRITER_CODE },
       },
@@ -153,6 +154,7 @@ test("typewriter-evm simulate scales with EVM workload", async () => {
 
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
+      spec: "MonadTen",
       chain_id: 31337,
       accounts: {
         [CALL_BURN_CALLEE_ADDR]: {

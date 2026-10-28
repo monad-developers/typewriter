@@ -125,6 +125,7 @@ export function tokenInit(
   return {
     schedulerBalanceSlot,
     params: {
+      spec: "MonadTen",
       chain_id: 31337,
       accounts: {
         [tokenAddr]: {
