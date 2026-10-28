@@ -37,6 +37,7 @@ import {
   makeSigner,
   mutationKey,
   type Step,
+  signAtSubmission,
 } from "./assessment";
 import {
   ASSESSMENT_ENTRYPOINT,
@@ -70,6 +71,8 @@ export type SIM = {
     enqueueRate: number;
     /** How often an executed step is executed again as soon as it is received. */
     resubmitRate: number;
+    /** How often a step's authorization expires. */
+    expiryRate: number;
   };
   typewriter: {
     submitIntervalMs: number;
@@ -136,6 +139,7 @@ export const SIM: SIM = {
     revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
+    expiryRate: pick(SEED, "generator.expiryRate", [0, 0.01, 0.1, 0.5]),
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -386,8 +390,8 @@ const program = Effect.gen(function* () {
       }).pipe(Effect.forever),
     );
 
-    /** Executes the mutation of `step` and checks the result against `want`. */
-    const submit = (step: Step, what: string, want: string) =>
+    /** Executes the mutation of `step` and checks the result is one of `want`. */
+    const submit = (step: Step, what: string, want: string[]) =>
       Effect.gen(function* () {
         const { mutation } = step;
         const exit = yield* Effect.exit(typewriter.execute(mutation));
@@ -400,32 +404,48 @@ const program = Effect.gen(function* () {
               error.errorName !== undefined
             ? error.errorName
             : Cause.pretty(exit.cause);
-        if (got !== want) {
+        if (!want.includes(got)) {
           return yield* Effect.die(
-            `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want}`,
+            `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want.join(" or ")}`,
           );
         }
         return exit;
       });
 
     /**
-     * Executes `step` and checks the result against `shouldRevert`. A
-     * resubmission is a second, concurrent `execute` of the same mutation. It
-     * fails: on the nonce the first one used, or on the same revert.
+     * Executes `step` and checks the result against `shouldRevert` and
+     * `expiry`. A resubmission is a second, concurrent `execute` of the same
+     * mutation. It fails: on the nonce the first one used, or on the same
+     * revert. An expired authorization fails both before either check, and a
+     * `near` one may expire before either submission is simulated.
      */
     const execute = (step: Step) =>
       Effect.gen(function* () {
         const { mutation } = step;
         const fail = `${mutation.name}Error`;
         const shouldRevert = mutation.params.shouldRevert;
+        const unlessExpired = (want: string) =>
+          step.expiry?.kind === "expired"
+            ? ["AuthorizationExpired"]
+            : step.expiry?.kind === "near"
+              ? [want, "AuthorizationExpired"]
+              : [want];
         // The first submission runs here, not on the scheduler, until it waits
         // on its result, so it is queued before the resubmission starts.
         const first = yield* Effect.forkChild(
-          submit(step, "execute", shouldRevert ? fail : "success"),
+          submit(
+            step,
+            "execute",
+            unlessExpired(shouldRevert ? fail : "success"),
+          ),
           { startImmediately: true },
         );
         if (step.resubmit) {
-          yield* submit(step, "resubmit", shouldRevert ? fail : "InvalidNonce");
+          yield* submit(
+            step,
+            "resubmit",
+            unlessExpired(shouldRevert ? fail : "InvalidNonce"),
+          );
         }
         const exit = yield* Fiber.join(first);
         if (Exit.isSuccess(exit)) {
@@ -480,6 +500,11 @@ const program = Effect.gen(function* () {
       // one before it to settle.
       for (const step of plan) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
+        step.mutation = signAtSubmission(
+          manifest,
+          step,
+          yield* Clock.currentTimeMillis,
+        );
         yield* FiberSet.run(
           fibers,
           step.via === "execute" ? execute(step) : yield* enqueue(step),
