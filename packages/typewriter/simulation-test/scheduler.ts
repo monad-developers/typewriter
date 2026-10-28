@@ -1,18 +1,35 @@
 import { Effect, type Exit, type Random, Scheduler } from "effect";
 
-type Task = { run: () => void; priority: number };
+/**
+ * A `Scheduler` for the fibers of one process. A crash drops every task of
+ * the group, so its fibers never run again, and run no finalizers.
+ */
+export type SimGroup = Scheduler.Scheduler & { alive: boolean };
+
+type Task = { run: () => void; priority: number; group: SimGroup };
 
 type Io = {
   exit: Promise<Exit.Exit<unknown, unknown>>;
   resume: (exit: Exit.Exit<unknown, unknown>) => void;
+  group: SimGroup;
 };
 
 /** A `Scheduler` that runs tasks only from the step loop, in a seeded order. */
-export type SimScheduler = Scheduler.Scheduler & {
+export type SimScheduler = SimGroup & {
   /** Runs `effect` outside the simulation. Its result reaches the fiber in the order of the calls to `io`. */
   io: <a, e>(effect: Effect.Effect<a, e>) => Effect.Effect<a, e>;
-  /** Queues `run` as a task. */
-  schedule: (run: () => void) => void;
+  /** Queues `run` as a task of `group`. */
+  schedule: (run: () => void, group: SimGroup) => void;
+  /** A new group. Its tasks run in the same seeded order as every other. */
+  group: () => SimGroup;
+  /**
+   * Drops the tasks of `group`, and each task it queues later. Its I/O in
+   * flight still lands, since the process sent it, but no fiber sees the
+   * result. Completes once that I/O has landed.
+   */
+  crash: (group: SimGroup) => Effect.Effect<void>;
+  /** Whether `group` has a task ready or I/O in flight. */
+  busy: (group: SimGroup) => boolean;
   /**
    * Runs tasks and releases I/O, in a seeded order, until no task is ready and
    * no I/O is in flight.
@@ -20,14 +37,19 @@ export type SimScheduler = Scheduler.Scheduler & {
   runUntilIdle: () => Promise<void>;
 };
 
+/** The group of the running fiber. */
+export const currentGroup = Effect.withFiber((fiber) =>
+  Effect.succeed(fiber.getRef(Scheduler.Scheduler) as SimGroup),
+);
+
 export function makeSimScheduler(
   random: Random.Random,
   jumpRate: number,
   jump: () => void,
   ioRate: number,
 ): SimScheduler {
-  const tasks: Task[] = [];
-  const inFlight: Io[] = [];
+  let tasks: Task[] = [];
+  let inFlight: Io[] = [];
 
   /** Runs one task of the lowest priority, picked at random. */
   const runOne = () => {
@@ -43,21 +65,41 @@ export function makeSimScheduler(
     task!.run();
   };
 
-  const schedule = (run: () => void) => {
-    tasks.push({ run, priority: 0 });
+  const schedule = (run: () => void, group: SimGroup, priority = 0) => {
+    if (group.alive) tasks.push({ run, priority, group });
   };
 
   const drain = () => {
     while (tasks.length > 0) runOne();
   };
 
+  const makeGroup = (): SimGroup => {
+    const group: SimGroup = {
+      alive: true,
+      executionMode: "async",
+      shouldYield: (fiber) =>
+        fiber.currentOpCount >= fiber.getRef(Scheduler.MaxOpsBeforeYield),
+      makeDispatcher: () => ({
+        scheduleTask: (run, priority) => schedule(run, group, priority),
+        flush: drain,
+      }),
+    };
+    return group;
+  };
+
   const io = <a, e>(effect: Effect.Effect<a, e>) =>
-    Effect.callback<a, e>((resume) => {
-      inFlight.push({
-        exit: Effect.runPromiseExit(effect),
-        resume: resume as Io["resume"],
-      });
-    });
+    Effect.flatMap(currentGroup, (group) =>
+      Effect.callback<a, e>((resume) => {
+        // The task that a crash cut short can still reach here. Its process
+        // is gone, so the I/O never starts.
+        if (!group.alive) return;
+        inFlight.push({
+          exit: Effect.runPromiseExit(effect),
+          resume: resume as Io["resume"],
+          group,
+        });
+      }),
+    );
 
   /** Lets a promise outside `io` resume its fiber. If it needs more than one macrotask, the clock moves past it. */
   const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -74,7 +116,7 @@ export function makeSimScheduler(
     // Tasks that promises outside `io` queued during the wait go first, so
     // their order among the tasks does not depend on how long the wait was.
     await settle();
-    schedule(() => next!.resume(exit));
+    schedule(() => next!.resume(exit), next!.group);
   };
 
   const runUntilIdle = async () => {
@@ -99,18 +141,25 @@ export function makeSimScheduler(
     }
   };
 
-  return {
-    executionMode: "async",
-    shouldYield: (fiber) =>
-      fiber.currentOpCount >= fiber.getRef(Scheduler.MaxOpsBeforeYield),
-    makeDispatcher: () => ({
-      scheduleTask: (run, priority) => {
-        tasks.push({ run, priority });
-      },
-      flush: drain,
-    }),
+  const crash = (group: SimGroup) =>
+    Effect.suspend(() => {
+      group.alive = false;
+      tasks = tasks.filter((task) => task.group !== group);
+      const landed = inFlight
+        .filter((entry) => entry.group === group)
+        .map((entry) => entry.exit);
+      inFlight = inFlight.filter((entry) => entry.group !== group);
+      return io(Effect.promise(() => Promise.all(landed))).pipe(Effect.asVoid);
+    });
+
+  return Object.assign(makeGroup(), {
     io,
-    schedule,
+    schedule: (run: () => void, group: SimGroup) => schedule(run, group),
+    group: makeGroup,
+    crash,
+    busy: (group: SimGroup) =>
+      tasks.some((task) => task.group === group) ||
+      inFlight.some((entry) => entry.group === group),
     runUntilIdle,
-  };
+  });
 }

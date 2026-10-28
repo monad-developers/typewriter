@@ -1,6 +1,7 @@
 import { type Clock, Duration, Effect } from "effect";
+import { currentGroup, type SimGroup } from "./scheduler";
 
-type Sleeper = { at: number; seq: number; wake: () => void };
+type Sleeper = { at: number; seq: number; wake: () => void; group: SimGroup };
 
 /** A `Clock` that moves only when the step loop advances it. */
 export type SimClock = Clock.Clock & {
@@ -8,16 +9,20 @@ export type SimClock = Clock.Clock & {
   nextWakeup: () => number | undefined;
   /** Sets the time to `at` and schedules the wake-up of each sleep due at `at` or before. */
   advanceTo: (at: number) => void;
+  /** Drops the sleeps of `group`, whose process crashed. */
+  crash: (group: SimGroup) => void;
+  /** Whether a fiber of `group` sleeps. */
+  sleeping: (group: SimGroup) => boolean;
 };
 
 export function makeSimClock(
   startMs: number,
-  schedule: (run: () => void) => void,
+  schedule: (run: () => void, group: SimGroup) => void,
 ): SimClock {
   let now = startMs;
   let seq = 0;
   // Sorted by (at, seq).
-  const sleepers: Sleeper[] = [];
+  let sleepers: Sleeper[] = [];
 
   const insert = (sleeper: Sleeper) => {
     let low = 0;
@@ -36,20 +41,23 @@ export function makeSimClock(
   };
 
   const sleep = (duration: Duration.Duration) =>
-    Effect.callback<void>((resume) => {
-      const ms = Duration.toMillis(duration);
-      if (ms === Number.POSITIVE_INFINITY) return;
-      const sleeper: Sleeper = {
-        at: now + Math.max(ms, 0),
-        seq: seq++,
-        wake: () => resume(Effect.void),
-      };
-      insert(sleeper);
-      return Effect.sync(() => {
-        const index = sleepers.indexOf(sleeper);
-        if (index !== -1) sleepers.splice(index, 1);
-      });
-    });
+    Effect.flatMap(currentGroup, (group) =>
+      Effect.callback<void>((resume) => {
+        const ms = Duration.toMillis(duration);
+        if (ms === Number.POSITIVE_INFINITY) return;
+        const sleeper: Sleeper = {
+          at: now + Math.max(ms, 0),
+          seq: seq++,
+          wake: () => resume(Effect.void),
+          group,
+        };
+        insert(sleeper);
+        return Effect.sync(() => {
+          const index = sleepers.indexOf(sleeper);
+          if (index !== -1) sleepers.splice(index, 1);
+        });
+      }),
+    );
 
   const nanos = () => BigInt(now) * 1_000_000n;
 
@@ -66,8 +74,13 @@ export function makeSimClock(
       if (at < now) throw new Error(`clock cannot move back: ${now} -> ${at}`);
       now = at;
       while (sleepers.length > 0 && sleepers[0]!.at <= now) {
-        schedule(sleepers.shift()!.wake);
+        const sleeper = sleepers.shift()!;
+        schedule(sleeper.wake, sleeper.group);
       }
     },
+    crash: (group) => {
+      sleepers = sleepers.filter((sleeper) => sleeper.group !== group);
+    },
+    sleeping: (group) => sleepers.some((sleeper) => sleeper.group === group),
   };
 }

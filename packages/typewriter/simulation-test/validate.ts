@@ -206,6 +206,8 @@ export function validate({
   blockEvents,
   typewriter,
   ordering,
+  shutdowns,
+  dropped,
 }: {
   app: TypewriterApp;
   chain: Chain;
@@ -220,6 +222,10 @@ export function validate({
   /** The runtime, still alive after the drain, to read its views. */
   typewriter: Pick<StorageView<AssessmentStorage, false>, "state" | "accounts">;
   ordering: SIM["typewriter"]["ordering"];
+  /** How many times the runtime shut down and started again. */
+  shutdowns: number;
+  /** Mutations whose `execute` a shutdown cut off before a runtime accepted them. */
+  dropped: Set<string>;
 }): Effect.Effect<void> {
   return Effect.gen(function* () {
     const errors: string[] = [];
@@ -250,10 +256,11 @@ export function validate({
 
     const all = wants(signers, plan, expired);
     // A negative `expiresInS` always expires, and an infinite one, like an
-    // account creation's, never does.
+    // account creation's, never does. A dropped step never got that far.
     for (const want of all) {
       const expiresInS = want.step?.expiresInS ?? Infinity;
       if (expiresInS >= 0 && Number.isFinite(expiresInS)) continue;
+      if (dropped.has(want.key)) continue;
       equal(
         expired.has(want.key),
         expiresInS < 0,
@@ -288,26 +295,50 @@ export function validate({
     for (const want of all) {
       let seen = events.get(want.key) ?? [];
       // A resubmission shares its key: its events are the second `received`
-      // and the last `rejected`.
+      // and the last `rejected`. A shutdown can cut it off before it is
+      // rejected, which leaves the first submission's `rejected` as the last.
       if (want.step?.resubmit) {
         const second = seen.findIndex(
           (event, i) =>
             event.status === "received" &&
             seen.findIndex((other) => other.status === "received") < i,
         );
-        const last = seen.findLastIndex((event) => event.status === "rejected");
-        equal(
-          [seen[second]?.status, seen[last]?.status],
-          ["received", "rejected"],
-          `${want.label} resubmission event statuses`,
-        );
+        const rejections = seen.filter(
+          (event) => event.status === "rejected",
+        ).length;
+        const last =
+          shutdowns === 0 || rejections > (want.reverts ? 1 : 0)
+            ? seen.findLastIndex((event) => event.status === "rejected")
+            : -1;
+        if (shutdowns === 0) {
+          equal(
+            [seen[second]?.status, seen[last]?.status],
+            ["received", "rejected"],
+            `${want.label} resubmission event statuses`,
+          );
+        }
         seen = seen.filter((_, i) => i !== second && i !== last);
       }
-      equal(
-        seen.map((event) => event.status),
-        want.statuses,
-        `${want.label} mutation event statuses`,
-      );
+      const statuses = seen.map((event) => event.status);
+      if (shutdowns === 0) {
+        equal(statuses, want.statuses, `${want.label} mutation event statuses`);
+      } else {
+        // TODO(kyle) shutdowns: decide which events a restarted runtime emits
+        // for a mutation an earlier one emitted. For now a status may repeat
+        // across runtimes, but never goes back.
+        const ranks = statuses.map((status) => want.statuses.indexOf(status));
+        const last = dropped.has(want.key)
+          ? want.statuses.indexOf("received")
+          : want.statuses.length - 1;
+        if (
+          ranks.some((rank, i) => rank === -1 || rank < (ranks[i - 1] ?? 0)) ||
+          ranks.at(-1) !== last
+        ) {
+          errors.push(
+            `${want.label} mutation event statuses: got ${toJson(statuses)}, want an ordered run of ${toJson(want.statuses.slice(0, last + 1))}`,
+          );
+        }
+      }
       for (const event of seen) {
         if ("isForceInclusion" in event) {
           equal(
@@ -339,6 +370,17 @@ export function validate({
       }
     }
 
+    // A mutation that a runtime accepted executes once, whatever shuts down
+    // after (typewriter does not do this yet). The checks below hold it to
+    // that, since only a dropped mutation leaves `executed`.
+    // TODO(kyle) shutdowns: decide what each other state at a shutdown owes
+    // the client, then check it here:
+    // - received, not yet accepted: `dropped`, never resent, for now.
+    // - accepted, its batch not committed to the database.
+    // - committed, the settlement not sent, or sent and not included.
+    // - included, not finalized.
+    // - enqueued onchain, the ForceInclusionQueued log not yet seen by revm.
+
     // `execute` returns the index the events report.
     for (const [key, executionIndex] of results) {
       equal(
@@ -349,8 +391,11 @@ export function validate({
     }
 
     // The execution order: account creations first, then every step that
-    // does not revert, with no gaps.
-    const executed = all.filter((want) => !want.reverts);
+    // does not revert and was not dropped, with no gaps.
+    const executed = all.filter(
+      (want) => !want.reverts && !dropped.has(want.key),
+    );
+    const executedKeys = new Set(executed.map((want) => want.key));
     const order = [...executed].sort((a, b) => {
       const x = executionIndexes.get(a.key) ?? -1n;
       const y = executionIndexes.get(b.key) ?? -1n;
@@ -397,7 +442,7 @@ export function validate({
           )
           .map((event) => byKey.get(mutationKey(event.authorization))!),
       ),
-    ].filter((want) => !want.reverts);
+    ].filter((want) => executedKeys.has(want.key));
     const executions = order.filter((want) => want.step?.via === "execute");
     if (ordering.order === "fifo") {
       equal(
@@ -413,7 +458,9 @@ export function validate({
         .map((event) =>
           event.mutations
             .map((mutation) => byKey.get(mutationKey(mutation.authorization))!)
-            .filter((want) => want.step !== undefined),
+            .filter(
+              (want) => want.step !== undefined && executedKeys.has(want.key),
+            ),
         )
         .filter((batch) => batch.length > 0);
       const arrival = new Map(arrivals.map((want, i) => [want.key, i]));
@@ -450,11 +497,15 @@ export function validate({
     }
     const blockOrder: bigint[] = [];
     for (const [hash, seen] of blocks) {
-      equal(
-        seen.map((event) => event.status),
-        ["included", "finalized"],
-        `block ${hash} event statuses`,
-      );
+      // TODO(kyle) shutdowns: decide which block events a restarted runtime
+      // emits. For now a block may lack either event, or repeat one.
+      if (shutdowns === 0) {
+        equal(
+          seen.map((event) => event.status),
+          ["included", "finalized"],
+          `block ${hash} event statuses`,
+        );
+      }
       const indexes = seen.map((event) =>
         ("mutations" in event
           ? event.mutations
@@ -495,11 +546,19 @@ export function validate({
         `transaction ${event.transactionHash} block`,
       );
     }
-    equal(
-      blockOrder,
-      executed.map((_, i) => BigInt(i)),
-      "execution indexes across block events",
-    );
+    if (shutdowns === 0) {
+      equal(
+        blockOrder,
+        executed.map((_, i) => BigInt(i)),
+        "execution indexes across block events",
+      );
+    } else {
+      equal(
+        blockOrder,
+        [...new Set(blockOrder)].sort((a, b) => (a < b ? -1 : 1)),
+        "execution indexes across block events",
+      );
+    }
 
     // `typewriter.state` and `typewriter.accounts`, against the model
     // replayed in the observed order, and against the same views over Anvil

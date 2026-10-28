@@ -3,6 +3,7 @@ import { SQL } from "bun";
 import {
   Cause,
   Clock,
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -13,6 +14,7 @@ import {
   type LogLevel,
   Option,
   Random,
+  Scheduler,
   Scope,
 } from "effect";
 import { Hex } from "ox";
@@ -22,9 +24,14 @@ import type { TypewriterManifest } from "../src/config";
 import { Database, makeDb } from "../src/db";
 import { encodeEnqueueCalldata } from "../src/encoding";
 import { loggerLayer } from "../src/logger";
-import { layerRpc } from "../src/rpc";
+import { layerRpc, type Rpc } from "../src/rpc";
 import { loadSolidityTypewriterApp } from "../src/sol-parse";
-import { createTypewriterEffect, type ProgramError } from "../src/typewriter";
+import {
+  type CreateTypewriterError,
+  createTypewriterEffect,
+  type ProgramError,
+  type TypewriterEffect,
+} from "../src/typewriter";
 import type {
   BatchEvent,
   BlockEvent,
@@ -47,7 +54,7 @@ import {
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
 import { int, makeRandom, pick } from "./random";
-import { makeSimScheduler } from "./scheduler";
+import { makeSimScheduler, type SimGroup } from "./scheduler";
 import { makeSimDb } from "./sim-db";
 import { makeSimTransport } from "./sim-rpc";
 import { validate } from "./validate";
@@ -56,6 +63,8 @@ export type SIM = {
   seed: string;
   /** The run fails when the runtime emits no mutation event for this much virtual time. */
   stallTimeoutMs: number;
+  /** The run fails when a soft shutdown takes longer than this, in virtual time. */
+  softShutdownTimeoutMs: number;
   /** How often the scheduler moves the clock to the next sleep before a pick, while tasks are ready. */
   jumpRate: number;
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
@@ -83,6 +92,19 @@ export type SIM = {
      * `Infinity` never expires. `Infinity` repeats so most steps draw it.
      */
     expirationsS: number[];
+    /**
+     * The shutdowns of the runtime, in order. A soft shutdown closes the
+     * runtime's scope. A hard one stops its fibers where they are, as a
+     * crash of the process does. Then the runtime starts again on the same
+     * database and chain.
+     */
+    shutdowns: {
+      kind: "soft" | "hard";
+      /** How long after the runtime starts. The first comes after the accounts exist. */
+      afterMs: number;
+      /** How long until the next runtime starts. The chain keeps mining. */
+      downtimeMs: number;
+    }[];
   };
   typewriter: {
     submitIntervalMs: number;
@@ -123,6 +145,7 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
 export const SIM: SIM = {
   seed: SEED,
   stallTimeoutMs: 300_000,
+  softShutdownTimeoutMs: 10_000,
   jumpRate: pick(SEED, "jumpRate", [0, 0.0001, 0.001]),
   ioRate: pick(SEED, "ioRate", [0, 0.01, 0.1]),
   chain: {
@@ -151,6 +174,25 @@ export const SIM: SIM = {
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
     expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
+    shutdowns: Array.from(
+      { length: pick(SEED, "generator.shutdowns", [0, 1, 3, 5]) },
+      (_, i) => ({
+        kind: pick(SEED, `generator.shutdowns.${i}.kind`, ["soft", "hard"] as (
+          | "soft"
+          | "hard"
+        )[]),
+        afterMs: pick(
+          SEED,
+          `generator.shutdowns.${i}.afterMs`,
+          [0, 10, 100, 1_000, 10_000, 60_000],
+        ),
+        downtimeMs: pick(
+          SEED,
+          `generator.shutdowns.${i}.downtimeMs`,
+          [0, 100, 1_000, 10_000],
+        ),
+      }),
+    ),
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -345,16 +387,27 @@ const program = Effect.gen(function* () {
   /** Emitted only with batch sequencing. */
   const batchEvents: BatchEvent<AssessmentMutations>[] = [];
   const blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[] = [];
-  // Every mutation ends finalized or rejected, once, and every resubmission
-  // ends rejected.
-  let settlements = 0;
   const mutations = signers.length + plan.length;
-  const resubmissions = plan.filter((step) => step.resubmit).length;
-  // The virtual time of the last mutation event.
+  /** Mutations that a runtime accepted, which every later runtime owes. */
+  const accepted = new Set<string>();
+  /** Mutations whose `execute` a shutdown cut off before a runtime accepted them. */
+  const dropped = new Set<string>();
+  /**
+   * How many submissions of each mutation have not settled, finalized or
+   * rejected, or been cut off. A resubmission ends rejected under the same
+   * key as its first submission.
+   */
+  const outstanding = new Map<string, number>();
+  const send = (key: string) => {
+    outstanding.set(key, (outstanding.get(key) ?? 0) + 1);
+  };
+  let clientDone = false;
+  let shutdownsDone = false;
+  // The virtual time of the last mutation event, or of the last start.
   let progressedAt = startMs;
 
   // The world's scope outlives its fiber, so `validate` can read the runtime's
-  // views after the run. The runtime's fibers run on the simulated scheduler,
+  // views after the run. The world's fibers run on the simulated scheduler,
   // so it runs their interruption.
   const scope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Effect.promise(() => {
@@ -365,31 +418,167 @@ const program = Effect.gen(function* () {
   const world = Effect.gen(function* () {
     // A failure of any fiber in the set fails the run.
     const fibers = yield* FiberSet.make<void, ProgramError>();
+    /** A failure of a runtime, which fails the run. */
+    const failed = yield* Deferred.make<
+      never,
+      CreateTypewriterError | ProgramError
+    >();
+    const drained = yield* Deferred.make<void>();
+    const checkDrained = () => {
+      if (clientDone && shutdownsDone && outstanding.size === 0) {
+        Deferred.doneUnsafe(drained, Effect.void);
+      }
+    };
 
-    const typewriter = yield* createTypewriterEffect<
+    // Each runtime runs in a group of its own, as a process of its own would,
+    // so a hard shutdown can stop its fibers without stopping the world's.
+    const context = yield* Effect.context<Database | Rpc>();
+    const forkIn = <a, e>(
+      group: SimGroup,
+      effect: Effect.Effect<a, e, Database | Rpc>,
+    ) =>
+      Effect.runForkWith(Context.add(context, Scheduler.Scheduler, group))(
+        effect,
+      );
+
+    type Typewriter = TypewriterEffect<
       AssessmentStorage,
       AssessmentMutations,
       "fifo" | "batch"
-    >(app);
+    >;
+    type Runtime = {
+      index: number;
+      group: SimGroup;
+      scope: Scope.Closeable;
+      /** Starts the runtime, then runs its program. */
+      fiber: Fiber.Fiber<never, CreateTypewriterError | ProgramError>;
+      ready: Deferred.Deferred<Typewriter>;
+      /** Done once the runtime has shut down. */
+      down: Deferred.Deferred<void>;
+    };
+    /** Done with the runtime that accepts `execute` calls, until it shuts down. */
+    let up = yield* Deferred.make<Runtime>();
 
-    const drained = yield* Deferred.make<void>();
-    yield* typewriter.on("mutation", (event) => {
-      mutationEvents.push(event);
-      progressedAt = clock.currentTimeMillisUnsafe();
-      if (event.status !== "finalized" && event.status !== "rejected") return;
-      settlements++;
-      if (settlements === mutations + resubmissions) {
-        Deferred.doneUnsafe(drained, Effect.void);
+    const start = (index: number) =>
+      Effect.gen(function* () {
+        const group = scheduler.group();
+        const runtimeScope = yield* Scope.make();
+        const ready = yield* Deferred.make<Typewriter>();
+        const down = yield* Deferred.make<void>();
+        const upNow = up;
+        const runtime: Runtime = {
+          index,
+          group,
+          scope: runtimeScope,
+          ready,
+          down,
+          fiber: forkIn(
+            group,
+            Effect.gen(function* () {
+              const typewriter = yield* createTypewriterEffect<
+                AssessmentStorage,
+                AssessmentMutations,
+                "fifo" | "batch"
+              >(app).pipe(Scope.provide(runtimeScope));
+
+              yield* typewriter.on("mutation", (event) => {
+                mutationEvents.push(event);
+                progressedAt = clock.currentTimeMillisUnsafe();
+                const key = mutationKey(event.authorization);
+                if (event.status === "accepted") accepted.add(key);
+                if (
+                  event.status !== "finalized" &&
+                  event.status !== "rejected"
+                ) {
+                  return;
+                }
+                settle(key);
+              });
+              yield* typewriter.on("batch", (event) => {
+                batchEvents.push(event);
+              });
+              yield* typewriter.on("block", (event) => {
+                blockEvents.push(event);
+              });
+
+              progressedAt = clock.currentTimeMillisUnsafe();
+              yield* Deferred.succeed(ready, typewriter);
+              yield* Deferred.succeed(upNow, runtime);
+              return yield* typewriter.program;
+            }),
+          ),
+        };
+        runtime.fiber.addObserver((exit) => {
+          // A soft shutdown interrupts the runtime. Any other exit fails the run.
+          if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
+            Deferred.doneUnsafe(failed, exit);
+          }
+        });
+        return runtime;
+      });
+
+    /** Closes the runtime's scope, from inside its group, as its process would. */
+    const softShutdown = (runtime: Runtime) =>
+      Effect.gen(function* () {
+        const closed = yield* Deferred.make<void>();
+        forkIn(
+          runtime.group,
+          Effect.gen(function* () {
+            yield* Fiber.interrupt(runtime.fiber);
+            yield* Scope.close(runtime.scope, Exit.void);
+            yield* Deferred.succeed(closed, undefined);
+          }),
+        );
+        const done = yield* Deferred.await(closed).pipe(
+          Effect.timeoutOption(Duration.millis(SIM.softShutdownTimeoutMs)),
+        );
+        if (Option.isNone(done)) {
+          return yield* Effect.die(
+            `soft shutdown of runtime ${runtime.index} hung for ${SIM.softShutdownTimeoutMs}ms`,
+          );
+        }
+        if (scheduler.busy(runtime.group) || clock.sleeping(runtime.group)) {
+          return yield* Effect.die(
+            `soft shutdown of runtime ${runtime.index} left fibers running`,
+          );
+        }
+      });
+
+    /** Stops the runtime's fibers where they are. Its I/O in flight lands. */
+    const hardShutdown = (runtime: Runtime) =>
+      Effect.gen(function* () {
+        clock.crash(runtime.group);
+        yield* scheduler.crash(runtime.group);
+      });
+
+    const shutdowns = Effect.gen(function* () {
+      let runtime = yield* start(0);
+      yield* Deferred.await(accountsCreated);
+      for (const [i, shutdown] of SIM.generator.shutdowns.entries()) {
+        yield* Effect.sleep(Duration.millis(shutdown.afterMs));
+        if (Deferred.isDoneUnsafe(up)) up = yield* Deferred.make<Runtime>();
+        yield* logSim("shutting down runtime").pipe(
+          Effect.annotateLogs({
+            runtime: runtime.index,
+            kind: shutdown.kind,
+            ready: Deferred.isDoneUnsafe(runtime.ready),
+          }),
+        );
+        yield* shutdown.kind === "soft"
+          ? softShutdown(runtime)
+          : hardShutdown(runtime);
+        yield* Deferred.succeed(runtime.down, undefined);
+        yield* Effect.sleep(Duration.millis(shutdown.downtimeMs));
+        runtime = yield* start(i + 1);
+        yield* logSim("started runtime").pipe(
+          Effect.annotateLogs({ runtime: runtime.index }),
+        );
       }
-    });
-    yield* typewriter.on("batch", (event) => {
-      batchEvents.push(event);
-    });
-    yield* typewriter.on("block", (event) => {
-      blockEvents.push(event);
+      shutdownsDone = true;
+      checkDrained();
+      return runtime;
     });
 
-    yield* FiberSet.run(fibers, typewriter.program);
     yield* FiberSet.run(
       fibers,
       Effect.gen(function* () {
@@ -415,11 +604,91 @@ const program = Effect.gen(function* () {
       }).pipe(Effect.forever),
     );
 
-    /** Executes the mutation of `step` and checks the result is one of `want`. */
-    const submit = (step: Step, what: string, want: string[]) =>
+    /**
+     * Calls `execute` of `runtime`, from inside its group, as a request to its
+     * process would. `undefined` when a shutdown cuts it off.
+     */
+    const call = (
+      runtime: Runtime,
+      typewriter: Typewriter,
+      mutation: Step["mutation"] | ReturnType<typeof createAccount>,
+    ) =>
+      Effect.gen(function* () {
+        const result =
+          yield* Deferred.make<
+            Exit.Exit<
+              Effect.Success<ReturnType<Typewriter["execute"]>>,
+              Effect.Error<ReturnType<Typewriter["execute"]>>
+            >
+          >();
+        forkIn(
+          runtime.group,
+          Effect.exit(typewriter.execute(mutation)).pipe(
+            Effect.flatMap((exit) => Deferred.succeed(result, exit)),
+          ),
+        );
+        const exit = yield* Deferred.await(result).pipe(
+          Effect.raceFirst(
+            Deferred.await(runtime.down).pipe(Effect.as(undefined)),
+          ),
+        );
+        // A soft shutdown fails a waiting `execute`, which is a cut-off too.
+        if (
+          exit === undefined ||
+          (Exit.isFailure(exit) &&
+            Option.getOrUndefined(Cause.findErrorOption(exit.cause))?._tag ===
+              "TypewriterStoppedError")
+        ) {
+          return undefined;
+        }
+        return exit;
+      });
+
+    /** The runtime that is up, once it is. */
+    const runtimeUp = Effect.gen(function* () {
+      const runtime = yield* Deferred.await(up);
+      return { runtime, typewriter: yield* Deferred.await(runtime.ready) };
+    });
+
+    /** Records that a submission of `key` settled, or a shutdown cut it off. */
+    const settle = (key: string) => {
+      const count = (outstanding.get(key) ?? 0) - 1;
+      if (count > 0) outstanding.set(key, count);
+      else outstanding.delete(key);
+      checkDrained();
+    };
+
+    /**
+     * Records that a shutdown cut off a submission of `key`. A runtime still
+     * owes a mutation it accepted.
+     */
+    const cutOff = (key: string, resubmission: boolean) => {
+      // TODO(kyle) shutdowns: decide what a runtime owes a mutation it had
+      // received but not accepted. For now it is dropped, never resent.
+      if (!resubmission && accepted.has(key)) return;
+      if (!resubmission) dropped.add(key);
+      settle(key);
+    };
+
+    /**
+     * Executes the mutation of `step` on `runtime` and checks the result is
+     * one of `want`. `undefined` when a shutdown cuts it off.
+     */
+    const submit = (
+      { runtime, typewriter }: Effect.Success<typeof runtimeUp>,
+      step: Step,
+      what: "execute" | "resubmit",
+      want: string[],
+    ) =>
       Effect.gen(function* () {
         const { mutation } = step;
-        const exit = yield* Effect.exit(typewriter.execute(mutation));
+        const key = mutationKey(mutation.authorization);
+        send(key);
+        const exit = yield* call(runtime, typewriter, mutation);
+        if (exit === undefined) {
+          cutOff(key, what === "resubmit");
+          return undefined;
+        }
         const error = Exit.isFailure(exit)
           ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
           : undefined;
@@ -455,10 +724,15 @@ const program = Effect.gen(function* () {
             : Number.isFinite(expiresInS)
               ? [want, "AuthorizationExpired"]
               : [want];
+        // Wait for a runtime once, before either submission. While none is up,
+        // two waits would wake in a seeded order, and the resubmission could
+        // be queued first.
+        const up = yield* runtimeUp;
         // The first submission runs here, not on the scheduler, until it waits
         // on its result, so it is queued before the resubmission starts.
         const first = yield* Effect.forkChild(
           submit(
+            up,
             step,
             "execute",
             unlessExpired(shouldRevert ? fail : "success"),
@@ -467,13 +741,14 @@ const program = Effect.gen(function* () {
         );
         if (step.resubmit) {
           yield* submit(
+            up,
             step,
             "resubmit",
             unlessExpired(shouldRevert ? fail : "InvalidNonce"),
           );
         }
         const exit = yield* Fiber.join(first);
-        if (Exit.isSuccess(exit)) {
+        if (exit !== undefined && Exit.isSuccess(exit)) {
           results.set(
             mutationKey(mutation.authorization),
             exit.value.executionIndex,
@@ -493,6 +768,7 @@ const program = Effect.gen(function* () {
           params: mutation.params,
           authorization: mutation.authorization,
         });
+        send(mutationKey(mutation.authorization));
         const hash = yield* simChain.request({
           method: "eth_sendTransaction",
           params: [{ from: CLIENT, to: app.address, data, gas: ENQUEUE_GAS }],
@@ -514,12 +790,22 @@ const program = Effect.gen(function* () {
         });
       });
 
+    /** Done once every account exists, before the first shutdown. */
+    const accountsCreated = yield* Deferred.make<void>();
+
     const client = Effect.gen(function* () {
       for (const signer of signers) {
-        yield* typewriter
-          .execute(createAccount(manifest, signer))
-          .pipe(Effect.orDie);
+        const mutation = createAccount(manifest, signer);
+        send(mutationKey(mutation.authorization));
+        const { runtime, typewriter } = yield* runtimeUp;
+        const exit = yield* call(runtime, typewriter, mutation);
+        if (exit === undefined || Exit.isFailure(exit)) {
+          return yield* Effect.die(
+            `create account ${signer.accountID}: ${exit === undefined ? "cut off" : Cause.pretty(exit.cause)}`,
+          );
+        }
       }
+      yield* Deferred.succeed(accountsCreated, undefined);
 
       // Each step comes from its own client, so a step does not wait for the
       // one before it to settle.
@@ -535,14 +821,23 @@ const program = Effect.gen(function* () {
           step.via === "execute" ? execute(step) : yield* enqueue(step),
         );
       }
-
-      yield* Deferred.await(drained);
-      return typewriter;
+      clientDone = true;
+      checkDrained();
     });
 
-    return yield* Effect.raceFirst(
-      client,
-      FiberSet.join(fibers).pipe(Effect.andThen(Effect.never)),
+    const run = Effect.gen(function* () {
+      const [, runtime] = yield* Effect.all([client, shutdowns], {
+        concurrency: 2,
+      });
+      yield* Deferred.await(drained);
+      return yield* Deferred.await(runtime.ready);
+    });
+
+    return yield* run.pipe(
+      Effect.raceFirst(
+        FiberSet.join(fibers).pipe(Effect.andThen(Effect.never)),
+      ),
+      Effect.raceFirst(Deferred.await(failed)),
     );
   }).pipe(
     Scope.provide(scope),
@@ -582,8 +877,17 @@ const program = Effect.gen(function* () {
       );
     }
     if (next - progressedAt > SIM.stallTimeoutMs) {
+      const unsettled = [...outstanding.keys()].slice(0, 10).map((key) => {
+        const step = plan.find(
+          (step) => mutationKey(step.mutation.authorization) === key,
+        );
+        const statuses = mutationEvents
+          .filter((event) => mutationKey(event.authorization) === key)
+          .map((event) => event.status);
+        return `${step === undefined ? key : `step ${step.index} (${step.via})`}: ${statuses.join(" ") || "no events"}`;
+      });
       return yield* Effect.die(
-        `stalled for ${SIM.stallTimeoutMs}ms of virtual time`,
+        `stalled for ${SIM.stallTimeoutMs}ms of virtual time, with ${outstanding.size} mutations outstanding:\n${unsettled.join("\n")}`,
       );
     }
     clock.advanceTo(next);
@@ -609,11 +913,15 @@ const program = Effect.gen(function* () {
     blockEvents,
     typewriter,
     ordering: SIM.typewriter.ordering,
+    shutdowns: SIM.generator.shutdowns.length,
+    dropped,
   });
 
   yield* logSim("validated run").pipe(
     Effect.annotateLogs({
       mutations,
+      shutdowns: SIM.generator.shutdowns.length,
+      dropped: dropped.size,
       blocks: blockEvents.length,
       batches: batchEvents.length,
       reorgs,
