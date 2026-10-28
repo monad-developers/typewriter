@@ -58,10 +58,7 @@ export type Step = {
   /** Drawn from `SIM.generator.expirationsS`. See {@link signAtSubmission}. */
   expiresInS: number;
   signer: Signer;
-  /**
-   * Unsigned, with a `0x` signature, until {@link signAtSubmission} signs it,
-   * unless `expiresInS` is infinite.
-   */
+  /** Unsigned, with a `0x` signature, until {@link signAtSubmission} signs it. */
   mutation: Mutation<AppMutationName>;
 };
 
@@ -284,20 +281,20 @@ export function stepNonce(index: number): bigint {
 }
 
 /**
- * Signs the mutation of `step`, submitted at `nowMs`, when `expiresInS` is
- * finite. It expires `expiresInS` after the second of `nowMs`, in the whole
- * seconds of `block.timestamp`, or before genesis, so before every block,
- * when `expiresInS` is negative.
+ * Signs the mutation of `step`, submitted at `nowMs`. It expires
+ * `expiresInS` after the second of `nowMs`, in the whole seconds of
+ * `block.timestamp`. A negative `expiresInS` expires before genesis, so
+ * before every block, and an infinite one never expires.
  */
 export function signAtSubmission(
   manifest: TypewriterManifest<AssessmentMutations>,
   step: Step,
   nowMs: number,
 ): Mutation<AppMutationName> {
-  if (!Number.isFinite(step.expiresInS)) return step.mutation;
   const { name, params, authorization } = step.mutation;
-  const expiration =
-    step.expiresInS < 0
+  const expiration = !Number.isFinite(step.expiresInS)
+    ? 0
+    : step.expiresInS < 0
       ? SIM.chain.genesisTimestamp - 1
       : Math.floor(nowMs / 1000) + step.expiresInS;
   return authorize<AppMutationName>(manifest, step.signer, {
@@ -314,7 +311,6 @@ function below(random: Random.Random, length: number): number {
 
 /** Draws the plan of `SIM.generator.mutations` steps. */
 export function makePlan(
-  manifest: TypewriterManifest<AssessmentMutations>,
   signers: readonly Signer[],
   random: Random.Random,
 ): Step[] {
@@ -339,7 +335,6 @@ export function makePlan(
     const resubmit =
       random.nextDoubleUnsafe() < resubmitRate && via === "execute";
     const expiresInS = expirationsS[below(random, expirationsS.length)]!;
-    const mutation = { name, params, nonce: stepNonce(index) };
     return {
       index,
       delayMs,
@@ -347,9 +342,7 @@ export function makePlan(
       resubmit,
       expiresInS,
       signer,
-      mutation: Number.isFinite(expiresInS)
-        ? unsigned(signer, mutation)
-        : authorize(manifest, signer, mutation),
+      mutation: unsigned(signer, { name, params, nonce: stepNonce(index) }),
     };
   });
 }

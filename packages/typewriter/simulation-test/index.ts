@@ -302,11 +302,7 @@ const program = Effect.gen(function* () {
   const signers = SIM.generator.accounts.map((keyType, i) =>
     makeSigner(i, keyType),
   );
-  const plan = makePlan(
-    manifest,
-    signers,
-    yield* makeRandom(SIM.seed, "generator"),
-  );
+  const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
