@@ -27,7 +27,7 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 1677,
+      astId: 1858,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,
@@ -272,6 +272,81 @@ export const MUTATIONS = {
       {
         name: "value",
         type: "uint256",
+      },
+      {
+        name: "shouldRevert",
+        type: "bool",
+      },
+    ],
+  },
+  C: {
+    id: 2,
+    params: [
+      {
+        name: "slot",
+        type: "uint256",
+      },
+      {
+        name: "data",
+        type: "bytes",
+      },
+      {
+        name: "memo",
+        type: "string",
+      },
+      {
+        name: "shouldRevert",
+        type: "bool",
+      },
+    ],
+  },
+  D: {
+    id: 3,
+    params: [
+      {
+        name: "slot",
+        type: "uint256",
+      },
+      {
+        name: "to",
+        type: "address",
+      },
+      {
+        name: "delta",
+        type: "int64",
+      },
+      {
+        name: "tag",
+        type: "bytes32",
+      },
+      {
+        name: "small",
+        type: "uint8",
+      },
+      {
+        name: "window",
+        type: "uint40",
+      },
+      {
+        name: "shouldRevert",
+        type: "bool",
+      },
+    ],
+  },
+  E: {
+    id: 4,
+    params: [
+      {
+        name: "slot",
+        type: "uint256",
+      },
+      {
+        name: "values",
+        type: "uint256[]",
+      },
+      {
+        name: "pair",
+        type: "address[2]",
       },
       {
         name: "shouldRevert",

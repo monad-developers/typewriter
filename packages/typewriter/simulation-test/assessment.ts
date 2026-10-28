@@ -30,29 +30,21 @@ import type { Chain } from "./chain";
 import { SIM } from "./index";
 import {
   drawMalformation,
+  expectMalformed,
   type Malformation,
-  type Submission,
-  submissionAuthorization,
 } from "./malformations";
+import type { Expected } from "./run";
+import { TEMPLATES, type Template } from "./templates";
 
 /** The mutations of `Assessment.sol`, without the built-in ones. */
-export type AppMutationName = "A" | "B";
+export type AppMutationName = "A" | "B" | "C" | "D" | "E";
 
-type Mutation<
+export type Manifest = TypewriterManifest<AssessmentMutations>;
+
+export type Mutation<
   name extends keyof AssessmentMutations & string = keyof AssessmentMutations &
     string,
-> = AuthorizedMutation<TypewriterManifest<AssessmentMutations>, name>;
-
-/** Mutations write slots in [0, SLOT_COUNT), so later writes overwrite earlier ones. */
-const SLOT_COUNT = 16;
-
-/** The key of a mutation in the events. Every mutation of a run has its own. */
-export function mutationKey(authorization: {
-  accountID: Hex.Hex;
-  nonce: bigint;
-}): string {
-  return `${authorization.accountID}:${authorization.nonce}`;
-}
+> = AuthorizedMutation<Manifest, name>;
 
 /** One entry of the plan. */
 export type Step = {
@@ -61,24 +53,24 @@ export type Step = {
   via: "execute" | "enqueue";
   /** Executes the mutation again as soon as it is received. The second `execute` fails. */
   resubmit: boolean;
-  /** Drawn from `SIM.generator.expirationsS`. See {@link signAtSubmission}. */
+  /** Drawn from `SIM.generator.expirationsS`. See {@link withExpiration}. */
   expiresInS: number;
   signer: Signer;
-  /** Unsigned, with a `0x` signature, until {@link signAtSubmission} signs it. */
+  /** Unsigned, with a `0x` signature, until it is submitted. */
   mutation: Mutation<AppMutationName>;
   /** Submits a malformed version of `mutation` instead. */
   malformation: Malformation | undefined;
-  /** What the client submitted for `malformation`. */
-  submission: Submission | undefined;
 };
 
-/** The key of the mutation events of `step`, which a malformation can change. */
-export function stepKey(step: Step): string {
-  return mutationKey(
-    step.submission === undefined
-      ? step.mutation.authorization
-      : submissionAuthorization(step.submission),
-  );
+export function stepLabel({
+  index,
+  via,
+  mutation,
+  malformation,
+}: Step): string {
+  return malformation === undefined
+    ? `step ${index} (${via} ${mutation.name})`
+    : `step ${index} (${via} ${mutation.name}, ${malformation.name})`;
 }
 
 /** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
@@ -247,51 +239,36 @@ export function makeSigner(index: number, keyType: KeyType): Signer {
   }
 }
 
-type Unsigned<name extends keyof AssessmentMutations & string> = Pick<
-  Mutation<name>,
-  "name" | "params"
-> & { nonce: bigint; expiration?: bigint };
-
-function unsignedMutation<
-  const name extends keyof AssessmentMutations & string,
->(signer: Signer, mutation: Unsigned<name>) {
-  return {
-    expiration: 0n,
-    ...mutation,
-    accountID: signer.accountID,
-    credentialID: 0n,
-  };
-}
-
-/** The mutation with a `0x` signature, to sign later. */
 function unsigned<const name extends keyof AssessmentMutations & string>(
   signer: Signer,
-  mutation: Unsigned<name>,
+  mutation: Pick<Mutation<name>, "name" | "params"> & { nonce: bigint },
 ): Mutation<name> {
-  return authorizeMutation(unsignedMutation(signer, mutation), "0x");
-}
-
-function authorize<const name extends keyof AssessmentMutations & string>(
-  manifest: TypewriterManifest<AssessmentMutations>,
-  signer: Signer,
-  mutation: Unsigned<name>,
-): Mutation<name> {
-  const unsigned = unsignedMutation(signer, mutation);
   return authorizeMutation(
-    unsigned,
-    signer.sign(getAuthorizationPayload(manifest, unsigned)),
+    {
+      ...mutation,
+      accountID: signer.accountID,
+      credentialID: 0n,
+      expiration: 0n,
+    },
+    "0x",
   );
 }
 
-export function createAccount(
-  manifest: TypewriterManifest<AssessmentMutations>,
-  signer: Signer,
-): Mutation<"CreateAccount"> {
-  return authorize(manifest, signer, {
+export function createAccount(manifest: Manifest, signer: Signer) {
+  const mutation = unsigned(signer, {
     name: "CreateAccount",
     params: { keyType: signer.keyType, publicKey: signer.publicKey },
     nonce: 0n,
   });
+  return authorizeMutation(
+    { ...mutation, ...mutation.authorization },
+    signer.sign(
+      getAuthorizationPayload(manifest, {
+        ...mutation,
+        ...mutation.authorization,
+      }),
+    ),
+  );
 }
 
 /** The nonce of step `index`. Each step has its own lane, so arrival order never decides a nonce check. */
@@ -300,35 +277,80 @@ export function stepNonce(index: number): bigint {
 }
 
 /**
- * Signs the mutation of `step`, submitted at `nowMs`. It expires
- * `expiresInS` after the second of `nowMs`, in the whole seconds of
+ * The mutation of `step`, submitted at `nowMs`, with its expiration. It
+ * expires `expiresInS` after the second of `nowMs`, in the whole seconds of
  * `block.timestamp`. A negative `expiresInS` expires before genesis, so
  * before every block, and an infinite one never expires.
  */
-export function signAtSubmission(
-  manifest: TypewriterManifest<AssessmentMutations>,
+export function withExpiration(
   step: Step,
   nowMs: number,
 ): Mutation<AppMutationName> {
-  const { name, params, authorization } = step.mutation;
-  const expiration = !Number.isFinite(step.expiresInS)
+  const { expiresInS, mutation } = step;
+  const expiration = !Number.isFinite(expiresInS)
     ? 0
-    : step.expiresInS < 0
+    : expiresInS < 0
       ? SIM.chain.genesisTimestamp - 1
-      : Math.floor(nowMs / 1000) + step.expiresInS;
-  return authorize<AppMutationName>(manifest, step.signer, {
-    name,
-    params,
-    nonce: authorization.nonce,
-    expiration: BigInt(expiration),
-  });
+      : Math.floor(nowMs / 1000) + expiresInS;
+  return {
+    ...mutation,
+    authorization: {
+      ...mutation.authorization,
+      expiration: BigInt(expiration),
+    },
+  };
+}
+
+/** How `step` must end. */
+export function expect(step: Step): Expected {
+  const { mutation, malformation, expiresInS } = step;
+  if (malformation !== undefined) return expectMalformed(malformation);
+  if (expiresInS < 0) {
+    return {
+      executes: false,
+      errors: ["AuthorizationExpired"],
+      resubmissionErrors: ["AuthorizationExpired"],
+      events: true,
+    };
+  }
+  // A finite authorization can expire before the runtime simulates it.
+  const expired = Number.isFinite(expiresInS) ? ["AuthorizationExpired"] : [];
+  const revert = `${mutation.name}Error`;
+  return mutation.params.shouldRevert
+    ? {
+        executes: false,
+        errors: [revert, ...expired],
+        resubmissionErrors: [revert, ...expired],
+        events: true,
+      }
+    : {
+        executes: true,
+        errors: expired,
+        // The first submission used the nonce.
+        resubmissionErrors: ["InvalidNonce", ...expired],
+        events: true,
+      };
 }
 
 function below(random: Random.Random, length: number): number {
   return Math.floor(random.nextDoubleUnsafe() * length);
 }
 
-/** Draws the plan of `SIM.generator.mutations` steps. */
+/** The well-formed mutation of `template`, unsigned. */
+function fromTemplate(
+  signer: Signer,
+  template: Template,
+  shouldRevert: boolean,
+  index: number,
+): Mutation<AppMutationName> {
+  return unsigned<AppMutationName>(signer, {
+    name: template.name,
+    params: { ...template.params, shouldRevert },
+    nonce: stepNonce(index),
+  } as Pick<Mutation<AppMutationName>, "name" | "params"> & { nonce: bigint });
+}
+
+/** Draws the plan of `SIM.generator.mutations` steps from {@link TEMPLATES}. */
 export function makePlan(
   signers: readonly Signer[],
   random: Random.Random,
@@ -344,55 +366,35 @@ export function makePlan(
   } = SIM.generator;
   const plan = Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
-    const name: AppMutationName = random.nextDoubleUnsafe() < 0.5 ? "A" : "B";
-    const via = random.nextDoubleUnsafe() < enqueueRate ? "enqueue" : "execute";
     const signer = signers[below(random, signers.length)]!;
-    const params = {
-      slot: BigInt(below(random, SLOT_COUNT)),
-      value: BigInt(below(random, 1_000_000)),
-      shouldRevert: random.nextDoubleUnsafe() < revertRate,
+    const template = TEMPLATES[below(random, TEMPLATES.length)]!;
+    if (random.nextDoubleUnsafe() < malformedRate) {
+      // A malformation decides how its step is submitted and how it ends, so
+      // the mutation it starts from neither reverts nor expires.
+      const malformation = drawMalformation(random, template.name);
+      return {
+        index,
+        delayMs,
+        via: malformation.via,
+        resubmit: false,
+        expiresInS: Infinity,
+        signer,
+        mutation: fromTemplate(signer, template, false, index),
+        malformation,
+      };
+    }
+    const shouldRevert = random.nextDoubleUnsafe() < revertRate;
+    const via = random.nextDoubleUnsafe() < enqueueRate ? "enqueue" : "execute";
+    return {
+      index,
+      delayMs,
+      via,
+      resubmit: via === "execute" && random.nextDoubleUnsafe() < resubmitRate,
+      expiresInS: expirationsS[below(random, expirationsS.length)]!,
+      signer,
+      mutation: fromTemplate(signer, template, shouldRevert, index),
+      malformation: undefined,
     };
-    const resubmit =
-      random.nextDoubleUnsafe() < resubmitRate && via === "execute";
-    const expiresInS = expirationsS[below(random, expirationsS.length)]!;
-    const malformation =
-      random.nextDoubleUnsafe() < malformedRate
-        ? drawMalformation(random)
-        : undefined;
-    const mutation = unsigned(signer, {
-      name,
-      params,
-      nonce: stepNonce(index),
-    });
-    // A malformation decides how the step is submitted and how it fails, so
-    // it is the well-formed mutation it starts from that neither reverts nor
-    // expires.
-    return malformation === undefined
-      ? {
-          index,
-          delayMs,
-          via,
-          resubmit,
-          expiresInS,
-          signer,
-          mutation,
-          malformation,
-          submission: undefined,
-        }
-      : {
-          index,
-          delayMs,
-          via: malformation.via,
-          resubmit: false,
-          expiresInS: Infinity,
-          signer,
-          mutation: {
-            ...mutation,
-            params: { ...mutation.params, shouldRevert: false },
-          },
-          malformation,
-          submission: undefined,
-        };
   });
 
   // A malformed enqueue may have no mutation event, so nothing shows the
@@ -408,55 +410,9 @@ export function makePlan(
       resubmit: false,
       expiresInS: Infinity,
       signer,
-      mutation: unsigned(signer, {
-        name: "A",
-        params: { slot: 0n, value: BigInt(index), shouldRevert: false },
-        nonce: stepNonce(index),
-      }),
+      mutation: fromTemplate(signer, TEMPLATES[0]!, false, index),
       malformation: undefined,
-      submission: undefined,
     });
   }
   return plan;
-}
-
-/** Replays `order`, the steps that execute in execution order, as `Assessment.sol` executes them. */
-export function replay(order: readonly Step[]): {
-  accumulator: Hex.Hex;
-  slots: Map<bigint, Hex.Hex>;
-} {
-  let accumulator: Hex.Hex = Hex.padLeft("0x0", 32);
-  const slots = new Map<bigint, Hex.Hex>();
-
-  for (const { mutation, signer } of order) {
-    const { slot, value } = mutation.params;
-    slots.set(
-      slot,
-      mutation.name === "A"
-        ? Hex.fromNumber(value, { size: 32 })
-        : Hash.keccak256(
-            AbiParameters.encode(AbiParameters.from(["uint256"]), [value]),
-          ),
-    );
-    accumulator = Hash.keccak256(
-      AbiParameters.encode(
-        AbiParameters.from([
-          "bytes32",
-          "uint8",
-          "bytes32",
-          "uint256",
-          "uint256",
-        ]),
-        [
-          accumulator,
-          mutation.name === "A" ? 0 : 1,
-          signer.accountID,
-          slot,
-          value,
-        ],
-      ),
-    );
-  }
-
-  return { accumulator, slots };
 }
