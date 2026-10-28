@@ -34,25 +34,26 @@ export function makeSimTransport({
 
   // Anvil answers `eth_sendRawTransactionSync` once the block is mined, and the
   // simulation mines only between requests, so it sends and then polls. Like a
-  // node, it does not send a transaction it already has.
+  // node, it does not send a transaction it already has. Anvil's JSON-RPC
+  // errors reach the caller, as a node's do.
   const send = (request: RpcRequest) =>
     request.method !== "eth_sendRawTransactionSync"
-      ? chain.request(request)
+      ? chain.forward(request)
       : Effect.gen(function* () {
           const [raw] = request.params;
           const hash = Hash.keccak256(raw);
-          const known = yield* chain.request({
+          const known = yield* chain.forward({
             method: "eth_getTransactionByHash",
             params: [hash],
           });
           if (known === null) {
-            yield* chain.request({
+            yield* chain.forward({
               method: "eth_sendRawTransaction",
               params: [raw],
             });
           }
           while (true) {
-            const receipt = yield* chain.request({
+            const receipt = yield* chain.forward({
               method: "eth_getTransactionReceipt",
               params: [hash],
             });

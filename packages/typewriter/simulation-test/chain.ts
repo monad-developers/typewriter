@@ -20,6 +20,13 @@ export type Chain = {
   request: <request extends RpcRequest>(
     request: request,
   ) => Effect.Effect<RpcResult<request["method"]>>;
+  /**
+   * Sends `request` like `request`, but fails with the node's JSON-RPC error,
+   * as a transport does, so that the caller can handle it.
+   */
+  forward: <request extends RpcRequest>(
+    request: request,
+  ) => Effect.Effect<RpcResult<request["method"]>, RpcResponseError>;
   /** Mines one block at `timestamp`, in seconds. */
   mine: (timestamp: number) => Effect.Effect<void>;
   /**
@@ -84,18 +91,27 @@ export function makeChain(): Effect.Effect<
     const transport = makeHttpTransport(`http://127.0.0.1:${port}`);
     const lock = yield* Semaphore.make(1);
 
-    const send = (request: RpcRequest) =>
+    const sendOrFail = (request: RpcRequest) =>
       transport.request(request).pipe(
         Effect.retry({
           schedule: Schedule.exponential("10 millis"),
           times: 5,
           while: (error) => !(error instanceof RpcResponseError),
         }),
-        Effect.orDie,
-      );
+        Effect.catchIf(
+          (error) => !(error instanceof RpcResponseError),
+          Effect.die,
+        ),
+      ) as Effect.Effect<unknown, RpcResponseError>;
+
+    const send = (request: RpcRequest) =>
+      sendOrFail(request).pipe(Effect.orDie);
 
     const request = ((request: RpcRequest) =>
       lock.withPermits(1)(send(request))) as Chain["request"];
+
+    const forward = ((request: RpcRequest) =>
+      lock.withPermits(1)(sendOrFail(request))) as Chain["forward"];
 
     const mine = (timestamp: number) =>
       lock
@@ -159,6 +175,6 @@ export function makeChain(): Effect.Effect<
         }),
       );
 
-    return { request, mine, reorg };
+    return { request, forward, mine, reorg };
   });
 }
