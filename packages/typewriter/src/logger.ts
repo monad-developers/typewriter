@@ -50,12 +50,13 @@ const logFormat = readEnv(
 );
 
 /**
- * An error that typewriter raises on purpose: an Effect tagged error. Its
- * message says what went wrong, so its stack, which points into typewriter, is
- * noise. Any other error is a bug, and keeps its stack.
+ * An error that typewriter raises on purpose: an Effect tagged error that it
+ * failed with. Its message says what went wrong, so its stack, which points
+ * into typewriter, is noise. Any other error, or a defect, is a bug, and keeps
+ * its stack.
  */
-function isKnownError(error: Error): boolean {
-  return Predicate.isString((error as { _tag?: unknown })._tag);
+function isKnownError({ error, defect }: LogError): boolean {
+  return !defect && Predicate.isString((error as { _tag?: unknown })._tag);
 }
 
 /** An error's `cause`, with an Effect `Cause` reduced to its first error. */
@@ -63,16 +64,25 @@ function errorCause(error: Error): unknown {
   return Cause.isCause(error.cause) ? Cause.squash(error.cause) : error.cause;
 }
 
+/** An error a log is about, and whether it reached the log as a defect. */
+type LogError = { error: unknown; defect: boolean };
+
 /** The errors a log is about, from its message and its cause. */
 function logErrors(
   message: readonly unknown[],
   cause: Cause.Cause<unknown>,
-): unknown[] {
-  const errors: unknown[] = message.filter((m) => m instanceof Error);
+): LogError[] {
+  const errors: LogError[] = message
+    .filter((m) => m instanceof Error)
+    .map((error) => ({ error, defect: false }));
   for (const reason of cause.reasons) {
-    if (Cause.isFailReason(reason)) errors.push(reason.error);
-    else if (Cause.isDieReason(reason)) errors.push(reason.defect);
-    else errors.push(new Error("Interrupted"));
+    if (Cause.isFailReason(reason)) {
+      errors.push({ error: reason.error, defect: false });
+    } else if (Cause.isDieReason(reason)) {
+      errors.push({ error: reason.defect, defect: true });
+    } else {
+      errors.push({ error: "Interrupted", defect: false });
+    }
   }
   return errors;
 }
@@ -143,20 +153,20 @@ function formatValue(value: unknown): string {
  * unknown top-level error. The stack of a cause points into the library that
  * threw it, so it is left out.
  */
-function formatErrorLines(error: unknown): string[] {
+function formatErrorLines(error: LogError): string[] {
   const lines: string[] = [];
-  let current: unknown = error;
+  let current: unknown = error.error;
   for (let depth = 0; current !== undefined && depth < 10; depth++) {
     const prefix = depth === 0 ? "" : "  cause: ";
     if (!(current instanceof Error)) {
       lines.push(`${prefix}${formatValue(current)}`);
       break;
     }
-    if (depth === 0 && !isKnownError(current) && current.stack) {
-      lines.push(current.stack);
-    } else {
-      const text = `${current.name}: ${current.message}`;
-      lines.push(`${prefix}${text.replaceAll("\n", "\n    ")}`);
+    const text = `${current.name}: ${current.message}`;
+    lines.push(`${prefix}${text.replaceAll("\n", "\n    ")}`);
+    // The stack's own header can predate the message, as a tagged error's does.
+    if (depth === 0 && !isKnownError(error) && current.stack) {
+      lines.push(...current.stack.split("\n").filter((l) => /^\s+at /.test(l)));
     }
     current = errorCause(current);
   }
@@ -177,7 +187,7 @@ function formatPretty(options: Logger.Options<unknown>): string {
     if (key === "duration" && Predicate.isNumber(value)) {
       duration = ` ${gray(`(${formatDuration(value)})`)}`;
     } else if (key === "error") {
-      errors.unshift(value);
+      errors.unshift({ error: value, defect: false });
     } else {
       keys += ` ${key}=${formatValue(value)}`;
     }
@@ -204,7 +214,7 @@ function stringify(value: unknown): string {
  * `name`, `message`, the error's own fields, the serialized `cause`, and the
  * stack of an unknown top-level error.
  */
-function serializeError(error: unknown, depth = 0): unknown {
+function serializeError(error: unknown, known: boolean, depth = 0): unknown {
   if (!(error instanceof Error)) return error;
   const serialized: {
     name: string;
@@ -220,12 +230,12 @@ function serializeError(error: unknown, depth = 0): unknown {
     if (key === "_tag" || key === "cause" || key === "message") continue;
     serialized[key] = value;
   }
-  if (depth === 0 && !isKnownError(error) && error.stack) {
+  if (depth === 0 && !known && error.stack) {
     serialized.stack = error.stack;
   }
   const cause = errorCause(error);
   if (cause !== undefined && depth < 10) {
-    serialized.cause = serializeError(cause, depth + 1);
+    serialized.cause = serializeError(cause, known, depth + 1);
   }
   return serialized;
 }
@@ -250,11 +260,14 @@ function formatJson(options: Logger.Options<unknown>): string {
   };
   const errors = logErrors(message, options.cause);
   for (const [key, value] of Object.entries(annotations)) {
-    if (key === "error") errors.unshift(value);
+    if (key === "error") errors.unshift({ error: value, defect: false });
     else if (!JSON_RESERVED_KEYS.has(key)) log[key] = value;
   }
-  if (errors.length === 1) log.error = serializeError(errors[0]);
-  else if (errors.length > 1) log.error = errors.map((e) => serializeError(e));
+  const serialized = errors.map((e) =>
+    serializeError(e.error, isKnownError(e)),
+  );
+  if (serialized.length === 1) log.error = serialized[0];
+  else if (serialized.length > 1) log.error = serialized;
   return stringify(log);
 }
 
