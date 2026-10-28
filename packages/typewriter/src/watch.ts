@@ -84,12 +84,17 @@ export type Watch = {
   program: Effect.Effect<never, WatchError>;
 };
 
+/**
+ * Appends `block` and keeps the last `maxChainDepth + 1` blocks: a reorg can
+ * replace the newest `maxChainDepth`, and the block before them is the common
+ * ancestor that `reconcileReorg` needs to find.
+ */
 const appendTip = (
   chain: readonly LocalBlock[],
   block: LocalBlock,
   maxChainDepth: number,
 ): readonly LocalBlock[] => {
-  const trimmed = chain.length >= maxChainDepth ? chain.slice(1) : chain;
+  const trimmed = chain.length > maxChainDepth ? chain.slice(1) : chain;
   return [...trimmed, block];
 };
 
@@ -216,7 +221,7 @@ export function makeWatch(
         return yield* getLocalBlockWithLogs(block);
       });
 
-    // oldest first; tip is last. capped at maxChainDepth.
+    // oldest first; tip is last. capped at maxChainDepth + 1.
     let localChain: readonly LocalBlock[] = [
       yield* getBlockByHash(config.fromBlock),
     ];
