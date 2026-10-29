@@ -1,4 +1,4 @@
-import { AbiFunction, AbiParameters, Address, Bytes, Hex } from "ox";
+import { AbiFunction, AbiParameters, Address, Bytes, type Hex } from "ox";
 import {
   AUTHORIZATION_ABI_PARAMS,
   TYPEWRITER_ABI,
@@ -24,6 +24,35 @@ function calldataStructParams<
   return [{ type: "tuple", components: params }] as const;
 }
 
+/** An ABI type: an array of `item`s, a tuple, or a value type like `uint8`. */
+type AbiType =
+  | {
+      kind: "array";
+      item: AbiParameters.Parameter;
+      /** Unset for a dynamic array. */
+      length: number | undefined;
+    }
+  | { kind: "tuple"; components: readonly AbiParameters.Parameter[] }
+  | { kind: "value"; type: string };
+
+function abiType(param: AbiParameters.Parameter): AbiType {
+  const array = /^(.*)\[(\d*)\]$/.exec(param.type);
+  if (array !== null) {
+    return {
+      kind: "array",
+      item: { ...param, type: array[1]! },
+      length: array[2] === "" ? undefined : Number(array[2]),
+    };
+  }
+  if (param.type === "tuple") {
+    const { components } = param as {
+      components: readonly AbiParameters.Parameter[];
+    };
+    return { kind: "tuple", components };
+  }
+  return { kind: "value", type: param.type };
+}
+
 /**
  * Throws unless `value` is what `ox` encodes for `param` as given. `ox` checks
  * integers and `bool`s itself, but encodes a missing or non-string `string`
@@ -34,56 +63,56 @@ function assertEncodable(
   value: unknown,
   path: string,
 ): void {
-  const array = /^(.*)\[(\d*)\]$/.exec(param.type);
-  if (array !== null) {
-    const [, item, length] = array;
+  const type = abiType(param);
+  if (type.kind === "array") {
     if (
       !Array.isArray(value) ||
-      (length !== "" && value.length !== Number(length))
+      (type.length !== undefined && value.length !== type.length)
     ) {
-      throw new Error(`${path} must be an array of ${length || "any"} ${item}`);
+      throw new Error(
+        `${path} must be an array of ${type.length ?? "any"} ${type.item.type}`,
+      );
     }
     for (const [i, entry] of value.entries()) {
-      assertEncodable({ ...param, type: item! }, entry, `${path}[${i}]`);
+      assertEncodable(type.item, entry, `${path}[${i}]`);
     }
-    return;
-  }
-  if (param.type === "tuple") {
+  } else if (type.kind === "tuple") {
     if (typeof value !== "object" || value === null) {
       throw new Error(`${path} must be an object`);
     }
-    const { components } = param as {
-      components: readonly AbiParameters.Parameter[];
-    };
-    for (const [i, component] of components.entries()) {
+    for (const [i, component] of type.components.entries()) {
       const entry = Array.isArray(value)
         ? value[i]
         : (value as Record<string, unknown>)[component.name ?? ""];
       assertEncodable(component, entry, `${path}.${component.name ?? i}`);
     }
-    return;
+  } else {
+    const expected = unencodableValue(type.type, value);
+    if (expected !== undefined) throw new Error(`${path} must be ${expected}`);
   }
-  if (param.type === "string" && typeof value !== "string") {
-    throw new Error(`${path} must be a string`);
+}
+
+/** What a `type` value must be, if `value` isn't one `ox` encodes as given. */
+function unencodableValue(type: string, value: unknown): string | undefined {
+  if (type === "string") {
+    return typeof value === "string" ? undefined : "a string";
   }
-  if (
-    param.type === "address" &&
-    !Address.validate(value as string, { strict: false })
-  ) {
-    throw new Error(`${path} must be an address`);
+  if (type === "address") {
+    return typeof value === "string" &&
+      Address.validate(value, { strict: false })
+      ? undefined
+      : "an address";
   }
-  const bytes = /^bytes(\d*)$/.exec(param.type);
+  const bytes = /^bytes(\d*)$/.exec(type);
   if (bytes !== null) {
     const size = bytes[1] === "" ? undefined : Number(bytes[1]);
-    if (
-      typeof value !== "string" ||
-      !Hex.validate(value, { strict: true }) ||
-      value.length % 2 !== 0 ||
-      (size !== undefined && Hex.size(value) !== size)
-    ) {
-      throw new Error(`${path} must be ${size ?? "even-length"} hex bytes`);
-    }
+    return typeof value === "string" &&
+      /^0x(?:[0-9a-fA-F]{2})*$/.test(value) &&
+      (size === undefined || value.length === 2 + 2 * size)
+      ? undefined
+      : `${size ?? "even-length"} hex bytes`;
   }
+  return undefined;
 }
 
 /**
@@ -108,52 +137,37 @@ function assertCleanTuple(
   let head = start;
   for (const component of components) {
     if (isDynamic(component)) {
-      assertCleanDynamic(component, data, start + Number(word(data, head)));
+      assertCleanAt(component, data, start + Number(word(data, head)));
       head += 32;
     } else {
-      assertCleanStatic(component, data, head);
+      assertCleanAt(component, data, head);
       head += staticSize(component);
     }
   }
 }
 
-function assertCleanDynamic(
+/** Checks `param` encoded at `position`: its tail if dynamic, else in place. */
+function assertCleanAt(
   param: AbiParameters.Parameter,
   data: Bytes.Bytes,
   position: number,
 ): void {
-  const array = /^(.*)\[(\d*)\]$/.exec(param.type);
-  if (array !== null) {
-    const [, item, length] = array;
-    const items = Array<AbiParameters.Parameter>(
-      length === "" ? Number(word(data, position)) : Number(length),
-    ).fill({ ...param, type: item! });
-    assertCleanTuple(items, data, length === "" ? position + 32 : position);
-  } else if (param.type === "tuple") {
-    assertCleanTuple(componentsOf(param), data, position);
-  }
-  // `bytes` and `string` have no value type to check.
-}
-
-function assertCleanStatic(
-  param: AbiParameters.Parameter,
-  data: Bytes.Bytes,
-  position: number,
-): void {
-  const array = /^(.*)\[(\d+)\]$/.exec(param.type);
-  if (array !== null) {
-    const item = { ...param, type: array[1]! };
-    for (let i = 0; i < Number(array[2]); i++) {
-      assertCleanStatic(item, data, position + i * staticSize(item));
+  const type = abiType(param);
+  if (type.kind === "array") {
+    // A dynamic array's length precedes its items.
+    const length = type.length ?? Number(word(data, position));
+    const items = Array<AbiParameters.Parameter>(length).fill(type.item);
+    assertCleanTuple(
+      items,
+      data,
+      type.length === undefined ? position + 32 : position,
+    );
+  } else if (type.kind === "tuple") {
+    assertCleanTuple(type.components, data, position);
+  } else if (type.type !== "bytes" && type.type !== "string") {
+    if (!isClean(type.type, word(data, position))) {
+      throw new Error(`dirty ${type.type} at byte ${position}`);
     }
-    return;
-  }
-  if (param.type === "tuple") {
-    assertCleanTuple(componentsOf(param), data, position);
-    return;
-  }
-  if (!isClean(param.type, word(data, position))) {
-    throw new Error(`dirty ${param.type} at byte ${position}`);
   }
 }
 
@@ -176,34 +190,25 @@ function isClean(type: string, value: bigint): boolean {
 }
 
 function isDynamic(param: AbiParameters.Parameter): boolean {
-  if (param.type === "bytes" || param.type === "string") return true;
-  const array = /^(.*)\[(\d*)\]$/.exec(param.type);
-  if (array !== null) {
-    return array[2] === "" || isDynamic({ ...param, type: array[1]! });
+  const type = abiType(param);
+  if (type.kind === "array") {
+    return type.length === undefined || isDynamic(type.item);
   }
-  return param.type === "tuple" && componentsOf(param).some(isDynamic);
+  if (type.kind === "tuple") return type.components.some(isDynamic);
+  return type.type === "bytes" || type.type === "string";
 }
 
 /** The size of a static `param` in the head of its tuple. */
 function staticSize(param: AbiParameters.Parameter): number {
-  const array = /^(.*)\[(\d+)\]$/.exec(param.type);
-  if (array !== null) {
-    return Number(array[2]) * staticSize({ ...param, type: array[1]! });
-  }
-  if (param.type === "tuple") {
-    return componentsOf(param).reduce(
+  const type = abiType(param);
+  if (type.kind === "array") return type.length! * staticSize(type.item);
+  if (type.kind === "tuple") {
+    return type.components.reduce(
       (size, component) => size + staticSize(component),
       0,
     );
   }
   return 32;
-}
-
-function componentsOf(
-  param: AbiParameters.Parameter,
-): readonly AbiParameters.Parameter[] {
-  return (param as { components: readonly AbiParameters.Parameter[] })
-    .components;
 }
 
 function word(data: Bytes.Bytes, position: number): bigint {
