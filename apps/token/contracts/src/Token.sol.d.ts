@@ -28,12 +28,12 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_uint256";
       },
       {
-        readonly astId: 42186;
+        readonly astId: 42087;
         readonly contract: "src/Token.sol:Token";
         readonly label: "state";
         readonly offset: 0;
         readonly slot: "3";
-        readonly type: "t_struct(State)42175_storage";
+        readonly type: "t_struct(State)42076_storage";
       },
     ];
     readonly types: {
@@ -194,13 +194,13 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(State)42175_storage": {
+      readonly "t_struct(State)42076_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 42170;
+            readonly astId: 42071;
             readonly contract: "src/Token.sol:Token";
             readonly label: "totalSupply";
             readonly offset: 0;
@@ -208,7 +208,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint256";
           },
           {
-            readonly astId: 42174;
+            readonly astId: 42075;
             readonly contract: "src/Token.sol:Token";
             readonly label: "balances";
             readonly offset: 0;
