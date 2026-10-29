@@ -116,7 +116,7 @@ const typewriter = await createTypewriter(Token, {
 });
 ```
 
-Dev mode is ephemeral: each start deploys to a new chain, so typewriter drops the deployment's database schema on startup. Anvil stops on `typewriter.close()`, and when the process exits. It needs `anvil` from Foundry on the `PATH`.
+Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, so several dev processes can share one database. `typewriter.close()` drops the schema and stops Anvil. Anvil also stops when the process exits, but a process that ends without `close()` leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
 
 #### Sequencing
 

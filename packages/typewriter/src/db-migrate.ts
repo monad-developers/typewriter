@@ -3,7 +3,6 @@ import { sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import { Data, Effect } from "effect";
 import { type Address, Hash, Hex } from "ox";
-import { deploymentKey } from "./client";
 import type { Db, DbError } from "./db";
 import { selectMaxExecutionIndex } from "./db-query";
 import {
@@ -18,12 +17,12 @@ export class MigrationError extends Data.TaggedError("MigrationError")<{
   cause?: unknown;
 }> {}
 
-export function deploymentLockKey(
-  chainId: number,
-  address: Address.Address,
-): bigint {
-  const name = `typewriter_${deploymentKey(chainId, address)}`;
-  return BigInt.asIntN(64, Hex.toBigInt(Hash.keccak256(Hex.fromString(name))));
+/** The advisory lock that one runtime holds for the deployment's schema. */
+export function deploymentLockKey(schemaName: string): bigint {
+  return BigInt.asIntN(
+    64,
+    Hex.toBigInt(Hash.keccak256(Hex.fromString(schemaName))),
+  );
 }
 
 function createTablesStatements(
@@ -41,10 +40,9 @@ function createTablesStatements(
 }
 
 /**
- * Drop the deployment schema. `dev` mode does this on startup, because it
- * deploys to a new chain each run, at the same address.
+ * Drop a `dev` process's schema when it closes.
  *
- * @dev The caller must hold `db.lock(deploymentLockKey(...))`.
+ * @dev The caller must hold `db.lock(deploymentLockKey(schemaName))`.
  */
 export function dropSchema(
   db: Db,

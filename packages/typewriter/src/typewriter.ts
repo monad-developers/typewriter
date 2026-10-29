@@ -739,12 +739,20 @@ export function createTypewriterEffect<
     }
 
     const lockLost = yield* db.lock(
-      deploymentLockKey(app.chainId, app.address),
+      deploymentLockKey(app.schemaName),
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
-    // In `dev` mode the chain is new, so the schema left by the last run, at
-    // the same address, describes a deployment that no longer exists.
-    if (app.dev) yield* dropSchema(db, app.schemaName);
+    if (app.dev) {
+      // The schema lasts as long as this process's chain. The finalizer runs
+      // before the lock is released, since it is added after it.
+      yield* Effect.addFinalizer(() =>
+        dropSchema(db, app.schemaName).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to drop dev schema", cause),
+          ),
+        ),
+      );
+    }
 
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.

@@ -1,7 +1,7 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Data } from "effect";
-import type { Address } from "ox";
+import { type Address, Hex } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Spec } from "typewriter-evm";
 import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
@@ -10,6 +10,7 @@ import type { DatabaseOptions } from "./db";
 import {
   createMutationSchema,
   createTypewriterSchema,
+  DEV_SCHEMA_PREFIX,
   type TypewriterSchema,
 } from "./db-schema";
 import {
@@ -297,7 +298,11 @@ export function createTypewriterApp(params: {
     Array.isArray(network.rpcUrl) ? network.rpcUrl : [network.rpcUrl]
   ) as [string, ...string[]];
 
-  const schemaName = `typewriter_${deploymentKey(network.chainId, network.address)}`;
+  // Every `dev` chain deploys to the same address, so each process gets its
+  // own schema, and dev processes can share a database.
+  const schemaName = dev
+    ? `${DEV_SCHEMA_PREFIX}${Hex.random(6).slice(2)}`
+    : `typewriter_${deploymentKey(network.chainId, network.address)}`;
   if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
     throw new ConfigError({
       message: `config.chainId is too long for the Postgres schema name: ${schemaName}`,

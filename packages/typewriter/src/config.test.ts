@@ -154,6 +154,7 @@ test("createTypewriterApp takes the network from the dev chain", () => {
     devChain,
   });
 
+  expect(app.schemaName).toMatch(/^typewriter_dev_[0-9a-f]{12}$/);
   expect(app).toMatchObject({
     dev: true,
     address: devChain.address,
