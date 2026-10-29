@@ -827,15 +827,3 @@ export async function loadSolidityMetadata(
   await maybeWriteAppSolidityDeclaration(entrypointPath, metadata);
   return metadata;
 }
-
-export async function loadSolidityTypewriterApp<
-  sequencingConfig extends SequencingConfig,
->(
-  entrypoint: TypewriterSolidityEntrypoint,
-  config: TypewriterConfig<sequencingConfig>,
-): Promise<TypewriterApp> {
-  return createSolidityTypewriterApp(
-    config,
-    await loadSolidityMetadata(entrypoint),
-  );
-}

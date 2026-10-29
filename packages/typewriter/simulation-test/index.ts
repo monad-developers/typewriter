@@ -23,7 +23,10 @@ import { Database, makeDb } from "../src/db";
 import { encodeEnqueueCalldata } from "../src/encoding";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
-import { loadSolidityTypewriterApp } from "../src/sol-parse";
+import {
+  createSolidityTypewriterApp,
+  loadSolidityMetadata,
+} from "../src/sol-parse";
 import { createTypewriterEffect, type ProgramError } from "../src/typewriter";
 import type {
   BatchEvent,
@@ -274,8 +277,11 @@ const program = Effect.gen(function* () {
   yield* Effect.logInfo("Created simulation database").pipe(
     Effect.annotateLogs({ database: database.name }),
   );
-  const app = yield* Effect.promise(() =>
-    loadSolidityTypewriterApp(ASSESSMENT_ENTRYPOINT, {
+  const metadata = yield* Effect.promise(() =>
+    loadSolidityMetadata(ASSESSMENT_ENTRYPOINT),
+  );
+  const app = createSolidityTypewriterApp(
+    {
       address,
       account: SCHEDULER,
       chainId,
@@ -294,7 +300,8 @@ const program = Effect.gen(function* () {
         ...SIM.typewriter.ordering,
         submitIntervalMs: SIM.typewriter.submitIntervalMs,
       },
-    }),
+    },
+    metadata,
   );
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
   // One connection runs the statements in the order `io` starts them, so
