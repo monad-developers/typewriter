@@ -62,7 +62,6 @@ contract NativeAccountHarness is Typewriter {
 
     constructor() {
         SCHEDULER = msg.sender;
-        FORCE_INCLUSION_DELAY = 2;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
@@ -472,6 +471,34 @@ contract AccountTest {
 
         require(nativeHarness.value() == 55, "queued dispatch");
         require(nativeHarness.nonce(accountID, 0) == 1, "queued nonce");
+    }
+
+    function test_forceExecute_waitsForTheDelayInSeconds() external {
+        vm.warp(1000);
+        bytes32 accountID = _createNativeAccount(SECP256K1_PK);
+        SetValue memory setValue = SetValue({value: 77});
+        Authorization memory authorization =
+            _signNativeAuthorization(accountID, 0, 0, 0, 0, abi.encode(setValue), SECP256K1_PK);
+        uint256 queuedIndex = nativeHarness.enqueue(0, abi.encode(setValue), abi.encode(authorization));
+
+        vm.warp(1000 + 5 minutes - 1);
+        _expectForceExecuteRevert(
+            queuedIndex, abi.encodeWithSelector(Typewriter.ForceInclusionTooEarly.selector, uint256(1))
+        );
+
+        vm.warp(1000 + 5 minutes);
+        nativeHarness.forceExecute(queuedIndex);
+        require(nativeHarness.value() == 77, "force executed");
+
+        _expectForceExecuteRevert(
+            queuedIndex, abi.encodeWithSelector(Typewriter.ForceInclusionAlreadyExecuted.selector, queuedIndex)
+        );
+    }
+
+    function _expectForceExecuteRevert(uint256 index, bytes memory expected) internal {
+        (bool ok, bytes memory ret) = address(nativeHarness).call(abi.encodeCall(nativeHarness.forceExecute, (index)));
+        require(!ok, "expected forceExecute to revert");
+        require(keccak256(ret) == keccak256(expected), "wrong revert");
     }
 
     function _expectInvalidSignature(bytes memory callData, KeyType keyType) internal {

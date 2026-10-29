@@ -24,7 +24,6 @@ contract Token is Typewriter {
     constructor(address _scheduler) {
         if (_scheduler == address(0)) revert InvalidScheduler();
         SCHEDULER = _scheduler;
-        FORCE_INCLUSION_DELAY = 658;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {

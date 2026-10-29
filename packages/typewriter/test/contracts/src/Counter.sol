@@ -26,7 +26,6 @@ contract Counter is Typewriter {
 
     constructor() {
         SCHEDULER = msg.sender;
-        FORCE_INCLUSION_DELAY = 658;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {

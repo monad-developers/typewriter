@@ -159,7 +159,6 @@ contract OrderBook is Typewriter {
 
     constructor(address _scheduler) {
         SCHEDULER = _scheduler;
-        FORCE_INCLUSION_DELAY = 658;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
