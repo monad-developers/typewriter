@@ -1,5 +1,5 @@
 import { abiParametersToValues } from "abipg";
-import { desc, getTableColumns, inArray, sql } from "drizzle-orm";
+import { desc, getTableColumns, gte, inArray, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { Hex } from "ox";
@@ -115,6 +115,26 @@ export function updateMutationInclusion(
   });
 }
 
+/**
+ * Delete the mutation rows and storage slots from `executionIndex` on, so the
+ * mutations that execute again in their place can insert theirs.
+ */
+export function deleteExecutionsFrom(
+  tx: DbTransaction,
+  schema: Record<string, PgTable>,
+  { storageSlots }: ReturnType<typeof createTypewriterSchema>,
+  executionIndex: bigint,
+): Effect.Effect<void, DbError> {
+  return Effect.gen(function* () {
+    for (const table of [...Object.values(schema), storageSlots]) {
+      const { execution_index } = getTableColumns(table);
+      yield* tx.query((db) =>
+        db.delete(table).where(gte(execution_index!, executionIndex)),
+      );
+    }
+  });
+}
+
 /** The largest execution index over all mutation tables, or `undefined` if they are empty. */
 export function selectMaxExecutionIndex(
   tx: DbTransaction,
@@ -174,6 +194,23 @@ export function insertKeccakPreimages(
     for (const batch of chunkRows(rows)) {
       yield* tx.query((db) =>
         db.insert(keccakPreimages).values(batch).onConflictDoNothing(),
+      );
+    }
+  });
+}
+
+export function deleteKeccakPreimages(
+  tx: DbTransaction,
+  { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
+  preimages: readonly Hex.Hex[],
+): Effect.Effect<void, DbError> {
+  return Effect.gen(function* () {
+    for (let i = 0; i < preimages.length; i += MAX_PG_PARAMS) {
+      const batch = preimages.slice(i, i + MAX_PG_PARAMS);
+      yield* tx.query((db) =>
+        db
+          .delete(keccakPreimages)
+          .where(inArray(keccakPreimages.preimage, batch)),
       );
     }
   });

@@ -91,6 +91,13 @@ export type TypewriterConfig<
   rpcUrl: string | string[];
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
+  /**
+   * The seconds past the latest block's timestamp that an authorization or
+   * credential must stay valid for a mutation to be accepted. A mutation that
+   * expires before its settlement lands reverts the settlement, so this covers
+   * the time from acceptance to inclusion.
+   */
+  expirationMarginS?: number;
   confirmations?: {
     finalizedBlockDepth?: number;
   };
@@ -114,6 +121,7 @@ export type TypewriterApp = {
   typewriterSchema: TypewriterSchema;
   mutationSchema: Record<string, PgTable>;
   blockPollingIntervalMs: number;
+  expirationMarginS: number;
   confirmations: {
     finalizedBlockDepth: number;
   };
@@ -137,6 +145,7 @@ const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
 const DEFAULT_SUBMIT_INTERVAL_MS = 300;
+const DEFAULT_EXPIRATION_MARGIN_S = 5;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,
@@ -158,6 +167,11 @@ export function validateConfig(config: TypewriterConfig): void {
   assertSafeNonNegativeInteger(
     config.blockPollingIntervalMs,
     "config.blockPollingIntervalMs",
+  );
+
+  assertSafeNonNegativeInteger(
+    config.expirationMarginS,
+    "config.expirationMarginS",
   );
 
   assertSafeNonNegativeInteger(
@@ -289,6 +303,7 @@ export function createTypewriterApp(params: {
     mutationSchema: createMutationSchema(schemaName, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
+    expirationMarginS: config.expirationMarginS ?? DEFAULT_EXPIRATION_MARGIN_S,
     confirmations,
     sequencing,
   };

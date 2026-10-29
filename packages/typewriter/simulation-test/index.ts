@@ -80,13 +80,16 @@ export type SIM = {
      * The seconds from a step's submission to its authorization's expiration
      * that a step draws from. `-1` expires before genesis, so it always fails,
      * `0` and the intermediate ones expire around the step's inclusion, and
-     * `Infinity` never expires. `Infinity` repeats so most steps draw it.
+     * `Infinity` never expires. `Infinity` repeats so most steps draw it. The
+     * ones within `typewriter.expirationMarginS` may be rejected on receipt,
+     * and the ones past it may expire after they are accepted.
      */
     expirationsS: number[];
   };
   typewriter: {
     submitIntervalMs: number;
     blockPollingIntervalMs: number;
+    expirationMarginS: number;
     finalizedBlockDepth: number;
     ordering:
       | { order: "fifo" }
@@ -163,6 +166,7 @@ export const SIM: SIM = {
       "typewriter.blockPollingIntervalMs",
       [50, 200, 1_000],
     ),
+    expirationMarginS: pick(SEED, "typewriter.expirationMarginS", [0, 1, 2]),
     finalizedBlockDepth: int(SEED, "typewriter.finalizedBlockDepth", 1, 5),
     ordering:
       pick(SEED, "typewriter.ordering", ["fifo", "batch"]) === "fifo"
@@ -287,6 +291,7 @@ const program = Effect.gen(function* () {
       ],
       database: { url: database.url },
       blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
+      expirationMarginS: SIM.typewriter.expirationMarginS,
       confirmations: {
         finalizedBlockDepth: SIM.typewriter.finalizedBlockDepth,
       },
@@ -424,7 +429,9 @@ const program = Effect.gen(function* () {
           : error?._tag === "MutationRevertedError" &&
               error.errorName !== undefined
             ? error.errorName
-            : Cause.pretty(exit.cause);
+            : error?._tag === "MutationExpiresTooSoonError"
+              ? error._tag
+              : Cause.pretty(exit.cause);
         if (!want.includes(got)) {
           return yield* Effect.die(
             `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want.join(" or ")}`,
@@ -437,8 +444,9 @@ const program = Effect.gen(function* () {
      * Executes `step` and checks the result against `shouldRevert` and
      * `expiresInS`. A resubmission is a second, concurrent `execute` of the
      * same mutation. It fails: on the nonce the first one used, or on the same
-     * revert. An expired authorization fails both before either check, and a
-     * finite one may expire before either submission is simulated.
+     * revert. An expired authorization fails both before either check, on the
+     * runtime's expiration margin, and a finite one may expire within the
+     * margin or before either submission is simulated.
      */
     const execute = (step: Step) =>
       Effect.gen(function* () {
@@ -447,9 +455,9 @@ const program = Effect.gen(function* () {
         const shouldRevert = mutation.params.shouldRevert;
         const unlessExpired = (want: string) =>
           expiresInS < 0
-            ? ["AuthorizationExpired"]
+            ? ["MutationExpiresTooSoonError"]
             : Number.isFinite(expiresInS)
-              ? [want, "AuthorizationExpired"]
+              ? [want, "AuthorizationExpired", "MutationExpiresTooSoonError"]
               : [want];
         // The first submission runs here, not on the scheduler, until it waits
         // on its result, so it is queued before the resubmission starts.
@@ -610,12 +618,25 @@ const program = Effect.gen(function* () {
     ordering: SIM.typewriter.ordering,
   });
 
+  // Mutations accepted, then dropped when their settlement reverted in revm.
+  const accepted = new Set<string>();
+  let dropped = 0;
+  for (const event of mutationEvents) {
+    const key = mutationKey(event.authorization);
+    if (event.status === "accepted") accepted.add(key);
+    if (event.status === "rejected" && accepted.has(key)) {
+      if (event.error._tag !== "MutationRevertedError") continue;
+      if (event.error.errorName === "AuthorizationExpired") dropped++;
+    }
+  }
+
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
       mutations,
       blocks: blockEvents.length,
       batches: batchEvents.length,
       reorgs,
+      dropped,
       wall_ms: Math.round(performance.now() - wallStart),
     }),
   );

@@ -70,7 +70,7 @@ The lifecycle of a mutation is as follows:
 
 `createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, and `sequencing`.
+`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `expirationMarginS`, `confirmations`, and `sequencing`.
 
 ```ts
 import { createTypewriter } from "typewriter";
@@ -502,7 +502,7 @@ Starts the runtime and resolves to the `Typewriter` handle (see the [Server runt
 - `rpcUrl` — `string | string[]`.
 - `database` — `{ url, maxConnections? }` (Postgres).
 
-Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ finalizedBlockDepth? }`, default `5`), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
+Optional runtime controls: `blockPollingIntervalMs` (default `200`), `expirationMarginS` (default `5`; a mutation whose authorization or credential expires within this many seconds of the latest block is rejected with `MutationExpiresTooSoonError`), `confirmations` (`{ finalizedBlockDepth? }`, default `5`), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
 The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives app mutation IDs, params, and typed storage from the contract.
 

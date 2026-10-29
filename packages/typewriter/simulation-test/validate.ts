@@ -231,22 +231,25 @@ export function validate({
 
     // Whether a finite authorization expires depends on the block it is
     // simulated against, so a step expired when it was rejected on
-    // `AuthorizationExpired` and never accepted. A rejection of its
-    // resubmission alone does not count.
+    // `AuthorizationExpired`, or as expiring within the runtime's margin, and
+    // never included. It may have been accepted first, and dropped when its
+    // settlement reverted in revm. A rejection of its resubmission alone does
+    // not count.
     const expired = new Set<string>();
-    const accepted = new Set<string>();
+    const included = new Set<string>();
     for (const event of mutationEvents) {
       const key = mutationKey(event.authorization);
-      if (event.status === "accepted") accepted.add(key);
+      if (event.status === "included") included.add(key);
       if (
         event.status === "rejected" &&
-        event.error._tag === "MutationRevertedError" &&
-        event.error.errorName === "AuthorizationExpired"
+        (event.error._tag === "MutationExpiresTooSoonError" ||
+          (event.error._tag === "MutationRevertedError" &&
+            event.error.errorName === "AuthorizationExpired"))
       ) {
         expired.add(key);
       }
     }
-    for (const key of accepted) expired.delete(key);
+    for (const key of included) expired.delete(key);
 
     const all = wants(signers, plan, expired);
     // A negative `expiresInS` always expires, and an infinite one, like an
@@ -283,6 +286,8 @@ export function validate({
       else equal(value, map.get(want.key), `${want.label} ${what}`);
     };
     const executionIndexes = new Map<string, bigint>();
+    /** The index of a mutation's first `accepted` event, which `execute` returns. */
+    const firstExecutionIndexes = new Map<string, bigint>();
     const queueIndexes = new Map<string, bigint>();
     const inclusions = new Map<string, Inclusion>();
     for (const want of all) {
@@ -303,8 +308,20 @@ export function validate({
         );
         seen = seen.filter((_, i) => i !== second && i !== last);
       }
+      // When a settlement reverts in revm, its mutations execute again: each
+      // one is accepted again, maybe at a new execution index, or rejected if
+      // it expired since.
+      const statuses = seen
+        .map((event) => event.status)
+        .filter(
+          (status, i, all) => status !== "accepted" || all[i - 1] !== status,
+        );
+      const dropped =
+        expired.has(want.key) &&
+        statuses.at(-1) === "rejected" &&
+        statuses.at(-2) === "accepted";
       equal(
-        seen.map((event) => event.status),
+        dropped ? statuses.filter((status) => status !== "accepted") : statuses,
         want.statuses,
         `${want.label} mutation event statuses`,
       );
@@ -319,7 +336,12 @@ export function validate({
             agree(queueIndexes, want, event.queueIndex, "queueIndex");
           }
         }
-        if ("executionIndex" in event) {
+        if (event.status === "accepted") {
+          executionIndexes.set(want.key, event.executionIndex);
+          if (!firstExecutionIndexes.has(want.key)) {
+            firstExecutionIndexes.set(want.key, event.executionIndex);
+          }
+        } else if ("executionIndex" in event) {
           agree(executionIndexes, want, event.executionIndex, "executionIndex");
         }
         if (event.status === "included" || event.status === "finalized") {
@@ -339,11 +361,12 @@ export function validate({
       }
     }
 
-    // `execute` returns the index the events report.
+    // `execute` returns the index of the first `accepted` event, which a
+    // reverted settlement simulation may change later.
     for (const [key, executionIndex] of results) {
       equal(
         executionIndex,
-        executionIndexes.get(key),
+        firstExecutionIndexes.get(key),
         `${byKey.get(key)?.label} execute result`,
       );
     }
@@ -413,7 +436,8 @@ export function validate({
         .map((event) =>
           event.mutations
             .map((mutation) => byKey.get(mutationKey(mutation.authorization))!)
-            .filter((want) => want.step !== undefined),
+            // A mutation dropped from a reverted settlement leaves its batch.
+            .filter((want) => want.step !== undefined && !want.reverts),
         )
         .filter((batch) => batch.length > 0);
       const arrival = new Map(arrivals.map((want, i) => [want.key, i]));
