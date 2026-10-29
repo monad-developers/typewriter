@@ -62,7 +62,7 @@ export type Step = {
   mutation: Mutation<AppMutationName>;
 };
 
-/** The deployment, with a `forceInclusionDelay()` the runtime cannot reach. */
+/** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
 export function deploy({
   chain,
   deployer,

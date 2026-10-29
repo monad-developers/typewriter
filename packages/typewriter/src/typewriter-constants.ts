@@ -138,7 +138,7 @@ export const TYPEWRITER_ABI = [
       { name: "mutation", type: "uint8", indexed: false },
       { name: "mutationData", type: "bytes", indexed: false },
       { name: "authorizationData", type: "bytes", indexed: false },
-      { name: "enqueuedTimestamp", type: "uint256", indexed: false },
+      { name: "enqueuedTimestamp", type: "uint40", indexed: false },
     ],
     anonymous: false,
   },

@@ -27,12 +27,12 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 1686,
+      astId: 1680,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,
       slot: "3",
-      type: "t_struct(State)1551_storage",
+      type: "t_struct(State)1545_storage",
     },
   ],
   types: {
@@ -157,7 +157,7 @@ export const STORAGE_LAYOUT = {
     "t_struct(QueuedMutation)657_storage": {
       encoding: "inplace",
       label: "struct Typewriter.QueuedMutation",
-      numberOfBytes: "128",
+      numberOfBytes: "96",
       members: [
         {
           astId: 650,
@@ -170,36 +170,36 @@ export const STORAGE_LAYOUT = {
         {
           astId: 652,
           contract: "src/Assessment.sol:Assessment",
+          label: "enqueuedTimestamp",
+          offset: 1,
+          slot: "0",
+          type: "t_uint40",
+        },
+        {
+          astId: 654,
+          contract: "src/Assessment.sol:Assessment",
           label: "mutationData",
           offset: 0,
           slot: "1",
           type: "t_bytes_storage",
         },
         {
-          astId: 654,
+          astId: 656,
           contract: "src/Assessment.sol:Assessment",
           label: "authorizationData",
           offset: 0,
           slot: "2",
           type: "t_bytes_storage",
         },
-        {
-          astId: 656,
-          contract: "src/Assessment.sol:Assessment",
-          label: "enqueuedTimestamp",
-          offset: 0,
-          slot: "3",
-          type: "t_uint256",
-        },
       ],
     },
-    "t_struct(State)1551_storage": {
+    "t_struct(State)1545_storage": {
       encoding: "inplace",
       label: "struct State",
       numberOfBytes: "64",
       members: [
         {
-          astId: 1546,
+          astId: 1540,
           contract: "src/Assessment.sol:Assessment",
           label: "accumulator",
           offset: 0,
@@ -207,7 +207,7 @@ export const STORAGE_LAYOUT = {
           type: "t_bytes32",
         },
         {
-          astId: 1550,
+          astId: 1544,
           contract: "src/Assessment.sol:Assessment",
           label: "slots",
           offset: 0,

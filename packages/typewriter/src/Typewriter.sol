@@ -146,13 +146,13 @@ abstract contract Typewriter {
 
     struct QueuedMutation {
         uint8 mutation;
+        uint40 enqueuedTimestamp;
         bytes mutationData;
         bytes authorizationData;
-        uint256 enqueuedTimestamp;
     }
 
     event ForceInclusionQueued(
-        uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint256 enqueuedTimestamp
+        uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint40 enqueuedTimestamp
     );
 
     error UnauthorizedExecute(address caller);
@@ -162,7 +162,7 @@ abstract contract Typewriter {
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
-    uint256 internal constant FORCE_INCLUSION_DELAY = 5 minutes;
+    uint256 internal immutable FORCE_INCLUSION_DELAY = 5 minutes;
 
     mapping(bytes32 => Account) internal accounts;
     QueuedMutation[] internal queue;
@@ -216,10 +216,6 @@ abstract contract Typewriter {
         }
     }
 
-    function forceInclusionDelay() internal pure virtual returns (uint256) {
-        return FORCE_INCLUSION_DELAY;
-    }
-
     function _getFreeMemoryPointer() private pure returns (uint256 pointer) {
         assembly ("memory-safe") {
             pointer := mload(0x40)
@@ -237,13 +233,13 @@ abstract contract Typewriter {
         returns (uint256)
     {
         uint256 index = queue.length;
-        uint256 enqueuedTimestamp = block.timestamp;
+        uint40 enqueuedTimestamp = uint40(block.timestamp);
         queue.push(
             QueuedMutation({
                 mutation: mutation,
+                enqueuedTimestamp: enqueuedTimestamp,
                 mutationData: mutationData,
-                authorizationData: authorizationData,
-                enqueuedTimestamp: enqueuedTimestamp
+                authorizationData: authorizationData
             })
         );
         emit ForceInclusionQueued(index, mutation, mutationData, authorizationData, enqueuedTimestamp);
@@ -254,7 +250,7 @@ abstract contract Typewriter {
         QueuedMutation storage queued = queue[index];
 
         if (queued.enqueuedTimestamp == 0) revert ForceInclusionAlreadyExecuted(index);
-        uint256 executableAt = queued.enqueuedTimestamp + forceInclusionDelay();
+        uint256 executableAt = queued.enqueuedTimestamp + FORCE_INCLUSION_DELAY;
         if (block.timestamp < executableAt) revert ForceInclusionTooEarly(executableAt - block.timestamp);
 
         _execute(queued.mutation, queued.mutationData, queued.authorizationData);

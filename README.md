@@ -419,15 +419,14 @@ contract Token is Typewriter {
 **`DOMAIN_SEPARATOR`.** Constructed by the base contract from the fixed
 Typewriter name/version, `block.chainid`, and `address(this)`.
 
-**`FORCE_INCLUSION_DELAY`.** The number of seconds that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal constant`, set to `5 minutes`. `forceExecute` reads it through `forceInclusionDelay()`, so an app that needs a different delay overrides that function:
+**`FORCE_INCLUSION_DELAY`.** The number of seconds that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal immutable`, initialized to `5 minutes`. An app that needs a different delay reassigns it in its constructor:
 
 ```solidity
-function forceInclusionDelay() internal pure override returns (uint256) {
-    return 10 minutes;
+constructor(address _scheduler) {
+    SCHEDULER = _scheduler;
+    FORCE_INCLUSION_DELAY = 10 minutes;
 }
 ```
-
-The function is `pure`, so the delay is fixed in the contract's code rather than set at deploy time.
 
 **Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `Typewriter` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 
@@ -440,7 +439,7 @@ function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexe
 // `ForceInclusionQueued`.
 function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata authorizationData) external returns (uint256);
 
-// Un-gated escape hatch, callable by anyone once `forceInclusionDelay()` seconds
+// Un-gated escape hatch, callable by anyone once `FORCE_INCLUSION_DELAY` seconds
 // have elapsed since the entry was enqueued.
 function forceExecute(uint256 index) external;
 ```
@@ -453,7 +452,7 @@ event ForceInclusionQueued(
     uint8 mutation,
     bytes mutationData,
     bytes authorizationData,
-    uint256 enqueuedTimestamp
+    uint40 enqueuedTimestamp
 );
 ```
 

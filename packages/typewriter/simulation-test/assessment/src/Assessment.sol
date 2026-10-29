@@ -54,10 +54,7 @@ contract Assessment is Typewriter {
     constructor(address _scheduler) {
         if (_scheduler == address(0)) revert InvalidScheduler();
         SCHEDULER = _scheduler;
-    }
-
-    function forceInclusionDelay() internal pure override returns (uint256) {
-        return 365 days;
+        FORCE_INCLUSION_DELAY = 365 days;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
