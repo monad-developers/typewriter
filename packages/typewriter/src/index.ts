@@ -1,3 +1,4 @@
+import { BunServices } from "@effect/platform-bun";
 import { Cause, Effect, Exit, Layer, Scope } from "effect";
 import { startDevChain } from "./anvil";
 import {
@@ -203,7 +204,7 @@ export async function createTypewriter<
         const devChain =
           config.dev === true
             ? yield* startDevChain(metadata.bytecode).pipe(
-                Effect.provide(loggerLayer),
+                Effect.provide([loggerLayer, BunServices.layer]),
                 Effect.provideService(Scope.Scope, scope),
               )
             : undefined;
