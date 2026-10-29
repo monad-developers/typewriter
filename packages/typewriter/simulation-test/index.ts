@@ -32,7 +32,6 @@ import {
   type ProgramError,
 } from "../src/typewriter";
 import {
-  type AppMutationName,
   createAccount,
   deploy,
   expect,
@@ -106,7 +105,7 @@ export type SIM = {
       | {
           order: "batch";
           batchIntervalMs: number;
-          batchOrder: AppMutationName[];
+          batchOrder: ["A", "B"] | ["B", "A"];
         };
   };
   transports: {
@@ -189,10 +188,9 @@ export const SIM: SIM = {
               [10, 50, 300],
             ),
             batchOrder: pick(SEED, "typewriter.ordering.batchOrder", [
-              ["A", "B", "C", "D", "E"],
-              ["E", "D", "C", "B", "A"],
-              ["C", "A", "E", "B", "D"],
-            ] as AppMutationName[][]),
+              ["A", "B"],
+              ["B", "A"],
+            ] as (["A", "B"] | ["B", "A"])[]),
           },
   },
   transports: Array.from(
@@ -229,11 +227,11 @@ const SCHEDULER = privateKeyToAccount(
 const CLIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
 /**
- * The gas limit of an `enqueue` transaction, about three times what the
- * largest template uses. Monad's storage gas depends on state that can change
- * between the estimate and the block, so an estimated limit can run out.
+ * The gas limit of an `enqueue` transaction, about three times what one uses.
+ * Monad's storage gas depends on state that can change between the estimate
+ * and the block, so an estimated limit can run out.
  */
-const ENQUEUE_GAS = Hex.fromNumber(5_000_000);
+const ENQUEUE_GAS = Hex.fromNumber(1_000_000);
 
 /**
  * A database of its own for the run. It is dropped when the run passes, and
