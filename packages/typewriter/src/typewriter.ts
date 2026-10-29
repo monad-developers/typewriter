@@ -499,6 +499,12 @@ type ForceInclusionQueued = {
   authorizationData: Hex.Hex;
 };
 
+/**
+ * An enqueue the runtime can't decode. revm still decides whether it
+ * executes, since only the contract knows.
+ */
+type UndecodableEnqueue = { status: "undecodable"; queueIndex: bigint };
+
 export function decodeForceInclusionQueued(
   log: LocalLog,
 ): ForceInclusionQueued {
@@ -808,11 +814,15 @@ export function createTypewriterEffect<
     let batchPosition = 0;
 
     const batchesById = new Map<number, RuntimeBatch>();
+    /** The journals of each block's undecodable enqueues, pruned with it. */
+    const undecodableJournalIds = new Map<RuntimeBlock<"batch">, number[]>();
     const receivedMutationQueue = yield* Queue.unbounded<{
       mutation: ReceivedMutation;
       deferred: AcceptDeferred;
     }>();
-    const enqueuedMutationsQueue = yield* Queue.unbounded<EnqueuedMutation>();
+    const enqueuedMutationsQueue = yield* Queue.unbounded<
+      EnqueuedMutation | UndecodableEnqueue
+    >();
     const acceptedBatchesQueue = yield* Queue.unbounded<{
       id: number;
       committed: Deferred.Deferred<void>;
@@ -948,17 +958,7 @@ export function createTypewriterEffect<
           );
 
         nextExecutionIndex++;
-
-        invalidateStorageCache(
-          executeResult.slot_writes.map((write) => write.slot),
-        );
-
-        const newPreimages: Hex.Hex[] = [];
-        for (const preimage of executeResult.keccak_preimages) {
-          if (preimages.has(preimage)) continue;
-          preimages.add(preimage);
-          newPreimages.push(preimage);
-        }
+        const newPreimages = recordExecution(executeResult);
 
         yield* emitMutation(mutationToEvent(acceptedMutation));
 
@@ -966,6 +966,56 @@ export function createTypewriterEffect<
           mutation: acceptedMutation,
           executeResult,
           preimages: newPreimages,
+        };
+      });
+    }
+
+    /** Updates the caches for an execution. Returns its new preimages. */
+    function recordExecution(executeResult: ExecuteResult): Hex.Hex[] {
+      invalidateStorageCache(
+        executeResult.slot_writes.map((write) => write.slot),
+      );
+
+      const newPreimages: Hex.Hex[] = [];
+      for (const preimage of executeResult.keccak_preimages) {
+        if (preimages.has(preimage)) continue;
+        preimages.add(preimage);
+        newPreimages.push(preimage);
+      }
+      return newPreimages;
+    }
+
+    // Force-executes an enqueue the runtime can't decode. The contract can
+    // still execute it, for example when `dispatch` reads its bytes another
+    // way, so revm decides. It gets no event and no mutation row, since the
+    // runtime can't say what it is, but its writes settle like any other.
+    function forceExecuteUndecodable(queueIndex: bigint) {
+      return Effect.gen(function* () {
+        const executeResult = yield* evm.execute({
+          from: app.account.address,
+          to: app.address,
+          data: encodeExecuteCalldata([], [queueIndex]),
+        });
+        if (executeResult.status !== "success") {
+          yield* Effect.logWarning(
+            "Discarded undecodable enqueued mutation",
+          ).pipe(Effect.annotateLogs({ queue_index: queueIndex }));
+          return undefined;
+        }
+
+        const executionIndex = nextExecutionIndex++;
+        yield* Effect.logError(
+          "Executed an enqueued mutation the runtime can't decode",
+        ).pipe(
+          Effect.annotateLogs({
+            queue_index: queueIndex,
+            execution_index: executionIndex,
+          }),
+        );
+        return {
+          mutation: { executionIndex },
+          executeResult,
+          preimages: recordExecution(executeResult),
         };
       });
     }
@@ -1083,11 +1133,33 @@ export function createTypewriterEffect<
             executeResult: ExecuteResult;
             preimages: readonly Hex.Hex[];
           }[] = [];
+          const executedUndecodables: NonNullable<
+            Effect.Success<ReturnType<typeof forceExecuteUndecodable>>
+          >[] = [];
+          /** The enqueues that execute, in the order the settlement runs them. */
+          const forceExecuted: { queueIndex: bigint; journalId: number }[] = [];
           for (const enqueuedMutation of enqueuedMutations) {
+            if (enqueuedMutation.status === "undecodable") {
+              const executed = yield* forceExecuteUndecodable(
+                enqueuedMutation.queueIndex,
+              );
+              if (executed !== undefined) {
+                executedUndecodables.push(executed);
+                forceExecuted.push({
+                  queueIndex: enqueuedMutation.queueIndex,
+                  journalId: executed.executeResult.journal_id,
+                });
+              }
+              continue;
+            }
             const result = yield* Effect.result(
               acceptMutation(enqueuedMutation),
             );
             if (Result.isSuccess(result)) {
+              forceExecuted.push({
+                queueIndex: enqueuedMutation.queueIndex,
+                journalId: result.success.mutation.journalId,
+              });
               acceptedEnqueuedMutations.push(
                 result.success as {
                   mutation: Extract<
@@ -1123,14 +1195,11 @@ export function createTypewriterEffect<
             ({ mutation }) => mutation,
           );
 
-          if (
-            batches.length === 0 &&
-            acceptedForceIncludedMutations.length === 0
-          ) {
+          if (batches.length === 0 && forceExecuted.length === 0) {
             return undefined;
           }
 
-          if (acceptedEnqueuedMutations.length > 0) {
+          if (forceExecuted.length > 0) {
             commits.push(
               yield* persist((tx) =>
                 Effect.gen(function* () {
@@ -1139,17 +1208,17 @@ export function createTypewriterEffect<
                     app.mutationSchema,
                     acceptedEnqueuedMutations.map((entry) => entry.mutation),
                   );
-                  yield* insertStorageSlots(
-                    tx,
-                    app.typewriterSchema,
-                    acceptedEnqueuedMutations,
-                  );
+                  yield* insertStorageSlots(tx, app.typewriterSchema, [
+                    ...acceptedEnqueuedMutations,
+                    ...executedUndecodables,
+                  ]);
                   yield* insertKeccakPreimages(
                     tx,
                     app.typewriterSchema,
-                    acceptedEnqueuedMutations.flatMap(
-                      ({ preimages }) => preimages,
-                    ),
+                    [
+                      ...acceptedEnqueuedMutations,
+                      ...executedUndecodables,
+                    ].flatMap(({ preimages }) => preimages),
                   );
                 }),
               ),
@@ -1159,11 +1228,7 @@ export function createTypewriterEffect<
           const speculativeJournalIds = batches
             .flatMap((batch) => batch.mutations)
             .map((mutation) => mutation.journalId)
-            .concat(
-              acceptedForceIncludedMutations.map(
-                (mutation) => mutation.journalId,
-              ),
-            );
+            .concat(forceExecuted.map(({ journalId }) => journalId));
 
           // TODO(kyle) cap a submission at the block gas limit. Every pending
           // batch and enqueued mutation goes into one transaction, so after a
@@ -1171,7 +1236,7 @@ export function createTypewriterEffect<
           // retries fail the program.
           const calldata = encodeExecuteCalldata(
             batches.map((batch) => encodeBatchArg(batch.mutations)),
-            acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
+            forceExecuted.map(({ queueIndex }) => queueIndex),
           );
 
           const simulationStartedAt = yield* startTimer;
@@ -1206,6 +1271,7 @@ export function createTypewriterEffect<
           return {
             batches,
             acceptedForceIncludedMutations,
+            executedUndecodables,
             calldata,
             simulateResult,
             commits,
@@ -1218,6 +1284,7 @@ export function createTypewriterEffect<
       const {
         batches,
         acceptedForceIncludedMutations,
+        executedUndecodables,
         calldata,
         simulateResult,
         commits,
@@ -1333,6 +1400,14 @@ export function createTypewriterEffect<
         batches,
         forceIncludedMutations,
       };
+      if (executedUndecodables.length > 0) {
+        undecodableJournalIds.set(
+          runtimeBlock,
+          executedUndecodables.map(
+            ({ executeResult }) => executeResult.journal_id,
+          ),
+        );
+      }
 
       yield* persist((tx) =>
         updateMutationInclusion(
@@ -1401,15 +1476,20 @@ export function createTypewriterEffect<
                 Effect.try(() => decodeEnqueuedMutation(app, queued)),
               );
               if (Result.isFailure(decoded)) {
-                // No one can execute it, so it gets no event.
+                // revm decides whether it executes, but it gets no event:
+                // the runtime can't say what it is.
                 yield* Effect.logWarning(
-                  "Ignored undecodable enqueued mutation",
+                  "Can't decode enqueued mutation",
                   decoded.failure,
                 ).pipe(Effect.annotateLogs({ queue_index: queued.index }));
-                continue;
               }
 
-              yield* Queue.offer(enqueuedMutationsQueue, decoded.success);
+              yield* Queue.offer(
+                enqueuedMutationsQueue,
+                Result.isSuccess(decoded)
+                  ? decoded.success
+                  : { status: "undecodable", queueIndex: queued.index },
+              );
             }
 
             for (const block of unfinalizedBlocks.filter(
@@ -1442,10 +1522,12 @@ export function createTypewriterEffect<
               ];
 
               yield* evm.pruneJournals({
-                journal_ids: submittedMutations.map(
-                  (mutation) => mutation.journalId,
-                ),
+                journal_ids: [
+                  ...submittedMutations.map((mutation) => mutation.journalId),
+                  ...(undecodableJournalIds.get(block) ?? []),
+                ],
               });
+              undecodableJournalIds.delete(block);
               for (const batch of block.batches) {
                 batchesById.delete(batch.id);
               }
