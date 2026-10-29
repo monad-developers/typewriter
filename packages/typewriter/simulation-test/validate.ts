@@ -2,7 +2,7 @@ import { abiParametersToValues } from "abipg";
 import { asc } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect, Exit } from "effect";
-import { Hash, type Hex } from "ox";
+import { Hash, Hex } from "ox";
 import { createStorageView, type StorageView } from "storage-layout";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
@@ -63,7 +63,7 @@ export function validate(params: Params): Effect.Effect<void> {
 
     checkSettlements(check, onchain, app);
     checkOutcomes(check, run, onchain);
-    checkArrivals(check, run, onchain, params.ordering);
+    checkOrder(check, run, onchain, params.ordering);
     checkFinality(check, run, onchain);
     yield* checkQueue(check, run, onchain, params);
 
@@ -226,40 +226,29 @@ function checkResult(
 }
 
 /**
- * `execute` emits `received` before it waits, so arrival order is call order.
- * FIFO executes in arrival order. Batch sequencing takes runs of arrivals as
- * batches, each in `batchOrder` and then arrival order. Enqueued mutations
- * execute in queue order.
+ * The client calls `execute` in submission order. FIFO executes in call
+ * order. Batch sequencing takes runs of calls as batches, each in
+ * `batchOrder` and then call order. Enqueued mutations execute in queue order.
  */
-function checkArrivals(
+function checkOrder(
   check: Check,
   run: Run,
   onchain: Onchain,
   ordering: SIM["typewriter"]["ordering"],
 ) {
-  for (const key of run.lateArrivals) {
-    check.fail(
-      `${check.label(key)}: execute waited before it emitted received`,
-    );
-  }
-
-  const arrival = new Map<string, number>();
-  for (const event of run.mutationEvents) {
-    const key = mutationKey(event.authorization);
-    if (event.status === "received" && !arrival.has(key)) {
-      arrival.set(key, arrival.size);
-    }
-  }
   const executed = executedByKey(onchain);
-  const arrived = [...arrival.keys()].filter((key) => executed.has(key));
-  const byArrival = (a: string, b: string) =>
-    (arrival.get(a) ?? Infinity) - (arrival.get(b) ?? Infinity);
+  const called = run.submissions.flatMap(({ key, via }) =>
+    via === "execute" && executed.has(key) ? [key] : [],
+  );
+  const position = new Map(called.map((key, i) => [key, i]));
+  const byCall = (a: string, b: string) =>
+    (position.get(a) ?? Infinity) - (position.get(b) ?? Infinity);
   const labels = (keys: readonly string[]) => keys.map(check.label);
 
   if (ordering.order === "fifo") {
     check.equal(
       labels(onchain.batches.flat()),
-      labels(arrived),
+      labels(called),
       "FIFO execution order",
     );
   } else {
@@ -272,14 +261,14 @@ function checkArrivals(
             ordering.batchOrder.indexOf(name as AppMutationName);
     };
     check.equal(
-      labels(onchain.batches.flatMap((batch) => [...batch].sort(byArrival))),
-      labels(arrived),
-      "batches are runs of arrivals",
+      labels(onchain.batches.flatMap((batch) => [...batch].sort(byCall))),
+      labels(called),
+      "batches are runs of calls",
     );
     for (const [i, batch] of onchain.batches.entries()) {
       check.equal(
         labels(batch),
-        labels([...batch].sort((a, b) => rank(a) - rank(b) || byArrival(a, b))),
+        labels([...batch].sort((a, b) => rank(a) - rank(b) || byCall(a, b))),
         `batch ${i} order`,
       );
     }
@@ -588,15 +577,14 @@ function checkDatabase(
     const stored = new Set(
       Object.keys(storage).map((slot) => slot.toLowerCase()),
     );
-    for (const [slot, value] of Object.entries(storage) as [
-      Hex.Hex,
-      Hex.Hex,
-    ][]) {
-      const onChain = yield* chain.request({
-        method: "eth_getStorageAt",
-        params: [app.address, slot, "latest"],
-      });
-      check.equal(value, onChain, `storage_slots ${slot}`);
+    const entries = Object.entries(storage) as [Hex.Hex, Hex.Hex][];
+    const onChain = yield* storageValues(
+      chain,
+      app,
+      entries.map(([slot]) => slot),
+    );
+    for (const [i, [slot, value]] of entries.entries()) {
+      check.equal(value, onChain[i], `storage_slots ${slot}`);
     }
     for (const settlement of onchain.settlements) {
       if (settlement.reverted) continue;
@@ -632,6 +620,38 @@ function checkDatabase(
       ],
       "typewriter_metadata",
     );
+  });
+}
+
+/** Anvil reads at most this many slots in one `eth_getStorageValues`. */
+const STORAGE_VALUES_LIMIT = 1024;
+
+/** The values of `slots` of the app on Anvil, in as few requests as Anvil allows. */
+function storageValues(
+  chain: Chain,
+  app: TypewriterApp,
+  slots: readonly Hex.Hex[],
+) {
+  return Effect.gen(function* () {
+    const address = app.address.toLowerCase();
+    const values: Hex.Hex[] = [];
+    for (let i = 0; i < slots.length; i += STORAGE_VALUES_LIMIT) {
+      // `PublicRpcSchema` does not include `eth_getStorageValues`. Anvil takes
+      // only full 32-byte slots, and answers by lowercase address.
+      const chunk = (yield* chain.request({
+        method: "eth_getStorageValues",
+        params: [
+          {
+            [address]: slots
+              .slice(i, i + STORAGE_VALUES_LIMIT)
+              .map((slot) => Hex.padLeft(slot, 32)),
+          },
+          "latest",
+        ],
+      } as unknown as RpcRequest)) as unknown as Record<string, Hex.Hex[]>;
+      values.push(...chunk[address]!);
+    }
+    return values;
   });
 }
 
@@ -672,17 +692,7 @@ function checkRuntimeState(
       .pipe(Effect.orDie);
     const chainStorage = createStorageView(
       app.storageLayout,
-      (slots) =>
-        Promise.all(
-          slots.map((slot) =>
-            Effect.runPromise(
-              chain.request({
-                method: "eth_getStorageAt",
-                params: [app.address, slot, "latest"],
-              }),
-            ),
-          ),
-        ),
+      (slots) => Effect.runPromise(storageValues(chain, app, slots)),
       new Set(preimages),
     );
     const [runtimeViews, chainViews] = yield* Effect.promise(() =>
