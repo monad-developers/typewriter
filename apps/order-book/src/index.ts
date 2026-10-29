@@ -3,11 +3,10 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import superjson from "superjson";
 import { createTypewriter } from "typewriter";
 import type { Address, Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import OrderBook from "../contracts/src/OrderBook.sol";
 import index from "../frontend/index.html";
 import { ORDER_BOOK_BATCH_ORDER } from "./app";
-import { CHAIN, ORDER_BOOK_ADDRESS, RPC_URLS } from "./constants";
+import { DEV, network } from "./constants";
 import {
   selectBlock,
   selectMutationByExecutionIndex,
@@ -16,26 +15,27 @@ import {
   selectRecentMutationCount,
 } from "./db-queries";
 
-if (process.env.PRIVATE_KEY === undefined) {
-  throw new Error("PRIVATE_KEY env var is required");
-}
 if (process.env.DATABASE_URL === undefined) {
   throw new Error("DATABASE_URL env var is required");
 }
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
+// `bun --hot` runs this module again without stopping the last typewriter,
+// which would keep running, and in dev keep its Anvil.
+const hot = globalThis as { typewriter?: { close: () => Promise<void> } };
+await hot.typewriter?.close();
+
 const app = await createTypewriter(OrderBook, {
-  address: ORDER_BOOK_ADDRESS,
-  account: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
-  chainId: CHAIN.id,
-  rpcUrl: RPC_URLS,
+  dev: DEV,
+  ...(DEV ? {} : network()),
   database: { url: DATABASE_URL, maxConnections: 25 },
   sequencing: {
     order: "batch",
     batchOrder: ORDER_BOOK_BATCH_ORDER,
   },
 });
+hot.typewriter = app;
 
 const readerDb = drizzle({
   client: new Bun.SQL({

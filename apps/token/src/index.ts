@@ -19,16 +19,30 @@ function jsonResponse(data: unknown): Response {
   });
 }
 
-const scheduler = privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex);
+// Without RPC_URL, development runs on a local Anvil that typewriter starts
+// and deploys the token to.
+const dev =
+  process.env.NODE_ENV !== "production" && process.env.RPC_URL === undefined;
+
+// `bun --hot` runs this module again without stopping the last typewriter,
+// which would keep running, and in dev keep its Anvil.
+const hot = globalThis as { typewriter?: { close: () => Promise<void> } };
+await hot.typewriter?.close();
 
 const typewriter = await createTypewriter(Token, {
-  address: requireEnv("TOKEN_ADDRESS") as Address,
-  account: scheduler,
-  chainId: Number(requireEnv("CHAIN_ID")),
-  rpcUrl: requireEnv("RPC_URL"),
+  dev,
+  ...(dev
+    ? {}
+    : {
+        address: requireEnv("TOKEN_ADDRESS") as Address,
+        account: privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex),
+        chainId: Number(requireEnv("CHAIN_ID")),
+        rpcUrl: requireEnv("RPC_URL"),
+      }),
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   sequencing: { order: "fifo" },
 });
+hot.typewriter = typewriter;
 
 // Accepted mutations that are not finalized yet. Clients only ask about
 // mutations they posted, which are accepted before `execute` resolves, so a
