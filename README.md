@@ -71,7 +71,7 @@ The lifecycle of a mutation is as follows:
 
 `createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`. Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
+`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`, or just `database` in [dev mode](#local-development). Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, `onFatalError`, and `sequencing`.
 
 ```ts
 import { createTypewriter } from "typewriter";
@@ -106,6 +106,19 @@ const accepted = await typewriter.execute({
 ```
 
 > Onchain submission is gated to a single scheduler address that the server controls (see [Contract structure](#contract-structure)). Because no one else can submit transactions, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
+
+#### Local development
+
+With `dev: true`, typewriter starts its own Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the scheduler, and fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork` itself. Leave those fields unset; setting any of them with `dev` is an error.
+
+```ts
+const typewriter = await createTypewriter(Token, {
+  dev: true,
+  database: { url: databaseUrl },
+});
+```
+
+Dev mode is ephemeral: each start deploys to a new chain, so typewriter drops the deployment's database schema on startup. Anvil stops on `typewriter.close()`, and when the process exits. It needs `anvil` from Foundry on the `PATH`.
 
 #### Sequencing
 
@@ -393,9 +406,7 @@ contract Token is Typewriter {
         Add
     }
 
-    constructor(address _scheduler) {
-        SCHEDULER = _scheduler;
-    }
+    constructor(address _scheduler) Typewriter(_scheduler) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID)
         internal override
@@ -414,7 +425,7 @@ contract Token is Typewriter {
 
 **`Mutation` enum.** Designates the valid mutations for the contract.
 
-**`SCHEDULER`.** The privileged address for submitting mutations. Declared in `Typewriter` as `address internal immutable` — the inheriting contract must assign it in the constructor.
+**`SCHEDULER`.** The privileged address for submitting mutations. Declared in `Typewriter` as `address internal immutable` and assigned by the `Typewriter` constructor. Every app has the same constructor, `constructor(address scheduler)`, and passes `scheduler` to `Typewriter(scheduler)`; it may do more in the body, but takes no other arguments, so typewriter can deploy any app.
 
 **`DOMAIN_SEPARATOR`.** Constructed by the base contract from the fixed
 Typewriter name/version, `block.chainid`, and `address(this)`.
@@ -502,7 +513,7 @@ function createTypewriter(
 
 Starts the runtime and resolves to the `Typewriter` handle (see the [Server runtime](#server-runtime) example for a full call). On startup it connects to the chain and database, runs migrations, and hydrates local revm state from persisted slot writes; from there it accepts mutations and submits them onchain.
 
-**`TypewriterConfig`.** Required fields:
+**`TypewriterConfig`.** Required fields, except in [dev mode](#local-development) (`dev: true`), where typewriter fills in all but `database`:
 
 - `address` — the deployed Typewriter contract.
 - `account` — the scheduler `PrivateKeyAccount`; signs and submits the onchain `execute` transactions.
@@ -520,6 +531,14 @@ The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `
 - `TYPEWRITER_LOG_FORMAT` — `"pretty" | "json"`. Default `"json"` when `NODE_ENV` is `"production"`, else `"pretty"`.
 
 An invalid value throws when the server module loads.
+
+#### `typewriter.close()`
+
+```ts
+close(): Promise<void>;
+```
+
+Stops the runtime and releases its database connections, and in dev mode stops Anvil.
 
 #### `typewriter.manifest`
 

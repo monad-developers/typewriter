@@ -27,12 +27,12 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 1680,
+      astId: 1686,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,
       slot: "3",
-      type: "t_struct(State)1545_storage",
+      type: "t_struct(State)1551_storage",
     },
   ],
   types: {
@@ -193,13 +193,13 @@ export const STORAGE_LAYOUT = {
         },
       ],
     },
-    "t_struct(State)1545_storage": {
+    "t_struct(State)1551_storage": {
       encoding: "inplace",
       label: "struct State",
       numberOfBytes: "64",
       members: [
         {
-          astId: 1540,
+          astId: 1546,
           contract: "src/Assessment.sol:Assessment",
           label: "accumulator",
           offset: 0,
@@ -207,7 +207,7 @@ export const STORAGE_LAYOUT = {
           type: "t_bytes32",
         },
         {
-          astId: 1544,
+          astId: 1550,
           contract: "src/Assessment.sol:Assessment",
           label: "slots",
           offset: 0,

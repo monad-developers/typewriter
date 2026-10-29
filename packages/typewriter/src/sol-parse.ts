@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { $ } from "bun";
 import { Predicate } from "effect";
+import { Hex } from "ox";
 import type { Abi, AbiParameter } from "viem";
 import type {
   ResolvedTypewriterMutationConfig,
@@ -9,7 +10,12 @@ import type {
   StorageConfig,
   TypewriterConfig,
 } from "./config";
-import { ConfigError, createTypewriterApp, type TypewriterApp } from "./config";
+import {
+  ConfigError,
+  createTypewriterApp,
+  type DevChain,
+  type TypewriterApp,
+} from "./config";
 import {
   BUILTIN_MUTATIONS,
   FIRST_BUILTIN_MUTATION_ID,
@@ -61,6 +67,7 @@ export type TypewriterSolidityEntrypoint<metadata = unknown> = string & {
 type SolidityArtifact = {
   readonly abi?: unknown;
   readonly ast?: AstNode;
+  readonly bytecode?: { readonly object?: unknown };
   readonly storageLayout?: StorageLayout;
 };
 
@@ -74,9 +81,11 @@ type ParsedMutation = {
   readonly params: readonly AbiParameter[];
 };
 
-type ParsedSolidityMetadata = {
+export type ParsedSolidityMetadata = {
   readonly contractName: string;
   readonly abi: Abi;
+  /** Creation bytecode, without constructor arguments. */
+  readonly bytecode: Hex.Hex;
   readonly storageLayout: StorageLayout;
   readonly mutations: readonly ParsedMutation[];
 };
@@ -227,6 +236,29 @@ function requireArtifactAbi(artifact: SolidityArtifact, path: string): Abi {
     });
   }
   return artifact.abi as Abi;
+}
+
+function requireArtifactBytecode(
+  artifact: SolidityArtifact,
+  path: string,
+): Hex.Hex {
+  const bytecode = artifact.bytecode?.object;
+  if (typeof bytecode !== "string" || !Hex.validate(bytecode)) {
+    throw new ConfigError({
+      message: `Could not find bytecode in artifact ${path}`,
+    });
+  }
+  return bytecode;
+}
+
+/** Typewriter deploys apps itself, so every app takes only the scheduler. */
+function requireStandardConstructor(contractName: string, abi: Abi): void {
+  const inputs = abi.find((item) => item.type === "constructor")?.inputs ?? [];
+  if (inputs.length !== 1 || inputs[0]!.type !== "address") {
+    throw new ConfigError({
+      message: `${contractName} must declare \`constructor(address scheduler)\` and pass it to \`Typewriter(scheduler)\`, but its constructor takes (${inputs.map((input) => input.type).join(", ")})`,
+    });
+  }
 }
 
 async function readEntrypointAst(
@@ -619,9 +651,12 @@ function parseMutations(params: {
   });
 }
 
-function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
+export function createSolidityTypewriterApp<
+  sequencingConfig extends SequencingConfig,
+>(
   baseConfig: TypewriterConfig<sequencingConfig>,
   metadata: ParsedSolidityMetadata,
+  devChain?: DevChain,
 ): TypewriterApp {
   const mutations: Record<string, ResolvedTypewriterMutationConfig> = {};
 
@@ -637,6 +672,7 @@ function mergeSolidityConfig<sequencingConfig extends SequencingConfig>(
     abi: metadata.abi,
     storageLayout: metadata.storageLayout,
     mutations,
+    devChain,
   });
 }
 
@@ -755,6 +791,7 @@ async function readSolidityMetadata(
   );
   const artifact = await readArtifact(artifactPath);
   const abi = requireArtifactAbi(artifact, artifactPath);
+  requireStandardConstructor(contract.name, abi);
   if (artifact.storageLayout === undefined) {
     throw new ConfigError({
       message: `Could not find storage layout for ${contract.name}; ensure the Foundry profile emits storageLayout`,
@@ -775,9 +812,20 @@ async function readSolidityMetadata(
   return {
     contractName: contract.name,
     abi,
+    bytecode: requireArtifactBytecode(artifact, artifactPath),
     storageLayout: validateRootStorageLayout(artifact.storageLayout),
     mutations: [...appMutations, ...builtinMutations],
   };
+}
+
+/** Builds the app's contract, and refreshes its generated declaration. */
+export async function loadSolidityMetadata(
+  entrypoint: TypewriterSolidityEntrypoint,
+): Promise<ParsedSolidityMetadata> {
+  const metadata = await parseSolidityMetadata(entrypoint);
+  const entrypointPath = await requireEntrypointPath(entrypoint);
+  await maybeWriteAppSolidityDeclaration(entrypointPath, metadata);
+  return metadata;
 }
 
 export async function loadSolidityTypewriterApp<
@@ -786,8 +834,8 @@ export async function loadSolidityTypewriterApp<
   entrypoint: TypewriterSolidityEntrypoint,
   config: TypewriterConfig<sequencingConfig>,
 ): Promise<TypewriterApp> {
-  const metadata = await parseSolidityMetadata(entrypoint);
-  const entrypointPath = await requireEntrypointPath(entrypoint);
-  await maybeWriteAppSolidityDeclaration(entrypointPath, metadata);
-  return mergeSolidityConfig(config, metadata);
+  return createSolidityTypewriterApp(
+    config,
+    await loadSolidityMetadata(entrypoint),
+  );
 }

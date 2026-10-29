@@ -1,17 +1,20 @@
 import { Cause, Effect, Exit, Layer, Scope } from "effect";
-import type {
-  MutationConfig,
-  MutationsConfig,
-  SequencingConfig,
-  StorageConfig,
-  TypewriterConfig,
+import { startDevChain } from "./anvil";
+import {
+  type MutationConfig,
+  type MutationsConfig,
+  type SequencingConfig,
+  type StorageConfig,
+  type TypewriterConfig,
+  validateConfig,
 } from "./config";
 import { layerDatabase } from "./db";
 import { loggerLayer } from "./logger";
 import { layerRpc } from "./rpc";
 import { makeHttpTransport } from "./rpc-transport";
 import {
-  loadSolidityTypewriterApp,
+  createSolidityTypewriterApp,
+  loadSolidityMetadata,
   type TypewriterSolidityEntrypoint,
 } from "./sol-parse";
 import { createTypewriterEffect, type TypewriterEffect } from "./typewriter";
@@ -37,9 +40,15 @@ export type Typewriter<
     submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Promise<TypewriterMutationResult>;
   on: On<sequencingConfig, mutationsConfig, () => void>;
+  /**
+   * Stops the typewriter and releases its database connections and, in `dev`
+   * mode, Anvil.
+   */
+  close: () => Promise<void>;
 };
 
 export type { EvmError, Spec } from "typewriter-evm";
+export { AnvilError } from "./anvil";
 export type {
   ResolvedTypewriterMutationConfig,
   TypewriterConfig,
@@ -145,16 +154,33 @@ export async function createTypewriter<
     sequencingConfig
   >;
 
-  const app = await loadSolidityTypewriterApp(entrypoint, config).catch(
-    (error: unknown) => exit("Failed to start typewriter", Cause.fail(error)),
-  );
-  // TODO(kyle) expose a way to close the scope. Until then the typewriter
-  // runs until the process exits.
+  const metadata = await Promise.resolve()
+    .then(() => {
+      // Check the config before `dev` mode starts Anvil for it.
+      validateConfig(config);
+      return loadSolidityMetadata(entrypoint);
+    })
+    .catch((error: unknown) =>
+      exit("Failed to start typewriter", Cause.fail(error)),
+    );
+  // `close` closes the scope; otherwise the typewriter runs until the process
+  // exits.
   const scope = Effect.runSync(Scope.make());
 
   try {
     const { typewriter, services } = await Effect.runPromise(
       Effect.gen(function* () {
+        const devChain =
+          config.dev === true
+            ? yield* startDevChain(metadata.bytecode).pipe(
+                Effect.provide(loggerLayer),
+                Effect.provideService(Scope.Scope, scope),
+              )
+            : undefined;
+        const app = yield* Effect.try({
+          try: () => createSolidityTypewriterApp(config, metadata, devChain),
+          catch: (error) => error,
+        });
         const [rpcUrl, ...rpcUrls] = app.rpcUrls;
         const services = yield* Layer.buildWithScope(
           Layer.mergeAll(
@@ -217,6 +243,7 @@ export async function createTypewriter<
       manifest: typewriter.manifest,
       execute,
       on,
+      close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
     } as Result;
   } catch (error) {
     await Effect.runPromise(Scope.close(scope, Exit.void));

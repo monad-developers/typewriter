@@ -41,7 +41,12 @@ import type {
   TypewriterManifest,
 } from "./config";
 import { Database, type Db, type DbError, type DbTransaction } from "./db";
-import { deploymentLockKey, type MigrationError, migrate } from "./db-migrate";
+import {
+  deploymentLockKey,
+  dropSchema,
+  type MigrationError,
+  migrate,
+} from "./db-migrate";
 import {
   insertKeccakPreimages,
   insertMutations,
@@ -737,6 +742,9 @@ export function createTypewriterEffect<
       deploymentLockKey(app.chainId, app.address),
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
+    // In `dev` mode the chain is new, so the schema left by the last run, at
+    // the same address, describes a deployment that no longer exists.
+    if (app.dev) yield* dropSchema(db, app.schemaName);
 
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.

@@ -41,6 +41,25 @@ function createTablesStatements(
 }
 
 /**
+ * Drop the deployment schema. `dev` mode does this on startup, because it
+ * deploys to a new chain each run, at the same address.
+ *
+ * @dev The caller must hold `db.lock(deploymentLockKey(...))`.
+ */
+export function dropSchema(
+  db: Db,
+  schemaName: string,
+): Effect.Effect<void, DbError> {
+  return db
+    .query((db) =>
+      db.execute(
+        sql`DROP SCHEMA IF EXISTS ${sql.identifier(schemaName)} CASCADE`,
+      ),
+    )
+    .pipe(Effect.asVoid);
+}
+
+/**
  * Create the deployment schema, or migrate and check an existing one.
  *
  * @dev The caller must hold `db.lock(deploymentLockKey(...))`.

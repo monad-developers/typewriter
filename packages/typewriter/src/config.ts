@@ -79,16 +79,27 @@ export type TypewriterSequencingConfig<
 export type TypewriterConfig<
   sequencingConfig extends SequencingConfig = SequencingConfig,
 > = {
-  address: Address.Address;
-  account: PrivateKeyAccount;
-  chainId: number;
+  /**
+   * Starts a local Anvil and deploys the app to it with Anvil's first
+   * account as the scheduler. The chain and the deployment's database schema
+   * last only as long as the process, so leave the network fields
+   * (`address`, `account`, `chainId`, `rpcUrl`) unset.
+   */
+  dev?: boolean;
+  /** Required unless `dev` is set. */
+  address?: Address.Address;
+  /** Required unless `dev` is set. */
+  account?: PrivateKeyAccount;
+  /** Required unless `dev` is set. */
+  chainId?: number;
   /**
    * Pins the EVM hardfork that mutations execute under. By default it follows
    * the Monad mainnet or testnet schedule for `chainId`, so it is required on
    * any other chain, such as a local Anvil started with `--network monad`.
    */
   hardfork?: Spec;
-  rpcUrl: string | string[];
+  /** Required unless `dev` is set. */
+  rpcUrl?: string | string[];
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
   confirmations?: {
@@ -97,8 +108,21 @@ export type TypewriterConfig<
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
+/** The network fields of a `TypewriterConfig`, filled in by `dev` mode. */
+export type DevChain = {
+  address: Address.Address;
+  account: PrivateKeyAccount;
+  chainId: number;
+  hardfork: Spec;
+  rpcUrl: string;
+};
+
+const NETWORK_FIELDS = ["address", "account", "chainId", "rpcUrl"] as const;
+
 /** A resolved `TypewriterConfig`, merged with the app's Solidity metadata. */
 export type TypewriterApp = {
+  /** Set in `dev` mode, where the deployment's schema starts empty. */
+  dev: boolean;
   address: Address.Address;
   abi: Abi;
   manifest: TypewriterManifest;
@@ -151,6 +175,24 @@ function assertSafeNonNegativeInteger(
 }
 
 export function validateConfig(config: TypewriterConfig): void {
+  if (config.dev === true) {
+    const set = NETWORK_FIELDS.filter((field) => config[field] !== undefined);
+    if (set.length > 0) {
+      throw new ConfigError({
+        message: `config.dev starts its own Anvil, so leave ${set.map((field) => `config.${field}`).join(", ")} unset`,
+      });
+    }
+  } else {
+    const missing = NETWORK_FIELDS.filter(
+      (field) => config[field] === undefined,
+    );
+    if (missing.length > 0) {
+      throw new ConfigError({
+        message: `${missing.map((field) => `config.${field}`).join(", ")} ${missing.length === 1 ? "is" : "are"} required unless config.dev is set`,
+      });
+    }
+  }
+
   if (Array.isArray(config.rpcUrl) && config.rpcUrl.length === 0) {
     throw new ConfigError({ message: "At least one RPC URL is required" });
   }
@@ -226,17 +268,36 @@ export function createTypewriterApp(params: {
   abi: Abi;
   storageLayout: StorageConfig;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
+  /** The started Anvil, required in `dev` mode. */
+  devChain?: DevChain;
 }): TypewriterApp {
-  const { abi, config, mutations, storageLayout } = params;
+  const { abi, config, devChain, mutations, storageLayout } = params;
   validateConfig(config);
   validateMutationDefinitions(mutations);
 
+  const dev = config.dev === true;
+  if (dev && devChain === undefined) {
+    throw new ConfigError({
+      message: "config.dev needs a started Anvil; use createTypewriter",
+    });
+  }
+  // `validateConfig` checked that the network fields are set outside `dev`.
+  const network = dev
+    ? devChain!
+    : {
+        address: config.address!,
+        account: config.account!,
+        chainId: config.chainId!,
+        hardfork: config.hardfork,
+        rpcUrl: config.rpcUrl!,
+      };
+
   // `validateConfig` rejects an empty `rpcUrl` list.
   const rpcUrls = (
-    Array.isArray(config.rpcUrl) ? config.rpcUrl : [config.rpcUrl]
+    Array.isArray(network.rpcUrl) ? network.rpcUrl : [network.rpcUrl]
   ) as [string, ...string[]];
 
-  const schemaName = `typewriter_${deploymentKey(config.chainId, config.address)}`;
+  const schemaName = `typewriter_${deploymentKey(network.chainId, network.address)}`;
   if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
     throw new ConfigError({
       message: `config.chainId is too long for the Postgres schema name: ${schemaName}`,
@@ -265,11 +326,12 @@ export function createTypewriterApp(params: {
         };
 
   return {
-    address: config.address,
+    dev,
+    address: network.address,
     abi,
     manifest: {
-      chainId: config.chainId,
-      address: config.address,
+      chainId: network.chainId,
+      address: network.address,
       mutations: Object.fromEntries(
         Object.entries(mutations).map(([name, mutation]) => [
           name,
@@ -278,9 +340,9 @@ export function createTypewriterApp(params: {
       ),
     },
     storageLayout,
-    account: config.account,
-    chainId: config.chainId,
-    hardfork: config.hardfork,
+    account: network.account,
+    chainId: network.chainId,
+    hardfork: network.hardfork,
     rpcUrls,
     database: config.database,
     mutations,

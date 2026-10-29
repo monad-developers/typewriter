@@ -157,9 +157,7 @@ contract OrderBook is Typewriter {
 
     State internal state;
 
-    constructor(address _scheduler) {
-        SCHEDULER = _scheduler;
-    }
+    constructor(address _scheduler) Typewriter(_scheduler) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.CloseOrder)) {

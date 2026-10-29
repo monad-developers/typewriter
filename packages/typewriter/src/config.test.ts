@@ -3,10 +3,12 @@ import type { Hex } from "ox";
 import type { StorageView } from "storage-layout";
 import {
   createTypewriterApp,
+  type DevChain,
   type MutationsConfig,
   type SequencingConfig,
   type StorageConfig,
   type TypewriterConfig,
+  validateConfig,
 } from "./config";
 import type {
   Authorization,
@@ -114,6 +116,50 @@ test("createTypewriterApp constructs a serializable manifest", () => {
     chainId: 1,
     address: publicConfig.address,
     mutations: MUTATIONS,
+  });
+});
+
+test("validateConfig lists every missing network field outside dev", () => {
+  expect(() => validateConfig({ database: publicConfig.database })).toThrow(
+    "config.address, config.account, config.chainId, config.rpcUrl are required unless config.dev is set",
+  );
+});
+
+test("validateConfig rejects network fields in dev", () => {
+  expect(() =>
+    validateConfig({
+      dev: true,
+      address: publicConfig.address,
+      rpcUrl: publicConfig.rpcUrl,
+      database: publicConfig.database,
+    }),
+  ).toThrow(
+    "config.dev starts its own Anvil, so leave config.address, config.rpcUrl unset",
+  );
+});
+
+test("createTypewriterApp takes the network from the dev chain", () => {
+  const devChain: DevChain = {
+    address: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    account: {} as DevChain["account"],
+    chainId: 31337,
+    hardfork: "MonadTen",
+    rpcUrl: "http://127.0.0.1:8545",
+  };
+  const app = createTypewriterApp({
+    config: { dev: true, database: publicConfig.database },
+    abi: [],
+    storageLayout: STORAGE_LAYOUT,
+    mutations: MUTATIONS,
+    devChain,
+  });
+
+  expect(app).toMatchObject({
+    dev: true,
+    address: devChain.address,
+    chainId: 31337,
+    hardfork: "MonadTen",
+    rpcUrls: [devChain.rpcUrl],
   });
 });
 
