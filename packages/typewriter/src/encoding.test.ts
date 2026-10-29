@@ -91,6 +91,98 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
   ).toEqual([params]);
 });
 
+const TYPED = {
+  id: 0,
+  params: [
+    { name: "memo", type: "string" },
+    { name: "data", type: "bytes" },
+    { name: "tag", type: "bytes2" },
+    { name: "to", type: "address" },
+    { name: "pair", type: "bytes[2]" },
+  ],
+};
+const TYPED_PARAMS = {
+  memo: "memo",
+  data: "0xff",
+  tag: "0xabcd",
+  to: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  pair: ["0x", "0x01"],
+};
+
+test("encodeMutationCalldata accepts any-case addresses and empty bytes", () => {
+  expect(() =>
+    encodeMutationCalldata(acceptedMutation(TYPED, TYPED_PARAMS)),
+  ).not.toThrow();
+});
+
+test.each([
+  ["a missing string", { memo: undefined }, "params.memo must be a string"],
+  ["a number as a string", { memo: 7 }, "params.memo must be a string"],
+  [
+    "non-hex bytes",
+    { data: "not hex" },
+    "params.data must be even-length hex bytes",
+  ],
+  [
+    "odd-length bytes",
+    { data: "0xabc" },
+    "params.data must be even-length hex bytes",
+  ],
+  [
+    "bytes with a 0X prefix",
+    { data: "0XFF" },
+    "params.data must be even-length hex bytes",
+  ],
+  [
+    "bytes2 of the wrong size",
+    { tag: "0xab" },
+    "params.tag must be 2 hex bytes",
+  ],
+  ["an invalid address", { to: "0x1234" }, "params.to must be an address"],
+  [
+    "a short fixed array",
+    { pair: ["0x"] },
+    "params.pair must be an array of 2 bytes",
+  ],
+  [
+    "non-hex bytes in an array",
+    { pair: ["0x", "zz"] },
+    "params.pair[1] must be even-length hex bytes",
+  ],
+])("encodeMutationCalldata rejects %s", (_, change, message) => {
+  expect(() =>
+    encodeMutationCalldata(
+      acceptedMutation(TYPED, { ...TYPED_PARAMS, ...change }),
+    ),
+  ).toThrow(message);
+});
+
+test("encodeMutationCalldata rejects params that are not an object", () => {
+  expect(() => encodeMutationCalldata(acceptedMutation(TYPED, null))).toThrow(
+    "params must be an object",
+  );
+});
+
+test.each([
+  ["not hex", "signature"],
+  ["with a non-hex character", "0xdeadbeefzz"],
+  ["of odd length", "0xdeadbeef0"],
+  ["with a 0X prefix", "0XDEADBEEF"],
+])("encodeAuthorizationCalldata rejects a signature %s", (_, signature) => {
+  expect(() =>
+    encodeAuthorizationCalldata({
+      ...AUTHORIZATION,
+      signature: signature as Authorization["signature"],
+    }),
+  ).toThrow("authorization.signature must be even-length hex bytes");
+});
+
+test("encodeAuthorizationCalldata rejects an accountID of the wrong size", () => {
+  expect(() =>
+    encodeAuthorizationCalldata({ ...AUTHORIZATION, accountID: "0x1234" }),
+  ).toThrow("authorization.accountID must be 32 hex bytes");
+});
+
 test("decodeMutationCalldata round-trips params", () => {
   const mutation = {
     id: 0,
