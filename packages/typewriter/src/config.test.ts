@@ -1,6 +1,7 @@
 import { expect, expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type { StorageView } from "storage-layout";
+import type { PrivateKeyAccount } from "viem";
 import {
   createTypewriterApp,
   type DevChain,
@@ -12,9 +13,11 @@ import {
 } from "./config";
 import type {
   Authorization,
+  createTypewriter,
   Typewriter,
   TypewriterMutationInput,
 } from "./index";
+import type { TypewriterSolidityEntrypoint } from "./sol-parse";
 import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 
 const STORAGE_LAYOUT = {
@@ -98,7 +101,7 @@ function createTypewriterTest<
 
 const publicConfig = {
   address: "0x0000000000000000000000000000000000000000",
-  account: {} as TypewriterConfig["account"],
+  account: {} as PrivateKeyAccount,
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
@@ -166,6 +169,38 @@ test("createTypewriterApp takes the network from the dev chain", () => {
     hardfork: "MonadTen",
     rpcUrls: [devChain.rpcUrl],
   });
+});
+
+test("createTypewriter types the network fields by dev", () => {
+  // Type checks only: the calls never run.
+  const check = (
+    create: typeof createTypewriter,
+    entrypoint: TypewriterSolidityEntrypoint,
+    envDev: boolean,
+  ) => {
+    const { address, account, chainId, rpcUrl, database } = publicConfig;
+
+    create(entrypoint, { dev: true, database });
+    create(entrypoint, { address, account, chainId, rpcUrl, database });
+    create(entrypoint, {
+      dev: false,
+      address,
+      account,
+      chainId,
+      rpcUrl,
+      database,
+    });
+    // A `dev` typed as `boolean` leaves the check to `validateConfig`.
+    create(entrypoint, { dev: envDev, address: undefined, database });
+
+    // @ts-expect-error dev mode starts its own chain
+    create(entrypoint, { dev: true, address, database });
+    // @ts-expect-error a deployment needs every network field
+    create(entrypoint, { database });
+    // @ts-expect-error a deployment needs every network field
+    create(entrypoint, { dev: false, address, account, chainId, database });
+  };
+  expect(check).toBeFunction();
 });
 
 test("Typewriter exposes each storage root at one property layer", () => {

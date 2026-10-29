@@ -82,30 +82,43 @@ export type TypewriterSequencingConfig<
       batchOrder: readonly string[];
     };
 
+/** The fields that point typewriter at a deployment, which `dev` fills in. */
+type NetworkConfig = {
+  /** The deployed Typewriter contract. */
+  address: Address.Address;
+  /** The scheduler, which signs and submits settlements. */
+  account: PrivateKeyAccount;
+  chainId: number;
+  rpcUrl: string | string[];
+};
+
+/**
+ * A literal `dev: true` leaves the network fields unset, and `false` or no
+ * `dev` sets them all. A `dev` typed as `boolean`, such as one read from the
+ * environment, allows either, and `validateConfig` checks it at startup.
+ */
+type DevNetworkConfig<dev extends boolean> = boolean extends dev
+  ? Partial<NetworkConfig>
+  : dev extends true
+    ? { [field in keyof NetworkConfig]?: undefined }
+    : NetworkConfig;
+
 export type TypewriterConfig<
   sequencingConfig extends SequencingConfig = SequencingConfig,
-> = {
+  dev extends boolean = boolean,
+> = DevNetworkConfig<dev> & {
   /**
    * Starts a local Anvil and deploys the app to it with Anvil's first
    * account as the scheduler. The chain and the deployment's database schema
-   * last only as long as the process, so leave the network fields
-   * (`address`, `account`, `chainId`, `rpcUrl`) unset.
+   * last only as long as the process, so the network fields stay unset.
    */
-  dev?: boolean;
-  /** Required unless `dev` is set. */
-  address?: Address.Address;
-  /** Required unless `dev` is set. */
-  account?: PrivateKeyAccount;
-  /** Required unless `dev` is set. */
-  chainId?: number;
+  dev?: dev;
   /**
    * Pins the EVM hardfork that mutations execute under. By default it follows
    * the Monad mainnet or testnet schedule for `chainId`, so it is required on
    * any other chain, such as a local Anvil started with `--network monad`.
    */
   hardfork?: Spec;
-  /** Required unless `dev` is set. */
-  rpcUrl?: string | string[];
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
   confirmations?: {

@@ -138,9 +138,10 @@ type EntrypointMutationsConfig<entrypoint> =
 export async function createTypewriter<
   const entrypoint extends TypewriterSolidityEntrypoint,
   const sequencingConfig extends SequencingConfig = SequencingConfig,
+  const dev extends boolean = false,
 >(
   entrypoint: entrypoint,
-  config: TypewriterConfig<sequencingConfig>,
+  config: TypewriterConfig<sequencingConfig, dev>,
 ): Promise<
   Typewriter<
     EntrypointStorageConfig<entrypoint>,
