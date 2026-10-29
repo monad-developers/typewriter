@@ -4,7 +4,6 @@ import { Secp256k1, Signature } from "ox";
 import type * as HexNamespace from "ox/Hex";
 import {
   authorizeMutation,
-  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   type TypedMutation,
@@ -29,10 +28,7 @@ function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
 
 export function useDemoSignUp() {
   const { data: manifest } = useManifest();
-  const storageKey =
-    manifest === undefined
-      ? undefined
-      : deploymentKey(manifest.chainId, manifest.address);
+  const storageKey = manifest?.deploymentKey;
   const queryClient = useQueryClient();
 
   return useMutation({

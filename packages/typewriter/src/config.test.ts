@@ -115,8 +115,10 @@ test("createTypewriterApp constructs a serializable manifest", () => {
   expect(app.manifest).toEqual({
     chainId: 1,
     address: publicConfig.address,
+    deploymentKey: `1_${publicConfig.address}`,
     mutations: MUTATIONS,
   });
+  expect(app.schemaName).toBe(`typewriter_1_${publicConfig.address}`);
 });
 
 test("validateConfig lists every missing network field outside dev", () => {
@@ -154,7 +156,9 @@ test("createTypewriterApp takes the network from the dev chain", () => {
     devChain,
   });
 
-  expect(app.schemaName).toMatch(/^typewriter_dev_[0-9a-f]{12}$/);
+  // Each dev process gets its own schema and browser storage.
+  expect(app.manifest.deploymentKey).toMatch(/^dev_[0-9a-f]{12}$/);
+  expect(app.schemaName).toBe(`typewriter_${app.manifest.deploymentKey}`);
   expect(app).toMatchObject({
     dev: true,
     address: devChain.address,

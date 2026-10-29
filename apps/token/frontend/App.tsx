@@ -4,7 +4,6 @@ import type { TypewriterManifest, TypewriterMutationResult } from "typewriter";
 import {
   authorizeMutation,
   BUILTIN_MUTATIONS,
-  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   incrementNonce,
@@ -116,10 +115,7 @@ export function App() {
     }
   }
   const { data: manifest } = useManifest();
-  const storageKey =
-    manifest === undefined
-      ? undefined
-      : deploymentKey(manifest.chainId, manifest.address);
+  const storageKey = manifest?.deploymentKey;
   const storedAccountQuery = useStoredAccount();
   const account = storedAccountQuery.data ?? null;
   const accountQuery = useQuery({

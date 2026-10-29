@@ -41,9 +41,6 @@ const authorizationColumns = () => ({
 
 export const TYPEWRITER_SCHEMA_VERSION = 1;
 
-/** Each `dev` process has its own schema, which lasts as long as its chain. */
-export const DEV_SCHEMA_PREFIX = "typewriter_dev_";
-
 export function createMutationSchema<
   const mutationsConfig extends MutationsConfig,
 >(

@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { deploymentKey, incrementNonce } from "typewriter/client";
+import { incrementNonce } from "typewriter/client";
 import { request } from "../lib/api";
 import { useManifest } from "./useManifest";
 import { signMarketOrder } from "./useSign";
@@ -13,10 +13,7 @@ type MarketOrderParams = {
 
 export function useMarketOrderMutation() {
   const { data: manifest } = useManifest();
-  const storageKey =
-    manifest === undefined
-      ? undefined
-      : deploymentKey(manifest.chainId, manifest.address);
+  const storageKey = manifest?.deploymentKey;
   const { data: account } = useStoredAccount();
   const queryClient = useQueryClient();
 

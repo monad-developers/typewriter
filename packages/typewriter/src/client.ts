@@ -24,6 +24,9 @@ import type {
   RemoveCredentialParams,
 } from "./typewriter-types";
 
+/** The parts of a manifest that signing reads, which a client can build itself. */
+type SigningManifest = Omit<TypewriterManifest, "deploymentKey">;
+
 export type { Authorization, CreateAccountParams };
 export { AUTHORIZATION_ABI_PARAMS, BUILTIN_MUTATIONS, KeyType };
 
@@ -31,11 +34,11 @@ const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_UINT192 = (1n << 192n) - 1n;
 const MAX_UINT64 = (1n << 64n) - 1n;
 
-type MutationName<manifest extends TypewriterManifest> =
+type MutationName<manifest extends SigningManifest> =
   keyof manifest["mutations"] & string;
 
 type MutationParams<
-  manifest extends TypewriterManifest,
+  manifest extends SigningManifest,
   name extends MutationName<manifest>,
 > = {
   [param in manifest["mutations"][name]["params"][number] as param extends {
@@ -48,7 +51,7 @@ type MutationParams<
 };
 
 type MutationParamsForName<
-  manifest extends TypewriterManifest,
+  manifest extends SigningManifest,
   name extends MutationName<manifest>,
 > = name extends "CreateAccount"
   ? CreateAccountParams
@@ -59,7 +62,7 @@ type MutationParamsForName<
       : MutationParams<manifest, name>;
 
 export type TypedMutation<
-  manifest extends TypewriterManifest,
+  manifest extends SigningManifest,
   name extends MutationName<manifest> = MutationName<manifest>,
 > = {
   name: name;
@@ -71,7 +74,7 @@ export type TypedMutation<
 };
 
 export type AuthorizedMutation<
-  manifest extends TypewriterManifest,
+  manifest extends SigningManifest,
   name extends MutationName<manifest> = MutationName<manifest>,
 > = {
   name: name;
@@ -89,9 +92,10 @@ export function deriveAccountID(params: CreateAccountParams): Hex.Hex {
 }
 
 /**
- * Returns the key that identifies one deployment of a Typewriter app. The
- * runtime uses it in the Postgres schema name, and clients use it to scope
- * browser storage.
+ * Returns the key that identifies one deployment of a Typewriter app on a
+ * chain. The runtime uses it in the Postgres schema name. Clients should scope
+ * browser storage by `manifest.deploymentKey`, which is this key except in
+ * `dev` mode.
  */
 export function deploymentKey(
   chainId: number,
@@ -135,7 +139,7 @@ function encodeMutationData(
 }
 
 export function getAuthorizationPayload<
-  const manifest extends TypewriterManifest,
+  const manifest extends SigningManifest,
   const name extends MutationName<manifest>,
 >(manifest: manifest, mutation: TypedMutation<manifest, name>): Hex.Hex {
   const config = manifest.mutations[mutation.name];
@@ -163,7 +167,7 @@ export function getAuthorizationPayload<
 }
 
 export function authorizeMutation<
-  const manifest extends TypewriterManifest,
+  const manifest extends SigningManifest,
   const name extends MutationName<manifest>,
 >(
   mutation: TypedMutation<manifest, name>,

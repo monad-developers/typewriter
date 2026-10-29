@@ -116,7 +116,7 @@ const typewriter = await createTypewriter(Token, {
 });
 ```
 
-Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, so several dev processes can share one database. `typewriter.close()` drops the schema and stops Anvil. Anvil also stops when the process exits, but a process that ends without `close()` leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
+Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, and gives clients the matching `manifest.deploymentKey`, so several dev processes can share one database. `typewriter.close()` drops the schema and stops Anvil. Anvil also stops when the process exits, but a process that ends without `close()` leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
 
 #### Sequencing
 
@@ -544,9 +544,12 @@ Stops the runtime and releases its database connections, and in dev mode stops A
 typewriter.manifest: {
   chainId: number;
   address: Address;
+  deploymentKey: string;
   mutations: Record<string, { id: number; params: AbiParameter[] }>;
 };
 ```
+
+`deploymentKey` identifies the deployment; scope browser storage, such as stored account keys, by it. It is `<chainId>_<address>`, except in [dev mode](#local-development), where every chain deploys to the same address and each process gets a random `dev_<random>` key. A browser therefore never reuses an account from a dev chain that is gone.
 
 The serializable manifest contains the deployment and all app/native mutation
 metadata needed to authorize mutations. The browser-safe `typewriter/client`

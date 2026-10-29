@@ -10,7 +10,6 @@ import type { DatabaseOptions } from "./db";
 import {
   createMutationSchema,
   createTypewriterSchema,
-  DEV_SCHEMA_PREFIX,
   type TypewriterSchema,
 } from "./db-schema";
 import {
@@ -51,6 +50,12 @@ export type TypewriterManifest<
 > = {
   chainId: number;
   address: Address.Address;
+  /**
+   * Identifies this deployment, for clients to scope browser storage by. It
+   * is `deploymentKey(chainId, address)`, except in `dev` mode, where every
+   * chain deploys to the same address and each process gets a random key.
+   */
+  deploymentKey: string;
   mutations: {
     [name in keyof mutationsConfig]: {
       id: mutationsConfig[name] extends {
@@ -299,10 +304,13 @@ export function createTypewriterApp(params: {
   ) as [string, ...string[]];
 
   // Every `dev` chain deploys to the same address, so each process gets its
-  // own schema, and dev processes can share a database.
-  const schemaName = dev
-    ? `${DEV_SCHEMA_PREFIX}${Hex.random(6).slice(2)}`
-    : `typewriter_${deploymentKey(network.chainId, network.address)}`;
+  // own key: its own schema, so dev processes can share a database, and its
+  // own browser storage, so a client does not reuse an account from a chain
+  // that is gone.
+  const key = dev
+    ? `dev_${Hex.random(6).slice(2)}`
+    : deploymentKey(network.chainId, network.address);
+  const schemaName = `typewriter_${key}`;
   if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
     throw new ConfigError({
       message: `config.chainId is too long for the Postgres schema name: ${schemaName}`,
@@ -337,6 +345,7 @@ export function createTypewriterApp(params: {
     manifest: {
       chainId: network.chainId,
       address: network.address,
+      deploymentKey: key,
       mutations: Object.fromEntries(
         Object.entries(mutations).map(([name, mutation]) => [
           name,

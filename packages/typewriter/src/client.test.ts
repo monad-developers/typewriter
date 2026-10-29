@@ -15,6 +15,7 @@ import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 const manifest = {
   chainId: 10,
   address: "0x1111111111111111111111111111111111111111",
+  deploymentKey: "10_0x1111111111111111111111111111111111111111",
   mutations: {
     Transfer: {
       id: 7,
