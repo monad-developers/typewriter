@@ -1,7 +1,6 @@
 import superjson from "superjson";
 import { createTypewriter, type MutationStatus } from "typewriter";
-import type { Address, Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import type { Hex } from "viem";
 import Token from "../contracts/src/Token.sol";
 import index from "../frontend/index.html";
 
@@ -19,16 +18,8 @@ function jsonResponse(data: unknown): Response {
   });
 }
 
-const { CHAIN_ID, PRIVATE_KEY, RPC_URL, TOKEN_ADDRESS } = process.env;
-
 const typewriter = await createTypewriter(Token, {
-  // Without RPC_URL, development runs on a local Anvil that typewriter starts
-  // and deploys the token to.
-  dev: process.env.NODE_ENV !== "production" && RPC_URL === undefined,
-  address: TOKEN_ADDRESS as Address | undefined,
-  account: PRIVATE_KEY ? privateKeyToAccount(PRIVATE_KEY as Hex) : undefined,
-  chainId: CHAIN_ID ? Number(CHAIN_ID) : undefined,
-  rpcUrl: RPC_URL,
+  dev: true,
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   sequencing: { order: "fifo" },
 });
