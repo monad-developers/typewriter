@@ -1,5 +1,5 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Cause, Effect, Layer } from "effect";
+import { Cause, Deferred, Effect, Layer } from "effect";
 import { startDevChain } from "./anvil";
 import {
   type MutationConfig,
@@ -103,15 +103,6 @@ export {
   type WatchError,
 } from "./watch";
 
-/**
- * Logs `cause` and exits the process. A typewriter that failed to start or
- * stopped can't accept mutations, so it crashes rather than serve stale state.
- */
-function exit(msg: string, cause: Cause.Cause<unknown>): never {
-  Effect.runSync(Effect.logError(msg, cause).pipe(Effect.provide(loggerLayer)));
-  process.exit(1);
-}
-
 type EntrypointMetadata<entrypoint> =
   entrypoint extends TypewriterSolidityEntrypoint<infer metadata>
     ? metadata
@@ -131,7 +122,7 @@ type EntrypointMutationsConfig<entrypoint> =
     ? mutations
     : MutationsConfig;
 
-export async function createTypewriter<
+export function createTypewriter<
   const entrypoint extends TypewriterSolidityEntrypoint,
   const sequencingConfig extends SequencingConfig = SequencingConfig,
   const dev extends boolean = false,
@@ -151,99 +142,101 @@ export async function createTypewriter<
     sequencingConfig
   >;
 
-  const metadata = await Promise.resolve()
-    .then(() => {
+  const started = Deferred.makeUnsafe<Result>();
+
+  // The typewriter runs as the process's main fiber. SIGINT and SIGTERM
+  // interrupt it, so its scope's finalizers stop the program, release the
+  // deployment lock and the database, and in `dev` mode drop the schema and
+  // stop Anvil, before the process exits. A typewriter that fails to start or
+  // stops can't accept mutations, so the process exits rather than serve
+  // stale state.
+  BunRuntime.runMain(
+    Effect.gen(function* () {
       // Check the config before `dev` mode starts Anvil for it.
-      validateConfig(config);
-      return loadSolidityMetadata(entrypoint);
-    })
-    .catch((error: unknown) =>
-      exit("Failed to start typewriter", Cause.fail(error)),
-    );
-  return new Promise<Result>((resolve) => {
-    let started = false;
-    // The typewriter runs as the process's main fiber. SIGINT and SIGTERM
-    // interrupt it, so its scope's finalizers stop the program, release the
-    // deployment lock and the database, and in `dev` mode drop the schema and
-    // stop Anvil, before the process exits. A typewriter that fails to start or
-    // stops can't accept mutations, so the process exits rather than serve
-    // stale state.
-    BunRuntime.runMain(
-      Effect.gen(function* () {
-        const devChain =
-          config.dev === true
-            ? yield* startDevChain(metadata.bytecode)
-            : undefined;
-        const app = yield* Effect.try({
-          try: () => createSolidityTypewriterApp(config, metadata, devChain),
-          catch: (error) => error,
-        });
-        const [rpcUrl, ...rpcUrls] = app.rpcUrls;
-        const services = yield* Layer.build(
-          Layer.mergeAll(
-            loggerLayer,
-            layerRpc([
-              makeHttpTransport(rpcUrl),
-              ...rpcUrls.map(makeHttpTransport),
-            ]),
-            layerDatabase(app.database),
-          ),
-        );
-        const typewriter = yield* createTypewriterEffect<
-          EntrypointStorageConfig<entrypoint>,
-          EntrypointMutationsConfig<entrypoint>,
-          sequencingConfig
-        >(app).pipe(Effect.provide(services));
+      yield* Effect.try({
+        try: () => validateConfig(config),
+        catch: (error) => error,
+      });
+      const metadata = yield* Effect.tryPromise({
+        try: () => loadSolidityMetadata(entrypoint),
+        catch: (error) => error,
+      });
+      const devChain =
+        config.dev === true
+          ? yield* startDevChain(metadata.bytecode)
+          : undefined;
+      const app = yield* Effect.try({
+        try: () => createSolidityTypewriterApp(config, metadata, devChain),
+        catch: (error) => error,
+      });
+      const [rpcUrl, ...rpcUrls] = app.rpcUrls;
+      const services = yield* Layer.build(
+        Layer.mergeAll(
+          loggerLayer,
+          layerRpc([
+            makeHttpTransport(rpcUrl),
+            ...rpcUrls.map(makeHttpTransport),
+          ]),
+          layerDatabase(app.database),
+        ),
+      );
+      const typewriter = yield* createTypewriterEffect<
+        EntrypointStorageConfig<entrypoint>,
+        EntrypointMutationsConfig<entrypoint>,
+        sequencingConfig
+      >(app).pipe(Effect.provide(services));
 
-        const execute = ((
-          submitted: TypewriterMutationInput<
-            EntrypointMutationsConfig<entrypoint>
-          >,
-        ) =>
-          Effect.runPromise(
-            typewriter.execute(submitted).pipe(Effect.provide(services)),
-          )) as Result["execute"];
+      const execute = ((
+        submitted: TypewriterMutationInput<
+          EntrypointMutationsConfig<entrypoint>
+        >,
+      ) =>
+        Effect.runPromise(
+          typewriter.execute(submitted).pipe(Effect.provide(services)),
+        )) as Result["execute"];
 
-        const on = ((
-          event: "mutation" | "batch" | "block",
-          cb:
-            | MutationListener<EntrypointMutationsConfig<entrypoint>>
-            | BatchListener<EntrypointMutationsConfig<entrypoint>>
-            | BlockListener<
-                sequencingConfig,
-                EntrypointMutationsConfig<entrypoint>
-              >,
-        ) =>
-          Effect.runSync(
-            // @ts-expect-error `on` is overloaded per event, and this forwards whichever event and listener the caller passed.
-            typewriter.on(event, cb),
-          )) as Result["on"];
+      const on = ((
+        event: "mutation" | "batch" | "block",
+        cb:
+          | MutationListener<EntrypointMutationsConfig<entrypoint>>
+          | BatchListener<EntrypointMutationsConfig<entrypoint>>
+          | BlockListener<
+              sequencingConfig,
+              EntrypointMutationsConfig<entrypoint>
+            >,
+      ) =>
+        Effect.runSync(
+          // @ts-expect-error `on` is overloaded per event, and this forwards whichever event and listener the caller passed.
+          typewriter.on(event, cb),
+        )) as Result["on"];
 
-        resolve({
-          state: typewriter.state,
-          accounts: typewriter.accounts,
-          schema: typewriter.schema,
-          manifest: typewriter.manifest,
-          execute,
-          on,
-        } as Result);
-        started = true;
+      yield* Deferred.succeed(started, {
+        state: typewriter.state,
+        accounts: typewriter.accounts,
+        schema: typewriter.schema,
+        manifest: typewriter.manifest,
+        execute,
+        on,
+      } as Result);
 
-        return yield* typewriter.program.pipe(Effect.provide(services));
-      }).pipe(
-        Effect.tapCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.void
-            : Effect.logError(
-                started ? "Stopped typewriter" : "Failed to start typewriter",
+      return yield* typewriter.program.pipe(Effect.provide(services));
+    }).pipe(
+      Effect.tapCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.flatMap(Deferred.isDone(started), (isStarted) =>
+              Effect.logError(
+                isStarted ? "Stopped typewriter" : "Failed to start typewriter",
                 cause,
               ),
-        ),
-        Effect.scoped,
-        Effect.provide([loggerLayer, BunServices.layer]),
+            ),
       ),
-      // The log above reports the failure with typewriter's logger.
-      { disableErrorReporting: true },
-    );
-  });
+      Effect.scoped,
+      Effect.provide([loggerLayer, BunServices.layer]),
+    ),
+    // The log above reports the failure with typewriter's logger.
+    { disableErrorReporting: true },
+  );
+
+  return Effect.runPromise(Deferred.await(started));
 }
