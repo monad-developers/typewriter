@@ -82,8 +82,6 @@ export type Run = {
   /** Emitted only with batch sequencing. */
   batchEvents: BatchEvent<AssessmentMutations>[];
   blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[];
-  /** The keys of `execute` calls that waited before they emitted `received`. */
-  lateArrivals: string[];
   reorgs: Reorg[];
   expiryChecks: ExpiryCheck[];
 };
@@ -94,7 +92,6 @@ export function makeRun(): Run {
     mutationEvents: [],
     batchEvents: [],
     blockEvents: [],
-    lateArrivals: [],
     reorgs: [],
     expiryChecks: [],
   };

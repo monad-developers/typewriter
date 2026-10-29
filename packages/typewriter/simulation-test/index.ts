@@ -361,8 +361,6 @@ const program = Effect.gen(function* () {
       0,
     );
   let settlements = 0;
-  /** The `received` events of each key, to check `execute` emits one before it waits. */
-  const received = new Map<string, number>();
   // The virtual time of the last mutation event.
   let progressedAt = startMs;
 
@@ -409,15 +407,16 @@ const program = Effect.gen(function* () {
     yield* typewriter.on("mutation", (event) => {
       run.mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
-      const key = mutationKey(event.authorization);
-      if (event.status === "received") {
-        received.set(key, (received.get(key) ?? 0) + 1);
-      }
       if (
         event.status === "rejected" &&
         errorName(event.error) === "AuthorizationExpired"
       ) {
-        runExpiryCheck(checkExpiry(key, event.authorization.expiration));
+        runExpiryCheck(
+          checkExpiry(
+            mutationKey(event.authorization),
+            event.authorization.expiration,
+          ),
+        );
       }
       if (event.status !== "finalized" && event.status !== "rejected") return;
       settlements++;
@@ -459,25 +458,15 @@ const program = Effect.gen(function* () {
     );
 
     /**
-     * Starts `execute` of `input` for `submission`. It runs here, not on the
-     * scheduler, until it first waits, so `received` must be out by then.
+     * Starts `execute` of `input`. It runs here, not on the scheduler, until
+     * it first waits, so the runtime sees calls in submission order.
      */
-    const startExecute = (submission: Submission, input: unknown) =>
-      Effect.gen(function* () {
-        const before = received.get(submission.key) ?? 0;
-        const fiber = yield* Effect.forkChild(
-          // Any shape, malformed or not.
-          Effect.exit(typewriter.execute(input as never)),
-          { startImmediately: true },
-        );
-        if (
-          submission.expected.events &&
-          (received.get(submission.key) ?? 0) === before
-        ) {
-          run.lateArrivals.push(submission.key);
-        }
-        return fiber;
-      });
+    const startExecute = (input: unknown) =>
+      Effect.forkChild(
+        // Any shape, malformed or not.
+        Effect.exit(typewriter.execute(input as never)),
+        { startImmediately: true },
+      );
 
     /**
      * Executes `input`, and again at once if `submission` is resubmitted, and
@@ -485,9 +474,9 @@ const program = Effect.gen(function* () {
      */
     const execute = (submission: Submission, input: unknown) =>
       Effect.gen(function* () {
-        const first = yield* startExecute(submission, input);
+        const first = yield* startExecute(input);
         const second = submission.resubmitted
-          ? yield* startExecute(submission, input)
+          ? yield* startExecute(input)
           : undefined;
         submission.results[0] = resultOf(yield* Fiber.join(first));
         if (second !== undefined) {
