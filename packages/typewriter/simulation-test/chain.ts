@@ -24,10 +24,10 @@ export type Chain = {
   mine: (timestamp: number) => Effect.Effect<void>;
   /**
    * Replaces the last `depth` blocks with as many new ones at `timestamp`, in
-   * seconds. Block 1, where the contract is deployed, stays. Returns the depth
-   * it replaced.
+   * seconds. Block 1, where the contract is deployed, stays. Returns the
+   * hashes of the blocks it replaced.
    */
-  reorg: (depth: number, timestamp: number) => Effect.Effect<number>;
+  reorg: (depth: number, timestamp: number) => Effect.Effect<Hex.Hex[]>;
 };
 
 /**
@@ -116,14 +116,16 @@ export function makeChain(): Effect.Effect<
         Effect.gen(function* () {
           const head = Number(yield* send({ method: "eth_blockNumber" }));
           const replaced = Math.min(depth, head - 1);
-          if (replaced <= 0) return 0;
+          if (replaced <= 0) return [];
 
+          const hashes: Hex.Hex[] = [];
           const raws: unknown[] = [];
           for (let number = head - replaced + 1; number <= head; number++) {
             const block = (yield* send({
               method: "eth_getBlockByNumber",
               params: [Hex.fromNumber(number), false],
-            })) as { transactions: Hex.Hex[] };
+            })) as { hash: Hex.Hex; transactions: Hex.Hex[] };
+            hashes.push(block.hash);
             for (const hash of block.transactions) {
               raws.push(
                 yield* send({
@@ -155,7 +157,7 @@ export function makeChain(): Effect.Effect<
               params: [{ timestamp, blocks: 1 }],
             } as unknown as RpcRequest);
           }
-          return replaced;
+          return hashes;
         }),
       );
 

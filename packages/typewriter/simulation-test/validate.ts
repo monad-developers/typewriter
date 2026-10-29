@@ -1,32 +1,753 @@
+import { abiParametersToValues } from "abipg";
 import { asc } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { Hash, Hex } from "ox";
 import { createStorageView, type StorageView } from "storage-layout";
-import { BUILTIN_MUTATIONS } from "../src/client";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
 import { selectKeccakPreimages, selectStorageSlots } from "../src/db-query";
+import { encodeExecuteCalldata } from "../src/encoding";
+import type { RpcRequest } from "../src/rpc-transport";
 import type {
-  BatchEvent,
   BlockEvent,
-  Inclusion,
   MutationEvent,
   MutationStatus,
 } from "../src/typewriter-types";
-import {
-  type AppMutationName,
-  mutationKey,
-  replay,
-  type Signer,
-  type Step,
-} from "./assessment";
+import type { AppMutationName } from "./assessment";
 import type {
   AssessmentMutations,
   AssessmentStorage,
 } from "./assessment-constants";
 import type { Chain } from "./chain";
 import type { SIM } from "./index";
+import {
+  type Executed,
+  encodingOf,
+  type Onchain,
+  readOnchain,
+} from "./onchain";
+import {
+  errorName,
+  mutationKey,
+  type Result,
+  type Run,
+  type Submission,
+} from "./run";
+
+type Params = {
+  app: TypewriterApp;
+  chain: Chain;
+  db: Db;
+  run: Run;
+  /** The runtime, still alive after the drain, to read its views. */
+  typewriter: Pick<StorageView<AssessmentStorage, false>, "state" | "accounts">;
+  ordering: SIM["typewriter"]["ordering"];
+};
+
+/**
+ * Checks the run against the chain. First the harness's own rules: what
+ * executed, and in what order. Then the chain is the source of truth for the
+ * runtime's events, its database, and its state. Dies with one line per
+ * mismatch.
+ */
+export function validate(params: Params): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const { app, chain, run } = params;
+    const onchain = yield* readOnchain({
+      app,
+      chain,
+      submissions: run.submissions,
+    });
+    const check = makeCheck(run);
+
+    checkSettlements(check, onchain, app);
+    checkOutcomes(check, run, onchain);
+    checkOrder(check, run, onchain, params.ordering);
+    checkFinality(check, run, onchain);
+    yield* checkQueue(check, run, onchain, params);
+
+    checkMutationEvents(check, run, onchain);
+    checkBatchEvents(check, run, onchain, params.ordering);
+    checkBlockEvents(check, run, onchain);
+    yield* checkDatabase(check, onchain, params);
+    yield* checkRuntimeState(check, onchain, params);
+
+    if (check.errors.length > 0) {
+      return yield* Effect.die(check.errors.join("\n"));
+    }
+  });
+}
+
+type Check = {
+  errors: string[];
+  fail: (message: string) => void;
+  equal: (actual: unknown, want: unknown, what: string) => void;
+  /** The submission of each key. */
+  submissions: Map<string, Submission>;
+  label: (key: string) => string;
+};
+
+function makeCheck(run: Run): Check {
+  const errors: string[] = [];
+  const submissions = new Map(
+    run.submissions.map((submission) => [submission.key, submission]),
+  );
+  return {
+    errors,
+    fail: (message) => errors.push(message),
+    equal: (actual, want, what) => {
+      if (toJson(actual) !== toJson(want)) {
+        errors.push(`${what}: got ${toJson(actual)}, want ${toJson(want)}`);
+      }
+    },
+    submissions,
+    label: (key) => submissions.get(key)?.label ?? key,
+  };
+}
+
+/**
+ * Every settlement succeeded, and executed only submitted mutations, each
+ * once, encoded as they were signed.
+ */
+function checkSettlements(check: Check, onchain: Onchain, app: TypewriterApp) {
+  for (const settlement of onchain.settlements) {
+    if (settlement.reverted) {
+      check.fail(`settlement ${settlement.transactionHash} reverted`);
+    }
+  }
+  const seen = new Set<string>();
+  for (const { key, executionIndex, encoding } of onchain.executed) {
+    const submission = check.submissions.get(key);
+    if (submission === undefined) {
+      check.fail(`execution index ${executionIndex}: no one submitted ${key}`);
+      continue;
+    }
+    if (seen.has(key)) {
+      check.fail(`${submission.label}: executed again at ${executionIndex}`);
+    }
+    seen.add(key);
+    if (encoding !== undefined) {
+      check.equal(
+        encoding,
+        encodingOf(app, submission),
+        `${submission.label} settled encoding`,
+      );
+    }
+  }
+}
+
+/**
+ * Each submission ended as expected: it executed onchain, or it was rejected
+ * with an error its submission explains. An expiry is checked against the
+ * chain at the time of the rejection.
+ */
+function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
+  const executed = executedByKey(onchain);
+  const events = eventsByKey(run);
+
+  for (const submission of run.submissions) {
+    const { label, key, expected } = submission;
+    const onChain = executed.get(key);
+    const rejections = (events.get(key) ?? []).flatMap((event) =>
+      event.status === "rejected" ? [errorName(event.error)] : [],
+    );
+    const allowed = submission.resubmitted
+      ? [...expected.errors, ...expected.resubmissionErrors]
+      : expected.errors;
+    const want =
+      allowed.length === 0
+        ? "no rejection"
+        : `rejected with ${allowed.join(" or ")}`;
+
+    if (onChain !== undefined && !expected.executes) {
+      check.fail(
+        `${label}: executed at ${onChain.executionIndex}, want ${want}`,
+      );
+    }
+    for (const error of rejections) {
+      if (!allowed.includes(error)) {
+        check.fail(`${label}: rejected with ${error}, want ${want}`);
+      }
+    }
+    if (!expected.events && events.has(key)) {
+      check.fail(`${label}: has mutation events, want none`);
+    }
+    const [first, resubmission] = submission.results;
+    if (
+      onChain === undefined &&
+      expected.executes &&
+      rejections.length === 0 &&
+      (first === undefined || "executionIndex" in first)
+    ) {
+      check.fail(`${label}: never executed`);
+    }
+    if (first !== undefined) {
+      checkResult(check, `${label} execute`, first, expected.errors, onChain);
+    }
+    if (resubmission !== undefined) {
+      checkResult(
+        check,
+        `${label} resubmission`,
+        resubmission,
+        expected.resubmissionErrors,
+        undefined,
+      );
+    }
+  }
+
+  for (const { key, expiration, latestTimestamp } of run.expiryChecks) {
+    // The contract expires an authorization once `block.timestamp` passes it.
+    if (expiration === 0n || expiration >= latestTimestamp) {
+      check.fail(
+        `${check.label(key)}: rejected as expired at ${expiration}, but the latest block is at ${latestTimestamp}`,
+      );
+    }
+  }
+}
+
+/** `execute` returned the execution index the chain shows, or an allowed error. */
+function checkResult(
+  check: Check,
+  what: string,
+  result: Result,
+  allowed: string[],
+  onChain: Executed | undefined,
+) {
+  if ("error" in result) {
+    if (!allowed.includes(result.error)) {
+      check.fail(
+        `${what}: got ${result.error}, want ${allowed.join(" or ") || "success"}`,
+      );
+    }
+    return;
+  }
+  check.equal(result.executionIndex, onChain?.executionIndex, `${what} result`);
+}
+
+/**
+ * The client calls `execute` in submission order. FIFO executes in call
+ * order. Batch sequencing takes runs of calls as batches, each in
+ * `batchOrder` and then call order. Enqueued mutations execute in queue order.
+ */
+function checkOrder(
+  check: Check,
+  run: Run,
+  onchain: Onchain,
+  ordering: SIM["typewriter"]["ordering"],
+) {
+  const executed = executedByKey(onchain);
+  const called = run.submissions.flatMap(({ key, via }) =>
+    via === "execute" && executed.has(key) ? [key] : [],
+  );
+  const position = new Map(called.map((key, i) => [key, i]));
+  const byCall = (a: string, b: string) =>
+    (position.get(a) ?? Infinity) - (position.get(b) ?? Infinity);
+  const labels = (keys: readonly string[]) => keys.map(check.label);
+
+  if (ordering.order === "fifo") {
+    check.equal(
+      labels(onchain.batches.flat()),
+      labels(called),
+      "FIFO execution order",
+    );
+  } else {
+    const rank = (key: string) => {
+      const name = check.submissions.get(key)?.mutation.name ?? "";
+      const builtin = BUILTIN_ORDER.indexOf(name);
+      return builtin >= 0
+        ? builtin
+        : BUILTIN_ORDER.length +
+            ordering.batchOrder.indexOf(name as AppMutationName);
+    };
+    check.equal(
+      labels(onchain.batches.flatMap((batch) => [...batch].sort(byCall))),
+      labels(called),
+      "batches are runs of calls",
+    );
+    for (const [i, batch] of onchain.batches.entries()) {
+      check.equal(
+        labels(batch),
+        labels([...batch].sort((a, b) => rank(a) - rank(b) || byCall(a, b))),
+        `batch ${i} order`,
+      );
+    }
+  }
+
+  const forced = onchain.executed.flatMap(({ queueIndex }) =>
+    queueIndex === undefined ? [] : [queueIndex],
+  );
+  check.equal(forced, [...forced].sort(compareBigInt), "force-execution order");
+}
+
+/** The runtime sorts built-in mutations first in a batch. */
+const BUILTIN_ORDER = ["CreateAccount", "AddCredential", "RemoveCredential"];
+
+/** A finalized block is on the canonical chain, and no reorg replaced it. */
+function checkFinality(check: Check, run: Run, onchain: Onchain) {
+  const replaced = new Set(
+    run.reorgs.flatMap(({ replaced }) =>
+      replaced.map((hash) => hash.toLowerCase()),
+    ),
+  );
+  for (const { status, number, hash } of run.blockEvents) {
+    if (status !== "finalized") continue;
+    if (replaced.has(hash.toLowerCase())) {
+      check.fail(`block ${number} ${hash}: finalized, but a reorg replaced it`);
+    } else if (
+      onchain.blockHashes.get(number)?.toLowerCase() !== hash.toLowerCase()
+    ) {
+      check.fail(`block ${number} ${hash}: finalized, but not canonical`);
+    }
+  }
+}
+
+/**
+ * Every enqueue that never executed stays in the queue, where anyone can
+ * force-execute it. It must revert, or it would change state outside the
+ * runtime.
+ */
+function checkQueue(
+  check: Check,
+  run: Run,
+  onchain: Onchain,
+  { app, chain }: Params,
+) {
+  return Effect.gen(function* () {
+    const executed = executedByKey(onchain);
+    for (const { label, key, via, transactionHash } of run.submissions) {
+      if (via !== "enqueue" || executed.has(key)) continue;
+      const queueIndex = onchain.queueIndexes.get(transactionHash!);
+      if (queueIndex === undefined) {
+        check.fail(`${label}: enqueue is not on the canonical chain`);
+        continue;
+      }
+      // Anvil answers a reverting call with an error.
+      const call = yield* Effect.exit(
+        chain.request({
+          method: "eth_call",
+          params: [
+            {
+              from: app.account.address,
+              to: app.address,
+              data: encodeExecuteCalldata([], [queueIndex]),
+            },
+            "latest",
+          ],
+        }),
+      );
+      if (Exit.isSuccess(call)) {
+        check.fail(
+          `${label}: queue index ${queueIndex} never executed, but it can be force-executed`,
+        );
+      }
+    }
+  });
+}
+
+/**
+ * Each submission's events follow from how it ended, and an executed one's
+ * report its execution index, inclusion, and queue index as onchain.
+ */
+function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
+  const executed = executedByKey(onchain);
+  const events = eventsByKey(run);
+  for (const key of events.keys()) {
+    if (!check.submissions.has(key)) {
+      check.fail(`mutation events for a mutation no one submitted: ${key}`);
+    }
+  }
+
+  for (const submission of run.submissions) {
+    const { label, key, via } = submission;
+    let seen = events.get(key) ?? [];
+    // A resubmission shares its key: its events are the second `received`
+    // and the last `rejected`.
+    if (submission.resubmitted) {
+      const second = seen.findIndex(
+        (event, i) =>
+          event.status === "received" &&
+          seen.findIndex((other) => other.status === "received") < i,
+      );
+      const last = seen.findLastIndex((event) => event.status === "rejected");
+      check.equal(
+        [seen[second]?.status, seen[last]?.status],
+        ["received", "rejected"],
+        `${label} resubmission event statuses`,
+      );
+      seen = seen.filter((_, i) => i !== second && i !== last);
+    }
+
+    const onChain = executed.get(key);
+    const statuses: MutationStatus[] =
+      onChain !== undefined
+        ? ["accepted", "included", "finalized"]
+        : submission.expected.events
+          ? ["rejected"]
+          : [];
+    check.equal(
+      seen.map((event) => event.status),
+      via === "execute" && statuses.length > 0
+        ? ["received", ...statuses]
+        : statuses,
+      `${label} mutation event statuses`,
+    );
+    if (onChain === undefined) continue;
+
+    for (const event of seen) {
+      if ("executionIndex" in event) {
+        check.equal(
+          event.executionIndex,
+          onChain.executionIndex,
+          `${label} ${event.status} event executionIndex`,
+        );
+      }
+      if ("isForceInclusion" in event) {
+        check.equal(
+          event.isForceInclusion ? event.queueIndex : undefined,
+          onChain.queueIndex,
+          `${label} ${event.status} event queueIndex`,
+        );
+      }
+      if (event.status === "included" || event.status === "finalized") {
+        check.equal(
+          {
+            blockNumber: event.blockNumber,
+            blockHash: event.blockHash,
+            blockTimestamp: event.blockTimestamp,
+            transactionHash: event.transactionHash,
+            transactionIndex: event.transactionIndex,
+          },
+          onChain.inclusion,
+          `${label} ${event.status} event inclusion`,
+        );
+      }
+    }
+  }
+}
+
+/** Each accepted batch is a batch onchain, and goes on to be included and finalized. */
+function checkBatchEvents(
+  check: Check,
+  run: Run,
+  onchain: Onchain,
+  ordering: SIM["typewriter"]["ordering"],
+) {
+  if (ordering.order === "fifo") {
+    check.equal(run.batchEvents.length, 0, "batch events with FIFO sequencing");
+    return;
+  }
+  const accepted = run.batchEvents.filter(
+    (event) => event.status === "accepted",
+  );
+  check.equal(
+    accepted.map((event) =>
+      event.mutations.map((mutation) =>
+        check.label(mutationKey(mutation.authorization)),
+      ),
+    ),
+    onchain.batches.map((batch) => batch.map(check.label)),
+    "accepted batches",
+  );
+  for (const { id } of accepted) {
+    check.equal(
+      run.batchEvents
+        .filter((event) => event.id === id)
+        .map((event) => event.status),
+      ["accepted", "included", "finalized"],
+      `batch ${id} event statuses`,
+    );
+  }
+}
+
+/** Each settlement's block is included, then finalized, with the mutations it executed. */
+function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
+  const byHash = new Map<string, typeof run.blockEvents>();
+  for (const event of run.blockEvents) {
+    const hash = event.hash.toLowerCase();
+    byHash.set(hash, [...(byHash.get(hash) ?? []), event]);
+  }
+
+  const settled = new Set<string>();
+  for (const settlement of onchain.settlements) {
+    if (settlement.reverted) continue;
+    const hash = settlement.blockHash.toLowerCase();
+    settled.add(hash);
+    const seen = byHash.get(hash) ?? [];
+    const what = `block ${settlement.blockNumber}`;
+    check.equal(
+      seen.map((event) => event.status),
+      ["included", "finalized"],
+      `${what} event statuses`,
+    );
+    for (const event of seen) {
+      check.equal(
+        {
+          number: event.number,
+          timestamp: event.timestamp,
+          transactionHash: event.transactionHash,
+          executionIndexes: executionIndexesOf(event),
+        },
+        {
+          number: settlement.blockNumber,
+          timestamp: settlement.blockTimestamp,
+          transactionHash: settlement.transactionHash,
+          executionIndexes: settlement.executionIndexes,
+        },
+        `${what} ${event.status} event`,
+      );
+    }
+  }
+  for (const [hash, [event]] of byHash) {
+    if (!settled.has(hash)) {
+      check.fail(
+        `block ${event!.number} ${hash}: block events, but it settled nothing`,
+      );
+    }
+  }
+}
+
+/** A row of a mutation table: the shared columns, then one per parameter. */
+type MutationRow = { execution_index: bigint; [column: string]: unknown };
+
+/**
+ * The mutation tables hold exactly the executed mutations, `storage_slots`
+ * holds every slot a settlement wrote at its value onchain, and
+ * `typewriter_metadata` describes the deployment.
+ */
+function checkDatabase(
+  check: Check,
+  onchain: Onchain,
+  { app, chain, db }: Params,
+) {
+  return Effect.gen(function* () {
+    const rows = new Map<bigint, { name: string; row: MutationRow }>();
+    for (const name of Object.keys(app.mutations)) {
+      const table = app.mutationSchema[
+        `${name.toLowerCase()}_mutations`
+      ] as PgTable & {
+        execution_index: never;
+      };
+      const found = yield* db
+        .query((d) =>
+          d.select().from(table).orderBy(asc(table.execution_index)),
+        )
+        .pipe(Effect.orDie);
+      for (const row of found as MutationRow[]) {
+        rows.set(row.execution_index, { name, row });
+      }
+    }
+    check.equal(
+      [...rows.keys()].sort(compareBigInt),
+      onchain.executed.map(({ executionIndex }) => executionIndex),
+      "mutation table execution indexes",
+    );
+    for (const { key, executionIndex, inclusion } of onchain.executed) {
+      const submission = check.submissions.get(key);
+      const entry = rows.get(executionIndex);
+      if (submission === undefined || entry === undefined) continue;
+      const { name, params, authorization } = submission.mutation;
+      check.equal(entry.name, name, `${submission.label} table`);
+      const want = {
+        execution_index: executionIndex,
+        authorization_account_id: authorization.accountID,
+        authorization_credential_id: authorization.credentialID,
+        authorization_nonce: authorization.nonce,
+        authorization_expiration: authorization.expiration,
+        authorization_signature: authorization.signature,
+        ...abiParametersToValues(app.mutations[name]!.params, params as never),
+        block_number: inclusion.blockNumber,
+        block_hash: inclusion.blockHash,
+        block_timestamp: inclusion.blockTimestamp,
+        transaction_hash: inclusion.transactionHash,
+        transaction_index: inclusion.transactionIndex,
+      };
+      check.equal(
+        Object.fromEntries(
+          Object.keys(want).map((column) => [column, entry.row[column]]),
+        ),
+        want,
+        `${submission.label} row`,
+      );
+    }
+
+    const storage = yield* db
+      .transaction((tx) => selectStorageSlots(tx, app.typewriterSchema))
+      .pipe(Effect.orDie);
+    const stored = new Set(
+      Object.keys(storage).map((slot) => slot.toLowerCase()),
+    );
+    const entries = Object.entries(storage) as [Hex.Hex, Hex.Hex][];
+    const onChain = yield* storageValues(
+      chain,
+      app,
+      entries.map(([slot]) => slot),
+    );
+    for (const [i, [slot, value]] of entries.entries()) {
+      check.equal(value, onChain[i], `storage_slots ${slot}`);
+    }
+    for (const settlement of onchain.settlements) {
+      if (settlement.reverted) continue;
+      for (const slot of yield* slotsWritten(
+        chain,
+        app,
+        settlement.transactionHash,
+      )) {
+        if (!stored.has(slot)) {
+          check.fail(
+            `storage_slots: missing ${slot}, which settlement ${settlement.transactionHash} wrote`,
+          );
+        }
+      }
+    }
+
+    const metadata = yield* db
+      .query((d) => d.select().from(app.typewriterSchema.typewriterMetadata))
+      .pipe(Effect.orDie);
+    const code = yield* chain.request({
+      method: "eth_getCode",
+      params: [app.address, "latest"],
+    });
+    check.equal(
+      metadata,
+      [
+        {
+          schema_version: 1,
+          address: app.address,
+          chain_id: app.chainId,
+          code_hash: Hash.keccak256(code),
+        },
+      ],
+      "typewriter_metadata",
+    );
+  });
+}
+
+/** Anvil reads at most this many slots in one `eth_getStorageValues`. */
+const STORAGE_VALUES_LIMIT = 1024;
+
+/** The values of `slots` of the app on Anvil, in as few requests as Anvil allows. */
+function storageValues(
+  chain: Chain,
+  app: TypewriterApp,
+  slots: readonly Hex.Hex[],
+) {
+  return Effect.gen(function* () {
+    const address = app.address.toLowerCase();
+    const values: Hex.Hex[] = [];
+    for (let i = 0; i < slots.length; i += STORAGE_VALUES_LIMIT) {
+      // `PublicRpcSchema` does not include `eth_getStorageValues`. Anvil takes
+      // only full 32-byte slots, and answers by lowercase address.
+      const chunk = (yield* chain.request({
+        method: "eth_getStorageValues",
+        params: [
+          {
+            [address]: slots
+              .slice(i, i + STORAGE_VALUES_LIMIT)
+              .map((slot) => Hex.padLeft(slot, 32)),
+          },
+          "latest",
+        ],
+      } as unknown as RpcRequest)) as unknown as Record<string, Hex.Hex[]>;
+      values.push(...chunk[address]!);
+    }
+    return values;
+  });
+}
+
+/** The slots of the app that transaction `hash` changed. */
+function slotsWritten(chain: Chain, app: TypewriterApp, hash: Hex.Hex) {
+  return Effect.gen(function* () {
+    type Diff = Record<string, { storage?: Record<string, Hex.Hex> }>;
+    // `PublicRpcSchema` does not include `debug_traceTransaction`.
+    const trace = (yield* chain.request({
+      method: "debug_traceTransaction",
+      params: [
+        hash,
+        { tracer: "prestateTracer", tracerConfig: { diffMode: true } },
+      ],
+    } as unknown as RpcRequest)) as unknown as { pre: Diff; post: Diff };
+    const address = app.address.toLowerCase();
+    return [
+      ...new Set(
+        [trace.pre, trace.post].flatMap((diff) =>
+          Object.keys(diff[address]?.storage ?? {}).map((slot) =>
+            slot.toLowerCase(),
+          ),
+        ),
+      ),
+    ];
+  });
+}
+
+/** `state` and `accounts` of the runtime match the same views over Anvil storage. */
+function checkRuntimeState(
+  check: Check,
+  onchain: Onchain,
+  { app, chain, db, typewriter }: Params,
+) {
+  return Effect.gen(function* () {
+    const preimages = yield* db
+      .transaction((tx) => selectKeccakPreimages(tx, app.typewriterSchema))
+      .pipe(Effect.orDie);
+    const chainStorage = createStorageView(
+      app.storageLayout,
+      (slots) => Effect.runPromise(storageValues(chain, app, slots)),
+      new Set(preimages),
+    );
+    const [runtimeViews, chainViews] = yield* Effect.promise(() =>
+      Promise.all([
+        snapshot(typewriter.state, typewriter.accounts),
+        // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
+        snapshot(chainStorage["state"], chainStorage["accounts"]),
+      ]),
+    );
+    check.equal(runtimeViews.state, chainViews.state, "typewriter.state");
+    check.equal(
+      runtimeViews.accounts,
+      chainViews.accounts,
+      "typewriter.accounts",
+    );
+    check.equal(
+      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
+      yield* Effect.promise(async () => chainStorage["executionIndex"]),
+      BigInt(onchain.executed.length),
+      "executionIndex on Anvil",
+    );
+  });
+}
+
+function executedByKey(onchain: Onchain): Map<string, Executed> {
+  return new Map(onchain.executed.map((executed) => [executed.key, executed]));
+}
+
+function eventsByKey(
+  run: Run,
+): Map<string, MutationEvent<AssessmentMutations>[]> {
+  const events = new Map<string, MutationEvent<AssessmentMutations>[]>();
+  for (const event of run.mutationEvents) {
+    const key = mutationKey(event.authorization);
+    events.set(key, [...(events.get(key) ?? []), event]);
+  }
+  return events;
+}
+
+function executionIndexesOf(
+  event: BlockEvent<"fifo" | "batch", AssessmentMutations>,
+) {
+  const mutations =
+    "mutations" in event
+      ? event.mutations
+      : [
+          ...event.batches.flatMap((batch) => batch.mutations),
+          ...event.forceIncludedMutations,
+        ];
+  return mutations.map((mutation) => mutation.executionIndex);
+}
+
+function compareBigInt(a: bigint, b: bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 /** `state` and `accounts` of a storage view, as plain values. */
 type Views = {
@@ -99,591 +820,3 @@ const toJson = (value: unknown) =>
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     );
   });
-
-/** A row of a mutation table: the shared columns, then one per parameter. */
-type MutationRow = {
-  execution_index: bigint;
-  authorization_account_id: Hex.Hex;
-  authorization_credential_id: bigint;
-  authorization_nonce: bigint;
-  authorization_expiration: bigint;
-  block_number: bigint | null;
-  block_hash: Hex.Hex | null;
-  block_timestamp: bigint | null;
-  transaction_hash: Hex.Hex | null;
-  transaction_index: number | null;
-  [param: string]: unknown;
-};
-
-/** One mutation of the run, keyed like the events. */
-type Want = {
-  key: string;
-  label: string;
-  name: string;
-  params: Record<string, unknown>;
-  signer: Signer;
-  nonce: bigint;
-  expiration: bigint;
-  /** Unset for an account creation. */
-  step: Step | undefined;
-  /** Reverts on `shouldRevert`, or on an expired authorization. */
-  reverts: boolean;
-  statuses: MutationStatus[];
-  isForceInclusion: boolean;
-};
-
-/** `expired` holds the keys of the steps whose authorization expired. */
-function wants(
-  signers: readonly Signer[],
-  plan: readonly Step[],
-  expired: ReadonlySet<string>,
-): Want[] {
-  const executed: MutationStatus[] = [
-    "received",
-    "accepted",
-    "included",
-    "finalized",
-  ];
-  const creations = signers.map(
-    (signer, index): Want => ({
-      key: mutationKey({ accountID: signer.accountID, nonce: 0n }),
-      label: `CreateAccount ${index}`,
-      name: "CreateAccount",
-      params: { keyType: signer.keyType, publicKey: signer.publicKey },
-      signer,
-      nonce: 0n,
-      expiration: 0n,
-      step: undefined,
-      reverts: false,
-      statuses: executed,
-      isForceInclusion: false,
-    }),
-  );
-  const steps = plan.map((step): Want => {
-    const { mutation } = step;
-    const key = mutationKey(mutation.authorization);
-    const reverts = mutation.params.shouldRevert || expired.has(key);
-    const statuses: MutationStatus[] =
-      step.via === "execute"
-        ? reverts
-          ? ["received", "rejected"]
-          : executed
-        : reverts
-          ? ["rejected"]
-          : ["accepted", "included", "finalized"];
-    return {
-      key,
-      label: `step ${step.index} (${step.via} ${mutation.name})`,
-      name: mutation.name,
-      params: mutation.params,
-      signer: step.signer,
-      nonce: mutation.authorization.nonce,
-      expiration: mutation.authorization.expiration,
-      step,
-      reverts,
-      statuses,
-      isForceInclusion: step.via === "enqueue",
-    };
-  });
-  return [...creations, ...steps];
-}
-
-/**
- * Checks that the run executed every mutation that does not revert once, in
- * an order the sequencing allows, and that the events, the runtime's views,
- * the database, and Anvil all hold the model replayed in that order. Dies
- * with one line per mismatch.
- */
-export function validate({
-  app,
-  chain,
-  db,
-  signers,
-  plan,
-  results,
-  mutationEvents,
-  batchEvents,
-  blockEvents,
-  typewriter,
-  ordering,
-}: {
-  app: TypewriterApp;
-  chain: Chain;
-  db: Db;
-  signers: readonly Signer[];
-  plan: readonly Step[];
-  /** The `executionIndex` that `execute` returned, by mutation key. */
-  results: Map<string, bigint>;
-  mutationEvents: MutationEvent<AssessmentMutations>[];
-  batchEvents: BatchEvent<AssessmentMutations>[];
-  blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[];
-  /** The runtime, still alive after the drain, to read its views. */
-  typewriter: Pick<StorageView<AssessmentStorage, false>, "state" | "accounts">;
-  ordering: SIM["typewriter"]["ordering"];
-}): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const errors: string[] = [];
-    const equal = (actual: unknown, want: unknown, what: string) => {
-      if (toJson(actual) !== toJson(want)) {
-        errors.push(`${what}: got ${toJson(actual)}, want ${toJson(want)}`);
-      }
-    };
-
-    // Whether a finite authorization expires depends on the block it is
-    // simulated against, so a step expired when it was rejected on
-    // `AuthorizationExpired` and never accepted. A rejection of its
-    // resubmission alone does not count.
-    const expired = new Set<string>();
-    const accepted = new Set<string>();
-    for (const event of mutationEvents) {
-      const key = mutationKey(event.authorization);
-      if (event.status === "accepted") accepted.add(key);
-      if (
-        event.status === "rejected" &&
-        event.error._tag === "MutationRevertedError" &&
-        event.error.errorName === "AuthorizationExpired"
-      ) {
-        expired.add(key);
-      }
-    }
-    for (const key of accepted) expired.delete(key);
-
-    const all = wants(signers, plan, expired);
-    // A negative `expiresInS` always expires, and an infinite one, like an
-    // account creation's, never does.
-    for (const want of all) {
-      const expiresInS = want.step?.expiresInS ?? Infinity;
-      if (expiresInS >= 0 && Number.isFinite(expiresInS)) continue;
-      equal(
-        expired.has(want.key),
-        expiresInS < 0,
-        `${want.label} authorization expired (expiresInS ${expiresInS})`,
-      );
-    }
-    const byKey = new Map(all.map((want) => [want.key, want]));
-
-    // The statuses of each mutation, in order, and where it executed.
-    const events = new Map<string, typeof mutationEvents>();
-    for (const event of mutationEvents) {
-      const key = mutationKey(event.authorization);
-      if (!byKey.has(key)) {
-        errors.push(`mutation event for an unknown mutation: ${key}`);
-        continue;
-      }
-      events.set(key, [...(events.get(key) ?? []), event]);
-    }
-    /** Records the first value of `want`, and checks that later ones match it. */
-    const agree = <value>(
-      map: Map<string, value>,
-      want: Want,
-      value: value,
-      what: string,
-    ) => {
-      if (!map.has(want.key)) map.set(want.key, value);
-      else equal(value, map.get(want.key), `${want.label} ${what}`);
-    };
-    const executionIndexes = new Map<string, bigint>();
-    const queueIndexes = new Map<string, bigint>();
-    const inclusions = new Map<string, Inclusion>();
-    for (const want of all) {
-      let seen = events.get(want.key) ?? [];
-      // A resubmission shares its key: its events are the second `received`
-      // and the last `rejected`.
-      if (want.step?.resubmit) {
-        const second = seen.findIndex(
-          (event, i) =>
-            event.status === "received" &&
-            seen.findIndex((other) => other.status === "received") < i,
-        );
-        const last = seen.findLastIndex((event) => event.status === "rejected");
-        equal(
-          [seen[second]?.status, seen[last]?.status],
-          ["received", "rejected"],
-          `${want.label} resubmission event statuses`,
-        );
-        seen = seen.filter((_, i) => i !== second && i !== last);
-      }
-      equal(
-        seen.map((event) => event.status),
-        want.statuses,
-        `${want.label} mutation event statuses`,
-      );
-      for (const event of seen) {
-        if ("isForceInclusion" in event) {
-          equal(
-            event.isForceInclusion,
-            want.isForceInclusion,
-            `${want.label} ${event.status} event isForceInclusion`,
-          );
-          if (event.isForceInclusion) {
-            agree(queueIndexes, want, event.queueIndex, "queueIndex");
-          }
-        }
-        if ("executionIndex" in event) {
-          agree(executionIndexes, want, event.executionIndex, "executionIndex");
-        }
-        if (event.status === "included" || event.status === "finalized") {
-          agree(
-            inclusions,
-            want,
-            {
-              blockNumber: event.blockNumber,
-              blockHash: event.blockHash,
-              blockTimestamp: event.blockTimestamp,
-              transactionHash: event.transactionHash,
-              transactionIndex: event.transactionIndex,
-            },
-            "inclusion",
-          );
-        }
-      }
-    }
-
-    // `execute` returns the index the events report.
-    for (const [key, executionIndex] of results) {
-      equal(
-        executionIndex,
-        executionIndexes.get(key),
-        `${byKey.get(key)?.label} execute result`,
-      );
-    }
-
-    // The execution order: account creations first, then every step that
-    // does not revert, with no gaps.
-    const executed = all.filter((want) => !want.reverts);
-    const order = [...executed].sort((a, b) => {
-      const x = executionIndexes.get(a.key) ?? -1n;
-      const y = executionIndexes.get(b.key) ?? -1n;
-      return x < y ? -1 : x > y ? 1 : 0;
-    });
-    equal(
-      order.map((want) => executionIndexes.get(want.key)),
-      order.map((_, i) => BigInt(i)),
-      "execution indexes",
-    );
-    equal(
-      order.slice(0, signers.length).map((want) => want.label),
-      signers.map((_, index) => `CreateAccount ${index}`),
-      "account creations execute first",
-    );
-
-    // Enqueued mutations take queue indexes in plan order, since the client
-    // sends one transaction at a time, and execute in queue order.
-    const enqueues = all.filter((want) => want.step?.via === "enqueue");
-    equal(
-      enqueues.map((want) => queueIndexes.get(want.key)),
-      enqueues.map((_, i) => BigInt(i)),
-      "queue indexes",
-    );
-    equal(
-      order.filter((want) => want.step?.via === "enqueue").map((w) => w.label),
-      enqueues.filter((want) => !want.reverts).map((w) => w.label),
-      "enqueued execution order",
-    );
-
-    // Executed mutations arrive in the order of their `received` events. FIFO
-    // executes them in that order. Batch takes runs of arrivals as batches
-    // and orders each batch by `batchOrder`, keeping arrival order within a
-    // name.
-    // A resubmission arrives after its first submission, so only the first
-    // `received` of a key counts.
-    const arrivals = [
-      ...new Set(
-        mutationEvents
-          .filter(
-            (event) =>
-              event.status === "received" &&
-              byKey.get(mutationKey(event.authorization))?.step !== undefined,
-          )
-          .map((event) => byKey.get(mutationKey(event.authorization))!),
-      ),
-    ].filter((want) => !want.reverts);
-    const executions = order.filter((want) => want.step?.via === "execute");
-    if (ordering.order === "fifo") {
-      equal(
-        executions.map((want) => want.label),
-        arrivals.map((want) => want.label),
-        "FIFO execution order",
-      );
-    } else {
-      const rank = (name: string) =>
-        ordering.batchOrder.indexOf(name as AppMutationName);
-      const batches = batchEvents
-        .filter((event) => event.status === "accepted")
-        .map((event) =>
-          event.mutations
-            .map((mutation) => byKey.get(mutationKey(mutation.authorization))!)
-            .filter((want) => want.step !== undefined),
-        )
-        .filter((batch) => batch.length > 0);
-      const arrival = new Map(arrivals.map((want, i) => [want.key, i]));
-      const byArrival = (a: Want, b: Want) =>
-        arrival.get(a.key)! - arrival.get(b.key)!;
-      equal(
-        batches.flatMap((batch) =>
-          [...batch].sort(byArrival).map((want) => want.label),
-        ),
-        arrivals.map((want) => want.label),
-        "batches are runs of arrivals",
-      );
-      for (const [i, batch] of batches.entries()) {
-        equal(
-          batch.map((want) => want.label),
-          [...batch]
-            .sort((a, b) => rank(a.name) - rank(b.name) || byArrival(a, b))
-            .map((want) => want.label),
-          `batch ${i} order`,
-        );
-      }
-      equal(
-        executions.map((want) => want.label),
-        batches.flat().map((want) => want.label),
-        "batch execution order",
-      );
-    }
-
-    // Block events: each block is included, then finalized, and the blocks
-    // hold every executed mutation once, in execution order.
-    const blocks = new Map<Hex.Hex, typeof blockEvents>();
-    for (const event of blockEvents) {
-      blocks.set(event.hash, [...(blocks.get(event.hash) ?? []), event]);
-    }
-    const blockOrder: bigint[] = [];
-    for (const [hash, seen] of blocks) {
-      equal(
-        seen.map((event) => event.status),
-        ["included", "finalized"],
-        `block ${hash} event statuses`,
-      );
-      const indexes = seen.map((event) =>
-        ("mutations" in event
-          ? event.mutations
-          : [
-              ...event.batches.flatMap((batch) => batch.mutations),
-              ...event.forceIncludedMutations,
-            ]
-        ).map((mutation) => mutation.executionIndex),
-      );
-      for (const other of indexes.slice(1)) {
-        equal(other, indexes[0], `block ${hash} finalized mutations`);
-      }
-      blockOrder.push(...(indexes[0] ?? []));
-
-      const event = seen[0]!;
-      const block = yield* chain.request({
-        method: "eth_getBlockByNumber",
-        params: [Hex.fromNumber(event.number), false],
-      });
-      equal(block?.hash, hash, `block ${event.number} hash on Anvil`);
-      equal(
-        block === null ? undefined : BigInt(block.timestamp),
-        event.timestamp,
-        `block ${hash} timestamp on Anvil`,
-      );
-      const receipt = yield* chain.request({
-        method: "eth_getTransactionReceipt",
-        params: [event.transactionHash],
-      });
-      equal(
-        receipt?.status,
-        "0x1",
-        `transaction ${event.transactionHash} status`,
-      );
-      equal(
-        receipt?.blockHash,
-        hash,
-        `transaction ${event.transactionHash} block`,
-      );
-    }
-    equal(
-      blockOrder,
-      executed.map((_, i) => BigInt(i)),
-      "execution indexes across block events",
-    );
-
-    // `typewriter.state` and `typewriter.accounts`, against the model
-    // replayed in the observed order, and against the same views over Anvil
-    // storage.
-    const expected = replay(
-      order.flatMap((want) => (want.step === undefined ? [] : [want.step])),
-    );
-    const wantViews: Views = {
-      state: {
-        accumulator: expected.accumulator,
-        slots: Object.fromEntries(
-          [...expected.slots].map(([slot, value]) => [slot.toString(), value]),
-        ),
-      },
-      accounts: Object.fromEntries(
-        signers.map((signer) => [
-          signer.accountID,
-          {
-            nonces: Object.fromEntries(
-              executed
-                .filter((want) => want.signer === signer && want.step)
-                .map((want) => [(want.nonce >> 64n).toString(), 1n]),
-            ),
-            credentials: [
-              { keyType: signer.keyType, publicKey: signer.publicKey },
-            ],
-          },
-        ]),
-      ),
-    };
-    const runtimeViews = yield* Effect.promise(() =>
-      snapshot(typewriter.state, typewriter.accounts),
-    );
-    equal(runtimeViews.state, wantViews.state, "typewriter.state");
-    equal(runtimeViews.accounts, wantViews.accounts, "typewriter.accounts");
-
-    const preimages = yield* db
-      .transaction((tx) => selectKeccakPreimages(tx, app.typewriterSchema))
-      .pipe(Effect.orDie);
-    const chainStorage = createStorageView(
-      app.storageLayout,
-      (slots) =>
-        Promise.all(
-          slots.map((slot) =>
-            Effect.runPromise(
-              chain.request({
-                method: "eth_getStorageAt",
-                params: [app.address, slot, "latest"],
-              }),
-            ),
-          ),
-        ),
-      new Set(preimages),
-    );
-    const chainViews = yield* Effect.promise(() =>
-      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
-      snapshot(chainStorage["state"], chainStorage["accounts"]),
-    );
-    equal(chainViews.state, wantViews.state, "state on Anvil");
-    equal(chainViews.accounts, wantViews.accounts, "accounts on Anvil");
-
-    equal(
-      // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
-      yield* Effect.promise(async () => chainStorage["executionIndex"]),
-      BigInt(executed.length),
-      "executionIndex on Anvil",
-    );
-
-    // `storage_slots`: the latest value of each slot is the value on Anvil.
-    const storage = yield* db
-      .transaction((tx) => selectStorageSlots(tx, app.typewriterSchema))
-      .pipe(Effect.orDie);
-    for (const [slot, value] of Object.entries(storage) as [
-      Hex.Hex,
-      Hex.Hex,
-    ][]) {
-      const onchain = yield* chain.request({
-        method: "eth_getStorageAt",
-        params: [app.address, slot, "latest"],
-      });
-      equal(value, onchain, `storage_slots ${slot}`);
-    }
-
-    // The mutation tables.
-    const rows: { name: string; row: MutationRow }[] = [];
-    for (const name of Object.keys(app.mutations)) {
-      const table = app.mutationSchema[
-        `${name.toLowerCase()}_mutations`
-      ] as PgTable & { execution_index: never };
-      const found = yield* db
-        .query((d) =>
-          d.select().from(table).orderBy(asc(table.execution_index)),
-        )
-        .pipe(Effect.orDie);
-      for (const row of found as MutationRow[]) rows.push({ name, row });
-    }
-    equal(
-      rows
-        .map(({ row }) => row.execution_index)
-        .sort((a, b) => (a < b ? -1 : 1)),
-      executed.map((_, i) => BigInt(i)),
-      "mutation table execution indexes",
-    );
-    const byIndex = new Map(
-      rows.map((entry) => [entry.row.execution_index, entry]),
-    );
-    for (const want of executed) {
-      const entry = byIndex.get(executionIndexes.get(want.key) ?? -1n);
-      if (entry === undefined) continue;
-      const { name, row } = entry;
-      equal(name, want.name, `${want.label} table`);
-      equal(
-        {
-          accountID: row.authorization_account_id,
-          credentialID: row.authorization_credential_id,
-          nonce: row.authorization_nonce,
-          expiration: row.authorization_expiration,
-          ...Object.fromEntries(
-            Object.keys(want.params).map((param) => [param, row[param]]),
-          ),
-        },
-        {
-          accountID: want.signer.accountID,
-          credentialID: 0n,
-          nonce: want.nonce,
-          expiration: want.expiration,
-          ...want.params,
-        },
-        `${want.label} row`,
-      );
-      // The contract accepts an authorization up to and including the second
-      // of its expiration.
-      const blockTimestamp = inclusions.get(want.key)?.blockTimestamp;
-      if (
-        want.expiration !== 0n &&
-        blockTimestamp !== undefined &&
-        blockTimestamp > want.expiration
-      ) {
-        errors.push(
-          `${want.label} included at ${blockTimestamp}, after its expiration ${want.expiration}`,
-        );
-      }
-      equal(
-        {
-          blockNumber: row.block_number,
-          blockHash: row.block_hash,
-          blockTimestamp: row.block_timestamp,
-          transactionHash: row.transaction_hash,
-          transactionIndex: row.transaction_index,
-        },
-        inclusions.get(want.key),
-        `${want.label} row inclusion`,
-      );
-    }
-    for (const builtin of Object.keys(BUILTIN_MUTATIONS)) {
-      if (builtin === "CreateAccount") continue;
-      equal(
-        rows.filter(({ name }) => name === builtin).length,
-        0,
-        `${builtin} rows`,
-      );
-    }
-
-    // `typewriter_metadata`.
-    const metadata = yield* db
-      .query((d) => d.select().from(app.typewriterSchema.typewriterMetadata))
-      .pipe(Effect.orDie);
-    const code = yield* chain.request({
-      method: "eth_getCode",
-      params: [app.address, "latest"],
-    });
-    equal(
-      metadata,
-      [
-        {
-          schema_version: 1,
-          address: app.address,
-          chain_id: app.chainId,
-          code_hash: Hash.keccak256(code),
-        },
-      ],
-      "typewriter_metadata",
-    );
-
-    if (errors.length > 0) return yield* Effect.die(errors.join("\n"));
-  });
-}

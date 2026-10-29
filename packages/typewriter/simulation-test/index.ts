@@ -20,27 +20,25 @@ import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
 import { Database, makeDb } from "../src/db";
-import { encodeEnqueueCalldata } from "../src/encoding";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import {
   createSolidityTypewriterApp,
   loadSolidityMetadata,
 } from "../src/sol-parse";
-import { createTypewriterEffect, type ProgramError } from "../src/typewriter";
-import type {
-  BatchEvent,
-  BlockEvent,
-  MutationEvent,
-} from "../src/typewriter-types";
+import {
+  createTypewriterEffect,
+  type ExecuteError,
+  type ProgramError,
+} from "../src/typewriter";
 import {
   createAccount,
   deploy,
+  expect,
   makePlan,
   makeSigner,
-  mutationKey,
-  type Step,
-  signAtSubmission,
+  stepLabel,
+  withExpiration,
 } from "./assessment";
 import {
   ASSESSMENT_ENTRYPOINT,
@@ -49,7 +47,16 @@ import {
 } from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
+import { prepare } from "./malformations";
 import { int, makeRandom, pick } from "./random";
+import {
+  errorName,
+  makeRun,
+  mutationKey,
+  type Result,
+  type Run,
+  type Submission,
+} from "./run";
 import { makeSimScheduler } from "./scheduler";
 import { makeSimDb } from "./sim-db";
 import { makeSimTransport } from "./sim-rpc";
@@ -86,6 +93,8 @@ export type SIM = {
      * `Infinity` never expires. `Infinity` repeats so most steps draw it.
      */
     expirationsS: number[];
+    /** How often a step submits a malformed mutation. See `malformations.ts`. */
+    malformedRate: number;
   };
   typewriter: {
     submitIntervalMs: number;
@@ -154,6 +163,7 @@ export const SIM: SIM = {
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
     expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
+    malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -312,6 +322,13 @@ const program = Effect.gen(function* () {
     makeSigner(i, keyType),
   );
   const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
+  /** Signers of each key type with no account, for malformed signatures. */
+  const strangers = new Map(
+    [KeyType.Secp256k1, KeyType.P256, KeyType.WebAuthnP256].map((keyType) => [
+      keyType,
+      makeSigner(-1, keyType),
+    ]),
+  );
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
@@ -333,7 +350,6 @@ const program = Effect.gen(function* () {
     reorg: (depth, timestamp) => scheduler.io(chain.reorg(depth, timestamp)),
   };
   const chainRandom = yield* makeRandom(SIM.seed, "chain");
-  let reorgs = 0;
   const transports = SIM.transports.map((_, index) =>
     makeSimTransport({ chain: simChain, index }),
   ) as [
@@ -341,18 +357,17 @@ const program = Effect.gen(function* () {
     ...ReturnType<typeof makeSimTransport>[],
   ];
 
-  // What the runtime told the outside world, for `validate`.
-  /** The `executionIndex` that `execute` returned, by mutation key. */
-  const results = new Map<string, bigint>();
-  const mutationEvents: MutationEvent<AssessmentMutations>[] = [];
-  /** Emitted only with batch sequencing. */
-  const batchEvents: BatchEvent<AssessmentMutations>[] = [];
-  const blockEvents: BlockEvent<"fifo" | "batch", AssessmentMutations>[] = [];
-  // Every mutation ends finalized or rejected, once, and every resubmission
-  // ends rejected.
+  // What the run recorded, for `validate`.
+  const run = makeRun();
+  // Every mutation with events ends finalized or rejected once, and so does
+  // every resubmission. The run drains when all of them have.
+  const settlementsWanted =
+    signers.length +
+    plan.reduce(
+      (sum, step) => sum + (expect(step).events ? (step.resubmit ? 2 : 1) : 0),
+      0,
+    );
   let settlements = 0;
-  const mutations = signers.length + plan.length;
-  const resubmissions = plan.filter((step) => step.resubmit).length;
   // The virtual time of the last mutation event.
   let progressedAt = startMs;
 
@@ -368,6 +383,9 @@ const program = Effect.gen(function* () {
   const world = Effect.gen(function* () {
     // A failure of any fiber in the set fails the run.
     const fibers = yield* FiberSet.make<void, ProgramError>();
+    // Reads of the chain after an expiry, which the drain waits for.
+    const expiryChecks = yield* FiberSet.make<void>();
+    const runExpiryCheck = yield* FiberSet.runtime(expiryChecks)<never>();
 
     const typewriter = yield* createTypewriterEffect<
       AssessmentStorage,
@@ -375,21 +393,49 @@ const program = Effect.gen(function* () {
       "fifo" | "batch"
     >(app);
 
+    /**
+     * Records the chain's latest block right after the runtime rejected a
+     * mutation as expired. The authorization must have expired by then.
+     */
+    const checkExpiry = (key: string, expiration: bigint) =>
+      Effect.gen(function* () {
+        const latest = yield* simChain.request({
+          method: "eth_getBlockByNumber",
+          params: ["latest", false],
+        });
+        run.expiryChecks.push({
+          key,
+          expiration,
+          latestTimestamp: BigInt(latest!.timestamp),
+        });
+      });
+
     const drained = yield* Deferred.make<void>();
     yield* typewriter.on("mutation", (event) => {
-      mutationEvents.push(event);
+      run.mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
+      if (
+        event.status === "rejected" &&
+        errorName(event.error) === "AuthorizationExpired"
+      ) {
+        runExpiryCheck(
+          checkExpiry(
+            mutationKey(event.authorization),
+            event.authorization.expiration,
+          ),
+        );
+      }
       if (event.status !== "finalized" && event.status !== "rejected") return;
       settlements++;
-      if (settlements === mutations + resubmissions) {
+      if (settlements === settlementsWanted) {
         Deferred.doneUnsafe(drained, Effect.void);
       }
     });
     yield* typewriter.on("batch", (event) => {
-      batchEvents.push(event);
+      run.batchEvents.push(event);
     });
     yield* typewriter.on("block", (event) => {
-      blockEvents.push(event);
+      run.blockEvents.push(event);
     });
 
     yield* FiberSet.run(fibers, typewriter.program);
@@ -410,136 +456,129 @@ const program = Effect.gen(function* () {
             chainRandom.nextDoubleUnsafe() * SIM.typewriter.finalizedBlockDepth,
           );
         const replaced = yield* simChain.reorg(depth, timestamp);
-        if (replaced === 0) return;
-        reorgs++;
+        if (replaced.length === 0) return;
+        run.reorgs.push({ replaced, timestamp });
         yield* Effect.logInfo("Reorged simulation chain").pipe(
-          Effect.annotateLogs({ depth: replaced, timestamp }),
+          Effect.annotateLogs({ depth: replaced.length, timestamp }),
         );
       }).pipe(Effect.forever),
     );
 
-    /** Executes the mutation of `step` and checks the result is one of `want`. */
-    const submit = (step: Step, what: string, want: string[]) =>
+    /**
+     * Starts `execute` of `input`. It runs here, not on the scheduler, until
+     * it first waits, so the runtime sees calls in submission order.
+     */
+    const startExecute = (input: unknown) =>
+      Effect.forkChild(
+        // Any shape, malformed or not.
+        Effect.exit(typewriter.execute(input as never)),
+        { startImmediately: true },
+      );
+
+    /**
+     * Executes `input`, and again at once if `submission` is resubmitted, and
+     * records what each returned.
+     */
+    const execute = (submission: Submission, input: unknown) =>
       Effect.gen(function* () {
-        const { mutation } = step;
-        const exit = yield* Effect.exit(typewriter.execute(mutation));
-        const error = Exit.isFailure(exit)
-          ? Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+        const first = yield* startExecute(input);
+        const second = submission.resubmitted
+          ? yield* startExecute(input)
           : undefined;
-        const got = Exit.isSuccess(exit)
-          ? "success"
-          : error?._tag === "MutationRevertedError" &&
-              error.errorName !== undefined
-            ? error.errorName
-            : Cause.pretty(exit.cause);
-        if (!want.includes(got)) {
-          return yield* Effect.die(
-            `step ${step.index} (${what} ${mutation.name}): got ${got}, want ${want.join(" or ")}`,
-          );
-        }
-        return exit;
-      });
-
-    /**
-     * Executes `step` and checks the result against `shouldRevert` and
-     * `expiresInS`. A resubmission is a second, concurrent `execute` of the
-     * same mutation. It fails: on the nonce the first one used, or on the same
-     * revert. An expired authorization fails both before either check, and a
-     * finite one may expire before either submission is simulated.
-     */
-    const execute = (step: Step) =>
-      Effect.gen(function* () {
-        const { mutation, expiresInS } = step;
-        const fail = `${mutation.name}Error`;
-        const shouldRevert = mutation.params.shouldRevert;
-        const unlessExpired = (want: string) =>
-          expiresInS < 0
-            ? ["AuthorizationExpired"]
-            : Number.isFinite(expiresInS)
-              ? [want, "AuthorizationExpired"]
-              : [want];
-        // The first submission runs here, not on the scheduler, until it waits
-        // on its result, so it is queued before the resubmission starts.
-        const first = yield* Effect.forkChild(
-          submit(
-            step,
-            "execute",
-            unlessExpired(shouldRevert ? fail : "success"),
-          ),
-          { startImmediately: true },
-        );
-        if (step.resubmit) {
-          yield* submit(
-            step,
-            "resubmit",
-            unlessExpired(shouldRevert ? fail : "InvalidNonce"),
-          );
-        }
-        const exit = yield* Fiber.join(first);
-        if (Exit.isSuccess(exit)) {
-          results.set(
-            mutationKey(mutation.authorization),
-            exit.value.executionIndex,
-          );
+        submission.results[0] = resultOf(yield* Fiber.join(first));
+        if (second !== undefined) {
+          submission.results[1] = resultOf(yield* Fiber.join(second));
         }
       });
 
-    /**
-     * Sends the `enqueue` of `step` from the client. Returns an effect that
-     * checks it lands.
-     */
-    const enqueue = (step: Step) =>
+    /** Sends `calldata` to `enqueue` from the client. Returns the transaction. */
+    const enqueue = (calldata: Hex.Hex) =>
+      simChain.request({
+        method: "eth_sendTransaction",
+        params: [
+          { from: CLIENT, to: app.address, data: calldata, gas: ENQUEUE_GAS },
+        ],
+      });
+
+    /** Waits for the `enqueue` of `submission` to land. It never reverts. */
+    const awaitEnqueue = ({ label, transactionHash }: Submission) =>
       Effect.gen(function* () {
-        const { mutation } = step;
-        const data = encodeEnqueueCalldata({
-          config: app.mutations[mutation.name]!,
-          params: mutation.params,
-          authorization: mutation.authorization,
-        });
-        const hash = yield* simChain.request({
-          method: "eth_sendTransaction",
-          params: [{ from: CLIENT, to: app.address, data, gas: ENQUEUE_GAS }],
-        });
-        return Effect.gen(function* () {
-          while (true) {
-            const receipt = yield* simChain.request({
-              method: "eth_getTransactionReceipt",
-              params: [hash],
-            });
-            if (receipt?.status === "0x1") return;
-            if (receipt !== null) {
-              return yield* Effect.die(
-                `step ${step.index} (enqueue ${mutation.name}): transaction ${hash} reverted`,
-              );
-            }
-            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        while (true) {
+          const receipt = yield* simChain.request({
+            method: "eth_getTransactionReceipt",
+            params: [transactionHash!],
+          });
+          if (receipt?.status === "0x1") return;
+          if (receipt !== null) {
+            return yield* Effect.die(
+              `${label}: enqueue ${transactionHash} reverted`,
+            );
           }
-        });
+          yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        }
       });
 
     const client = Effect.gen(function* () {
-      for (const signer of signers) {
-        yield* typewriter
-          .execute(createAccount(manifest, signer))
-          .pipe(Effect.orDie);
+      for (const [index, signer] of signers.entries()) {
+        const mutation = createAccount(manifest, signer);
+        const submission: Submission = {
+          label: `CreateAccount ${index}`,
+          key: mutationKey(mutation.authorization),
+          via: "execute",
+          mutation,
+          sent: deepFreeze(mutation),
+          expected: {
+            executes: true,
+            errors: [],
+            resubmissionErrors: [],
+            events: true,
+          },
+          resubmitted: false,
+          results: [],
+          transactionHash: undefined,
+        };
+        run.submissions.push(submission);
+        yield* execute(submission, submission.sent);
+        const [result] = submission.results;
+        if (result !== undefined && "error" in result) {
+          return yield* Effect.die(`${submission.label}: got ${result.error}`);
+        }
       }
 
       // Each step comes from its own client, so a step does not wait for the
       // one before it to settle.
       for (const step of plan) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
-        step.mutation = signAtSubmission(
+        const prepared = prepare(step, {
           manifest,
-          step,
-          yield* Clock.currentTimeMillis,
-        );
-        yield* FiberSet.run(
-          fibers,
-          step.via === "execute" ? execute(step) : yield* enqueue(step),
-        );
+          signer: step.signer,
+          stranger: strangers.get(step.signer.keyType)!,
+          mutation: withExpiration(step, yield* Clock.currentTimeMillis),
+          random: yield* makeRandom(SIM.seed, `step:${step.index}`),
+        });
+        const { sent } = prepared;
+        const submission: Submission = {
+          label: stepLabel(step),
+          key: prepared.key,
+          via: step.via,
+          mutation: prepared.mutation,
+          sent: deepFreeze(sent.via === "execute" ? sent.input : sent.calldata),
+          expected: expect(step),
+          resubmitted: step.resubmit,
+          results: [],
+          transactionHash: undefined,
+        };
+        run.submissions.push(submission);
+        if (sent.via === "execute") {
+          yield* FiberSet.run(fibers, execute(submission, submission.sent));
+        } else {
+          submission.transactionHash = yield* enqueue(sent.calldata);
+          yield* FiberSet.run(fibers, awaitEnqueue(submission));
+        }
       }
 
       yield* Deferred.await(drained);
+      yield* FiberSet.awaitEmpty(expiryChecks);
       return typewriter;
     });
 
@@ -589,7 +628,7 @@ const program = Effect.gen(function* () {
     }
     if (next - progressedAt > SIM.stallTimeoutMs) {
       return yield* Effect.die(
-        `stalled for ${SIM.stallTimeoutMs}ms of virtual time`,
+        `stalled for ${SIM.stallTimeoutMs}ms of virtual time, waiting on: ${unsettled(run).join(", ")}`,
       );
     }
     clock.advanceTo(next);
@@ -597,7 +636,7 @@ const program = Effect.gen(function* () {
   const typewriter = yield* exit;
   yield* Effect.logInfo("Settled simulation mutations").pipe(
     Effect.annotateLogs({
-      mutations,
+      submissions: run.submissions.length,
       virtual_ms: Math.round(clock.currentTimeMillisUnsafe() - startMs),
       wall_ms: Math.round(performance.now() - wallStart),
     }),
@@ -607,26 +646,58 @@ const program = Effect.gen(function* () {
     app,
     chain,
     db,
-    signers,
-    plan,
-    results,
-    mutationEvents,
-    batchEvents,
-    blockEvents,
+    run,
     typewriter,
     ordering: SIM.typewriter.ordering,
   });
 
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
-      mutations,
-      blocks: blockEvents.length,
-      batches: batchEvents.length,
-      reorgs,
+      submissions: run.submissions.length,
+      blocks: run.blockEvents.length,
+      batches: run.batchEvents.length,
+      reorgs: run.reorgs.length,
       wall_ms: Math.round(performance.now() - wallStart),
     }),
   );
 });
+
+/** What `execute` returned, as the run records it. */
+function resultOf(
+  exit: Exit.Exit<{ executionIndex: bigint }, ExecuteError>,
+): Result {
+  if (Exit.isSuccess(exit))
+    return { executionIndex: exit.value.executionIndex };
+  const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
+  return {
+    error: error === undefined ? Cause.pretty(exit.cause) : errorName(error),
+  };
+}
+
+/** Freezes `value` and everything it holds, so the runtime cannot change what the client sent. */
+function deepFreeze<value>(value: value): value {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const entry of Object.values(value)) deepFreeze(entry);
+  }
+  return value;
+}
+
+/** The submissions the run still waits on for a final event. */
+function unsettled(run: Run): string[] {
+  const settled = new Map<string, number>();
+  for (const event of run.mutationEvents) {
+    if (event.status !== "finalized" && event.status !== "rejected") continue;
+    const key = mutationKey(event.authorization);
+    settled.set(key, (settled.get(key) ?? 0) + 1);
+  }
+  return run.submissions
+    .filter(
+      ({ key, expected, resubmitted }) =>
+        expected.events && (settled.get(key) ?? 0) < (resubmitted ? 2 : 1),
+    )
+    .map(({ label }) => label);
+}
 
 BunRuntime.runMain(
   program.pipe(
