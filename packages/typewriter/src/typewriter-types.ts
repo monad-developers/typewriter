@@ -103,9 +103,18 @@ export type BlockStatus = "included" | "finalized";
 
 type MutationBase = {
   name: string;
+  /** Decoded from `mutationData`. */
   params: unknown;
+  /** Decoded from `authorizationData`. */
   authorization: Authorization;
   config: ResolvedTypewriterMutationConfig;
+  /**
+   * The bytes the contract decodes `params` from, and the signature covers.
+   * The runtime passes them to the contract as they are, never re-encoded.
+   */
+  mutationData: Hex.Hex;
+  /** The bytes the contract decodes `authorization` from. */
+  authorizationData: Hex.Hex;
 };
 
 // TODO(kyle) persist `isForceInclusion` and `queueIndex`, the mutation tables
@@ -172,7 +181,11 @@ export type RuntimeBlock<sequence extends SequencingConfig> = {
   : { batches: RuntimeBatch[]; forceIncludedMutations: IncludedMutation[] });
 
 /** Fields of a runtime mutation that listeners never see. */
-type RuntimeOnlyField = "config" | "journalId";
+type RuntimeOnlyField =
+  | "config"
+  | "journalId"
+  | "mutationData"
+  | "authorizationData";
 
 type ToMutationEvent<
   mutation,

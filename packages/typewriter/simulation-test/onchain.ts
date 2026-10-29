@@ -2,7 +2,11 @@ import { Effect } from "effect";
 import { AbiFunction, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import type { TypewriterApp } from "../src/config";
-import { decodeAuthorizationCalldata, encodeBatchArg } from "../src/encoding";
+import {
+  decodeAuthorizationCalldata,
+  encodeAuthorizationCalldata,
+  encodeMutationCalldata,
+} from "../src/encoding";
 import { TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type { Inclusion } from "../src/typewriter-types";
 import type { Chain } from "./chain";
@@ -180,11 +184,10 @@ export function readOnchain({
 export function encodingOf(app: TypewriterApp, submission: Submission): string {
   const { name, params, authorization } = submission.mutation;
   const config = app.mutations[name]!;
-  const batch = encodeBatchArg([{ config, params, authorization }]);
   return encode(
-    batch.mutations[0]!,
-    batch.mutationData[0]!,
-    batch.authorizationData[0]!,
+    config.id,
+    encodeMutationCalldata({ config, params }),
+    encodeAuthorizationCalldata(authorization),
   );
 }
 

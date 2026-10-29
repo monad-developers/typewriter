@@ -14,7 +14,7 @@ import {
   AUTHORIZATION_ABI_PARAMS,
   TYPEWRITER_ABI,
 } from "./typewriter-constants";
-import type { AcceptedMutation, Authorization } from "./typewriter-types";
+import type { Authorization, RuntimeMutation } from "./typewriter-types";
 
 function calldataStructParams(
   params: readonly AbiParameters.Parameter[],
@@ -31,20 +31,21 @@ const AUTHORIZATION = {
   signature: "0xdeadbeef",
 } as const satisfies Authorization;
 
-function acceptedMutation(
-  config: AcceptedMutation["config"],
+function encodable(config: RuntimeMutation["config"], params: unknown) {
+  return { config, params };
+}
+
+/** A mutation with the bytes the runtime keeps for it. */
+function withBytes(
+  config: RuntimeMutation["config"],
   params: unknown,
   authorization: Authorization = AUTHORIZATION,
-): AcceptedMutation {
+) {
   return {
-    status: "accepted",
-    name: "test",
-    params,
-    authorization,
-    executionIndex: 0n,
-    journalId: 0,
-    isForceInclusion: false,
     config,
+    params,
+    mutationData: encodeMutationCalldata({ config, params }),
+    authorizationData: encodeAuthorizationCalldata(authorization),
   };
 }
 
@@ -63,7 +64,7 @@ test("encodeMutationCalldata wraps params as one struct", () => {
     amount: 100n,
   } as const;
 
-  const encoded = encodeMutationCalldata(acceptedMutation(mutation, params));
+  const encoded = encodeMutationCalldata(encodable(mutation, params));
 
   expect(
     AbiParameters.decode(calldataStructParams(mutation.params), encoded),
@@ -84,7 +85,7 @@ test("encodeMutationCalldata wraps dynamic params as one struct", () => {
     publicKey: "0x1234",
   } as const;
 
-  const encoded = encodeMutationCalldata(acceptedMutation(mutation, params));
+  const encoded = encodeMutationCalldata(encodable(mutation, params));
 
   expect(
     AbiParameters.decode(calldataStructParams(mutation.params), encoded),
@@ -111,7 +112,7 @@ const TYPED_PARAMS = {
 
 test("encodeMutationCalldata accepts any-case addresses and empty bytes", () => {
   expect(() =>
-    encodeMutationCalldata(acceptedMutation(TYPED, TYPED_PARAMS)),
+    encodeMutationCalldata(encodable(TYPED, TYPED_PARAMS)),
   ).not.toThrow();
 });
 
@@ -151,14 +152,12 @@ test.each([
   ],
 ])("encodeMutationCalldata rejects %s", (_, change, message) => {
   expect(() =>
-    encodeMutationCalldata(
-      acceptedMutation(TYPED, { ...TYPED_PARAMS, ...change }),
-    ),
+    encodeMutationCalldata(encodable(TYPED, { ...TYPED_PARAMS, ...change })),
   ).toThrow(message);
 });
 
 test("encodeMutationCalldata rejects params that are not an object", () => {
-  expect(() => encodeMutationCalldata(acceptedMutation(TYPED, null))).toThrow(
+  expect(() => encodeMutationCalldata(encodable(TYPED, null))).toThrow(
     "params must be an object",
   );
 });
@@ -198,7 +197,7 @@ test("decodeMutationCalldata round-trips params", () => {
     amount: 100n,
   };
 
-  const encoded = encodeMutationCalldata(acceptedMutation(mutation, params));
+  const encoded = encodeMutationCalldata(encodable(mutation, params));
   const decoded = decodeMutationCalldata(mutation, encoded);
 
   expect(decoded.params).toEqual(params);
@@ -235,15 +234,19 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
     id: 3,
     params: [{ name: "data", type: "bytes" }],
   };
-  const mutation = acceptedMutation(config, { data: "0x1234" });
-  const mutationData = encodeMutationCalldata(mutation);
-  const authorizationData = encodeAuthorizationCalldata(AUTHORIZATION);
+  const { mutationData, authorizationData } = withBytes(config, {
+    data: "0x1234",
+  });
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "enqueue",
     args: [3, mutationData, authorizationData],
   });
-  const actual = encodeEnqueueCalldata(mutation);
+  const actual = encodeEnqueueCalldata({
+    mutation: 3,
+    mutationData,
+    authorizationData,
+  });
   expect(actual).toBe(expected);
 });
 
@@ -267,16 +270,12 @@ test("encodeBatchArg builds a structured batch value", () => {
     credentialID: 8n,
     signature: "0xbeef",
   } as const satisfies Authorization;
-  const transferResolved = acceptedMutation(transfer, {
+  const transferResolved = withBytes(transfer, {
     from: "0x0000000000000000000000000000000000000001",
     to: "0x0000000000000000000000000000000000000002",
     amount: 100n,
   });
-  const marketResolved = acceptedMutation(
-    market,
-    { size: 10n },
-    secondAuthorization,
-  );
+  const marketResolved = withBytes(market, { size: 10n }, secondAuthorization);
 
   const batch = encodeBatchArg([transferResolved, marketResolved]);
 

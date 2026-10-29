@@ -6,10 +6,14 @@ import {
 import type { Authorization, RuntimeMutation } from "./typewriter-types";
 
 /** The parts of a mutation that its calldata encodes. */
-type EncodableMutation = Pick<
-  RuntimeMutation,
-  "config" | "params" | "authorization"
->;
+type EncodableMutation = Pick<RuntimeMutation, "config" | "params">;
+
+/** A mutation with the bytes the contract decodes it from. */
+type EncodedMutation = {
+  config: Pick<RuntimeMutation["config"], "id">;
+  mutationData: Hex.Hex;
+  authorizationData: Hex.Hex;
+};
 
 const EXECUTE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
 const ENQUEUE_FUNCTION = AbiFunction.fromAbi(TYPEWRITER_ABI, "enqueue");
@@ -138,24 +142,26 @@ export function encodeExecuteCalldata(
   ]);
 }
 
-export function encodeEnqueueCalldata(mutation: EncodableMutation): Hex.Hex {
+export function encodeEnqueueCalldata(args: {
+  mutation: number;
+  mutationData: Hex.Hex;
+  authorizationData: Hex.Hex;
+}): Hex.Hex {
   return AbiFunction.encodeData(ENQUEUE_FUNCTION, [
-    mutation.config.id,
-    encodeMutationCalldata(mutation),
-    encodeAuthorizationCalldata(mutation.authorization),
+    args.mutation,
+    args.mutationData,
+    args.authorizationData,
   ]);
 }
 
-export function encodeBatchArg(mutations: readonly EncodableMutation[]): {
+export function encodeBatchArg(mutations: readonly EncodedMutation[]): {
   mutations: readonly number[];
   mutationData: readonly Hex.Hex[];
   authorizationData: readonly Hex.Hex[];
 } {
   return {
     mutations: mutations.map((mutation) => mutation.config.id),
-    mutationData: mutations.map((m) => encodeMutationCalldata(m)),
-    authorizationData: mutations.map((mutation) =>
-      encodeAuthorizationCalldata(mutation.authorization),
-    ),
+    mutationData: mutations.map((mutation) => mutation.mutationData),
+    authorizationData: mutations.map((mutation) => mutation.authorizationData),
   };
 }

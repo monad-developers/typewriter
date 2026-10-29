@@ -59,9 +59,11 @@ import type { TypewriterMutationSchema } from "./db-schema";
 import {
   decodeAuthorizationCalldata,
   decodeMutationCalldata,
+  encodeAuthorizationCalldata,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
+  encodeMutationCalldata,
 } from "./encoding";
 import { durationMs, startTimer } from "./logger";
 import { Rpc, type RpcError } from "./rpc";
@@ -396,11 +398,11 @@ export function batchBlockToEvent(
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
 )<{
-  mutation: ReceivedMutation | EnqueuedMutation;
+  name: string;
   cause: unknown;
 }> {
   override get message() {
-    return `Failed to encode '${this.mutation.name}' mutation`;
+    return `Failed to encode '${this.name}' mutation`;
   }
 }
 
@@ -447,14 +449,10 @@ export function executeMutation(params: {
     // TODO: Validate the fixed Authorization against the mirrored account
     // state before entering revm, then retain contract execution as the final
     // authority. The static wire shape makes this a future fast-rejection path.
-    const mutationCalldata = yield* Effect.try({
-      try: () =>
-        params.mutation.status === "enqueued"
-          ? encodeExecuteCalldata([], [params.mutation.queueIndex])
-          : encodeExecuteCalldata([encodeBatchArg([params.mutation])], []),
-      catch: (cause) =>
-        new EncodeMutationError({ mutation: params.mutation, cause }),
-    });
+    const mutationCalldata =
+      params.mutation.status === "enqueued"
+        ? encodeExecuteCalldata([], [params.mutation.queueIndex])
+        : encodeExecuteCalldata([encodeBatchArg([params.mutation])], []);
 
     const executeStartedAt = yield* startTimer;
     const executeResult = yield* params.evm.execute({
@@ -493,18 +491,37 @@ export function executeMutation(params: {
   });
 }
 
+/** The arguments of an `enqueue` call, from its `ForceInclusionQueued` log. */
+type ForceInclusionQueued = {
+  index: bigint;
+  mutation: number;
+  mutationData: Hex.Hex;
+  authorizationData: Hex.Hex;
+};
+
+export function decodeForceInclusionQueued(
+  log: LocalLog,
+): ForceInclusionQueued {
+  return decodeEventLog({
+    abi: TYPEWRITER_ABI,
+    eventName: "ForceInclusionQueued",
+    topics: log.topics,
+    data: log.data,
+    strict: true,
+  }).args;
+}
+
+/** Replays an `enqueue` in revm with the bytes it had onchain. */
 export function enqueueMutation(params: {
   app: TypewriterApp;
   evm: EVM;
-  mutation: EnqueuedMutation;
+  queued: ForceInclusionQueued;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
-    const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
-
     const executeResult = yield* params.evm.execute({
       from: "0x0000000000000000000000000000000000000000",
       to: params.app.address,
-      data: enqueueCalldata,
+      data: encodeEnqueueCalldata(params.queued),
     });
 
     // The enqueue is already onchain, so a settlement never rewinds it.
@@ -520,25 +537,19 @@ export function enqueueMutation(params: {
 
 const SLOT_CACHE_MAX_ENTRIES = 200_000;
 
-export function decodeEnqueuedMutation(params: {
-  app: TypewriterApp;
-  log: LocalLog;
-}): EnqueuedMutation {
-  const forceInclusionLog = decodeEventLog({
-    abi: TYPEWRITER_ABI,
-    eventName: "ForceInclusionQueued",
-    topics: params.log.topics,
-    data: params.log.data,
-    strict: true,
-  }).args;
-
-  const mutationEntry = Object.entries(params.app.mutations).find(
-    ([_, mutationConfig]) => mutationConfig.id === forceInclusionLog.mutation,
+/**
+ * Throws if the contract can't decode `queued`, so no one can execute it: an
+ * unknown mutation ID, or bytes that `abi.decode` reverts on.
+ */
+export function decodeEnqueuedMutation(
+  app: TypewriterApp,
+  queued: ForceInclusionQueued,
+): EnqueuedMutation {
+  const mutationEntry = Object.entries(app.mutations).find(
+    ([_, mutationConfig]) => mutationConfig.id === queued.mutation,
   );
   if (mutationEntry === undefined) {
-    throw new Error(
-      `Unknown mutation ID ${forceInclusionLog.mutation} in ForceInclusionQueued event`,
-    );
+    throw new Error(`Unknown mutation ID ${queued.mutation}`);
   }
   const [mutationName, mutationConfig] = mutationEntry;
 
@@ -546,12 +557,12 @@ export function decodeEnqueuedMutation(params: {
     status: "enqueued",
     name: mutationName,
     config: mutationConfig,
-    authorization: decodeAuthorizationCalldata(
-      forceInclusionLog.authorizationData,
-    ),
+    authorization: decodeAuthorizationCalldata(queued.authorizationData),
     isForceInclusion: true,
-    queueIndex: forceInclusionLog.index,
-    ...decodeMutationCalldata(mutationConfig, forceInclusionLog.mutationData),
+    queueIndex: queued.index,
+    mutationData: queued.mutationData,
+    authorizationData: queued.authorizationData,
+    ...decodeMutationCalldata(mutationConfig, queued.mutationData),
   };
 }
 
@@ -1363,10 +1374,12 @@ export function createTypewriterEffect<
             });
 
             for (const log of message.block.logs) {
-              const enqueuedMutation = decodeEnqueuedMutation({ app, log });
+              const queued = decodeForceInclusionQueued(log);
 
+              // Every enqueue takes a queue index onchain, so revm replays
+              // each one, decodable or not.
               const executeResult = yield* withSpeculativeStateLock(
-                enqueueMutation({ app, evm, mutation: enqueuedMutation }),
+                enqueueMutation({ app, evm, queued }),
               );
 
               if (executeResult.status === "revert") {
@@ -1384,7 +1397,19 @@ export function createTypewriterEffect<
                 executeResult.slot_writes.map((write) => write.slot),
               );
 
-              yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation);
+              const decoded = yield* Effect.result(
+                Effect.try(() => decodeEnqueuedMutation(app, queued)),
+              );
+              if (Result.isFailure(decoded)) {
+                // No one can execute it, so it gets no event.
+                yield* Effect.logWarning(
+                  "Ignored undecodable enqueued mutation",
+                  decoded.failure,
+                ).pipe(Effect.annotateLogs({ queue_index: queued.index }));
+                continue;
+              }
+
+              yield* Queue.offer(enqueuedMutationsQueue, decoded.success);
             }
 
             for (const block of unfinalizedBlocks.filter(
@@ -1520,20 +1545,65 @@ export function createTypewriterEffect<
           return yield* new UnknownMutationError({ mutation: mutation.name });
         }
 
-        const runtimeMutation = {
-          name: resolvedMutation.name,
-          params: mutation.params,
-          authorization: mutation.authorization,
-          status: "received",
-          config: resolvedMutation.config,
-        } as const satisfies ReceivedMutation;
+        // The contract sees only these bytes, so the mutation's params and
+        // authorization are what they decode to, not the input.
+        const encoded = yield* Effect.result(
+          Effect.try({
+            try: () => {
+              const mutationData = encodeMutationCalldata({
+                config: resolvedMutation.config,
+                params: mutation.params,
+              });
+              const authorizationData = encodeAuthorizationCalldata(
+                mutation.authorization,
+              );
+              return {
+                ...decodeMutationCalldata(
+                  resolvedMutation.config,
+                  mutationData,
+                ),
+                authorization: decodeAuthorizationCalldata(authorizationData),
+                mutationData,
+                authorizationData,
+              };
+            },
+            catch: (cause) =>
+              new EncodeMutationError({ name: resolvedMutation.name, cause }),
+          }),
+        );
 
         yield* Effect.logDebug("Received mutation").pipe(
           Effect.annotateLogs({
-            mutation: runtimeMutation.name,
-            params: runtimeMutation.params,
+            mutation: resolvedMutation.name,
+            params: mutation.params,
           }),
         );
+
+        if (Result.isFailure(encoded)) {
+          const event = {
+            name: resolvedMutation.name,
+            params: mutation.params,
+            authorization: mutation.authorization,
+          };
+          yield* emitMutation({
+            ...event,
+            status: "received",
+          } as MutationEvent);
+          yield* emitMutation({
+            ...event,
+            status: "rejected",
+            isForceInclusion: false,
+            error: encoded.failure,
+          } as MutationEvent);
+          return yield* encoded.failure;
+        }
+
+        const runtimeMutation = {
+          name: resolvedMutation.name,
+          status: "received",
+          config: resolvedMutation.config,
+          ...encoded.success,
+        } as const satisfies ReceivedMutation;
 
         yield* emitMutation(mutationToEvent(runtimeMutation));
 
