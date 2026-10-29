@@ -23,11 +23,11 @@ bun run dev
 
 5. Open the app at `http://localhost:3000`.
 
-Without `RPC_URL`, the app runs Typewriter in dev mode: it starts a local Anvil, deploys the token with Anvil's first account as the scheduler, and starts from an empty database schema. Every start is a fresh chain.
+The app runs Typewriter in dev mode: it starts a local Anvil, deploys the token with Anvil's first account as the scheduler, and starts from an empty database schema. Every start is a fresh chain.
 
 ## .env
 
-`apps/token/.env.example` is the source of truth for local config. Bun loads `.env` automatically for the app, and the Foundry deploy script sources it explicitly.
+`apps/token/.env.example` is the source of truth for local config. Bun loads `.env` automatically.
 
 ### Runtime
 

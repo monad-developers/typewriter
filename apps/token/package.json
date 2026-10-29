@@ -9,8 +9,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "contracts:build": "forge build --root contracts --force",
-    "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
-    "deploy": ". .env && forge build --root contracts --force && forge script --root contracts ./contracts/script/Token.s.sol:TokenScript --broadcast --fork-url $RPC_URL --private-key $PRIVATE_KEY"
+    "contracts:lint": "forge fmt --check contracts && forge lint --root contracts"
   },
   "dependencies": {
     "@tanstack/react-query": "catalog:",
