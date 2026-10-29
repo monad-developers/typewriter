@@ -1,4 +1,4 @@
-import { AbiFunction, AbiParameters, Address, Hex } from "ox";
+import { AbiFunction, AbiParameters, Address, Bytes, Hex } from "ox";
 import {
   AUTHORIZATION_ABI_PARAMS,
   TYPEWRITER_ABI,
@@ -86,6 +86,133 @@ function assertEncodable(
   }
 }
 
+/**
+ * Throws unless every value type in `data` is clean, as the contract's
+ * `abi.decode` requires. `ox` decodes within the same bounds, but drops the
+ * high bits of an integer or address and the low bits of a `bytesN`, where
+ * `abi.decode` reverts. Like `abi.decode`, it accepts trailing bytes, any
+ * in-bounds offset, and any padding after `bytes` and `string`.
+ */
+function assertClean(
+  params: readonly AbiParameters.Parameter[],
+  data: Bytes.Bytes,
+): void {
+  assertCleanTuple(params, data, 0);
+}
+
+function assertCleanTuple(
+  components: readonly AbiParameters.Parameter[],
+  data: Bytes.Bytes,
+  start: number,
+): void {
+  let head = start;
+  for (const component of components) {
+    if (isDynamic(component)) {
+      assertCleanDynamic(component, data, start + Number(word(data, head)));
+      head += 32;
+    } else {
+      assertCleanStatic(component, data, head);
+      head += staticSize(component);
+    }
+  }
+}
+
+function assertCleanDynamic(
+  param: AbiParameters.Parameter,
+  data: Bytes.Bytes,
+  position: number,
+): void {
+  const array = /^(.*)\[(\d*)\]$/.exec(param.type);
+  if (array !== null) {
+    const [, item, length] = array;
+    const items = Array<AbiParameters.Parameter>(
+      length === "" ? Number(word(data, position)) : Number(length),
+    ).fill({ ...param, type: item! });
+    assertCleanTuple(items, data, length === "" ? position + 32 : position);
+  } else if (param.type === "tuple") {
+    assertCleanTuple(componentsOf(param), data, position);
+  }
+  // `bytes` and `string` have no value type to check.
+}
+
+function assertCleanStatic(
+  param: AbiParameters.Parameter,
+  data: Bytes.Bytes,
+  position: number,
+): void {
+  const array = /^(.*)\[(\d+)\]$/.exec(param.type);
+  if (array !== null) {
+    const item = { ...param, type: array[1]! };
+    for (let i = 0; i < Number(array[2]); i++) {
+      assertCleanStatic(item, data, position + i * staticSize(item));
+    }
+    return;
+  }
+  if (param.type === "tuple") {
+    assertCleanTuple(componentsOf(param), data, position);
+    return;
+  }
+  if (!isClean(param.type, word(data, position))) {
+    throw new Error(`dirty ${param.type} at byte ${position}`);
+  }
+}
+
+/** Whether `abi.decode` accepts the word `value` as a `type`. */
+function isClean(type: string, value: bigint): boolean {
+  const integer = /^(u?)int(\d*)$/.exec(type);
+  if (integer !== null) {
+    const bits = Number(integer[2] || 256);
+    return integer[1] === "u"
+      ? BigInt.asUintN(bits, value) === value
+      : BigInt.asIntN(bits, value) === BigInt.asIntN(256, value);
+  }
+  if (type === "address") return BigInt.asUintN(160, value) === value;
+  if (type === "bool") return value <= 1n;
+  const bytes = /^bytes(\d+)$/.exec(type);
+  if (bytes !== null) {
+    return BigInt.asUintN(256 - 8 * Number(bytes[1]), value) === 0n;
+  }
+  return true;
+}
+
+function isDynamic(param: AbiParameters.Parameter): boolean {
+  if (param.type === "bytes" || param.type === "string") return true;
+  const array = /^(.*)\[(\d*)\]$/.exec(param.type);
+  if (array !== null) {
+    return array[2] === "" || isDynamic({ ...param, type: array[1]! });
+  }
+  return param.type === "tuple" && componentsOf(param).some(isDynamic);
+}
+
+/** The size of a static `param` in the head of its tuple. */
+function staticSize(param: AbiParameters.Parameter): number {
+  const array = /^(.*)\[(\d+)\]$/.exec(param.type);
+  if (array !== null) {
+    return Number(array[2]) * staticSize({ ...param, type: array[1]! });
+  }
+  if (param.type === "tuple") {
+    return componentsOf(param).reduce(
+      (size, component) => size + staticSize(component),
+      0,
+    );
+  }
+  return 32;
+}
+
+function componentsOf(
+  param: AbiParameters.Parameter,
+): readonly AbiParameters.Parameter[] {
+  return (param as { components: readonly AbiParameters.Parameter[] })
+    .components;
+}
+
+function word(data: Bytes.Bytes, position: number): bigint {
+  if (position + 32 > data.length) {
+    throw new Error(`no word at byte ${position}`);
+  }
+  return Bytes.toBigInt(data.subarray(position, position + 32));
+}
+
 export function encodeMutationCalldata(mutation: EncodableMutation): Hex.Hex {
   const params = calldataStructParams(mutation.config.params);
   assertEncodable(params[0], mutation.params, "params");
@@ -99,11 +226,11 @@ export function decodeMutationCalldata(
   },
   calldata: Hex.Hex,
 ): { params: unknown } {
-  const [decodedParams] = AbiParameters.decode(
-    calldataStructParams(mutationConfig.params),
-    calldata,
-    { checksumAddress: false },
-  );
+  const params = calldataStructParams(mutationConfig.params);
+  const [decodedParams] = AbiParameters.decode(params, calldata, {
+    checksumAddress: false,
+  });
+  assertClean(params, Bytes.fromHex(calldata));
   return { params: decodedParams };
 }
 
@@ -119,11 +246,11 @@ export function encodeAuthorizationCalldata(
 }
 
 export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
-  const [authorization] = AbiParameters.decode(
-    calldataStructParams(AUTHORIZATION_ABI_PARAMS),
-    calldata,
-    { checksumAddress: false },
-  );
+  const params = calldataStructParams(AUTHORIZATION_ABI_PARAMS);
+  const [authorization] = AbiParameters.decode(params, calldata, {
+    checksumAddress: false,
+  });
+  assertClean(params, Bytes.fromHex(calldata));
   // ox decodes `uint40` as a number.
   return { ...authorization, expiration: BigInt(authorization.expiration) };
 }

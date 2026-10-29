@@ -203,6 +203,65 @@ test("decodeMutationCalldata round-trips params", () => {
   expect(decoded.params).toEqual(params);
 });
 
+const STATIC = {
+  id: 0,
+  params: [
+    { name: "data", type: "bytes" },
+    { name: "to", type: "address" },
+    { name: "tag", type: "bytes2" },
+    { name: "small", type: "int8" },
+    { name: "pair", type: "uint8[2]" },
+  ],
+};
+const STATIC_PARAMS = {
+  data: "0xff",
+  to: "0x0000000000000000000000000000000000000001",
+  tag: "0xabcd",
+  small: -1,
+  pair: [1, 2],
+};
+
+/** `calldata` with word `index` of its tuple, after the tuple's offset, set to `word`. */
+function withTupleWord(calldata: string, index: number, word: string) {
+  const start = 2 + 64 * (index + 1);
+  return `0x${calldata.slice(2, start)}${word}${calldata.slice(start + 64)}` as const;
+}
+
+test("decodeMutationCalldata accepts trailing bytes, as abi.decode does", () => {
+  const encoded = encodeMutationCalldata(encodable(STATIC, STATIC_PARAMS));
+  expect(
+    decodeMutationCalldata(STATIC, `${encoded}${"ff".repeat(33)}`).params,
+  ).toEqual(decodeMutationCalldata(STATIC, encoded).params);
+});
+
+test.each([
+  [
+    "an address with dirty high bits",
+    1,
+    `${"ff".repeat(12)}${"11".repeat(20)}`,
+  ],
+  ["a bytes2 with dirty low bits", 2, `abcd${"00".repeat(29)}01`],
+  ["an int8 that is not sign-extended", 3, `${"00".repeat(31)}80`],
+  ["a uint8 above its range", 5, `${"00".repeat(30)}0100`],
+])(
+  "decodeMutationCalldata rejects %s, as abi.decode does",
+  (_, index, word) => {
+    const encoded = encodeMutationCalldata(encodable(STATIC, STATIC_PARAMS));
+    expect(() =>
+      decodeMutationCalldata(STATIC, withTupleWord(encoded, index, word)),
+    ).toThrow("dirty");
+  },
+);
+
+test("decodeAuthorizationCalldata rejects a credentialID with dirty high bits", () => {
+  const encoded = encodeAuthorizationCalldata(AUTHORIZATION);
+  expect(() =>
+    decodeAuthorizationCalldata(
+      withTupleWord(encoded, 1, `01${"00".repeat(23)}${"00".repeat(7)}07`),
+    ),
+  ).toThrow("dirty uint64");
+});
+
 test("fixed Authorization calldata round-trips as one Solidity struct", () => {
   const encoded = encodeAuthorizationCalldata(AUTHORIZATION);
 
