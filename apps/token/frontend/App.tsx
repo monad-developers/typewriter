@@ -160,19 +160,31 @@ export function App() {
     });
   }, [recipients]);
 
-  function watchStatus(executionIndex: bigint) {
-    const events = new EventSource(`/api/mutation/${executionIndex}/status`);
-    events.onmessage = (event) => {
-      const { status } = JSON.parse(event.data) as { status: TxStatus };
-      setTxs((previous) =>
-        previous.map((tx) =>
-          tx.executionIndex === executionIndex ? { ...tx, status } : tx,
-        ),
-      );
-      if (status === "finalized") events.close();
-    };
-    events.onerror = () => events.close();
-  }
+  // One request polls every pending tx, so status checks don't hold the
+  // browser's six connections per host.
+  const pendingIndexes = txs
+    .filter((tx) => tx.status !== "finalized")
+    .map((tx) => tx.executionIndex)
+    .join(",");
+  const statusesQuery = useQuery({
+    queryKey: ["statuses", pendingIndexes],
+    queryFn: () =>
+      request<Record<string, TxStatus>>(
+        `/api/mutations/status?executionIndexes=${pendingIndexes}`,
+      ),
+    enabled: pendingIndexes !== "",
+    refetchInterval: 100,
+  });
+  useEffect(() => {
+    const statuses = statusesQuery.data;
+    if (statuses === undefined) return;
+    setTxs((previous) =>
+      previous.map((tx) => {
+        const status = statuses[tx.executionIndex.toString()];
+        return status === undefined ? tx : { ...tx, status };
+      }),
+    );
+  }, [statusesQuery.data]);
 
   const signInMutation = useMutation({
     mutationFn: async () => {
@@ -251,7 +263,6 @@ export function App() {
         },
         ...previous,
       ]);
-      watchStatus(result.executionIndex);
     },
     onError: (cause) =>
       setError(cause instanceof Error ? cause.message : String(cause)),
@@ -308,7 +319,6 @@ export function App() {
         queryKey: ["account", account.accountId],
       });
       await queryClient.invalidateQueries({ queryKey: ["accountIDs"] });
-      watchStatus(result.executionIndex);
     },
     onError: (cause) =>
       setError(cause instanceof Error ? cause.message : String(cause)),
