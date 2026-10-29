@@ -82,10 +82,9 @@ export function deploy({
     const artifact = yield* Effect.promise(() =>
       Bun.file(`${out}/out/Assessment.sol/Assessment.json`).json(),
     );
-    const args = AbiParameters.encode(
-      AbiParameters.from(["address", "uint256"]),
-      [deployer, 1_000_000n],
-    );
+    const args = AbiParameters.encode(AbiParameters.from(["address"]), [
+      deployer,
+    ]);
     const hash = yield* chain.request({
       method: "eth_sendTransaction",
       params: [

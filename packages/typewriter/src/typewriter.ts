@@ -1083,7 +1083,7 @@ export function createTypewriterEffect<
               );
               // TODO(kyle) how to handle failed enqueue.
               // TODO(kyle) the discarded mutation stays in the queue onchain,
-              // and anyone can `forceExecute` it after FORCE_INCLUSION_DELAY.
+              // and anyone can `forceExecute` it after `FORCE_INCLUSION_DELAY` seconds.
               // It can succeed then, for example once its nonce is next, and
               // change state and `executionIndex` outside revm. The watch only
               // sees `ForceInclusionQueued` logs and `forceExecute` emits no

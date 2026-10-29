@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.21;
 
 enum KeyType {
     P256,
@@ -146,13 +146,13 @@ abstract contract Typewriter {
 
     struct QueuedMutation {
         uint8 mutation;
+        uint40 enqueuedTimestamp;
         bytes mutationData;
         bytes authorizationData;
-        uint256 enqueuedBlock;
     }
 
     event ForceInclusionQueued(
-        uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint256 enqueuedBlock
+        uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint40 enqueuedTimestamp
     );
 
     error UnauthorizedExecute(address caller);
@@ -162,7 +162,7 @@ abstract contract Typewriter {
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
-    uint256 internal immutable FORCE_INCLUSION_DELAY;
+    uint256 internal immutable FORCE_INCLUSION_DELAY = 5 minutes;
 
     mapping(bytes32 => Account) internal accounts;
     QueuedMutation[] internal queue;
@@ -205,7 +205,7 @@ abstract contract Typewriter {
             uint256 index = forceExecuteIndexes[i];
             QueuedMutation storage queued = queue[index];
 
-            if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+            if (queued.enqueuedTimestamp == 0) revert ForceInclusionAlreadyExecuted(index);
 
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
             _execute(queued.mutation, queued.mutationData, queued.authorizationData);
@@ -233,26 +233,25 @@ abstract contract Typewriter {
         returns (uint256)
     {
         uint256 index = queue.length;
-        uint256 enqueuedBlock = block.number;
+        uint40 enqueuedTimestamp = uint40(block.timestamp);
         queue.push(
             QueuedMutation({
                 mutation: mutation,
+                enqueuedTimestamp: enqueuedTimestamp,
                 mutationData: mutationData,
-                authorizationData: authorizationData,
-                enqueuedBlock: enqueuedBlock
+                authorizationData: authorizationData
             })
         );
-        emit ForceInclusionQueued(index, mutation, mutationData, authorizationData, enqueuedBlock);
+        emit ForceInclusionQueued(index, mutation, mutationData, authorizationData, enqueuedTimestamp);
         return index;
     }
 
     function forceExecute(uint256 index) external {
         QueuedMutation storage queued = queue[index];
 
-        if (block.number < queued.enqueuedBlock + FORCE_INCLUSION_DELAY) {
-            revert ForceInclusionTooEarly((queued.enqueuedBlock + FORCE_INCLUSION_DELAY) - block.number);
-        }
-        if (queued.enqueuedBlock == 0) revert ForceInclusionAlreadyExecuted(index);
+        if (queued.enqueuedTimestamp == 0) revert ForceInclusionAlreadyExecuted(index);
+        uint256 executableAt = queued.enqueuedTimestamp + FORCE_INCLUSION_DELAY;
+        if (block.timestamp < executableAt) revert ForceInclusionTooEarly(executableAt - block.timestamp);
 
         _execute(queued.mutation, queued.mutationData, queued.authorizationData);
         executionIndex++;

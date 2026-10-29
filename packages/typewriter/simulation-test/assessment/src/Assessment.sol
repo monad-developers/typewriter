@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.21;
 
 import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
@@ -51,10 +51,10 @@ contract Assessment is Typewriter {
         B
     }
 
-    constructor(address _scheduler, uint256 _forceInclusionDelay) {
+    constructor(address _scheduler) {
         if (_scheduler == address(0)) revert InvalidScheduler();
         SCHEDULER = _scheduler;
-        FORCE_INCLUSION_DELAY = _forceInclusionDelay;
+        FORCE_INCLUSION_DELAY = 365 days;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {

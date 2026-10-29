@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.21;
 
 import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
@@ -26,7 +26,6 @@ contract Counter is Typewriter {
 
     constructor() {
         SCHEDULER = msg.sender;
-        FORCE_INCLUSION_DELAY = 658;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {

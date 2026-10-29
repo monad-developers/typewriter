@@ -4,7 +4,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
   readonly storageLayout: {
     readonly storage: readonly [
       {
-        readonly astId: 694;
+        readonly astId: 695;
         readonly contract: "src/Token.sol:Token";
         readonly label: "accounts";
         readonly offset: 0;
@@ -12,7 +12,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_mapping(t_bytes32,t_struct(Account)26_storage)";
       },
       {
-        readonly astId: 698;
+        readonly astId: 699;
         readonly contract: "src/Token.sol:Token";
         readonly label: "queue";
         readonly offset: 0;
@@ -20,7 +20,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_array(t_struct(QueuedMutation)657_storage)dyn_storage";
       },
       {
-        readonly astId: 700;
+        readonly astId: 701;
         readonly contract: "src/Token.sol:Token";
         readonly label: "executionIndex";
         readonly offset: 0;
@@ -28,12 +28,12 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_uint256";
       },
       {
-        readonly astId: 42177;
+        readonly astId: 42180;
         readonly contract: "src/Token.sol:Token";
         readonly label: "state";
         readonly offset: 0;
         readonly slot: "3";
-        readonly type: "t_struct(State)42166_storage";
+        readonly type: "t_struct(State)42169_storage";
       },
     ];
     readonly types: {
@@ -158,7 +158,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
       readonly "t_struct(QueuedMutation)657_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Typewriter.QueuedMutation";
-        readonly numberOfBytes: "128";
+        readonly numberOfBytes: "96";
         readonly members: readonly [
           {
             readonly astId: 650;
@@ -171,36 +171,36 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           {
             readonly astId: 652;
             readonly contract: "src/Token.sol:Token";
+            readonly label: "enqueuedTimestamp";
+            readonly offset: 1;
+            readonly slot: "0";
+            readonly type: "t_uint40";
+          },
+          {
+            readonly astId: 654;
+            readonly contract: "src/Token.sol:Token";
             readonly label: "mutationData";
             readonly offset: 0;
             readonly slot: "1";
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 654;
+            readonly astId: 656;
             readonly contract: "src/Token.sol:Token";
             readonly label: "authorizationData";
             readonly offset: 0;
             readonly slot: "2";
             readonly type: "t_bytes_storage";
           },
-          {
-            readonly astId: 656;
-            readonly contract: "src/Token.sol:Token";
-            readonly label: "enqueuedBlock";
-            readonly offset: 0;
-            readonly slot: "3";
-            readonly type: "t_uint256";
-          },
         ];
       };
-      readonly "t_struct(State)42166_storage": {
+      readonly "t_struct(State)42169_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 42161;
+            readonly astId: 42164;
             readonly contract: "src/Token.sol:Token";
             readonly label: "totalSupply";
             readonly offset: 0;
@@ -208,7 +208,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint256";
           },
           {
-            readonly astId: 42165;
+            readonly astId: 42168;
             readonly contract: "src/Token.sol:Token";
             readonly label: "balances";
             readonly offset: 0;
