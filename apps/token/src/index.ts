@@ -19,21 +19,16 @@ function jsonResponse(data: unknown): Response {
   });
 }
 
-// Without RPC_URL, development runs on a local Anvil that typewriter starts
-// and deploys the token to.
-const dev =
-  process.env.NODE_ENV !== "production" && process.env.RPC_URL === undefined;
+const { CHAIN_ID, PRIVATE_KEY, RPC_URL, TOKEN_ADDRESS } = process.env;
 
 const typewriter = await createTypewriter(Token, {
-  dev,
-  ...(dev
-    ? {}
-    : {
-        address: requireEnv("TOKEN_ADDRESS") as Address,
-        account: privateKeyToAccount(requireEnv("PRIVATE_KEY") as Hex),
-        chainId: Number(requireEnv("CHAIN_ID")),
-        rpcUrl: requireEnv("RPC_URL"),
-      }),
+  // Without RPC_URL, development runs on a local Anvil that typewriter starts
+  // and deploys the token to.
+  dev: process.env.NODE_ENV !== "production" && RPC_URL === undefined,
+  address: TOKEN_ADDRESS as Address | undefined,
+  account: PRIVATE_KEY ? privateKeyToAccount(PRIVATE_KEY as Hex) : undefined,
+  chainId: CHAIN_ID ? Number(CHAIN_ID) : undefined,
+  rpcUrl: RPC_URL,
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   sequencing: { order: "fifo" },
 });

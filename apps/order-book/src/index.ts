@@ -3,10 +3,10 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import superjson from "superjson";
 import { createTypewriter } from "typewriter";
 import type { Address, Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import OrderBook from "../contracts/src/OrderBook.sol";
 import index from "../frontend/index.html";
 import { ORDER_BOOK_BATCH_ORDER } from "./app";
-import { DEV, network } from "./constants";
 import {
   selectBlock,
   selectMutationByExecutionIndex,
@@ -21,9 +21,16 @@ if (process.env.DATABASE_URL === undefined) {
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
+const { CHAIN_ID, ORDER_BOOK_ADDRESS, PRIVATE_KEY, RPC_URL } = process.env;
+
 const app = await createTypewriter(OrderBook, {
-  dev: DEV,
-  ...(DEV ? {} : network()),
+  // Without RPC_URL, development runs on a local Anvil that typewriter starts
+  // and deploys the order book to.
+  dev: process.env.NODE_ENV !== "production" && RPC_URL === undefined,
+  address: ORDER_BOOK_ADDRESS as Address | undefined,
+  account: PRIVATE_KEY ? privateKeyToAccount(PRIVATE_KEY as Hex) : undefined,
+  chainId: CHAIN_ID ? Number(CHAIN_ID) : undefined,
+  rpcUrl: RPC_URL?.split(",").map((url) => url.trim()),
   database: { url: DATABASE_URL, maxConnections: 25 },
   sequencing: {
     order: "batch",

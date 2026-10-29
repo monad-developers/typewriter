@@ -22,7 +22,7 @@ Start local development with:
 cp .env.example.local .env
 ```
 
-Without `RPC_URL`, `bun dev` runs Typewriter in dev mode: it starts a local Anvil, deploys `OrderBook` with Anvil account #0 as the scheduler, and starts from an empty database schema. The backend ignores `PRIVATE_KEY`, `ORDER_BOOK_ADDRESS`, and `CHAIN_ID` then; the scripts still use the last two, which in development are always `0x5FbDB2315678afecb367f032d93F642f64180aa3` and `31337`.
+Without `RPC_URL`, `bun dev` runs Typewriter in dev mode: it starts a local Anvil, deploys `OrderBook` with Anvil account #0 as the scheduler, and starts from an empty database schema. Leave `PRIVATE_KEY`, `ORDER_BOOK_ADDRESS`, and `CHAIN_ID` unset then; Typewriter refuses to start in dev mode with any of them set. Participant scripts read the deployment from the running backend at `API_URL`.
 
 For Monad testnet or a hosted deployment, start with:
 
@@ -36,9 +36,9 @@ cp .env.example.testnet .env
 |---|---|---|
 | `PRIVATE_KEY` | `bun start`, `bun run deploy`, `bun dev` with `RPC_URL` | Funded deployer/backend wallet private key |
 | `DATABASE_URL` | `bun dev`, `bun start` | Postgres connection string |
-| `ORDER_BOOK_ADDRESS` | Backend, scripts | Deployed `OrderBook` contract address |
+| `ORDER_BOOK_ADDRESS` | Backend, scripts | Deployed `OrderBook` contract address. Only with `RPC_URL` |
 | `RPC_URL` | Backend, scripts, deploy | RPC endpoint. The backend accepts comma-separated failover URLs. Unset in development to run on a local Anvil |
-| `CHAIN_ID` | Backend, scripts | Chain ID, for example `31337` for Anvil or `10143` for Monad testnet |
+| `CHAIN_ID` | Backend, scripts | Chain ID, for example `10143` for Monad testnet. Only with `RPC_URL` |
 | `BUN_PUBLIC_RP_ID` | Frontend | WebAuthn relying party ID, usually the hostname |
 | `BUN_PUBLIC_ORIGIN` | Frontend | Expected WebAuthn origin |
 | `API_URL` | Scripts | Running order-book backend URL |
@@ -47,7 +47,7 @@ cp .env.example.testnet .env
 
 ### Script Overrides
 
-Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL` and read `CHAIN_ID`, `ORDER_BOOK_ADDRESS`, and `RPC_URL` from `.env`.
+Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL`, and read the chain ID and order book address from the backend's `/api/manifest` unless `CHAIN_ID` and `ORDER_BOOK_ADDRESS` are set.
 
 Set these only for one-off overrides:
 
