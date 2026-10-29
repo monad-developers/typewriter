@@ -107,13 +107,48 @@ export {
   type WatchError,
 } from "./watch";
 
+/** How long a signal waits for the scope to close before ending the process. */
+const SIGNAL_CLOSE_TIMEOUT_MS = 10_000;
+
+/**
+ * Returns a function that closes `scope` once. SIGINT and SIGTERM close it
+ * too, so its finalizers stop the program, release the database, and in `dev`
+ * mode stop Anvil and drop the schema. Without other listeners, the signal
+ * then ends the process as it would have.
+ */
+function closeOnSignals(scope: Scope.Closeable): () => Promise<void> {
+  let closing: Promise<void> | undefined;
+  const close = () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    closing ??= Effect.runPromise(Scope.close(scope, Exit.void));
+    return closing;
+  };
+  const onSignal = (signal: NodeJS.Signals) => {
+    void Promise.race([close(), Bun.sleep(SIGNAL_CLOSE_TIMEOUT_MS)]).finally(
+      () => {
+        if (process.listenerCount(signal) === 0) {
+          process.kill(process.pid, signal);
+        }
+      },
+    );
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  return close;
+}
+
 /**
  * Logs `cause` and exits the process. A typewriter that failed to start or
  * stopped can't accept mutations, so it crashes rather than serve stale state.
  */
 function exit(msg: string, cause: Cause.Cause<unknown>): never {
-  Effect.runSync(Effect.logError(msg, cause).pipe(Effect.provide(loggerLayer)));
+  logError(msg, cause);
   process.exit(1);
+}
+
+function logError(msg: string, cause: Cause.Cause<unknown>): void {
+  Effect.runSync(Effect.logError(msg, cause).pipe(Effect.provide(loggerLayer)));
 }
 
 type EntrypointMetadata<entrypoint> =
@@ -164,9 +199,8 @@ export async function createTypewriter<
     .catch((error: unknown) =>
       exit("Failed to start typewriter", Cause.fail(error)),
     );
-  // `close` closes the scope; otherwise the typewriter runs until the process
-  // exits.
   const scope = Effect.runSync(Scope.make());
+  const close = closeOnSignals(scope);
 
   try {
     const { typewriter, services } = await Effect.runPromise(
@@ -207,7 +241,11 @@ export async function createTypewriter<
           Effect.tapCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.void
-              : Effect.sync(() => exit("Stopped typewriter", cause)),
+              : Effect.sync(() => {
+                  // Close before exiting, so the finalizers run.
+                  logError("Stopped typewriter", cause);
+                  void close().finally(() => process.exit(1));
+                }),
           ),
           Effect.forkIn(scope),
         );
@@ -244,10 +282,10 @@ export async function createTypewriter<
       manifest: typewriter.manifest,
       execute,
       on,
-      close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+      close,
     } as Result;
   } catch (error) {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
+    await close();
     exit("Failed to start typewriter", Cause.fail(error));
   }
 }

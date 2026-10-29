@@ -118,7 +118,7 @@ const typewriter = await createTypewriter(Token, {
 });
 ```
 
-Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, and gives clients the matching `manifest.deploymentKey`, so several dev processes can share one database. `typewriter.close()` drops the schema and stops Anvil. Anvil also stops when the process exits, but a process that ends without `close()` leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
+Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, and gives clients the matching `manifest.deploymentKey`, so several dev processes can share one database. `typewriter.close()`, SIGINT, and SIGTERM drop the schema and stop Anvil. A process that exits any other way, such as with `process.exit` or `kill -9`, still stops Anvil where it can but leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
 
 #### Sequencing
 
@@ -538,7 +538,7 @@ An invalid value throws when the server module loads.
 close(): Promise<void>;
 ```
 
-Stops the runtime and releases its database connections, and in dev mode stops Anvil.
+Stops the runtime and releases its database connections and deployment lock, and in dev mode drops the schema and stops Anvil. SIGINT and SIGTERM do the same before the process ends, so a server does not need to call it on shutdown; it is for stopping a typewriter in a process that keeps running, such as a test.
 
 #### `typewriter.manifest`
 

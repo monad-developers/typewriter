@@ -140,25 +140,13 @@ function spawnAnvil(): {
     { stdout: "pipe", stderr: "inherit" },
   );
 
-  // A scope that never closes, such as on a crash or a signal, must not leave
-  // Anvil running. Without other listeners, a signal still ends the process.
+  // The scope stops Anvil. A process that exits without closing it, such as
+  // with `process.exit`, still kills Anvil, which would otherwise outlive it.
   const kill = () => anvil.kill();
-  const onSignal = (signal: NodeJS.Signals) => {
-    kill();
-    removeListeners();
-    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
-  };
-  const removeListeners = () => {
-    process.off("exit", kill);
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-  };
   process.on("exit", kill);
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
 
   const stop = async () => {
-    removeListeners();
+    process.off("exit", kill);
     kill();
     await anvil.exited;
   };
