@@ -40,11 +40,6 @@ export type Typewriter<
     submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Promise<TypewriterMutationResult>;
   on: On<sequencingConfig, mutationsConfig, () => void>;
-  /**
-   * Stops the typewriter and releases its database connections and, in `dev`
-   * mode, Anvil.
-   */
-  close: () => Promise<void>;
 };
 
 export type { EvmError, Spec } from "typewriter-evm";
@@ -282,7 +277,6 @@ export async function createTypewriter<
       manifest: typewriter.manifest,
       execute,
       on,
-      close,
     } as Result;
   } catch (error) {
     await close();

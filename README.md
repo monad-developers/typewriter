@@ -118,7 +118,7 @@ const typewriter = await createTypewriter(Token, {
 });
 ```
 
-Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, and gives clients the matching `manifest.deploymentKey`, so several dev processes can share one database. `typewriter.close()`, SIGINT, and SIGTERM drop the schema and stop Anvil. A process that exits any other way, such as with `process.exit` or `kill -9`, still stops Anvil where it can but leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
+Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, and gives clients the matching `manifest.deploymentKey`, so several dev processes can share one database. SIGINT and SIGTERM drop the schema and stop Anvil. A process that exits any other way, such as with `process.exit` or `kill -9`, still stops Anvil where it can but leaves its schema behind. It needs `anvil` from Foundry on the `PATH`.
 
 #### Sequencing
 
@@ -531,14 +531,6 @@ The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `
 - `TYPEWRITER_LOG_FORMAT` — `"pretty" | "json"`. Default `"json"` when `NODE_ENV` is `"production"`, else `"pretty"`.
 
 An invalid value throws when the server module loads.
-
-#### `typewriter.close()`
-
-```ts
-close(): Promise<void>;
-```
-
-Stops the runtime and releases its database connections and deployment lock, and in dev mode drops the schema and stops Anvil. SIGINT and SIGTERM do the same before the process ends, so a server does not need to call it on shutdown; it is for stopping a typewriter in a process that keeps running, such as a test.
 
 #### `typewriter.manifest`
 
