@@ -1,9 +1,5 @@
 import superjson from "superjson";
-import {
-  createTypewriter,
-  type MutationEvent,
-  type MutationStatus,
-} from "typewriter";
+import { createTypewriter, type MutationStatus } from "typewriter";
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
@@ -34,19 +30,19 @@ const typewriter = await createTypewriter(Token, {
   sequencing: { order: "fifo" },
 });
 
-// Keyed by execution index, which mutations get once accepted. Accepted
-// mutations are never rejected, so the status stream ends at "finalized".
-const mutations = new Map<bigint, MutationEvent>();
+// Accepted mutations that are not finalized yet. Clients only ask about
+// mutations they posted, which are accepted before `execute` resolves, so a
+// missing execution index is finalized.
+const statuses = new Map<bigint, MutationStatus>();
 
 typewriter.on("mutation", (mutation) => {
-  if ("executionIndex" in mutation) {
-    mutations.set(mutation.executionIndex, mutation);
+  if (!("executionIndex" in mutation)) return;
+  if (mutation.status === "finalized") {
+    statuses.delete(mutation.executionIndex);
+  } else {
+    statuses.set(mutation.executionIndex, mutation.status);
   }
 });
-
-function sse(value: unknown): string {
-  return `data: ${JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v))}\n\n`;
-}
 
 const server = Bun.serve({
   routes: {
@@ -69,37 +65,20 @@ const server = Bun.serve({
         balance: typewriter.state.balances[accountID],
       });
     },
-    "/api/mutation/:executionIndex/status": {
-      GET: (req) => {
-        if (!/^\d+$/.test(req.params.executionIndex)) {
-          return new Response("Bad Request", { status: 400 });
-        }
-        const executionIndex = BigInt(req.params.executionIndex);
-
-        const stream = new ReadableStream({
-          async start(controller) {
-            let last: MutationStatus | undefined;
-            while (true) {
-              const mutation = mutations.get(executionIndex);
-              if (mutation !== undefined && mutation.status !== last) {
-                last = mutation.status;
-                controller.enqueue(sse({ status: mutation.status }));
-              }
-              if (last === "finalized") break;
-              await new Promise((resolve) => setTimeout(resolve, 25));
-            }
-            controller.close();
-          },
-        });
-
-        return new Response(stream, {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          },
-        });
-      },
+    "/api/mutations/status": (req) => {
+      const executionIndexes =
+        new URL(req.url).searchParams.get("executionIndexes")?.split(",") ?? [];
+      if (!executionIndexes.every((index) => /^\d+$/.test(index))) {
+        return new Response("Bad Request", { status: 400 });
+      }
+      return jsonResponse(
+        Object.fromEntries(
+          executionIndexes.map((index) => [
+            index,
+            statuses.get(BigInt(index)) ?? "finalized",
+          ]),
+        ),
+      );
     },
   },
 });
