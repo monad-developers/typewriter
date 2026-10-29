@@ -145,7 +145,7 @@ const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
 const DEFAULT_SUBMIT_INTERVAL_MS = 300;
-const DEFAULT_EXPIRATION_MARGIN_S = 5;
+const EXPIRATION_MARGIN = 5;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,
@@ -303,7 +303,7 @@ export function createTypewriterApp(params: {
     mutationSchema: createMutationSchema(schemaName, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
-    expirationMarginS: config.expirationMarginS ?? DEFAULT_EXPIRATION_MARGIN_S,
+    expirationMarginS: config.expirationMarginS ?? EXPIRATION_MARGIN,
     confirmations,
     sequencing,
   };
