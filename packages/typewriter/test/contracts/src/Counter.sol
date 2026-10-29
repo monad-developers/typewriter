@@ -24,9 +24,7 @@ contract Counter is Typewriter {
         Add
     }
 
-    constructor() {
-        SCHEDULER = msg.sender;
-    }
+    constructor(address scheduler) Typewriter(scheduler) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {
         if (mutation == uint8(Mutation.Add)) {

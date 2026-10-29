@@ -28,12 +28,12 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_uint256";
       },
       {
-        readonly astId: 43938;
+        readonly astId: 43944;
         readonly contract: "src/OrderBook.sol:OrderBook";
         readonly label: "state";
         readonly offset: 0;
         readonly slot: "3";
-        readonly type: "t_struct(State)43455_storage";
+        readonly type: "t_struct(State)43461_storage";
       },
     ];
     readonly types: {
@@ -48,11 +48,11 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly numberOfBytes: "32";
         readonly base: "t_struct(Credential)15_storage";
       };
-      readonly "t_array(t_struct(Order)43475_storage)dyn_storage": {
+      readonly "t_array(t_struct(Order)43481_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
         readonly label: "struct Order[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(Order)43475_storage";
+        readonly base: "t_struct(Order)43481_storage";
       };
       readonly "t_array(t_struct(QueuedMutation)657_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
@@ -89,12 +89,12 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly numberOfBytes: "32";
         readonly value: "t_struct(Account)26_storage";
       };
-      readonly "t_mapping(t_bytes32,t_struct(Account)43464_storage)": {
+      readonly "t_mapping(t_bytes32,t_struct(Account)43470_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_bytes32";
         readonly label: "mapping(bytes32 => struct Account)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Account)43464_storage";
+        readonly value: "t_struct(Account)43470_storage";
       };
       readonly "t_mapping(t_uint192,t_uint64)": {
         readonly encoding: "mapping";
@@ -103,19 +103,19 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly numberOfBytes: "32";
         readonly value: "t_uint64";
       };
-      readonly "t_mapping(t_uint64,t_struct(Instrument)43498_storage)": {
+      readonly "t_mapping(t_uint64,t_struct(Instrument)43504_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_uint64";
         readonly label: "mapping(uint64 => struct Instrument)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Instrument)43498_storage";
+        readonly value: "t_struct(Instrument)43504_storage";
       };
-      readonly "t_mapping(t_uint64,t_struct(Tick)43509_storage)": {
+      readonly "t_mapping(t_uint64,t_struct(Tick)43515_storage)": {
         readonly encoding: "mapping";
         readonly key: "t_uint64";
         readonly label: "mapping(uint64 => struct Tick)";
         readonly numberOfBytes: "32";
-        readonly value: "t_struct(Tick)43509_storage";
+        readonly value: "t_struct(Tick)43515_storage";
       };
       readonly "t_struct(Account)26_storage": {
         readonly encoding: "inplace";
@@ -148,13 +148,13 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(Account)43464_storage": {
+      readonly "t_struct(Account)43470_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Account";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 43459;
+            readonly astId: 43465;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "balances";
             readonly offset: 0;
@@ -162,12 +162,12 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_mapping(t_address,t_uint256)";
           },
           {
-            readonly astId: 43463;
+            readonly astId: 43469;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "orders";
             readonly offset: 0;
             readonly slot: "1";
-            readonly type: "t_array(t_struct(Order)43475_storage)dyn_storage";
+            readonly type: "t_array(t_struct(Order)43481_storage)dyn_storage";
           },
         ];
       };
@@ -210,13 +210,13 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(Instrument)43498_storage": {
+      readonly "t_struct(Instrument)43504_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Instrument";
         readonly numberOfBytes: "160";
         readonly members: readonly [
           {
-            readonly astId: 43477;
+            readonly astId: 43483;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "base";
             readonly offset: 0;
@@ -224,7 +224,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_address";
           },
           {
-            readonly astId: 43479;
+            readonly astId: 43485;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "quote";
             readonly offset: 0;
@@ -232,7 +232,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_address";
           },
           {
-            readonly astId: 43481;
+            readonly astId: 43487;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "baseLotExp";
             readonly offset: 20;
@@ -240,7 +240,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint8";
           },
           {
-            readonly astId: 43483;
+            readonly astId: 43489;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "quoteLotExp";
             readonly offset: 21;
@@ -248,7 +248,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint8";
           },
           {
-            readonly astId: 43485;
+            readonly astId: 43491;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "bestBid";
             readonly offset: 22;
@@ -256,7 +256,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43487;
+            readonly astId: 43493;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "bestAsk";
             readonly offset: 0;
@@ -264,30 +264,30 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43492;
+            readonly astId: 43498;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "bids";
             readonly offset: 0;
             readonly slot: "3";
-            readonly type: "t_mapping(t_uint64,t_struct(Tick)43509_storage)";
+            readonly type: "t_mapping(t_uint64,t_struct(Tick)43515_storage)";
           },
           {
-            readonly astId: 43497;
+            readonly astId: 43503;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "asks";
             readonly offset: 0;
             readonly slot: "4";
-            readonly type: "t_mapping(t_uint64,t_struct(Tick)43509_storage)";
+            readonly type: "t_mapping(t_uint64,t_struct(Tick)43515_storage)";
           },
         ];
       };
-      readonly "t_struct(Order)43475_storage": {
+      readonly "t_struct(Order)43481_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Order";
         readonly numberOfBytes: "32";
         readonly members: readonly [
           {
-            readonly astId: 43466;
+            readonly astId: 43472;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "quantity";
             readonly offset: 0;
@@ -295,7 +295,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43468;
+            readonly astId: 43474;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "instrumentId";
             readonly offset: 8;
@@ -303,7 +303,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43470;
+            readonly astId: 43476;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "price";
             readonly offset: 16;
@@ -311,7 +311,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43472;
+            readonly astId: 43478;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "tickVolume";
             readonly offset: 24;
@@ -319,7 +319,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint32";
           },
           {
-            readonly astId: 43474;
+            readonly astId: 43480;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "side";
             readonly offset: 28;
@@ -367,36 +367,36 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(State)43455_storage": {
+      readonly "t_struct(State)43461_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 43449;
+            readonly astId: 43455;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "accounts";
             readonly offset: 0;
             readonly slot: "0";
-            readonly type: "t_mapping(t_bytes32,t_struct(Account)43464_storage)";
+            readonly type: "t_mapping(t_bytes32,t_struct(Account)43470_storage)";
           },
           {
-            readonly astId: 43454;
+            readonly astId: 43460;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "instruments";
             readonly offset: 0;
             readonly slot: "1";
-            readonly type: "t_mapping(t_uint64,t_struct(Instrument)43498_storage)";
+            readonly type: "t_mapping(t_uint64,t_struct(Instrument)43504_storage)";
           },
         ];
       };
-      readonly "t_struct(Tick)43509_storage": {
+      readonly "t_struct(Tick)43515_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Tick";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 43500;
+            readonly astId: 43506;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "quantity";
             readonly offset: 0;
@@ -404,7 +404,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43502;
+            readonly astId: 43508;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "remainingQuantity";
             readonly offset: 8;
@@ -412,7 +412,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43504;
+            readonly astId: 43510;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "volume";
             readonly offset: 16;
@@ -420,7 +420,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint32";
           },
           {
-            readonly astId: 43506;
+            readonly astId: 43512;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "prev";
             readonly offset: 20;
@@ -428,7 +428,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint64";
           },
           {
-            readonly astId: 43508;
+            readonly astId: 43514;
             readonly contract: "src/OrderBook.sol:OrderBook";
             readonly label: "next";
             readonly offset: 0;

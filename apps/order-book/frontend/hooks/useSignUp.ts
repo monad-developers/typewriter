@@ -2,7 +2,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
 import {
   authorizeMutation,
-  deploymentKey,
   deriveAccountID,
   getAuthorizationPayload,
   type TypedMutation,
@@ -21,10 +20,7 @@ import { toAccount } from "./useStoredAccount";
 
 export function useSignUp() {
   const { data: manifest } = useManifest();
-  const storageKey =
-    manifest === undefined
-      ? undefined
-      : deploymentKey(manifest.chainId, manifest.address);
+  const storageKey = manifest?.deploymentKey;
   const queryClient = useQueryClient();
 
   return useMutation({

@@ -1,18 +1,23 @@
 import { expect, expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type { StorageView } from "storage-layout";
+import type { PrivateKeyAccount } from "viem";
 import {
   createTypewriterApp,
+  type DevChain,
   type MutationsConfig,
   type SequencingConfig,
   type StorageConfig,
   type TypewriterConfig,
+  validateConfig,
 } from "./config";
 import type {
   Authorization,
+  createTypewriter,
   Typewriter,
   TypewriterMutationInput,
 } from "./index";
+import type { TypewriterSolidityEntrypoint } from "./sol-parse";
 import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 
 const STORAGE_LAYOUT = {
@@ -96,7 +101,7 @@ function createTypewriterTest<
 
 const publicConfig = {
   address: "0x0000000000000000000000000000000000000000",
-  account: {} as TypewriterConfig["account"],
+  account: {} as PrivateKeyAccount,
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
@@ -113,8 +118,89 @@ test("createTypewriterApp constructs a serializable manifest", () => {
   expect(app.manifest).toEqual({
     chainId: 1,
     address: publicConfig.address,
+    deploymentKey: `1_${publicConfig.address}`,
     mutations: MUTATIONS,
   });
+  expect(app.schemaName).toBe(`typewriter_1_${publicConfig.address}`);
+});
+
+test("validateConfig lists every missing network field outside dev", () => {
+  expect(() => validateConfig({ database: publicConfig.database })).toThrow(
+    "config.address, config.account, config.chainId, config.rpcUrl are required unless config.dev is set",
+  );
+});
+
+test("validateConfig rejects network fields in dev", () => {
+  expect(() =>
+    validateConfig({
+      dev: true,
+      address: publicConfig.address,
+      rpcUrl: publicConfig.rpcUrl,
+      database: publicConfig.database,
+    }),
+  ).toThrow(
+    "config.dev starts its own Anvil, so leave config.address, config.rpcUrl unset",
+  );
+});
+
+test("createTypewriterApp takes the network from the dev chain", () => {
+  const devChain: DevChain = {
+    address: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    account: {} as DevChain["account"],
+    chainId: 31337,
+    hardfork: "MonadTen",
+    rpcUrl: "http://127.0.0.1:8545",
+  };
+  const app = createTypewriterApp({
+    config: { dev: true, database: publicConfig.database },
+    abi: [],
+    storageLayout: STORAGE_LAYOUT,
+    mutations: MUTATIONS,
+    devChain,
+  });
+
+  // Each dev process gets its own schema and browser storage.
+  expect(app.manifest.deploymentKey).toMatch(/^dev_[0-9a-f]{12}$/);
+  expect(app.schemaName).toBe(`typewriter_${app.manifest.deploymentKey}`);
+  expect(app).toMatchObject({
+    dev: true,
+    address: devChain.address,
+    chainId: 31337,
+    hardfork: "MonadTen",
+    rpcUrls: [devChain.rpcUrl],
+  });
+});
+
+test("createTypewriter types the network fields by dev", () => {
+  // Type checks only: the calls never run.
+  const check = (
+    create: typeof createTypewriter,
+    entrypoint: TypewriterSolidityEntrypoint,
+    envDev: boolean,
+  ) => {
+    const { address, account, chainId, rpcUrl, database } = publicConfig;
+
+    create(entrypoint, { dev: true, database });
+    create(entrypoint, { address, account, chainId, rpcUrl, database });
+    create(entrypoint, {
+      dev: false,
+      address,
+      account,
+      chainId,
+      rpcUrl,
+      database,
+    });
+    // A `dev` typed as `boolean` leaves the check to `validateConfig`.
+    create(entrypoint, { dev: envDev, address: undefined, database });
+
+    // @ts-expect-error dev mode starts its own chain
+    create(entrypoint, { dev: true, address, database });
+    // @ts-expect-error a deployment needs every network field
+    create(entrypoint, { database });
+    // @ts-expect-error a deployment needs every network field
+    create(entrypoint, { dev: false, address, account, chainId, database });
+  };
+  expect(check).toBeFunction();
 });
 
 test("Typewriter exposes each storage root at one property layer", () => {

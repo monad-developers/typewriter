@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import Token from "../../../apps/token/contracts/src/Token.sol";
 import Counter from "../test/contracts/src/Counter.sol";
+import ExtraConstructorArg from "../test/contracts/src/ExtraConstructorArg.sol";
 import Harness from "../test/contracts/src/Harness.sol";
 import InvalidEntrypoint from "../test/contracts/src/InvalidEntrypoint.sol";
 import MultipleEntrypoints from "../test/contracts/src/MultipleEntrypoints.sol";
@@ -214,6 +215,18 @@ test("generated Token Solidity declaration matches committed artifact", async ()
 
   expect(formatSolidityDeclaration(metadata)).toBe(declaration);
 }, 20_000);
+
+test("parseSolidityMetadata includes the creation bytecode", async () => {
+  const metadata = await parseSolidityMetadata(Counter);
+
+  expect(metadata.bytecode).toMatch(/^0x60[0-9a-f]+$/);
+});
+
+test("parseSolidityMetadata errors when the constructor takes more than the scheduler", async () => {
+  await expect(parseSolidityMetadata(ExtraConstructorArg)).rejects.toThrow(
+    "ExtraConstructorArg must declare `constructor(address scheduler)` and pass it to `Typewriter(scheduler)`, but its constructor takes (address, uint256)",
+  );
+});
 
 test("parseSolidityMetadata errors when no contract inherits Typewriter", async () => {
   await expect(parseSolidityMetadata(InvalidEntrypoint)).rejects.toThrow(

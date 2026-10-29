@@ -41,7 +41,12 @@ import type {
   TypewriterManifest,
 } from "./config";
 import { Database, type Db, type DbError, type DbTransaction } from "./db";
-import { deploymentLockKey, type MigrationError, migrate } from "./db-migrate";
+import {
+  deploymentLockKey,
+  dropSchema,
+  type MigrationError,
+  migrate,
+} from "./db-migrate";
 import {
   insertKeccakPreimages,
   insertMutations,
@@ -734,9 +739,20 @@ export function createTypewriterEffect<
     }
 
     const lockLost = yield* db.lock(
-      deploymentLockKey(app.chainId, app.address),
+      deploymentLockKey(app.schemaName),
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
+    if (app.dev) {
+      // The schema lasts as long as this process's chain. The finalizer runs
+      // before the lock is released, since it is added after it.
+      yield* Effect.addFinalizer(() =>
+        dropSchema(db, app.schemaName).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to drop dev schema", cause),
+          ),
+        ),
+      );
+    }
 
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.

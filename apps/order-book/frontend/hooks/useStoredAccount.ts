@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { deploymentKey, packNonce } from "typewriter/client";
+import { packNonce } from "typewriter/client";
 import { bytesToHex } from "viem";
 import { loadStoredAccount, type StoredAccount } from "../lib/account-store";
 import { useManifest } from "./useManifest";
@@ -22,10 +22,7 @@ async function loadAccount(storageKey: string): Promise<Account | null> {
 
 export function useStoredAccount() {
   const { data: manifest } = useManifest();
-  const storageKey =
-    manifest === undefined
-      ? undefined
-      : deploymentKey(manifest.chainId, manifest.address);
+  const storageKey = manifest?.deploymentKey;
   return useQuery({
     queryKey: ["storedAccount", storageKey],
     queryFn: () => loadAccount(storageKey!),

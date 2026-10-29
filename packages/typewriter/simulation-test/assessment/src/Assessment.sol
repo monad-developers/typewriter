@@ -51,9 +51,8 @@ contract Assessment is Typewriter {
         B
     }
 
-    constructor(address _scheduler) {
+    constructor(address _scheduler) Typewriter(_scheduler) {
         if (_scheduler == address(0)) revert InvalidScheduler();
-        SCHEDULER = _scheduler;
         FORCE_INCLUSION_DELAY = 365 days;
     }
 

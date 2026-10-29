@@ -91,6 +91,7 @@
     "packages/typewriter": {
       "name": "typewriter",
       "dependencies": {
+        "@effect/platform-bun": "4.0.3",
         "abipg": "workspace:*",
         "abitype": "catalog:",
         "drizzle-kit": "catalog:",
@@ -100,9 +101,6 @@
         "storage-layout": "workspace:*",
         "typewriter-evm": "workspace:*",
         "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@effect/platform-bun": "4.0.3",
       },
       "peerDependencies": {
         "typescript": "catalog:",

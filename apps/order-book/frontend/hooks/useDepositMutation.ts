@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { deploymentKey, incrementNonce } from "typewriter/client";
+import { incrementNonce } from "typewriter/client";
 import type { Address } from "viem";
 import { request } from "../lib/api";
 import { useManifest } from "./useManifest";
@@ -13,10 +13,7 @@ type DepositParams = {
 
 export function useDepositMutation() {
   const { data: manifest } = useManifest();
-  const storageKey =
-    manifest === undefined
-      ? undefined
-      : deploymentKey(manifest.chainId, manifest.address);
+  const storageKey = manifest?.deploymentKey;
   const { data: account } = useStoredAccount();
   const queryClient = useQueryClient();
 

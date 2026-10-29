@@ -60,9 +60,7 @@ contract NativeAccountHarness is Typewriter {
     uint256 public value;
     bytes32 public lastAccountID;
 
-    constructor() {
-        SCHEDULER = msg.sender;
-    }
+    constructor(address scheduler) Typewriter(scheduler) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation != SET_VALUE_MUTATION) revert UnknownMutation(mutation);
@@ -120,7 +118,7 @@ contract AccountTest {
 
     function setUp() public {
         harness = new AccountHarness();
-        nativeHarness = new NativeAccountHarness();
+        nativeHarness = new NativeAccountHarness(address(this));
     }
 
     function test_verifySignature_acceptsSecp256k1() external {

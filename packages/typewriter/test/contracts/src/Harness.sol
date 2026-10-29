@@ -46,9 +46,7 @@ contract Harness is Typewriter {
         Assert
     }
 
-    constructor() {
-        SCHEDULER = msg.sender;
-    }
+    constructor(address scheduler) Typewriter(scheduler) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.Credit)) {

@@ -21,9 +21,8 @@ contract Token is Typewriter {
         Mint
     }
 
-    constructor(address _scheduler) {
+    constructor(address _scheduler) Typewriter(_scheduler) {
         if (_scheduler == address(0)) revert InvalidScheduler();
-        SCHEDULER = _scheduler;
     }
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {

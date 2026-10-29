@@ -168,7 +168,8 @@ abstract contract Typewriter {
     QueuedMutation[] internal queue;
     uint256 public executionIndex;
 
-    constructor() {
+    constructor(address scheduler) {
+        SCHEDULER = scheduler;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,

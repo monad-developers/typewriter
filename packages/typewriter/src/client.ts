@@ -89,9 +89,10 @@ export function deriveAccountID(params: CreateAccountParams): Hex.Hex {
 }
 
 /**
- * Returns the key that identifies one deployment of a Typewriter app. The
- * runtime uses it in the Postgres schema name, and clients use it to scope
- * browser storage.
+ * Returns the key that identifies one deployment of a Typewriter app on a
+ * chain. The runtime uses it in the Postgres schema name. Clients should scope
+ * browser storage by `manifest.deploymentKey`, which is this key except in
+ * `dev` mode.
  */
 export function deploymentKey(
   chainId: number,
