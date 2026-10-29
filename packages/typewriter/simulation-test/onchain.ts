@@ -41,6 +41,8 @@ export type Onchain = {
   batches: string[][];
   /** The queue index of each `enqueue` transaction. */
   queueIndexes: Map<Hex.Hex, bigint>;
+  /** The `authorizationData` of each `enqueue`, by queue index. */
+  enqueuedAuthorizationData: Map<bigint, Hex.Hex>;
   /** The hash of each canonical block, by number. */
   blockHashes: Map<bigint, Hex.Hex>;
 };
@@ -84,6 +86,7 @@ export function readOnchain({
       executed: [],
       batches: [],
       queueIndexes: new Map(),
+      enqueuedAuthorizationData: new Map(),
       blockHashes: new Map(),
     };
     const keyByQueueIndex = new Map<bigint, string>();
@@ -113,6 +116,10 @@ export function readOnchain({
               strict: true,
             });
             onchain.queueIndexes.set(transaction.hash, args.index);
+            onchain.enqueuedAuthorizationData.set(
+              args.index,
+              args.authorizationData,
+            );
             keyByQueueIndex.set(
               args.index,
               keyByEnqueue.get(transaction.hash) ??

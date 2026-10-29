@@ -7,7 +7,10 @@ import { createStorageView, type StorageView } from "storage-layout";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
 import { selectKeccakPreimages, selectStorageSlots } from "../src/db-query";
-import { encodeExecuteCalldata } from "../src/encoding";
+import {
+  decodeAuthorizationCalldata,
+  encodeExecuteCalldata,
+} from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
 import type {
   BlockEvent,
@@ -542,11 +545,26 @@ function checkDatabase(
       onchain.executed.map(({ executionIndex }) => executionIndex),
       "mutation table execution indexes",
     );
-    for (const { key, executionIndex, inclusion } of onchain.executed) {
+    for (const {
+      key,
+      executionIndex,
+      inclusion,
+      queueIndex,
+    } of onchain.executed) {
       const submission = check.submissions.get(key);
       const entry = rows.get(executionIndex);
       if (submission === undefined || entry === undefined) continue;
-      const { name, params, authorization } = submission.mutation;
+      const { name, params } = submission.mutation;
+      // An enqueue's signature can cover other bytes than the well-formed
+      // mutation's, so its authorization is the one it had onchain.
+      const enqueued =
+        queueIndex === undefined
+          ? undefined
+          : onchain.enqueuedAuthorizationData.get(queueIndex);
+      const authorization =
+        enqueued === undefined
+          ? submission.mutation.authorization
+          : decodeAuthorizationCalldata(enqueued);
       check.equal(entry.name, name, `${submission.label} table`);
       const want = {
         execution_index: executionIndex,
