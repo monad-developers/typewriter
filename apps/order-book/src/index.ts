@@ -21,11 +21,6 @@ if (process.env.DATABASE_URL === undefined) {
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
-// `bun --hot` runs this module again without stopping the last typewriter,
-// which would keep running, and in dev keep its Anvil.
-const hot = globalThis as { typewriter?: { close: () => Promise<void> } };
-await hot.typewriter?.close();
-
 const app = await createTypewriter(OrderBook, {
   dev: DEV,
   ...(DEV ? {} : network()),
@@ -35,7 +30,6 @@ const app = await createTypewriter(OrderBook, {
     batchOrder: ORDER_BOOK_BATCH_ORDER,
   },
 });
-hot.typewriter = app;
 
 const readerDb = drizzle({
   client: new Bun.SQL({

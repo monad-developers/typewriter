@@ -24,11 +24,6 @@ function jsonResponse(data: unknown): Response {
 const dev =
   process.env.NODE_ENV !== "production" && process.env.RPC_URL === undefined;
 
-// `bun --hot` runs this module again without stopping the last typewriter,
-// which would keep running, and in dev keep its Anvil.
-const hot = globalThis as { typewriter?: { close: () => Promise<void> } };
-await hot.typewriter?.close();
-
 const typewriter = await createTypewriter(Token, {
   dev,
   ...(dev
@@ -42,7 +37,6 @@ const typewriter = await createTypewriter(Token, {
   database: { url: requireEnv("DATABASE_URL"), maxConnections: 25 },
   sequencing: { order: "fifo" },
 });
-hot.typewriter = typewriter;
 
 // Accepted mutations that are not finalized yet. Clients only ask about
 // mutations they posted, which are accepted before `execute` resolves, so a
