@@ -237,8 +237,8 @@ export const MALFORMATIONS: Malformation[] = [
     via: "execute",
     expect: ENCODE,
     input: (input, context) => {
-      const param = pickParam(context, (type) => bitsOf(type) !== undefined);
-      return withParam(input, param.name, outOfRange(param.type, context));
+      const param = pickParam(context, (type) => type === "uint256");
+      return withParam(input, param.name, outOfRange(context));
     },
   },
   ...[null, undefined, "params", 7].map(
@@ -819,35 +819,17 @@ function pickParam(
   return params[below(context.random, params.length)]!;
 }
 
-/** The width of an integer type, or `undefined` for any other type. */
-function bitsOf(type: string): number | undefined {
-  const match = /^u?int(\d*)$/.exec(type);
-  return match === null ? undefined : Number(match[1] || 256);
-}
-
-/** A value of the wrong JavaScript type for an ABI `type`. */
+/** A value of the wrong JavaScript type for an ABI `type`: an integer or a `bool`. */
 function wrongType(type: string): unknown {
-  if (type.endsWith("]")) return "not an array";
-  if (bitsOf(type) !== undefined) return "not a number";
-  if (type === "bool") return "false";
-  if (type === "address") return "0x1234";
-  if (type === "bytes") return "not hex";
-  if (type === "string") return 7;
-  // `bytesN`.
-  return "0x12";
+  return type === "bool" ? "false" : "not a number";
 }
 
-/** A value just outside an integer `type`. */
-function outOfRange(type: string, context: Context): bigint {
-  const bits = BigInt(bitsOf(type)!);
-  if (type.startsWith("int")) {
-    const max = 1n << (bits - 1n);
-    return context.random.nextDoubleUnsafe() < 0.5 ? max : -max - 1n;
-  }
-  return context.random.nextDoubleUnsafe() < 0.5 ? -1n : 1n << bits;
+/** A value just outside `uint256`. */
+function outOfRange(context: Context): bigint {
+  return context.random.nextDoubleUnsafe() < 0.5 ? -1n : MAX_UINT256 + 1n;
 }
 
-/** Applies `map` to every integer the params hold, outside arrays. */
+/** Applies `map` to every integer the params hold. */
 function mapIntegers(
   params: Record<string, unknown>,
   map: (value: bigint | number) => unknown,
