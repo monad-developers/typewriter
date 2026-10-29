@@ -24,9 +24,6 @@ import type {
   RemoveCredentialParams,
 } from "./typewriter-types";
 
-/** The parts of a manifest that signing reads, which a client can build itself. */
-type SigningManifest = Omit<TypewriterManifest, "deploymentKey">;
-
 export type { Authorization, CreateAccountParams };
 export { AUTHORIZATION_ABI_PARAMS, BUILTIN_MUTATIONS, KeyType };
 
@@ -34,11 +31,11 @@ const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_UINT192 = (1n << 192n) - 1n;
 const MAX_UINT64 = (1n << 64n) - 1n;
 
-type MutationName<manifest extends SigningManifest> =
+type MutationName<manifest extends TypewriterManifest> =
   keyof manifest["mutations"] & string;
 
 type MutationParams<
-  manifest extends SigningManifest,
+  manifest extends TypewriterManifest,
   name extends MutationName<manifest>,
 > = {
   [param in manifest["mutations"][name]["params"][number] as param extends {
@@ -51,7 +48,7 @@ type MutationParams<
 };
 
 type MutationParamsForName<
-  manifest extends SigningManifest,
+  manifest extends TypewriterManifest,
   name extends MutationName<manifest>,
 > = name extends "CreateAccount"
   ? CreateAccountParams
@@ -62,7 +59,7 @@ type MutationParamsForName<
       : MutationParams<manifest, name>;
 
 export type TypedMutation<
-  manifest extends SigningManifest,
+  manifest extends TypewriterManifest,
   name extends MutationName<manifest> = MutationName<manifest>,
 > = {
   name: name;
@@ -74,7 +71,7 @@ export type TypedMutation<
 };
 
 export type AuthorizedMutation<
-  manifest extends SigningManifest,
+  manifest extends TypewriterManifest,
   name extends MutationName<manifest> = MutationName<manifest>,
 > = {
   name: name;
@@ -139,7 +136,7 @@ function encodeMutationData(
 }
 
 export function getAuthorizationPayload<
-  const manifest extends SigningManifest,
+  const manifest extends TypewriterManifest,
   const name extends MutationName<manifest>,
 >(manifest: manifest, mutation: TypedMutation<manifest, name>): Hex.Hex {
   const config = manifest.mutations[mutation.name];
@@ -167,7 +164,7 @@ export function getAuthorizationPayload<
 }
 
 export function authorizeMutation<
-  const manifest extends SigningManifest,
+  const manifest extends TypewriterManifest,
   const name extends MutationName<manifest>,
 >(
   mutation: TypedMutation<manifest, name>,

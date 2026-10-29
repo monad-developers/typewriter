@@ -1,5 +1,6 @@
 import type { Address } from "ox/Address";
 import superjson from "superjson";
+import { deploymentKey } from "typewriter/client";
 
 export { GOLD, INSTRUMENTS, USD, WTIOIL } from "order-book-sdk";
 
@@ -23,6 +24,7 @@ const manifest =
 async function backendManifest(): Promise<{
   chainId: number;
   address: Address;
+  deploymentKey: string;
 }> {
   const response = await fetch(`${API_URL}/api/manifest`);
   if (!response.ok) {
@@ -40,3 +42,6 @@ if (Number.isNaN(CHAIN_ID)) {
 
 export const ORDER_BOOK_ADDRESS = (process.env.ORDER_BOOK_ADDRESS ||
   manifest?.address) as Address;
+
+export const DEPLOYMENT_KEY =
+  manifest?.deploymentKey ?? deploymentKey(CHAIN_ID, ORDER_BOOK_ADDRESS);

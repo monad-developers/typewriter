@@ -11,7 +11,12 @@ import {
   getAuthorizationPayload,
   type TypedMutation,
 } from "typewriter/client";
-import { API_URL, CHAIN_ID, ORDER_BOOK_ADDRESS } from "./constants";
+import {
+  API_URL,
+  CHAIN_ID,
+  DEPLOYMENT_KEY,
+  ORDER_BOOK_ADDRESS,
+} from "./constants";
 
 console.log(
   `Using API_URL=${API_URL}, CHAIN_ID=${CHAIN_ID}, ORDER_BOOK_ADDRESS=${ORDER_BOOK_ADDRESS}`,
@@ -22,6 +27,7 @@ const FETCH_TIMEOUT_MS = 30_000;
 const manifest = {
   chainId: CHAIN_ID,
   address: ORDER_BOOK_ADDRESS,
+  deploymentKey: DEPLOYMENT_KEY,
   mutations: {
     CloseOrder: { id: 0, params: [{ name: "orderId", type: "uint64" }] },
     ChangeOrder: {
