@@ -83,7 +83,7 @@ export type TypewriterSequencingConfig<
     };
 
 /** The fields that point typewriter at a deployment, which `dev` fills in. */
-type NetworkConfig = {
+type ChainConfig = {
   /** The deployed Typewriter contract. */
   address: Address.Address;
   /** The scheduler, which signs and submits settlements. */
@@ -93,24 +93,24 @@ type NetworkConfig = {
 };
 
 /**
- * A literal `dev: true` leaves the network fields unset, and `false` or no
+ * A literal `dev: true` leaves the chain fields unset, and `false` or no
  * `dev` sets them all. A `dev` typed as `boolean`, such as one read from the
  * environment, allows either, and `validateConfig` checks it at startup.
  */
-type DevNetworkConfig<dev extends boolean> = boolean extends dev
-  ? Partial<NetworkConfig>
+type DevChainConfig<dev extends boolean> = boolean extends dev
+  ? Partial<ChainConfig>
   : dev extends true
-    ? { [field in keyof NetworkConfig]?: undefined }
-    : NetworkConfig;
+    ? { [field in keyof ChainConfig]?: undefined }
+    : ChainConfig;
 
 export type TypewriterConfig<
   sequencingConfig extends SequencingConfig = SequencingConfig,
   dev extends boolean = boolean,
-> = DevNetworkConfig<dev> & {
+> = DevChainConfig<dev> & {
   /**
    * Starts a local Anvil and deploys the app to it with Anvil's first
    * account as the scheduler. The chain and the deployment's database schema
-   * last only as long as the process, so the network fields stay unset.
+   * last only as long as the process, so the chain fields stay unset.
    */
   dev?: dev;
   /**
@@ -127,7 +127,7 @@ export type TypewriterConfig<
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
-/** The network fields of a `TypewriterConfig`, filled in by `dev` mode. */
+/** The chain fields of a `TypewriterConfig`, filled in by `dev` mode. */
 export type DevChain = {
   address: Address.Address;
   account: PrivateKeyAccount;
@@ -136,7 +136,7 @@ export type DevChain = {
   rpcUrl: string;
 };
 
-const NETWORK_FIELDS = ["address", "account", "chainId", "rpcUrl"] as const;
+const CHAIN_FIELDS = ["address", "account", "chainId", "rpcUrl"] as const;
 
 /** A resolved `TypewriterConfig`, merged with the app's Solidity metadata. */
 export type TypewriterApp = {
@@ -195,16 +195,14 @@ function assertSafeNonNegativeInteger(
 
 export function validateConfig(config: TypewriterConfig): void {
   if (config.dev === true) {
-    const set = NETWORK_FIELDS.filter((field) => config[field] !== undefined);
+    const set = CHAIN_FIELDS.filter((field) => config[field] !== undefined);
     if (set.length > 0) {
       throw new ConfigError({
         message: `config.dev starts its own Anvil, so leave ${set.map((field) => `config.${field}`).join(", ")} unset`,
       });
     }
   } else {
-    const missing = NETWORK_FIELDS.filter(
-      (field) => config[field] === undefined,
-    );
+    const missing = CHAIN_FIELDS.filter((field) => config[field] === undefined);
     if (missing.length > 0) {
       throw new ConfigError({
         message: `${missing.map((field) => `config.${field}`).join(", ")} ${missing.length === 1 ? "is" : "are"} required unless config.dev is set`,
@@ -300,8 +298,8 @@ export function createTypewriterApp(params: {
       message: "config.dev needs a started Anvil; use createTypewriter",
     });
   }
-  // `validateConfig` checked that the network fields are set outside `dev`.
-  const network = dev
+  // `validateConfig` checked that the chain fields are set outside `dev`.
+  const chain = dev
     ? devChain!
     : {
         address: config.address!,
@@ -313,7 +311,7 @@ export function createTypewriterApp(params: {
 
   // `validateConfig` rejects an empty `rpcUrl` list.
   const rpcUrls = (
-    Array.isArray(network.rpcUrl) ? network.rpcUrl : [network.rpcUrl]
+    Array.isArray(chain.rpcUrl) ? chain.rpcUrl : [chain.rpcUrl]
   ) as [string, ...string[]];
 
   // Every `dev` chain deploys to the same address, so each process gets its
@@ -322,7 +320,7 @@ export function createTypewriterApp(params: {
   // that is gone.
   const key = dev
     ? `dev_${Hex.random(6).slice(2)}`
-    : deploymentKey(network.chainId, network.address);
+    : deploymentKey(chain.chainId, chain.address);
   const schemaName = `typewriter_${key}`;
   if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
     throw new ConfigError({
@@ -353,11 +351,11 @@ export function createTypewriterApp(params: {
 
   return {
     dev,
-    address: network.address,
+    address: chain.address,
     abi,
     manifest: {
-      chainId: network.chainId,
-      address: network.address,
+      chainId: chain.chainId,
+      address: chain.address,
       deploymentKey: key,
       mutations: Object.fromEntries(
         Object.entries(mutations).map(([name, mutation]) => [
@@ -367,9 +365,9 @@ export function createTypewriterApp(params: {
       ),
     },
     storageLayout,
-    account: network.account,
-    chainId: network.chainId,
-    hardfork: network.hardfork,
+    account: chain.account,
+    chainId: chain.chainId,
+    hardfork: chain.hardfork,
     rpcUrls,
     database: config.database,
     mutations,
