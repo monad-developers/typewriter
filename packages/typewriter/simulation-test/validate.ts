@@ -106,13 +106,15 @@ function makeCheck(run: Run): Check {
 }
 
 /**
- * Every settlement succeeded, and executed only submitted mutations, each
- * once, encoded as they were signed.
+ * Every settlement succeeded or reverted on an expired authorization, and
+ * executed only submitted mutations, each once, encoded as they were signed.
  */
 function checkSettlements(check: Check, onchain: Onchain, app: TypewriterApp) {
   for (const settlement of onchain.settlements) {
-    if (settlement.reverted) {
-      check.fail(`settlement ${settlement.transactionHash} reverted`);
+    if (settlement.reverted && settlement.expired.length === 0) {
+      check.fail(
+        `settlement ${settlement.transactionHash} reverted, but no authorization in it expired before block ${settlement.blockNumber}`,
+      );
     }
   }
   const seen = new Set<string>();

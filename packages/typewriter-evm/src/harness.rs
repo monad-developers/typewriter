@@ -300,7 +300,13 @@ impl Journal {
             journal
                 .accounts
                 .insert(*address, (account.original_info(), account.info.clone()));
-            for (slot, value) in &account.storage {
+            // Only writes: undoing a slot the tx just read would overwrite
+            // what a later tx, whose journal stays, wrote to it.
+            for (slot, value) in account
+                .storage
+                .iter()
+                .filter(|(_, value)| value.is_changed())
+            {
                 journal.storage.insert(
                     (*address, *slot),
                     (value.original_value(), value.present_value()),
@@ -842,6 +848,38 @@ mod tests {
         let outer = require_success(call(CALL, CALLEE, GAS));
         let middle = require_success(call(CALL, INNER, GAS));
         assert_reserve_needed(&[(CONTRACT, &outer), (CALLEE, &middle), (INNER, COUNTER)]);
+    }
+
+    #[test]
+    fn revert_keeps_later_writes_to_slots_the_journal_read() {
+        // CALLDATASIZE PUSH1 9 JUMPI, then with no calldata PUSH1 0 SLOAD POP
+        // STOP, else JUMPDEST and COUNTER.
+        let mut code = vec![0x36, 0x60, 0x09, 0x57, 0x60, 0x00, 0x54, 0x50, 0x00, 0x5b];
+        code.extend_from_slice(COUNTER);
+        let mut harness = harness(&[(CONTRACT, &code)]);
+
+        let read = harness.execute(&tx()).unwrap().journal_id.unwrap();
+        let write = ExecuteParams {
+            data: Bytes::from_static(&[0x01]),
+            ..tx()
+        };
+        let write = harness.execute(&write).unwrap().journal_id.unwrap();
+        harness
+            .prune_journals(&JournalIdsParams {
+                journal_ids: vec![write],
+            })
+            .unwrap();
+        harness
+            .revert_journals(&JournalIdsParams {
+                journal_ids: vec![read],
+            })
+            .unwrap();
+
+        let storage = harness.read_storage(&ReadStorageParams {
+            address: address(CONTRACT),
+            slots: vec![U256::ZERO],
+        });
+        assert_eq!(storage[&B256::ZERO], B256::from(U256::from(1)));
     }
 
     #[test]
