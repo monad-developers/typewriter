@@ -1537,9 +1537,17 @@ export function createTypewriterEffect<
           }),
         );
 
-        const block = yield* requestBlock(receipt.blockHash).pipe(
+        // By number, so a reorg that already replaced the block reads as one.
+        const block = yield* requestBlock(receipt.blockNumber).pipe(
           Effect.provideService(Rpc, rpc),
         );
+        if (block.hash !== receipt.blockHash) {
+          return yield* new SettlementReorgedError({
+            blockNumber: receipt.blockNumber,
+            blockHash: receipt.blockHash,
+            transactionHash: receipt.transactionHash,
+          });
+        }
 
         const inclusion: Inclusion = {
           blockNumber: block.number,
