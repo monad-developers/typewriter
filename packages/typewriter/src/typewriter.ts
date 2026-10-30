@@ -302,8 +302,9 @@ export type CreateTypewriterError =
   | EvmError;
 
 function resolveMutationConfig(app: TypewriterApp, name: string) {
-  const config = app.mutations[name];
-  return config === undefined ? undefined : { name, config };
+  // Not `app.mutations[name]`, which finds `Object.prototype` names too.
+  if (!Object.hasOwn(app.mutations, name)) return undefined;
+  return { name, config: app.mutations[name]! };
 }
 
 /**
