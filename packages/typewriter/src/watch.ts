@@ -1,29 +1,13 @@
-import {
-  Data,
-  Duration,
-  Effect,
-  Queue,
-  Schedule,
-  type Scope,
-  Stream,
-} from "effect";
+import { Data, Duration, Effect, Result, Schedule } from "effect";
 import { Bloom, Hex } from "ox";
-import type { RpcBlock } from "viem";
 import { Rpc, type RpcError } from "./rpc";
-import { BlockNotFoundError } from "./rpc-request";
 
-const ZERO_LOGS_BLOOM = `0x${"0".repeat(512)}` as Hex.Hex;
-
-/** How many missing blocks the watch requests at once when it falls behind. */
+/** How many blocks the watch requests at once when it falls behind. */
 const CATCH_UP_CONCURRENCY = 16;
 
 export type LocalLog = {
-  address: Hex.Hex;
   topics: [] | [signature: Hex.Hex, ...args: Hex.Hex[]];
   data: Hex.Hex;
-  transactionHash: Hex.Hex;
-  transactionIndex: number;
-  logIndex: number;
 };
 
 export type LocalBlock = {
@@ -31,33 +15,28 @@ export type LocalBlock = {
   hash: Hex.Hex;
   parentHash: Hex.Hex;
   timestamp: bigint;
-  transactions: readonly Hex.Hex[];
+  /** The block's logs that match `logFilter`, in order. */
   logs: LocalLog[];
 };
 
-export type WatchLogFilter = {
-  address: Hex.Hex;
-  selector: Hex.Hex;
-};
-
+/**
+ * `Added` puts `block` on top of the chain. `Removed` takes `block`, the top,
+ * off it: a reorg replaced it.
+ */
 export type WatchMessage =
-  | { _tag: "Extended"; block: LocalBlock }
-  | {
-      _tag: "Reorged";
-      commonAncestor: LocalBlock | undefined;
-      reorgedBlocks: LocalBlock[];
-      newBlocks: LocalBlock[];
-    };
+  | { _tag: "Added"; block: LocalBlock }
+  | { _tag: "Removed"; block: LocalBlock };
 
 export type WatchConfig = {
-  /** The last block the caller has seen. The watch emits each block after it. */
-  fromBlock: Hex.Hex;
+  /** The last block the caller has seen. The watch adds each block after it. */
+  fromBlock: { number: bigint; hash: Hex.Hex };
+  /** The deepest reorg the watch follows. */
   maxChainDepth: number;
   pollIntervalMs: number;
-  logFilter?: WatchLogFilter;
+  logFilter: { address: Hex.Hex; selector: Hex.Hex };
 };
 
-/** The provider returned a block or log without a field that a mined one has. */
+/** The provider returned a block without a field that a mined one has. */
 export class IncompleteBlockError extends Data.TaggedError(
   "IncompleteBlockError",
 )<{
@@ -78,280 +57,133 @@ export class UnrecoverableReorgError extends Data.TaggedError(
 
 export type WatchError =
   | RpcError
-  | BlockNotFoundError
   | IncompleteBlockError
   | UnrecoverableReorgError;
 
-export type Watch = {
-  messages: Stream.Stream<WatchMessage>;
-  /** Polls the chain and publishes to `messages`. Runs until it fails. */
-  program: Effect.Effect<never, WatchError>;
-};
-
 /**
- * Appends `block` and keeps the last `maxChainDepth + 1` blocks: a reorg can
- * replace the newest `maxChainDepth`, and the block before them is the common
- * ancestor that `reconcileReorg` needs to find.
+ * Polls the chain and passes each change after `fromBlock` to `onMessage`, in
+ * order. A reorg is `Removed` for each replaced block, newest first, then
+ * `Added` for each new one. Runs until it or `onMessage` fails.
  */
-const appendTip = (
-  chain: readonly LocalBlock[],
-  block: LocalBlock,
-  maxChainDepth: number,
-): readonly LocalBlock[] => {
-  const trimmed = chain.length > maxChainDepth ? chain.slice(1) : chain;
-  return [...trimmed, block];
-};
-
-const appendBlocks = (
-  chain: readonly LocalBlock[],
-  blocks: readonly LocalBlock[],
-  maxChainDepth: number,
-): readonly LocalBlock[] => {
-  let next = chain;
-  for (const block of blocks) next = appendTip(next, block, maxChainDepth);
-  return next;
-};
-
-const quantity = (value: bigint): Hex.Hex => `0x${value.toString(16)}`;
-
-export function makeWatch(
+export function watchChain<E, R>(
   config: WatchConfig,
-): Effect.Effect<
-  Watch,
-  IncompleteBlockError | RpcError | BlockNotFoundError,
-  Rpc | Scope.Scope
-> {
+  onMessage: (message: WatchMessage) => Effect.Effect<void, E, R>,
+): Effect.Effect<never, WatchError | E, Rpc | R> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
+    const { address, selector } = config.logFilter;
 
-    const queue = yield* Effect.acquireRelease(
-      Queue.unbounded<WatchMessage>(),
-      (q) => Queue.shutdown(q),
-    );
-
-    const getLocalBlockWithLogs = (block: RpcBlock) =>
+    /**
+     * The block at `number` with its logs, or `undefined` if the provider has
+     * no block there, or the block left the chain before its logs were read.
+     */
+    const getBlock = (number: bigint) =>
       Effect.gen(function* () {
+        const block = yield* rpc.request({
+          method: "eth_getBlockByNumber",
+          params: [Hex.fromNumber(number), false],
+        });
+        if (block === null) return undefined;
         // TODO(kyle) write RPC response normalizers
-        if (
-          block.number === null ||
-          block.hash === null ||
-          block.logsBloom === null
-        ) {
+        if (block.hash === null || block.logsBloom === null) {
           return yield* new IncompleteBlockError({
-            message: "Received block without a number or hash",
+            message: "Received block without a hash or logs bloom",
           });
         }
 
         let logs: LocalLog[] = [];
-        const filter = config.logFilter;
         // TODO(kyle) don't rely on logsBloom, it breaks on async execution chains
         if (
-          filter !== undefined &&
-          block.logsBloom !== ZERO_LOGS_BLOOM &&
-          Bloom.contains(block.logsBloom, filter.address) &&
-          Bloom.contains(block.logsBloom, filter.selector)
+          Bloom.contains(block.logsBloom, address) &&
+          Bloom.contains(block.logsBloom, selector)
         ) {
-          const matchingLogs = yield* rpc.request({
-            method: "eth_getLogs",
-            params: [
-              {
-                blockHash: block.hash,
-                address: filter.address,
-                topics: [filter.selector],
-              },
-            ],
-          });
-
-          logs = yield* Effect.forEach(
-            matchingLogs.filter((log) => log.topics[0] === filter.selector),
-            (log) =>
-              Effect.gen(function* () {
-                if (
-                  log.transactionHash === null ||
-                  log.transactionIndex === null ||
-                  log.logIndex === null
-                ) {
-                  return yield* new IncompleteBlockError({
-                    message: "Received log without a transaction hash or index",
-                  });
-                }
-
-                return {
-                  address: log.address,
-                  topics: log.topics,
-                  data: log.data,
-                  transactionHash: log.transactionHash,
-                  transactionIndex: Hex.toNumber(log.transactionIndex),
-                  logIndex: Hex.toNumber(log.logIndex),
-                };
-              }),
+          const result = yield* Effect.result(
+            rpc.request({
+              method: "eth_getLogs",
+              params: [{ blockHash: block.hash, address, topics: [selector] }],
+            }),
           );
+          if (Result.isFailure(result)) {
+            // A node fails `eth_getLogs` for a block hash it no longer has.
+            const current = yield* rpc.request({
+              method: "eth_getBlockByNumber",
+              params: [Hex.fromNumber(number), false],
+            });
+            if (current?.hash !== block.hash) return undefined;
+            return yield* Effect.fail(result.failure);
+          }
+          logs = result.success.map((log) => ({
+            topics: log.topics,
+            data: log.data,
+          }));
         }
 
         const localBlock: LocalBlock = {
-          number: Hex.toBigInt(block.number),
+          number,
           hash: block.hash,
           parentHash: block.parentHash,
           timestamp: Hex.toBigInt(block.timestamp),
-          transactions: block.transactions.map((transaction) =>
-            typeof transaction === "string" ? transaction : transaction.hash,
-          ),
           logs,
         };
         return localBlock;
       });
 
-    const getBlockByHash = (blockHash: Hex.Hex) =>
-      Effect.gen(function* () {
-        const block = yield* rpc.request({
-          method: "eth_getBlockByHash",
-          params: [blockHash, false],
-        });
-        if (block === null) {
-          return yield* new BlockNotFoundError({ block: blockHash });
-        }
-        return yield* getLocalBlockWithLogs(block);
-      });
+    /** The block before `chain`. A reorg that replaces it is unrecoverable. */
+    let root = config.fromBlock;
+    /** The newest `maxChainDepth` blocks, oldest first. */
+    const chain: LocalBlock[] = [];
 
-    const getBlockByNumber = (blockNumber: bigint) =>
-      Effect.gen(function* () {
-        const block = yield* rpc.request({
-          method: "eth_getBlockByNumber",
-          params: [quantity(blockNumber), false],
-        });
-        if (block === null) {
-          return yield* new BlockNotFoundError({ block: blockNumber });
-        }
-        return yield* getLocalBlockWithLogs(block);
-      });
+    const poll = Effect.gen(function* () {
+      const latest = Hex.toBigInt(
+        yield* rpc.request({ method: "eth_blockNumber" }),
+      );
+      while (true) {
+        const tip = chain.at(-1) ?? root;
+        if (tip.number >= latest) return;
 
-    // oldest first; tip is last. capped at maxChainDepth + 1.
-    let localChain: readonly LocalBlock[] = [
-      yield* getBlockByHash(config.fromBlock),
-    ];
+        // Request the missing blocks in parallel, so the watch keeps up when a
+        // block takes less time than a request.
+        const count = Math.min(
+          Number(latest - tip.number),
+          CATCH_UP_CONCURRENCY,
+        );
+        const blocks = yield* Effect.forEach(
+          Array.from({ length: count }, (_, i) => tip.number + 1n + BigInt(i)),
+          getBlock,
+          { concurrency: "unbounded" },
+        );
 
-    const reconcileReorg = (
-      block: LocalBlock,
-    ): Effect.Effect<void, WatchError> =>
-      Effect.gen(function* () {
-        const originalChain = localChain;
-        let reorgedBlocks = localChain.filter((b) => b.number >= block.number);
-        let remoteBlock = block;
-        const newBlocks = [block];
+        for (const block of blocks) {
+          // The provider is behind `latest`, or the block left the chain. The
+          // next poll asks again.
+          if (block === undefined) return;
 
-        localChain = localChain.filter((b) => b.number < block.number);
-
-        while (true) {
-          const parentBlock = localChain[localChain.length - 1];
-          if (
-            parentBlock !== undefined &&
-            parentBlock.hash === remoteBlock.parentHash
-          ) {
-            break;
+          const parent = chain.at(-1) ?? root;
+          if (block.parentHash === parent.hash) {
+            chain.push(block);
+            if (chain.length > config.maxChainDepth) root = chain.shift()!;
+            yield* onMessage({ _tag: "Added", block });
+            continue;
           }
 
-          if (localChain.length === 0) {
-            localChain = originalChain;
+          // A reorg replaced the top block. The next request is for its
+          // number, and compares the new block's parent with the one below.
+          const removed = chain.pop();
+          if (removed === undefined) {
             return yield* new UnrecoverableReorgError({
               number: block.number,
               hash: block.hash,
             });
           }
-
-          remoteBlock = yield* getBlockByHash(remoteBlock.parentHash);
-          newBlocks.unshift(remoteBlock);
-          reorgedBlocks = [
-            localChain[localChain.length - 1]!,
-            ...reorgedBlocks,
-          ];
-          localChain = localChain.slice(0, -1);
+          yield* onMessage({ _tag: "Removed", block: removed });
+          break;
         }
-
-        const commonAncestor = localChain[localChain.length - 1];
-        localChain = appendBlocks(localChain, newBlocks, config.maxChainDepth);
-        yield* Queue.offer(queue, {
-          _tag: "Reorged",
-          commonAncestor,
-          reorgedBlocks,
-          newBlocks,
-        });
-      });
-
-    const reconcileBlock = (
-      newBlock: LocalBlock,
-    ): Effect.Effect<void, WatchError> =>
-      Effect.gen(function* () {
-        const current = localChain[localChain.length - 1];
-
-        if (current === undefined) {
-          localChain = appendTip(localChain, newBlock, config.maxChainDepth);
-          return;
-        }
-
-        if (newBlock.hash === current.hash) {
-          return;
-        }
-
-        if (current.number >= newBlock.number) {
-          yield* reconcileReorg(newBlock);
-          return;
-        }
-
-        if (current.number + 1n < newBlock.number) {
-          // Request the missing blocks in parallel, so the watch keeps up when
-          // a block takes less time than a request.
-          for (
-            let start = current.number + 1n;
-            start < newBlock.number;
-            start += BigInt(CATCH_UP_CONCURRENCY)
-          ) {
-            const numbers: bigint[] = [];
-            for (
-              let number = start;
-              number < newBlock.number &&
-              number < start + BigInt(CATCH_UP_CONCURRENCY);
-              number++
-            ) {
-              numbers.push(number);
-            }
-            const blocks = yield* Effect.forEach(numbers, getBlockByNumber, {
-              concurrency: "unbounded",
-            });
-            for (const block of blocks) yield* reconcileBlock(block);
-          }
-          yield* reconcileBlock(newBlock);
-          return;
-        }
-
-        if (newBlock.parentHash !== current.hash) {
-          yield* reconcileReorg(newBlock);
-          return;
-        }
-
-        localChain = appendTip(localChain, newBlock, config.maxChainDepth);
-        yield* Queue.offer(queue, { _tag: "Extended", block: newBlock });
-      });
-
-    const poll = Effect.gen(function* () {
-      const latestBlock = yield* Effect.gen(function* () {
-        const block = yield* rpc.request({
-          method: "eth_getBlockByNumber",
-          params: ["latest", false],
-        });
-        if (block === null) {
-          return yield* new BlockNotFoundError({ block: "latest" });
-        }
-        return yield* getLocalBlockWithLogs(block);
-      });
-      yield* reconcileBlock(latestBlock);
+      }
     });
 
-    return {
-      messages: Stream.fromQueue(queue),
-      program: Effect.repeat(
-        poll,
-        Schedule.spaced(Duration.millis(config.pollIntervalMs)),
-      ).pipe(Effect.andThen(Effect.never)),
-    };
+    return yield* Effect.repeat(
+      poll,
+      Schedule.spaced(Duration.millis(config.pollIntervalMs)),
+    ).pipe(Effect.andThen(Effect.never));
   });
 }
