@@ -67,8 +67,14 @@ export type SIM = {
   seed: string;
   /** The run fails when the runtime emits no mutation event for this much virtual time. */
   stallTimeoutMs: number;
-  /** How often the scheduler moves the clock to the next sleep before a pick, while tasks are ready. */
+  /** How often the scheduler jumps the clock before a pick, while tasks are ready. */
   jumpRate: number;
+  /**
+   * How far past now a jump moves the clock, at least to the next sleep, that
+   * a jump draws from. A jump past `EXPIRATION_MARGIN` moves the next block's
+   * timestamp past expirations the runtime accepted against the block before.
+   */
+  jumpsMs: number[];
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
   ioRate: number;
   chain: {
@@ -76,12 +82,6 @@ export type SIM = {
     genesisTimestamp: number;
     /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
     reorgRate: number;
-    /**
-     * How often the chain pauses before a block, for longer than
-     * `EXPIRATION_MARGIN`, so the next block's timestamp passes expirations
-     * the runtime accepted against the block before it.
-     */
-    pauseRate: number;
   };
   generator: {
     /** The key type of each account. */
@@ -97,10 +97,10 @@ export type SIM = {
      * The seconds from a step's submission to its authorization's expiration
      * that a step draws from. `-1` expires before genesis, so it always fails.
      * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
-     * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the chain
-     * pauses, and `EXPIRATION_MARGIN` and above are accepted, and expire if
-     * the chain pauses before their settlement. `Infinity` never expires, and
-     * repeats so most steps draw it.
+     * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the runtime's
+     * latest block is behind the clock, and `EXPIRATION_MARGIN` and above are
+     * accepted, and expire if the clock jumps before their settlement.
+     * `Infinity` never expires, and repeats so most steps draw it.
      */
     expirationsS: number[];
     /** How often a step submits a malformed mutation. See `malformations.ts`. */
@@ -146,12 +146,13 @@ export const SIM: SIM = {
   seed: SEED,
   stallTimeoutMs: 300_000,
   jumpRate: pick(SEED, "jumpRate", [0, 0.0001, 0.001]),
+  // The long jump passes the latest finite expiration, `EXPIRATION_MARGIN + 2`.
+  jumpsMs: [0, 0, 0, (EXPIRATION_MARGIN + 3) * 1_000],
   ioRate: pick(SEED, "ioRate", [0, 0.01, 0.1]),
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
     reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
-    pauseRate: pick(SEED, "chain.pauseRate", [0, 0.01, 0.05]),
   },
   generator: {
     accounts: Array.from(
@@ -352,12 +353,18 @@ const program = Effect.gen(function* () {
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
   // it, through `io`.
   const startMs = SIM.chain.genesisTimestamp * 1000;
+  const jumpRandom = yield* makeRandom(SIM.seed, "jumps");
   const scheduler = makeSimScheduler(
     yield* makeRandom(SIM.seed, "scheduler"),
     SIM.jumpRate,
     () => {
-      const next = clock.nextWakeup();
-      if (next !== undefined) clock.advanceTo(next);
+      const now = clock.currentTimeMillisUnsafe();
+      const jumpMs =
+        SIM.jumpsMs[
+          Math.floor(jumpRandom.nextDoubleUnsafe() * SIM.jumpsMs.length)
+        ]!;
+      const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
+      if (at > now) clock.advanceTo(at);
     },
     SIM.ioRate,
   );
@@ -469,13 +476,6 @@ const program = Effect.gen(function* () {
       fibers,
       Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
-        if (chainRandom.nextDoubleUnsafe() < SIM.chain.pauseRate) {
-          const pauseS =
-            EXPIRATION_MARGIN +
-            1 +
-            Math.floor(chainRandom.nextDoubleUnsafe() * EXPIRATION_MARGIN);
-          yield* Effect.sleep(Duration.seconds(pauseS));
-        }
         // Anvil takes whole seconds, so blocks in the same second share a timestamp.
         const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         if (chainRandom.nextDoubleUnsafe() >= SIM.chain.reorgRate) {
