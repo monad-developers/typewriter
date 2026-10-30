@@ -448,40 +448,40 @@ export type ExecuteMutationError =
   | MutationHaltedError
   | MutationExpiresTooSoonError;
 
+/** The `execute` calldata of `mutation`. Fails if a field is malformed. */
+export function encodeMutation(
+  mutation: ReceivedMutation | EnqueuedMutation,
+): Effect.Effect<Hex.Hex, EncodeMutationError> {
+  return Effect.try({
+    try: () =>
+      mutation.status === "enqueued"
+        ? encodeExecuteCalldata([], [mutation.queueIndex])
+        : encodeExecuteCalldata([encodeBatchArg([mutation])], []),
+    catch: (cause) => new EncodeMutationError({ mutation, cause }),
+  });
+}
+
 export function executeMutation(params: {
   app: TypewriterApp;
   evm: EVM;
   mutation: ReceivedMutation | EnqueuedMutation;
+  /** The calldata from {@link encodeMutation}. */
+  calldata: Hex.Hex;
   /** The index the mutation takes if it executes. */
   executionIndex: bigint;
-  /** Runs once the mutation encodes, so its authorization is well-formed. */
-  checkExpiration?: Effect.Effect<void, MutationExpiresTooSoonError>;
 }): Effect.Effect<
   {
     mutation: AcceptedMutation;
     executeResult: ExecuteResult;
   },
-  ExecuteMutationError
+  EvmError | MutationRevertedError | MutationHaltedError
 > {
   return Effect.gen(function* () {
-    // TODO: Validate the fixed Authorization against the mirrored account
-    // state before entering revm, then retain contract execution as the final
-    // authority. The static wire shape makes this a future fast-rejection path.
-    const mutationCalldata = yield* Effect.try({
-      try: () =>
-        params.mutation.status === "enqueued"
-          ? encodeExecuteCalldata([], [params.mutation.queueIndex])
-          : encodeExecuteCalldata([encodeBatchArg([params.mutation])], []),
-      catch: (cause) =>
-        new EncodeMutationError({ mutation: params.mutation, cause }),
-    });
-    if (params.checkExpiration !== undefined) yield* params.checkExpiration;
-
     const executeStartedAt = yield* startTimer;
     const executeResult = yield* params.evm.execute({
       from: params.app.account.address,
       to: params.app.address,
-      data: mutationCalldata,
+      data: params.calldata,
     });
 
     if (executeResult.status === "revert") {
@@ -995,27 +995,37 @@ export function createTypewriterEffect<
       ExecuteMutationError
     > {
       return Effect.gen(function* () {
-        const { executeResult, mutation: acceptedMutation } =
-          yield* executeMutation({
-            app,
-            evm,
-            mutation,
-            executionIndex: nextExecutionIndex,
-            checkExpiration:
-              minExpiration === undefined
-                ? undefined
-                : checkExpiration(mutation, minExpiration),
-          }).pipe(
-            Effect.tapError((error) =>
-              Effect.suspend(() => {
-                const rejectedMutation = updateMutationToRejected(mutation, {
-                  error,
-                });
+        const { executeResult, mutation: acceptedMutation } = yield* Effect.gen(
+          function* () {
+            const calldata = yield* encodeMutation(mutation);
+            // The mutation encodes, so its authorization is well-formed to
+            // read the account state with.
+            if (minExpiration !== undefined) {
+              yield* checkExpiration(mutation, minExpiration);
+            }
+            // TODO: Validate the fixed Authorization against the mirrored
+            // account state before entering revm, then retain contract
+            // execution as the final authority. The static wire shape makes
+            // this a future fast-rejection path.
+            return yield* executeMutation({
+              app,
+              evm,
+              mutation,
+              calldata,
+              executionIndex: nextExecutionIndex,
+            });
+          },
+        ).pipe(
+          Effect.tapError((error) =>
+            Effect.suspend(() => {
+              const rejectedMutation = updateMutationToRejected(mutation, {
+                error,
+              });
 
-                return emitMutation(mutationToEvent(rejectedMutation));
-              }),
-            ),
-          );
+              return emitMutation(mutationToEvent(rejectedMutation));
+            }),
+          ),
+        );
 
         nextExecutionIndex++;
 
