@@ -31,6 +31,7 @@ import {
   type ExecuteError,
   type ProgramError,
 } from "../src/typewriter";
+import { EXPIRATION_MARGIN } from "../src/typewriter-constants";
 import {
   createAccount,
   deploy,
@@ -66,8 +67,14 @@ export type SIM = {
   seed: string;
   /** The run fails when the runtime emits no mutation event for this much virtual time. */
   stallTimeoutMs: number;
-  /** How often the scheduler moves the clock to the next sleep before a pick, while tasks are ready. */
+  /** How often the scheduler jumps the clock before a pick, while tasks are ready. */
   jumpRate: number;
+  /**
+   * How far past now a jump moves the clock, at least to the next sleep, that
+   * a jump draws from. A jump past `EXPIRATION_MARGIN` moves the next block's
+   * timestamp past expirations the runtime accepted against the block before.
+   */
+  jumpsMs: number[];
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
   ioRate: number;
   chain: {
@@ -88,9 +95,12 @@ export type SIM = {
     resubmitRate: number;
     /**
      * The seconds from a step's submission to its authorization's expiration
-     * that a step draws from. `-1` expires before genesis, so it always fails,
-     * `0` and the intermediate ones expire around the step's inclusion, and
-     * `Infinity` never expires. `Infinity` repeats so most steps draw it.
+     * that a step draws from. `-1` expires before genesis, so it always fails.
+     * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
+     * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the runtime's
+     * latest block is behind the clock, and `EXPIRATION_MARGIN` and above are
+     * accepted, and expire if the clock jumps before their settlement.
+     * `Infinity` never expires, and repeats so most steps draw it.
      */
     expirationsS: number[];
     /** How often a step submits a malformed mutation. See `malformations.ts`. */
@@ -136,6 +146,8 @@ export const SIM: SIM = {
   seed: SEED,
   stallTimeoutMs: 300_000,
   jumpRate: pick(SEED, "jumpRate", [0, 0.0001, 0.001]),
+  // The long jump passes the latest finite expiration, `EXPIRATION_MARGIN + 2`.
+  jumpsMs: [0, 0, 0, (EXPIRATION_MARGIN + 3) * 1_000],
   ioRate: pick(SEED, "ioRate", [0, 0.01, 0.1]),
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
@@ -162,7 +174,14 @@ export const SIM: SIM = {
     revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
-    expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
+    expirationsS: [
+      -1,
+      0,
+      EXPIRATION_MARGIN - 2,
+      EXPIRATION_MARGIN,
+      EXPIRATION_MARGIN + 2,
+      ...Array<number>(20).fill(Infinity),
+    ],
     malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
@@ -334,12 +353,18 @@ const program = Effect.gen(function* () {
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
   // it, through `io`.
   const startMs = SIM.chain.genesisTimestamp * 1000;
+  const jumpRandom = yield* makeRandom(SIM.seed, "jumps");
   const scheduler = makeSimScheduler(
     yield* makeRandom(SIM.seed, "scheduler"),
     SIM.jumpRate,
     () => {
-      const next = clock.nextWakeup();
-      if (next !== undefined) clock.advanceTo(next);
+      const now = clock.currentTimeMillisUnsafe();
+      const jumpMs =
+        SIM.jumpsMs[
+          Math.floor(jumpRandom.nextDoubleUnsafe() * SIM.jumpsMs.length)
+        ]!;
+      const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
+      if (at > now) clock.advanceTo(at);
     },
     SIM.ioRate,
   );
@@ -395,9 +420,10 @@ const program = Effect.gen(function* () {
 
     /**
      * Records the chain's latest block right after the runtime rejected a
-     * mutation as expired. The authorization must have expired by then.
+     * mutation as expired. The authorization must have expired by then, or
+     * expire within `margin` seconds of it.
      */
-    const checkExpiry = (key: string, expiration: bigint) =>
+    const checkExpiry = (key: string, expiration: bigint, margin: bigint) =>
       Effect.gen(function* () {
         const latest = yield* simChain.request({
           method: "eth_getBlockByNumber",
@@ -406,6 +432,7 @@ const program = Effect.gen(function* () {
         run.expiryChecks.push({
           key,
           expiration,
+          margin,
           latestTimestamp: BigInt(latest!.timestamp),
         });
       });
@@ -414,14 +441,20 @@ const program = Effect.gen(function* () {
     yield* typewriter.on("mutation", (event) => {
       run.mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
-      if (
-        event.status === "rejected" &&
-        errorName(event.error) === "AuthorizationExpired"
-      ) {
+      const margin =
+        event.status !== "rejected"
+          ? undefined
+          : errorName(event.error) === "AuthorizationExpired"
+            ? 0n
+            : errorName(event.error) === "MutationExpiresTooSoonError"
+              ? BigInt(EXPIRATION_MARGIN)
+              : undefined;
+      if (margin !== undefined) {
         runExpiryCheck(
           checkExpiry(
             mutationKey(event.authorization),
             event.authorization.expiration,
+            margin,
           ),
         );
       }
@@ -651,9 +684,25 @@ const program = Effect.gen(function* () {
     ordering: SIM.typewriter.ordering,
   });
 
+  // Mutations accepted, then dropped when their settlement reverted in revm.
+  const accepted = new Set<string>();
+  let dropped = 0;
+  for (const event of run.mutationEvents) {
+    const key = mutationKey(event.authorization);
+    if (event.status === "accepted") accepted.add(key);
+    if (
+      event.status === "rejected" &&
+      accepted.has(key) &&
+      errorName(event.error) === "AuthorizationExpired"
+    ) {
+      dropped++;
+    }
+  }
+
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
       submissions: run.submissions.length,
+      dropped,
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,

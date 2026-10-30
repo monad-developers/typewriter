@@ -1,5 +1,5 @@
 import { abiParametersToValues } from "abipg";
-import { desc, getTableColumns, inArray, sql } from "drizzle-orm";
+import { desc, getTableColumns, gte, inArray, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { Hex } from "ox";
@@ -111,6 +111,26 @@ export function updateMutationInclusion(
           db.update(table).set(values).where(inArray(execution_index!, batch)),
         );
       }
+    }
+  });
+}
+
+/**
+ * Delete the mutation rows and storage slots from `executionIndex` on, so the
+ * mutations that execute again in their place can insert theirs.
+ */
+export function deleteExecutionsFrom(
+  tx: DbTransaction,
+  schema: Record<string, PgTable>,
+  { storageSlots }: ReturnType<typeof createTypewriterSchema>,
+  executionIndex: bigint,
+): Effect.Effect<void, DbError> {
+  return Effect.gen(function* () {
+    for (const table of [...Object.values(schema), storageSlots]) {
+      const { execution_index } = getTableColumns(table);
+      yield* tx.query((db) =>
+        db.delete(table).where(gte(execution_index!, executionIndex)),
+      );
     }
   });
 }

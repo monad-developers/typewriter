@@ -48,6 +48,7 @@ import {
   migrate,
 } from "./db-migrate";
 import {
+  deleteExecutionsFrom,
   insertKeccakPreimages,
   insertMutations,
   insertStorageSlots,
@@ -72,7 +73,7 @@ import {
   requestBlock,
   requestExecutionIndex,
 } from "./rpc-request";
-import { TYPEWRITER_ABI } from "./typewriter-constants";
+import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "./typewriter-constants";
 import type {
   AcceptedMutation,
   Authorization,
@@ -151,6 +152,20 @@ type AcceptDeferred = Deferred.Deferred<
   { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
   ExecuteMutationError
 >;
+
+/** An accepted mutation that executes from the force-inclusion queue. */
+type AcceptedForceInclusion = Extract<
+  AcceptedMutation,
+  { isForceInclusion: true }
+>;
+
+/** A mutation that executed against the speculative state, and what it wrote. */
+type AcceptedExecution<mutation extends AcceptedMutation = AcceptedMutation> = {
+  mutation: mutation;
+  executeResult: ExecuteResult;
+  /** Preimages first seen in this mutation, to persist. */
+  preimages: readonly Hex.Hex[];
+};
 
 /** `execute` got a mutation name that the app does not define. */
 export class UnknownMutationError extends Data.TaggedError(
@@ -352,6 +367,24 @@ export function updateMutationToFinalized(
   return mutation;
 }
 
+/** `mutation` as it was before it executed, to execute it again. */
+function toUnexecuted(
+  mutation: AcceptedMutation,
+): ReceivedMutation | EnqueuedMutation {
+  const { name, params, authorization, config } = mutation;
+  return mutation.isForceInclusion
+    ? {
+        name,
+        params,
+        authorization,
+        config,
+        status: "enqueued",
+        isForceInclusion: true,
+        queueIndex: mutation.queueIndex,
+      }
+    : { name, params, authorization, config, status: "received" };
+}
+
 export function mutationToEvent(mutation: RuntimeMutation): MutationEvent {
   const {
     config: _config,
@@ -423,16 +456,48 @@ export class MutationHaltedError extends Data.TaggedError(
   }
 }
 
+/**
+ * A mutation's authorization or credential expires within
+ * {@link EXPIRATION_MARGIN} seconds of the latest block, so it could expire
+ * before its settlement lands.
+ */
+export class MutationExpiresTooSoonError extends Data.TaggedError(
+  "MutationExpiresTooSoonError",
+)<{
+  expiration: bigint;
+  minExpiration: bigint;
+}> {
+  override get message() {
+    return `Mutation expires at ${this.expiration}, before ${this.minExpiration}`;
+  }
+}
+
 export type ExecuteMutationError =
   | EncodeMutationError
   | EvmError
   | MutationRevertedError
-  | MutationHaltedError;
+  | MutationHaltedError
+  | MutationExpiresTooSoonError;
+
+/** The `execute` calldata of `mutation`. Fails if a field is malformed. */
+export function encodeMutation(
+  mutation: ReceivedMutation | EnqueuedMutation,
+): Effect.Effect<Hex.Hex, EncodeMutationError> {
+  return Effect.try({
+    try: () =>
+      mutation.status === "enqueued"
+        ? encodeExecuteCalldata([], [mutation.queueIndex])
+        : encodeExecuteCalldata([encodeBatchArg([mutation])], []),
+    catch: (cause) => new EncodeMutationError({ mutation, cause }),
+  });
+}
 
 export function executeMutation(params: {
   app: TypewriterApp;
   evm: EVM;
   mutation: ReceivedMutation | EnqueuedMutation;
+  /** The calldata from {@link encodeMutation}. */
+  calldata: Hex.Hex;
   /** The index the mutation takes if it executes. */
   executionIndex: bigint;
 }): Effect.Effect<
@@ -440,26 +505,14 @@ export function executeMutation(params: {
     mutation: AcceptedMutation;
     executeResult: ExecuteResult;
   },
-  ExecuteMutationError
+  EvmError | MutationRevertedError | MutationHaltedError
 > {
   return Effect.gen(function* () {
-    // TODO: Validate the fixed Authorization against the mirrored account
-    // state before entering revm, then retain contract execution as the final
-    // authority. The static wire shape makes this a future fast-rejection path.
-    const mutationCalldata = yield* Effect.try({
-      try: () =>
-        params.mutation.status === "enqueued"
-          ? encodeExecuteCalldata([], [params.mutation.queueIndex])
-          : encodeExecuteCalldata([encodeBatchArg([params.mutation])], []),
-      catch: (cause) =>
-        new EncodeMutationError({ mutation: params.mutation, cause }),
-    });
-
     const executeStartedAt = yield* startTimer;
     const executeResult = yield* params.evm.execute({
       from: params.app.account.address,
       to: params.app.address,
-      data: mutationCalldata,
+      data: params.calldata,
     });
 
     if (executeResult.status === "revert") {
@@ -780,6 +833,8 @@ export function createTypewriterEffect<
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
       yield* createRuntimeState(app, db, code, startBlock);
+    /** The timestamp of the block that mutations execute in. */
+    let blockTimestamp = startBlock.timestamp;
 
     const watch = yield* makeWatch({
       fromBlock: startBlock.hash,
@@ -901,39 +956,94 @@ export function createTypewriterEffect<
           : batchBlockToEvent(block)) as BlockEvent<"fifo" | "batch">,
       );
 
+    // Fails if the authorization or its credential expires before
+    // `minExpiration`. The credential is read from speculative state, so one
+    // added earlier in the batch counts. A missing credential is left to revm.
+    function checkExpiration(
+      mutation: ReceivedMutation | EnqueuedMutation,
+      minExpiration: bigint,
+    ): Effect.Effect<void, MutationExpiresTooSoonError> {
+      return Effect.gen(function* () {
+        const { authorization } = mutation;
+        if (
+          authorization.expiration !== 0n &&
+          authorization.expiration < minExpiration
+        ) {
+          return yield* new MutationExpiresTooSoonError({
+            expiration: authorization.expiration,
+            minExpiration,
+          });
+        }
+
+        if (mutation.name === "CreateAccount") return;
+        const { credentials } = (
+          accounts as unknown as Record<
+            Hex.Hex,
+            {
+              credentials: {
+                length: number;
+                [index: number]: { expiration: number };
+              };
+            }
+          >
+        )[authorization.accountID]!;
+        if (authorization.credentialID >= BigInt(credentials.length)) return;
+        const credentialExpiration = BigInt(
+          credentials[Number(authorization.credentialID)]!.expiration,
+        );
+        if (
+          credentialExpiration !== 0n &&
+          credentialExpiration < minExpiration
+        ) {
+          return yield* new MutationExpiresTooSoonError({
+            expiration: credentialExpiration,
+            minExpiration,
+          });
+        }
+      });
+    }
+
     // Executes a mutation against speculative state and updates in-memory
     // bookkeeping, but performs no database writes. Persistence is batched by
     // the caller (`acceptBatch`, `submit`, and `watch`) so many mutations share
     // a single set of insert statements.
     function acceptMutation(
       mutation: ReceivedMutation | EnqueuedMutation,
-    ): Effect.Effect<
-      {
-        mutation: AcceptedMutation;
-        executeResult: ExecuteResult;
-        /** Preimages first seen in this mutation, to persist. */
-        preimages: readonly Hex.Hex[];
-      },
-      ExecuteMutationError
-    > {
+      /** Rejects the mutation if it expires before this timestamp. */
+      minExpiration?: bigint,
+    ): Effect.Effect<AcceptedExecution, ExecuteMutationError> {
       return Effect.gen(function* () {
-        const { executeResult, mutation: acceptedMutation } =
-          yield* executeMutation({
-            app,
-            evm,
-            mutation,
-            executionIndex: nextExecutionIndex,
-          }).pipe(
-            Effect.tapError((error) =>
-              Effect.suspend(() => {
-                const rejectedMutation = updateMutationToRejected(mutation, {
-                  error,
-                });
+        const { executeResult, mutation: acceptedMutation } = yield* Effect.gen(
+          function* () {
+            const calldata = yield* encodeMutation(mutation);
+            // The mutation encodes, so its authorization is well-formed to
+            // read the account state with.
+            if (minExpiration !== undefined) {
+              yield* checkExpiration(mutation, minExpiration);
+            }
+            // TODO: Validate the fixed Authorization against the mirrored
+            // account state before entering revm, then retain contract
+            // execution as the final authority. The static wire shape makes
+            // this a future fast-rejection path.
+            return yield* executeMutation({
+              app,
+              evm,
+              mutation,
+              calldata,
+              executionIndex: nextExecutionIndex,
+            });
+          },
+        ).pipe(
+          Effect.tapError((error) =>
+            Effect.suspend(() => {
+              const rejectedMutation = updateMutationToRejected(mutation, {
+                error,
+              });
 
-                return emitMutation(mutationToEvent(rejectedMutation));
-              }),
-            ),
-          );
+              return emitMutation(mutationToEvent(rejectedMutation));
+            }),
+          ),
+        );
 
         nextExecutionIndex++;
 
@@ -989,15 +1099,15 @@ export function createTypewriterEffect<
             );
           }
 
-          const acceptedMutations: {
-            mutation: AcceptedMutation;
-            executeResult: ExecuteResult;
-            preimages: readonly Hex.Hex[];
+          const acceptedMutations: (AcceptedExecution & {
             deferred: AcceptDeferred;
-          }[] = [];
+          })[] = [];
 
+          const minExpiration = blockTimestamp + BigInt(EXPIRATION_MARGIN);
           for (const { mutation, deferred } of submittedMutations) {
-            const result = yield* Effect.result(acceptMutation(mutation));
+            const result = yield* Effect.result(
+              acceptMutation(mutation, minExpiration),
+            );
             if (Result.isSuccess(result)) {
               acceptedMutations.push({ ...result.success, deferred });
             } else {
@@ -1054,6 +1164,88 @@ export function createTypewriterEffect<
         }),
       );
 
+    // Rewinds the speculative state to before the unsubmitted mutations, then
+    // executes them again in order at the current block and drops the ones
+    // that fail now. The rest may take new execution indexes. The unsubmitted
+    // mutations hold the newest journals, so reverting them restores the state
+    // the submitted ones left. Enqueues since then only added queue entries,
+    // which these journals never touch.
+    // TODO(kyle) `execute` already returned the old execution index, and a
+    // dropped mutation goes from `accepted` to `rejected`.
+    const reexecute = (
+      batches: RuntimeBatch[],
+      forceIncludedMutations: AcceptedForceInclusion[],
+    ) =>
+      Effect.gen(function* () {
+        const pending = [
+          ...batches.flatMap((batch) => batch.mutations as AcceptedMutation[]),
+          ...forceIncludedMutations,
+        ];
+        const fromExecutionIndex = pending[0]!.executionIndex;
+        yield* evm.revertJournals({
+          journal_ids: pending.map((mutation) => mutation.journalId),
+        });
+        invalidateStorageCache();
+        nextExecutionIndex = fromExecutionIndex;
+
+        const executed: AcceptedExecution[] = [];
+        /** Executes `mutations` again, and returns the ones that succeed. */
+        const reaccept = <mutation extends AcceptedMutation>(
+          mutations: mutation[],
+        ) =>
+          Effect.gen(function* () {
+            const kept: mutation[] = [];
+            for (const mutation of mutations) {
+              const result = yield* Effect.result(
+                acceptMutation(toUnexecuted(mutation)),
+              );
+              if (Result.isFailure(result)) continue;
+              executed.push(result.success);
+              kept.push(result.success.mutation as mutation);
+            }
+            return kept;
+          });
+
+        for (const batch of batches) {
+          batch.mutations = yield* reaccept(
+            batch.mutations as AcceptedMutation[],
+          );
+          if (batch.mutations.length === 0) batchesById.delete(batch.id);
+        }
+        const keptForceIncludedMutations = yield* reaccept(
+          forceIncludedMutations,
+        );
+
+        const committed = yield* persist((tx) =>
+          Effect.gen(function* () {
+            yield* deleteExecutionsFrom(
+              tx,
+              app.mutationSchema,
+              app.typewriterSchema,
+              fromExecutionIndex,
+            );
+            yield* insertMutations(
+              tx,
+              app.mutationSchema,
+              executed.map((entry) => entry.mutation),
+            );
+            yield* insertStorageSlots(tx, app.typewriterSchema, executed);
+            yield* insertKeccakPreimages(
+              tx,
+              app.typewriterSchema,
+              executed.flatMap(({ preimages }) => preimages),
+            );
+          }),
+        );
+
+        return {
+          batches: batches.filter((batch) => batch.mutations.length > 0),
+          forceIncludedMutations: keptForceIncludedMutations,
+          committed,
+          droppedCount: pending.length - executed.length,
+        };
+      });
+
     const submit = Effect.gen(function* () {
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
@@ -1063,28 +1255,18 @@ export function createTypewriterEffect<
             return undefined;
           }
 
-          const batches = acceptedBatches.map(({ id }) => batchesById.get(id)!);
+          let batches = acceptedBatches.map(({ id }) => batchesById.get(id)!);
           const commits = acceptedBatches.map(({ committed }) => committed);
 
-          const acceptedEnqueuedMutations: {
-            mutation: Extract<AcceptedMutation, { isForceInclusion: true }>;
-            executeResult: ExecuteResult;
-            preimages: readonly Hex.Hex[];
-          }[] = [];
+          const acceptedEnqueuedMutations: AcceptedExecution<AcceptedForceInclusion>[] =
+            [];
           for (const enqueuedMutation of enqueuedMutations) {
             const result = yield* Effect.result(
               acceptMutation(enqueuedMutation),
             );
             if (Result.isSuccess(result)) {
               acceptedEnqueuedMutations.push(
-                result.success as {
-                  mutation: Extract<
-                    AcceptedMutation,
-                    { isForceInclusion: true }
-                  >;
-                  executeResult: ExecuteResult;
-                  preimages: readonly Hex.Hex[];
-                },
+                result.success as AcceptedExecution<AcceptedForceInclusion>,
               );
             } else {
               // No caller gets this error, and the runtime keeps running.
@@ -1107,16 +1289,9 @@ export function createTypewriterEffect<
             }
           }
 
-          const acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
+          let acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
             ({ mutation }) => mutation,
           );
-
-          if (
-            batches.length === 0 &&
-            acceptedForceIncludedMutations.length === 0
-          ) {
-            return undefined;
-          }
 
           if (acceptedEnqueuedMutations.length > 0) {
             commits.push(
@@ -1144,60 +1319,93 @@ export function createTypewriterEffect<
             );
           }
 
-          const speculativeJournalIds = batches
-            .flatMap((batch) => batch.mutations)
-            .map((mutation) => mutation.journalId)
-            .concat(
+          // Each mutation executed when it was accepted, so the settlement
+          // reverts only when one fails in a later block, e.g. on an
+          // authorization that expired since. Then execute them again, drop
+          // the ones that fail, and simulate what is left.
+          while (true) {
+            if (
+              batches.length === 0 &&
+              acceptedForceIncludedMutations.length === 0
+            ) {
+              return undefined;
+            }
+
+            const speculativeJournalIds = batches
+              .flatMap((batch) => batch.mutations)
+              .map((mutation) => mutation.journalId)
+              .concat(
+                acceptedForceIncludedMutations.map(
+                  (mutation) => mutation.journalId,
+                ),
+              );
+
+            // TODO(kyle) cap a submission at the block gas limit. Every pending
+            // batch and enqueued mutation goes into one transaction, so after a
+            // backlog the node rejects it ("intrinsic gas too high") and the
+            // retries fail the program.
+            const calldata = encodeExecuteCalldata(
+              batches.map((batch) => encodeBatchArg(batch.mutations)),
               acceptedForceIncludedMutations.map(
-                (mutation) => mutation.journalId,
+                ({ queueIndex }) => queueIndex,
               ),
             );
 
-          // TODO(kyle) cap a submission at the block gas limit. Every pending
-          // batch and enqueued mutation goes into one transaction, so after a
-          // backlog the node rejects it ("intrinsic gas too high") and the
-          // retries fail the program.
-          const calldata = encodeExecuteCalldata(
-            batches.map((batch) => encodeBatchArg(batch.mutations)),
-            acceptedForceIncludedMutations.map(({ queueIndex }) => queueIndex),
-          );
+            const simulationStartedAt = yield* startTimer;
+            const simulateResult = yield* evm.simulate({
+              from: app.account.address,
+              to: app.address,
+              data: calldata,
+              journal_ids: speculativeJournalIds,
+            });
+            const duration = yield* durationMs(simulationStartedAt);
+            if (simulateResult.status === "halt") {
+              return yield* new SettlementSimulationHaltedError({
+                reason: simulateResult.reason,
+              });
+            }
+            if (simulateResult.status === "success") {
+              yield* Effect.logDebug("Simulated settlement transaction").pipe(
+                Effect.annotateLogs({
+                  nonce,
+                  gas_limit: simulateResult.gas_limit,
+                  batch_count: batches.length,
+                  mutation_count: speculativeJournalIds.length,
+                  duration,
+                }),
+              );
 
-          const simulationStartedAt = yield* startTimer;
-          const simulateResult = yield* evm.simulate({
-            from: app.account.address,
-            to: app.address,
-            data: calldata,
-            journal_ids: speculativeJournalIds,
-          });
-          const duration = yield* durationMs(simulationStartedAt);
-          if (simulateResult.status === "revert") {
-            return yield* new SettlementSimulationRevertedError(
+              return {
+                batches,
+                acceptedForceIncludedMutations,
+                calldata,
+                simulateResult,
+                commits,
+              };
+            }
+
+            const error = new SettlementSimulationRevertedError(
               decodeRevert(app.abi, simulateResult.data),
             );
-          }
-          if (simulateResult.status === "halt") {
-            return yield* new SettlementSimulationHaltedError({
-              reason: simulateResult.reason,
-            });
-          }
+            const reexecuted = yield* reexecute(
+              batches,
+              acceptedForceIncludedMutations,
+            );
+            if (reexecuted.droppedCount === 0) return yield* error;
+            yield* Effect.logWarning(
+              "Dropped mutations from a reverted settlement",
+              error,
+            ).pipe(
+              Effect.annotateLogs({
+                dropped_count: reexecuted.droppedCount,
+                mutation_count: speculativeJournalIds.length,
+              }),
+            );
 
-          yield* Effect.logDebug("Simulated settlement transaction").pipe(
-            Effect.annotateLogs({
-              nonce,
-              gas_limit: simulateResult.gas_limit,
-              batch_count: batches.length,
-              mutation_count: speculativeJournalIds.length,
-              duration,
-            }),
-          );
-
-          return {
-            batches,
-            acceptedForceIncludedMutations,
-            calldata,
-            simulateResult,
-            commits,
-          };
+            batches = reexecuted.batches;
+            acceptedForceIncludedMutations = reexecuted.forceIncludedMutations;
+            commits.push(reexecuted.committed);
+          }
         }),
       );
 
@@ -1360,6 +1568,7 @@ export function createTypewriterEffect<
               number: Hex.fromNumber(message.block.number),
               timestamp: Hex.fromNumber(message.block.timestamp),
             });
+            blockTimestamp = message.block.timestamp;
 
             for (const log of message.block.logs) {
               const enqueuedMutation = decodeEnqueuedMutation({ app, log });

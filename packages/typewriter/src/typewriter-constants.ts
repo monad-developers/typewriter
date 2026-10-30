@@ -77,6 +77,14 @@ export const BUILTIN_MUTATIONS = {
 /** The lowest built-in mutation ID. App mutation IDs must be below it. */
 export const FIRST_BUILTIN_MUTATION_ID = 253;
 
+/**
+ * The seconds past the latest block's timestamp that an authorization or
+ * credential must stay valid for a mutation to be accepted. A mutation that
+ * expires before its settlement lands reverts the settlement, so this covers
+ * the time from acceptance to inclusion.
+ */
+export const EXPIRATION_MARGIN = 5;
+
 /** `struct Authorization`. */
 export const AUTHORIZATION_ABI_PARAMS = [
   { name: "accountID", type: "bytes32" },

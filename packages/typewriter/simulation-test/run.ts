@@ -71,6 +71,12 @@ export type Reorg = {
 export type ExpiryCheck = {
   key: string;
   expiration: bigint;
+  /**
+   * The seconds before the latest block that the authorization must expire
+   * by: `0` for `AuthorizationExpired`, and `EXPIRATION_MARGIN` for
+   * `MutationExpiresTooSoonError`.
+   */
+  margin: bigint;
   latestTimestamp: bigint;
 };
 
