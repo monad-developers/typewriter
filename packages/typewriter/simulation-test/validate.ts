@@ -106,9 +106,8 @@ function makeCheck(run: Run): Check {
 }
 
 /**
- * Every settlement succeeded, or reverted on an authorization that expired
- * after revm simulated it, and the settlements executed only submitted
- * mutations, each once, encoded as they were signed.
+ * Every settlement succeeded or reverted on an expired authorization, and
+ * executed only submitted mutations, each once, encoded as they were signed.
  */
 function checkSettlements(check: Check, onchain: Onchain, app: TypewriterApp) {
   for (const settlement of onchain.settlements) {
@@ -222,8 +221,8 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
 
 /**
  * `execute` returned the execution index the mutation was first accepted at,
- * or an allowed error. When its settlement reverts in revm or onchain, the
- * mutation executes again, maybe at another index, or is dropped.
+ * or an allowed error. When its settlement reverts in revm, the mutation
+ * executes again, maybe at another index, or is dropped.
  */
 function checkResult(
   check: Check,
@@ -410,8 +409,8 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           : submission.expected.events
             ? ["received", "rejected"]
             : [];
-    // When a settlement reverts in revm or onchain, its mutations execute
-    // again: each is accepted again, maybe at another index, or dropped.
+    // When a settlement reverts in revm, its mutations execute again: each is
+    // accepted again, maybe at another index, or dropped.
     const seenStatuses = seen
       .map((event) => event.status)
       .filter(
@@ -790,7 +789,7 @@ function executedByKey(onchain: Onchain): Map<string, Executed> {
 
 /**
  * The keys of the mutations accepted, then rejected as expired when their
- * settlement reverted in revm or onchain.
+ * settlement reverted in revm.
  */
 function droppedKeys(run: Run): Set<string> {
   const accepted = new Set<string>();

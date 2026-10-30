@@ -26,7 +26,6 @@ export type Settlement = Inclusion & {
   reverted: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
-  /** The keys of its mutations whose authorization expired before its block. */
   expired: string[];
 };
 
@@ -152,7 +151,6 @@ export function readOnchain({
           ]) {
             const authorization =
               decodeAuthorizationCalldata(authorizationData);
-            // The contract expires an authorization once `block.timestamp` passes it.
             if (
               authorization.expiration !== 0n &&
               authorization.expiration < inclusion.blockTimestamp

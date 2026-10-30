@@ -749,8 +749,7 @@ const program = Effect.gen(function* () {
     ordering: SIM.typewriter.ordering,
   });
 
-  // Mutations accepted, then dropped when their settlement reverted in revm
-  // or onchain.
+  // Mutations accepted, then dropped when their settlement reverted in revm.
   const accepted = new Set<string>();
   let dropped = 0;
   for (const event of run.mutationEvents) {
