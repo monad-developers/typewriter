@@ -60,6 +60,10 @@ export type Step = {
   mutation: Mutation<AppMutationName>;
   /** Submits a malformed version of `mutation` instead. */
   malformation: Malformation | undefined;
+  /** The index of the step whose nonce this enqueue takes. */
+  replaces: number | undefined;
+  /** An enqueue right after it takes its nonce. */
+  replaced: boolean;
 };
 
 export function stepLabel({
@@ -67,10 +71,14 @@ export function stepLabel({
   via,
   mutation,
   malformation,
+  replaces,
 }: Step): string {
-  return malformation === undefined
+  const detail =
+    malformation?.name ??
+    (replaces === undefined ? undefined : `replaces step ${replaces}`);
+  return detail === undefined
     ? `step ${index} (${via} ${mutation.name})`
-    : `step ${index} (${via} ${mutation.name}, ${malformation.name})`;
+    : `step ${index} (${via} ${mutation.name}, ${detail})`;
 }
 
 /** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
@@ -302,7 +310,20 @@ export function withExpiration(
 
 /** How `step` must end. */
 export function expect(step: Step): Expected {
-  const expected = expectExecute(step);
+  // It executes only if the step whose nonce it takes does not.
+  if (step.replaces !== undefined) {
+    return {
+      executes: true,
+      errors: ["InvalidNonce"],
+      resubmissionErrors: [],
+      events: false,
+    };
+  }
+  const executed = expectExecute(step);
+  // Its replacement can take the nonce first.
+  const expected = step.replaced
+    ? { ...executed, errors: [...executed.errors, "InvalidNonce"] }
+    : executed;
   // The runtime never decodes an enqueue, so it has no events.
   return step.via === "enqueue" ? { ...expected, events: false } : expected;
 }
@@ -366,6 +387,7 @@ function fromTemplate(
 export function makePlan(
   signers: readonly Signer[],
   random: Random.Random,
+  replacements: Random.Random,
 ): Step[] {
   const {
     mutations,
@@ -375,6 +397,7 @@ export function makePlan(
     resubmitRate,
     expirationsS,
     malformedRate,
+    replaceRate,
   } = SIM.generator;
   const plan = Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
@@ -393,6 +416,8 @@ export function makePlan(
         signer,
         mutation: fromTemplate(signer, template, false, index),
         malformation,
+        replaces: undefined,
+        replaced: false,
       };
     }
     const shouldRevert = random.nextDoubleUnsafe() < revertRate;
@@ -406,6 +431,8 @@ export function makePlan(
       signer,
       mutation: fromTemplate(signer, template, shouldRevert, index),
       malformation: undefined,
+      replaces: undefined,
+      replaced: false,
     };
   });
 
@@ -424,7 +451,45 @@ export function makePlan(
       signer,
       mutation: fromTemplate(signer, TEMPLATES[0]!, false, index),
       malformation: undefined,
+      replaces: undefined,
+      replaced: false,
     });
   }
-  return plan;
+
+  // An enqueue right after an `execute` can take its nonce with another
+  // mutation. Its own stream keeps the draws above the same.
+  let index = plan.length;
+  return plan.flatMap((step): Step[] => {
+    if (
+      step.via !== "execute" ||
+      step.malformation !== undefined ||
+      replacements.nextDoubleUnsafe() >= replaceRate
+    ) {
+      return [step];
+    }
+    step.replaced = true;
+    const templates = TEMPLATES.filter(
+      ({ name }) => name !== step.mutation.name,
+    );
+    return [
+      step,
+      {
+        index: index++,
+        delayMs: 0,
+        via: "enqueue",
+        resubmit: false,
+        expiresInS: Infinity,
+        signer: step.signer,
+        mutation: fromTemplate(
+          step.signer,
+          templates[below(replacements, templates.length)]!,
+          false,
+          step.index,
+        ),
+        malformation: undefined,
+        replaces: step.index,
+        replaced: false,
+      },
+    ];
+  });
 }

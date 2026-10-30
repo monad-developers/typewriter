@@ -62,6 +62,7 @@ export function validate(params: Params): Effect.Effect<void> {
 
     checkSettlements(check, onchain, app);
     checkOutcomes(check, run, onchain);
+    checkReplacements(check, run, onchain);
     checkOrder(check, run, onchain, params.ordering);
     checkFinality(check, run, onchain);
     yield* checkQueue(check, run, onchain, params);
@@ -214,6 +215,20 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
     if (expiration === 0n || expiration >= latestTimestamp + margin) {
       check.fail(
         `${check.label(key)}: rejected as expired at ${expiration}, but the latest block is at ${latestTimestamp} (margin ${margin}s)`,
+      );
+    }
+  }
+}
+
+/** Of a step and the enqueue that takes its nonce, exactly one executes. */
+function checkReplacements(check: Check, run: Run, onchain: Onchain) {
+  const executed = executedByKey(onchain);
+  for (const { label, key, replaces } of run.submissions) {
+    if (replaces === undefined) continue;
+    const count = [replaces, key].filter((k) => executed.has(k)).length;
+    if (count !== 1) {
+      check.fail(
+        `${label}: ${count} of it and ${check.label(replaces)} executed, want 1`,
       );
     }
   }
