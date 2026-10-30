@@ -43,7 +43,6 @@ function acceptedMutation(
     authorization,
     executionIndex: 0n,
     journalId: 0,
-    isForceInclusion: false,
     config,
   };
 }
@@ -151,7 +150,11 @@ test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {
     functionName: "enqueue",
     args: [3, mutationData, authorizationData],
   });
-  const actual = encodeEnqueueCalldata(mutation);
+  const actual = encodeEnqueueCalldata({
+    mutation: 3,
+    mutationData,
+    authorizationData,
+  });
   expect(actual).toBe(expected);
 });
 
