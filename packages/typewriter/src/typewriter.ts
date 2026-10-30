@@ -11,6 +11,7 @@ import {
   Schema,
   Scope,
   Semaphore,
+  Stream,
 } from "effect";
 import { Hash, Hex } from "ox";
 import {
@@ -131,6 +132,12 @@ export type TypewriterEffect<
 const DEPLOYMENT_LOCK_TIMEOUT_MS = 10_000;
 
 const SUBMIT_RETRY_TIMES = 5;
+
+/**
+ * How many watch messages, one block each, the watch reads ahead of the
+ * runtime, so a block that waits on a lock doesn't hold up polling.
+ */
+const WATCH_BUFFER_SIZE = 16;
 
 type RuntimeExecuteInput = {
   name: string;
@@ -1610,19 +1617,19 @@ export function createTypewriterEffect<
       }
     });
 
-    const watchProgram = watchChain(
-      {
-        fromBlock: startBlock,
-        pollIntervalMs: app.blockPollingIntervalMs,
-        maxChainDepth: app.confirmations.finalizedBlockDepth,
-        logFilter: {
-          address: app.address,
-          selector: toEventSelector(
-            getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
-          ),
-        },
+    const watchProgram = watchChain({
+      fromBlock: startBlock,
+      pollIntervalMs: app.blockPollingIntervalMs,
+      maxChainDepth: app.confirmations.finalizedBlockDepth,
+      bufferSize: WATCH_BUFFER_SIZE,
+      logFilter: {
+        address: app.address,
+        selector: toEventSelector(
+          getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
+        ),
       },
-      (message) =>
+    }).pipe(
+      Stream.runForEach((message) =>
         Effect.gen(function* () {
           if (message._tag === "Removed") {
             // Revm replayed the block's enqueues, and the runtime does not
@@ -1733,7 +1740,9 @@ export function createTypewriterEffect<
             (block) => block.status !== "finalized",
           );
         }),
-    ).pipe(Effect.provideService(Rpc, rpc));
+      ),
+      Effect.provideService(Rpc, rpc),
+    );
 
     const submitIntervalMs = app.sequencing.submitIntervalMs;
 

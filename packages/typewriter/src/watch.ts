@@ -1,5 +1,13 @@
-import { Data, Duration, Effect, Result, Schedule } from "effect";
-import { Bloom, Hex } from "ox";
+import {
+  Data,
+  Duration,
+  Effect,
+  Queue,
+  Result,
+  Schedule,
+  Stream,
+} from "effect";
+import { Hex } from "ox";
 import { Rpc, type RpcError } from "./rpc";
 
 /** How many blocks the watch requests at once when it falls behind. */
@@ -19,6 +27,9 @@ export type LocalBlock = {
   logs: LocalLog[];
 };
 
+/** A block before its logs are read. */
+type Header = Omit<LocalBlock, "logs">;
+
 /**
  * `Added` puts `block` on top of the chain. `Removed` takes `block`, the top,
  * off it: a reorg replaced it.
@@ -33,6 +44,8 @@ export type WatchConfig = {
   /** The deepest reorg the watch follows. */
   maxChainDepth: number;
   pollIntervalMs: number;
+  /** How many messages the watch reads ahead of its consumer. */
+  bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
 };
 
@@ -61,129 +74,194 @@ export type WatchError =
   | UnrecoverableReorgError;
 
 /**
- * Polls the chain and passes each change after `fromBlock` to `onMessage`, in
- * order. A reorg is `Removed` for each replaced block, newest first, then
- * `Added` for each new one. Runs until it or `onMessage` fails.
+ * Polls the chain and streams each change after `fromBlock`, in order. A reorg
+ * is `Removed` for each replaced block, newest first, then `Added` for each new
+ * one. The watch reads up to `bufferSize` messages ahead of the consumer.
  */
-export function watchChain<E, R>(
+export function watchChain(
   config: WatchConfig,
-  onMessage: (message: WatchMessage) => Effect.Effect<void, E, R>,
-): Effect.Effect<never, WatchError | E, Rpc | R> {
-  return Effect.gen(function* () {
-    const rpc = yield* Rpc;
-    const { address, selector } = config.logFilter;
-
-    /**
-     * The block at `number` with its logs, or `undefined` if the provider has
-     * no block there, or the block left the chain before its logs were read.
-     */
-    const getBlock = (number: bigint) =>
+): Stream.Stream<WatchMessage, WatchError, Rpc> {
+  return Stream.callback<WatchMessage, WatchError, Rpc>(
+    (queue) =>
       Effect.gen(function* () {
-        const block = yield* rpc.request({
-          method: "eth_getBlockByNumber",
-          params: [Hex.fromNumber(number), false],
-        });
-        if (block === null) return undefined;
-        // TODO(kyle) write RPC response normalizers
-        if (block.hash === null || block.logsBloom === null) {
-          return yield* new IncompleteBlockError({
-            message: "Received block without a hash or logs bloom",
-          });
-        }
+        const rpc = yield* Rpc;
+        const { address, selector } = config.logFilter;
 
-        let logs: LocalLog[] = [];
-        // TODO(kyle) don't rely on logsBloom, it breaks on async execution chains
-        if (
-          Bloom.contains(block.logsBloom, address) &&
-          Bloom.contains(block.logsBloom, selector)
-        ) {
-          const result = yield* Effect.result(
-            rpc.request({
-              method: "eth_getLogs",
-              params: [{ blockHash: block.hash, address, topics: [selector] }],
-            }),
-          );
-          if (Result.isFailure(result)) {
-            // A node fails `eth_getLogs` for a block hash it no longer has.
-            const current = yield* rpc.request({
-              method: "eth_getBlockByNumber",
-              params: [Hex.fromNumber(number), false],
-            });
-            if (current?.hash !== block.hash) return undefined;
-            return yield* Effect.fail(result.failure);
-          }
-          logs = result.success.map((log) => ({
-            topics: log.topics,
-            data: log.data,
-          }));
-        }
-
-        const localBlock: LocalBlock = {
-          number,
-          hash: block.hash,
-          parentHash: block.parentHash,
-          timestamp: Hex.toBigInt(block.timestamp),
-          logs,
-        };
-        return localBlock;
-      });
-
-    /** The block before `chain`. A reorg that replaces it is unrecoverable. */
-    let root = config.fromBlock;
-    /** The newest `maxChainDepth` blocks, oldest first. */
-    const chain: LocalBlock[] = [];
-
-    const poll = Effect.gen(function* () {
-      const latest = Hex.toBigInt(
-        yield* rpc.request({ method: "eth_blockNumber" }),
-      );
-      while (true) {
-        const tip = chain.at(-1) ?? root;
-        if (tip.number >= latest) return;
-
-        // Request the missing blocks in parallel, so the watch keeps up when a
-        // block takes less time than a request.
-        const count = Math.min(
-          Number(latest - tip.number),
-          CATCH_UP_CONCURRENCY,
-        );
-        const blocks = yield* Effect.forEach(
-          Array.from({ length: count }, (_, i) => tip.number + 1n + BigInt(i)),
-          getBlock,
-          { concurrency: "unbounded" },
-        );
-
-        for (const block of blocks) {
-          // The provider is behind `latest`, or the block left the chain. The
-          // next poll asks again.
-          if (block === undefined) return;
-
-          const parent = chain.at(-1) ?? root;
-          if (block.parentHash === parent.hash) {
-            chain.push(block);
-            if (chain.length > config.maxChainDepth) root = chain.shift()!;
-            yield* onMessage({ _tag: "Added", block });
-            continue;
-          }
-
-          // A reorg replaced the top block. The next request is for its
-          // number, and compares the new block's parent with the one below.
-          const removed = chain.pop();
-          if (removed === undefined) {
-            return yield* new UnrecoverableReorgError({
-              number: block.number,
+        /** The block that `id` names, or `undefined` if the provider has none. */
+        const getHeader = (id: bigint | Hex.Hex | "latest") =>
+          Effect.gen(function* () {
+            const block =
+              typeof id === "bigint" || id === "latest"
+                ? yield* rpc.request({
+                    method: "eth_getBlockByNumber",
+                    params: [
+                      typeof id === "bigint" ? Hex.fromNumber(id) : id,
+                      false,
+                    ],
+                  })
+                : yield* rpc.request({
+                    method: "eth_getBlockByHash",
+                    params: [id, false],
+                  });
+            if (block === null) return undefined;
+            // TODO(kyle) write RPC response normalizers
+            if (block.number === null || block.hash === null) {
+              return yield* new IncompleteBlockError({
+                message: "Received block without a number or hash",
+              });
+            }
+            const header: Header = {
+              number: Hex.toBigInt(block.number),
               hash: block.hash,
-            });
-          }
-          yield* onMessage({ _tag: "Removed", block: removed });
-          break;
-        }
-      }
-    });
+              parentHash: block.parentHash,
+              timestamp: Hex.toBigInt(block.timestamp),
+            };
+            return header;
+          });
 
-    return yield* Effect.repeat(
-      poll,
-      Schedule.spaced(Duration.millis(config.pollIntervalMs)),
-    ).pipe(Effect.andThen(Effect.never));
-  });
+        /**
+         * `header` with its logs, or `undefined` if the block left the chain
+         * before its logs were read.
+         */
+        const withLogs = (header: Header) =>
+          Effect.gen(function* () {
+            const result = yield* Effect.result(
+              rpc.request({
+                method: "eth_getLogs",
+                params: [
+                  { blockHash: header.hash, address, topics: [selector] },
+                ],
+              }),
+            );
+            if (Result.isFailure(result)) {
+              // A node fails `eth_getLogs` for a block hash it doesn't have.
+              if ((yield* getHeader(header.hash)) === undefined) {
+                return undefined;
+              }
+              return yield* Effect.fail(result.failure);
+            }
+            const block: LocalBlock = {
+              ...header,
+              logs: result.success.map((log) => ({
+                topics: log.topics,
+                data: log.data,
+              })),
+            };
+            return block;
+          });
+
+        /**
+         * The block at `number` with its logs, or `undefined` if the provider
+         * has none, or the block left the chain before its logs were read.
+         */
+        const getBlock = (number: bigint) =>
+          Effect.gen(function* () {
+            const header = yield* getHeader(number);
+            return header === undefined ? undefined : yield* withLogs(header);
+          });
+
+        /** The block below `chain`. A reorg that replaces it is unrecoverable. */
+        let root = config.fromBlock;
+        /** The blocks above `root`, oldest first, at most `maxChainDepth`. */
+        let chain: LocalBlock[] = [];
+        const tip = () => chain.at(-1) ?? root;
+
+        /**
+         * Puts `top` on top of the blocks below its number. If it doesn't
+         * build on them, a reorg replaced them too: the watch reads their
+         * replacements by parent hash, down to a block it keeps. `top` is at
+         * most one above the watch's top. Returns `false`, and changes
+         * nothing, if a block left the chain meanwhile.
+         */
+        const reconcile = (top: LocalBlock) =>
+          Effect.gen(function* () {
+            const kept = chain.filter((block) => block.number < top.number);
+            const removed = chain
+              .filter((block) => block.number >= top.number)
+              .reverse();
+            /** The replacements below `top`, oldest first. */
+            const parents: Header[] = [];
+            let child: Header = top;
+            while (child.parentHash !== (kept.at(-1) ?? root).hash) {
+              const replaced = kept.pop();
+              if (replaced === undefined) {
+                return yield* new UnrecoverableReorgError({
+                  number: top.number,
+                  hash: top.hash,
+                });
+              }
+              removed.push(replaced);
+              const parent = yield* getHeader(child.parentHash);
+              if (parent === undefined) return false;
+              parents.unshift(parent);
+              child = parent;
+            }
+
+            const added: LocalBlock[] = [];
+            for (const block of yield* Effect.forEach(parents, withLogs, {
+              concurrency: "unbounded",
+            })) {
+              if (block === undefined) return false;
+              added.push(block);
+            }
+            added.push(top);
+
+            chain = [...kept, ...added];
+            while (chain.length > config.maxChainDepth) root = chain.shift()!;
+            for (const block of removed) {
+              yield* Queue.offer(queue, { _tag: "Removed", block });
+            }
+            for (const block of added) {
+              yield* Queue.offer(queue, { _tag: "Added", block });
+            }
+            return true;
+          });
+
+        const poll = Effect.gen(function* () {
+          const latest = yield* getHeader("latest");
+          // A provider with no block past the root, or with a block the watch
+          // has, is behind the watch.
+          if (
+            latest === undefined ||
+            latest.number <= root.number ||
+            chain.some((block) => block.hash === latest.hash)
+          ) {
+            return;
+          }
+
+          // A new top, or a replacement for blocks the watch has.
+          if (latest.number <= tip().number + 1n) {
+            const block = yield* withLogs(latest);
+            if (block !== undefined) yield* reconcile(block);
+            return;
+          }
+
+          // The watch is behind. It reads the blocks after its top by number,
+          // so a reorg meanwhile shows in what it reads, and requests them in
+          // parallel, so it keeps up when a block takes less time than a
+          // request.
+          while (tip().number < latest.number) {
+            const start = tip().number + 1n;
+            const count = Math.min(
+              Number(latest.number - start) + 1,
+              CATCH_UP_CONCURRENCY,
+            );
+            const blocks = yield* Effect.forEach(
+              Array.from({ length: count }, (_, i) => start + BigInt(i)),
+              getBlock,
+              { concurrency: "unbounded" },
+            );
+            for (const block of blocks) {
+              if (block === undefined || !(yield* reconcile(block))) return;
+            }
+          }
+        });
+
+        yield* Effect.repeat(
+          poll,
+          Schedule.spaced(Duration.millis(config.pollIntervalMs)),
+        );
+      }),
+    { bufferSize: config.bufferSize, strategy: "suspend" },
+  );
 }
