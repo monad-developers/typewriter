@@ -18,7 +18,7 @@ import type {
   AssessmentMutations,
   AssessmentStorage,
 } from "./assessment-constants";
-import type { Chain } from "./chain";
+import type { Chain, StateDiff } from "./chain";
 import type { SIM } from "./index";
 import {
   type Executed,
@@ -643,11 +643,17 @@ function checkDatabase(
     }
     for (const settlement of onchain.settlements) {
       if (settlement.reverted) continue;
-      for (const slot of yield* slotsWritten(
-        chain,
-        app,
+      const diff = chain.stateDiff(
+        settlement.blockHash,
         settlement.transactionHash,
-      )) {
+      );
+      if (diff === undefined) {
+        check.fail(
+          `settlement ${settlement.transactionHash}: no state diff from when block ${settlement.blockNumber} was mined`,
+        );
+        continue;
+      }
+      for (const slot of slotsWritten(diff, app)) {
         if (!stored.has(slot)) {
           check.fail(
             `storage_slots: missing ${slot}, which settlement ${settlement.transactionHash} wrote`,
@@ -710,29 +716,18 @@ function storageValues(
   });
 }
 
-/** The slots of the app that transaction `hash` changed. */
-function slotsWritten(chain: Chain, app: TypewriterApp, hash: Hex.Hex) {
-  return Effect.gen(function* () {
-    type Diff = Record<string, { storage?: Record<string, Hex.Hex> }>;
-    // `PublicRpcSchema` does not include `debug_traceTransaction`.
-    const trace = (yield* chain.request({
-      method: "debug_traceTransaction",
-      params: [
-        hash,
-        { tracer: "prestateTracer", tracerConfig: { diffMode: true } },
-      ],
-    } as unknown as RpcRequest)) as unknown as { pre: Diff; post: Diff };
-    const address = app.address.toLowerCase();
-    return [
-      ...new Set(
-        [trace.pre, trace.post].flatMap((diff) =>
-          Object.keys(diff[address]?.storage ?? {}).map((slot) =>
-            slot.toLowerCase(),
-          ),
+/** The slots of the app that a transaction with `diff` changed. */
+function slotsWritten(diff: StateDiff, app: TypewriterApp) {
+  const address = app.address.toLowerCase();
+  return [
+    ...new Set(
+      [diff.pre, diff.post].flatMap((accounts) =>
+        Object.keys(accounts[address]?.storage ?? {}).map((slot) =>
+          slot.toLowerCase(),
         ),
       ),
-    ];
-  });
+    ),
+  ];
 }
 
 /** `state` and `accounts` of the runtime match the same views over Anvil storage. */

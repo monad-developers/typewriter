@@ -16,10 +16,25 @@ import {
 } from "../src/rpc-transport";
 import { SIM } from "./index";
 
+/** What a transaction changed: each account's values before and after. */
+export type StateDiff = Record<
+  "pre" | "post",
+  Record<string, { storage?: Record<string, Hex.Hex> }>
+>;
+
 export type Chain = {
   request: <request extends RpcRequest>(
     request: request,
   ) => Effect.Effect<RpcResult<request["method"]>>;
+  /**
+   * What transaction `transactionHash` changed in block `blockHash`, traced
+   * when the block was mined. A later trace replays the block on the state
+   * before it, which Anvil drops after a few thousand blocks.
+   */
+  stateDiff: (
+    blockHash: Hex.Hex,
+    transactionHash: Hex.Hex,
+  ) => StateDiff | undefined;
   /** Mines one block at `timestamp`, in seconds. */
   mine: (timestamp: number) => Effect.Effect<void>;
   /**
@@ -97,16 +112,42 @@ export function makeChain(): Effect.Effect<
     const request = ((request: RpcRequest) =>
       lock.withPermits(1)(send(request))) as Chain["request"];
 
+    /** By block hash, then transaction hash, lowercase. */
+    const stateDiffs = new Map<string, StateDiff>();
+    const stateDiffKey = (blockHash: Hex.Hex, transactionHash: Hex.Hex) =>
+      `${blockHash}:${transactionHash}`.toLowerCase();
+
+    // Mines one block and traces its transactions, while Anvil still has the
+    // state before it.
+    const mineBlock = (timestamp: number) =>
+      Effect.gen(function* () {
+        // `PublicRpcSchema` does not include Anvil methods.
+        yield* send({
+          method: "evm_mine",
+          params: [{ timestamp, blocks: 1 }],
+        } as unknown as RpcRequest);
+        const block = (yield* send({
+          method: "eth_getBlockByNumber",
+          params: ["latest", false],
+        })) as { hash: Hex.Hex; transactions: Hex.Hex[] };
+        for (const hash of block.transactions) {
+          // `PublicRpcSchema` does not include `debug_traceTransaction`.
+          const diff = (yield* send({
+            method: "debug_traceTransaction",
+            params: [
+              hash,
+              { tracer: "prestateTracer", tracerConfig: { diffMode: true } },
+            ],
+          } as unknown as RpcRequest)) as unknown as StateDiff;
+          stateDiffs.set(stateDiffKey(block.hash, hash), diff);
+        }
+      });
+
+    const stateDiff = (blockHash: Hex.Hex, transactionHash: Hex.Hex) =>
+      stateDiffs.get(stateDiffKey(blockHash, transactionHash));
+
     const mine = (timestamp: number) =>
-      lock
-        .withPermits(1)(
-          // `PublicRpcSchema` does not include Anvil methods.
-          send({
-            method: "evm_mine",
-            params: [{ timestamp, blocks: 1 }],
-          } as unknown as RpcRequest),
-        )
-        .pipe(Effect.asVoid);
+      lock.withPermits(1)(mineBlock(timestamp));
 
     // A node puts the transactions of dropped blocks back in its pool. Anvil
     // drops them, and evicts any pool transaction whose nonce they precede
@@ -152,15 +193,12 @@ export function makeChain(): Effect.Effect<
             params: [{ from: REORG, to: REORG }],
           });
           for (let i = 0; i < replaced; i++) {
-            yield* send({
-              method: "evm_mine",
-              params: [{ timestamp, blocks: 1 }],
-            } as unknown as RpcRequest);
+            yield* mineBlock(timestamp);
           }
           return hashes;
         }),
       );
 
-    return { request, mine, reorg };
+    return { request, stateDiff, mine, reorg };
   });
 }
