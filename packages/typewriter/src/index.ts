@@ -66,12 +66,14 @@ export {
   ChainIdMismatchError,
   type CreateTypewriterError,
   EncodeMutationError,
+  EnqueueReorgedError,
   type ExecuteError,
   type ExecuteMutationError,
   MutationHaltedError,
   MutationRevertedError,
   type ProgramError,
   ProgramStoppedError,
+  SettlementReorgedError,
   SettlementRevertedError,
   SettlementSimulationHaltedError,
   SettlementSimulationRevertedError,
@@ -98,7 +100,6 @@ export type {
   TypewriterMutationResult,
 } from "./typewriter-types";
 export {
-  IncompleteBlockError,
   UnrecoverableReorgError,
   type WatchError,
 } from "./watch";

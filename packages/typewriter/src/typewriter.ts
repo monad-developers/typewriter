@@ -94,12 +94,7 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
-import {
-  type IncompleteBlockError,
-  type LocalLog,
-  makeWatch,
-  type WatchError,
-} from "./watch";
+import { type LocalLog, type WatchError, watchChain } from "./watch";
 
 export type StorageRootProperty<
   storageConfig extends StorageConfig,
@@ -137,6 +132,8 @@ export type TypewriterEffect<
 const DEPLOYMENT_LOCK_TIMEOUT_MS = 10_000;
 
 const SUBMIT_RETRY_TIMES = 5;
+
+const WATCH_BUFFER_SIZE = 16;
 
 type RuntimeExecuteInput = {
   name: string;
@@ -253,6 +250,37 @@ export class SettlementRevertedError extends Data.TaggedError(
 }
 
 /**
+ * A reorg replaced the block of a settlement transaction before it was final.
+ * The runtime does not follow a settlement to its new block.
+ */
+export class SettlementReorgedError extends Data.TaggedError(
+  "SettlementReorgedError",
+)<{
+  blockNumber: bigint;
+  blockHash: Hex.Hex;
+  transactionHash: Hex.Hex;
+}> {
+  override get message() {
+    return `Settlement transaction ${this.transactionHash} was reorged out of block ${this.blockNumber} (${this.blockHash})`;
+  }
+}
+
+/**
+ * A reorg replaced a block with enqueues that revm replayed. The runtime does
+ * not undo an enqueue.
+ */
+export class EnqueueReorgedError extends Data.TaggedError(
+  "EnqueueReorgedError",
+)<{
+  blockNumber: bigint;
+  blockHash: Hex.Hex;
+}> {
+  override get message() {
+    return `Block ${this.blockNumber} (${this.blockHash}) with enqueued mutations was reorged out`;
+  }
+}
+
+/**
  * `program` stopped, so a waiting `execute` will never get an answer. `cause`
  * is how the program exited: a {@link ProgramError}, or an interruption.
  */
@@ -274,13 +302,16 @@ export type ExecuteError =
 
 export type ProgramError =
   | WatchError
+  | BlockNotFoundError
   | DbError
   | EvmError
   | SettlementSimulationRevertedError
   | SettlementSimulationHaltedError
   | SettlementRevertedError
+  | SettlementReorgedError
   | EnqueueRevertedError
   | EnqueueHaltedError
+  | EnqueueReorgedError
   | SignTransactionError
   | ProgramStoppedError;
 
@@ -288,7 +319,6 @@ export type CreateTypewriterError =
   | DbError
   | RpcError
   | BlockNotFoundError
-  | IncompleteBlockError
   | NoDataReturnedError
   | MigrationError
   | ChainIdMismatchError
@@ -784,17 +814,6 @@ export function createTypewriterEffect<
     let blockTimestamp = startBlock.timestamp;
     let blockNumber = startBlock.number;
 
-    const watch = yield* makeWatch({
-      fromBlock: startBlock.hash,
-      pollIntervalMs: app.blockPollingIntervalMs,
-      maxChainDepth: app.confirmations.finalizedBlockDepth,
-      logFilter: {
-        address: app.address,
-        selector: toEventSelector(
-          getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
-        ),
-      },
-    });
     let batchId = 0;
     let batchPosition = 0;
 
@@ -1521,9 +1540,17 @@ export function createTypewriterEffect<
           }),
         );
 
-        const block = yield* requestBlock(receipt.blockHash).pipe(
+        // By number, so a reorg that already replaced the block reads as one.
+        const block = yield* requestBlock(receipt.blockNumber).pipe(
           Effect.provideService(Rpc, rpc),
         );
+        if (block.hash !== receipt.blockHash) {
+          return yield* new SettlementReorgedError({
+            blockNumber: receipt.blockNumber,
+            blockHash: receipt.blockHash,
+            transactionHash: receipt.transactionHash,
+          });
+        }
 
         const inclusion: Inclusion = {
           blockNumber: block.number,
@@ -1586,96 +1613,128 @@ export function createTypewriterEffect<
       }
     });
 
-    const watchProgram = Effect.gen(function* () {
-      yield* watch.messages.pipe(
-        Stream.runForEach((message) =>
-          Effect.gen(function* () {
-            if (message._tag === "Reorged") {
-              return;
-            }
-
-            yield* evm.setBlockContext({
-              number: Hex.fromNumber(message.block.number),
-              timestamp: Hex.fromNumber(message.block.timestamp),
-            });
-            blockTimestamp = message.block.timestamp;
-            blockNumber = message.block.number;
-
-            for (const log of message.block.logs) {
-              const queued = decodeForceInclusionQueued(log);
-
-              // Every enqueue takes a queue index onchain, so revm replays
-              // each one with its bytes. `submit` force-executes it.
-              const executeResult = yield* withSpeculativeStateLock(
-                enqueueMutation({ app, evm, queued }),
-              );
-
-              if (executeResult.status === "revert") {
-                return yield* new EnqueueRevertedError(
-                  decodeRevert(app.abi, executeResult.data),
-                );
-              }
-              if (executeResult.status === "halt") {
-                return yield* new EnqueueHaltedError({
-                  reason: executeResult.reason,
-                });
-              }
-
-              invalidateStorageCache(
-                executeResult.slot_writes.map((write) => write.slot),
-              );
-
-              yield* Queue.offer(enqueuedQueue, queued.index);
-            }
-
-            for (const block of unfinalizedBlocks.filter(
-              (block) => block.number < message.block.number,
-            )) {
-              const nextStatus = nextBlockStatus(
-                block,
-                message.block.number,
-                app.confirmations,
-              );
-              if (nextStatus === undefined) continue;
-
-              block.status = nextStatus;
-
-              for (const batch of block.batches) {
-                batch.status = nextStatus;
-                for (const mutation of batch.mutations) {
-                  updateMutationToFinalized(mutation as IncludedMutation);
-                }
-              }
-
-              yield* evm.pruneJournals({
-                journal_ids: [
-                  ...block.batches.flatMap((batch) =>
-                    batch.mutations.map((mutation) => mutation.journalId),
-                  ),
-                  ...(forceExecutedJournalIds.get(block) ?? []),
-                ],
-              });
-              forceExecutedJournalIds.delete(block);
-              for (const batch of block.batches) {
-                batchesById.delete(batch.id);
-              }
-
-              yield* emitBlock(block);
-
-              for (const batch of block.batches) {
-                yield* emitBatch(batchToEvent(batch));
-                for (const mutation of batch.mutations) {
-                  yield* emitMutation(mutationToEvent(mutation));
-                }
-              }
-            }
-            unfinalizedBlocks = unfinalizedBlocks.filter(
-              (block) => block.status !== "finalized",
-            );
-          }),
+    const watchProgram = watchChain({
+      fromBlock: startBlock,
+      pollIntervalMs: app.blockPollingIntervalMs,
+      maxChainDepth: app.confirmations.finalizedBlockDepth,
+      bufferSize: WATCH_BUFFER_SIZE,
+      logFilter: {
+        address: app.address,
+        selector: toEventSelector(
+          getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
         ),
-      );
-    });
+      },
+    }).pipe(
+      Stream.runForEach((message) =>
+        Effect.gen(function* () {
+          if (message._tag === "Removed") {
+            if (message.block.logs.length > 0) {
+              return yield* new EnqueueReorgedError({
+                blockNumber: message.block.number,
+                blockHash: message.block.hash,
+              });
+            }
+            yield* Effect.logInfo("Removed reorged block").pipe(
+              Effect.annotateLogs({
+                block_number: message.block.number,
+                block_hash: message.block.hash,
+              }),
+            );
+            return;
+          }
+
+          yield* evm.setBlockContext({
+            number: Hex.fromNumber(message.block.number),
+            timestamp: Hex.fromNumber(message.block.timestamp),
+          });
+          blockTimestamp = message.block.timestamp;
+          blockNumber = message.block.number;
+
+          for (const log of message.block.logs) {
+            const queued = decodeForceInclusionQueued(log);
+
+            // Every enqueue takes a queue index onchain, so revm replays
+            // each one with its bytes. `submit` force-executes it.
+            const executeResult = yield* withSpeculativeStateLock(
+              enqueueMutation({ app, evm, queued }),
+            );
+
+            if (executeResult.status === "revert") {
+              return yield* new EnqueueRevertedError(
+                decodeRevert(app.abi, executeResult.data),
+              );
+            }
+            if (executeResult.status === "halt") {
+              return yield* new EnqueueHaltedError({
+                reason: executeResult.reason,
+              });
+            }
+
+            invalidateStorageCache(
+              executeResult.slot_writes.map((write) => write.slot),
+            );
+
+            yield* Queue.offer(enqueuedQueue, queued.index);
+          }
+
+          for (const block of unfinalizedBlocks.filter(
+            (block) => block.number < message.block.number,
+          )) {
+            const nextStatus = nextBlockStatus(
+              block,
+              message.block.number,
+              app.confirmations,
+            );
+            if (nextStatus === undefined) continue;
+
+            // A reorg can replace a receipt's block before the watch sees it.
+            const finalBlock = yield* requestBlock(block.number);
+            if (finalBlock.hash !== block.hash) {
+              return yield* new SettlementReorgedError({
+                blockNumber: block.number,
+                blockHash: block.hash,
+                transactionHash: block.transactionHash,
+              });
+            }
+
+            block.status = nextStatus;
+
+            for (const batch of block.batches) {
+              batch.status = nextStatus;
+              for (const mutation of batch.mutations) {
+                updateMutationToFinalized(mutation as IncludedMutation);
+              }
+            }
+
+            yield* evm.pruneJournals({
+              journal_ids: [
+                ...block.batches.flatMap((batch) =>
+                  batch.mutations.map((mutation) => mutation.journalId),
+                ),
+                ...(forceExecutedJournalIds.get(block) ?? []),
+              ],
+            });
+            forceExecutedJournalIds.delete(block);
+            for (const batch of block.batches) {
+              batchesById.delete(batch.id);
+            }
+
+            yield* emitBlock(block);
+
+            for (const batch of block.batches) {
+              yield* emitBatch(batchToEvent(batch));
+              for (const mutation of batch.mutations) {
+                yield* emitMutation(mutationToEvent(mutation));
+              }
+            }
+          }
+          unfinalizedBlocks = unfinalizedBlocks.filter(
+            (block) => block.status !== "finalized",
+          );
+        }),
+      ),
+      Effect.provideService(Rpc, rpc),
+    );
 
     const submitIntervalMs = app.sequencing.submitIntervalMs;
 
@@ -1726,13 +1785,7 @@ export function createTypewriterEffect<
     );
 
     const program = Effect.all(
-      [
-        batchProgram,
-        submitProgram,
-        persistProgram,
-        watchProgram,
-        watch.program,
-      ],
+      [batchProgram, submitProgram, persistProgram, watchProgram],
       { concurrency: "unbounded" },
     ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
