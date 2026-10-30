@@ -448,7 +448,7 @@ export const MALFORMATIONS: Malformation[] = [
     signing: (context) => ({
       params: {
         ...context.mutation.params,
-        slot: context.mutation.params.slot + 1n,
+        slot: context.mutation.params.slot ^ 1n,
       },
     }),
     input: (input, context) => ({ ...input, params: context.mutation.params }),
