@@ -199,23 +199,6 @@ export function insertKeccakPreimages(
   });
 }
 
-export function deleteKeccakPreimages(
-  tx: DbTransaction,
-  { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
-  preimages: readonly Hex.Hex[],
-): Effect.Effect<void, DbError> {
-  return Effect.gen(function* () {
-    for (let i = 0; i < preimages.length; i += MAX_PG_PARAMS) {
-      const batch = preimages.slice(i, i + MAX_PG_PARAMS);
-      yield* tx.query((db) =>
-        db
-          .delete(keccakPreimages)
-          .where(inArray(keccakPreimages.preimage, batch)),
-      );
-    }
-  });
-}
-
 export function selectStorageSlots(
   tx: DbTransaction,
   { storageSlots }: ReturnType<typeof createTypewriterSchema>,

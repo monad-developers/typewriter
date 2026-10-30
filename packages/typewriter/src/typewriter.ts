@@ -49,7 +49,6 @@ import {
 } from "./db-migrate";
 import {
   deleteExecutionsFrom,
-  deleteKeccakPreimages,
   insertKeccakPreimages,
   insertMutations,
   insertStorageSlots,
@@ -836,11 +835,6 @@ export function createTypewriterEffect<
       yield* createRuntimeState(app, db, code, startBlock);
     /** The timestamp of the block that mutations execute in. */
     let blockTimestamp = startBlock.timestamp;
-    /**
-     * The preimages first seen by mutations that no settlement simulation has
-     * included yet, so a rewind can forget them.
-     */
-    let unsubmittedPreimages: Hex.Hex[] = [];
 
     const watch = yield* makeWatch({
       fromBlock: startBlock.hash,
@@ -1063,7 +1057,6 @@ export function createTypewriterEffect<
           preimages.add(preimage);
           newPreimages.push(preimage);
         }
-        unsubmittedPreimages.push(...newPreimages);
 
         yield* emitMutation(mutationToEvent(acceptedMutation));
 
@@ -1194,11 +1187,6 @@ export function createTypewriterEffect<
         });
         invalidateStorageCache();
         nextExecutionIndex = fromExecutionIndex;
-        // A preimage that only a rewound mutation saw would otherwise
-        // enumerate its mapping key, e.g. the nonce lane of a dropped mutation.
-        const rewoundPreimages = unsubmittedPreimages;
-        unsubmittedPreimages = [];
-        for (const preimage of rewoundPreimages) preimages.delete(preimage);
 
         const executed: AcceptedExecution[] = [];
         /** Executes `mutations` again, and returns the ones that succeed. */
@@ -1235,11 +1223,6 @@ export function createTypewriterEffect<
               app.mutationSchema,
               app.typewriterSchema,
               fromExecutionIndex,
-            );
-            yield* deleteKeccakPreimages(
-              tx,
-              app.typewriterSchema,
-              rewoundPreimages,
             );
             yield* insertMutations(
               tx,
@@ -1392,7 +1375,6 @@ export function createTypewriterEffect<
                 }),
               );
 
-              unsubmittedPreimages = [];
               return {
                 batches,
                 acceptedForceIncludedMutations,
