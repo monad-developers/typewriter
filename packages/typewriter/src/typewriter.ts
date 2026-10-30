@@ -1316,24 +1316,26 @@ export function createTypewriterEffect<
             let forceExecuted: ForceExecution[] = reverted?.forceExecuted ?? [];
             // After an onchain revert, `reexecute` runs them on the rewound state.
             if (reverted === undefined) {
+              const executed: ForceExecution[] = [];
               for (const queueIndex of queueIndexes) {
-                const executed = yield* forceExecute(queueIndex);
-                if (executed !== undefined) forceExecuted.push(executed);
+                const execution = yield* forceExecute(queueIndex);
+                if (execution !== undefined) executed.push(execution);
               }
+              forceExecuted = executed;
 
-              if (forceExecuted.length > 0) {
+              if (executed.length > 0) {
                 commits.push(
                   yield* persist((tx) =>
                     Effect.gen(function* () {
                       yield* insertStorageSlots(
                         tx,
                         app.typewriterSchema,
-                        forceExecuted,
+                        executed,
                       );
                       yield* insertKeccakPreimages(
                         tx,
                         app.typewriterSchema,
-                        forceExecuted.flatMap(({ preimages }) => preimages),
+                        executed.flatMap(({ preimages }) => preimages),
                       );
                     }),
                   ),
