@@ -8,6 +8,7 @@ import {
   Queue,
   Result,
   Schedule,
+  Schema,
   Scope,
   Semaphore,
   Stream,
@@ -63,6 +64,7 @@ import {
   encodeExecuteCalldata,
 } from "./encoding";
 import { durationMs, startTimer } from "./logger";
+import { executeInputSchema } from "./mutation-schema";
 import { Rpc, type RpcError } from "./rpc";
 import {
   type BlockNotFoundError,
@@ -291,11 +293,6 @@ export type CreateTypewriterError =
   | MigrationError
   | ChainIdMismatchError
   | EvmError;
-
-function resolveMutationConfig(app: TypewriterApp, name: string) {
-  const config = app.mutations[name];
-  return config === undefined ? undefined : { name, config };
-}
 
 /**
  * Moves `mutation` to the `to` status in place, so the batches and blocks
@@ -801,6 +798,18 @@ export function createTypewriterEffect<
     let batchPosition = 0;
 
     const batchesById = new Map<number, RuntimeBatch>();
+    // `execute` checks a mutation's name, then the shape of its input,
+    // before it queues it: an input that passes encodes to the bytes it means.
+    // Not `app.mutations[name]`, which finds `Object.prototype` names too.
+    const isMutationName = Schema.is(
+      Schema.Literals(Object.keys(app.mutations)),
+    );
+    const executeInputSchemas = new Map(
+      Object.entries(app.mutations).map(([name, config]) => [
+        name,
+        executeInputSchema(config.params),
+      ]),
+    );
     /** The journals of each block's force-executed enqueues, pruned with it. */
     const forceExecutedJournalIds = new Map<RuntimeBlock<"batch">, number[]>();
     const receivedMutationQueue = yield* Queue.unbounded<{
@@ -1677,17 +1686,16 @@ export function createTypewriterEffect<
       mutation: RuntimeExecuteInput,
     ): Effect.Effect<TypewriterMutationResult, ExecuteError> {
       return Effect.gen(function* () {
-        const resolvedMutation = resolveMutationConfig(app, mutation.name);
-        if (resolvedMutation === undefined) {
+        if (!isMutationName(mutation.name)) {
           return yield* new UnknownMutationError({ mutation: mutation.name });
         }
 
         const runtimeMutation = {
-          name: resolvedMutation.name,
+          name: mutation.name,
           params: mutation.params,
           authorization: mutation.authorization,
           status: "received",
-          config: resolvedMutation.config,
+          config: app.mutations[mutation.name]!,
         } as const satisfies ReceivedMutation;
 
         yield* Effect.logDebug("Received mutation").pipe(
@@ -1698,6 +1706,22 @@ export function createTypewriterEffect<
         );
 
         yield* emitMutation(mutationToEvent(runtimeMutation));
+
+        yield* Schema.decodeUnknownEffect(
+          executeInputSchemas.get(mutation.name)!,
+        )(mutation).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EncodeMutationError({ mutation: runtimeMutation, cause }),
+          ),
+          Effect.tapError((error) =>
+            emitMutation(
+              mutationToEvent(
+                updateMutationToRejected(runtimeMutation, { error }),
+              ),
+            ),
+          ),
+        );
 
         const deferred = yield* Deferred.make<
           { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
