@@ -1278,289 +1278,295 @@ export function createTypewriterEffect<
         };
       });
 
-    let revertedSettlement:
-      | {
-          error: SettlementRevertedError;
-          blockNumber: bigint;
-          batches: RuntimeBatch[];
-          forceExecuted: ForceExecution[];
-        }
-      | undefined;
+    type RevertedSettlement = {
+      error: SettlementRevertedError;
+      blockNumber: bigint;
+      batches: RuntimeBatch[];
+      forceExecuted: ForceExecution[];
+    };
 
-    const submit = Effect.gen(function* () {
-      // revm must reach the block a settlement reverted in to execute it again.
-      if (
-        revertedSettlement !== undefined &&
-        blockNumber < revertedSettlement.blockNumber
-      ) {
-        return;
-      }
-
-      const simulation = yield* withSpeculativeStateLock(
-        Effect.gen(function* () {
-          const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
-          const queueIndexes = yield* Queue.clear(enqueuedQueue);
-          const reverted = revertedSettlement;
-          revertedSettlement = undefined;
-          if (
-            reverted === undefined &&
-            acceptedBatches.length === 0 &&
-            queueIndexes.length === 0
-          ) {
-            return undefined;
-          }
-
-          let batches = [
-            ...(reverted?.batches ?? []),
-            ...acceptedBatches.map(({ id }) => batchesById.get(id)!),
-          ];
-          const commits = acceptedBatches.map(({ committed }) => committed);
-
-          const enqueued: ForceExecution[] = [];
-          for (const queueIndex of queueIndexes) {
-            const executed = yield* forceExecute(queueIndex);
-            if (executed !== undefined) enqueued.push(executed);
-          }
-          /** The enqueues that execute, in the order the settlement runs them. */
-          let forceExecuted = [...(reverted?.forceExecuted ?? []), ...enqueued];
-
-          if (enqueued.length > 0) {
-            commits.push(
-              yield* persist((tx) =>
-                Effect.gen(function* () {
-                  yield* insertStorageSlots(tx, app.typewriterSchema, enqueued);
-                  yield* insertKeccakPreimages(
-                    tx,
-                    app.typewriterSchema,
-                    enqueued.flatMap(({ preimages }) => preimages),
-                  );
-                }),
-              ),
-            );
-          }
-
-          // Each mutation executed when it was accepted, so the settlement
-          // reverts only when one fails in a later block, e.g. on an
-          // authorization that expired since. Then execute them again, drop
-          // the ones that fail, and simulate what is left.
-          let revert:
-            | SettlementSimulationRevertedError
-            | SettlementRevertedError
-            | undefined = reverted?.error;
-          while (true) {
-            if (revert !== undefined) {
-              const reexecuted = yield* reexecute(
-                revert,
-                batches,
-                forceExecuted,
-              );
-              batches = reexecuted.batches;
-              forceExecuted = reexecuted.forceExecuted;
-              commits.push(reexecuted.committed);
-            }
-            if (batches.length === 0 && forceExecuted.length === 0) {
+    const settle = (reverted: RevertedSettlement | undefined) =>
+      Effect.gen(function* () {
+        const simulation = yield* withSpeculativeStateLock(
+          Effect.gen(function* () {
+            const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
+            const queueIndexes = yield* Queue.clear(enqueuedQueue);
+            if (
+              reverted === undefined &&
+              acceptedBatches.length === 0 &&
+              queueIndexes.length === 0
+            ) {
               return undefined;
             }
 
-            const speculativeJournalIds = batches
-              .flatMap((batch) => batch.mutations)
-              .map((mutation) => mutation.journalId)
-              .concat(
-                forceExecuted.map(
-                  ({ executeResult }) => executeResult.journal_id,
+            let batches = [
+              ...(reverted?.batches ?? []),
+              ...acceptedBatches.map(({ id }) => batchesById.get(id)!),
+            ];
+            const commits = acceptedBatches.map(({ committed }) => committed);
+
+            const enqueued: ForceExecution[] = [];
+            for (const queueIndex of queueIndexes) {
+              const executed = yield* forceExecute(queueIndex);
+              if (executed !== undefined) enqueued.push(executed);
+            }
+            /** The enqueues that execute, in the order the settlement runs them. */
+            let forceExecuted = [
+              ...(reverted?.forceExecuted ?? []),
+              ...enqueued,
+            ];
+
+            if (enqueued.length > 0) {
+              commits.push(
+                yield* persist((tx) =>
+                  Effect.gen(function* () {
+                    yield* insertStorageSlots(
+                      tx,
+                      app.typewriterSchema,
+                      enqueued,
+                    );
+                    yield* insertKeccakPreimages(
+                      tx,
+                      app.typewriterSchema,
+                      enqueued.flatMap(({ preimages }) => preimages),
+                    );
+                  }),
                 ),
               );
+            }
 
-            // TODO(kyle) cap a submission at the block gas limit. Every pending
-            // batch and enqueued mutation goes into one transaction, so after a
-            // backlog the node rejects it ("intrinsic gas too high") and the
-            // retries fail the program.
-            const calldata = encodeExecuteCalldata(
-              batches.map((batch) => encodeBatchArg(batch.mutations)),
-              forceExecuted.map(({ queueIndex }) => queueIndex),
-            );
+            // Each mutation executed when it was accepted, so the settlement
+            // reverts only when one fails in a later block, e.g. on an
+            // authorization that expired since. Then execute them again, drop
+            // the ones that fail, and simulate what is left.
+            let revert:
+              | SettlementSimulationRevertedError
+              | SettlementRevertedError
+              | undefined = reverted?.error;
+            while (true) {
+              if (revert !== undefined) {
+                const reexecuted = yield* reexecute(
+                  revert,
+                  batches,
+                  forceExecuted,
+                );
+                batches = reexecuted.batches;
+                forceExecuted = reexecuted.forceExecuted;
+                commits.push(reexecuted.committed);
+              }
+              if (batches.length === 0 && forceExecuted.length === 0) {
+                return undefined;
+              }
 
-            const simulationStartedAt = yield* startTimer;
-            const simulateResult = yield* evm.simulate({
+              const speculativeJournalIds = batches
+                .flatMap((batch) => batch.mutations)
+                .map((mutation) => mutation.journalId)
+                .concat(
+                  forceExecuted.map(
+                    ({ executeResult }) => executeResult.journal_id,
+                  ),
+                );
+
+              // TODO(kyle) cap a submission at the block gas limit. Every pending
+              // batch and enqueued mutation goes into one transaction, so after a
+              // backlog the node rejects it ("intrinsic gas too high") and the
+              // retries fail the program.
+              const calldata = encodeExecuteCalldata(
+                batches.map((batch) => encodeBatchArg(batch.mutations)),
+                forceExecuted.map(({ queueIndex }) => queueIndex),
+              );
+
+              const simulationStartedAt = yield* startTimer;
+              const simulateResult = yield* evm.simulate({
+                from: app.account.address,
+                to: app.address,
+                data: calldata,
+                journal_ids: speculativeJournalIds,
+              });
+              const duration = yield* durationMs(simulationStartedAt);
+              if (simulateResult.status === "halt") {
+                return yield* new SettlementSimulationHaltedError({
+                  reason: simulateResult.reason,
+                });
+              }
+              if (simulateResult.status === "success") {
+                yield* Effect.logDebug("Simulated settlement transaction").pipe(
+                  Effect.annotateLogs({
+                    nonce,
+                    gas_limit: simulateResult.gas_limit,
+                    batch_count: batches.length,
+                    mutation_count: speculativeJournalIds.length,
+                    duration,
+                  }),
+                );
+
+                return {
+                  batches,
+                  forceExecuted,
+                  calldata,
+                  simulateResult,
+                  commits,
+                };
+              }
+
+              revert = new SettlementSimulationRevertedError(
+                decodeRevert(app.abi, simulateResult.data),
+              );
+            }
+          }),
+        );
+
+        if (simulation === undefined) return;
+
+        const { batches, forceExecuted, calldata, simulateResult, commits } =
+          simulation;
+
+        yield* Effect.forEach(commits, Deferred.await, { discard: true });
+
+        const transactionStartedAt = yield* startTimer;
+
+        const filled = yield* rpc.request({
+          method: "eth_fillTransaction",
+          params: [
+            {
               from: app.account.address,
               to: app.address,
               data: calldata,
-              journal_ids: speculativeJournalIds,
-            });
-            const duration = yield* durationMs(simulationStartedAt);
-            if (simulateResult.status === "halt") {
-              return yield* new SettlementSimulationHaltedError({
-                reason: simulateResult.reason,
-              });
-            }
-            if (simulateResult.status === "success") {
-              yield* Effect.logDebug("Simulated settlement transaction").pipe(
-                Effect.annotateLogs({
-                  nonce,
-                  gas_limit: simulateResult.gas_limit,
-                  batch_count: batches.length,
-                  mutation_count: speculativeJournalIds.length,
-                  duration,
-                }),
-              );
-
-              return {
-                batches,
-                forceExecuted,
-                calldata,
-                simulateResult,
-                commits,
-              };
-            }
-
-            revert = new SettlementSimulationRevertedError(
-              decodeRevert(app.abi, simulateResult.data),
-            );
-          }
-        }),
-      );
-
-      if (simulation === undefined) return;
-
-      const { batches, forceExecuted, calldata, simulateResult, commits } =
-        simulation;
-
-      yield* Effect.forEach(commits, Deferred.await, { discard: true });
-
-      const transactionStartedAt = yield* startTimer;
-
-      const filled = yield* rpc.request({
-        method: "eth_fillTransaction",
-        params: [
-          {
-            from: app.account.address,
-            to: app.address,
-            data: calldata,
-            gas: Hex.fromNumber(simulateResult.gas_limit),
-            nonce: Hex.fromNumber(nonce),
-            accessList: simulateResult.access_list,
-          },
-        ],
-      });
-
-      // `eth_fillTransaction` returns an already-signed `raw`; strip its
-      // signature fields so the account re-signs over the correct payload.
-      const transaction = parseTransaction(filled.raw);
-      // The RPC backing `eth_fillTransaction` can be out of sync with the one
-      // backing the send, so the nonce it fills may be stale and override our
-      // clamp. Force our locally reconciled nonce onto the transaction so the
-      // broadcast nonce is exactly the value we tracked, independent of fill's
-      // view of the pending pool.
-      delete transaction.r;
-      delete transaction.s;
-      delete transaction.v;
-      delete transaction.yParity;
-      const signed = yield* Effect.tryPromise({
-        try: () => app.account.signTransaction(transaction),
-        catch: (cause) => new SignTransactionError({ cause }),
-      });
-      const hash = Hash.keccak256(signed as Hex.Hex);
-
-      let broadcastAttempted = false;
-      const receipt = yield* Effect.gen(function* () {
-        if (broadcastAttempted) {
-          const receipt = yield* rpc.request({
-            method: "eth_getTransactionReceipt",
-            params: [hash],
-          });
-          if (receipt !== null) return receipt;
-        }
-
-        broadcastAttempted = true;
-        return yield* rpc.request({
-          method: "eth_sendRawTransactionSync",
-          params: [signed],
+              gas: Hex.fromNumber(simulateResult.gas_limit),
+              nonce: Hex.fromNumber(nonce),
+              accessList: simulateResult.access_list,
+            },
+          ],
         });
-      }).pipe(
-        Effect.tapError((error) =>
-          Effect.logDebug("Failed settlement submission", error).pipe(
-            Effect.annotateLogs({ transaction_hash: hash }),
+
+        // `eth_fillTransaction` returns an already-signed `raw`; strip its
+        // signature fields so the account re-signs over the correct payload.
+        const transaction = parseTransaction(filled.raw);
+        // The RPC backing `eth_fillTransaction` can be out of sync with the one
+        // backing the send, so the nonce it fills may be stale and override our
+        // clamp. Force our locally reconciled nonce onto the transaction so the
+        // broadcast nonce is exactly the value we tracked, independent of fill's
+        // view of the pending pool.
+        delete transaction.r;
+        delete transaction.s;
+        delete transaction.v;
+        delete transaction.yParity;
+        const signed = yield* Effect.tryPromise({
+          try: () => app.account.signTransaction(transaction),
+          catch: (cause) => new SignTransactionError({ cause }),
+        });
+        const hash = Hash.keccak256(signed as Hex.Hex);
+
+        let broadcastAttempted = false;
+        const receipt = yield* Effect.gen(function* () {
+          if (broadcastAttempted) {
+            const receipt = yield* rpc.request({
+              method: "eth_getTransactionReceipt",
+              params: [hash],
+            });
+            if (receipt !== null) return receipt;
+          }
+
+          broadcastAttempted = true;
+          return yield* rpc.request({
+            method: "eth_sendRawTransactionSync",
+            params: [signed],
+          });
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.logDebug("Failed settlement submission", error).pipe(
+              Effect.annotateLogs({ transaction_hash: hash }),
+            ),
           ),
-        ),
-        Effect.retry({ times: SUBMIT_RETRY_TIMES }),
-        Effect.map(formatTransactionReceipt),
-      );
-
-      nonce += 1;
-
-      if (receipt.status === "reverted") {
-        revertedSettlement = {
-          error: new SettlementRevertedError({
-            transactionHash: receipt.transactionHash,
-          }),
-          blockNumber: receipt.blockNumber,
-          batches,
-          forceExecuted,
-        };
-        return;
-      }
-      const duration = yield* durationMs(transactionStartedAt);
-
-      yield* Effect.logDebug("Submitted settlement transaction").pipe(
-        Effect.annotateLogs({
-          transaction_hash: receipt.transactionHash,
-          block_number: receipt.blockNumber,
-          duration,
-        }),
-      );
-
-      const block = yield* requestBlock(receipt.blockHash).pipe(
-        Effect.provideService(Rpc, rpc),
-      );
-
-      const inclusion: Inclusion = {
-        blockNumber: block.number,
-        blockHash: block.hash,
-        blockTimestamp: block.timestamp,
-        transactionHash: receipt.transactionHash,
-        transactionIndex: receipt.transactionIndex,
-      };
-
-      for (const batch of batches) {
-        batch.status = "included";
-        for (const mutation of batch.mutations) {
-          updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
-        }
-      }
-
-      const runtimeBlock: RuntimeBlock<"batch"> = {
-        status: "included",
-        number: block.number,
-        hash: block.hash,
-        timestamp: block.timestamp,
-        transactionHash: receipt.transactionHash,
-        batches,
-      };
-      if (forceExecuted.length > 0) {
-        forceExecutedJournalIds.set(
-          runtimeBlock,
-          forceExecuted.map(({ executeResult }) => executeResult.journal_id),
+          Effect.retry({ times: SUBMIT_RETRY_TIMES }),
+          Effect.map(formatTransactionReceipt),
         );
-      }
 
-      yield* persist((tx) =>
-        updateMutationInclusion(
-          tx,
-          app.mutationSchema,
-          batches.flatMap((batch) => batch.mutations),
-          inclusion,
-        ),
-      );
+        nonce += 1;
 
-      yield* emitBlock(runtimeBlock);
-      for (const batch of batches) {
-        yield* emitBatch(batchToEvent(batch));
-        for (const mutation of batch.mutations) {
-          yield* emitMutation(mutationToEvent(mutation));
+        if (receipt.status === "reverted") {
+          return {
+            error: new SettlementRevertedError({
+              transactionHash: receipt.transactionHash,
+            }),
+            blockNumber: receipt.blockNumber,
+            batches,
+            forceExecuted,
+          };
         }
-      }
+        const duration = yield* durationMs(transactionStartedAt);
 
-      unfinalizedBlocks.push(runtimeBlock);
+        yield* Effect.logDebug("Submitted settlement transaction").pipe(
+          Effect.annotateLogs({
+            transaction_hash: receipt.transactionHash,
+            block_number: receipt.blockNumber,
+            duration,
+          }),
+        );
+
+        const block = yield* requestBlock(receipt.blockHash).pipe(
+          Effect.provideService(Rpc, rpc),
+        );
+
+        const inclusion: Inclusion = {
+          blockNumber: block.number,
+          blockHash: block.hash,
+          blockTimestamp: block.timestamp,
+          transactionHash: receipt.transactionHash,
+          transactionIndex: receipt.transactionIndex,
+        };
+
+        for (const batch of batches) {
+          batch.status = "included";
+          for (const mutation of batch.mutations) {
+            updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
+          }
+        }
+
+        const runtimeBlock: RuntimeBlock<"batch"> = {
+          status: "included",
+          number: block.number,
+          hash: block.hash,
+          timestamp: block.timestamp,
+          transactionHash: receipt.transactionHash,
+          batches,
+        };
+        if (forceExecuted.length > 0) {
+          forceExecutedJournalIds.set(
+            runtimeBlock,
+            forceExecuted.map(({ executeResult }) => executeResult.journal_id),
+          );
+        }
+
+        yield* persist((tx) =>
+          updateMutationInclusion(
+            tx,
+            app.mutationSchema,
+            batches.flatMap((batch) => batch.mutations),
+            inclusion,
+          ),
+        );
+
+        yield* emitBlock(runtimeBlock);
+        for (const batch of batches) {
+          yield* emitBatch(batchToEvent(batch));
+          for (const mutation of batch.mutations) {
+            yield* emitMutation(mutationToEvent(mutation));
+          }
+        }
+
+        unfinalizedBlocks.push(runtimeBlock);
+      });
+
+    const submit = Effect.gen(function* () {
+      let reverted = yield* settle(undefined);
+      while (reverted !== undefined) {
+        // revm must reach the block a settlement reverted in to execute it again.
+        while (blockNumber < reverted.blockNumber) {
+          yield* Effect.sleep(Duration.millis(app.blockPollingIntervalMs));
+        }
+        reverted = yield* settle(reverted);
+      }
     });
 
     const watchProgram = Effect.gen(function* () {
