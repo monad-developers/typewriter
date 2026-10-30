@@ -27,7 +27,7 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 1578,
+      astId: 1589,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,
@@ -272,6 +272,23 @@ export const MUTATIONS = {
       {
         name: "value",
         type: "uint256",
+      },
+      {
+        name: "shouldRevert",
+        type: "bool",
+      },
+    ],
+  },
+  C: {
+    id: 2,
+    params: [
+      {
+        name: "slot",
+        type: "uint256",
+      },
+      {
+        name: "value",
+        type: "string",
       },
       {
         name: "shouldRevert",

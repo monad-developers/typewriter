@@ -27,4 +27,23 @@ export const TEMPLATES: Template[] = [
   { name: "B", params: { slot: 1n, value: 42n } },
   { name: "B", params: { slot: 2n, value: MAX_UINT256 } },
   { name: "B", params: { slot: 3n, value: 1n << 128n } },
+  // Strings that are valid onchain but not everywhere offchain.
+  ...[
+    "",
+    "a",
+    "héllo wörld",
+    "日本語",
+    "🙂🙂",
+    "x".repeat(100),
+    // A BOM, which a UTF-8 decoder strips by default.
+    "\uFEFFbom",
+    // NUL, which Postgres `text` rejects.
+    "\u0000",
+    "a\u0000b",
+    // A lone surrogate, which encodes as U+FFFD.
+    "\uD800",
+  ].map((value, i) => ({
+    name: "C" as const,
+    params: { slot: BigInt(i % 4), value },
+  })),
 ];

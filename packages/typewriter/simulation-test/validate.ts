@@ -14,7 +14,6 @@ import type {
   MutationEvent,
   MutationStatus,
 } from "../src/typewriter-types";
-import type { AppMutationName } from "./assessment";
 import type {
   AssessmentMutations,
   AssessmentStorage,
@@ -268,10 +267,13 @@ function checkOrder(
     const rank = (key: string) => {
       const name = check.submissions.get(key)?.mutation.name ?? "";
       const builtin = BUILTIN_ORDER.indexOf(name);
-      return builtin >= 0
-        ? builtin
-        : BUILTIN_ORDER.length +
-            ordering.batchOrder.indexOf(name as AppMutationName);
+      if (builtin >= 0) return builtin;
+      // The runtime puts the mutations `batchOrder` doesn't name last.
+      const position = (ordering.batchOrder as readonly string[]).indexOf(name);
+      return (
+        BUILTIN_ORDER.length +
+        (position >= 0 ? position : ordering.batchOrder.length)
+      );
     };
     check.equal(
       labels(onchain.batches.flatMap((batch) => [...batch].sort(byCall))),
@@ -577,6 +579,7 @@ function checkDatabase(
       const entry = rows.get(executionIndex);
       if (submission === undefined || entry === undefined) continue;
       const { name, params, authorization } = submission.mutation;
+      const config = app.mutations[name]!;
       check.equal(entry.name, name, `${submission.label} table`);
       const want = {
         execution_index: executionIndex,
@@ -585,7 +588,26 @@ function checkDatabase(
         authorization_nonce: authorization.nonce,
         authorization_expiration: authorization.expiration,
         authorization_signature: authorization.signature,
-        ...abiParametersToValues(app.mutations[name]!.params, params as never),
+        ...abiParametersToValues(config.params, params as never),
+        // `abiParametersToValues` stores a string lossily, as Postgres
+        // `text` allows. A row must hold the string the contract decoded:
+        // the one submitted, with lone surrogates as U+FFFD, as UTF-8
+        // encodes them. Not a decoder's output, which can drop bytes (`ox`
+        // strips a leading BOM).
+        ...Object.fromEntries(
+          config.params
+            .filter((param) => param.type === "string")
+            .map((param) => {
+              const submitted = submission.mutation.params as Record<
+                string,
+                unknown
+              >;
+              return [
+                param.name,
+                (submitted[param.name!] as string).toWellFormed(),
+              ];
+            }),
+        ),
         block_number: inclusion.blockNumber,
         block_hash: inclusion.blockHash,
         block_timestamp: inclusion.blockTimestamp,
