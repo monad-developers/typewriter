@@ -107,6 +107,8 @@ export type SIM = {
     expirationsS: number[];
     /** How often a step submits a malformed mutation. See `malformations.ts`. */
     malformedRate: number;
+    /** How often an `execute` is followed by an enqueue with its nonce. */
+    replaceRate: number;
   };
   typewriter: {
     submitIntervalMs: number;
@@ -185,6 +187,7 @@ export const SIM: SIM = {
       ...Array<number>(20).fill(Infinity),
     ],
     malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
+    replaceRate: pick(SEED, "generator.replaceRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
     submitIntervalMs: pick(
@@ -342,7 +345,11 @@ const program = Effect.gen(function* () {
   const signers = SIM.generator.accounts.map((keyType, i) =>
     makeSigner(i, keyType),
   );
-  const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
+  const plan = makePlan(
+    signers,
+    yield* makeRandom(SIM.seed, "generator"),
+    yield* makeRandom(SIM.seed, "replacements"),
+  );
   /** Signers of each key type with no account, for malformed signatures. */
   const strangers = new Map(
     [KeyType.Secp256k1, KeyType.P256, KeyType.WebAuthnP256].map((keyType) => [
@@ -549,6 +556,7 @@ const program = Effect.gen(function* () {
       transactionHash,
       expected,
       mutation,
+      replaces,
     }: Submission) =>
       Effect.gen(function* () {
         const receipt = yield* Effect.gen(function* () {
@@ -589,8 +597,16 @@ const program = Effect.gen(function* () {
               params: ["latest", false],
             }))!;
             if (yield* deletedAt(BigInt(latest.number!))) break;
-            // The contract rejects it in every block past its expiration.
-            if (expiration !== 0n && BigInt(latest.timestamp) > expiration) {
+            // The contract rejects it in every block past its expiration, or
+            // once the step it replaces used the nonce.
+            if (
+              (expiration !== 0n && BigInt(latest.timestamp) > expiration) ||
+              run.mutationEvents.some(
+                (event) =>
+                  event.status === "finalized" &&
+                  mutationKey(event.authorization) === replaces,
+              )
+            ) {
               pendingEnqueues.delete(label);
               return;
             }
@@ -631,6 +647,7 @@ const program = Effect.gen(function* () {
           resubmitted: false,
           results: [],
           transactionHash: undefined,
+          replaces: undefined,
         };
         run.submissions.push(submission);
         yield* execute(submission, submission.sent);
@@ -640,6 +657,7 @@ const program = Effect.gen(function* () {
         }
       }
 
+      const keyByStep = new Map<number, string>();
       // Each step comes from its own client, so a step does not wait for the
       // one before it to settle.
       for (const step of plan) {
@@ -662,7 +680,12 @@ const program = Effect.gen(function* () {
           resubmitted: step.resubmit,
           results: [],
           transactionHash: undefined,
+          replaces:
+            step.replaces === undefined
+              ? undefined
+              : keyByStep.get(step.replaces),
         };
+        keyByStep.set(step.index, submission.key);
         run.submissions.push(submission);
         if (sent.via === "execute") {
           yield* FiberSet.run(fibers, execute(submission, submission.sent));

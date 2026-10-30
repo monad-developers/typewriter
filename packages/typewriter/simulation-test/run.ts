@@ -8,14 +8,16 @@ import type { Mutation } from "./assessment";
 import type { AssessmentMutations } from "./assessment-constants";
 
 /**
- * The key of a mutation in the events: its account and nonce. Every mutation
- * of a run has its own, malformed or not.
+ * The key of a mutation in the events: its account, nonce and signature.
+ * Every mutation of a run has its own, malformed or not, and a replacement
+ * with the same nonce has another.
  */
 export function mutationKey(authorization: {
   accountID: unknown;
   nonce: unknown;
+  signature: unknown;
 }): string {
-  return `${String(authorization.accountID).toLowerCase()}:${String(authorization.nonce)}`;
+  return `${String(authorization.accountID).toLowerCase()}:${String(authorization.nonce)}:${String(authorization.signature).toLowerCase()}`;
 }
 
 /** The name of a rejection: a revert's error name, or the error's tag. */
@@ -58,6 +60,8 @@ export type Submission = {
   results: Result[];
   /** The `enqueue` transaction. */
   transactionHash: Hex.Hex | undefined;
+  /** The key of the submission whose nonce this enqueue takes. */
+  replaces: string | undefined;
 };
 
 /** A reorg the harness made. */
