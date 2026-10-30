@@ -937,9 +937,19 @@ export function createTypewriterEffect<
       mutation: ReceivedMutation | EnqueuedMutation,
       minExpiration: bigint,
     ): Effect.Effect<void, MutationExpiresTooSoonError> {
-      const { authorization } = mutation;
-      const expirations = [authorization.expiration];
-      if (mutation.name !== "CreateAccount") {
+      return Effect.gen(function* () {
+        const { authorization } = mutation;
+        if (
+          authorization.expiration !== 0n &&
+          authorization.expiration < minExpiration
+        ) {
+          return yield* new MutationExpiresTooSoonError({
+            expiration: authorization.expiration,
+            minExpiration,
+          });
+        }
+
+        if (mutation.name === "CreateAccount") return;
         const { credentials } = (
           accounts as unknown as Record<
             Hex.Hex,
@@ -951,21 +961,20 @@ export function createTypewriterEffect<
             }
           >
         )[authorization.accountID]!;
-        if (authorization.credentialID < BigInt(credentials.length)) {
-          expirations.push(
-            BigInt(credentials[Number(authorization.credentialID)]!.expiration),
-          );
+        if (authorization.credentialID >= BigInt(credentials.length)) return;
+        const credentialExpiration = BigInt(
+          credentials[Number(authorization.credentialID)]!.expiration,
+        );
+        if (
+          credentialExpiration !== 0n &&
+          credentialExpiration < minExpiration
+        ) {
+          return yield* new MutationExpiresTooSoonError({
+            expiration: credentialExpiration,
+            minExpiration,
+          });
         }
-      }
-
-      const expiration = expirations.find(
-        (expiration) => expiration !== 0n && expiration < minExpiration,
-      );
-      return expiration === undefined
-        ? Effect.void
-        : Effect.fail(
-            new MutationExpiresTooSoonError({ expiration, minExpiration }),
-          );
+      });
     }
 
     // Executes a mutation against speculative state and updates in-memory
@@ -995,9 +1004,7 @@ export function createTypewriterEffect<
             checkExpiration:
               minExpiration === undefined
                 ? undefined
-                : Effect.suspend(() =>
-                    checkExpiration(mutation, minExpiration),
-                  ),
+                : checkExpiration(mutation, minExpiration),
           }).pipe(
             Effect.tapError((error) =>
               Effect.suspend(() => {
