@@ -92,7 +92,6 @@ export type TypewriterMutationResult = { executionIndex: bigint };
 
 export type MutationStatus =
   | "received"
-  | "enqueued"
   | "accepted"
   | "rejected"
   | "included"
@@ -107,12 +106,6 @@ type MutationBase = {
   authorization: Authorization;
   config: ResolvedTypewriterMutationConfig;
 };
-
-// TODO(kyle) persist `isForceInclusion` and `queueIndex`, the mutation tables
-// cannot tell a force-included row from a batched one.
-type ForceInclusion =
-  | { isForceInclusion: true; queueIndex: bigint }
-  | { isForceInclusion: false };
 
 /** Set when the mutation executes against the speculative state. */
 type Execution = {
@@ -131,25 +124,23 @@ export type Inclusion = {
   transactionIndex: number;
 };
 
+/**
+ * A mutation from `execute`. An `enqueue` is not one: revm force-executes it
+ * from its bytes, and it has no events or mutation row.
+ */
 export type ReceivedMutation = MutationBase & { status: "received" };
-export type EnqueuedMutation = MutationBase & {
-  status: "enqueued";
-  isForceInclusion: true;
-  queueIndex: bigint;
-};
 export type AcceptedMutation = MutationBase &
-  ForceInclusion &
   Execution & { status: "accepted" };
 export type IncludedMutation = MutationBase &
-  ForceInclusion &
   Execution &
   Inclusion & { status: "included" | "finalized" };
-export type RejectedMutation = MutationBase &
-  ForceInclusion & { status: "rejected"; error: ExecuteMutationError };
+export type RejectedMutation = MutationBase & {
+  status: "rejected";
+  error: ExecuteMutationError;
+};
 
 export type RuntimeMutation =
   | ReceivedMutation
-  | EnqueuedMutation
   | AcceptedMutation
   | IncludedMutation
   | RejectedMutation;
@@ -169,7 +160,7 @@ export type RuntimeBlock<sequence extends SequencingConfig> = {
   transactionHash: Hex.Hex;
 } & (sequence extends "fifo"
   ? { mutations: IncludedMutation[] }
-  : { batches: RuntimeBatch[]; forceIncludedMutations: IncludedMutation[] });
+  : { batches: RuntimeBatch[] });
 
 /** Fields of a runtime mutation that listeners never see. */
 type RuntimeOnlyField = "config" | "journalId";
@@ -230,7 +221,6 @@ export type BlockEvent<
         BatchEvent<mutationsConfig>,
         { status: "included" | "finalized" }
       >[];
-      forceIncludedMutations: IncludedMutationEvent<mutationsConfig>[];
     });
 
 export type MutationListener<

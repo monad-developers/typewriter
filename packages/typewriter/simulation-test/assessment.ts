@@ -302,6 +302,12 @@ export function withExpiration(
 
 /** How `step` must end. */
 export function expect(step: Step): Expected {
+  const expected = expectExecute(step);
+  // The runtime never decodes an enqueue, so it has no events.
+  return step.via === "enqueue" ? { ...expected, events: false } : expected;
+}
+
+function expectExecute(step: Step): Expected {
   const { mutation, malformation, expiresInS, via } = step;
   if (malformation !== undefined) return expectMalformed(malformation);
   // The runtime rejects an `execute` that expires within its margin before
@@ -404,8 +410,8 @@ export function makePlan(
   });
 
   // A malformed enqueue may have no mutation event, so nothing shows the
-  // runtime read its log. A well-formed enqueue after it does: the runtime
-  // reads logs in block order.
+  // runtime read its log. A well-formed enqueue after it executes onchain:
+  // the runtime force-executes enqueues in queue order.
   if (plan.some((step) => step.malformation?.via === "enqueue")) {
     const index = plan.length;
     const signer = signers[below(random, signers.length)]!;

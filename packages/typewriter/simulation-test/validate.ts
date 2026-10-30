@@ -181,6 +181,9 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
       onChain === undefined &&
       expected.executes &&
       rejections.length === 0 &&
+      // An enqueue has no events, so no one sees a rejection it allows.
+      // `checkQueue` checks that no one can force-execute it either.
+      !(submission.via === "enqueue" && expected.errors.length > 0) &&
       (first === undefined || "executionIndex" in first)
     ) {
       check.fail(`${label}: never executed`);
@@ -393,12 +396,15 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
     }
 
     const onChain = executed.get(key);
+    // An enqueue has no events, whether or not it executes.
     const statuses: MutationStatus[] =
-      onChain !== undefined
-        ? ["accepted", "included", "finalized"]
-        : submission.expected.events
-          ? ["rejected"]
-          : [];
+      via === "enqueue"
+        ? []
+        : onChain !== undefined
+          ? ["received", "accepted", "included", "finalized"]
+          : submission.expected.events
+            ? ["received", "rejected"]
+            : [];
     // When a settlement reverts in revm, its mutations execute again: each is
     // accepted again, maybe at another index, or dropped.
     const seenStatuses = seen
@@ -410,9 +416,7 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
       onChain === undefined && dropped.has(key)
         ? seenStatuses.filter((status) => status !== "accepted")
         : seenStatuses,
-      via === "execute" && statuses.length > 0
-        ? ["received", ...statuses]
-        : statuses,
+      statuses,
       `${label} mutation event statuses`,
     );
     if (onChain === undefined) continue;
@@ -425,13 +429,6 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           event.executionIndex,
           onChain.executionIndex,
           `${label} ${event.status} event executionIndex`,
-        );
-      }
-      if ("isForceInclusion" in event) {
-        check.equal(
-          event.isForceInclusion ? event.queueIndex : undefined,
-          onChain.queueIndex,
-          `${label} ${event.status} event queueIndex`,
         );
       }
       if (event.status === "included" || event.status === "finalized") {
@@ -492,6 +489,7 @@ function checkBatchEvents(
 
 /** Each settlement's block is included, then finalized, with the mutations it executed. */
 function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
+  const forced = forceExecuted(onchain);
   const byHash = new Map<string, typeof run.blockEvents>();
   for (const event of run.blockEvents) {
     const hash = event.hash.toLowerCase();
@@ -522,7 +520,10 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
           number: settlement.blockNumber,
           timestamp: settlement.blockTimestamp,
           transactionHash: settlement.transactionHash,
-          executionIndexes: settlement.executionIndexes,
+          // Force-executed enqueues have no events.
+          executionIndexes: settlement.executionIndexes.filter(
+            (index) => !forced.has(index),
+          ),
         },
         `${what} ${event.status} event`,
       );
@@ -569,7 +570,9 @@ function checkDatabase(
     }
     check.equal(
       [...rows.keys()].sort(compareBigInt),
-      onchain.executed.map(({ executionIndex }) => executionIndex),
+      onchain.executed.flatMap(({ executionIndex, queueIndex }) =>
+        queueIndex === undefined ? [executionIndex] : [],
+      ),
       "mutation table execution indexes",
     );
     for (const { key, executionIndex, inclusion } of onchain.executed) {
@@ -747,6 +750,15 @@ function checkRuntimeState(
   });
 }
 
+/** The execution indexes of the force-executed enqueues. */
+function forceExecuted(onchain: Onchain): Set<bigint> {
+  return new Set(
+    onchain.executed.flatMap(({ executionIndex, queueIndex }) =>
+      queueIndex === undefined ? [] : [executionIndex],
+    ),
+  );
+}
+
 function executedByKey(onchain: Onchain): Map<string, Executed> {
   return new Map(onchain.executed.map((executed) => [executed.key, executed]));
 }
@@ -789,10 +801,7 @@ function executionIndexesOf(
   const mutations =
     "mutations" in event
       ? event.mutations
-      : [
-          ...event.batches.flatMap((batch) => batch.mutations),
-          ...event.forceIncludedMutations,
-        ];
+      : event.batches.flatMap((batch) => batch.mutations);
   return mutations.map((mutation) => mutation.executionIndex);
 }
 

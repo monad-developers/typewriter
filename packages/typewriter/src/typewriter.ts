@@ -58,8 +58,6 @@ import {
 } from "./db-query";
 import type { TypewriterMutationSchema } from "./db-schema";
 import {
-  decodeAuthorizationCalldata,
-  decodeMutationCalldata,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
@@ -81,7 +79,6 @@ import type {
   BatchListener,
   BlockEvent,
   BlockListener,
-  EnqueuedMutation,
   IncludedMutation,
   Inclusion,
   MutationEvent,
@@ -151,12 +148,6 @@ type RuntimeExecuteInput = {
 type AcceptDeferred = Deferred.Deferred<
   { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
   ExecuteMutationError
->;
-
-/** An accepted mutation that executes from the force-inclusion queue. */
-type AcceptedForceInclusion = Extract<
-  AcceptedMutation,
-  { isForceInclusion: true }
 >;
 
 /** A mutation that executed against the speculative state, and what it wrote. */
@@ -319,35 +310,27 @@ function updateMutation<
 }
 
 export function updateMutationToAccepted(
-  mutation: ReceivedMutation | EnqueuedMutation,
+  mutation: ReceivedMutation,
   params: {
     executionIndex: bigint;
     journalId: number;
   },
 ): AcceptedMutation {
-  return updateMutation<ReceivedMutation | EnqueuedMutation, AcceptedMutation>(
-    mutation,
-    {
-      status: "accepted",
-      isForceInclusion: mutation.status === "enqueued",
-      executionIndex: params.executionIndex,
-      journalId: params.journalId,
-    },
-  );
+  return updateMutation<ReceivedMutation, AcceptedMutation>(mutation, {
+    status: "accepted",
+    executionIndex: params.executionIndex,
+    journalId: params.journalId,
+  });
 }
 
 export function updateMutationToRejected(
-  mutation: ReceivedMutation | EnqueuedMutation,
+  mutation: ReceivedMutation,
   params: { error: ExecuteMutationError },
 ): RejectedMutation {
-  return updateMutation<ReceivedMutation | EnqueuedMutation, RejectedMutation>(
-    mutation,
-    {
-      status: "rejected",
-      isForceInclusion: mutation.status === "enqueued",
-      error: params.error,
-    },
-  );
+  return updateMutation<ReceivedMutation, RejectedMutation>(mutation, {
+    status: "rejected",
+    error: params.error,
+  });
 }
 
 export function updateMutationToIncluded(
@@ -368,21 +351,9 @@ export function updateMutationToFinalized(
 }
 
 /** `mutation` as it was before it executed, to execute it again. */
-function toUnexecuted(
-  mutation: AcceptedMutation,
-): ReceivedMutation | EnqueuedMutation {
+function toUnexecuted(mutation: AcceptedMutation): ReceivedMutation {
   const { name, params, authorization, config } = mutation;
-  return mutation.isForceInclusion
-    ? {
-        name,
-        params,
-        authorization,
-        config,
-        status: "enqueued",
-        isForceInclusion: true,
-        queueIndex: mutation.queueIndex,
-      }
-    : { name, params, authorization, config, status: "received" };
+  return { name, params, authorization, config, status: "received" };
 }
 
 export function mutationToEvent(mutation: RuntimeMutation): MutationEvent {
@@ -421,14 +392,13 @@ export function batchBlockToEvent(
     timestamp: block.timestamp,
     transactionHash: block.transactionHash,
     batches: block.batches.map(batchToEvent),
-    forceIncludedMutations: block.forceIncludedMutations.map(mutationToEvent),
   } as BlockEvent<"batch">;
 }
 
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
 )<{
-  mutation: ReceivedMutation | EnqueuedMutation;
+  mutation: ReceivedMutation;
   cause: unknown;
 }> {
   override get message() {
@@ -481,13 +451,10 @@ export type ExecuteMutationError =
 
 /** The `execute` calldata of `mutation`. Fails if a field is malformed. */
 export function encodeMutation(
-  mutation: ReceivedMutation | EnqueuedMutation,
+  mutation: ReceivedMutation,
 ): Effect.Effect<Hex.Hex, EncodeMutationError> {
   return Effect.try({
-    try: () =>
-      mutation.status === "enqueued"
-        ? encodeExecuteCalldata([], [mutation.queueIndex])
-        : encodeExecuteCalldata([encodeBatchArg([mutation])], []),
+    try: () => encodeExecuteCalldata([encodeBatchArg([mutation])], []),
     catch: (cause) => new EncodeMutationError({ mutation, cause }),
   });
 }
@@ -495,7 +462,7 @@ export function encodeMutation(
 export function executeMutation(params: {
   app: TypewriterApp;
   evm: EVM;
-  mutation: ReceivedMutation | EnqueuedMutation;
+  mutation: ReceivedMutation;
   /** The calldata from {@link encodeMutation}. */
   calldata: Hex.Hex;
   /** The index the mutation takes if it executes. */
@@ -545,18 +512,37 @@ export function executeMutation(params: {
   });
 }
 
+/** The arguments of an `enqueue` call, from its `ForceInclusionQueued` log. */
+type ForceInclusionQueued = {
+  index: bigint;
+  mutation: number;
+  mutationData: Hex.Hex;
+  authorizationData: Hex.Hex;
+};
+
+export function decodeForceInclusionQueued(
+  log: LocalLog,
+): ForceInclusionQueued {
+  return decodeEventLog({
+    abi: TYPEWRITER_ABI,
+    eventName: "ForceInclusionQueued",
+    topics: log.topics,
+    data: log.data,
+    strict: true,
+  }).args;
+}
+
+/** Replays an `enqueue` in revm with the bytes it had onchain. */
 export function enqueueMutation(params: {
   app: TypewriterApp;
   evm: EVM;
-  mutation: EnqueuedMutation;
+  queued: ForceInclusionQueued;
 }): Effect.Effect<ExecuteResult, EvmError> {
   return Effect.gen(function* () {
-    const enqueueCalldata = encodeEnqueueCalldata(params.mutation);
-
     const executeResult = yield* params.evm.execute({
       from: "0x0000000000000000000000000000000000000000",
       to: params.app.address,
-      data: enqueueCalldata,
+      data: encodeEnqueueCalldata(params.queued),
     });
 
     // The enqueue is already onchain, so a settlement never rewinds it.
@@ -571,41 +557,6 @@ export function enqueueMutation(params: {
 }
 
 const SLOT_CACHE_MAX_ENTRIES = 200_000;
-
-export function decodeEnqueuedMutation(params: {
-  app: TypewriterApp;
-  log: LocalLog;
-}): EnqueuedMutation {
-  const forceInclusionLog = decodeEventLog({
-    abi: TYPEWRITER_ABI,
-    eventName: "ForceInclusionQueued",
-    topics: params.log.topics,
-    data: params.log.data,
-    strict: true,
-  }).args;
-
-  const mutationEntry = Object.entries(params.app.mutations).find(
-    ([_, mutationConfig]) => mutationConfig.id === forceInclusionLog.mutation,
-  );
-  if (mutationEntry === undefined) {
-    throw new Error(
-      `Unknown mutation ID ${forceInclusionLog.mutation} in ForceInclusionQueued event`,
-    );
-  }
-  const [mutationName, mutationConfig] = mutationEntry;
-
-  return {
-    status: "enqueued",
-    name: mutationName,
-    config: mutationConfig,
-    authorization: decodeAuthorizationCalldata(
-      forceInclusionLog.authorizationData,
-    ),
-    isForceInclusion: true,
-    queueIndex: forceInclusionLog.index,
-    ...decodeMutationCalldata(mutationConfig, forceInclusionLog.mutationData),
-  };
-}
 
 /** Revert data from revm, decoded against the app's ABI when it matches. */
 type Revert = {
@@ -748,13 +699,12 @@ function createRuntimeState(
 function batchBlockToFifoBlock(
   block: RuntimeBlock<"batch">,
 ): RuntimeBlock<"fifo"> {
-  const { batches, forceIncludedMutations, ...rest } = block;
+  const { batches, ...rest } = block;
   return {
     ...rest,
-    mutations: [
-      ...batches.flatMap((batch) => batch.mutations as IncludedMutation[]),
-      ...forceIncludedMutations,
-    ],
+    mutations: batches.flatMap(
+      (batch) => batch.mutations as IncludedMutation[],
+    ),
   };
 }
 
@@ -851,11 +801,14 @@ export function createTypewriterEffect<
     let batchPosition = 0;
 
     const batchesById = new Map<number, RuntimeBatch>();
+    /** The journals of each block's force-executed enqueues, pruned with it. */
+    const forceExecutedJournalIds = new Map<RuntimeBlock<"batch">, number[]>();
     const receivedMutationQueue = yield* Queue.unbounded<{
       mutation: ReceivedMutation;
       deferred: AcceptDeferred;
     }>();
-    const enqueuedMutationsQueue = yield* Queue.unbounded<EnqueuedMutation>();
+    /** The queue index of each `enqueue` the watch has seen, in order. */
+    const enqueuedQueue = yield* Queue.unbounded<bigint>();
     const acceptedBatchesQueue = yield* Queue.unbounded<{
       id: number;
       committed: Deferred.Deferred<void>;
@@ -865,7 +818,7 @@ export function createTypewriterEffect<
       committed: Deferred.Deferred<void>;
     }>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
-    yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedMutationsQueue));
+    yield* Scope.addFinalizer(scope, Queue.shutdown(enqueuedQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptedBatchesQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
     const stopped = yield* Deferred.make<never, TypewriterStoppedError>();
@@ -960,7 +913,7 @@ export function createTypewriterEffect<
     // `minExpiration`. The credential is read from speculative state, so one
     // added earlier in the batch counts. A missing credential is left to revm.
     function checkExpiration(
-      mutation: ReceivedMutation | EnqueuedMutation,
+      mutation: ReceivedMutation,
       minExpiration: bigint,
     ): Effect.Effect<void, MutationExpiresTooSoonError> {
       return Effect.gen(function* () {
@@ -1008,7 +961,7 @@ export function createTypewriterEffect<
     // the caller (`acceptBatch`, `submit`, and `watch`) so many mutations share
     // a single set of insert statements.
     function acceptMutation(
-      mutation: ReceivedMutation | EnqueuedMutation,
+      mutation: ReceivedMutation,
       /** Rejects the mutation if it expires before this timestamp. */
       minExpiration?: bigint,
     ): Effect.Effect<AcceptedExecution, ExecuteMutationError> {
@@ -1046,17 +999,7 @@ export function createTypewriterEffect<
         );
 
         nextExecutionIndex++;
-
-        invalidateStorageCache(
-          executeResult.slot_writes.map((write) => write.slot),
-        );
-
-        const newPreimages: Hex.Hex[] = [];
-        for (const preimage of executeResult.keccak_preimages) {
-          if (preimages.has(preimage)) continue;
-          preimages.add(preimage);
-          newPreimages.push(preimage);
-        }
+        const newPreimages = recordExecution(executeResult);
 
         yield* emitMutation(mutationToEvent(acceptedMutation));
 
@@ -1067,6 +1010,71 @@ export function createTypewriterEffect<
         };
       });
     }
+
+    /** Updates the caches for an execution. Returns its new preimages. */
+    function recordExecution(executeResult: ExecuteResult): Hex.Hex[] {
+      invalidateStorageCache(
+        executeResult.slot_writes.map((write) => write.slot),
+      );
+
+      const newPreimages: Hex.Hex[] = [];
+      for (const preimage of executeResult.keccak_preimages) {
+        if (preimages.has(preimage)) continue;
+        preimages.add(preimage);
+        newPreimages.push(preimage);
+      }
+      return newPreimages;
+    }
+
+    // Force-executes the enqueue at `queueIndex`. The runtime never decodes
+    // an enqueue: revm runs the contract on its bytes and decides whether it
+    // executes. It has no event and no mutation row, but its writes settle
+    // like any other.
+    function forceExecute(queueIndex: bigint) {
+      return Effect.gen(function* () {
+        const executeResult = yield* evm.execute({
+          from: app.account.address,
+          to: app.address,
+          data: encodeExecuteCalldata([], [queueIndex]),
+        });
+        if (executeResult.status !== "success") {
+          yield* Effect.logWarning(
+            executeResult.status === "revert"
+              ? revertMessage(
+                  "Discarded enqueued mutation",
+                  decodeRevert(app.abi, executeResult.data),
+                )
+              : `Discarded enqueued mutation, which halted with ${executeResult.reason}`,
+          ).pipe(Effect.annotateLogs({ queue_index: queueIndex }));
+          // TODO(kyle) the discarded mutation stays in the queue onchain,
+          // and anyone can `forceExecute` it after `FORCE_INCLUSION_DELAY` seconds.
+          // It can succeed then, for example once its nonce is next, and
+          // change state and `executionIndex` outside revm. The watch only
+          // sees `ForceInclusionQueued` logs and `forceExecute` emits no
+          // event, so revm would not see it.
+          return undefined;
+        }
+
+        const executionIndex = nextExecutionIndex++;
+        yield* Effect.logDebug("Force-executed enqueued mutation").pipe(
+          Effect.annotateLogs({
+            queue_index: queueIndex,
+            execution_index: executionIndex,
+          }),
+        );
+        return {
+          queueIndex,
+          mutation: { executionIndex },
+          executeResult,
+          preimages: recordExecution(executeResult),
+        };
+      });
+    }
+
+    /** An enqueue that executed against the speculative state. */
+    type ForceExecution = NonNullable<
+      Effect.Success<ReturnType<typeof forceExecute>>
+    >;
 
     const persist = (
       write: (tx: DbTransaction) => Effect.Effect<void, DbError>,
@@ -1164,57 +1172,54 @@ export function createTypewriterEffect<
         }),
       );
 
-    // Rewinds the speculative state to before the unsubmitted mutations, then
-    // executes them again in order at the current block and drops the ones
-    // that fail now. The rest may take new execution indexes. The unsubmitted
-    // mutations hold the newest journals, so reverting them restores the state
-    // the submitted ones left. Enqueues since then only added queue entries,
-    // which these journals never touch.
+    // Rewinds the speculative state to before the unsubmitted mutations and
+    // enqueues, then executes them again in order at the current block and
+    // drops the ones that fail now. The rest may take new execution indexes.
+    // They hold the newest journals, so reverting them restores the state the
+    // submitted ones left, and the queue entries of the enqueues. Enqueues
+    // since then only added queue entries, which these journals never touch.
     // TODO(kyle) `execute` already returned the old execution index, and a
     // dropped mutation goes from `accepted` to `rejected`.
     const reexecute = (
       batches: RuntimeBatch[],
-      forceIncludedMutations: AcceptedForceInclusion[],
+      forceExecuted: ForceExecution[],
     ) =>
       Effect.gen(function* () {
-        const pending = [
-          ...batches.flatMap((batch) => batch.mutations as AcceptedMutation[]),
-          ...forceIncludedMutations,
-        ];
-        const fromExecutionIndex = pending[0]!.executionIndex;
+        const pending = batches.flatMap(
+          (batch) => batch.mutations as AcceptedMutation[],
+        );
+        const fromExecutionIndex = (pending[0] ?? forceExecuted[0]!.mutation)
+          .executionIndex;
         yield* evm.revertJournals({
-          journal_ids: pending.map((mutation) => mutation.journalId),
+          journal_ids: [
+            ...pending.map((mutation) => mutation.journalId),
+            ...forceExecuted.map(
+              ({ executeResult }) => executeResult.journal_id,
+            ),
+          ],
         });
         invalidateStorageCache();
         nextExecutionIndex = fromExecutionIndex;
 
         const executed: AcceptedExecution[] = [];
-        /** Executes `mutations` again, and returns the ones that succeed. */
-        const reaccept = <mutation extends AcceptedMutation>(
-          mutations: mutation[],
-        ) =>
-          Effect.gen(function* () {
-            const kept: mutation[] = [];
-            for (const mutation of mutations) {
-              const result = yield* Effect.result(
-                acceptMutation(toUnexecuted(mutation)),
-              );
-              if (Result.isFailure(result)) continue;
-              executed.push(result.success);
-              kept.push(result.success.mutation as mutation);
-            }
-            return kept;
-          });
-
         for (const batch of batches) {
-          batch.mutations = yield* reaccept(
-            batch.mutations as AcceptedMutation[],
-          );
+          const kept: AcceptedMutation[] = [];
+          for (const mutation of batch.mutations as AcceptedMutation[]) {
+            const result = yield* Effect.result(
+              acceptMutation(toUnexecuted(mutation)),
+            );
+            if (Result.isFailure(result)) continue;
+            executed.push(result.success);
+            kept.push(result.success.mutation);
+          }
+          batch.mutations = kept;
           if (batch.mutations.length === 0) batchesById.delete(batch.id);
         }
-        const keptForceIncludedMutations = yield* reaccept(
-          forceIncludedMutations,
-        );
+        const keptForceExecuted: ForceExecution[] = [];
+        for (const { queueIndex } of forceExecuted) {
+          const reexecuted = yield* forceExecute(queueIndex);
+          if (reexecuted !== undefined) keptForceExecuted.push(reexecuted);
+        }
 
         const committed = yield* persist((tx) =>
           Effect.gen(function* () {
@@ -1229,20 +1234,29 @@ export function createTypewriterEffect<
               app.mutationSchema,
               executed.map((entry) => entry.mutation),
             );
-            yield* insertStorageSlots(tx, app.typewriterSchema, executed);
+            yield* insertStorageSlots(tx, app.typewriterSchema, [
+              ...executed,
+              ...keptForceExecuted,
+            ]);
             yield* insertKeccakPreimages(
               tx,
               app.typewriterSchema,
-              executed.flatMap(({ preimages }) => preimages),
+              [...executed, ...keptForceExecuted].flatMap(
+                ({ preimages }) => preimages,
+              ),
             );
           }),
         );
 
         return {
           batches: batches.filter((batch) => batch.mutations.length > 0),
-          forceIncludedMutations: keptForceIncludedMutations,
+          forceExecuted: keptForceExecuted,
           committed,
-          droppedCount: pending.length - executed.length,
+          droppedCount:
+            pending.length +
+            forceExecuted.length -
+            executed.length -
+            keptForceExecuted.length,
         };
       });
 
@@ -1250,69 +1264,34 @@ export function createTypewriterEffect<
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
           const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
-          const enqueuedMutations = yield* Queue.clear(enqueuedMutationsQueue);
-          if (acceptedBatches.length === 0 && enqueuedMutations.length === 0) {
+          const queueIndexes = yield* Queue.clear(enqueuedQueue);
+          if (acceptedBatches.length === 0 && queueIndexes.length === 0) {
             return undefined;
           }
 
           let batches = acceptedBatches.map(({ id }) => batchesById.get(id)!);
           const commits = acceptedBatches.map(({ committed }) => committed);
 
-          const acceptedEnqueuedMutations: AcceptedExecution<AcceptedForceInclusion>[] =
-            [];
-          for (const enqueuedMutation of enqueuedMutations) {
-            const result = yield* Effect.result(
-              acceptMutation(enqueuedMutation),
-            );
-            if (Result.isSuccess(result)) {
-              acceptedEnqueuedMutations.push(
-                result.success as AcceptedExecution<AcceptedForceInclusion>,
-              );
-            } else {
-              // No caller gets this error, and the runtime keeps running.
-              yield* Effect.logWarning(
-                "Discarded enqueued mutation",
-                result.failure,
-              ).pipe(
-                Effect.annotateLogs({
-                  mutation: enqueuedMutation.name,
-                  queue_index: enqueuedMutation.queueIndex,
-                }),
-              );
-              // TODO(kyle) how to handle failed enqueue.
-              // TODO(kyle) the discarded mutation stays in the queue onchain,
-              // and anyone can `forceExecute` it after `FORCE_INCLUSION_DELAY` seconds.
-              // It can succeed then, for example once its nonce is next, and
-              // change state and `executionIndex` outside revm. The watch only
-              // sees `ForceInclusionQueued` logs and `forceExecute` emits no
-              // event, so revm would not see it.
-            }
+          /** The enqueues that execute, in the order the settlement runs them. */
+          let forceExecuted: ForceExecution[] = [];
+          for (const queueIndex of queueIndexes) {
+            const executed = yield* forceExecute(queueIndex);
+            if (executed !== undefined) forceExecuted.push(executed);
           }
 
-          let acceptedForceIncludedMutations = acceptedEnqueuedMutations.map(
-            ({ mutation }) => mutation,
-          );
-
-          if (acceptedEnqueuedMutations.length > 0) {
+          if (forceExecuted.length > 0) {
             commits.push(
               yield* persist((tx) =>
                 Effect.gen(function* () {
-                  yield* insertMutations(
-                    tx,
-                    app.mutationSchema,
-                    acceptedEnqueuedMutations.map((entry) => entry.mutation),
-                  );
                   yield* insertStorageSlots(
                     tx,
                     app.typewriterSchema,
-                    acceptedEnqueuedMutations,
+                    forceExecuted,
                   );
                   yield* insertKeccakPreimages(
                     tx,
                     app.typewriterSchema,
-                    acceptedEnqueuedMutations.flatMap(
-                      ({ preimages }) => preimages,
-                    ),
+                    forceExecuted.flatMap(({ preimages }) => preimages),
                   );
                 }),
               ),
@@ -1324,10 +1303,7 @@ export function createTypewriterEffect<
           // authorization that expired since. Then execute them again, drop
           // the ones that fail, and simulate what is left.
           while (true) {
-            if (
-              batches.length === 0 &&
-              acceptedForceIncludedMutations.length === 0
-            ) {
+            if (batches.length === 0 && forceExecuted.length === 0) {
               return undefined;
             }
 
@@ -1335,8 +1311,8 @@ export function createTypewriterEffect<
               .flatMap((batch) => batch.mutations)
               .map((mutation) => mutation.journalId)
               .concat(
-                acceptedForceIncludedMutations.map(
-                  (mutation) => mutation.journalId,
+                forceExecuted.map(
+                  ({ executeResult }) => executeResult.journal_id,
                 ),
               );
 
@@ -1346,9 +1322,7 @@ export function createTypewriterEffect<
             // retries fail the program.
             const calldata = encodeExecuteCalldata(
               batches.map((batch) => encodeBatchArg(batch.mutations)),
-              acceptedForceIncludedMutations.map(
-                ({ queueIndex }) => queueIndex,
-              ),
+              forceExecuted.map(({ queueIndex }) => queueIndex),
             );
 
             const simulationStartedAt = yield* startTimer;
@@ -1377,7 +1351,7 @@ export function createTypewriterEffect<
 
               return {
                 batches,
-                acceptedForceIncludedMutations,
+                forceExecuted,
                 calldata,
                 simulateResult,
                 commits,
@@ -1387,10 +1361,7 @@ export function createTypewriterEffect<
             const error = new SettlementSimulationRevertedError(
               decodeRevert(app.abi, simulateResult.data),
             );
-            const reexecuted = yield* reexecute(
-              batches,
-              acceptedForceIncludedMutations,
-            );
+            const reexecuted = yield* reexecute(batches, forceExecuted);
             if (reexecuted.droppedCount === 0) return yield* error;
             yield* Effect.logWarning(
               "Dropped mutations from a reverted settlement",
@@ -1403,7 +1374,7 @@ export function createTypewriterEffect<
             );
 
             batches = reexecuted.batches;
-            acceptedForceIncludedMutations = reexecuted.forceIncludedMutations;
+            forceExecuted = reexecuted.forceExecuted;
             commits.push(reexecuted.committed);
           }
         }),
@@ -1411,13 +1382,8 @@ export function createTypewriterEffect<
 
       if (simulation === undefined) return;
 
-      const {
-        batches,
-        acceptedForceIncludedMutations,
-        calldata,
-        simulateResult,
-        commits,
-      } = simulation;
+      const { batches, forceExecuted, calldata, simulateResult, commits } =
+        simulation;
 
       yield* Effect.forEach(commits, Deferred.await, { discard: true });
 
@@ -1516,10 +1482,6 @@ export function createTypewriterEffect<
         }
       }
 
-      const forceIncludedMutations = acceptedForceIncludedMutations.map(
-        (mutation) => updateMutationToIncluded(mutation, inclusion),
-      );
-
       const runtimeBlock: RuntimeBlock<"batch"> = {
         status: "included",
         number: block.number,
@@ -1527,17 +1489,19 @@ export function createTypewriterEffect<
         timestamp: block.timestamp,
         transactionHash: receipt.transactionHash,
         batches,
-        forceIncludedMutations,
       };
+      if (forceExecuted.length > 0) {
+        forceExecutedJournalIds.set(
+          runtimeBlock,
+          forceExecuted.map(({ executeResult }) => executeResult.journal_id),
+        );
+      }
 
       yield* persist((tx) =>
         updateMutationInclusion(
           tx,
           app.mutationSchema,
-          [
-            ...batches.flatMap((batch) => batch.mutations),
-            ...forceIncludedMutations,
-          ],
+          batches.flatMap((batch) => batch.mutations),
           inclusion,
         ),
       );
@@ -1548,9 +1512,6 @@ export function createTypewriterEffect<
         for (const mutation of batch.mutations) {
           yield* emitMutation(mutationToEvent(mutation));
         }
-      }
-      for (const mutation of forceIncludedMutations) {
-        yield* emitMutation(mutationToEvent(mutation));
       }
 
       unfinalizedBlocks.push(runtimeBlock);
@@ -1571,10 +1532,12 @@ export function createTypewriterEffect<
             blockTimestamp = message.block.timestamp;
 
             for (const log of message.block.logs) {
-              const enqueuedMutation = decodeEnqueuedMutation({ app, log });
+              const queued = decodeForceInclusionQueued(log);
 
+              // Every enqueue takes a queue index onchain, so revm replays
+              // each one with its bytes. `submit` force-executes it.
               const executeResult = yield* withSpeculativeStateLock(
-                enqueueMutation({ app, evm, mutation: enqueuedMutation }),
+                enqueueMutation({ app, evm, queued }),
               );
 
               if (executeResult.status === "revert") {
@@ -1592,7 +1555,7 @@ export function createTypewriterEffect<
                 executeResult.slot_writes.map((write) => write.slot),
               );
 
-              yield* Queue.offer(enqueuedMutationsQueue, enqueuedMutation);
+              yield* Queue.offer(enqueuedQueue, queued.index);
             }
 
             for (const block of unfinalizedBlocks.filter(
@@ -1613,22 +1576,16 @@ export function createTypewriterEffect<
                   updateMutationToFinalized(mutation as IncludedMutation);
                 }
               }
-              for (const mutation of block.forceIncludedMutations) {
-                updateMutationToFinalized(mutation);
-              }
-
-              const submittedMutations = [
-                ...block.batches.flatMap(
-                  (batch) => batch.mutations as IncludedMutation[],
-                ),
-                ...block.forceIncludedMutations,
-              ];
 
               yield* evm.pruneJournals({
-                journal_ids: submittedMutations.map(
-                  (mutation) => mutation.journalId,
-                ),
+                journal_ids: [
+                  ...block.batches.flatMap((batch) =>
+                    batch.mutations.map((mutation) => mutation.journalId),
+                  ),
+                  ...(forceExecutedJournalIds.get(block) ?? []),
+                ],
               });
+              forceExecutedJournalIds.delete(block);
               for (const batch of block.batches) {
                 batchesById.delete(batch.id);
               }
@@ -1640,9 +1597,6 @@ export function createTypewriterEffect<
                 for (const mutation of batch.mutations) {
                   yield* emitMutation(mutationToEvent(mutation));
                 }
-              }
-              for (const mutation of block.forceIncludedMutations) {
-                yield* emitMutation(mutationToEvent(mutation));
               }
             }
             unfinalizedBlocks = unfinalizedBlocks.filter(

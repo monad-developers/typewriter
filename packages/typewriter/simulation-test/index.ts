@@ -15,7 +15,8 @@ import {
   Random,
   Scope,
 } from "effect";
-import { Hex } from "ox";
+import { Hash, Hex } from "ox";
+import { decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
@@ -31,7 +32,7 @@ import {
   type ExecuteError,
   type ProgramError,
 } from "../src/typewriter";
-import { EXPIRATION_MARGIN } from "../src/typewriter-constants";
+import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import {
   createAccount,
   deploy,
@@ -45,6 +46,7 @@ import {
   ASSESSMENT_ENTRYPOINT,
   type AssessmentMutations,
   type AssessmentStorage,
+  STORAGE_LAYOUT,
 } from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
@@ -393,7 +395,9 @@ const program = Effect.gen(function* () {
       0,
     );
   let settlements = 0;
-  // The virtual time of the last mutation event.
+  // The enqueues the run still waits on to land, or to execute.
+  const pendingEnqueues = new Set<string>();
+  // The virtual time of the last mutation event, or force-executed enqueue.
   let progressedAt = startMs;
 
   // The world's scope outlives its fiber, so `validate` can read the runtime's
@@ -533,22 +537,79 @@ const program = Effect.gen(function* () {
         ],
       });
 
-    /** Waits for the `enqueue` of `submission` to land. It never reverts. */
-    const awaitEnqueue = ({ label, transactionHash }: Submission) =>
+    /**
+     * Waits for the `enqueue` of `submission` to land, which it always does.
+     * Then, if it should execute, waits for a settlement to force-execute
+     * it, or for its authorization to expire first: the runtime gives an
+     * enqueue no events.
+     */
+    const awaitEnqueue = ({
+      label,
+      transactionHash,
+      expected,
+      mutation,
+    }: Submission) =>
       Effect.gen(function* () {
-        while (true) {
-          const receipt = yield* simChain.request({
-            method: "eth_getTransactionReceipt",
-            params: [transactionHash!],
-          });
-          if (receipt?.status === "0x1") return;
-          if (receipt !== null) {
-            return yield* Effect.die(
-              `${label}: enqueue ${transactionHash} reverted`,
-            );
+        const receipt = yield* Effect.gen(function* () {
+          while (true) {
+            const receipt = yield* simChain.request({
+              method: "eth_getTransactionReceipt",
+              params: [transactionHash!],
+            });
+            if (receipt?.status === "0x1") return receipt;
+            if (receipt !== null) {
+              return yield* Effect.die(
+                `${label}: enqueue ${transactionHash} reverted`,
+              );
+            }
+            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
           }
-          yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        });
+        if (expected.executes) {
+          const { args } = decodeEventLog({
+            abi: TYPEWRITER_ABI,
+            eventName: "ForceInclusionQueued",
+            topics: receipt.logs[0]!.topics as [Hex.Hex, ...Hex.Hex[]],
+            data: receipt.logs[0]!.data,
+            strict: true,
+          });
+          const slot = queueEntrySlot(args.index);
+          const deletedAt = (block: bigint) =>
+            simChain
+              .request({
+                method: "eth_getStorageAt",
+                params: [app.address, slot, Hex.fromNumber(block)],
+              })
+              .pipe(Effect.map((value) => BigInt(value) === 0n));
+          const { expiration } = mutation.authorization;
+          while (true) {
+            const latest = (yield* simChain.request({
+              method: "eth_getBlockByNumber",
+              params: ["latest", false],
+            }))!;
+            if (yield* deletedAt(BigInt(latest.number!))) break;
+            // The contract rejects it in every block past its expiration.
+            if (expiration !== 0n && BigInt(latest.timestamp) > expiration) {
+              pendingEnqueues.delete(label);
+              return;
+            }
+            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+          }
+          // The settlement's block: the first in which the entry is gone.
+          let settled = BigInt(receipt.blockNumber);
+          while (!(yield* deletedAt(settled))) settled++;
+          progressedAt = clock.currentTimeMillisUnsafe();
+          // The settlement has no mutation events, so wait for its block's.
+          while (
+            !run.blockEvents.some(
+              (event) =>
+                event.number === settled && event.status === "finalized",
+            )
+          ) {
+            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+          }
         }
+        pendingEnqueues.delete(label);
       });
 
     const client = Effect.gen(function* () {
@@ -606,11 +667,15 @@ const program = Effect.gen(function* () {
           yield* FiberSet.run(fibers, execute(submission, submission.sent));
         } else {
           submission.transactionHash = yield* enqueue(sent.calldata);
+          pendingEnqueues.add(submission.label);
           yield* FiberSet.run(fibers, awaitEnqueue(submission));
         }
       }
 
       yield* Deferred.await(drained);
+      while (pendingEnqueues.size > 0) {
+        yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+      }
       yield* FiberSet.awaitEmpty(expiryChecks);
       return typewriter;
     });
@@ -661,7 +726,7 @@ const program = Effect.gen(function* () {
     }
     if (next - progressedAt > SIM.stallTimeoutMs) {
       return yield* Effect.die(
-        `stalled for ${SIM.stallTimeoutMs}ms of virtual time, waiting on: ${unsettled(run).join(", ")}`,
+        `stalled for ${SIM.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...pendingEnqueues].join(", ")}`,
       );
     }
     clock.advanceTo(next);
@@ -730,6 +795,18 @@ function deepFreeze<value>(value: value): value {
     for (const entry of Object.values(value)) deepFreeze(entry);
   }
   return value;
+}
+
+/** The first storage slot of `queue[index]`, which `delete` zeroes once the entry executes. */
+function queueEntrySlot(index: bigint): Hex.Hex {
+  const queue = STORAGE_LAYOUT.storage.find(({ label }) => label === "queue")!;
+  const entry =
+    STORAGE_LAYOUT.types["t_struct(QueuedMutation)657_storage"].numberOfBytes;
+  // A dynamic array's entries start at the keccak256 of its slot.
+  const start = BigInt(
+    Hash.keccak256(Hex.fromNumber(BigInt(queue.slot), { size: 32 })),
+  );
+  return Hex.fromNumber(start + (index * BigInt(entry)) / 32n, { size: 32 });
 }
 
 /** The submissions the run still waits on for a final event. */

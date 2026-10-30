@@ -74,11 +74,15 @@ export function encodeExecuteCalldata(
   ]);
 }
 
-export function encodeEnqueueCalldata(mutation: EncodableMutation): Hex.Hex {
+export function encodeEnqueueCalldata(args: {
+  mutation: number;
+  mutationData: Hex.Hex;
+  authorizationData: Hex.Hex;
+}): Hex.Hex {
   return AbiFunction.encodeData(ENQUEUE_FUNCTION, [
-    mutation.config.id,
-    encodeMutationCalldata(mutation),
-    encodeAuthorizationCalldata(mutation.authorization),
+    args.mutation,
+    args.mutationData,
+    args.authorizationData,
   ]);
 }
 
