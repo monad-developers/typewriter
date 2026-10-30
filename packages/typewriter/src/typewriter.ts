@@ -1194,6 +1194,7 @@ export function createTypewriterEffect<
       error: SettlementSimulationRevertedError | SettlementRevertedError,
       batches: RuntimeBatch[],
       forceExecuted: ForceExecution[],
+      queueIndexes: bigint[],
     ) =>
       Effect.gen(function* () {
         // After an onchain revert, later batches executed after its enqueues.
@@ -1225,8 +1226,10 @@ export function createTypewriterEffect<
           batch.mutations = kept;
           if (batch.mutations.length === 0) batchesById.delete(batch.id);
         }
+        // An enqueue that failed before can execute once a dropped mutation
+        // frees what it held, such as a nonce.
         const keptForceExecuted: ForceExecution[] = [];
-        for (const { queueIndex } of forceExecuted) {
+        for (const queueIndex of queueIndexes) {
           const reexecuted = yield* forceExecute(queueIndex);
           if (reexecuted !== undefined) keptForceExecuted.push(reexecuted);
         }
@@ -1258,8 +1261,13 @@ export function createTypewriterEffect<
           }),
         );
 
+        const kept = new Set(
+          keptForceExecuted.map(({ queueIndex }) => queueIndex),
+        );
         const droppedCount =
-          pending.length - executed.length - keptForceExecuted.length;
+          pending.length -
+          executed.length -
+          forceExecuted.filter(({ queueIndex }) => kept.has(queueIndex)).length;
         if (droppedCount === 0) return yield* error;
         yield* Effect.logWarning(
           "Dropped mutations from a reverted settlement",
@@ -1283,6 +1291,7 @@ export function createTypewriterEffect<
       blockNumber: bigint;
       batches: RuntimeBatch[];
       forceExecuted: ForceExecution[];
+      queueIndexes: bigint[];
     };
 
     const settle = (reverted: RevertedSettlement | undefined) =>
@@ -1290,49 +1299,46 @@ export function createTypewriterEffect<
         const simulation = yield* withSpeculativeStateLock(
           Effect.gen(function* () {
             const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
-            const queueIndexes = yield* Queue.clear(enqueuedQueue);
-            if (
-              reverted === undefined &&
-              acceptedBatches.length === 0 &&
-              queueIndexes.length === 0
-            ) {
-              return undefined;
-            }
-
+            const queueIndexes = [
+              ...(reverted?.queueIndexes ?? []),
+              ...(yield* Queue.clear(enqueuedQueue)),
+            ];
             let batches = [
               ...(reverted?.batches ?? []),
               ...acceptedBatches.map(({ id }) => batchesById.get(id)!),
             ];
+            if (batches.length === 0 && queueIndexes.length === 0) {
+              return undefined;
+            }
             const commits = acceptedBatches.map(({ committed }) => committed);
 
-            const enqueued: ForceExecution[] = [];
-            for (const queueIndex of queueIndexes) {
-              const executed = yield* forceExecute(queueIndex);
-              if (executed !== undefined) enqueued.push(executed);
-            }
             /** The enqueues that execute, in the order the settlement runs them. */
-            let forceExecuted = [
-              ...(reverted?.forceExecuted ?? []),
-              ...enqueued,
-            ];
+            let forceExecuted: ForceExecution[] = reverted?.forceExecuted ?? [];
+            // After an onchain revert, `reexecute` runs them on the rewound state.
+            if (reverted === undefined) {
+              for (const queueIndex of queueIndexes) {
+                const executed = yield* forceExecute(queueIndex);
+                if (executed !== undefined) forceExecuted.push(executed);
+              }
 
-            if (enqueued.length > 0) {
-              commits.push(
-                yield* persist((tx) =>
-                  Effect.gen(function* () {
-                    yield* insertStorageSlots(
-                      tx,
-                      app.typewriterSchema,
-                      enqueued,
-                    );
-                    yield* insertKeccakPreimages(
-                      tx,
-                      app.typewriterSchema,
-                      enqueued.flatMap(({ preimages }) => preimages),
-                    );
-                  }),
-                ),
-              );
+              if (forceExecuted.length > 0) {
+                commits.push(
+                  yield* persist((tx) =>
+                    Effect.gen(function* () {
+                      yield* insertStorageSlots(
+                        tx,
+                        app.typewriterSchema,
+                        forceExecuted,
+                      );
+                      yield* insertKeccakPreimages(
+                        tx,
+                        app.typewriterSchema,
+                        forceExecuted.flatMap(({ preimages }) => preimages),
+                      );
+                    }),
+                  ),
+                );
+              }
             }
 
             // Each mutation executed when it was accepted, so the settlement
@@ -1349,6 +1355,7 @@ export function createTypewriterEffect<
                   revert,
                   batches,
                   forceExecuted,
+                  queueIndexes,
                 );
                 batches = reexecuted.batches;
                 forceExecuted = reexecuted.forceExecuted;
@@ -1403,6 +1410,7 @@ export function createTypewriterEffect<
                 return {
                   batches,
                   forceExecuted,
+                  queueIndexes,
                   calldata,
                   simulateResult,
                   commits,
@@ -1418,8 +1426,14 @@ export function createTypewriterEffect<
 
         if (simulation === undefined) return;
 
-        const { batches, forceExecuted, calldata, simulateResult, commits } =
-          simulation;
+        const {
+          batches,
+          forceExecuted,
+          queueIndexes,
+          calldata,
+          simulateResult,
+          commits,
+        } = simulation;
 
         yield* Effect.forEach(commits, Deferred.await, { discard: true });
 
@@ -1492,6 +1506,7 @@ export function createTypewriterEffect<
             blockNumber: receipt.blockNumber,
             batches,
             forceExecuted,
+            queueIndexes,
           };
         }
         const duration = yield* durationMs(transactionStartedAt);
