@@ -122,7 +122,6 @@ export function watchChain(
 
         const poll = Effect.gen(function* () {
           const latest = yield* requestBlock("latest");
-          // The provider is behind the watch.
           if (
             latest.number <= root.number ||
             chain.some((block) => block.hash === latest.hash)
