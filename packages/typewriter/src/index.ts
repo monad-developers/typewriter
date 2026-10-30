@@ -100,7 +100,6 @@ export type {
   TypewriterMutationResult,
 } from "./typewriter-types";
 export {
-  IncompleteBlockError,
   UnrecoverableReorgError,
   type WatchError,
 } from "./watch";

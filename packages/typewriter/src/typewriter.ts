@@ -133,10 +133,6 @@ const DEPLOYMENT_LOCK_TIMEOUT_MS = 10_000;
 
 const SUBMIT_RETRY_TIMES = 5;
 
-/**
- * How many watch messages, one block each, the watch reads ahead of the
- * runtime, so a block that waits on a lock doesn't hold up polling.
- */
 const WATCH_BUFFER_SIZE = 16;
 
 type RuntimeExecuteInput = {
@@ -1632,8 +1628,6 @@ export function createTypewriterEffect<
       Stream.runForEach((message) =>
         Effect.gen(function* () {
           if (message._tag === "Removed") {
-            // Revm replayed the block's enqueues, and the runtime does not
-            // undo them.
             if (message.block.logs.length > 0) {
               return yield* new EnqueueReorgedError({
                 blockNumber: message.block.number,
@@ -1693,9 +1687,7 @@ export function createTypewriterEffect<
             );
             if (nextStatus === undefined) continue;
 
-            // The block is from the settlement's receipt, so a reorg can
-            // replace it before the watch reaches its number. The runtime
-            // does not follow a settlement to its new block.
+            // A reorg can replace a receipt's block before the watch sees it.
             const finalBlock = yield* requestBlock(block.number);
             if (finalBlock.hash !== block.hash) {
               return yield* new SettlementReorgedError({
