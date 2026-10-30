@@ -12,6 +12,7 @@ struct State {
 error InvalidScheduler();
 error AError();
 error BError();
+error CError();
 
 library AMutation {
     struct A {
@@ -29,12 +30,22 @@ library BMutation {
     }
 }
 
+/// Holds a `string`, whose bytes need not be valid UTF-8 or free of NUL.
+library CMutation {
+    struct C {
+        uint256 slot;
+        string value;
+        bool shouldRevert;
+    }
+}
+
 contract Assessment is Typewriter {
     State internal state;
 
     enum Mutation {
         A,
-        B
+        B,
+        C
     }
 
     constructor(address _scheduler) Typewriter(_scheduler) {
@@ -54,6 +65,12 @@ contract Assessment is Typewriter {
             if (b.shouldRevert) revert BError();
             state.slots[b.slot] = keccak256(abi.encode(b.value));
             state.accumulator = keccak256(abi.encode(state.accumulator, uint8(1), accountID, b.slot, b.value));
+        } else if (mutation == uint8(Mutation.C)) {
+            CMutation.C memory c = abi.decode(mutationData, (CMutation.C));
+            if (c.shouldRevert) revert CError();
+            bytes32 hash = keccak256(bytes(c.value));
+            state.slots[c.slot] = hash;
+            state.accumulator = keccak256(abi.encode(state.accumulator, uint8(2), accountID, c.slot, hash));
         } else {
             revert UnknownMutation(mutation);
         }
