@@ -37,7 +37,7 @@ import type { Expected } from "./run";
 import { TEMPLATES, type Template } from "./templates";
 
 /** The mutations of `Assessment.sol`, without the built-in ones. */
-export type AppMutationName = "A" | "B";
+export type AppMutationName = "A" | "B" | "C";
 
 export type Manifest = TypewriterManifest<AssessmentMutations>;
 

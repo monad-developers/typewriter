@@ -1,5 +1,5 @@
 import type { Random } from "effect";
-import { AbiFunction, Hex, TypedData } from "ox";
+import { AbiFunction, AbiParameters, Hex, TypedData } from "ox";
 import type { Authorization } from "../src/client";
 import {
   encodeAuthorizationCalldata,
@@ -620,6 +620,37 @@ export const MALFORMATIONS: Malformation[] = [
     },
   },
   {
+    // Valid for `abi.decode`, which doesn't check UTF-8, but no JS string
+    // holds the bytes. The signature covers them.
+    name: "string of invalid UTF-8, signed over it",
+    via: "enqueue",
+    appliesTo: ["C"],
+    expect: "executed",
+    bytes: (args, context) => {
+      const mutationData = AbiParameters.encode(
+        [
+          {
+            type: "tuple",
+            components: configOf(context).params.map((param) =>
+              param.type === "string" ? { ...param, type: "bytes" } : param,
+            ),
+          },
+        ],
+        [
+          {
+            ...context.mutation.params,
+            value: context.random.nextDoubleUnsafe() < 0.5 ? "0xff" : "0x61c3",
+          },
+        ] as never,
+      );
+      return {
+        ...args,
+        mutationData,
+        authorizationData: authorizeBytes(context, args.mutation, mutationData),
+      };
+    },
+  },
+  {
     name: "authorizationData with trailing bytes",
     via: "enqueue",
     expect: "executed",
@@ -819,8 +850,9 @@ function pickParam(
   return params[below(context.random, params.length)]!;
 }
 
-/** A value of the wrong JavaScript type for an ABI `type`: an integer or a `bool`. */
+/** A value of the wrong JavaScript type for an ABI `type`: an integer, a `bool` or a `string`. */
 function wrongType(type: string): unknown {
+  if (type === "string") return 7;
   return type === "bool" ? "false" : "not a number";
 }
 
