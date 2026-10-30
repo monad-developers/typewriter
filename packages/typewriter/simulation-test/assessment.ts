@@ -323,7 +323,7 @@ function expectExecute(step: Step): Expected {
     };
   }
   // A finite authorization can be rejected within the margin, or expire
-  // after it is accepted, before the runtime simulates its settlement.
+  // after it is accepted, before its settlement is simulated or lands.
   const expired = Number.isFinite(expiresInS)
     ? ["AuthorizationExpired", ...(tooSoon === undefined ? [] : [tooSoon])]
     : [];

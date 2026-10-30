@@ -12,6 +12,7 @@ import {
   Scope,
   Semaphore,
   Stream,
+  SubscriptionRef,
 } from "effect";
 import { Hash, Hex } from "ox";
 import {
@@ -241,7 +242,11 @@ export class ChainIdMismatchError extends Data.TaggedError(
   }
 }
 
-/** A settlement transaction was mined but reverted onchain. */
+/**
+ * A settlement transaction was mined but reverted onchain, and each of its
+ * mutations still executes in revm once it reaches that block, so none
+ * explains the revert.
+ */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
 )<{
@@ -782,6 +787,8 @@ export function createTypewriterEffect<
       yield* createRuntimeState(app, db, code, startBlock);
     /** The timestamp of the block that mutations execute in. */
     let blockTimestamp = startBlock.timestamp;
+    /** The number of the block that mutations execute in. */
+    const blockNumber = yield* SubscriptionRef.make(startBlock.number);
 
     const watch = yield* makeWatch({
       fromBlock: startBlock.hash,
@@ -1181,31 +1188,35 @@ export function createTypewriterEffect<
         }),
       );
 
-    // Rewinds the speculative state to before the unsubmitted mutations and
-    // enqueues, then executes them again in order at the current block and
-    // drops the ones that fail now. The rest may take new execution indexes.
-    // They hold the newest journals, so reverting them restores the state the
-    // submitted ones left, and the queue entries of the enqueues. Enqueues
-    // since then only added queue entries, which these journals never touch.
+    // Rewinds the speculative state to before the mutations and enqueues not
+    // yet included, then executes them again in settlement order at the
+    // current block and drops the ones that fail now. The rest may take new
+    // execution indexes. They hold the newest journals, so reverting them in
+    // execution order restores the state the included ones left, and the
+    // queue entries of the enqueues. Enqueues since then only wrote the queue
+    // length and new entries, which a journal holds only if its execution
+    // wrote them too, and none does. Fails with `error`, the revert, if none
+    // fails now, since then none explains it.
     // TODO(kyle) `execute` already returned the old execution index, and a
     // dropped mutation goes from `accepted` to `rejected`.
     const reexecute = (
+      error: SettlementSimulationRevertedError | SettlementRevertedError,
       batches: RuntimeBatch[],
       forceExecuted: ForceExecution[],
     ) =>
       Effect.gen(function* () {
-        const pending = batches.flatMap(
-          (batch) => batch.mutations as AcceptedMutation[],
-        );
-        const fromExecutionIndex = (pending[0] ?? forceExecuted[0]!.mutation)
-          .executionIndex;
+        // After an onchain revert, the batches accepted since executed after
+        // the reverted settlement's enqueues.
+        const pending = [
+          ...batches.flatMap((batch) => batch.mutations as AcceptedMutation[]),
+          ...forceExecuted.map(({ mutation, executeResult }) => ({
+            executionIndex: mutation.executionIndex,
+            journalId: executeResult.journal_id,
+          })),
+        ].sort((a, b) => Number(a.executionIndex - b.executionIndex));
+        const fromExecutionIndex = pending[0]!.executionIndex;
         yield* evm.revertJournals({
-          journal_ids: [
-            ...pending.map((mutation) => mutation.journalId),
-            ...forceExecuted.map(
-              ({ executeResult }) => executeResult.journal_id,
-            ),
-          ],
+          journal_ids: pending.map(({ journalId }) => journalId),
         });
         invalidateStorageCache();
         nextExecutionIndex = fromExecutionIndex;
@@ -1257,50 +1268,92 @@ export function createTypewriterEffect<
           }),
         );
 
+        const droppedCount =
+          pending.length - executed.length - keptForceExecuted.length;
+        if (droppedCount === 0) return yield* error;
+        yield* Effect.logWarning(
+          "Dropped mutations from a reverted settlement",
+          error,
+        ).pipe(
+          Effect.annotateLogs({
+            dropped_count: droppedCount,
+            mutation_count: pending.length,
+          }),
+        );
+
         return {
           batches: batches.filter((batch) => batch.mutations.length > 0),
           forceExecuted: keptForceExecuted,
           committed,
-          droppedCount:
-            pending.length +
-            forceExecuted.length -
-            executed.length -
-            keptForceExecuted.length,
         };
       });
+
+    /**
+     * The batches and enqueues of the settlement that last reverted onchain.
+     * The next settlement executes them again, ahead of the ones accepted
+     * since.
+     */
+    let revertedSettlement:
+      | {
+          error: SettlementRevertedError;
+          batches: RuntimeBatch[];
+          forceExecuted: ForceExecution[];
+        }
+      | undefined;
 
     const submit = Effect.gen(function* () {
       const simulation = yield* withSpeculativeStateLock(
         Effect.gen(function* () {
           const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
           const queueIndexes = yield* Queue.clear(enqueuedQueue);
-          if (acceptedBatches.length === 0 && queueIndexes.length === 0) {
+          const reverted = revertedSettlement;
+          revertedSettlement = undefined;
+          if (
+            reverted === undefined &&
+            acceptedBatches.length === 0 &&
+            queueIndexes.length === 0
+          ) {
             return undefined;
           }
 
-          let batches = acceptedBatches.map(({ id }) => batchesById.get(id)!);
+          let batches = [
+            ...(reverted?.batches ?? []),
+            ...acceptedBatches.map(({ id }) => batchesById.get(id)!),
+          ];
+          /** The enqueues that execute, in the order the settlement runs them. */
+          let forceExecuted: ForceExecution[] = reverted?.forceExecuted ?? [];
           const commits = acceptedBatches.map(({ committed }) => committed);
 
-          /** The enqueues that execute, in the order the settlement runs them. */
-          let forceExecuted: ForceExecution[] = [];
-          for (const queueIndex of queueIndexes) {
-            const executed = yield* forceExecute(queueIndex);
-            if (executed !== undefined) forceExecuted.push(executed);
+          // A settlement that reverted onchain left its mutations in the
+          // speculative state, under the ones accepted since. Execute them all
+          // again, now that revm is at the block it reverted in or later.
+          if (reverted !== undefined) {
+            const reexecuted = yield* reexecute(
+              reverted.error,
+              batches,
+              forceExecuted,
+            );
+            batches = reexecuted.batches;
+            forceExecuted = reexecuted.forceExecuted;
+            commits.push(reexecuted.committed);
           }
 
-          if (forceExecuted.length > 0) {
+          const enqueued: ForceExecution[] = [];
+          for (const queueIndex of queueIndexes) {
+            const executed = yield* forceExecute(queueIndex);
+            if (executed !== undefined) enqueued.push(executed);
+          }
+          forceExecuted = [...forceExecuted, ...enqueued];
+
+          if (enqueued.length > 0) {
             commits.push(
               yield* persist((tx) =>
                 Effect.gen(function* () {
-                  yield* insertStorageSlots(
-                    tx,
-                    app.typewriterSchema,
-                    forceExecuted,
-                  );
+                  yield* insertStorageSlots(tx, app.typewriterSchema, enqueued);
                   yield* insertKeccakPreimages(
                     tx,
                     app.typewriterSchema,
-                    forceExecuted.flatMap(({ preimages }) => preimages),
+                    enqueued.flatMap(({ preimages }) => preimages),
                   );
                 }),
               ),
@@ -1367,21 +1420,13 @@ export function createTypewriterEffect<
               };
             }
 
-            const error = new SettlementSimulationRevertedError(
-              decodeRevert(app.abi, simulateResult.data),
+            const reexecuted = yield* reexecute(
+              new SettlementSimulationRevertedError(
+                decodeRevert(app.abi, simulateResult.data),
+              ),
+              batches,
+              forceExecuted,
             );
-            const reexecuted = yield* reexecute(batches, forceExecuted);
-            if (reexecuted.droppedCount === 0) return yield* error;
-            yield* Effect.logWarning(
-              "Dropped mutations from a reverted settlement",
-              error,
-            ).pipe(
-              Effect.annotateLogs({
-                dropped_count: reexecuted.droppedCount,
-                mutation_count: speculativeJournalIds.length,
-              }),
-            );
-
             batches = reexecuted.batches;
             forceExecuted = reexecuted.forceExecuted;
             commits.push(reexecuted.committed);
@@ -1457,10 +1502,23 @@ export function createTypewriterEffect<
 
       nonce += 1;
 
+      // A mutation can fail in the block the settlement lands in, after revm
+      // simulated it at an earlier one, e.g. on an authorization that expired
+      // in between. The next settlement executes these mutations again at the
+      // latest watched block, so wait until the watch reaches this one.
       if (receipt.status === "reverted") {
-        return yield* new SettlementRevertedError({
-          transactionHash: receipt.transactionHash,
-        });
+        revertedSettlement = {
+          error: new SettlementRevertedError({
+            transactionHash: receipt.transactionHash,
+          }),
+          batches,
+          forceExecuted,
+        };
+        yield* SubscriptionRef.changes(blockNumber).pipe(
+          Stream.takeUntil((number) => number >= receipt.blockNumber),
+          Stream.runDrain,
+        );
+        return;
       }
       const duration = yield* durationMs(transactionStartedAt);
 
@@ -1539,6 +1597,7 @@ export function createTypewriterEffect<
               timestamp: Hex.fromNumber(message.block.timestamp),
             });
             blockTimestamp = message.block.timestamp;
+            yield* SubscriptionRef.set(blockNumber, message.block.number);
 
             for (const log of message.block.logs) {
               const queued = decodeForceInclusionQueued(log);

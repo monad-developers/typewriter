@@ -26,6 +26,8 @@ export type Settlement = Inclusion & {
   reverted: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
+  /** The keys of its mutations whose authorization expired before its block. */
+  expired: string[];
 };
 
 /** What happened onchain, read from the canonical chain after the run. */
@@ -83,6 +85,7 @@ export function readOnchain({
       blockHashes: new Map(),
     };
     const keyByQueueIndex = new Map<bigint, string>();
+    const authorizationDataByQueueIndex = new Map<bigint, Hex.Hex>();
 
     const head = Number(yield* chain.request({ method: "eth_blockNumber" }));
     for (let number = 0; number <= head; number++) {
@@ -109,6 +112,10 @@ export function readOnchain({
               strict: true,
             });
             onchain.queueIndexes.set(transaction.hash, args.index);
+            authorizationDataByQueueIndex.set(
+              args.index,
+              args.authorizationData,
+            );
             keyByQueueIndex.set(
               args.index,
               keyByEnqueue.get(transaction.hash) ??
@@ -129,9 +136,32 @@ export function readOnchain({
           ...inclusion,
           reverted: receipt.status !== "0x1",
           executionIndexes: [],
+          expired: [],
         };
         onchain.settlements.push(settlement);
-        if (settlement.reverted) continue;
+        const [batches, forceExecuteIndexes] = AbiFunction.decodeData(
+          EXECUTE,
+          transaction.input,
+        );
+        if (settlement.reverted) {
+          for (const authorizationData of [
+            ...batches.flatMap((batch) => batch.authorizationData),
+            ...forceExecuteIndexes.map(
+              (queueIndex) => authorizationDataByQueueIndex.get(queueIndex)!,
+            ),
+          ]) {
+            const authorization =
+              decodeAuthorizationCalldata(authorizationData);
+            // The contract expires an authorization once `block.timestamp` passes it.
+            if (
+              authorization.expiration !== 0n &&
+              authorization.expiration < inclusion.blockTimestamp
+            ) {
+              settlement.expired.push(mutationKey(authorization));
+            }
+          }
+          continue;
+        }
 
         const execute = (
           executed: Pick<Executed, "key" | "batch" | "queueIndex" | "encoding">,
@@ -140,10 +170,6 @@ export function readOnchain({
           settlement.executionIndexes.push(executionIndex);
           onchain.executed.push({ ...executed, executionIndex, inclusion });
         };
-        const [batches, forceExecuteIndexes] = AbiFunction.decodeData(
-          EXECUTE,
-          transaction.input,
-        );
         for (const batch of batches) {
           const keys = batch.mutations.map((id, i) => {
             const authorizationData = batch.authorizationData[i]!;
