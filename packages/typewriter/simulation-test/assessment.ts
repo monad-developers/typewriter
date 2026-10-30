@@ -302,18 +302,25 @@ export function withExpiration(
 
 /** How `step` must end. */
 export function expect(step: Step): Expected {
-  const { mutation, malformation, expiresInS } = step;
+  const { mutation, malformation, expiresInS, via } = step;
   if (malformation !== undefined) return expectMalformed(malformation);
+  // The runtime rejects an `execute` that expires within its margin before
+  // it executes. An enqueue is already onchain, so only revm rejects it.
+  const tooSoon = via === "execute" ? "MutationExpiresTooSoonError" : undefined;
   if (expiresInS < 0) {
+    const errors = [tooSoon ?? "AuthorizationExpired"];
     return {
       executes: false,
-      errors: ["AuthorizationExpired"],
-      resubmissionErrors: ["AuthorizationExpired"],
+      errors,
+      resubmissionErrors: errors,
       events: true,
     };
   }
-  // A finite authorization can expire before the runtime simulates it.
-  const expired = Number.isFinite(expiresInS) ? ["AuthorizationExpired"] : [];
+  // A finite authorization can be rejected within the margin, or expire
+  // after it is accepted, before the runtime simulates its settlement.
+  const expired = Number.isFinite(expiresInS)
+    ? ["AuthorizationExpired", ...(tooSoon === undefined ? [] : [tooSoon])]
+    : [];
   const revert = `${mutation.name}Error`;
   return mutation.params.shouldRevert
     ? {

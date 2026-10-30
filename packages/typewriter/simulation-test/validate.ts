@@ -174,6 +174,9 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
       check.fail(`${label}: has mutation events, want none`);
     }
     const [first, resubmission] = submission.results;
+    const firstAccepted = (events.get(key) ?? []).find(
+      (event) => event.status === "accepted",
+    );
     if (
       onChain === undefined &&
       expected.executes &&
@@ -183,7 +186,13 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
       check.fail(`${label}: never executed`);
     }
     if (first !== undefined) {
-      checkResult(check, `${label} execute`, first, expected.errors, onChain);
+      checkResult(
+        check,
+        `${label} execute`,
+        first,
+        expected.errors,
+        firstAccepted?.executionIndex,
+      );
     }
     if (resubmission !== undefined) {
       checkResult(
@@ -196,23 +205,27 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
     }
   }
 
-  for (const { key, expiration, latestTimestamp } of run.expiryChecks) {
+  for (const { key, expiration, margin, latestTimestamp } of run.expiryChecks) {
     // The contract expires an authorization once `block.timestamp` passes it.
-    if (expiration === 0n || expiration >= latestTimestamp) {
+    if (expiration === 0n || expiration >= latestTimestamp + margin) {
       check.fail(
-        `${check.label(key)}: rejected as expired at ${expiration}, but the latest block is at ${latestTimestamp}`,
+        `${check.label(key)}: rejected as expired at ${expiration}, but the latest block is at ${latestTimestamp} (margin ${margin}s)`,
       );
     }
   }
 }
 
-/** `execute` returned the execution index the chain shows, or an allowed error. */
+/**
+ * `execute` returned the execution index the mutation was first accepted at,
+ * or an allowed error. When its settlement reverts in revm, the mutation
+ * executes again, maybe at another index, or is dropped.
+ */
 function checkResult(
   check: Check,
   what: string,
   result: Result,
   allowed: string[],
-  onChain: Executed | undefined,
+  acceptedAt: bigint | undefined,
 ) {
   if ("error" in result) {
     if (!allowed.includes(result.error)) {
@@ -222,7 +235,7 @@ function checkResult(
     }
     return;
   }
-  check.equal(result.executionIndex, onChain?.executionIndex, `${what} result`);
+  check.equal(result.executionIndex, acceptedAt, `${what} result`);
 }
 
 /**
@@ -352,6 +365,7 @@ function checkQueue(
 function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
   const executed = executedByKey(onchain);
   const events = eventsByKey(run);
+  const dropped = droppedKeys(run);
   for (const key of events.keys()) {
     if (!check.submissions.has(key)) {
       check.fail(`mutation events for a mutation no one submitted: ${key}`);
@@ -385,8 +399,17 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
         : submission.expected.events
           ? ["rejected"]
           : [];
+    // When a settlement reverts in revm, its mutations execute again: each is
+    // accepted again, maybe at another index, or dropped.
+    const seenStatuses = seen
+      .map((event) => event.status)
+      .filter(
+        (status, i, all) => status !== "accepted" || all[i - 1] !== status,
+      );
     check.equal(
-      seen.map((event) => event.status),
+      onChain === undefined && dropped.has(key)
+        ? seenStatuses.filter((status) => status !== "accepted")
+        : seenStatuses,
       via === "execute" && statuses.length > 0
         ? ["received", ...statuses]
         : statuses,
@@ -394,7 +417,9 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
     );
     if (onChain === undefined) continue;
 
+    const lastAccepted = seen.findLast((event) => event.status === "accepted");
     for (const event of seen) {
+      if (event.status === "accepted" && event !== lastAccepted) continue;
       if ("executionIndex" in event) {
         check.equal(
           event.executionIndex,
@@ -437,15 +462,20 @@ function checkBatchEvents(
     check.equal(run.batchEvents.length, 0, "batch events with FIFO sequencing");
     return;
   }
-  const accepted = run.batchEvents.filter(
-    (event) => event.status === "accepted",
-  );
+  // A mutation dropped from a reverted settlement leaves its batch, and a
+  // batch it empties is never included.
+  const dropped = droppedKeys(run);
+  const accepted = run.batchEvents
+    .filter((event) => event.status === "accepted")
+    .map(({ id, mutations }) => ({
+      id,
+      keys: mutations
+        .map((mutation) => mutationKey(mutation.authorization))
+        .filter((key) => !dropped.has(key)),
+    }))
+    .filter(({ keys }) => keys.length > 0);
   check.equal(
-    accepted.map((event) =>
-      event.mutations.map((mutation) =>
-        check.label(mutationKey(mutation.authorization)),
-      ),
-    ),
+    accepted.map(({ keys }) => keys.map(check.label)),
     onchain.batches.map((batch) => batch.map(check.label)),
     "accepted batches",
   );
@@ -719,6 +749,27 @@ function checkRuntimeState(
 
 function executedByKey(onchain: Onchain): Map<string, Executed> {
   return new Map(onchain.executed.map((executed) => [executed.key, executed]));
+}
+
+/**
+ * The keys of the mutations accepted, then rejected as expired when their
+ * settlement reverted in revm.
+ */
+function droppedKeys(run: Run): Set<string> {
+  const accepted = new Set<string>();
+  const dropped = new Set<string>();
+  for (const event of run.mutationEvents) {
+    const key = mutationKey(event.authorization);
+    if (event.status === "accepted") accepted.add(key);
+    if (
+      event.status === "rejected" &&
+      accepted.has(key) &&
+      errorName(event.error) === "AuthorizationExpired"
+    ) {
+      dropped.add(key);
+    }
+  }
+  return dropped;
 }
 
 function eventsByKey(

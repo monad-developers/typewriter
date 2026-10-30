@@ -31,6 +31,7 @@ import {
   type ExecuteError,
   type ProgramError,
 } from "../src/typewriter";
+import { EXPIRATION_MARGIN } from "../src/typewriter-constants";
 import {
   createAccount,
   deploy,
@@ -75,6 +76,12 @@ export type SIM = {
     genesisTimestamp: number;
     /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
     reorgRate: number;
+    /**
+     * How often the chain pauses before a block, for longer than
+     * `EXPIRATION_MARGIN`, so the next block's timestamp passes expirations
+     * the runtime accepted against the block before it.
+     */
+    pauseRate: number;
   };
   generator: {
     /** The key type of each account. */
@@ -88,9 +95,12 @@ export type SIM = {
     resubmitRate: number;
     /**
      * The seconds from a step's submission to its authorization's expiration
-     * that a step draws from. `-1` expires before genesis, so it always fails,
-     * `0` and the intermediate ones expire around the step's inclusion, and
-     * `Infinity` never expires. `Infinity` repeats so most steps draw it.
+     * that a step draws from. `-1` expires before genesis, so it always fails.
+     * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
+     * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the chain
+     * pauses, and `EXPIRATION_MARGIN` and above are accepted, and expire if
+     * the chain pauses before their settlement. `Infinity` never expires, and
+     * repeats so most steps draw it.
      */
     expirationsS: number[];
     /** How often a step submits a malformed mutation. See `malformations.ts`. */
@@ -141,6 +151,7 @@ export const SIM: SIM = {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
     reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
+    pauseRate: pick(SEED, "chain.pauseRate", [0, 0.01, 0.05]),
   },
   generator: {
     accounts: Array.from(
@@ -162,7 +173,14 @@ export const SIM: SIM = {
     revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
     enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
     resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
-    expirationsS: [-1, 0, 1, 2, 5, ...Array<number>(20).fill(Infinity)],
+    expirationsS: [
+      -1,
+      0,
+      EXPIRATION_MARGIN - 2,
+      EXPIRATION_MARGIN,
+      EXPIRATION_MARGIN + 2,
+      ...Array<number>(20).fill(Infinity),
+    ],
     malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
@@ -395,9 +413,10 @@ const program = Effect.gen(function* () {
 
     /**
      * Records the chain's latest block right after the runtime rejected a
-     * mutation as expired. The authorization must have expired by then.
+     * mutation as expired. The authorization must have expired by then, or
+     * expire within `margin` seconds of it.
      */
-    const checkExpiry = (key: string, expiration: bigint) =>
+    const checkExpiry = (key: string, expiration: bigint, margin: bigint) =>
       Effect.gen(function* () {
         const latest = yield* simChain.request({
           method: "eth_getBlockByNumber",
@@ -406,6 +425,7 @@ const program = Effect.gen(function* () {
         run.expiryChecks.push({
           key,
           expiration,
+          margin,
           latestTimestamp: BigInt(latest!.timestamp),
         });
       });
@@ -414,14 +434,20 @@ const program = Effect.gen(function* () {
     yield* typewriter.on("mutation", (event) => {
       run.mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
-      if (
-        event.status === "rejected" &&
-        errorName(event.error) === "AuthorizationExpired"
-      ) {
+      const margin =
+        event.status !== "rejected"
+          ? undefined
+          : errorName(event.error) === "AuthorizationExpired"
+            ? 0n
+            : errorName(event.error) === "MutationExpiresTooSoonError"
+              ? BigInt(EXPIRATION_MARGIN)
+              : undefined;
+      if (margin !== undefined) {
         runExpiryCheck(
           checkExpiry(
             mutationKey(event.authorization),
             event.authorization.expiration,
+            margin,
           ),
         );
       }
@@ -443,6 +469,13 @@ const program = Effect.gen(function* () {
       fibers,
       Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        if (chainRandom.nextDoubleUnsafe() < SIM.chain.pauseRate) {
+          const pauseS =
+            EXPIRATION_MARGIN +
+            1 +
+            Math.floor(chainRandom.nextDoubleUnsafe() * EXPIRATION_MARGIN);
+          yield* Effect.sleep(Duration.seconds(pauseS));
+        }
         // Anvil takes whole seconds, so blocks in the same second share a timestamp.
         const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
         if (chainRandom.nextDoubleUnsafe() >= SIM.chain.reorgRate) {
@@ -651,9 +684,25 @@ const program = Effect.gen(function* () {
     ordering: SIM.typewriter.ordering,
   });
 
+  // Mutations accepted, then dropped when their settlement reverted in revm.
+  const accepted = new Set<string>();
+  let dropped = 0;
+  for (const event of run.mutationEvents) {
+    const key = mutationKey(event.authorization);
+    if (event.status === "accepted") accepted.add(key);
+    if (
+      event.status === "rejected" &&
+      accepted.has(key) &&
+      errorName(event.error) === "AuthorizationExpired"
+    ) {
+      dropped++;
+    }
+  }
+
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
       submissions: run.submissions.length,
+      dropped,
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
