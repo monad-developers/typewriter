@@ -7,10 +7,7 @@ import { createStorageView, type StorageView } from "storage-layout";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
 import { selectKeccakPreimages, selectStorageSlots } from "../src/db-query";
-import {
-  decodeAuthorizationCalldata,
-  encodeExecuteCalldata,
-} from "../src/encoding";
+import { encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
 import type {
   BlockEvent,
@@ -382,17 +379,18 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
     }
 
     const onChain = executed.get(key);
+    // An enqueue has no events, whether or not it executes.
     const statuses: MutationStatus[] =
-      onChain !== undefined
-        ? ["accepted", "included", "finalized"]
-        : submission.expected.events
-          ? ["rejected"]
-          : [];
+      via === "enqueue"
+        ? []
+        : onChain !== undefined
+          ? ["received", "accepted", "included", "finalized"]
+          : submission.expected.events
+            ? ["received", "rejected"]
+            : [];
     check.equal(
       seen.map((event) => event.status),
-      via === "execute" && statuses.length > 0
-        ? ["received", ...statuses]
-        : statuses,
+      statuses,
       `${label} mutation event statuses`,
     );
     if (onChain === undefined) continue;
@@ -403,13 +401,6 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           event.executionIndex,
           onChain.executionIndex,
           `${label} ${event.status} event executionIndex`,
-        );
-      }
-      if ("isForceInclusion" in event) {
-        check.equal(
-          event.isForceInclusion ? event.queueIndex : undefined,
-          onChain.queueIndex,
-          `${label} ${event.status} event queueIndex`,
         );
       }
       if (event.status === "included" || event.status === "finalized") {
@@ -465,6 +456,7 @@ function checkBatchEvents(
 
 /** Each settlement's block is included, then finalized, with the mutations it executed. */
 function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
+  const forced = forceExecuted(onchain);
   const byHash = new Map<string, typeof run.blockEvents>();
   for (const event of run.blockEvents) {
     const hash = event.hash.toLowerCase();
@@ -495,7 +487,10 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
           number: settlement.blockNumber,
           timestamp: settlement.blockTimestamp,
           transactionHash: settlement.transactionHash,
-          executionIndexes: settlement.executionIndexes,
+          // Force-executed enqueues have no events.
+          executionIndexes: settlement.executionIndexes.filter(
+            (index) => !forced.has(index),
+          ),
         },
         `${what} ${event.status} event`,
       );
@@ -542,29 +537,16 @@ function checkDatabase(
     }
     check.equal(
       [...rows.keys()].sort(compareBigInt),
-      onchain.executed.map(({ executionIndex }) => executionIndex),
+      onchain.executed.flatMap(({ executionIndex, queueIndex }) =>
+        queueIndex === undefined ? [executionIndex] : [],
+      ),
       "mutation table execution indexes",
     );
-    for (const {
-      key,
-      executionIndex,
-      inclusion,
-      queueIndex,
-    } of onchain.executed) {
+    for (const { key, executionIndex, inclusion } of onchain.executed) {
       const submission = check.submissions.get(key);
       const entry = rows.get(executionIndex);
       if (submission === undefined || entry === undefined) continue;
-      const { name, params } = submission.mutation;
-      // An enqueue's signature can cover other bytes than the well-formed
-      // mutation's, so its authorization is the one it had onchain.
-      const enqueued =
-        queueIndex === undefined
-          ? undefined
-          : onchain.enqueuedAuthorizationData.get(queueIndex);
-      const authorization =
-        enqueued === undefined
-          ? submission.mutation.authorization
-          : decodeAuthorizationCalldata(enqueued);
+      const { name, params, authorization } = submission.mutation;
       check.equal(entry.name, name, `${submission.label} table`);
       const want = {
         execution_index: executionIndex,
@@ -735,6 +717,15 @@ function checkRuntimeState(
   });
 }
 
+/** The execution indexes of the force-executed enqueues. */
+function forceExecuted(onchain: Onchain): Set<bigint> {
+  return new Set(
+    onchain.executed.flatMap(({ executionIndex, queueIndex }) =>
+      queueIndex === undefined ? [] : [executionIndex],
+    ),
+  );
+}
+
 function executedByKey(onchain: Onchain): Map<string, Executed> {
   return new Map(onchain.executed.map((executed) => [executed.key, executed]));
 }
@@ -756,10 +747,7 @@ function executionIndexesOf(
   const mutations =
     "mutations" in event
       ? event.mutations
-      : [
-          ...event.batches.flatMap((batch) => batch.mutations),
-          ...event.forceIncludedMutations,
-        ];
+      : event.batches.flatMap((batch) => batch.mutations);
   return mutations.map((mutation) => mutation.executionIndex);
 }
 
