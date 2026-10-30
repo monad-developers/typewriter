@@ -373,6 +373,7 @@ const program = Effect.gen(function* () {
   const clock = makeSimClock(startMs, scheduler.schedule);
   const simChain: Chain = {
     request: (request) => scheduler.io(chain.request(request)),
+    getLogs: (request) => scheduler.io(chain.getLogs(request)),
     stateDiff: chain.stateDiff,
     mine: (timestamp) => scheduler.io(chain.mine(timestamp)),
     reorg: (depth, timestamp) => scheduler.io(chain.reorg(depth, timestamp)),

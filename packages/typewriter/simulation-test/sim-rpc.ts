@@ -32,6 +32,23 @@ export function makeSimTransport({
 
   const occurrences = new Map<string, number>();
 
+  // A node fails `eth_getLogs` for a block hash that a reorg replaced.
+  const getLogs = (request: Extract<RpcRequest, { method: "eth_getLogs" }>) =>
+    chain.getLogs(request).pipe(
+      Effect.flatMap((logs) =>
+        logs !== undefined
+          ? Effect.succeed(logs)
+          : Effect.fail(
+              new RpcResponseError({
+                method: request.method,
+                origin,
+                status: 200,
+                error: { code: -32000, message: "unknown block" },
+              }),
+            ),
+      ),
+    );
+
   // Anvil answers `eth_sendRawTransactionSync` once the block is mined, and the
   // simulation mines only between requests, so it sends and then polls. Like a
   // node, it does not send a transaction it already has.
@@ -106,7 +123,9 @@ export function makeSimTransport({
       yield* Effect.sleep(Duration.millis(latency));
 
       if (draw < errorRate) return yield* injected();
-      const result = yield* send(request);
+      const result = yield* request.method === "eth_getLogs"
+        ? getLogs(request)
+        : send(request);
       if (draw < errorRate + applyThenErrorRate) return yield* injected();
       return result;
     });

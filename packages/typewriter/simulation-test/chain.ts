@@ -35,6 +35,13 @@ export type Chain = {
     blockHash: Hex.Hex,
     transactionHash: Hex.Hex,
   ) => StateDiff | undefined;
+  /**
+   * `eth_getLogs`, or `undefined` for a block hash that a reorg replaced,
+   * which Anvil fails.
+   */
+  getLogs: (
+    request: Extract<RpcRequest, { method: "eth_getLogs" }>,
+  ) => Effect.Effect<RpcResult<"eth_getLogs"> | undefined>;
   /** Mines one block at `timestamp`, in seconds. */
   mine: (timestamp: number) => Effect.Effect<void>;
   /**
@@ -111,6 +118,23 @@ export function makeChain(): Effect.Effect<
 
     const request = ((request: RpcRequest) =>
       lock.withPermits(1)(send(request))) as Chain["request"];
+
+    const getLogs: Chain["getLogs"] = (request) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          const { blockHash } = request.params[0];
+          if (
+            blockHash !== undefined &&
+            (yield* send({
+              method: "eth_getBlockByHash",
+              params: [blockHash, false],
+            })) === null
+          ) {
+            return undefined;
+          }
+          return (yield* send(request)) as RpcResult<"eth_getLogs">;
+        }),
+      );
 
     /** By block hash, then transaction hash, lowercase. */
     const stateDiffs = new Map<string, StateDiff>();
@@ -199,6 +223,6 @@ export function makeChain(): Effect.Effect<
         }),
       );
 
-    return { request, stateDiff, mine, reorg };
+    return { request, getLogs, stateDiff, mine, reorg };
   });
 }
