@@ -1,4 +1,37 @@
-import type { Address } from "ox/Address";
+import { AbiParameters, Hex, Secp256k1, Signature } from "ox";
+import { type Address, fromPublicKey } from "ox/Address";
+import type {
+  TypewriterManifest,
+  TypewriterMutationInput,
+  TypewriterSolidityEntrypoint,
+} from "typewriter";
+import {
+  authorizeMutation,
+  deriveAccountID,
+  getAuthorizationPayload,
+  KeyType,
+  packNonce,
+  packSecp256k1Signature,
+  type TypedMutation,
+} from "typewriter/client";
+import type OrderBook from "../contracts/src/OrderBook.sol";
+
+type OrderBookMetadata =
+  typeof OrderBook extends TypewriterSolidityEntrypoint<infer metadata>
+    ? metadata
+    : never;
+
+export type OrderBookMutations = OrderBookMetadata extends {
+  readonly mutations: infer mutations extends TypewriterManifest["mutations"];
+}
+  ? mutations
+  : never;
+
+export type OrderBookManifest = TypewriterManifest<OrderBookMutations>;
+
+export type OrderBookMutation = TypewriterMutationInput<OrderBookMutations>;
+
+export type OrderBookMutationName = keyof OrderBookMutations & string;
 
 export const USD: Address = "0x1111111111111111111111111111111111111111";
 export const GOLD: Address = "0x2222222222222222222222222222222222222222";
@@ -138,4 +171,73 @@ export function baseToQuote(
   const quoteLots = (baseLots * q32Price) >> 32n;
   const raw = quoteLots << BigInt(instrument.quoteLotExp);
   return TokenAmount.fromRaw(raw, instrument.quote);
+}
+
+/** Rounds down to a whole number of lots. The contract rejects the rest. */
+export function lotAligned(raw: bigint, lotExp: number): bigint {
+  return fromLots(toLots(raw, lotExp), lotExp);
+}
+
+export type Side = "buy" | "sell";
+
+export function bidOrAsk(side: Side): 0 | 1 {
+  return side === "buy" ? 0 : 1;
+}
+
+export function limitOrderParams(
+  instrument: InstrumentConfig,
+  order: { price: number; side: Side; quantity: TokenAmount },
+) {
+  return {
+    quantity: lotAligned(order.quantity.raw, instrument.baseLotExp),
+    instrumentId: BigInt(instrument.id),
+    price: priceToQ32(order.price, instrument),
+    bidOrAsk: bidOrAsk(order.side),
+  };
+}
+
+/** A nonce on a random lane, so it doesn't wait on the account's others. */
+export function randomNonce(): bigint {
+  return packNonce(BigInt(Hex.random(24)), 0n);
+}
+
+export function authorizeWithSecp256k1<
+  const name extends OrderBookMutationName,
+>(
+  manifest: OrderBookManifest,
+  privateKey: Hex.Hex,
+  mutation: TypedMutation<OrderBookManifest, name>,
+) {
+  const signature = Secp256k1.sign({
+    payload: getAuthorizationPayload(manifest, mutation),
+    privateKey,
+  });
+  return authorizeMutation(
+    mutation,
+    packSecp256k1Signature(Signature.toHex(signature)),
+  );
+}
+
+/** The account a secp256k1 root key creates, and its `CreateAccount`. */
+export function createSecp256k1Account(
+  manifest: OrderBookManifest,
+  privateKey: Hex.Hex,
+) {
+  const params = {
+    keyType: KeyType.Secp256k1,
+    publicKey: AbiParameters.encode(
+      [{ type: "address" }],
+      [fromPublicKey(Secp256k1.getPublicKey({ privateKey }))],
+    ),
+  };
+  const accountID = deriveAccountID(params);
+  const mutation = authorizeWithSecp256k1(manifest, privateKey, {
+    name: "CreateAccount",
+    params,
+    accountID,
+    credentialID: 0n,
+    nonce: 0n,
+    expiration: 0n,
+  });
+  return { accountID, mutation };
 }

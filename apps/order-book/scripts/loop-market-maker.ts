@@ -5,21 +5,21 @@ import {
   q32ToPrice,
   TokenAmount,
 } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
   type Account,
   type AccountOrder,
   changeOrder,
   closeOrder,
-  createAccount,
+  createAccountRetrying,
   deposit,
   fetchAccountOrders,
   fetchPrice,
   fetchTicks,
   limitOrder,
-} from "./src/sdk";
+  type Tick,
+} from "./src/client";
+import { instrumentsEnv, intervalEnv, requiredEnv } from "./src/env";
 
-type Tick = { quantity: bigint; remainingQuantity: bigint; volume: number };
 type TickLookup = (side: 0 | 1, priceQ32: bigint) => Tick | null;
 
 const RANGES = [
@@ -33,31 +33,12 @@ const RANGES = [
   { min: 1000, max: 2500 },
   { min: 2500, max: 10000 },
 ];
-const DEFAULT_INTERVAL = 10_000;
+const humanQuantity = Number(requiredEnv("QUANTITY", "1 for 1 unit per level"));
+const instruments = instrumentsEnv();
+const interval = intervalEnv();
 
-if (!process.env.QUANTITY) {
-  console.error("QUANTITY env var is required (e.g. 1 for 1 unit per level)");
-  process.exit(1);
-}
-
-const humanQuantity = Number(process.env.QUANTITY);
-const instruments = resolveInstruments();
-const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
-
-let account: Awaited<ReturnType<typeof createAccount>>;
-while (true) {
-  try {
-    account = await createAccount();
-    break;
-  } catch (err) {
-    console.error(
-      "createAccount failed, retrying:",
-      err instanceof Error ? err.message : err,
-    );
-    await Bun.sleep(interval);
-  }
-}
-console.log(`account ${account.address}`);
+const account = await createAccountRetrying(interval);
+console.log(`account ${account.accountID}`);
 console.log(
   `interval: ${interval}ms, instruments: ${instruments.map((i) => i.name).join(", ")}`,
 );
@@ -76,36 +57,17 @@ while (true) {
   await Bun.sleep(interval);
 }
 
-function resolveInstruments(): {
-  name: keyof typeof INSTRUMENTS;
-  instrument: InstrumentConfig;
-}[] {
-  if (!process.env.INSTRUMENT) {
-    return Object.entries(INSTRUMENTS).map(([name, instrument]) => ({
-      name: name as keyof typeof INSTRUMENTS,
-      instrument,
-    }));
-  }
-  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-  const instrument = INSTRUMENTS[name];
-  if (!instrument) {
-    console.error(`unknown instrument: ${name}`);
-    process.exit(1);
-  }
-  return [{ name, instrument }];
-}
-
 async function tick(instrument: InstrumentConfig, label: string) {
   const [priceInfo, orders] = await Promise.all([
     fetchPrice(instrument.id),
-    fetchAccountOrders(account.accountHex, instrument.id),
+    fetchAccountOrders(account.accountID, instrument.id),
   ]);
 
-  if (priceInfo.priceQ32 === null) {
+  if (priceInfo.price === null) {
     console.log(`[${label}] no price available, skipping`);
     return;
   }
-  const midPrice = q32ToPrice(priceInfo.priceQ32, instrument);
+  const midPrice = q32ToPrice(priceInfo.price, instrument);
   console.log(`[${label}] mid price: $${midPrice.toFixed(4)}`);
 
   const candidates: { price: number; side: "buy" | "sell" }[] = [];

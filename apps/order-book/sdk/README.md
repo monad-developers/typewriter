@@ -71,6 +71,31 @@ const usd = baseToQuote(gold, q32, inst);
 usd.human // ~2400
 ```
 
+## Mutations
+
+`OrderBookManifest` types the backend's `/api/manifest` from the generated `OrderBook.sol.d.ts`, so signing checks each mutation's params.
+
+```ts
+import {
+  authorizeWithSecp256k1,
+  createSecp256k1Account,
+  limitOrderParams,
+  randomNonce,
+} from "order-book-sdk";
+
+const { accountID, mutation } = createSecp256k1Account(manifest, privateKey);
+const order = authorizeWithSecp256k1(manifest, privateKey, {
+  name: "LimitOrder",
+  params: limitOrderParams(inst, { price: 2400, side: "buy", quantity }),
+  accountID,
+  credentialID: 0n,
+  nonce: randomNonce(),
+  expiration: 0n,
+});
+```
+
+`lotAligned` rounds a raw amount down to whole lots, and `bidOrAsk` maps `"buy"`/`"sell"` to the contract's side.
+
 ## Constants
 
 ### Tokens
@@ -97,5 +122,6 @@ usd.human // ~2400
 ### Other exports
 
 - `ASSETS` — `[USD, GOLD, WTIOIL, EUR, SPX, BTC]`
-- `EIP712_TYPES` — EIP-712 type definitions for all order-book mutations
+- `PERM_*`, `ALL_PERMISSIONS`, `DEFAULT_NON_ROOT_PERMISSIONS` — credential permission bits
 - `InstrumentConfig` — TypeScript type for instrument configuration
+- `OrderBookMutation`, `OrderBookMutationName` — signed mutation input and mutation names

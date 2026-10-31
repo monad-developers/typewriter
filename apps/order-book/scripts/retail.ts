@@ -1,25 +1,13 @@
 import { fromLots, q32ToPrice, TokenAmount, toLots } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
   createAccount,
   deposit,
   estimateMarketOrder,
   marketOrder,
-} from "./src/sdk";
+} from "./src/client";
+import { instrumentEnv } from "./src/env";
 
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
+const { instrument } = instrumentEnv();
 
 const QUANTITIES = [0.1, 0.25, 0.5, 1, 2, 2, 5, 10];
 
@@ -46,7 +34,7 @@ try {
 }
 
 const account = await createAccount();
-console.log(`account ${account.address}`);
+console.log(`account ${account.accountID}`);
 
 if (side === "buy") {
   await deposit(account, {

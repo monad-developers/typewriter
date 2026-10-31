@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  BLOCK_QUEUE_SIZE,
   type LiveBatch,
   type LiveBlock,
   useLiveBlocks,
@@ -16,84 +15,69 @@ function batchColor(mutationCount: number): string {
   return "bg-blue-600";
 }
 
+const BLOCK_QUEUE_SIZE = 8;
 const BLOCK_INNER_SLOTS = 8;
 const BLOCK_INNER_KEYS = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
-function BlockColumn({ block }: { block: LiveBlock }) {
-  const bySlot = new Array<LiveBlock["batches"][number] | undefined>(
-    BLOCK_INNER_SLOTS,
-  );
-  for (const b of block.batches) {
+function BatchSlots({ batches }: { batches: LiveBatch[] }) {
+  const bySlot = new Array<LiveBatch | undefined>(BLOCK_INNER_SLOTS);
+  for (const b of batches) {
     bySlot[b.position % BLOCK_INNER_SLOTS] = b;
   }
 
+  return (
+    <div
+      className="grid gap-1 flex-1 min-h-0"
+      style={{
+        gridTemplateColumns: "1fr",
+        gridTemplateRows: `repeat(${BLOCK_INNER_SLOTS}, 1fr)`,
+      }}
+    >
+      {BLOCK_INNER_KEYS.map((key, i) => {
+        const batch = bySlot[i];
+        return (
+          <div
+            key={key}
+            className={
+              batch
+                ? batchColor(batch.mutationCount)
+                : "border border-dashed border-zinc-300"
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function BlockColumn({ block }: { block: LiveBlock }) {
   return (
     <Link
       to={`/block/${block.number}`}
       className="border border-black flex flex-col gap-1 h-full overflow-hidden p-2 hover:bg-zinc-50"
     >
       <div className="text-sm shrink-0 truncate">block {block.number}</div>
-      <div
-        className="grid gap-1 flex-1 min-h-0"
-        style={{
-          gridTemplateColumns: "1fr",
-          gridTemplateRows: `repeat(${BLOCK_INNER_SLOTS}, 1fr)`,
-        }}
-      >
-        {BLOCK_INNER_KEYS.map((key, i) => {
-          const batch = bySlot[i];
-          return (
-            <div
-              key={key}
-              className={
-                batch
-                  ? batchColor(batch.mutationCount)
-                  : "border border-dashed border-zinc-300"
-              }
-            />
-          );
-        })}
-      </div>
+      <BatchSlots batches={block.batches} />
     </Link>
   );
 }
 
-function FormingBlockColumn({
-  batchSlots,
-}: {
-  batchSlots: (LiveBatch | null)[];
-}) {
+function FormingBlockColumn({ batches }: { batches: LiveBatch[] }) {
   return (
     <div className="border border-dashed border-black flex flex-col gap-1 h-full overflow-hidden p-2">
       <div className="text-sm shrink-0 truncate">accepted</div>
-      <div
-        className="grid gap-1 flex-1 min-h-0"
-        style={{
-          gridTemplateColumns: "1fr",
-          gridTemplateRows: `repeat(${BLOCK_INNER_SLOTS}, 1fr)`,
-        }}
-      >
-        {batchSlots.map((batch, i) => (
-          <div
-            key={i}
-            className={
-              batch
-                ? batchColor(batch.mutations.length)
-                : "border border-dashed border-zinc-300"
-            }
-          />
-        ))}
-      </div>
+      <BatchSlots batches={batches} />
     </div>
   );
 }
 
 export function LiveBlocks() {
-  const { batchSlots, blocks } = useLiveBlocks();
+  const { data } = useLiveBlocks();
   const { data: tps } = useTps();
   const [frozenBlocks, setFrozenBlocks] = useState<LiveBlock[] | null>(null);
 
-  const displayBlocks = frozenBlocks ?? blocks;
+  const blocks = data?.includedBlocks ?? [];
+  const displayBlocks = (frozenBlocks ?? blocks).slice(0, BLOCK_QUEUE_SIZE);
   const isPaused = frozenBlocks !== null;
 
   const handleHoverChange = (hovered: boolean) => {
@@ -130,7 +114,7 @@ export function LiveBlocks() {
           gridTemplateColumns: `minmax(0, 1fr) repeat(${BLOCK_QUEUE_SIZE}, minmax(0, 1fr))`,
         }}
       >
-        <FormingBlockColumn batchSlots={batchSlots} />
+        <FormingBlockColumn batches={data?.acceptedBatches ?? []} />
         <section
           aria-label="landed blocks"
           onPointerEnter={() => handleHoverChange(true)}

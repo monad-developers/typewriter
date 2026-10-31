@@ -4,49 +4,33 @@ import {
   q32ToPrice,
   TokenAmount,
 } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
   createAccount,
   deposit,
   fetchPrice,
   fetchTicks,
   limitOrder,
-} from "./src/sdk";
+} from "./src/client";
+import { instrumentEnv, requiredEnv } from "./src/env";
 
 const BPS_LEVELS = [1, 5, 10, 25];
 
-if (!process.env.QUANTITY) {
-  console.error("QUANTITY env var is required (e.g. 1 for 1 unit per level)");
-  process.exit(1);
-}
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const humanQuantity = Number(process.env.QUANTITY);
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
+const humanQuantity = Number(requiredEnv("QUANTITY", "1 for 1 unit per level"));
+const { instrument } = instrumentEnv();
 
 const account = await createAccount();
-console.log(`account ${account.address}`);
+console.log(`account ${account.accountID}`);
 
 let midPrice: number;
 if (process.env.PRICE) {
   midPrice = Number(process.env.PRICE);
 } else {
-  const { priceQ32 } = await fetchPrice(instrument.id);
-  if (priceQ32 === null) {
+  const { price } = await fetchPrice(instrument.id);
+  if (price === null) {
     console.error("no existing liquidity, provide a PRICE env var as anchor");
     process.exit(1);
   }
-  midPrice = q32ToPrice(priceQ32, instrument);
+  midPrice = q32ToPrice(price, instrument);
 }
 console.log(`mid price: $${midPrice.toFixed(4)}`);
 

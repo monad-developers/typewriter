@@ -2,9 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { request } from "../lib/api";
 
 type DepthResponse = {
-  instrumentId: number;
-  bids: Record<string, string>;
-  asks: Record<string, string>;
+  bids: Record<string, bigint>;
+  asks: Record<string, bigint>;
 };
 
 export function useDepth(instrumentId: number) {

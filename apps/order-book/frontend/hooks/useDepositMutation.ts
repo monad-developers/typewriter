@@ -3,7 +3,7 @@ import { incrementNonce } from "typewriter/client";
 import type { Address } from "viem";
 import { request } from "../lib/api";
 import { useManifest } from "./useManifest";
-import { signDeposit } from "./useSign";
+import { signMutation } from "./useSign";
 import { useStoredAccount } from "./useStoredAccount";
 
 type DepositParams = {
@@ -22,19 +22,14 @@ export function useDepositMutation() {
       if (!account) throw new Error("No account");
       if (manifest === undefined) throw new Error("Missing manifest");
 
-      const signed = await signDeposit(account, manifest, account.nonce, {
+      const signed = await signMutation(account, manifest, "Deposit", {
         asset,
         amount,
       });
-
-      const start = performance.now();
       const result = await request<{ executionIndex: bigint }>("/api", {
         method: "POST",
         body: signed,
       });
-      console.log(
-        `[tx-latency] deposit ${(performance.now() - start).toFixed(1)}ms`,
-      );
 
       return {
         executionIndex: result.executionIndex,

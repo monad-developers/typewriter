@@ -4,8 +4,12 @@ const STAGES: MutationStatus[] = ["accepted", "included", "finalized"];
 
 export type StageTimestamps = Partial<Record<MutationStatus, string>>;
 
-function durationMs(a: string, b: string): number {
-  return new Date(b).getTime() - new Date(a).getTime();
+// Stages after `accepted` take their block's timestamp, which is in whole
+// seconds, so only an upper bound on the time to reach them is known.
+function segmentLabel(start: string, blockTimestamp: string): string {
+  const latestMs =
+    new Date(blockTimestamp).getTime() + 1000 - new Date(start).getTime();
+  return `<${Math.max(1, Math.ceil(latestMs / 1000))}s`;
 }
 
 function relativeMs(ms: number): string {
@@ -34,14 +38,16 @@ export function MutationLifecycle({
         const stageTime = timestamps?.[stage];
         const nextStage = STAGES[i + 1];
         const nextStageTime = nextStage ? timestamps?.[nextStage] : undefined;
-        const segmentMs =
+        const segment =
           stageTime && nextStageTime
-            ? durationMs(stageTime, nextStageTime)
+            ? segmentLabel(stageTime, nextStageTime)
             : null;
 
         const ago =
           isCurrent && stageTime
-            ? relativeMs(Date.now() - new Date(stageTime).getTime())
+            ? relativeMs(
+                Math.max(0, Date.now() - new Date(stageTime).getTime()),
+              )
             : null;
 
         return (
@@ -66,9 +72,9 @@ export function MutationLifecycle({
                     i < currentIndex ? "bg-blue-500" : "bg-zinc-300"
                   }`}
                 />
-                {segmentMs != null ? (
+                {segment != null ? (
                   <span className="text-xs text-zinc-500 tabular-nums mt-1">
-                    {segmentMs}ms
+                    {segment}
                   </span>
                 ) : null}
               </div>
