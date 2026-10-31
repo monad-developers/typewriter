@@ -1,12 +1,20 @@
 import { serve } from "bun";
-import { drizzle } from "drizzle-orm/bun-sql";
+import type { Side } from "order-book-sdk";
 import superjson from "superjson";
-import { createTypewriter } from "typewriter";
-import type { Address, Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import OrderBook from "../contracts/src/OrderBook.sol";
+import type { Hex } from "viem";
 import index from "../frontend/index.html";
-import { ORDER_BOOK_BATCH_ORDER } from "./app";
+import { app, dev } from "./app";
+import {
+  accountBalances,
+  accountCredentials,
+  accountExists,
+  accountOrders,
+  depth,
+  estimateFillToPrice,
+  estimateMarketOrder,
+  price,
+  tickAt,
+} from "./book";
 import {
   selectBlock,
   selectMutationByExecutionIndex,
@@ -15,46 +23,61 @@ import {
   selectRecentMutationCount,
 } from "./db-queries";
 
-if (process.env.DATABASE_URL === undefined) {
-  throw new Error("DATABASE_URL env var is required");
-}
-
-const DATABASE_URL = process.env.DATABASE_URL;
-
-const { CHAIN_ID, ORDER_BOOK_ADDRESS, PRIVATE_KEY, RPC_URL } = process.env;
-
-const app = await createTypewriter(OrderBook, {
-  // Without RPC_URL, development runs on a local Anvil that typewriter starts
-  // and deploys the order book to.
-  dev: process.env.NODE_ENV !== "production" && RPC_URL === undefined,
-  address: ORDER_BOOK_ADDRESS as Address | undefined,
-  account: PRIVATE_KEY ? privateKeyToAccount(PRIVATE_KEY as Hex) : undefined,
-  chainId: CHAIN_ID ? Number(CHAIN_ID) : undefined,
-  rpcUrl: RPC_URL?.split(",").map((url) => url.trim()),
-  database: { url: DATABASE_URL, maxConnections: 25 },
-  sequencing: {
-    order: "batch",
-    batchOrder: ORDER_BOOK_BATCH_ORDER,
-  },
-});
-
-const readerDb = drizzle({
-  client: new Bun.SQL({
-    url: DATABASE_URL,
-    max: 25,
-  }),
-});
 const ACCOUNT_MUTATION_HISTORY_LIMIT = 50;
 const TPS_WINDOW_MS = 10000;
+const LIVE_BATCH_COUNT = 8;
+const LIVE_BLOCK_COUNT = 8;
+
+type LiveBatch = { id: number; position: number; mutationCount: number };
 
 // The mutation tables have no status column; derive it from `block_number`
 // and the latest finalized block. Until a block finalizes after startup,
 // included mutations read as "included".
 let finalizedBlockNumber = -1n;
+let acceptedBatches: LiveBatch[] = [];
+let includedBlocks: {
+  number: bigint;
+  hash: Hex;
+  timestamp: bigint;
+  batches: LiveBatch[];
+}[] = [];
+
+function liveBatch(batch: {
+  id: number;
+  position: number;
+  mutations: unknown[];
+}): LiveBatch {
+  return {
+    id: batch.id,
+    position: batch.position,
+    mutationCount: batch.mutations.length,
+  };
+}
+
+app.on("batch", (batch) => {
+  if (batch.status !== "accepted") return;
+  acceptedBatches = [...acceptedBatches, liveBatch(batch)].slice(
+    -LIVE_BATCH_COUNT,
+  );
+});
+
 app.on("block", (block) => {
-  if (block.status === "finalized" && block.number > finalizedBlockNumber) {
-    finalizedBlockNumber = block.number;
+  if (block.status === "finalized") {
+    if (block.number > finalizedBlockNumber) {
+      finalizedBlockNumber = block.number;
+    }
+    return;
   }
+  acceptedBatches = [];
+  includedBlocks = [
+    {
+      number: block.number,
+      hash: block.hash,
+      timestamp: block.timestamp,
+      batches: block.batches.map(liveBatch),
+    },
+    ...includedBlocks,
+  ].slice(0, LIVE_BLOCK_COUNT);
 });
 
 function withStatus(row: Record<string, unknown>) {
@@ -68,33 +91,6 @@ function withStatus(row: Record<string, unknown>) {
   return { ...row, status };
 }
 
-function eventStream(event: "batch" | "block"): Response {
-  const textEncoder = new TextEncoder();
-  let unsubscribe = () => {};
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (value: unknown) => {
-        controller.enqueue(
-          textEncoder.encode(
-            `event: ${event}\ndata: ${superjson.stringify(value)}\n\n`,
-          ),
-        );
-      };
-      unsubscribe =
-        event === "batch" ? app.on("batch", send) : app.on("block", send);
-    },
-    cancel() {
-      unsubscribe();
-    },
-  });
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-    },
-  });
-}
-
 function json(value: unknown, init?: ResponseInit): Response {
   return new Response(superjson.stringify(value), {
     ...init,
@@ -102,162 +98,23 @@ function json(value: unknown, init?: ResponseInit): Response {
   });
 }
 
-function accountCredentials(account: Hex) {
-  const credentials = app.accounts[account].credentials;
-  const length = credentials.length;
-  const out: {
-    expiration: number;
-    keyType: number;
-    permissions: string;
-    publicKey: Hex;
-  }[] = [];
-  for (let i = 0; i < length; i++) {
-    const credential = credentials[i];
-    out.push({
-      expiration: Number(credential.expiration),
-      keyType: Number(credential.keyType),
-      permissions: String(credential.permissions),
-      publicKey: credential.publicKey as Hex,
-    });
-  }
-  return out;
+function badRequest(error: string): Response {
+  return json({ error }, { status: 400 });
 }
 
-function accountExists(account: Hex): boolean {
-  return app.accounts[account].credentials.length > 0;
+function intParam(value: string | null): bigint | undefined {
+  return value !== null && /^\d+$/.test(value) ? BigInt(value) : undefined;
 }
 
-function accountOrders(account: Hex, instrumentId?: number) {
-  const orders = app.state.accounts[account].orders;
-  const length = orders.length;
-  const out: {
-    orderId: number;
-    quantity: string;
-    instrumentId: number;
-    price: string;
-    tickVolume: number;
-    side: 0 | 1;
-  }[] = [];
-  for (let i = 0; i < length; i++) {
-    const order = orders[i];
-    const orderInstrumentId = order.instrumentId;
-    if (
-      instrumentId !== undefined &&
-      Number(orderInstrumentId) !== instrumentId
-    ) {
-      continue;
-    }
-    out.push({
-      orderId: i,
-      quantity: String(order.quantity),
-      instrumentId: Number(orderInstrumentId),
-      price: String(order.price),
-      tickVolume: Number(order.tickVolume),
-      side: Number(order.side) as 0 | 1,
-    });
-  }
-  return out;
+function sideParam(value: string | null): Side | undefined {
+  return value === "buy" || value === "sell" ? value : undefined;
 }
 
-function accountBalances(account: Hex): Record<string, string> {
-  const balanceProxy = app.state.accounts[account].balances;
-  const assets = Object.keys(balanceProxy) as Address[];
-  const balances: Record<string, string> = {};
-  for (const asset of assets) {
-    balances[asset] = String(balanceProxy[asset]);
-  }
-  return balances;
+function isAccountID(value: string | null): value is Hex {
+  return value !== null && /^0x[0-9a-fA-F]{64}$/.test(value);
 }
 
-function accountNonces(account: Hex): Record<string, string> {
-  const nonceProxy = app.accounts[account].nonces;
-  const keys = Object.keys(nonceProxy);
-  const nonces: Record<string, string> = {};
-  for (const key of keys) {
-    nonces[key] = String(nonceProxy[key as `${number}`]);
-  }
-  return nonces;
-}
-
-function getPrices(instrumentId: number, side: "bids" | "asks"): number[] {
-  const instrument = app.state.instruments[`${instrumentId}`];
-  const prices: number[] = [];
-  let price = Number(side === "asks" ? instrument.bestAsk : instrument.bestBid);
-  while (price !== 0) {
-    prices.push(price);
-    price = Number(instrument[side][`${price}`].next);
-  }
-  return prices;
-}
-
-function summarizePrice(
-  instrumentId: number,
-  bidPrices: number[],
-  askPrices: number[],
-) {
-  let bestBid: number | null = null;
-  let bestAsk: number | null = null;
-
-  for (const price of bidPrices) {
-    const remainingQuantity =
-      app.state.instruments[`${instrumentId}`].bids[`${price}`]
-        .remainingQuantity;
-    if (remainingQuantity > 0n) {
-      bestBid = price;
-      break;
-    }
-  }
-  for (const price of askPrices) {
-    const remainingQuantity =
-      app.state.instruments[`${instrumentId}`].asks[`${price}`]
-        .remainingQuantity;
-    if (remainingQuantity > 0n) {
-      bestAsk = price;
-      break;
-    }
-  }
-
-  const price =
-    bestBid !== null && bestAsk !== null
-      ? Math.round((bestBid + bestAsk) / 2)
-      : (bestBid ?? bestAsk);
-  return {
-    instrumentId,
-    price,
-    bestBid,
-    bestAsk,
-    spread: bestBid !== null && bestAsk !== null ? bestAsk - bestBid : null,
-  };
-}
-
-function tickAt(
-  instrumentId: number,
-  side: "bids" | "asks",
-  priceQ32: number,
-): {
-  quantity: string;
-  remainingQuantity: string;
-  volume: number;
-} | null {
-  const tick =
-    app.state.instruments[String(instrumentId) as `${number}`][side][
-      String(priceQ32) as `${number}`
-    ];
-  const quantity = tick.quantity;
-  const remainingQuantity = tick.remainingQuantity;
-  const volume = tick.volume;
-  if (quantity === 0n && remainingQuantity === 0n && Number(volume) === 0) {
-    return null;
-  }
-  return {
-    quantity: String(quantity),
-    remainingQuantity: String(remainingQuantity),
-    volume: Number(volume),
-  };
-}
-
-serve({
-  idleTimeout: 0,
+const server = serve({
   routes: {
     "/api/manifest": () => json(app.manifest),
     "/api/ping": () =>
@@ -274,7 +131,7 @@ serve({
           body.params === undefined ||
           body.authorization === undefined
         ) {
-          return json({ error: "Bad Request" }, { status: 400 });
+          return badRequest("Bad Request");
         }
 
         const result = await app.execute(
@@ -288,23 +145,18 @@ serve({
     },
     "/api/tps": {
       GET: async () => {
-        const count = await selectRecentMutationCount(
-          readerDb,
-          app.schema,
-          TPS_WINDOW_MS,
-        );
+        const count = await selectRecentMutationCount(TPS_WINDOW_MS);
         return json(count / (TPS_WINDOW_MS / 1000));
       },
     },
-    "/api/events/blocks": { GET: () => eventStream("block") },
-    "/api/events/batches": { GET: () => eventStream("batch") },
+    "/api/live-blocks": {
+      GET: () => json({ acceptedBatches, includedBlocks }),
+    },
     "/api/blocks/:number": {
       GET: async (req) => {
-        const number = req.params.number;
-        if (!/^\d+$/.test(number)) {
-          return json({ error: "Invalid block number" }, { status: 400 });
-        }
-        const block = await selectBlock(readerDb, app.schema, number);
+        const number = intParam(req.params.number);
+        if (number === undefined) return badRequest("Invalid block number");
+        const block = await selectBlock(number);
         if (block === null) {
           return json({ error: "Block not found" }, { status: 404 });
         }
@@ -313,36 +165,25 @@ serve({
     },
     "/api/mutations": {
       GET: async (req) => {
-        const block = new URL(req.url).searchParams.get("block");
-        if (block === null || !/^\d+$/.test(block)) {
-          return json(
-            { error: "block query parameter required (integer)" },
-            { status: 400 },
-          );
+        const block = intParam(new URL(req.url).searchParams.get("block"));
+        if (block === undefined) {
+          return badRequest("block query parameter required (integer)");
         }
-        const mutations = await selectMutationsByBlock(
-          readerDb,
-          app.schema,
-          block,
-        );
+        const mutations = await selectMutationsByBlock(block);
         return json(mutations.map(withStatus));
       },
     },
     "/api/mutation": {
       GET: async (req) => {
-        const url = new URL(req.url);
-        const executionIndex = url.searchParams.get("executionIndex");
-        if (executionIndex === null || !/^\d+$/.test(executionIndex)) {
-          return json(
-            { error: "executionIndex query parameter required (integer)" },
-            { status: 400 },
+        const executionIndex = intParam(
+          new URL(req.url).searchParams.get("executionIndex"),
+        );
+        if (executionIndex === undefined) {
+          return badRequest(
+            "executionIndex query parameter required (integer)",
           );
         }
-        const mutation = await selectMutationByExecutionIndex(
-          readerDb,
-          app.schema,
-          BigInt(executionIndex),
-        );
+        const mutation = await selectMutationByExecutionIndex(executionIndex);
         if (mutation === null) {
           return json({ error: "Mutation not found" }, { status: 404 });
         }
@@ -351,260 +192,134 @@ serve({
     },
     "/api/account/:id/orders": {
       GET: (req) => {
-        const account = req.params.id as Hex;
-        if (account === null) {
-          return json({ error: "Invalid account address" }, { status: 400 });
-        }
+        const account = req.params.id;
+        if (!isAccountID(account)) return badRequest("Invalid account ID");
         if (!accountExists(account)) {
           return json({ error: "account not found" }, { status: 404 });
         }
-        const instrumentIdParam = new URL(req.url).searchParams.get(
-          "instrumentId",
+        const instrumentId = intParam(
+          new URL(req.url).searchParams.get("instrumentId"),
         );
-        const instrumentId =
-          instrumentIdParam !== null && /^\d+$/.test(instrumentIdParam)
-            ? Number(instrumentIdParam)
-            : undefined;
         return json({ orders: accountOrders(account, instrumentId) });
       },
     },
     "/api/account/:id/exists": {
       GET: (req) => {
-        const account = req.params.id as Hex;
-        if (account === null) {
-          return json({ exists: false, hasKeys: false });
-        }
-        const exists = accountExists(account);
-        return json({ exists, hasKeys: exists });
+        const account = req.params.id;
+        return json({ exists: isAccountID(account) && accountExists(account) });
       },
     },
     "/api/account/:id": {
       GET: async (req) => {
-        const account = req.params.id as Hex;
-        if (account === null) {
-          return json({ error: "Invalid account address" }, { status: 400 });
-        }
+        const account = req.params.id;
+        if (!isAccountID(account)) return badRequest("Invalid account ID");
         if (!accountExists(account)) {
           return json({ error: "account not found" }, { status: 404 });
         }
-        const credentials = accountCredentials(account);
-        const nonces = accountNonces(account);
-        const orders = accountOrders(account);
-        const balances = accountBalances(account);
         const mutations = await selectMutationsByAccount(
-          readerDb,
-          app.schema,
           account,
           ACCOUNT_MUTATION_HISTORY_LIMIT,
         );
         return json({
           address: account,
-          credentials,
-          nonces,
-          orders,
-          balances,
+          credentials: accountCredentials(account),
+          balances: accountBalances(account),
           mutations: mutations.map(withStatus),
         });
       },
     },
     "/api/balances": {
       GET: (req) => {
-        const account = new URL(req.url).searchParams.get(
-          "account",
-        ) as Hex | null;
-        if (account === null || !/^0x[0-9a-fA-F]{64}$/.test(account)) {
-          return json(
-            { error: "account query parameter required" },
-            { status: 400 },
-          );
+        const account = new URL(req.url).searchParams.get("account");
+        if (!isAccountID(account)) {
+          return badRequest("account query parameter required");
         }
         if (!accountExists(account)) {
           return json({ error: "account not found" }, { status: 404 });
         }
-        const balances = accountBalances(account);
-        return json({ account, balances });
+        return json({ account, balances: accountBalances(account) });
       },
     },
     "/api/price": {
       GET: (req) => {
-        const instrumentIdParam = new URL(req.url).searchParams.get(
-          "instrumentId",
+        const instrumentId = intParam(
+          new URL(req.url).searchParams.get("instrumentId"),
         );
-        if (instrumentIdParam === null || !/^\d+$/.test(instrumentIdParam)) {
-          return json(
-            { error: "instrumentId query parameter required" },
-            { status: 400 },
-          );
+        if (instrumentId === undefined) {
+          return badRequest("instrumentId query parameter required");
         }
-        const instrumentId = Number(instrumentIdParam);
-        const bidPrices = getPrices(instrumentId, "bids");
-        const askPrices = getPrices(instrumentId, "asks");
-        return json(summarizePrice(instrumentId, bidPrices, askPrices));
+        return json(price(instrumentId));
       },
     },
     "/api/depth": {
       GET: (req) => {
-        const instrumentIdParam = new URL(req.url).searchParams.get(
-          "instrumentId",
+        const instrumentId = intParam(
+          new URL(req.url).searchParams.get("instrumentId"),
         );
-        if (instrumentIdParam === null || !/^\d+$/.test(instrumentIdParam)) {
-          return json(
-            { error: "instrumentId query parameter required" },
-            { status: 400 },
-          );
+        if (instrumentId === undefined) {
+          return badRequest("instrumentId query parameter required");
         }
-        const instrumentId = Number(instrumentIdParam);
-        const bidPrices = getPrices(instrumentId, "bids");
-        const askPrices = getPrices(instrumentId, "asks");
-        const summary = summarizePrice(instrumentId, bidPrices, askPrices);
-        const bidTotals: Record<number, string> = {};
-        const askTotals: Record<number, string> = {};
-        for (const bp of [1, 5, 25] as const) {
-          let bidTotal = 0n;
-          let askTotal = 0n;
-          if (summary.price !== null) {
-            for (const price of bidPrices) {
-              if (price >= summary.price * (1 - bp / 10_000)) {
-                const remainingQuantity =
-                  app.state.instruments[`${instrumentId}`].bids[`${price}`]
-                    .remainingQuantity;
-                bidTotal += remainingQuantity;
-              }
-            }
-            for (const price of askPrices) {
-              if (price <= summary.price * (1 + bp / 10_000)) {
-                const remainingQuantity =
-                  app.state.instruments[`${instrumentId}`].asks[`${price}`]
-                    .remainingQuantity;
-                askTotal += remainingQuantity;
-              }
-            }
-          }
-          bidTotals[bp] = bidTotal.toString();
-          askTotals[bp] = askTotal.toString();
-        }
-        return json({ instrumentId, bids: bidTotals, asks: askTotals });
+        return json(depth(instrumentId));
       },
     },
     "/api/ticks": {
       POST: async (req) => {
         const body = superjson.parse(await req.text()) as {
-          instrumentId?: number;
-          queries?: { side: "buy" | "sell"; priceQ32: string | bigint }[];
+          instrumentId?: number | bigint;
+          queries?: { side: Side; priceQ32: bigint }[];
         };
+        const { instrumentId, queries } = body;
         if (
-          typeof body.instrumentId !== "number" ||
-          !Array.isArray(body.queries)
+          (typeof instrumentId !== "number" &&
+            typeof instrumentId !== "bigint") ||
+          !Array.isArray(queries)
         ) {
-          return json(
-            { error: "instrumentId and queries required" },
-            { status: 400 },
-          );
+          return badRequest("instrumentId and queries required");
         }
-        const ticks = body.queries.map((query) =>
-          tickAt(
-            body.instrumentId as number,
-            query.side === "buy" ? "bids" : "asks",
-            Number(query.priceQ32),
+        return json({
+          ticks: queries.map((query) =>
+            tickAt(BigInt(instrumentId), query.side, BigInt(query.priceQ32)),
           ),
-        );
-        return json({ ticks });
+        });
       },
     },
     "/api/estimate-market-order": {
       GET: (req) => {
-        const url = new URL(req.url);
-        const instrumentId = url.searchParams.get("instrumentId");
-        const side = url.searchParams.get("side");
-        const quantity = url.searchParams.get("quantity");
+        const params = new URL(req.url).searchParams;
+        const instrumentId = intParam(params.get("instrumentId"));
+        const side = sideParam(params.get("side"));
+        const quantity = intParam(params.get("quantity"));
         if (
-          instrumentId === null ||
-          quantity === null ||
-          (side !== "buy" && side !== "sell")
+          instrumentId === undefined ||
+          side === undefined ||
+          quantity === undefined
         ) {
-          return json(
-            { error: "instrumentId, side, and quantity required" },
-            { status: 400 },
-          );
+          return badRequest("instrumentId, side, and quantity required");
         }
-        const parsedInstrumentId = Number(instrumentId);
-        const prices = getPrices(
-          parsedInstrumentId,
-          side === "buy" ? "asks" : "bids",
-        );
-        const quantityLots = BigInt(quantity);
-        let remaining = quantityLots;
-        let quoteQuantity = 0n;
-        const fills: { quantity: string; price: number }[] = [];
-        for (const price of prices) {
-          if (remaining === 0n) break;
-          const available =
-            app.state.instruments[`${parsedInstrumentId}`][
-              side === "buy" ? "asks" : "bids"
-            ][`${price}`].remainingQuantity;
-          if (available === 0n) continue;
-          const fillLots = remaining < available ? remaining : available;
-          quoteQuantity += (fillLots * BigInt(price)) >> 32n;
-          remaining -= fillLots;
-          fills.push({ quantity: fillLots.toString(), price });
-        }
-        if (remaining > 0n) {
-          return json({ error: "insufficient liquidity" }, { status: 400 });
-        }
-        return json({
-          fills,
-          filledQuantity: quantityLots.toString(),
-          quoteQuantity: quoteQuantity.toString(),
-        });
+        const estimate = estimateMarketOrder(instrumentId, side, quantity);
+        if (estimate === null) return badRequest("insufficient liquidity");
+        return json(estimate);
       },
     },
     "/api/estimate-fill-to-price": {
       GET: (req) => {
-        const url = new URL(req.url);
-        const instrumentId = url.searchParams.get("instrumentId");
-        const side = url.searchParams.get("side");
-        const priceQ32 = url.searchParams.get("priceQ32");
+        const params = new URL(req.url).searchParams;
+        const instrumentId = intParam(params.get("instrumentId"));
+        const side = sideParam(params.get("side"));
+        const priceQ32 = intParam(params.get("priceQ32"));
         if (
-          instrumentId === null ||
-          priceQ32 === null ||
-          (side !== "buy" && side !== "sell")
+          instrumentId === undefined ||
+          side === undefined ||
+          priceQ32 === undefined
         ) {
-          return json(
-            { error: "instrumentId, side, and priceQ32 required" },
-            { status: 400 },
-          );
+          return badRequest("instrumentId, side, and priceQ32 required");
         }
-        const parsedInstrumentId = Number(instrumentId);
-        const limitPrice = Number(priceQ32);
-        const prices = getPrices(
-          parsedInstrumentId,
-          side === "buy" ? "asks" : "bids",
-        );
-        let totalQuantity = 0n;
-        let quoteQuantity = 0n;
-        const fills: { quantity: string; price: number }[] = [];
-        for (const price of prices) {
-          if (side === "buy" ? price > limitPrice : price < limitPrice) break;
-          const remainingQuantity =
-            app.state.instruments[`${parsedInstrumentId}`][
-              side === "buy" ? "asks" : "bids"
-            ][`${price}`].remainingQuantity;
-          if (remainingQuantity === 0n) continue;
-          totalQuantity += remainingQuantity;
-          quoteQuantity += (remainingQuantity * BigInt(price)) >> 32n;
-          fills.push({ quantity: remainingQuantity.toString(), price });
-        }
-        return json({
-          fills,
-          totalQuantity: totalQuantity.toString(),
-          quoteQuantity: quoteQuantity.toString(),
-        });
+        return json(estimateFillToPrice(instrumentId, side, priceQ32));
       },
     },
     "/*": index,
   },
-  development: process.env.NODE_ENV !== "production" && {
-    hmr: true,
-    console: true,
-  },
+  development: dev && { hmr: true, console: true },
 });
+
+console.log(`order-book listening on ${server.url}`);

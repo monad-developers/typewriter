@@ -1,17 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { packNonce } from "typewriter/client";
-import { bytesToHex } from "viem";
+import { randomNonce } from "order-book-sdk";
 import { loadStoredAccount, type StoredAccount } from "../lib/account-store";
 import { useManifest } from "./useManifest";
 
 export type Account = StoredAccount & { nonce: bigint };
 
-function randomNonceLane(): bigint {
-  return BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24))));
-}
-
 export function toAccount(stored: StoredAccount): Account {
-  return { ...stored, nonce: packNonce(randomNonceLane(), 0n) };
+  return { ...stored, nonce: randomNonce() };
 }
 
 async function loadAccount(storageKey: string): Promise<Account | null> {

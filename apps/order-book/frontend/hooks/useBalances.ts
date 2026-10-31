@@ -4,7 +4,7 @@ import { ApiError, request } from "../lib/api";
 
 type BalancesResponse = {
   account: Address;
-  balances: Record<Address, string>;
+  balances: Record<Address, bigint>;
 };
 
 export function useBalances(account: Address | undefined) {

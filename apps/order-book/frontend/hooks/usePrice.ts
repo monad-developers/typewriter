@@ -2,11 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { request } from "../lib/api";
 
 type PriceResponse = {
-  instrumentId: number;
-  price: number | null;
-  bestBid: number | null;
-  bestAsk: number | null;
-  spread: number | null;
+  price: bigint | null;
+  bestBid: bigint | null;
+  bestAsk: bigint | null;
+  spread: bigint | null;
 };
 
 export function usePrice(instrumentId: number) {

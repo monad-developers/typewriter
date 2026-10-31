@@ -5,25 +5,15 @@ import type { ApiMutation } from "./useMutations";
 
 export type ApiKey = {
   keyType: 0 | 1 | 2;
-  permissions: string;
+  permissions: bigint;
   expiration: number;
   publicKey: Hex;
-};
-
-export type ApiOrder = {
-  quantity: string;
-  instrumentId: number;
-  price: string;
-  tickVolume: number;
-  side: 0 | 1;
 };
 
 export type ApiAccount = {
   address: Hex;
   credentials: ApiKey[];
-  nonces: Record<string, string>;
-  orders: ApiOrder[];
-  balances: Record<Address, string>;
+  balances: Record<Address, bigint>;
   mutations: ApiMutation[];
 };
 

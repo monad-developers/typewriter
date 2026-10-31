@@ -63,7 +63,7 @@ function OrderBookRoute() {
       </Shell>
     );
   if (!balances.data) return <Shell compact />;
-  const usdRaw = BigInt(balances.data.balances[USD] ?? "0");
+  const usdRaw = balances.data.balances[USD] ?? 0n;
   if (usdRaw === 0n) {
     return (
       <Shell compact>
