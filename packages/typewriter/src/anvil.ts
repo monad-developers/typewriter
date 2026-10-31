@@ -31,7 +31,20 @@ export function startDevChain(
   return Effect.gen(function* () {
     const anvil = yield* ChildProcess.make(
       "anvil",
-      ["--network", "monad", "--port", "0", "--block-time", "0.25"],
+      [
+        "--network",
+        "monad",
+        "--port",
+        "0",
+        "--block-time",
+        "0.25",
+        // Keep recent history only, in memory, so a long-running chain stays
+        // flat; the runtime reads state only at its start block.
+        "--prune-history",
+        "64",
+        "--transaction-block-keeper",
+        "1024",
+      ],
       // Anvil reports bad flags, such as `--network` on an old Anvil, on stderr.
       { stderr: "inherit" },
     ).pipe(
