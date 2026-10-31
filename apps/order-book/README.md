@@ -22,42 +22,32 @@ Start local development with:
 cp .env.example.local .env
 ```
 
-Without `RPC_URL`, `bun dev` runs Typewriter in dev mode: it starts a local Anvil, deploys `OrderBook` with Anvil account #0 as the scheduler, and starts from an empty database schema. Leave `PRIVATE_KEY`, `ORDER_BOOK_ADDRESS`, and `CHAIN_ID` unset then; Typewriter refuses to start in dev mode with any of them set. Participant scripts read the deployment from the running backend at `API_URL`.
+`bun dev` runs Typewriter in dev mode: it starts a local Anvil, deploys `OrderBook` with Anvil account #0 as the scheduler, starts from an empty database schema, and seeds the book (every instrument, with limit orders at 1, 5, 10, and 25bp around a fixed price). Every start is a new chain.
 
-For Monad testnet or a hosted deployment, start with:
+`bun start` runs against a deployed `OrderBook`. For Monad testnet or a hosted deployment, start with:
 
 ```bash
 cp .env.example.testnet .env
+bun run deploy
+bun scripts/seed.ts # with the backend running
 ```
 
 ### Required Variables
 
 | Variable | Used by | Description |
 |---|---|---|
-| `PRIVATE_KEY` | `bun start`, `bun run deploy`, `bun dev` with `RPC_URL` | Funded deployer/backend wallet private key |
 | `DATABASE_URL` | `bun dev`, `bun start` | Postgres connection string |
-| `ORDER_BOOK_ADDRESS` | Backend, scripts | Deployed `OrderBook` contract address. Only with `RPC_URL` |
-| `RPC_URL` | Backend, scripts, deploy | RPC endpoint. The backend accepts comma-separated failover URLs. Unset in development to run on a local Anvil |
-| `CHAIN_ID` | Backend, scripts | Chain ID, for example `10143` for Monad testnet. Only with `RPC_URL` |
+| `PRIVATE_KEY` | `bun start`, `bun run deploy` | Funded deployer/backend wallet private key |
+| `ORDER_BOOK_ADDRESS` | `bun start` | Deployed `OrderBook` contract address |
+| `RPC_URL` | `bun start`, `bun run deploy` | RPC endpoint. The backend accepts comma-separated failover URLs |
+| `CHAIN_ID` | `bun start` | Chain ID, for example `10143` for Monad testnet |
 | `BUN_PUBLIC_RP_ID` | Frontend | WebAuthn relying party ID, usually the hostname |
 | `BUN_PUBLIC_ORIGIN` | Frontend | Expected WebAuthn origin |
 | `API_URL` | Scripts | Running order-book backend URL |
 
 `BUN_PUBLIC_*` variables are only used for browser-facing WebAuthn settings. `bunfig.toml` exposes them to browser code.
 
-### Script Overrides
-
-Participant scripts are run from `apps/order-book` and load the same `.env`. They require `API_URL`, and read the chain ID and order book address from the backend's `/api/manifest` unless `CHAIN_ID` and `ORDER_BOOK_ADDRESS` are set.
-
-Set these only for one-off overrides:
-
-| Variable | Description |
-|---|---|
-| `CHAIN_ID` | One-off override for scripts |
-| `ORDER_BOOK_ADDRESS` | One-off override for scripts |
-| `RPC_URL` | One-off override for scripts |
-
-Order-entry scripts also take command-specific variables such as `INSTRUMENT`, `SIDE`, `QUANTITY`, `PRICE`, and `INTERVAL`; see `scripts/README.md`.
+Participant scripts are run from `apps/order-book` and load the same `.env`. They read the deployment from the backend's `/api/manifest` at `API_URL`, and take command-specific variables such as `INSTRUMENT`, `SIDE`, `QUANTITY`, `PRICE`, and `INTERVAL`; see `scripts/README.md`.
 
 ## Local Dev Loop
 
@@ -65,7 +55,7 @@ Order-entry scripts also take command-specific variables such as `INSTRUMENT`, `
 cd apps/order-book && cp .env.example.local .env && bun dev
 ```
 
-Open <http://localhost:3000>. The same process serves the API, frontend, and Typewriter runtime.
+Open <http://localhost:3000>. The same process serves the API, frontend, and Typewriter runtime. Restart it to pick up server changes.
 
 ## Checks
 
