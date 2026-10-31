@@ -1,31 +1,13 @@
 import { count, desc, eq, gte } from "drizzle-orm";
-import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
+import { drizzle } from "drizzle-orm/bun-sql";
 import type { Hex } from "viem";
+import { app, databaseUrl } from "./app";
 
-// biome-ignore lint/suspicious/noExplicitAny: generated Solidity schema types will replace this temporary dynamic schema access
-type OrderBookSchema = any;
-type QueryDatabase = BunSQLDatabase & { readonly $client: Bun.SQL };
+const db = drizzle({ client: new Bun.SQL({ url: databaseUrl, max: 25 }) });
+const tables = Object.values(app.schema);
 
-const mutationTableNames = [
-  "createaccount_mutations",
-  "addcredential_mutations",
-  "removecredential_mutations",
-  "closeorder_mutations",
-  "changeorder_mutations",
-  "limitorder_mutations",
-  "marketorder_mutations",
-  "addinstrument_mutations",
-  "deposit_mutations",
-  "withdrawal_mutations",
-] as const;
-
-export async function selectBlock(
-  db: QueryDatabase,
-  schema: OrderBookSchema,
-  blockNumber: string,
-) {
-  for (const mutationTableName of mutationTableNames) {
-    const table = schema[mutationTableName];
+export async function selectBlock(blockNumber: bigint) {
+  for (const table of tables) {
     const [row] = await db
       .select({
         blockNumber: table.block_number,
@@ -33,7 +15,7 @@ export async function selectBlock(
         blockTimestamp: table.block_timestamp,
       })
       .from(table)
-      .where(eq(table.block_number, BigInt(blockNumber)))
+      .where(eq(table.block_number, blockNumber))
       .limit(1);
     if (
       row !== undefined &&
@@ -51,58 +33,39 @@ export async function selectBlock(
   return null;
 }
 
-export async function selectMutationsByBlock(
-  db: QueryDatabase,
-  schema: OrderBookSchema,
-  blockNumber: string,
-) {
+export async function selectMutationsByBlock(blockNumber: bigint) {
   const rows = await Promise.all(
-    mutationTableNames.map(async (mutationTableName) => {
-      const table = schema[mutationTableName];
-      return await db
-        .select()
-        .from(table)
-        .where(eq(table.block_number, BigInt(blockNumber)));
-    }),
+    tables.map((table) =>
+      db.select().from(table).where(eq(table.block_number, blockNumber)),
+    ),
   );
   return rows
     .flat()
     .sort((a, b) => compareBigInt(a.execution_index, b.execution_index));
 }
 
-export async function selectMutationByExecutionIndex(
-  db: QueryDatabase,
-  schema: OrderBookSchema,
-  executionIndex: bigint,
-) {
-  for (const mutationTableName of mutationTableNames) {
-    const table = schema[mutationTableName];
-    const rows = await db
+export async function selectMutationByExecutionIndex(executionIndex: bigint) {
+  for (const table of tables) {
+    const [row] = await db
       .select()
       .from(table)
       .where(eq(table.execution_index, executionIndex))
       .limit(1);
-    if (rows.length > 0) return rows[0];
+    if (row !== undefined) return row;
   }
   return null;
 }
 
-export async function selectMutationsByAccount(
-  db: QueryDatabase,
-  schema: OrderBookSchema,
-  account: Hex,
-  limit: number,
-) {
+export async function selectMutationsByAccount(account: Hex, limit: number) {
   const rows = await Promise.all(
-    mutationTableNames.map(async (mutationTableName) => {
-      const table = schema[mutationTableName];
-      return await db
+    tables.map((table) =>
+      db
         .select()
         .from(table)
         .where(eq(table.authorization_account_id, account))
         .orderBy(desc(table.execution_index))
-        .limit(limit);
-    }),
+        .limit(limit),
+    ),
   );
   return rows
     .flat()
@@ -110,14 +73,9 @@ export async function selectMutationsByAccount(
     .slice(0, limit);
 }
 
-export async function selectRecentMutationCount(
-  db: QueryDatabase,
-  schema: OrderBookSchema,
-  windowMs: number,
-) {
+export async function selectRecentMutationCount(windowMs: number) {
   const counts = await Promise.all(
-    mutationTableNames.map(async (mutationTableName) => {
-      const table = schema[mutationTableName];
+    tables.map(async (table) => {
       const [row] = await db
         .select({ count: count() })
         .from(table)

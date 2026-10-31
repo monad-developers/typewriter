@@ -1,15 +1,16 @@
-import { fromLots, INSTRUMENTS, q32ToPrice, TokenAmount } from "order-book-sdk";
+import {
+  fromLots,
+  INSTRUMENTS,
+  lotAligned,
+  q32ToPrice,
+  TokenAmount,
+} from "order-book-sdk";
 import { useState } from "react";
 import { useBalances } from "../hooks/useBalances";
 import { useDepth } from "../hooks/useDepth";
 import { useMarketOrderMutation } from "../hooks/useMarketOrderMutation";
 import { usePrice } from "../hooks/usePrice";
 import { useStoredAccount } from "../hooks/useStoredAccount";
-
-function lotAligned(raw: bigint, lotExp: number): bigint {
-  const e = BigInt(lotExp);
-  return (raw >> e) << e;
-}
 
 const PLAIN_COLUMNS_LEFT = ["", "inventory", "price", "spread"] as const;
 const BID_SUB = ["25bp", "5bp", "1bp"] as const;
@@ -107,7 +108,7 @@ export function OrderBook() {
             isLast={i === instruments.length - 1}
             balance={
               TokenAmount.fromRaw(
-                BigInt(balancesData?.balances[inst.base] ?? "0"),
+                balancesData?.balances[inst.base] ?? 0n,
                 inst.base,
               ).human
             }
@@ -145,7 +146,7 @@ function Row({
       {
         instrumentId: instrument.id,
         side,
-        amount: aligned.toString(),
+        quantity: aligned,
       },
       {
         onSuccess: () => {
@@ -157,17 +158,17 @@ function Row({
   };
   const price =
     priceData?.price != null
-      ? `$${q32ToPrice(BigInt(priceData.price), instrument).toFixed(2)}`
+      ? `$${q32ToPrice(priceData.price, instrument).toFixed(2)}`
       : "—";
   const spread =
     priceData?.spread != null
-      ? `$${q32ToPrice(BigInt(priceData.spread), instrument).toFixed(2)}`
+      ? `$${q32ToPrice(priceData.spread, instrument).toFixed(2)}`
       : "—";
 
   const fmtDepth = (side: "bids" | "asks", bp: string) => {
     const lots = depthData?.[side][bp];
     if (lots == null) return "—";
-    const raw = fromLots(BigInt(lots), instrument.baseLotExp);
+    const raw = fromLots(lots, instrument.baseLotExp);
     return TokenAmount.fromRaw(raw, instrument.base).human.toFixed(2);
   };
 

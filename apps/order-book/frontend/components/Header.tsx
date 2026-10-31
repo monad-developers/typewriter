@@ -49,8 +49,7 @@ function HeaderAccountControls() {
   const { data } = useBalances(account?.accountId);
   const accountQuery = useAccount(account?.accountId);
 
-  const rawBalance = data?.balances[USD] ?? "0";
-  const balance = TokenAmount.fromRaw(BigInt(rawBalance), USD).human;
+  const balance = TokenAmount.fromRaw(data?.balances[USD] ?? 0n, USD).human;
   const accountID = accountQuery.data?.address;
 
   return (

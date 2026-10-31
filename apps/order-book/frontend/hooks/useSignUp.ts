@@ -1,9 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
+import {
+  DEFAULT_NON_ROOT_PERMISSIONS,
+  type OrderBookManifest,
+  randomNonce,
+} from "order-book-sdk";
 import {
   authorizeMutation,
   deriveAccountID,
   getAuthorizationPayload,
+  KeyType,
   type TypedMutation,
 } from "typewriter/client";
 import { bytesToHex } from "viem";
@@ -53,7 +58,7 @@ export function useSignUp() {
       });
 
       const createParams = {
-        keyType: 1,
+        keyType: KeyType.WebAuthnP256,
         publicKey: credential.publicKey,
       } as const;
       const accountId = deriveAccountID(createParams);
@@ -64,7 +69,7 @@ export function useSignUp() {
         credentialID: 0n,
         nonce: 0n,
         expiration: 0n,
-      } as unknown as TypedMutation<typeof manifest, "CreateAccount">;
+      } satisfies TypedMutation<OrderBookManifest, "CreateAccount">;
       const createAssertion = await ClientAuthentication.sign({
         rpId: RP_ID,
         challenge: getAuthorizationPayload(manifest, createMutation),
@@ -82,16 +87,15 @@ export function useSignUp() {
         name: "AddCredential",
         params: {
           expiration: 0n,
-          keyType: 0,
+          keyType: KeyType.P256,
           permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
           publicKey: sessionPublicKey,
         },
         accountID: accountId,
         credentialID: 0n,
-        nonce:
-          BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n,
+        nonce: randomNonce(),
         expiration: 0n,
-      } as unknown as TypedMutation<typeof manifest, "AddCredential">;
+      } satisfies TypedMutation<OrderBookManifest, "AddCredential">;
       const addAssertion = await ClientAuthentication.sign({
         rpId: RP_ID,
         challenge: getAuthorizationPayload(manifest, addMutation),

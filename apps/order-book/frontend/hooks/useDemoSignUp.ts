@@ -1,30 +1,17 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { DEFAULT_NON_ROOT_PERMISSIONS } from "order-book-sdk";
-import { Secp256k1, Signature } from "ox";
-import type * as HexNamespace from "ox/Hex";
 import {
-  authorizeMutation,
-  deriveAccountID,
-  getAuthorizationPayload,
-  type TypedMutation,
-} from "typewriter/client";
-import { bytesToHex, encodeAbiParameters, type Hex } from "viem";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+  authorizeWithSecp256k1,
+  createSecp256k1Account,
+  DEFAULT_NON_ROOT_PERMISSIONS,
+  randomNonce,
+} from "order-book-sdk";
+import { Secp256k1 } from "ox";
+import { KeyType } from "typewriter/client";
+import { bytesToHex } from "viem";
 import { saveStoredAccount } from "../lib/account-store";
 import { request } from "../lib/api";
 import { useManifest } from "./useManifest";
 import { toAccount } from "./useStoredAccount";
-
-function signSecp256k1(privateKey: Hex, payload: Hex): Hex {
-  const signature = Secp256k1.sign({
-    payload,
-    privateKey: privateKey as HexNamespace.Hex,
-  });
-  return encodeAbiParameters(
-    [{ type: "uint8" }, { type: "bytes32" }, { type: "bytes32" }],
-    [Signature.yParityToV(signature.yParity), signature.r, signature.s],
-  );
-}
 
 export function useDemoSignUp() {
   const { data: manifest } = useManifest();
@@ -36,30 +23,12 @@ export function useDemoSignUp() {
       if (manifest === undefined || storageKey === undefined) {
         throw new Error("Missing manifest");
       }
-      const rootPrivateKey = generatePrivateKey();
-      const rootAddress = privateKeyToAccount(rootPrivateKey).address;
-      const rootPublicKey = encodeAbiParameters(
-        [{ type: "address" }],
-        [rootAddress],
+      const rootPrivateKey = Secp256k1.randomPrivateKey();
+      const { accountID, mutation } = createSecp256k1Account(
+        manifest,
+        rootPrivateKey,
       );
-      const createParams = { keyType: 2, publicKey: rootPublicKey } as const;
-      const accountId = deriveAccountID(createParams);
-      const createMutation = {
-        name: "CreateAccount",
-        params: createParams,
-        accountID: accountId,
-        credentialID: 0n,
-        nonce: 0n,
-        expiration: 0n,
-      } as unknown as TypedMutation<typeof manifest, "CreateAccount">;
-      const create = authorizeMutation(
-        createMutation,
-        signSecp256k1(
-          rootPrivateKey,
-          getAuthorizationPayload(manifest, createMutation),
-        ),
-      );
-      await request("/api", { method: "POST", body: create });
+      await request("/api", { method: "POST", body: mutation });
 
       const keyPair = await crypto.subtle.generateKey(
         { name: "ECDSA", namedCurve: "P-256" },
@@ -69,29 +38,21 @@ export function useDemoSignUp() {
       const sessionPublicKey = bytesToHex(
         new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
       );
-      const addMutation = {
+      const add = authorizeWithSecp256k1(manifest, rootPrivateKey, {
         name: "AddCredential",
         params: {
           expiration: 0n,
-          keyType: 0,
+          keyType: KeyType.P256,
           permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
           publicKey: sessionPublicKey,
         },
-        accountID: accountId,
+        accountID,
         credentialID: 0n,
-        nonce:
-          BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24)))) << 64n,
+        nonce: randomNonce(),
         expiration: 0n,
-      } as unknown as TypedMutation<typeof manifest, "AddCredential">;
-      const add = authorizeMutation(
-        addMutation,
-        signSecp256k1(
-          rootPrivateKey,
-          getAuthorizationPayload(manifest, addMutation),
-        ),
-      );
+      });
       await request("/api", { method: "POST", body: add });
-      const stored = { accountId, keyPair };
+      const stored = { accountId: accountID, keyPair };
       await saveStoredAccount(storageKey, stored);
       return toAccount(stored);
     },
