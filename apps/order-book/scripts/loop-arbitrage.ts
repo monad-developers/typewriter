@@ -4,41 +4,30 @@ import {
   priceToQ32,
   TokenAmount,
 } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
-  createAccount,
+  createAccountRetrying,
   deposit,
   estimateFillToPrice,
   marketOrder,
-} from "./src/sdk";
+} from "./src/client";
+import { type InstrumentName, instrumentsEnv, intervalEnv } from "./src/env";
 
-const DEFAULT_INTERVAL = 10_000;
-
-const YAHOO_SYMBOLS = {
+const YAHOO_SYMBOLS: Record<InstrumentName, string> = {
   "GOLD/USD": "GC=F",
   "WTIOIL/USD": "CL=F",
   "EUR/USD": "EURUSD=X",
   "SPX/USD": "^GSPC",
   "BTC/USD": "BTC-USD",
-} as const;
+};
 
-const targets = resolveTargets();
-const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
+const targets = instrumentsEnv().map((target) => ({
+  ...target,
+  yahooSymbol: YAHOO_SYMBOLS[target.name],
+}));
+const interval = intervalEnv();
 
-let account: Awaited<ReturnType<typeof createAccount>>;
-while (true) {
-  try {
-    account = await createAccount();
-    break;
-  } catch (err) {
-    console.error(
-      "createAccount failed, retrying:",
-      err instanceof Error ? err.message : err,
-    );
-    await Bun.sleep(interval);
-  }
-}
-console.log(`account ${account.address}`);
+const account = await createAccountRetrying(interval);
+console.log(`account ${account.accountID}`);
 console.log(
   `interval: ${interval}ms, instruments: ${targets.map((t) => `${t.name}(${t.yahooSymbol})`).join(", ")}`,
 );
@@ -55,34 +44,6 @@ while (true) {
     }
   }
   await Bun.sleep(interval);
-}
-
-function resolveTargets(): {
-  name: keyof typeof INSTRUMENTS;
-  instrument: InstrumentConfig;
-  yahooSymbol: string;
-}[] {
-  if (!process.env.INSTRUMENT) {
-    return (Object.keys(INSTRUMENTS) as (keyof typeof INSTRUMENTS)[]).map(
-      (name) => ({
-        name,
-        instrument: INSTRUMENTS[name],
-        yahooSymbol: YAHOO_SYMBOLS[name],
-      }),
-    );
-  }
-  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-  const instrument = INSTRUMENTS[name];
-  if (!instrument) {
-    console.error(`unknown instrument: ${name}`);
-    process.exit(1);
-  }
-  const yahooSymbol = YAHOO_SYMBOLS[name];
-  if (!yahooSymbol) {
-    console.error(`no Yahoo Finance symbol for ${name}`);
-    process.exit(1);
-  }
-  return [{ name, instrument, yahooSymbol }];
 }
 
 async function fetchYahooPrice(symbol: string): Promise<number> {
