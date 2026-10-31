@@ -1,38 +1,18 @@
 import { fromLots, q32ToPrice, TokenAmount, toLots } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
   createAccount,
   deposit,
   estimateMarketOrder,
   marketOrder,
-} from "./src/sdk";
+} from "./src/client";
+import { instrumentEnv, requiredEnv, sideEnv } from "./src/env";
 
-if (!process.env.SIDE) {
-  console.error("SIDE env var is required (buy or sell)");
-  process.exit(1);
-}
-if (!process.env.QUANTITY) {
-  console.error("QUANTITY env var is required (e.g. 1 for 1 unit of base)");
-  process.exit(1);
-}
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const side = process.env.SIDE as "buy" | "sell";
-if (side !== "buy" && side !== "sell") {
-  console.error("SIDE env var must be 'buy' or 'sell'");
-  process.exit(1);
-}
-const humanQuantity = Number(process.env.QUANTITY);
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName]!;
+const side = sideEnv();
+const humanQuantity = Number(requiredEnv("QUANTITY", "1 for 1 unit of base"));
+const { instrument } = instrumentEnv();
 
 const account = await createAccount();
-console.log(`account ${account.address}`);
+console.log(`account ${account.accountID}`);
 
 const quantity = TokenAmount.from(humanQuantity, instrument.base);
 console.log(
@@ -51,7 +31,7 @@ try {
   quoteLots = estimate.quoteQuantity;
   for (const fill of estimate.fills) {
     console.log(
-      `price: $${q32ToPrice(BigInt(fill.price), instrument).toFixed(4)}, fill quantity: ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)}`,
+      `price: $${q32ToPrice(fill.price, instrument).toFixed(4)}, fill quantity: ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)}`,
     );
   }
 } catch (err) {

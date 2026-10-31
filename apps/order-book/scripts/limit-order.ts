@@ -1,42 +1,14 @@
 import { baseToQuote, priceToQ32, TokenAmount } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
-import { createAccount, deposit, limitOrder } from "./src/sdk";
+import { createAccount, deposit, limitOrder } from "./src/client";
+import { instrumentEnv, requiredEnv, sideEnv } from "./src/env";
 
-if (!process.env.PRICE) {
-  console.error("PRICE env var is required (e.g. 2400 for $2400)");
-  process.exit(1);
-}
-if (!process.env.SIDE) {
-  console.error("SIDE env var is required (buy or sell)");
-  process.exit(1);
-}
-if (!process.env.QUANTITY) {
-  console.error("QUANTITY env var is required (e.g. 1 for 1 unit)");
-  process.exit(1);
-}
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const price = Number(process.env.PRICE);
-const side = process.env.SIDE as "buy" | "sell";
-if (side !== "buy" && side !== "sell") {
-  console.error("SIDE env var must be 'buy' or 'sell'");
-  process.exit(1);
-}
-const humanQuantity = Number(process.env.QUANTITY);
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
+const price = Number(requiredEnv("PRICE", "2400 for $2400"));
+const side = sideEnv();
+const humanQuantity = Number(requiredEnv("QUANTITY", "1 for 1 unit"));
+const { instrument } = instrumentEnv();
 
 const account = await createAccount();
-console.log(`account ${account.address}`);
+console.log(`account ${account.accountID}`);
 
 const quantity = TokenAmount.from(humanQuantity, instrument.base);
 console.log(

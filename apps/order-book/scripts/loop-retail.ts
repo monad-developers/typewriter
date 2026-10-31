@@ -5,36 +5,23 @@ import {
   TokenAmount,
   toLots,
 } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
-  createAccount,
+  createAccountRetrying,
   deposit,
   estimateMarketOrder,
   marketOrder,
-} from "./src/sdk";
+} from "./src/client";
+import { instrumentsEnv, intervalEnv } from "./src/env";
 
-const DEFAULT_INTERVAL = 10_000;
 // 0 means skip the iteration, simulating a retail trader who is only
 // sometimes active. Repeated weights bias toward common sizes.
 const QUANTITIES = [0, 0, 0, 0, 0.1, 0.25, 0.5, 1, 2, 2, 5, 10];
 
-const instruments = resolveInstruments();
-const interval = Number(process.env.INTERVAL ?? DEFAULT_INTERVAL);
+const instruments = instrumentsEnv();
+const interval = intervalEnv();
 
-let account: Awaited<ReturnType<typeof createAccount>>;
-while (true) {
-  try {
-    account = await createAccount();
-    break;
-  } catch (err) {
-    console.error(
-      "createAccount failed, retrying:",
-      err instanceof Error ? err.message : err,
-    );
-    await Bun.sleep(interval);
-  }
-}
-console.log(`account ${account.address}`);
+const account = await createAccountRetrying(interval);
+console.log(`account ${account.accountID}`);
 console.log(
   `interval: ${interval}ms, instruments: ${instruments.map((i) => i.name).join(", ")}`,
 );
@@ -51,25 +38,6 @@ while (true) {
     }
   }
   await Bun.sleep(interval);
-}
-
-function resolveInstruments(): {
-  name: keyof typeof INSTRUMENTS;
-  instrument: InstrumentConfig;
-}[] {
-  if (!process.env.INSTRUMENT) {
-    return Object.entries(INSTRUMENTS).map(([name, instrument]) => ({
-      name: name as keyof typeof INSTRUMENTS,
-      instrument,
-    }));
-  }
-  const name = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-  const instrument = INSTRUMENTS[name];
-  if (!instrument) {
-    console.error(`unknown instrument: ${name}`);
-    process.exit(1);
-  }
-  return [{ name, instrument }];
 }
 
 async function tick(instrument: InstrumentConfig, label: string) {
