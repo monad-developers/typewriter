@@ -1,33 +1,17 @@
 import { fromLots, priceToQ32, q32ToPrice, TokenAmount } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
 import {
   createAccount,
   deposit,
   estimateFillToPrice,
   marketOrder,
-} from "./src/sdk";
+} from "./src/client";
+import { instrumentEnv, requiredEnv } from "./src/env";
 
-if (!process.env.PRICE) {
-  console.error("PRICE env var is required (e.g. 2400 for $2400)");
-  process.exit(1);
-}
-if (!process.env.INSTRUMENT) {
-  console.error(
-    "INSTRUMENT env var is required (e.g. GOLD/USD, or see constants.ts for options)",
-  );
-  process.exit(1);
-}
-
-const anchorPrice = Number(process.env.PRICE);
-const instrumentName = process.env.INSTRUMENT as keyof typeof INSTRUMENTS;
-const instrument = INSTRUMENTS[instrumentName];
-if (!instrument) {
-  console.error(`unknown instrument: ${instrumentName}`);
-  process.exit(1);
-}
+const anchorPrice = Number(requiredEnv("PRICE", "2400 for $2400"));
+const { instrument } = instrumentEnv();
 
 const account = await createAccount();
-console.log(`account ${account.address}`);
+console.log(`account ${account.accountID}`);
 
 const anchorQ32 = priceToQ32(anchorPrice, instrument);
 console.log(`anchor price: $${anchorPrice}`);
@@ -47,12 +31,12 @@ const [buyEstimate, sellEstimate] = await Promise.all([
 
 for (const fill of buyEstimate.fills) {
   console.log(
-    `  buy ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(BigInt(fill.price), instrument).toFixed(4)}`,
+    `  buy ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(fill.price, instrument).toFixed(4)}`,
   );
 }
 for (const fill of sellEstimate.fills) {
   console.log(
-    `  sell ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(BigInt(fill.price), instrument).toFixed(4)}`,
+    `  sell ${TokenAmount.fromRaw(fromLots(fill.quantity, instrument.baseLotExp), instrument.base).human.toFixed(4)} @ $${q32ToPrice(fill.price, instrument).toFixed(4)}`,
   );
 }
 

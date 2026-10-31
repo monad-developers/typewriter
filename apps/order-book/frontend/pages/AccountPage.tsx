@@ -66,17 +66,16 @@ function formatExpiry(expiry: number) {
   return new Date(expiry * 1000).toISOString();
 }
 
-function formatPermissions(permissions: string) {
-  const value = BigInt(permissions);
-  if (value === 0n) return "none";
-  const names = PERMISSIONS.filter((p) => value & BigInt(p.bit)).map(
+function formatPermissions(permissions: bigint) {
+  if (permissions === 0n) return "none";
+  const names = PERMISSIONS.filter((p) => permissions & BigInt(p.bit)).map(
     (p) => p.name,
   );
-  return names.join(", ") || `0x${value.toString(16)}`;
+  return names.join(", ") || `0x${permissions.toString(16)}`;
 }
 
-function formatAssetAmount(asset: Address, amount: string) {
-  return `${TokenAmount.fromRaw(BigInt(amount), asset).human.toFixed(2)} ${assetSymbol(asset)}`;
+function formatAssetAmount(asset: Address, amount: bigint) {
+  return `${TokenAmount.fromRaw(amount, asset).human.toFixed(2)} ${assetSymbol(asset)}`;
 }
 
 export function AccountPage() {

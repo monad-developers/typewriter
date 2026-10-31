@@ -1,14 +1,15 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { bidOrAsk, type Side } from "order-book-sdk";
 import { incrementNonce } from "typewriter/client";
 import { request } from "../lib/api";
 import { useManifest } from "./useManifest";
-import { signMarketOrder } from "./useSign";
+import { signMutation } from "./useSign";
 import { useStoredAccount } from "./useStoredAccount";
 
 type MarketOrderParams = {
   instrumentId: number;
-  side: "buy" | "sell";
-  amount: string;
+  side: Side;
+  quantity: bigint;
 };
 
 export function useMarketOrderMutation() {
@@ -18,25 +19,20 @@ export function useMarketOrderMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ instrumentId, side, amount }: MarketOrderParams) => {
+    mutationFn: async ({ instrumentId, side, quantity }: MarketOrderParams) => {
       if (!account) throw new Error("No account");
       if (manifest === undefined) throw new Error("Missing manifest");
 
-      const signed = await signMarketOrder(account, manifest, account.nonce, {
-        quantity: BigInt(amount),
+      const signed = await signMutation(account, manifest, "MarketOrder", {
+        quantity,
         minReceivedQuantity: 0n,
-        instrumentId,
-        bidOrAsk: side === "buy" ? 0 : 1,
+        instrumentId: BigInt(instrumentId),
+        bidOrAsk: bidOrAsk(side),
       });
-
-      const start = performance.now();
       const result = await request("/api", {
         method: "POST",
         body: signed,
       });
-      console.log(
-        `[tx-latency] market-order ${(performance.now() - start).toFixed(1)}ms`,
-      );
 
       return {
         result,
