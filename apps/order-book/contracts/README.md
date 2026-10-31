@@ -6,7 +6,7 @@ Within each batch, mutations are sequenced cancel → limit → market and marke
 
 ## Prerequisites
 
-[Latest Foundry](https://book.getfoundry.sh/getting-started/installation) with Monad network support. The latest release includes the P256 precompile at `address(0x100)` (RIP-7212) and does not require a separate category-labs Foundry build. Start local Anvil with `anvil --network monad`.
+[Latest Foundry](https://book.getfoundry.sh/getting-started/installation) with Monad network support. The latest release includes the P256 precompile at `address(0x100)` (RIP-7212) and does not require a separate category-labs Foundry build. Local development needs no deploy: `bun dev` starts its own Anvil and deploys the contract to it.
 
 ## Environment Variables
 
@@ -15,13 +15,14 @@ Within each batch, mutations are sequenced cancel → limit → market and marke
 | `PRIVATE_KEY` | Yes (for deploy) | Private key used to deploy the contract and derive the scheduler address |
 | `RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
 
-Order-book uses one root `.env` file. From `apps/order-book`, copy `.env.example.local` or `.env.example.testnet` to `.env`, then run `bun run deploy`.
+Order-book uses one root `.env` file. To deploy to Monad testnet, copy `.env.example.testnet` to `.env` in `apps/order-book`, set `PRIVATE_KEY`, then run `bun run deploy`.
 
 ## Usage
 
 ```shell
 bun install
 forge test --network monad # from this contracts directory
+forge snapshot --network monad # from this contracts directory, updates .gas-snapshot
 bun run contracts:build
 bun run deploy      # from apps/order-book, deploy to the RPC in .env
 ```

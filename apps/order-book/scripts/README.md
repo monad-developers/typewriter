@@ -14,16 +14,16 @@ Order-book uses one root `.env` file. Start from the app-level example:
 cp .env.example.local .env
 ```
 
-Scripts require `API_URL`. They read `CHAIN_ID`, `ORDER_BOOK_ADDRESS`, and `RPC_URL` from `.env`; set those only for one-off overrides.
+Scripts require `API_URL`, and read the chain and order book address from the backend's `/api/manifest`.
 
 ## Scripts
 
-### add-instrument
+### seed
 
-Registers instruments on the order book. Run this first.
+Registers every instrument and places limit orders around its price. `bun dev` seeds its own chain, so run this only against a new deployment.
 
 ```bash
-bun scripts/add-instrument.ts
+bun scripts/seed.ts
 ```
 
 ### limit-order
@@ -78,12 +78,11 @@ INSTRUMENT=GOLD/USD bun scripts/retail.ts
 
 ## Writing a script
 
-Create a new `.ts` file in `scripts/`. Import what you need from `order-book-sdk` and the local script SDK in `scripts/src/`:
+Create a new `.ts` file in `scripts/`. Import what you need from `order-book-sdk` and the backend client in `scripts/src/client.ts`; `scripts/src/env.ts` reads the common env vars:
 
 ```ts
-import { TokenAmount } from "order-book-sdk";
-import { INSTRUMENTS } from "./src/constants";
-import { createAccount, deposit, limitOrder } from "./src/sdk";
+import { INSTRUMENTS, TokenAmount } from "order-book-sdk";
+import { createAccount, deposit, limitOrder } from "./src/client";
 
 const inst = INSTRUMENTS["GOLD/USD"];
 const account = await createAccount();
@@ -102,7 +101,7 @@ await limitOrder(account, {
 
 Run it with `bun scripts/my-script.ts` from `apps/order-book/` so Bun loads the app-level `.env`.
 
-## SDK reference
+## Client reference
 
 ### Account
 
@@ -119,6 +118,7 @@ await withdraw(account, { quantity });
 await limitOrder(account, { instrument, quantity, price, side });
 await marketOrder(account, { instrument, quantity, minReceived, side });
 await closeOrder(account, { orderId });
+await changeOrder(account, { orderId, instrument, price });
 ```
 
 ### Concurrent transactions
@@ -132,10 +132,12 @@ await Promise.all([
 ]);
 ```
 
-### State
+### Reads
 
 ```ts
-const state = await fetchState();
-// state.instruments[0] — order book, ticks
-// state.accounts["0x..."] — balances, keys, nonces
+await fetchPrice(instrumentId); // { price, bestBid, bestAsk, spread }, Q32 prices
+await fetchTicks(instrumentId, [{ side, priceQ32 }]);
+await fetchAccountOrders(account.accountID, instrumentId);
+await estimateMarketOrder({ instrumentId, side, quantityLots });
+await estimateFillToPrice({ instrumentId, side, priceQ32 });
 ```
