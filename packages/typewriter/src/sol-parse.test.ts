@@ -385,11 +385,33 @@ contract App is Typewriter {
   );
 });
 
-test("parseSolidity errors when state is not a struct", () => {
+test("parseSolidity errors when the app fixes the scheduler", () => {
+  expect(() =>
+    parse(`
+contract App is Typewriter(address(1)) {
+    function dispatch(uint8, bytes memory, bytes32) internal override {}
+}`),
+  ).toThrowErrorMatchingInlineSnapshot(
+    `"App must declare \`constructor(address scheduler)\` and pass it to \`Typewriter(scheduler)\`, but its constructor takes ()"`,
+  );
+});
+
+test("parseSolidity errors when state is missing or not a struct", () => {
   expect(() =>
     parse(`
 contract App is Typewriter {
     uint256 internal state;
+    constructor(address scheduler) Typewriter(scheduler) {}
+    function dispatch(uint8, bytes memory, bytes32) internal override {}
+}`),
+  ).toThrowErrorMatchingInlineSnapshot(
+    `"App must keep its state in a struct variable named \`state\`"`,
+  );
+  expect(() =>
+    parse(`
+contract App is Typewriter {
+    struct State { uint256 total; }
+    State internal store;
     constructor(address scheduler) Typewriter(scheduler) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
@@ -426,7 +448,21 @@ test("parseSolidity errors when the app has no Mutation enum", () => {
       ),
     ),
   ).toThrowErrorMatchingInlineSnapshot(
-    `"App must declare \`enum Mutation\` with a member for each mutation"`,
+    `"App must declare \`enum Mutation\` inside the contract or a base contract, with a member for each mutation"`,
+  );
+});
+
+test("parseSolidity errors when Mutation is declared outside the contract", () => {
+  expect(() =>
+    parse(`
+enum Mutation { Add }
+struct Add { uint256 amount; }
+${app(`
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {
+        if (mutation == uint8(Mutation.Add)) abi.decode(mutationData, (Add));
+    }`)}`),
+  ).toThrowErrorMatchingInlineSnapshot(
+    `"App must declare \`enum Mutation\` inside the contract or a base contract, with a member for each mutation"`,
   );
 });
 
@@ -471,6 +507,8 @@ test("parseSolidity errors when a mutation has no dispatch branch", () => {
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {
         if (mutation == uint8(Mutation.Add)) abi.decode(mutationData, (Add));
+        // Only a comparison with Mutation.Sub counts as its branch.
+        if (mutation == 1) abi.decode(mutationData, (Add));
     }`),
     ),
   ).toThrowErrorMatchingInlineSnapshot(

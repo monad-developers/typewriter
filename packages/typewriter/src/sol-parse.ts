@@ -110,7 +110,7 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
   );
   if (mutationEnum === undefined) {
     throw new ConfigError({
-      message: `${contract.name} must declare \`enum Mutation\` with a member for each mutation`,
+      message: `${contract.name} must declare \`enum Mutation\` inside the contract or a base contract, with a member for each mutation`,
     });
   }
   // A contract that isn't abstract implements every function.
