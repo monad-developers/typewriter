@@ -491,7 +491,7 @@ The app contract must:
 - declare `enum Mutation` inside itself;
 - keep all its storage in `state` (`constant`s are allowed);
 - add no `public` or `external` functions or variables;
-- call only `internal` library functions.
+- implement `dispatch` by calling `internal` library functions only, such as each mutation library's `execute`.
 
 Typewriter checks these rules at startup and names the one that's broken.
 
