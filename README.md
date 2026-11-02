@@ -241,20 +241,15 @@ struct State {
 
 Each `Mutation` member `X` needs exactly one library named `XMutation`, in the
 entrypoint file or a file it imports, with:
-- **`struct X`**. Typewriter reads the mutation's params from this struct: field
-  names and order define the params extracted into the manifest. The app's
-  `dispatch` callback ABI-decodes `mutationData` into it. Fields can be any ABI
-  type: value types, `bytes`, `string`, arrays, and nested structs. Enums
-  become `uint8`, user-defined value types their underlying type, and contracts
-  and interfaces `address`.
+- **`struct X`**, the mutation's params. Field names and order define the
+  params in the manifest. Fields can be any ABI type: value types, `bytes`,
+  `string`, arrays, and nested structs. Enums become `uint8`, user-defined
+  value types their underlying type, and contracts and interfaces `address`.
 - **`function execute(State storage state, X memory mutation, bytes32 accountID) internal`**,
-  where `State` is the type of the app's `state` variable. Applies the mutation
-  to app state using the authenticated `accountID`. Account lookup,
-  permissions, expiration, nonce, and signature checks have already happened in
-  the base contract.
-
-`execute` returns nothing and must be `internal`: an external library function
-runs in a separately deployed library, which typewriter can't execute offchain.
+  with no return value, where `State` is the type of the app's `state`
+  variable. Applies the mutation to app state using the authenticated
+  `accountID`. Account lookup, permissions, expiration, nonce, and signature
+  checks have already happened in the base contract.
 
 ```solidity
 library AddMutation {
@@ -490,13 +485,15 @@ through the fixed authorization envelope, consumes the nonce, and calls
 mutation ID and ABI-decodes the mutation struct. Built-in account mutations are
 handled entirely by the base contract.
 
-Typewriter doesn't read `dispatch`; it reads each mutation's params from its
-`XMutation` library. The app contract must inherit only
-`Typewriter` and declare `enum Mutation` inside itself. It can't add `public`
-or `external` functions or variables, and it keeps all its storage in `state`
-(`constant`s are allowed). Library functions must be `internal`: typewriter
-executes only the app contract, so it rejects an app that links external
-libraries.
+The app contract must:
+
+- inherit only `Typewriter`;
+- declare `enum Mutation` inside itself;
+- keep all its storage in `state` (`constant`s are allowed);
+- add no `public` or `external` functions or variables;
+- call only `internal` library functions.
+
+Typewriter checks these rules at startup and names the one that's broken.
 
 #### Determinism
 
