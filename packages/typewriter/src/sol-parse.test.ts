@@ -612,8 +612,6 @@ ${app("enum Mutation { Add }")}`);
     }
   };
   expect({
-    timestamp: error("state.total = block.timestamp;"),
-    number: error("state.total = block.number;"),
     coinbase: error("state.total = uint160(address(block.coinbase));"),
     prevrandao: error("state.total = block.prevrandao;"),
     basefee: error("state.total = block.basefee;"),
@@ -633,7 +631,7 @@ ${app("enum Mutation { Add }")}`);
     create: error("new Other();"),
     assembly: error("assembly { sstore(0, 1) }"),
     allowed: error(
-      "state.total = block.chainid + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
+      "state.total = block.chainid + block.timestamp + block.number + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
     ),
   }).toMatchInlineSnapshot(`
     {
@@ -650,13 +648,11 @@ ${app("enum Mutation { Add }")}`);
       "gasleft": "AddMutation.execute uses \`gasleft\`, which can differ between offchain and onchain execution",
       "gaslimit": "AddMutation.execute uses \`block.gaslimit\`, which can differ between offchain and onchain execution",
       "gasprice": "AddMutation.execute uses \`tx.gasprice\`, which can differ between offchain and onchain execution",
-      "number": "AddMutation.execute uses \`block.number\`, which can differ between offchain and onchain execution",
       "origin": "AddMutation.execute uses \`tx.origin\`, which can differ between offchain and onchain execution",
       "prevrandao": "AddMutation.execute uses \`block.prevrandao\`, which can differ between offchain and onchain execution",
       "selfBalance": "AddMutation.execute uses \`address(…).balance\`, but offchain, typewriter runs the app contract alone",
       "sender": "AddMutation.execute uses \`msg.sender\`, which can differ between offchain and onchain execution",
       "staticcall": "AddMutation.execute uses \`mutation.token.staticcall\`, but offchain, typewriter runs the app contract alone",
-      "timestamp": "AddMutation.execute uses \`block.timestamp\`, which can differ between offchain and onchain execution",
       "transfer": "AddMutation.execute uses \`mutation.token.transfer\`, but offchain, typewriter runs the app contract alone",
     }
   `);
@@ -668,9 +664,9 @@ test("parseSolidity checks every function a mutation can reach", () => {
       parse(`
 library Helpers {
     function unused() internal pure returns (uint256 x) { assembly { x := 1 } }
-    function time() internal view returns (uint256) { return block.timestamp; }
+    function time() internal view returns (uint256) { return block.prevrandao; }
     function timed(uint256 x) internal view returns (uint256) { return x + time(); }
-    modifier onlyLater() { require(block.number > 1); _; }
+    modifier onlyLater() { require(block.basefee > 1); _; }
     function later() internal onlyLater {}
 }
 type Amount is uint256;
@@ -708,11 +704,11 @@ contract App is Typewriter {
     {
       "accounts": "App.dispatch uses Typewriter's \`accounts\`, which only Typewriter may read or change",
       "allowed": undefined,
-      "attached": "Helpers.time uses \`block.timestamp\`, which can differ between offchain and onchain execution",
-      "call": "Helpers.time uses \`block.timestamp\`, which can differ between offchain and onchain execution",
+      "attached": "Helpers.time uses \`block.prevrandao\`, which can differ between offchain and onchain execution",
+      "call": "Helpers.time uses \`block.prevrandao\`, which can differ between offchain and onchain execution",
       "dispatch": "App.dispatch uses \`msg.sender\`, which can differ between offchain and onchain execution",
       "executionIndex": "App.dispatch uses Typewriter's \`executionIndex\`, which only Typewriter may read or change",
-      "modifier": "Helpers.onlyLater uses \`block.number\`, which can differ between offchain and onchain execution",
+      "modifier": "Helpers.onlyLater uses \`block.basefee\`, which can differ between offchain and onchain execution",
       "nestedExecute": "App.dispatch uses Typewriter's \`_execute\`, which only Typewriter may read or change",
       "operator": "addAmounts uses inline assembly, which typewriter can't check; write it in Solidity",
     }

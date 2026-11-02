@@ -213,6 +213,7 @@ const ENVIRONMENT_GLOBALS = new Set([
   "blockhash",
   "blobhash",
 ]);
+const ALLOWED_BLOCK_MEMBERS = new Set(["chainid", "number", "timestamp"]);
 const ACCOUNT_MEMBERS = new Set([
   "balance",
   "code",
@@ -283,7 +284,10 @@ function checkDeterminism(
           base.referencedDeclaration < 0 &&
           ENVIRONMENT_GLOBALS.has(base.name)
         ) {
-          if (base.name !== "block" || node.memberName !== "chainid") {
+          if (
+            base.name !== "block" ||
+            !ALLOWED_BLOCK_MEMBERS.has(node.memberName)
+          ) {
             environment(node);
           }
         }

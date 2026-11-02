@@ -505,7 +505,7 @@ app contract's functions, each mutation library's `execute`, and every
 function, modifier, and operator they reach; it trusts Typewriter.sol. That code
 must not use:
 
-- `block.*` other than `block.chainid`, `blockhash`, or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
+- `block.*` other than `block.chainid`, `block.number`, and `block.timestamp`, or `blockhash` or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
 - `msg.*` or `tx.*`: the server calls as the scheduler, but anyone can call `forceExecute`, and settlement batches the calldata;
 - `gasleft()`: revm runs with unlimited gas;
 - another contract or account: external calls, `.call`/`.staticcall`/`.delegatecall`, `.send`/`.transfer`, `.balance`, `.code`/`.codehash`, `new`, or `selfdestruct`;
@@ -513,6 +513,12 @@ must not use:
 - Typewriter's own state and functions (`accounts`, `queue`, `executionIndex`, `_execute`, …).
 
 Library code a mutation doesn't reach, such as an unused assembly helper, isn't checked.
+
+`block.number` and `block.timestamp` are allowed, but the server executes with
+the last block it saw, so they lag the block a mutation settles in. A check that
+reverts, such as a deadline, is safe: if the settlement reverts onchain,
+typewriter drops the mutation. A branch that doesn't revert can leave different
+state offchain than onchain.
 
 ### Server runtime
 
