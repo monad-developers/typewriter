@@ -909,7 +909,7 @@ export function createTypewriterEffect<
           (cb) =>
             Effect.try({
               try: () => {
-                const result: unknown = cb(event);
+                const result: unknown = cb(structuredClone(event));
                 if (Predicate.isPromise(result)) {
                   result.catch((error) =>
                     Effect.runForkWith(context)(warn(error)),
@@ -1583,12 +1583,15 @@ export function createTypewriterEffect<
           );
         }
 
-        yield* persist((tx) =>
-          updateMutationInclusion(
-            tx,
-            app.mutationSchema,
-            batches.flatMap((batch) => batch.mutations),
-            inclusion,
+        const mutations = batches.flatMap((batch) => batch.mutations);
+        yield* Deferred.await(
+          yield* persist((tx) =>
+            updateMutationInclusion(
+              tx,
+              app.mutationSchema,
+              mutations,
+              inclusion,
+            ),
           ),
         );
 
@@ -1794,9 +1797,10 @@ export function createTypewriterEffect<
     );
 
     function execute(
-      mutation: RuntimeExecuteInput,
+      input: RuntimeExecuteInput,
     ): Effect.Effect<TypewriterMutationResult, ExecuteError> {
       return Effect.gen(function* () {
+        const mutation = structuredClone(input);
         if (!isMutationName(mutation.name)) {
           return yield* new UnknownMutationError({ mutation: mutation.name });
         }

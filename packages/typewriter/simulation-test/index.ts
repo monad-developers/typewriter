@@ -482,6 +482,10 @@ const program = Effect.gen(function* () {
     yield* typewriter.on("block", (event) => {
       run.blockEvents.push(event);
     });
+    // A listener may change its event, so each must get its own copy.
+    yield* typewriter.on("mutation", scribble);
+    yield* typewriter.on("batch", scribble);
+    yield* typewriter.on("block", scribble);
 
     yield* FiberSet.run(fibers, typewriter.program);
     yield* FiberSet.run(
@@ -526,8 +530,15 @@ const program = Effect.gen(function* () {
      * until it first waits, so the runtime sees calls in submission order.
      */
     const startExecute = (mutation: Mutation) =>
-      Effect.forkChild(Effect.exit(typewriter.execute(mutation as never)), {
-        startImmediately: true,
+      Effect.gen(function* () {
+        // The client may reuse what it sent, so the runtime must copy it.
+        const input = structuredClone(mutation);
+        const fiber = yield* Effect.forkChild(
+          Effect.exit(typewriter.execute(input as never)),
+          { startImmediately: true },
+        );
+        scribble(input);
+        return fiber;
       });
 
     /**
@@ -844,6 +855,20 @@ function deepFreeze<value>(value: value): value {
     for (const entry of Object.values(value)) deepFreeze(entry);
   }
   return value;
+}
+
+/** Changes every bigint, number, boolean, and hex string that `value` holds. */
+function scribble(value: unknown): void {
+  if (typeof value !== "object" || value === null) return;
+  const entries = value as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(entries)) {
+    if (typeof entry === "bigint") entries[key] = entry + 1n;
+    else if (typeof entry === "number") entries[key] = entry + 1;
+    else if (typeof entry === "boolean") entries[key] = !entry;
+    else if (typeof entry === "string" && entry.startsWith("0x")) {
+      entries[key] = `${entry.slice(0, -1)}${entry.endsWith("0") ? "1" : "0"}`;
+    } else scribble(entry);
+  }
 }
 
 /** The first storage slot of `queue[index]`, which `delete` zeroes once the entry executes. */
