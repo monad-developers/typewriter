@@ -35,17 +35,15 @@ struct State {
 Mutations are app-defined state transitions requested by a user and executed onchain. Updates to application state are done with mutations.
 
 ```solidity
-library TransferMutation {
-    struct Transfer {
-        bytes32 to;
-        uint256 amount;
-    }
+struct Transfer {
+    bytes32 to;
+    uint256 amount;
+}
 
-    function execute(State storage state, Transfer memory transfer, bytes32 accountID) internal {
-        state.balances[accountID] -= transfer.amount;
-        unchecked {
-            state.balances[transfer.to] += transfer.amount;
-        }
+function executeTransfer(State storage state, Transfer memory transfer, bytes32 accountID) {
+    state.balances[accountID] -= transfer.amount;
+    unchecked {
+        state.balances[transfer.to] += transfer.amount;
     }
 }
 ```
@@ -62,7 +60,7 @@ Accounts use two-dimensional nonces: a lane and a sequence number within that la
 
 ### Server runtime
 
-A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. The server executes each mutation against its own copy of the contract's state, and once it knows the mutation will succeed onchain it responds `accepted` — usually within milliseconds, before a block is produced.
+A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. Each mutation is executed locally in an embedded EVM (revm) against the server's copy of contract state, and once the server knows the mutation will succeed onchain it responds `accepted` — usually within milliseconds, before a block is produced.
 
 The lifecycle of a mutation is as follows:
 - **received**. The server has received the mutation.
@@ -181,6 +179,8 @@ anvil --network monad --block-time 0.3
 
 A mutation can be included in a block and later removed by a [chain reorganization](https://www.alchemy.com/overviews/what-is-a-reorg). By definition, this only affects mutations that have not reached the `finalized` state.
 
+Reorgs are detected on the server by requesting new blocks with JSON-RPC requests and reconciling them into the local view of the chain. The specific algorithm used to detect reorgs is inspired by [Ponder](https://github.com/ponder-sh/ponder), where it has been used in production for millions of hours, cumulatively.
+
 When a reorg is detected, mutations may move backwards in the mutation lifecycle (accepted => included => finalized). They are re-processed against the new canonical chain and re-emitted with their updated lifecycle status.
 
 > Coming soon: As a protection against exposing user-facing data that may be reorged, apps can choose to use later lifecycle stages, such as `"included"` or `"finalized"`, to serve read requests.
@@ -191,7 +191,7 @@ Users can bypass the server entirely and submit their mutations directly to the 
 
 Force inclusion uses a two-stage, enqueue then execute, mechanism. First, a user registers their mutation onchain by calling the `enqueue()` function.
 
-When the server sees an enqueued mutation, it executes it and settles it onchain like any other mutation.
+When the server detects a force-included mutation, it reconciles the force included mutation with its local state view, then includes the mutation onchain.
 
 If the server is completely offline, the user may call `forceExecute()` on their queued mutation after the `FORCE_INCLUSION_DELAY`.
 
@@ -203,13 +203,13 @@ This can happen when the execution depends on EVM environment opcodes whose valu
 
 When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "received"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorganization.
 
-Certain EVM environment opcodes, such as `COINBASE` or `PREVRANDAO`, make divergence likely or even guaranteed. See [Determinism](#determinism) for the full list.
+The server execution environment uses values from the last known block for EVM environment opcodes. Certain EVM environment opcodes, such as `COINBASE` or `PREVRANDAO`, can make divergence more likely or even guaranteed. For a full list of unsupported opcodes, see [contract requirements](#contract-requirements).
 
 > Coming soon: If onchain execution results in a different state transition than the server accepted, the transaction will revert instead of settling a mismatched result.
 
 ### Crash recovery
 
-The server can be restarted at any time without losing accepted mutations: they are persisted to Postgres as they are accepted, and the server restores its state from them on startup.
+The server can be restarted at any time without losing accepted state. Every mutation and raw slot write is persisted to Postgres as it happens. On startup, the runtime rehydrates its local execution environment from the persisted slot writes.
 
 Mutations that were accepted before the crash but had not yet reached `finalized` are reconciled with the underlying chain on restart.
 
@@ -222,8 +222,9 @@ In order to be Typewriter-compliant, a smart contract must be written with Solid
 #### State
 
 All application state is contained in one `struct State` stored in a top-level
-variable named `state`. Typewriter keeps its account registry separately, in an
-`accounts` mapping inherited from the base contract.
+variable named `state`. Typewriter stores its account registry separately in a
+top-level `accounts` mapping inherited from the base contract. Compiler storage
+layout gives the runtime typed proxies for both roots.
 
 ```solidity
 struct State {
@@ -232,7 +233,7 @@ struct State {
 }
 ```
 
-> Value types, enums, structs, fixed and dynamic arrays, mappings, `bytes`, and `string` are supported, nested in any combination. Fixed-point numbers, function types, contract and interface types, user-defined value types, and `bytes`/`string`/enum mapping keys are not supported and fail loudly. `Object.keys` on a mapping lists the keys that accepted mutations have read or written.
+> Value types, enums, structs, fixed and dynamic arrays, mappings, `bytes`, and `string` are supported, nested in any combination. Fixed-point numbers, function types, contract and interface types, user-defined value types, and `bytes`/`string`/enum mapping keys are not supported and fail loudly. The runtime stores the 64-byte keccak256 preimages from each accepted execution, so `Object.keys` on a mapping lists every key that an accepted mutation hashed.
 
 #### Mutations
 
@@ -250,7 +251,8 @@ entrypoint file or a file it imports, with:
   permissions, expiration, nonce, and signature checks have already happened in
   the base contract.
 
-`execute` returns nothing and must be `internal`.
+`execute` returns nothing and must be `internal`: an external library function
+runs in a separately deployed library, which typewriter can't execute offchain.
 
 ```solidity
 library AddMutation {
@@ -361,7 +363,7 @@ address matching the stored address. For `P256`, it verifies `(r, s)` over
 `sha256(digest)`. For `WebAuthnP256`, it checks that the 43-byte, unpadded
 base64url encoding of `digest` appears in `clientDataJSON` at `challengeOffset`,
 then verifies `(r, s)` over `sha256(authData || sha256(clientDataJSON))`.
-Both P-256 paths need the chain's P-256 precompile at `0x100`, which Monad provides.
+Both P-256 paths use the precompile at `0x100` and require it to return `1`.
 
 **Verification.** For an existing account, the base contract performs these
 checks before executing the mutation:
@@ -396,10 +398,10 @@ signature must be nonempty, and `accountID` must equal
 
 #### Contract structure
 
-The contract inherits from `typewriter/Typewriter.sol`, which supplies accounts
-and authorization, the scheduler, and force inclusion. The app owns only its
-`state`, its `Mutation` enum, its mutation libraries, and the `dispatch`
-callback.
+The contract inherits from `typewriter/Typewriter.sol`, which supplies native
+account storage and validation, the Typewriter EIP-712 domain, scheduler and
+force-inclusion protocol, and the external execution entry points. The app owns
+only its `State`, app mutation enum, and the `dispatch` callback.
 
 ```solidity
 import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
@@ -426,34 +428,43 @@ contract Token is Typewriter {
 }
 ```
 
-The app contract:
+**`state`.** A single non-public storage variable wraps the State struct. Underlying storage slots are read directly so Solidity visibility does not affect framework reads.
 
-- inherits only `Typewriter` and isn't abstract;
-- takes exactly `constructor(address scheduler)` and passes `scheduler` to `Typewriter(scheduler)`, so typewriter can deploy any app; the body may do more;
-- keeps all its storage in the non-public `state` variable (`constant`s are allowed);
-- declares `enum Mutation`, with one mutation library per member, as described in Mutations above;
-- adds no `public` or `external` functions;
-- calls only `internal` library functions.
+**`Mutation` enum.** Designates the valid mutations for the contract.
 
-Typewriter checks these rules at startup and names the one that's broken.
+**`SCHEDULER`.** The privileged address for submitting mutations. Declared in `Typewriter` as `address internal immutable` and assigned by the `Typewriter` constructor. Every app has the same constructor, `constructor(address scheduler)`, and passes `scheduler` to `Typewriter(scheduler)`; it may do more in the body, but takes no other arguments, so typewriter can deploy any app.
 
-**`FORCE_INCLUSION_DELAY`.** The number of seconds that must elapse after a mutation is enqueued before any caller may `forceExecute` it. It defaults to `5 minutes`; an app that needs a different delay reassigns it in its constructor:
+**`DOMAIN_SEPARATOR`.** Constructed by the base contract from the fixed
+Typewriter name/version, `block.chainid`, and `address(this)`.
+
+**`FORCE_INCLUSION_DELAY`.** The number of seconds that must elapse after a mutation is enqueued before any caller may `forceExecute` it. Declared in `Typewriter` as `uint256 internal immutable`, initialized to `5 minutes`. An app that needs a different delay reassigns it in its constructor:
 
 ```solidity
-constructor(address scheduler) Typewriter(scheduler) {
+constructor(address _scheduler) {
+    SCHEDULER = _scheduler;
     FORCE_INCLUSION_DELAY = 10 minutes;
 }
 ```
 
-**Force inclusion.** `Typewriter` implements `enqueue` and `forceExecute`, which let users bypass the server (see [Force inclusion](#force-inclusion)):
+**Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `Typewriter` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 
 ```solidity
-// Queues a mutation onchain and emits `ForceInclusionQueued`.
+// Scheduler-gated settlement. `forceExecuteIndexes` settles queued
+// force-included mutations alongside the batches.
+function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external;
+
+// User force-inclusion entry point. Pushes a `QueuedMutation` and emits
+// `ForceInclusionQueued`.
 function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata authorizationData) external returns (uint256);
 
-// Callable by anyone once `FORCE_INCLUSION_DELAY` seconds have elapsed since the entry was enqueued.
+// Un-gated escape hatch, callable by anyone once `FORCE_INCLUSION_DELAY` seconds
+// have elapsed since the entry was enqueued.
 function forceExecute(uint256 index) external;
+```
 
+`enqueue` emits `ForceInclusionQueued`, which clients and watchers decode to discover queued mutations:
+
+```solidity
 event ForceInclusionQueued(
     uint256 index,
     uint8 mutation,
@@ -470,11 +481,20 @@ function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID)
     internal override;
 ```
 
-For app mutations, Typewriter first [verifies the authorization](#authorization)
-and consumes the nonce, then calls `dispatch` with the authenticated account ID.
-`dispatch` branches on the mutation ID, ABI-decodes `mutationData` into the
-mutation's struct, and calls its library's `execute`. Built-in account
-mutations are handled entirely by the base contract.
+For app mutations, Typewriter first validates the account, credential,
+expiration, permission, and nonce. It verifies the original `mutationData`
+through the fixed authorization envelope, consumes the nonce, and calls
+`dispatch` with the authenticated account ID. The callback branches on the app
+mutation ID and ABI-decodes the mutation struct. Built-in account mutations are
+handled entirely by the base contract.
+
+Typewriter doesn't read `dispatch`; it reads each mutation's params from its
+`XMutation` library. The app contract must inherit only
+`Typewriter` and declare `enum Mutation` inside itself. It can't add `public`
+or `external` functions or variables, and it keeps all its storage in `state`
+(`constant`s are allowed). Library functions must be `internal`: typewriter
+executes only the app contract, so it rejects an app that links external
+libraries.
 
 #### Determinism
 
@@ -484,7 +504,7 @@ Opcodes whose values can't be reproduced offchain produce divergence between off
 - `block.difficulty` / `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
 - `blockhash(n)` (`BLOCKHASH`) for blocks the server hasn't seen.
 - `blobhash(i)` (`BLOBHASH`) and `block.blobbasefee` (`BLOBBASEFEE`) — blob context belongs to the submitting transaction, not the mutation.
-- `gasleft()` (`GAS`) — the server's gas accounting doesn't match the chain's, so any branch on remaining gas can diverge.
+- `gasleft()` (`GAS`) — gas accounting in revm does not match the live EVM, so any branch on remaining gas can diverge.
 
 `block.number` and `block.timestamp` are approximations — not guaranteed to match the block a mutation settles in. The server executes accepted mutations against the last known block's values, so what a mutation sees lags the block of inclusion by at least one. They're fine for coarse-grained checks (expiries, epoch windows) but unsafe for tight windows, sub-block timing, or logic that branches on the exact block of inclusion.
 
@@ -506,7 +526,7 @@ function createTypewriter(
 ): Promise<Typewriter>;
 ```
 
-Starts the runtime and resolves to the `Typewriter` handle once it is ready to accept mutations (see the [Server runtime](#server-runtime) example for a full call).
+Starts the runtime and resolves to the `Typewriter` handle (see the [Server runtime](#server-runtime) example for a full call). On startup it connects to the chain and database, runs migrations, and hydrates local revm state from persisted slot writes; from there it accepts mutations and submits them onchain.
 
 **`TypewriterConfig`.** Required fields, except in [dev mode](#local-development) (`dev: true`), where typewriter fills in all but `database`:
 
@@ -518,7 +538,7 @@ Starts the runtime and resolves to the `Typewriter` handle once it is ready to a
 
 Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ finalizedBlockDepth? }`, default `5`), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
-The Solidity entrypoint must be importable by Bun and belong to a Foundry project, with `forge` on the `PATH`. At startup, typewriter builds the project and derives mutation IDs, params, and typed storage from the contract.
+The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives app mutation IDs, params, and typed storage from the contract.
 
 **Logging.** Two environment variables control runtime logs:
 
@@ -594,9 +614,10 @@ const accepted = await typewriter.execute({
 typewriter.state: StorageView<State>;
 ```
 
-`typewriter.state` reads the app's `state` variable as the server has accepted
-it, so a mutation's effects are visible as soon as it is accepted, before
-onchain inclusion.
+`typewriter.state` resolves the top-level Solidity `state` variable by one proxy
+layer. It reads the runtime's local revm-backed storage mirror, so accepted state
+is visible before onchain inclusion. Leaf accesses are synchronous and return
+values.
 
 ```ts
 const balance = typewriter.state.balances[accountID];
@@ -606,8 +627,9 @@ const balance = typewriter.state.balances[accountID];
 
 #### `typewriter.accounts`
 
-`typewriter.accounts` reads the base contract's `accounts` mapping, so apps can
-inspect account credentials and nonce lanes.
+`typewriter.accounts` resolves the base contract's top-level native account
+mapping by one proxy layer. Apps can inspect learned account keys, credentials,
+and nonce lanes without placing account state inside their own `State` struct.
 
 ```ts
 const account = typewriter.accounts[accountID];
@@ -639,7 +661,7 @@ Every mutation table starts with the same **lifecycle columns**:
 
 Then two groups of payload columns:
 
-- **Param columns** — one per field of the mutation's struct, named after the field.
+- **Param columns** — one per ABI parameter in the mutation struct decoded by `dispatch`, named after the parameter (an unnamed parameter becomes `arg<index>`).
 - **Authorization columns** — fixed `authorization_account_id`,
   `authorization_credential_id`, `authorization_nonce`,
   `authorization_expiration`, and `authorization_signature` columns.
