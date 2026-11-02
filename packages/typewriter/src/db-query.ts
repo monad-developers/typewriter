@@ -153,9 +153,9 @@ export function selectMaxExecutionIndex(
       sql` UNION ALL `,
     );
     const [{ max = null } = {}] = yield* tx.query((db) =>
-      db.execute<{ max: string | null }>(
-        sql`SELECT max(max) AS max FROM (${maxes}) AS mutations`,
-      ),
+      db
+        .select({ max: sql<string | null>`max(max)::text` })
+        .from(sql`(${maxes}) AS mutations`),
     );
     return max === null ? undefined : BigInt(max);
   });

@@ -92,6 +92,7 @@
       "name": "typewriter",
       "dependencies": {
         "@effect/platform-bun": "4.0.3",
+        "@electric-sql/pglite": "0.5.8",
         "abipg": "workspace:*",
         "abitype": "catalog:",
         "drizzle-kit": "catalog:",

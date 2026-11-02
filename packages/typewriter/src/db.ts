@@ -2,11 +2,16 @@ import { Context, Effect, Layer, Schedule, type Scope } from "effect";
 import {
   DbError,
   type DbTransport,
+  makePgliteTransport,
   makePostgresTransport,
   type PostgresOptions,
 } from "./db-transport";
 
-export type DatabaseOptions = PostgresOptions;
+/**
+ * A Postgres database, or an in-memory PGlite database that lasts as long as
+ * the process.
+ */
+export type DatabaseOptions = PostgresOptions | { kind: "pglite" };
 
 /** Retries run a transaction again from the start, so `f` can run more than once. */
 export type Db = DbTransport;
@@ -18,6 +23,23 @@ export class Database extends Context.Service<Database, Db>()(
 export const layerDatabase = (
   options: DatabaseOptions,
 ): Layer.Layer<Database> => Layer.effect(Database, makeDb(options));
+
+// Inside a transaction, a statement on `Db` instead of `tx` runs outside it on
+// Postgres, and waits on it forever on PGlite.
+const InTransaction = Context.Reference<boolean>("typewriter/InTransaction", {
+  defaultValue: () => false,
+});
+
+function outsideTransaction<a, e, r>(effect: Effect.Effect<a, e, r>) {
+  return Effect.gen(function* () {
+    if (yield* InTransaction) {
+      return yield* Effect.die(
+        new Error("Used the database inside a transaction instead of `tx`"),
+      );
+    }
+    return yield* effect;
+  });
+}
 
 function retry<a, e, r>(effect: Effect.Effect<a, e, r>) {
   return effect.pipe(
@@ -35,8 +57,15 @@ function retry<a, e, r>(effect: Effect.Effect<a, e, r>) {
 /** Retries the work of `transport` that did not apply. */
 function makeDbClient(transport: DbTransport): Db {
   return {
-    query: (build) => retry(transport.query(build)),
-    transaction: (f) => retry(transport.transaction(f)),
+    query: (build) => outsideTransaction(retry(transport.query(build))),
+    transaction: (f) =>
+      outsideTransaction(
+        retry(
+          transport.transaction((tx) =>
+            Effect.provideService(f(tx), InTransaction, true),
+          ),
+        ),
+      ),
     lock: transport.lock,
   };
 }
@@ -44,5 +73,10 @@ function makeDbClient(transport: DbTransport): Db {
 export function makeDb(
   options: DatabaseOptions,
 ): Effect.Effect<Db, never, Scope.Scope> {
-  return Effect.map(makePostgresTransport(options), makeDbClient);
+  return Effect.map(
+    options.kind === "pglite"
+      ? makePgliteTransport()
+      : makePostgresTransport(options),
+    makeDbClient,
+  );
 }
