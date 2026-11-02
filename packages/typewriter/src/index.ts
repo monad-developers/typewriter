@@ -50,9 +50,9 @@ export type {
   TypewriterConfig,
   TypewriterManifest,
 } from "./config";
-export { DbError } from "./db";
 export { MigrationError } from "./db-migrate";
 export type { TypewriterMutationSchema } from "./db-schema";
+export { DbError } from "./db-transport";
 export { type RpcError, RpcTimeoutError } from "./rpc";
 export { BlockNotFoundError, NoDataReturnedError } from "./rpc-request";
 export {

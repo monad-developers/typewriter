@@ -1,6 +1,7 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import { Clock, Duration, Effect, Random } from "effect";
-import { type Db, DbError, type DbQuery, type DbStatement } from "../src/db";
+import type { Db } from "../src/db";
+import { DbError, type DbQuery, type DbStatement } from "../src/db-transport";
 import { SIM } from "./index";
 import { makeRandom } from "./random";
 import type { SimScheduler } from "./scheduler";
