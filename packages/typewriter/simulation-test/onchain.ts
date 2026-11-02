@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { AbiFunction, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import type { TypewriterApp } from "../src/config";
-import { decodeAuthorizationCalldata, encodeBatchArg } from "../src/encoding";
+import { decodeAuthorizationCalldata } from "../src/encoding";
 import { TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type { Inclusion } from "../src/typewriter-types";
 import type { Chain } from "./chain";
@@ -17,8 +17,6 @@ export type Executed = {
   batch: number | undefined;
   /** Its queue index when force-executed. */
   queueIndex: bigint | undefined;
-  /** Its encoding in the settlement. Unset when force-executed. */
-  encoding: string | undefined;
 };
 
 /** A settlement transaction on the canonical chain. */
@@ -54,8 +52,7 @@ type Transaction = {
 
 /**
  * Reads every settlement and `enqueue` of the canonical chain. A batch entry
- * is keyed by its authorization, like the events, and keeps its encoding to
- * compare with what was submitted.
+ * is keyed by its authorization, like the events.
  */
 export function readOnchain({
   app,
@@ -162,15 +159,14 @@ export function readOnchain({
         }
 
         const execute = (
-          executed: Pick<Executed, "key" | "batch" | "queueIndex" | "encoding">,
+          executed: Pick<Executed, "key" | "batch" | "queueIndex">,
         ) => {
           const executionIndex = BigInt(onchain.executed.length);
           settlement.executionIndexes.push(executionIndex);
           onchain.executed.push({ ...executed, executionIndex, inclusion });
         };
         for (const batch of batches) {
-          const keys = batch.mutations.map((id, i) => {
-            const authorizationData = batch.authorizationData[i]!;
+          const keys = batch.authorizationData.map((authorizationData) => {
             const key = mutationKey(
               decodeAuthorizationCalldata(authorizationData),
             );
@@ -178,7 +174,6 @@ export function readOnchain({
               key,
               batch: onchain.batches.length,
               queueIndex: undefined,
-              encoding: encode(id, batch.mutationData[i]!, authorizationData),
             });
             return key;
           });
@@ -191,31 +186,10 @@ export function readOnchain({
               `unknown queue index ${queueIndex}`,
             batch: undefined,
             queueIndex,
-            encoding: undefined,
           });
         }
       }
     }
     return onchain;
   });
-}
-
-/** The encoding of the well-formed mutation of `submission` in a batch. */
-export function encodingOf(app: TypewriterApp, submission: Submission): string {
-  const { name, params, authorization } = submission.mutation;
-  const config = app.mutations[name]!;
-  const batch = encodeBatchArg([{ config, params, authorization }]);
-  return encode(
-    batch.mutations[0]!,
-    batch.mutationData[0]!,
-    batch.authorizationData[0]!,
-  );
-}
-
-function encode(
-  id: number,
-  mutationData: Hex.Hex,
-  authorizationData: Hex.Hex,
-): string {
-  return `${id}:${mutationData}:${authorizationData}`.toLowerCase();
 }

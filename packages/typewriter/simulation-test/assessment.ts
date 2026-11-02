@@ -23,21 +23,30 @@ import {
 } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
 import {
+  encodeAuthorizationCalldata,
+  encodeEnqueueCalldata,
+  encodeMutationCalldata,
+} from "../src/encoding";
+import {
   ASSESSMENT_PROJECT,
   type AssessmentMutations,
 } from "./assessment-constants";
 import type { Chain } from "./chain";
 import { SIM } from "./index";
-import {
-  drawMalformation,
-  expectMalformed,
-  type Malformation,
-} from "./malformations";
 import type { Expected } from "./run";
 import { TEMPLATES, type Template } from "./templates";
 
 /** The mutations of `Assessment.sol`, without the built-in ones. */
-export type AppMutationName = "A" | "B" | "C";
+export type AppMutationName = "A" | "B";
+
+/**
+ * The `enqueue` field that a malformed step leaves empty, so that the
+ * contract cannot decode it and no one can execute the step. An empty
+ * `mutationData` is signed over, so the authorization holds.
+ */
+export type Malformation = "authorizationData" | "mutationData";
+
+const MALFORMATIONS: Malformation[] = ["authorizationData", "mutationData"];
 
 export type Manifest = TypewriterManifest<AssessmentMutations>;
 
@@ -58,7 +67,6 @@ export type Step = {
   signer: Signer;
   /** Unsigned, with a `0x` signature, until it is submitted. */
   mutation: Mutation<AppMutationName>;
-  /** Submits a malformed version of `mutation` instead. */
   malformation: Malformation | undefined;
 };
 
@@ -70,7 +78,7 @@ export function stepLabel({
 }: Step): string {
   return malformation === undefined
     ? `step ${index} (${via} ${mutation.name})`
-    : `step ${index} (${via} ${mutation.name}, ${malformation.name})`;
+    : `step ${index} (${via} ${mutation.name}, empty ${malformation})`;
 }
 
 /** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
@@ -253,21 +261,60 @@ function unsigned<const name extends keyof AssessmentMutations & string>(
   );
 }
 
-export function createAccount(manifest: Manifest, signer: Signer) {
-  const mutation = unsigned(signer, {
-    name: "CreateAccount",
-    params: { keyType: signer.keyType, publicKey: signer.publicKey },
-    nonce: 0n,
-  });
+/** Signs `mutation`, as a client does. */
+export function sign<const name extends keyof AssessmentMutations & string>(
+  manifest: Manifest,
+  signer: Signer,
+  mutation: Mutation<name>,
+): Mutation<name> {
+  const typed = { ...mutation, ...mutation.authorization };
   return authorizeMutation(
-    { ...mutation, ...mutation.authorization },
-    signer.sign(
-      getAuthorizationPayload(manifest, {
-        ...mutation,
-        ...mutation.authorization,
-      }),
-    ),
+    typed,
+    signer.sign(getAuthorizationPayload(manifest, typed)),
   );
+}
+
+export function createAccount(manifest: Manifest, signer: Signer) {
+  return sign(
+    manifest,
+    signer,
+    unsigned(signer, {
+      name: "CreateAccount",
+      params: { keyType: signer.keyType, publicKey: signer.publicKey },
+      nonce: 0n,
+    }),
+  );
+}
+
+/** The `enqueue` calldata of `mutation`, the signed mutation of `step`. */
+export function enqueueCalldata(
+  manifest: Manifest,
+  step: Step,
+  mutation: Mutation<AppMutationName>,
+): Hex.Hex {
+  const config = manifest.mutations[mutation.name];
+  let mutationData = encodeMutationCalldata({ ...mutation, config });
+  let { authorization } = mutation;
+  if (step.malformation === "mutationData") {
+    // Signed as a mutation with no params, whose encoding is empty.
+    mutationData = "0x";
+    authorization = sign(
+      {
+        ...manifest,
+        mutations: { [mutation.name]: { ...config, params: [] } },
+      } as never,
+      step.signer,
+      { ...mutation, params: {} } as never,
+    ).authorization;
+  }
+  return encodeEnqueueCalldata({
+    mutation: config.id,
+    mutationData,
+    authorizationData:
+      step.malformation === "authorizationData"
+        ? "0x"
+        : encodeAuthorizationCalldata(authorization),
+  });
 }
 
 /** The nonce of step `index`. Each step has its own lane, so arrival order never decides a nonce check. */
@@ -302,25 +349,16 @@ export function withExpiration(
 
 /** How `step` must end. */
 export function expect(step: Step): Expected {
-  const expected = expectExecute(step);
-  // The runtime never decodes an enqueue, so it has no events.
-  return step.via === "enqueue" ? { ...expected, events: false } : expected;
-}
-
-function expectExecute(step: Step): Expected {
   const { mutation, malformation, expiresInS, via } = step;
-  if (malformation !== undefined) return expectMalformed(malformation);
+  if (malformation !== undefined) {
+    return { executes: false, errors: [], resubmissionErrors: [] };
+  }
   // The runtime rejects an `execute` that expires within its margin before
   // it executes. An enqueue is already onchain, so only revm rejects it.
   const tooSoon = via === "execute" ? "MutationExpiresTooSoonError" : undefined;
   if (expiresInS < 0) {
     const errors = [tooSoon ?? "AuthorizationExpired"];
-    return {
-      executes: false,
-      errors,
-      resubmissionErrors: errors,
-      events: true,
-    };
+    return { executes: false, errors, resubmissionErrors: errors };
   }
   // A finite authorization can be rejected within the margin, or expire
   // after it is accepted, before the runtime simulates its settlement.
@@ -333,14 +371,12 @@ function expectExecute(step: Step): Expected {
         executes: false,
         errors: [revert, ...expired],
         resubmissionErrors: [revert, ...expired],
-        events: true,
       }
     : {
         executes: true,
         errors: expired,
         // The first submission used the nonce.
         resubmissionErrors: ["InvalidNonce", ...expired],
-        events: true,
       };
 }
 
@@ -381,18 +417,17 @@ export function makePlan(
     const signer = signers[below(random, signers.length)]!;
     const template = TEMPLATES[below(random, TEMPLATES.length)]!;
     if (random.nextDoubleUnsafe() < malformedRate) {
-      // A malformation decides how its step is submitted and how it ends, so
-      // the mutation it starts from neither reverts nor expires.
-      const malformation = drawMalformation(random, template.name);
+      // No one can execute a malformed enqueue, so the mutation it starts
+      // from neither reverts nor expires.
       return {
         index,
         delayMs,
-        via: malformation.via,
+        via: "enqueue",
         resubmit: false,
         expiresInS: Infinity,
         signer,
         mutation: fromTemplate(signer, template, false, index),
-        malformation,
+        malformation: MALFORMATIONS[below(random, MALFORMATIONS.length)],
       };
     }
     const shouldRevert = random.nextDoubleUnsafe() < revertRate;
@@ -409,10 +444,10 @@ export function makePlan(
     };
   });
 
-  // A malformed enqueue may have no mutation event, so nothing shows the
-  // runtime read its log. A well-formed enqueue after it executes onchain:
-  // the runtime force-executes enqueues in queue order.
-  if (plan.some((step) => step.malformation?.via === "enqueue")) {
+  // Nothing shows the runtime read a malformed enqueue's log. A well-formed
+  // enqueue after it executes onchain: the runtime force-executes enqueues
+  // in queue order.
+  if (plan.some((step) => step.malformation !== undefined)) {
     const index = plan.length;
     const signer = signers[below(random, signers.length)]!;
     plan.push({

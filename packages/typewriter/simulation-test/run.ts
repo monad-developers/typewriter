@@ -9,7 +9,7 @@ import type { AssessmentMutations } from "./assessment-constants";
 
 /**
  * The key of a mutation in the events: its account and nonce. Every mutation
- * of a run has its own, malformed or not.
+ * of a run has its own.
  */
 export function mutationKey(authorization: {
   accountID: unknown;
@@ -33,8 +33,6 @@ export type Expected = {
   errors: string[];
   /** The errors its resubmission may be rejected with. */
   resubmissionErrors: string[];
-  /** The runtime reports it in mutation events. */
-  events: boolean;
 };
 
 /**
@@ -48,10 +46,7 @@ export type Submission = {
   label: string;
   key: string;
   via: "execute" | "enqueue";
-  /** The well-formed mutation, signed: what executes if anything does. */
   mutation: Mutation;
-  /** What the client sent: the `execute` input, or the `enqueue` calldata. */
-  sent: unknown;
   expected: Expected;
   resubmitted: boolean;
   /** What `execute` returned: for the submission, then for its resubmission. */

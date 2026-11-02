@@ -64,7 +64,7 @@ import {
   encodeExecuteCalldata,
 } from "./encoding";
 import { durationMs, startTimer } from "./logger";
-import { executeInputSchema } from "./mutation-schema";
+import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 import { Rpc, type RpcError } from "./rpc";
 import {
   type BlockNotFoundError,
@@ -820,10 +820,7 @@ export function createTypewriterEffect<
     const batchesById = new Map<number, RuntimeBatch>();
     // `execute` checks a mutation's name, then the shape of its input,
     // before it queues it: an input that passes encodes to the bytes it means.
-    // Not `app.mutations[name]`, which finds `Object.prototype` names too.
-    const isMutationName = Schema.is(
-      Schema.Literals(Object.keys(app.mutations)),
-    );
+    const isMutationName = mutationNameGuard(Object.keys(app.mutations));
     const executeInputSchemas = new Map(
       Object.entries(app.mutations).map(([name, config]) => [
         name,
