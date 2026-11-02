@@ -1,4 +1,4 @@
-import { Duration, Effect } from "effect";
+import { Clock, Duration, Effect } from "effect";
 import { Hash } from "ox";
 import {
   RpcHttpError,
@@ -28,33 +28,36 @@ export function makeSimTransport({
     latencyMs: [latencyMin, latencyMax],
     errorRate,
     applyThenErrorRate,
+    lagMs,
   } = SIM.transports[index]!;
 
   const occurrences = new Map<string, number>();
 
-  // A node fails `eth_getLogs` for a block hash that a reorg replaced.
-  const getLogs = (request: Extract<RpcRequest, { method: "eth_getLogs" }>) =>
-    chain.getLogs(request).pipe(
-      Effect.flatMap((logs) =>
-        logs !== undefined
-          ? Effect.succeed(logs)
-          : Effect.fail(
-              new RpcResponseError({
-                method: request.method,
-                origin,
-                status: 200,
-                error: { code: -32000, message: "unknown block" },
-              }),
-            ),
-      ),
-    );
+  // The endpoint sees the chain as it was `lagMs` ago, but never before the
+  // run started, when the contract is deployed. It fails a read of a block it
+  // does not have.
+  const read = <request extends RpcRequest>(request: request) =>
+    Effect.gen(function* () {
+      const asOfMs = Math.max(
+        (yield* Clock.currentTimeMillis) - lagMs,
+        SIM.chain.genesisTimestamp * 1000,
+      );
+      const result = yield* chain.read(request, asOfMs);
+      if (result !== undefined) return result;
+      return yield* new RpcResponseError({
+        method: request.method,
+        origin,
+        status: 200,
+        error: { code: -32000, message: "unknown block" },
+      });
+    });
 
   // Anvil answers `eth_sendRawTransactionSync` once the block is mined, and the
   // simulation mines only between requests, so it sends and then polls. Like a
   // node, it does not send a transaction it already has.
   const send = (request: RpcRequest) =>
     request.method !== "eth_sendRawTransactionSync"
-      ? chain.request(request)
+      ? read(request)
       : Effect.gen(function* () {
           const [raw] = request.params;
           const hash = Hash.keccak256(raw);
@@ -69,7 +72,7 @@ export function makeSimTransport({
             });
           }
           while (true) {
-            const receipt = yield* chain.request({
+            const receipt = yield* read({
               method: "eth_getTransactionReceipt",
               params: [hash],
             });
@@ -123,9 +126,7 @@ export function makeSimTransport({
       yield* Effect.sleep(Duration.millis(latency));
 
       if (draw < errorRate) return yield* injected();
-      const result = yield* request.method === "eth_getLogs"
-        ? getLogs(request)
-        : send(request);
+      const result = yield* send(request);
       if (draw < errorRate + applyThenErrorRate) return yield* injected();
       return result;
     });

@@ -126,6 +126,8 @@ export type SIM = {
     latencyMs: [number, number];
     errorRate: number;
     applyThenErrorRate: number;
+    /** How far behind the chain the endpoint's view is, in virtual time. */
+    lagMs: number;
   }[];
   db: {
     latencyMs: [number, number];
@@ -230,6 +232,7 @@ export const SIM: SIM = {
         `transports.${i}.applyThenErrorRate`,
         [0, 0.01, 0.1],
       ),
+      lagMs: pick(SEED, `transports.${i}.lagMs`, [0, 0, 100, 1_000]),
     }),
   ),
   db: {
@@ -368,10 +371,10 @@ const program = Effect.gen(function* () {
   const clock = makeSimClock(startMs, scheduler.schedule);
   const simChain: Chain = {
     request: (request) => scheduler.io(chain.request(request)),
-    getLogs: (request) => scheduler.io(chain.getLogs(request)),
+    read: (request, asOfMs) => scheduler.io(chain.read(request, asOfMs)),
     stateDiff: chain.stateDiff,
-    mine: (timestamp) => scheduler.io(chain.mine(timestamp)),
-    reorg: (depth, timestamp) => scheduler.io(chain.reorg(depth, timestamp)),
+    mine: (atMs) => scheduler.io(chain.mine(atMs)),
+    reorg: (depth, atMs) => scheduler.io(chain.reorg(depth, atMs)),
   };
   const chainRandom = yield* makeRandom(SIM.seed, "chain");
   const transports = SIM.transports.map((_, index) =>
@@ -478,10 +481,10 @@ const program = Effect.gen(function* () {
       fibers,
       Effect.gen(function* () {
         yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
-        // Anvil takes whole seconds, so blocks in the same second share a timestamp.
-        const timestamp = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const atMs = yield* Clock.currentTimeMillis;
+        const timestamp = Math.floor(atMs / 1000);
         if (chainRandom.nextDoubleUnsafe() >= SIM.chain.reorgRate) {
-          yield* simChain.mine(timestamp);
+          yield* simChain.mine(atMs);
           return;
         }
         // A reorg of at most `finalizedBlockDepth` replaces no finalized block.
@@ -490,7 +493,7 @@ const program = Effect.gen(function* () {
           Math.floor(
             chainRandom.nextDoubleUnsafe() * SIM.typewriter.finalizedBlockDepth,
           );
-        const replaced = yield* simChain.reorg(depth, timestamp);
+        const replaced = yield* simChain.reorg(depth, atMs);
         if (replaced.length === 0) return;
         run.reorgs.push({ replaced, timestamp });
         yield* Effect.logInfo("Reorged simulation chain").pipe(

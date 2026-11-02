@@ -36,20 +36,50 @@ export type Chain = {
     transactionHash: Hex.Hex,
   ) => StateDiff | undefined;
   /**
-   * `eth_getLogs`, or `undefined` for a block hash that a reorg replaced,
-   * which Anvil fails.
+   * Answers `request` as a node that saw the chain as it was at `asOfMs`, in
+   * virtual time. `undefined` is a block that node does not have, or whose
+   * state Anvil dropped in a reorg.
    */
-  getLogs: (
-    request: Extract<RpcRequest, { method: "eth_getLogs" }>,
-  ) => Effect.Effect<RpcResult<"eth_getLogs"> | undefined>;
-  /** Mines one block at `timestamp`, in seconds. */
-  mine: (timestamp: number) => Effect.Effect<void>;
+  read: <request extends RpcRequest>(
+    request: request,
+    asOfMs: number,
+  ) => Effect.Effect<RpcResult<request["method"]> | undefined>;
+  /** Mines one block at `atMs`, in virtual time. */
+  mine: (atMs: number) => Effect.Effect<void>;
   /**
-   * Replaces the last `depth` blocks with as many new ones at `timestamp`, in
-   * seconds. Block 1, where the contract is deployed, stays. Returns the
+   * Replaces the last `depth` blocks with as many new ones at `atMs`, in
+   * virtual time. Block 1, where the contract is deployed, stays. Returns the
    * hashes of the blocks it replaced.
    */
-  reorg: (depth: number, timestamp: number) => Effect.Effect<Hex.Hex[]>;
+  reorg: (depth: number, atMs: number) => Effect.Effect<Hex.Hex[]>;
+};
+
+type Block = {
+  number: Hex.Hex;
+  hash: Hex.Hex;
+  parentHash: Hex.Hex;
+  transactions: { hash: Hex.Hex }[];
+};
+
+type Receipt = {
+  transactionHash: Hex.Hex;
+  blockHash: Hex.Hex;
+  logs: { address: Hex.Hex; topics: Hex.Hex[] }[];
+};
+
+type LogFilter = {
+  blockHash?: Hex.Hex;
+  address?: Hex.Hex | Hex.Hex[];
+  topics?: (Hex.Hex | Hex.Hex[] | null)[];
+};
+
+/** The index of the block parameter of each method that reads state. */
+const STATE_BLOCK_PARAM: Record<string, number | undefined> = {
+  eth_call: 1,
+  eth_getBalance: 1,
+  eth_getCode: 1,
+  eth_getStorageAt: 2,
+  eth_getTransactionCount: 1,
 };
 
 /**
@@ -119,22 +149,151 @@ export function makeChain(): Effect.Effect<
     const request = ((request: RpcRequest) =>
       lock.withPermits(1)(send(request))) as Chain["request"];
 
-    const getLogs: Chain["getLogs"] = (request) =>
+    const getBlock = (number: Hex.Hex | "latest", full: boolean) =>
+      send({
+        method: "eth_getBlockByNumber",
+        params: [number, full],
+      }) as unknown as Effect.Effect<Block>;
+
+    /** Every block Anvil mined, by hash. */
+    const blocks = new Map<Hex.Hex, { number: number; parentHash: Hex.Hex }>();
+    /** The canonical chain's hashes, by number. */
+    const canonical: Hex.Hex[] = [];
+    /** The canonical head after each change, in virtual time. */
+    const heads: { atMs: number; hash: Hex.Hex }[] = [];
+    /** The blocks that reorgs replaced, with their receipts, by hash. */
+    const orphans = new Map<Hex.Hex, { block: Block; receipts: Receipt[] }>();
+    /** The replaced blocks that each transaction was in, by its hash. */
+    const orphanedIn = new Map<Hex.Hex, Hex.Hex[]>();
+
+    const record = (block: Block) => {
+      const number = Number(block.number);
+      blocks.set(block.hash, { number, parentHash: block.parentHash });
+      canonical.length = number;
+      canonical.push(block.hash);
+    };
+
+    const genesis = yield* getBlock("0x0", false);
+    record(genesis);
+    heads.push({ atMs: Number.NEGATIVE_INFINITY, hash: genesis.hash });
+
+    /** The canonical head at `asOfMs`. */
+    const headAt = (asOfMs: number) => {
+      let low = 0;
+      let high = heads.length;
+      while (high - low > 1) {
+        const mid = (low + high) >> 1;
+        if (heads[mid]!.atMs <= asOfMs) low = mid;
+        else high = mid;
+      }
+      return heads[low]!.hash;
+    };
+
+    /** The hash of block `number` on the chain that ends at `head`. */
+    const hashAt = (head: Hex.Hex, number: number) => {
+      let hash = head;
+      while (true) {
+        const block = blocks.get(hash)!;
+        if (number > block.number) return undefined;
+        if (canonical[block.number] === hash) return canonical[number];
+        if (number === block.number) return hash;
+        hash = block.parentHash;
+      }
+    };
+
+    const read = ((request: RpcRequest, asOfMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
-          const { blockHash } = request.params[0];
-          if (
-            blockHash !== undefined &&
-            (yield* send({
-              method: "eth_getBlockByHash",
-              params: [blockHash, false],
-            })) === null
-          ) {
-            return undefined;
+          const head = headAt(asOfMs);
+          const seen = (hash: Hex.Hex) => {
+            const block = blocks.get(hash);
+            return block !== undefined && hashAt(head, block.number) === hash;
+          };
+          const blockByHash = (hash: Hex.Hex, full: boolean) => {
+            const orphan = orphans.get(hash);
+            if (orphan === undefined) {
+              return send({
+                method: "eth_getBlockByHash",
+                params: [hash, full],
+              });
+            }
+            return Effect.succeed(
+              full
+                ? orphan.block
+                : {
+                    ...orphan.block,
+                    transactions: orphan.block.transactions.map(
+                      ({ hash }) => hash,
+                    ),
+                  },
+            );
+          };
+          const params = (request.params ?? []) as unknown[];
+
+          switch (request.method) {
+            case "eth_blockNumber":
+              return Hex.fromNumber(blocks.get(head)!.number);
+            case "eth_getBlockByNumber": {
+              const [tag, full] = params as [string, boolean];
+              if (tag !== "latest" && !tag.startsWith("0x")) {
+                return yield* send(request);
+              }
+              const hash = tag === "latest" ? head : hashAt(head, Number(tag));
+              return hash === undefined ? null : yield* blockByHash(hash, full);
+            }
+            case "eth_getBlockByHash": {
+              const [hash, full] = params as [Hex.Hex, boolean];
+              return seen(hash) ? yield* blockByHash(hash, full) : null;
+            }
+            case "eth_getLogs": {
+              const [filter] = params as [LogFilter];
+              if (filter.blockHash === undefined) return yield* send(request);
+              if (!seen(filter.blockHash)) return undefined;
+              const orphan = orphans.get(filter.blockHash);
+              if (orphan === undefined) return yield* send(request);
+              return orphan.receipts
+                .flatMap(({ logs }) => logs)
+                .filter((log) => matches(filter, log));
+            }
+            case "eth_getTransactionReceipt": {
+              const [hash] = params as [Hex.Hex];
+              const receipt = (yield* send(request)) as Receipt | null;
+              if (receipt !== null && seen(receipt.blockHash)) return receipt;
+              const blockHash = orphanedIn.get(hash)?.find(seen);
+              if (blockHash === undefined) return null;
+              return orphans
+                .get(blockHash)!
+                .receipts.find(
+                  ({ transactionHash }) => transactionHash === hash,
+                );
+            }
           }
-          return (yield* send(request)) as RpcResult<"eth_getLogs">;
+
+          const index = STATE_BLOCK_PARAM[request.method];
+          if (index === undefined || params[index] === "pending") {
+            return yield* send(request);
+          }
+          const block = (params[index] ?? "latest") as
+            | string
+            | { blockHash: Hex.Hex }
+            | { blockNumber: Hex.Hex };
+          const hash =
+            block === "latest"
+              ? head
+              : typeof block === "string"
+                ? hashAt(head, Number(block))
+                : "blockHash" in block
+                  ? seen(block.blockHash)
+                    ? block.blockHash
+                    : undefined
+                  : hashAt(head, Number(block.blockNumber));
+          // Anvil keeps no state for a block that a reorg replaced.
+          if (hash === undefined || orphans.has(hash)) return undefined;
+          const at = [...params];
+          at[index] = { blockHash: hash };
+          return yield* send({ ...request, params: at } as RpcRequest);
         }),
-      );
+      )) as Chain["read"];
 
     /** By block hash, then transaction hash, lowercase. */
     const stateDiffs = new Map<string, StateDiff>();
@@ -143,18 +302,17 @@ export function makeChain(): Effect.Effect<
 
     // Mines one block and traces its transactions, while Anvil still has the
     // state before it.
-    const mineBlock = (timestamp: number) =>
+    const mineBlock = (atMs: number) =>
       Effect.gen(function* () {
-        // `PublicRpcSchema` does not include Anvil methods.
+        // `PublicRpcSchema` does not include Anvil methods. Anvil takes whole
+        // seconds, so blocks in the same second share a timestamp.
         yield* send({
           method: "evm_mine",
-          params: [{ timestamp, blocks: 1 }],
+          params: [{ timestamp: Math.floor(atMs / 1000), blocks: 1 }],
         } as unknown as RpcRequest);
-        const block = (yield* send({
-          method: "eth_getBlockByNumber",
-          params: ["latest", false],
-        })) as { hash: Hex.Hex; transactions: Hex.Hex[] };
-        for (const hash of block.transactions) {
+        const block = yield* getBlock("latest", false);
+        record(block);
+        for (const hash of block.transactions as unknown as Hex.Hex[]) {
           // `PublicRpcSchema` does not include `debug_traceTransaction`.
           const diff = (yield* send({
             method: "debug_traceTransaction",
@@ -165,33 +323,44 @@ export function makeChain(): Effect.Effect<
           } as unknown as RpcRequest)) as unknown as StateDiff;
           stateDiffs.set(stateDiffKey(block.hash, hash), diff);
         }
+        return block.hash;
       });
 
     const stateDiff = (blockHash: Hex.Hex, transactionHash: Hex.Hex) =>
       stateDiffs.get(stateDiffKey(blockHash, transactionHash));
 
-    const mine = (timestamp: number) =>
-      lock.withPermits(1)(mineBlock(timestamp));
+    const mine = (atMs: number) =>
+      lock.withPermits(1)(
+        Effect.gen(function* () {
+          heads.push({ atMs, hash: yield* mineBlock(atMs) });
+        }),
+      );
 
     // A node puts the transactions of dropped blocks back in its pool. Anvil
     // drops them, and evicts any pool transaction whose nonce they precede
     // once it mines a block, so they are sent again before the first new block.
-    const reorg = (depth: number, timestamp: number) =>
+    const reorg = (depth: number, atMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
-          const head = Number(yield* send({ method: "eth_blockNumber" }));
+          const head = canonical.length - 1;
           const replaced = Math.min(depth, head - 1);
           if (replaced <= 0) return [];
 
           const hashes: Hex.Hex[] = [];
           const raws: unknown[] = [];
           for (let number = head - replaced + 1; number <= head; number++) {
-            const block = (yield* send({
-              method: "eth_getBlockByNumber",
-              params: [Hex.fromNumber(number), false],
-            })) as { hash: Hex.Hex; transactions: Hex.Hex[] };
+            const block = yield* getBlock(Hex.fromNumber(number), true);
+            const receipts = (yield* send({
+              method: "eth_getBlockReceipts",
+              params: [block.number],
+            } as unknown as RpcRequest)) as unknown as Receipt[];
+            orphans.set(block.hash, { block, receipts });
             hashes.push(block.hash);
-            for (const hash of block.transactions) {
+            for (const { hash } of block.transactions) {
+              orphanedIn.set(hash, [
+                ...(orphanedIn.get(hash) ?? []),
+                block.hash,
+              ]);
               raws.push(
                 yield* send({
                   method: "eth_getRawTransactionByHash",
@@ -201,7 +370,6 @@ export function makeChain(): Effect.Effect<
             }
           }
 
-          // `PublicRpcSchema` does not include Anvil methods.
           yield* send({
             method: "anvil_rollback",
             params: [replaced],
@@ -216,13 +384,25 @@ export function makeChain(): Effect.Effect<
             method: "eth_sendTransaction",
             params: [{ from: REORG, to: REORG }],
           });
-          for (let i = 0; i < replaced; i++) {
-            yield* mineBlock(timestamp);
-          }
+          let hash = genesis.hash;
+          for (let i = 0; i < replaced; i++) hash = yield* mineBlock(atMs);
+          heads.push({ atMs, hash });
           return hashes;
         }),
       );
 
-    return { request, getLogs, stateDiff, mine, reorg };
+    return { request, read, stateDiff, mine, reorg };
   });
+}
+
+function matches(
+  { address, topics = [] }: LogFilter,
+  log: { address: Hex.Hex; topics: Hex.Hex[] },
+) {
+  const has = (wanted: Hex.Hex | Hex.Hex[], value: Hex.Hex | undefined) =>
+    [wanted].flat().some((w) => w.toLowerCase() === value?.toLowerCase());
+  return (
+    (address === undefined || has(address, log.address)) &&
+    topics.every((topic, i) => topic === null || has(topic, log.topics[i]))
+  );
 }
