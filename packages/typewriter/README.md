@@ -514,11 +514,14 @@ must not use:
 
 Library code a mutation doesn't reach, such as an unused assembly helper, isn't checked.
 
-`block.number` and `block.timestamp` are allowed, but the server executes with
-the last block it saw, so they lag the block a mutation settles in. A check that
-reverts, such as a deadline, is safe: if the settlement reverts onchain,
-typewriter drops the mutation. A branch that doesn't revert can leave different
-state offchain than onchain.
+`block.number` and `block.timestamp` are allowed, but use them only in
+conditions that revert, such as `require(block.timestamp <= deadline)`. The
+server executes with the last block it saw, so they lag the block a mutation
+settles in. When a check like this passes offchain but reverts onchain, the
+settlement reverts and typewriter drops the mutation. Typewriter doesn't check
+this rule. Storing these values, or branching on them without reverting
+(`if (block.timestamp > deadline) state.x = 1;`), leaves different state
+offchain than onchain, and nothing detects it.
 
 ### Server runtime
 
