@@ -29,25 +29,13 @@ type AstNode = {
   id: number;
   nodeType: string;
   name: string;
+  canonicalName: string;
   abstract: boolean;
-  contractKind: string;
   linearizedBaseContracts: number[];
   nodes: AstNode[];
   members: AstNode[];
-  implemented: boolean;
-  parameters: { parameters: AstNode[] };
-  body: AstNode;
-  condition: AstNode;
-  trueBody: AstNode;
-  operator: string;
-  leftExpression: AstNode;
-  rightExpression: AstNode;
-  kind: string;
-  expression: AstNode;
-  arguments: AstNode[];
-  memberName: string;
+  sourceUnit: number;
   referencedDeclaration: number;
-  components: AstNode[];
   typeName: AstNode;
   baseType: AstNode;
   underlyingType: AstNode;
@@ -102,39 +90,21 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
     });
   }
 
-  const inherited = contract.linearizedBaseContracts.flatMap(
-    (id) => nodes.get(id)!.nodes,
-  );
-  const mutationEnum = inherited.find(
+  const mutationEnum = contract.nodes.find(
     (node) => node.nodeType === "EnumDefinition" && node.name === "Mutation",
   );
   if (mutationEnum === undefined) {
     throw new ConfigError({
-      message: `${contract.name} must declare \`enum Mutation\` inside the contract or a base contract, with a member for each mutation`,
+      message: `${contract.name} must declare \`enum Mutation\` inside the contract, with a member for each mutation`,
     });
   }
-  // A contract that isn't abstract implements every function.
-  const dispatch = inherited.find(
-    (node) =>
-      node.nodeType === "FunctionDefinition" &&
-      node.name === "dispatch" &&
-      node.implemented,
-  )!;
-  const [mutationParam, dataParam] = dispatch.parameters.parameters;
-
-  const branches = new Map<number, AstNode>();
-  for (const node of descendants(dispatch.body)) {
-    if (node.nodeType !== "IfStatement") continue;
-    const member = comparedMember(node.condition, mutationParam!.id);
-    if (!mutationEnum.members.some(({ id }) => id === member)) continue;
-    if (branches.has(member!)) {
-      throw new ConfigError({
-        message: `${contract.name}.dispatch has more than one branch for Mutation.${nodes.get(member!)!.name}`,
-      });
-    }
-    branches.set(member!, node.trueBody);
+  if (mutationEnum.members.length > FIRST_BUILTIN_MUTATION_ID) {
+    throw new ConfigError({
+      message: `Mutation has ${mutationEnum.members.length} members, but typewriter reserves IDs from ${FIRST_BUILTIN_MUTATION_ID}; it can have at most ${FIRST_BUILTIN_MUTATION_ID}`,
+    });
   }
 
+  const structs = importedStructs(unit, nodes);
   const mutations: SolidityApp["mutations"] = {};
   for (const [id, member] of mutationEnum.members.entries()) {
     if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
@@ -142,24 +112,16 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
         message: `Mutation.${member.name} is reserved by typewriter; rename it`,
       });
     }
-    if (id >= FIRST_BUILTIN_MUTATION_ID) {
+    const matches = structs.filter(({ name }) => name === member.name);
+    if (matches.length !== 1) {
       throw new ConfigError({
-        message: `Mutation.${member.name} has ID ${id}, but typewriter reserves IDs from ${FIRST_BUILTIN_MUTATION_ID}; Mutation can have at most ${FIRST_BUILTIN_MUTATION_ID} members`,
+        message: `Mutation.${member.name} takes its params from a struct named ${member.name}, but ${path} and its imports define ${matches.length === 0 ? "none" : matches.map(({ canonicalName }) => canonicalName).join(", ")}`,
       });
     }
-    const branch = branches.get(member.id);
-    if (branch === undefined) {
-      throw new ConfigError({
-        message: `${contract.name}.dispatch has no branch for Mutation.${member.name}; add \`if (mutation == uint8(Mutation.${member.name}))\``,
-      });
-    }
-    const struct = decodedStruct(branch, dataParam!.id, nodes);
-    if (struct === undefined) {
-      throw new ConfigError({
-        message: `The Mutation.${member.name} branch of ${contract.name}.dispatch must decode mutationData into a struct once, as \`abi.decode(mutationData, (${member.name}))\``,
-      });
-    }
-    mutations[member.name] = { id, params: structParameters(struct, nodes) };
+    mutations[member.name] = {
+      id,
+      params: structParameters(matches[0]!, nodes),
+    };
   }
   for (const [name, { id, params }] of Object.entries(BUILTIN_MUTATIONS)) {
     mutations[name] = { id, params };
@@ -188,75 +150,49 @@ function findAppContract(
   const contracts = unit.nodes.filter(
     (node) =>
       node.nodeType === "ContractDefinition" &&
-      node.contractKind === "contract" &&
-      !node.abstract &&
       node.linearizedBaseContracts.some(
         (id) => nodes.get(id)!.name === "Typewriter",
       ),
   );
   if (contracts.length !== 1) {
     throw new ConfigError({
-      message: `${path} must define one contract that inherits Typewriter and isn't abstract, but defines ${contracts.length === 0 ? "none" : contracts.map(({ name }) => name).join(", ")}`,
+      message: `${path} must define one contract that inherits Typewriter, but defines ${contracts.length === 0 ? "none" : contracts.map(({ name }) => name).join(", ")}`,
     });
   }
-  return contracts[0]!;
-}
-
-/** `T(x)` → `x`, for any number of type conversions. */
-function unwrap(node: AstNode): AstNode {
-  return node.nodeType === "FunctionCall" && node.kind === "typeConversion"
-    ? unwrap(node.arguments[0]!)
-    : node;
-}
-
-function references(node: AstNode, declaration: number): boolean {
-  return (
-    node.nodeType === "Identifier" && node.referencedDeclaration === declaration
-  );
-}
-
-/** The `Mutation` member that `mutation == uint8(Mutation.X)` compares with. */
-function comparedMember(
-  condition: AstNode,
-  mutationParam: number,
-): number | undefined {
-  if (condition.nodeType !== "BinaryOperation" || condition.operator !== "==") {
-    return undefined;
+  const contract = contracts[0]!;
+  const bases = contract.linearizedBaseContracts.slice(1);
+  if (bases.length !== 1 || nodes.get(bases[0]!)!.name !== "Typewriter") {
+    throw new ConfigError({
+      message: `${contract.name} must inherit only Typewriter, but inherits ${bases.map((id) => nodes.get(id)!.name).join(", ")}`,
+    });
   }
-  const left = unwrap(condition.leftExpression);
-  const right = unwrap(condition.rightExpression);
-  const other = references(left, mutationParam)
-    ? right
-    : references(right, mutationParam)
-      ? left
-      : undefined;
-  return other?.nodeType === "MemberAccess"
-    ? other.referencedDeclaration
-    : undefined;
+  if (contract.abstract) {
+    throw new ConfigError({
+      message: `${contract.name} must not be abstract`,
+    });
+  }
+  return contract;
 }
 
-/** The struct of the one `abi.decode(mutationData, (Struct))` in `branch`. */
-function decodedStruct(
-  branch: AstNode,
-  dataParam: number,
+/** The structs defined in `unit` and the files it imports. */
+function importedStructs(
+  unit: AstNode,
   nodes: Map<number, AstNode>,
-): AstNode | undefined {
-  const decodes = [...descendants(branch)].filter(
-    (node) =>
-      node.nodeType === "FunctionCall" &&
-      node.expression.nodeType === "MemberAccess" &&
-      node.expression.memberName === "decode" &&
-      node.expression.expression.name === "abi" &&
-      references(node.arguments[0]!, dataParam),
-  );
-  if (decodes.length !== 1) return undefined;
-  const types = decodes[0]!.arguments[1]!;
-  const type =
-    types.nodeType === "TupleExpression" && types.components.length === 1
-      ? types.components[0]!
-      : types;
-  const struct = nodes.get(type.referencedDeclaration);
-  return struct?.nodeType === "StructDefinition" ? struct : undefined;
+): AstNode[] {
+  const visited = new Set<number>();
+  const structs: AstNode[] = [];
+  const visit = (unit: AstNode) => {
+    if (visited.has(unit.id)) return;
+    visited.add(unit.id);
+    for (const node of descendants(unit)) {
+      if (node.nodeType === "StructDefinition") structs.push(node);
+      if (node.nodeType === "ImportDirective") {
+        visit(nodes.get(node.sourceUnit)!);
+      }
+    }
+  };
+  visit(unit);
+  return structs;
 }
 
 function structParameters(
