@@ -20,8 +20,12 @@ import { decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
-import { Database, makeDbClient } from "../src/db";
-import { makePostgresTransport } from "../src/db-transport";
+import {
+  Database,
+  type DatabaseOptions,
+  makeDbClient,
+  makeDbTransport,
+} from "../src/db";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import {
@@ -139,14 +143,9 @@ export type SIM = {
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
 const SEED = process.env["SEED"] || Hex.random(32);
 
+/** Runs on this Postgres server instead of an in-memory PGlite, when set. */
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
-const DATABASE_URL = process.env["DATABASE_URL"];
-if (DATABASE_URL === undefined || DATABASE_URL === "") {
-  console.error(
-    "usage: DATABASE_URL=<postgres url> bun simulation-test/index.ts",
-  );
-  process.exit(1);
-}
+const DATABASE_URL = process.env["DATABASE_URL"] || undefined;
 
 /** The configuration of a run. Each value is drawn from `SEED` and its path. */
 export const SIM: SIM = {
@@ -261,44 +260,59 @@ const CLIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const ENQUEUE_GAS = Hex.fromNumber(1_000_000);
 
 /**
- * A database of its own for the run. It is dropped when the run passes, and
- * kept for inspection when it fails or is interrupted.
+ * A Postgres database of its own for the run, on the server at `serverUrl`.
+ * It is dropped when the run passes, and kept for inspection when it fails or
+ * is interrupted.
  */
-const makeDatabase = Effect.acquireRelease(
-  Effect.promise(async () => {
-    const name = `typewriter_sim_${process.pid}_${Date.now()}`;
-    const admin = new SQL({ url: DATABASE_URL, max: 1 });
-    await admin.unsafe(`CREATE DATABASE "${name}"`);
-    // The run never survives a Postgres crash, so commits need not wait for
-    // the WAL flush.
-    await admin.unsafe(`ALTER DATABASE "${name}" SET synchronous_commit = off`);
-    await admin.close();
-    const url = new URL(DATABASE_URL);
-    url.pathname = `/${name}`;
-    return { name, url: url.toString() };
-  }),
-  ({ name, url }, exit) =>
-    Exit.isSuccess(exit)
-      ? Effect.promise(async () => {
-          const admin = new SQL({ url: DATABASE_URL, max: 1 });
-          await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-          await admin.close();
-        }).pipe(
-          Effect.andThen(
-            Effect.logInfo("Dropped simulation database").pipe(
-              Effect.annotateLogs({ database: name }),
+const makePostgresDatabase = (serverUrl: string) =>
+  Effect.acquireRelease(
+    Effect.promise(async () => {
+      const name = `typewriter_sim_${process.pid}_${Date.now()}`;
+      const admin = new SQL({ url: serverUrl, max: 1 });
+      await admin.unsafe(`CREATE DATABASE "${name}"`);
+      // The run never survives a Postgres crash, so commits need not wait for
+      // the WAL flush.
+      await admin.unsafe(
+        `ALTER DATABASE "${name}" SET synchronous_commit = off`,
+      );
+      await admin.close();
+      const url = new URL(serverUrl);
+      url.pathname = `/${name}`;
+      return { name, url: url.toString() };
+    }),
+    ({ name, url }, exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.promise(async () => {
+            const admin = new SQL({ url: serverUrl, max: 1 });
+            await admin.unsafe(
+              `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`,
+            );
+            await admin.close();
+          }).pipe(
+            Effect.andThen(
+              Effect.logInfo("Dropped simulation database").pipe(
+                Effect.annotateLogs({ database: name }),
+              ),
             ),
+          )
+        : Effect.logInfo("Kept simulation database").pipe(
+            Effect.annotateLogs({
+              database: name,
+              seed: SIM.seed,
+              psql: `psql ${url}`,
+              drop: `DROP DATABASE "${name}" WITH (FORCE)`,
+            }),
           ),
-        )
-      : Effect.logInfo("Kept simulation database").pipe(
-          Effect.annotateLogs({
-            database: name,
-            seed: SIM.seed,
-            psql: `psql ${url}`,
-            drop: `DROP DATABASE "${name}" WITH (FORCE)`,
-          }),
-        ),
-);
+  ).pipe(
+    Effect.tap(({ name }) =>
+      Effect.logInfo("Created simulation database").pipe(
+        Effect.annotateLogs({ database: name }),
+      ),
+    ),
+    // One connection runs the statements in the order `io` starts them, so
+    // Postgres sees no race that depends on wall-clock time.
+    Effect.map(({ url }) => ({ url, maxConnections: 1 })),
+  );
 
 const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation").pipe(
@@ -310,10 +324,10 @@ const program = Effect.gen(function* () {
   yield* Effect.logInfo("Deployed simulation contract").pipe(
     Effect.annotateLogs({ address, chain_id: chainId }),
   );
-  const database = yield* makeDatabase;
-  yield* Effect.logInfo("Created simulation database").pipe(
-    Effect.annotateLogs({ database: database.name }),
-  );
+  const database: DatabaseOptions =
+    DATABASE_URL === undefined
+      ? { kind: "pglite" }
+      : yield* makePostgresDatabase(DATABASE_URL);
   const metadata = yield* Effect.promise(() =>
     loadSolidityMetadata(ASSESSMENT_ENTRYPOINT),
   );
@@ -328,7 +342,7 @@ const program = Effect.gen(function* () {
         string,
         ...string[],
       ],
-      database: { url: database.url },
+      database,
       blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
       confirmations: {
         finalizedBlockDepth: SIM.typewriter.finalizedBlockDepth,
@@ -341,12 +355,7 @@ const program = Effect.gen(function* () {
     metadata,
   );
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
-  // One connection runs the statements in the order `io` starts them, so
-  // Postgres sees no race that depends on wall-clock time.
-  const transport = yield* makePostgresTransport({
-    url: database.url,
-    maxConnections: 1,
-  });
+  const transport = yield* makeDbTransport(database);
   const db = makeDbClient(transport);
 
   const signers = SIM.generator.accounts.map((keyType, i) =>

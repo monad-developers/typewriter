@@ -70,13 +70,16 @@ export function makeDbClient(transport: DbTransport): Db {
   };
 }
 
+export function makeDbTransport(
+  options: DatabaseOptions,
+): Effect.Effect<DbTransport, never, Scope.Scope> {
+  return options.kind === "pglite"
+    ? makePgliteTransport()
+    : makePostgresTransport(options);
+}
+
 export function makeDb(
   options: DatabaseOptions,
 ): Effect.Effect<Db, never, Scope.Scope> {
-  return Effect.map(
-    options.kind === "pglite"
-      ? makePgliteTransport()
-      : makePostgresTransport(options),
-    makeDbClient,
-  );
+  return Effect.map(makeDbTransport(options), makeDbClient);
 }
