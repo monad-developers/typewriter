@@ -88,7 +88,8 @@ const STATE_BLOCK_PARAM: Record<string, number | undefined> = {
 
 /**
  * The third Anvil account. It sends one transaction in the first block of each
- * reorg, so the new blocks never hash the same as the ones they replace.
+ * reorg, with the reorg's count as data, so the new blocks never hash the same
+ * as the ones they replace.
  */
 const REORG = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 
@@ -342,11 +343,14 @@ export function makeChain(
         }),
       );
 
+    let reorgs = 0;
+
     // A node puts the transactions of replaced blocks back in its pool, unless
-    // it drops them. Anvil drops them, and evicts any pool transaction whose
-    // nonce they precede once it mines a block, so they are sent again before
-    // the first new block. Once a sender's transaction is dropped, so are its
-    // later ones, whose nonces follow it.
+    // it drops them. Anvil drops them, so they are sent again. Once a sender's
+    // transaction is dropped, so are its later ones, whose nonces follow it.
+    // Each one it keeps lands in a new block, or stays in the pool for the
+    // block after them, in a shuffled order. Anvil holds a transaction whose
+    // nonce is ahead until the one before it arrives.
     const reorg = (depth: number, atMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
@@ -383,7 +387,13 @@ export function makeChain(
           } as unknown as RpcRequest);
           const dropped: Hex.Hex[] = [];
           const droppedFrom = new Set<string>();
+          const slots = Array.from(
+            { length: replaced + 1 },
+            (): Hex.Hex[] => [],
+          );
           for (const { hash, from, raw } of orphaned) {
+            // A new marker takes the nonce of the first replaced one.
+            if (from === REORG.toLowerCase()) continue;
             if (
               droppedFrom.has(from) ||
               random.nextDoubleUnsafe() < SIM.chain.dropRate
@@ -392,14 +402,33 @@ export function makeChain(
               dropped.push(hash);
               continue;
             }
-            yield* send({ method: "eth_sendRawTransaction", params: [raw] });
+            slots[Math.floor(random.nextDoubleUnsafe() * slots.length)]!.push(
+              raw,
+            );
           }
+          const sendAll = (raws: Hex.Hex[]) =>
+            Effect.forEach(
+              shuffle(random, raws),
+              (raw) =>
+                send({ method: "eth_sendRawTransaction", params: [raw] }),
+              { discard: true },
+            );
           yield* send({
             method: "eth_sendTransaction",
-            params: [{ from: REORG, to: REORG }],
+            params: [
+              {
+                from: REORG,
+                to: REORG,
+                data: Hex.fromNumber(++reorgs, { size: 32 }),
+              },
+            ],
           });
           let hash = genesis.hash;
-          for (let i = 0; i < replaced; i++) hash = yield* mineBlock(atMs);
+          for (let i = 0; i < replaced; i++) {
+            yield* sendAll(slots[i]!);
+            hash = yield* mineBlock(atMs);
+          }
+          yield* sendAll(slots[replaced]!);
           heads.push({ atMs, hash });
           return { replaced: hashes, dropped };
         }),
@@ -407,6 +436,14 @@ export function makeChain(
 
     return { request, read, stateDiff, mine, reorg };
   });
+}
+
+function shuffle<value>(random: Random.Random, values: value[]): value[] {
+  for (let i = values.length - 1; i > 0; i--) {
+    const j = Math.floor(random.nextDoubleUnsafe() * (i + 1));
+    [values[i], values[j]] = [values[j]!, values[i]!];
+  }
+  return values;
 }
 
 function matches(
