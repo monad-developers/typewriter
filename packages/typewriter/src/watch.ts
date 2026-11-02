@@ -36,7 +36,7 @@ export type WatchConfig = {
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
 };
 
-/** The chain reorged the finalized block, or the block the watch started from. */
+/** The chain reorged deeper than the blocks the watch keeps. */
 export class UnrecoverableReorgError extends Data.TaggedError(
   "UnrecoverableReorgError",
 )<{
@@ -44,7 +44,7 @@ export class UnrecoverableReorgError extends Data.TaggedError(
   hash: Hex.Hex;
 }> {
   override get message() {
-    return `Detected unrecoverable reorg below the local chain at block ${this.number} (${this.hash})`;
+    return `Detected unrecoverable reorg deeper than the local chain at block ${this.number} (${this.hash})`;
   }
 }
 
@@ -81,10 +81,7 @@ export function watchChain(
         const getBlock = (id: bigint | Hex.Hex) =>
           requestBlock(id).pipe(Effect.flatMap(withLogs));
 
-        /**
-         * The finalized block below `chain`, or `fromBlock` until one is. A
-         * reorg that replaces it is unrecoverable.
-         */
+        /** The block below `chain`. A reorg that replaces it is unrecoverable. */
         let root = config.fromBlock;
         let chain: LocalBlock[] = [];
         const tip = () => chain.at(-1) ?? root;
@@ -118,7 +115,6 @@ export function watchChain(
             }
           });
 
-        /** Drops the blocks up to the finalized block, once the chain has it. */
         const finalize = Effect.gen(function* () {
           const finalized = yield* requestBlock("finalized");
           if (finalized.number <= root.number) return;

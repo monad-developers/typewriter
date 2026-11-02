@@ -167,7 +167,7 @@ export function makeChain(
     const blocks = new Map<Hex.Hex, { number: number; parentHash: Hex.Hex }>();
     /** The canonical chain's hashes, by number. */
     const canonical: Hex.Hex[] = [];
-    /** The canonical head after each change, in virtual time, with the highest head so far. */
+    /** The canonical head after each change, in virtual time. */
     const heads: { atMs: number; hash: Hex.Hex; highest: number }[] = [];
     /** The blocks that reorgs replaced, with their receipts, by hash. */
     const orphans = new Map<Hex.Hex, { block: Block; receipts: Receipt[] }>();
@@ -368,7 +368,7 @@ export function makeChain(
       lock.withPermits(1)(
         Effect.gen(function* () {
           const head = canonical.length - 1;
-          // The chain finalized every block `finalizedBlockDepth` below the
+          // The runtime finalized every block `finalizedBlockDepth` below the
           // highest head, even if a reorg has since shortened the chain.
           const replaced = Math.min(
             depth,
