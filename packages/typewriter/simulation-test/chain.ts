@@ -48,12 +48,13 @@ export type Chain = {
   /** Mines one block at `atMs`, in virtual time. */
   mine: (atMs: number) => Effect.Effect<void>;
   /**
-   * Replaces the last `depth` blocks with as many new ones at `atMs`, in
+   * Replaces the last `depth` blocks with `added` new ones at `atMs`, in
    * virtual time. Block 1, where the contract is deployed, stays. Returns the
    * hashes of the blocks it replaced, and of the transactions it dropped.
    */
   reorg: (
     depth: number,
+    added: number,
     atMs: number,
   ) => Effect.Effect<{ replaced: Hex.Hex[]; dropped: Hex.Hex[] }>;
 };
@@ -173,11 +174,15 @@ export function makeChain(
     /** The replaced blocks that each transaction was in, by its hash. */
     const orphanedIn = new Map<Hex.Hex, Hex.Hex[]>();
 
+    /** The highest head so far, which a reorg that shortens the chain lowers. */
+    let highest = 0;
+
     const record = (block: Block) => {
       const number = Number(block.number);
       blocks.set(block.hash, { number, parentHash: block.parentHash });
       canonical.length = number;
       canonical.push(block.hash);
+      highest = Math.max(highest, number);
     };
 
     const genesis = yield* getBlock("0x0", false);
@@ -351,11 +356,17 @@ export function makeChain(
     // Each one it keeps lands in a new block, or stays in the pool for the
     // block after them, in a shuffled order. Anvil holds a transaction whose
     // nonce is ahead until the one before it arrives.
-    const reorg = (depth: number, atMs: number) =>
+    const reorg = (depth: number, added: number, atMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
           const head = canonical.length - 1;
-          const replaced = Math.min(depth, head - 1);
+          // The runtime finalized every block `finalizedBlockDepth` below the
+          // highest head, even if a reorg has since shortened the chain.
+          const replaced = Math.min(
+            depth,
+            head - 1,
+            head - highest + SIM.typewriter.finalizedBlockDepth,
+          );
           if (replaced <= 0) return { replaced: [], dropped: [] };
 
           const hashes: Hex.Hex[] = [];
@@ -387,10 +398,7 @@ export function makeChain(
           } as unknown as RpcRequest);
           const dropped: Hex.Hex[] = [];
           const droppedFrom = new Set<string>();
-          const slots = Array.from(
-            { length: replaced + 1 },
-            (): Hex.Hex[] => [],
-          );
+          const slots = Array.from({ length: added + 1 }, (): Hex.Hex[] => []);
           for (const { hash, from, raw } of orphaned) {
             // A new marker takes the nonce of the first replaced one.
             if (from === REORG.toLowerCase()) continue;
@@ -424,11 +432,11 @@ export function makeChain(
             ],
           });
           let hash = genesis.hash;
-          for (let i = 0; i < replaced; i++) {
+          for (let i = 0; i < added; i++) {
             yield* sendAll(slots[i]!);
             hash = yield* mineBlock(atMs);
           }
-          yield* sendAll(slots[replaced]!);
+          yield* sendAll(slots[added]!);
           heads.push({ atMs, hash });
           return { replaced: hashes, dropped };
         }),
