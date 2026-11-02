@@ -115,45 +115,37 @@ export function watchChain(
             }
           });
 
-        // A watch behind the chain could always see a finalized block ahead
-        // of its tip, so it keeps one until its chain reaches it.
-        let finalized = root;
-        const finalize = Effect.gen(function* () {
-          if (finalized.number <= root.number) {
-            const block = yield* requestBlock("finalized");
-            finalized = { number: block.number, hash: block.hash };
-          }
-          if (
-            finalized.number <= root.number ||
-            finalized.number > tip().number
-          ) {
-            return;
-          }
-          // A chain that a reorg has yet to replace, which a later poll does.
-          const index = chain.findIndex(
-            (block) => block.hash === finalized.hash,
-          );
-          if (index === -1) return;
-          root = chain[index]!;
-          chain = chain.slice(index + 1);
-          yield* Queue.offer(queue, {
-            _tag: "Finalized",
-            block: { number: root.number, hash: root.hash },
+        const finalize = (finalized: RequestedBlock) =>
+          Effect.gen(function* () {
+            // A provider ahead of the one that served `latest`, or a chain
+            // that a reorg has yet to replace, is one a later poll reaches.
+            const index = chain.findIndex(
+              (block) => block.hash === finalized.hash,
+            );
+            if (index === -1) return;
+            root = chain[index]!;
+            chain = chain.slice(index + 1);
+            yield* Queue.offer(queue, {
+              _tag: "Finalized",
+              block: { number: root.number, hash: root.hash },
+            });
           });
-        });
 
         const poll = Effect.gen(function* () {
+          // Requested before `latest`, so the chain up to `latest` has it.
+          const finalized = yield* requestBlock("finalized");
           const latest = yield* requestBlock("latest");
           if (
             latest.number <= root.number ||
             chain.some((block) => block.hash === latest.hash)
           ) {
+            yield* finalize(finalized);
             return;
           }
 
           if (latest.number <= tip().number + 1n) {
             yield* reconcile(yield* withLogs(latest));
-            yield* finalize;
+            yield* finalize(finalized);
             return;
           }
 
@@ -169,7 +161,7 @@ export function watchChain(
               { concurrency: "unbounded" },
             );
             for (const block of blocks) yield* reconcile(block);
-            yield* finalize;
+            yield* finalize(finalized);
           }
         });
 
