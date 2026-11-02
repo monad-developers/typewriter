@@ -1,11 +1,7 @@
 import { Data, Duration, Effect, Queue, Schedule, Stream } from "effect";
 import type { Hex } from "ox";
 import { Rpc, type RpcError } from "./rpc";
-import {
-  type BlockNotFoundError,
-  type RequestedBlock,
-  requestBlock,
-} from "./rpc-request";
+import { type RequestedBlock, requestBlock } from "./rpc-request";
 
 /** How many blocks the watch requests at once when it falls behind. */
 const CATCH_UP_CONCURRENCY = 16;
@@ -49,10 +45,7 @@ export class UnrecoverableReorgError extends Data.TaggedError(
   }
 }
 
-export type WatchError =
-  | RpcError
-  | BlockNotFoundError
-  | UnrecoverableReorgError;
+export type WatchError = RpcError | UnrecoverableReorgError;
 
 export function watchChain(
   config: WatchConfig,

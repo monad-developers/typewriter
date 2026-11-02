@@ -53,8 +53,8 @@ export type {
 export { MigrationError } from "./db-migrate";
 export type { TypewriterMutationSchema } from "./db-schema";
 export { DbError } from "./db-transport";
-export { type RpcError, RpcTimeoutError } from "./rpc";
-export { BlockNotFoundError, NoDataReturnedError } from "./rpc-request";
+export { BlockNotFoundError, type RpcError, RpcTimeoutError } from "./rpc";
+export { NoDataReturnedError } from "./rpc-request";
 export {
   RpcHttpError,
   RpcNetworkError,

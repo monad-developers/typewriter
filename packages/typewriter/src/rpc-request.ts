@@ -17,15 +17,6 @@ export type RequestedBlock<includeTransactions extends boolean = false> = Block<
   Exclude<BlockTag, "pending">
 >;
 
-/** The provider returned `null` for the block. */
-export class BlockNotFoundError extends Data.TaggedError("BlockNotFoundError")<{
-  block: Hash | bigint | "latest";
-}> {
-  override get message() {
-    return `Block ${this.block} not found`;
-  }
-}
-
 /** The call returned `0x`, for example because no contract is at `address`. */
 export class NoDataReturnedError extends Data.TaggedError(
   "NoDataReturnedError",
@@ -41,11 +32,7 @@ export class NoDataReturnedError extends Data.TaggedError(
 export function requestBlock<includeTransactions extends boolean = false>(
   block: BlockIdentifier,
   includeTransactions: includeTransactions = false as includeTransactions,
-): Effect.Effect<
-  RequestedBlock<includeTransactions>,
-  RpcError | BlockNotFoundError,
-  Rpc
-> {
+): Effect.Effect<RequestedBlock<includeTransactions>, RpcError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
 
@@ -64,12 +51,9 @@ export function requestBlock<includeTransactions extends boolean = false>(
             ],
           });
 
-    if (rpcBlock === null) {
-      // TODO(kyle) retry `BlockNotFoundError` in `Rpc` service.
-      return yield* new BlockNotFoundError({ block: id });
-    }
+    // `Rpc` fails a `null` block with `BlockNotFoundError`.
     return formatBlock(
-      rpcBlock,
+      rpcBlock!,
       "requestBlock",
     ) as RequestedBlock<includeTransactions>;
   });
