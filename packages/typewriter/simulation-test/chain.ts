@@ -107,14 +107,8 @@ export function makeChain(
       "anvil",
       [
         ...(SIM.chain.network === "monad"
-          ? ["--network", "monad", "--chain-id", "143"]
-          : [
-              "--chain-id",
-              "1",
-              "--hardfork",
-              "osaka",
-              "--enable-tx-gas-limit",
-            ]),
+          ? ["--network", "monad"]
+          : ["--hardfork", "osaka", "--enable-tx-gas-limit"]),
         "--port",
         "0",
         "--no-mining",

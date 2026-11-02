@@ -80,7 +80,6 @@ export type SIM = {
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
   ioRate: number;
   chain: {
-    /** Anvil runs the network's EVM under its mainnet chain ID, which picks typewriter's. */
     network: "monad" | "ethereum";
     blockTimeMs: number;
     genesisTimestamp: number;
@@ -168,8 +167,7 @@ export const SIM: SIM = {
       NETWORK === "ethereum"
         ? 12_000
         : pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
-    // After MonadTen and Osaka, the hardforks Anvil runs.
-    genesisTimestamp: 1_790_000_000,
+    genesisTimestamp: 1_700_000_000,
     reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
     dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
     finalizedBlockDepth: int(SEED, "chain.finalizedBlockDepth", 1, 5),
@@ -336,6 +334,8 @@ const program = Effect.gen(function* () {
       address,
       account: SCHEDULER,
       chainId,
+      // Anvil's chain ID has no hardfork schedule.
+      hardfork: SIM.chain.network === "monad" ? "MonadTen" : "Osaka",
       rpcUrl: SIM.transports.map((_, index) => `sim-${index}`) as [
         string,
         ...string[],
