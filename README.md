@@ -242,7 +242,10 @@ struct State {
 Each mutation is a Solidity library with:
 - **`struct [Mutation]` definition**. The app's `dispatch` callback ABI-decodes
   `mutationData` into this struct. Field names and order define the params
-  extracted into the manifest.
+  extracted into the manifest. Fields can be any ABI type: value types,
+  `bytes`, `string`, arrays, and nested structs. Enums become `uint8`,
+  user-defined value types their underlying type, and contracts and interfaces
+  `address`.
 - **`execute` function**. Applies the mutation to app state using the
   authenticated `accountID`. Account lookup, permissions, expiration, nonce,
   and signature checks have already happened in the base contract.
@@ -480,6 +483,13 @@ through the fixed authorization envelope, consumes the nonce, and calls
 `dispatch` with the authenticated account ID. The callback branches on the app
 mutation ID and ABI-decodes the mutation struct. Built-in account mutations are
 handled entirely by the base contract.
+
+Typewriter reads each mutation's params from `dispatch`: every `Mutation`
+member needs exactly one branch that compares the `mutation` argument with it,
+as `if (mutation == uint8(Mutation.Add))`, and decodes `mutationData` into a
+struct exactly once inside that branch. `dispatch` and `Mutation` can live in
+a base contract. Library functions must be `internal`: typewriter executes only
+the app contract, so it rejects an app that links external libraries.
 
 #### Determinism
 
