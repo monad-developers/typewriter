@@ -31,7 +31,7 @@ contract LimitOrderTest is Test {
     }
 
     function _executeLimitOrder(LimitOrderMutation.LimitOrder memory order, bytes32 account) internal {
-        LimitOrderMutation.executeLimitOrder(state, order, account);
+        LimitOrderMutation.execute(state, order, account);
     }
 
     function callLimitOrder(LimitOrderMutation.LimitOrder memory order, bytes32 account) external {

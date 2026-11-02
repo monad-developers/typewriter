@@ -13,11 +13,18 @@ error InvalidScheduler();
 error AError();
 error BError();
 
+/// A mutation reverts when `shouldRevert` is set, so a failure depends only on the input.
 library AMutation {
     struct A {
         uint256 slot;
         uint256 value;
         bool shouldRevert;
+    }
+
+    function execute(State storage state, A memory a, bytes32 accountID) internal {
+        if (a.shouldRevert) revert AError();
+        state.slots[a.slot] = bytes32(a.value);
+        state.accumulator = keccak256(abi.encode(state.accumulator, uint8(0), accountID, a.slot, a.value));
     }
 }
 
@@ -26,6 +33,12 @@ library BMutation {
         uint256 slot;
         uint256 value;
         bool shouldRevert;
+    }
+
+    function execute(State storage state, B memory b, bytes32 accountID) internal {
+        if (b.shouldRevert) revert BError();
+        state.slots[b.slot] = keccak256(abi.encode(b.value));
+        state.accumulator = keccak256(abi.encode(state.accumulator, uint8(1), accountID, b.slot, b.value));
     }
 }
 
@@ -42,18 +55,11 @@ contract Assessment is Typewriter {
         FORCE_INCLUSION_DELAY = 365 days;
     }
 
-    /// A mutation reverts when `shouldRevert` is set, so a failure depends only on the input.
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.A)) {
-            AMutation.A memory a = abi.decode(mutationData, (AMutation.A));
-            if (a.shouldRevert) revert AError();
-            state.slots[a.slot] = bytes32(a.value);
-            state.accumulator = keccak256(abi.encode(state.accumulator, uint8(0), accountID, a.slot, a.value));
+            AMutation.execute(state, abi.decode(mutationData, (AMutation.A)), accountID);
         } else if (mutation == uint8(Mutation.B)) {
-            BMutation.B memory b = abi.decode(mutationData, (BMutation.B));
-            if (b.shouldRevert) revert BError();
-            state.slots[b.slot] = keccak256(abi.encode(b.value));
-            state.accumulator = keccak256(abi.encode(state.accumulator, uint8(1), accountID, b.slot, b.value));
+            BMutation.execute(state, abi.decode(mutationData, (BMutation.B)), accountID);
         } else {
             revert UnknownMutation(mutation);
         }

@@ -20,7 +20,7 @@ library ChangeOrderMutation {
         uint64 price;
     }
 
-    function executeChangeOrder(State storage state, ChangeOrder memory changeOrder, bytes32 accountID) internal {
+    function execute(State storage state, ChangeOrder memory changeOrder, bytes32 accountID) internal {
         Account storage account = state.accounts[accountID];
         Order storage order = account.orders[changeOrder.orderId];
         uint64 orderQuantity = order.quantity;
@@ -53,7 +53,7 @@ library ChangeOrderMutation {
         }
 
         delete account.orders[changeOrder.orderId];
-        LimitOrderMutation.executeLimitOrder(
+        LimitOrderMutation.execute(
             state,
             LimitOrderMutation.LimitOrder({
                 quantity: uint256(orderQuantity) << instrument.baseLotExp,

@@ -23,7 +23,7 @@ library LimitOrderMutation {
         uint8 bidOrAsk;
     }
 
-    function executeLimitOrder(State storage state, LimitOrder memory order, bytes32 accountID) internal {
+    function execute(State storage state, LimitOrder memory order, bytes32 accountID) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         address base = instrument.base;
         if (base == address(0)) revert InvalidInstrument();

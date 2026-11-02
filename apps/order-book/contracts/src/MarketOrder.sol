@@ -28,7 +28,7 @@ library MarketOrderMutation {
         uint8 bidOrAsk;
     }
 
-    function executeMarketOrder(State storage state, MarketOrder memory order, bytes32 accountID) internal {
+    function execute(State storage state, MarketOrder memory order, bytes32 accountID) internal {
         Instrument storage instrument = state.instruments[order.instrumentId];
         if (instrument.base == address(0)) revert InvalidInstrument();
 

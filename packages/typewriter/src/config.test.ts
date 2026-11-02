@@ -17,7 +17,7 @@ import type {
   Typewriter,
   TypewriterMutationInput,
 } from "./index";
-import type { TypewriterSolidityEntrypoint } from "./sol-parse";
+import type { TypewriterSolidityEntrypoint } from "./sol-build";
 import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 
 const STORAGE_LAYOUT = {

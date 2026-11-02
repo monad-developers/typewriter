@@ -237,13 +237,17 @@ struct State {
 
 #### Mutations
 
-Each mutation is a Solidity library with:
-- **`struct [Mutation]` definition**. The app's `dispatch` callback ABI-decodes
-  `mutationData` into this struct. Field names and order define the params
-  extracted into the manifest.
-- **`execute` function**. Applies the mutation to app state using the
-  authenticated `accountID`. Account lookup, permissions, expiration, nonce,
-  and signature checks have already happened in the base contract.
+Each `Mutation` member `X` needs exactly one library named `XMutation`, in the
+entrypoint file or a file it imports, with:
+- **`struct X`**, the mutation's params. Field names and order define the
+  params in the manifest. Fields can be any ABI type: value types, `bytes`,
+  `string`, arrays, and nested structs. Enums become `uint8`, user-defined
+  value types their underlying type, and contracts and interfaces `address`.
+- **`function execute(State storage state, X memory mutation, bytes32 accountID) internal`**,
+  with no return value, where `State` is the type of the app's `state`
+  variable. Applies the mutation to app state using the authenticated
+  `accountID`. Account lookup, permissions, expiration, nonce, and signature
+  checks have already happened in the base contract.
 
 ```solidity
 library AddMutation {
@@ -478,6 +482,17 @@ through the fixed authorization envelope, consumes the nonce, and calls
 `dispatch` with the authenticated account ID. The callback branches on the app
 mutation ID and ABI-decodes the mutation struct. Built-in account mutations are
 handled entirely by the base contract.
+
+The app contract must:
+
+- inherit only `Typewriter`;
+- declare exactly `constructor(address scheduler)` and pass `scheduler` to `Typewriter(scheduler)`; the body may do more, but it takes no other arguments, so typewriter can deploy any app;
+- declare `enum Mutation` inside itself;
+- keep all its storage in `state` (`constant`s are allowed);
+- add no `public` or `external` functions or variables;
+- implement `dispatch` by calling `internal` library functions only, such as each mutation library's `execute`.
+
+Typewriter checks these rules at startup and names the one that's broken.
 
 #### Determinism
 

@@ -19,14 +19,11 @@ import { Hash, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
-import type { TypewriterManifest } from "../src/config";
+import { createTypewriterApp, type TypewriterManifest } from "../src/config";
 import { Database, makeDb } from "../src/db";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
-import {
-  createSolidityTypewriterApp,
-  loadSolidityMetadata,
-} from "../src/sol-parse";
+import { loadSolidityApp } from "../src/sol-build";
 import {
   createTypewriterEffect,
   type ExecuteError,
@@ -316,11 +313,12 @@ const program = Effect.gen(function* () {
   yield* Effect.logInfo("Created simulation database").pipe(
     Effect.annotateLogs({ database: database.name }),
   );
-  const metadata = yield* Effect.promise(() =>
-    loadSolidityMetadata(ASSESSMENT_ENTRYPOINT),
+  const solidityApp = yield* Effect.promise(() =>
+    loadSolidityApp(ASSESSMENT_ENTRYPOINT),
   );
-  const app = createSolidityTypewriterApp(
-    {
+  const app = createTypewriterApp({
+    ...solidityApp,
+    config: {
       address,
       account: SCHEDULER,
       chainId,
@@ -340,8 +338,7 @@ const program = Effect.gen(function* () {
         submitIntervalMs: SIM.typewriter.submitIntervalMs,
       },
     },
-    metadata,
-  );
+  });
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
   // One connection runs the statements in the order `io` starts them, so
   // Postgres sees no race that depends on wall-clock time.

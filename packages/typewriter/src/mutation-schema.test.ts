@@ -223,3 +223,40 @@ test("rejects an authorization missing a field, or not an object", () => {
   // The encoder spreads the authorization, so it must be an object.
   expect(() => validate(TYPED_PARAMS, Object.values(AUTHORIZATION))).toThrow();
 });
+
+test("accepts nested structs as objects or arrays, and checks their fields", () => {
+  const leg = [
+    { name: "side", type: "uint8" },
+    { name: "price", type: "uint128" },
+  ];
+  const nested: readonly AbiParameters.Parameter[] = [
+    { name: "leg", type: "tuple", components: leg },
+    { name: "legs", type: "tuple[]", components: leg },
+  ];
+  const encode = (params: unknown) => {
+    validate(params, AUTHORIZATION, nested);
+    return encodeMutationCalldata({
+      config: { id: 0, params: nested },
+      params,
+      authorization: AUTHORIZATION,
+    } as Parameters<typeof encodeMutationCalldata>[0]);
+  };
+
+  const canonical = encode({
+    leg: { side: 1n, price: 100n },
+    legs: [{ side: 0n, price: 5n }],
+  });
+  expect(encode([[1, "100"], [[0, "0x05"]]])).toBe(canonical);
+  expect(encode({ leg: [1n, 100n], legs: [{ side: 0n, price: 5n }] })).toBe(
+    canonical,
+  );
+
+  for (const [params, message] of [
+    [{ leg: { side: 256n, price: 0n }, legs: [] }, "Expected uint8 between"],
+    [{ leg: { side: 0n }, legs: [] }, "Missing key"],
+    [{ leg: { side: 0n, price: 0n }, legs: [{ side: 0n }] }, "Missing key"],
+    [{ leg: { side: 0n, price: 0n }, legs: {} }, "Expected array"],
+  ] as const) {
+    expect(() => validate(params, AUTHORIZATION, nested)).toThrow(message);
+  }
+});

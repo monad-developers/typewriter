@@ -9,7 +9,7 @@ library DepositMutation {
         uint256 amount;
     }
 
-    function executeDeposit(State storage state, Deposit memory deposit, bytes32 accountID) internal {
+    function execute(State storage state, Deposit memory deposit, bytes32 accountID) internal {
         state.accounts[accountID].balances[deposit.asset] += deposit.amount;
     }
 }

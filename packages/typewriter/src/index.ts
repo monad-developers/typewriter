@@ -2,6 +2,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Cause, Deferred, Effect, Layer } from "effect";
 import { startDevChain } from "./anvil";
 import {
+  createTypewriterApp,
   type MutationConfig,
   type MutationsConfig,
   type SequencingConfig,
@@ -14,10 +15,9 @@ import { loggerLayer } from "./logger";
 import { layerRpc } from "./rpc";
 import { makeHttpTransport } from "./rpc-transport";
 import {
-  createSolidityTypewriterApp,
-  loadSolidityMetadata,
+  loadSolidityApp,
   type TypewriterSolidityEntrypoint,
-} from "./sol-parse";
+} from "./sol-build";
 import { createTypewriterEffect, type TypewriterEffect } from "./typewriter";
 import type {
   BatchListener,
@@ -61,7 +61,7 @@ export {
   RpcResponseError,
   type RpcTransportError,
 } from "./rpc-transport";
-export type { TypewriterSolidityEntrypoint } from "./sol-parse";
+export type { TypewriterSolidityEntrypoint } from "./sol-build";
 export {
   ChainIdMismatchError,
   type CreateTypewriterError,
@@ -158,16 +158,16 @@ export function createTypewriter<
         try: () => validateConfig(config),
         catch: (error) => error,
       });
-      const metadata = yield* Effect.tryPromise({
-        try: () => loadSolidityMetadata(entrypoint),
+      const solidityApp = yield* Effect.tryPromise({
+        try: () => loadSolidityApp(entrypoint),
         catch: (error) => error,
       });
       const devChain =
         config.dev === true
-          ? yield* startDevChain(metadata.bytecode)
+          ? yield* startDevChain(solidityApp.bytecode)
           : undefined;
       const app = yield* Effect.try({
-        try: () => createSolidityTypewriterApp(config, metadata, devChain),
+        try: () => createTypewriterApp({ config, ...solidityApp, devChain }),
         catch: (error) => error,
       });
       const [rpcUrl, ...rpcUrls] = app.rpcUrls;

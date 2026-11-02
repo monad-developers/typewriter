@@ -25,5 +25,8 @@
   },
   "peerDependencies": {
     "typescript": "catalog:"
+  },
+  "devDependencies": {
+    "solc": "0.8.37"
   }
 }
