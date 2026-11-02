@@ -55,7 +55,7 @@ function retry<a, e, r>(effect: Effect.Effect<a, e, r>) {
 }
 
 /** Retries the work of `transport` that did not apply. */
-function makeDbClient(transport: DbTransport): Db {
+export function makeDbClient(transport: DbTransport): Db {
   return {
     query: (build) => outsideTransaction(retry(transport.query(build))),
     transaction: (f) =>

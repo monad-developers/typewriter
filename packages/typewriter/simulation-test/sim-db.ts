@@ -1,7 +1,11 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import { Clock, Duration, Effect, Random } from "effect";
-import type { Db } from "../src/db";
-import { DbError, type DbQuery, type DbStatement } from "../src/db-transport";
+import {
+  DbError,
+  type DbQuery,
+  type DbStatement,
+  type DbTransport,
+} from "../src/db-transport";
 import { SIM } from "./index";
 import { makeRandom } from "./random";
 import type { SimScheduler } from "./scheduler";
@@ -28,19 +32,38 @@ const noRandom: Random.Random = {
   nextDoubleUnsafe: outside("Random"),
 };
 
+function statementsKey(statements: DbStatement<unknown>[]): string {
+  return JSON.stringify(
+    statements.map((statement) => {
+      const { sql, params } = dialect.sqlToQuery(statement.getSQL());
+      return [sql, params];
+    }),
+    (_, value) => (typeof value === "bigint" ? value.toString() : value),
+  );
+}
+
 /**
- * A `Db` that adds latency to `db`. Postgres runs outside the simulation, so
- * each statement outside a transaction, and each whole transaction, goes
- * through `io`. The caller then sleeps for a latency drawn from its own
- * generator, keyed by the statements that ran, their parameters, and how many
- * times the `Db` saw them.
+ * A `DbTransport` that adds latency and errors to `transport`. Postgres runs
+ * outside the simulation, so each statement outside a transaction, and
+ * each whole transaction, goes through `io`. The caller then sleeps for a
+ * latency drawn from its own generator, keyed by the statements that ran,
+ * their parameters, and how many times the transport saw them. A transaction
+ * that draws an error rolls back after `f` ran, so the client runs it again.
  */
-export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
+export function makeSimDbTransport({
+  transport,
+  io,
+}: {
+  transport: DbTransport;
+  io: SimScheduler["io"];
+}): DbTransport {
   const {
     latencyMs: [latencyMin, latencyMax],
+    errorRate,
   } = SIM.db;
 
   const occurrences = new Map<string, number>();
+  const attempts = new Map<string, number>();
 
   /**
    * Runs `effect` outside the simulation, then sleeps for the latency of the
@@ -52,19 +75,8 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
     statements: () => DbStatement<unknown>[],
   ) =>
     Effect.gen(function* () {
-      const result = yield* io(
-        // `db` has retried what it could, so an error is a flake of the test.
-        effect.pipe(
-          Effect.catchIf((error) => error instanceof DbError, Effect.die),
-        ),
-      );
-      const key = JSON.stringify(
-        statements().map((statement) => {
-          const { sql, params } = dialect.sqlToQuery(statement.getSQL());
-          return [sql, params];
-        }),
-        (_, value) => (typeof value === "bigint" ? value.toString() : value),
-      );
+      const exit = yield* Effect.exit(io(effect));
+      const key = statementsKey(statements());
       const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
       const random = yield* makeRandom(
@@ -76,14 +88,29 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
           latencyMin + random.nextDoubleUnsafe() * (latencyMax - latencyMin),
         ),
       );
-      return result;
+      return yield* exit;
+    });
+
+  /** Fails the transaction that ran `statements`, at the drawn rate, so it rolls back. */
+  const rollback = (statements: DbStatement<unknown>[]) =>
+    Effect.gen(function* () {
+      const key = statementsKey(statements);
+      const attempt = attempts.get(key) ?? 0;
+      attempts.set(key, attempt + 1);
+      const random = yield* makeRandom(SIM.seed, `db:error:${key}:${attempt}`);
+      if (random.nextDoubleUnsafe() < errorRate) {
+        return yield* new DbError({
+          sql: "COMMIT",
+          cause: new Error("simulated serialization failure"),
+          notApplied: true,
+        });
+      }
     });
 
   const query: DbQuery = (build) => {
-    // `db` builds the statement again on each retry.
     let statement: DbStatement<unknown> | undefined;
     return gate(
-      db.query((client) => {
+      transport.query((client) => {
         const built = build(client);
         statement = built;
         return built;
@@ -95,14 +122,12 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
   // `f` runs inside `io`, outside the fiber. It cannot have the simulated
   // clock, which moves only between `io` calls, so it has one that ends the
   // run instead of one that differs between runs.
-  const transaction: Db["transaction"] = (f) => {
-    let statements: DbStatement<unknown>[] = [];
+  const transaction: DbTransport["transaction"] = (f) => {
+    const statements: DbStatement<unknown>[] = [];
     return gate(
       // @ts-expect-error `gate` runs `f` outside the fiber, so it can't provide services. The runtime's transactions need none.
-      db.transaction((tx) => {
-        // `db` runs `f` again from the start on each retry.
-        statements = [];
-        return f({
+      transport.transaction((tx) =>
+        f({
           query: (build) =>
             tx.query((client) => {
               const statement = build(client);
@@ -112,14 +137,15 @@ export function makeSimDb({ db, io }: { db: Db; io: SimScheduler["io"] }): Db {
         }).pipe(
           Effect.provideService(Clock.Clock, noClock),
           Effect.provideService(Random.Random, noRandom),
-        );
-      }),
+          Effect.tap(() => rollback(statements)),
+        ),
+      ),
       () => statements,
     );
   };
 
   // One runtime runs per simulation, so the lock is never contended.
-  const lock: Db["lock"] = () => Effect.succeed(Effect.never);
+  const lock: DbTransport["lock"] = () => Effect.succeed(Effect.never);
 
   return { query, transaction, lock };
 }

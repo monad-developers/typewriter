@@ -20,7 +20,8 @@ import { decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
-import { Database, makeDb } from "../src/db";
+import { Database, makeDbClient } from "../src/db";
+import { makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import {
@@ -63,7 +64,7 @@ import {
   type Submission,
 } from "./run";
 import { makeSimScheduler } from "./scheduler";
-import { makeSimDb } from "./sim-db";
+import { makeSimDbTransport } from "./sim-db";
 import { makeSimTransport } from "./sim-rpc";
 import { validate } from "./validate";
 
@@ -129,6 +130,8 @@ export type SIM = {
   }[];
   db: {
     latencyMs: [number, number];
+    /** How often a transaction rolls back after `f` ran, so the runtime runs it again. */
+    errorRate: number;
   };
 };
 
@@ -238,6 +241,7 @@ export const SIM: SIM = {
       [1, 10],
       [10, 100],
     ] as [number, number][]),
+    errorRate: pick(SEED, "db.errorRate", [0, 0.01, 0.05]),
   },
 };
 
@@ -339,7 +343,11 @@ const program = Effect.gen(function* () {
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
   // One connection runs the statements in the order `io` starts them, so
   // Postgres sees no race that depends on wall-clock time.
-  const db = yield* makeDb({ url: database.url, maxConnections: 1 });
+  const transport = yield* makePostgresTransport({
+    url: database.url,
+    maxConnections: 1,
+  });
+  const db = makeDbClient(transport);
 
   const signers = SIM.generator.accounts.map((keyType, i) =>
     makeSigner(i, keyType),
@@ -676,7 +684,10 @@ const program = Effect.gen(function* () {
     );
   }).pipe(
     Scope.provide(scope),
-    Effect.provideService(Database, makeSimDb({ db, io: scheduler.io })),
+    Effect.provideService(
+      Database,
+      makeDbClient(makeSimDbTransport({ transport, io: scheduler.io })),
+    ),
     Effect.provide(layerRpc(transports)),
     Effect.provideService(Clock.Clock, clock),
     Effect.provide(
