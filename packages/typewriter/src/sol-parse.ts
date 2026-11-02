@@ -94,6 +94,12 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
       message: `${contract.name} must keep its state in a struct variable named \`state\``,
     });
   }
+  const storedFunction = findFunctionType(stateStruct, nodes);
+  if (storedFunction !== undefined) {
+    throw new ConfigError({
+      message: `${stateStruct.name}.${storedFunction} has a function type, which typewriter can't check for determinism; branch on a value instead`,
+    });
+  }
 
   for (const node of contract.nodes) {
     const isVariable = node.nodeType === "VariableDeclaration";
@@ -328,6 +334,28 @@ function checkDeterminism(
         target?.nodeType === "ModifierDefinition"
       ) {
         pending.push(target);
+      }
+    }
+  }
+}
+
+/** The first member of `struct`, or of a struct it holds, with a function type. */
+function findFunctionType(
+  struct: AstNode,
+  nodes: Map<number, AstNode>,
+  visited = new Set<number>(),
+): string | undefined {
+  visited.add(struct.id);
+  for (const member of struct.members) {
+    for (const node of descendants(member.typeName)) {
+      if (node.nodeType === "FunctionTypeName") return member.name;
+      const declaration = nodes.get(node.referencedDeclaration);
+      if (
+        declaration?.nodeType === "StructDefinition" &&
+        !visited.has(declaration.id)
+      ) {
+        const nested = findFunctionType(declaration, nodes, visited);
+        if (nested !== undefined) return `${member.name}.${nested}`;
       }
     }
   }

@@ -715,6 +715,32 @@ contract App is Typewriter {
   `);
 });
 
+test("parseSolidity errors when state holds a function", () => {
+  const error = (fields: string) => {
+    try {
+      parse(`
+struct Clock { function () view returns (uint256) read; }
+struct Store { ${fields} }
+contract App is Typewriter {
+    Store internal state;
+    constructor(address scheduler) Typewriter(scheduler) {}
+    function dispatch(uint8, bytes memory, bytes32) internal override {}
+}`);
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  expect({
+    direct: error("function () view returns (uint256) clock;"),
+    nested: error("mapping(uint256 => Clock[]) clocks;"),
+  }).toMatchInlineSnapshot(`
+    {
+      "direct": "Store.clock has a function type, which typewriter can't check for determinism; branch on a value instead",
+      "nested": "Store.clocks.read has a function type, which typewriter can't check for determinism; branch on a value instead",
+    }
+  `);
+});
+
 test("formatSolidityDeclaration types the entrypoint import", () => {
   expect(
     formatSolidityDeclaration({
