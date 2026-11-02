@@ -488,6 +488,7 @@ handled entirely by the base contract.
 The app contract must:
 
 - inherit only `Typewriter`;
+- declare exactly `constructor(address scheduler)` and pass `scheduler` to `Typewriter(scheduler)`; the body may do more, but it takes no other arguments, so typewriter can deploy any app;
 - declare `enum Mutation` inside itself;
 - keep all its storage in `state` (`constant`s are allowed);
 - add no `public` or `external` functions or variables;
