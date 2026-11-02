@@ -1,6 +1,7 @@
 import {
   Deferred,
   Effect,
+  type Random,
   Schedule,
   type Scope,
   Semaphore,
@@ -49,16 +50,19 @@ export type Chain = {
   /**
    * Replaces the last `depth` blocks with as many new ones at `atMs`, in
    * virtual time. Block 1, where the contract is deployed, stays. Returns the
-   * hashes of the blocks it replaced.
+   * hashes of the blocks it replaced, and of the transactions it dropped.
    */
-  reorg: (depth: number, atMs: number) => Effect.Effect<Hex.Hex[]>;
+  reorg: (
+    depth: number,
+    atMs: number,
+  ) => Effect.Effect<{ replaced: Hex.Hex[]; dropped: Hex.Hex[] }>;
 };
 
 type Block = {
   number: Hex.Hex;
   hash: Hex.Hex;
   parentHash: Hex.Hex;
-  transactions: { hash: Hex.Hex }[];
+  transactions: { hash: Hex.Hex; from: Hex.Hex }[];
 };
 
 type Receipt = {
@@ -88,7 +92,9 @@ const STATE_BLOCK_PARAM: Record<string, number | undefined> = {
  */
 const REORG = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 
-export function makeChain(): Effect.Effect<
+export function makeChain(
+  random: Random.Random,
+): Effect.Effect<
   Chain,
   never,
   Scope.Scope | ChildProcessSpawner.ChildProcessSpawner
@@ -336,18 +342,20 @@ export function makeChain(): Effect.Effect<
         }),
       );
 
-    // A node puts the transactions of dropped blocks back in its pool. Anvil
-    // drops them, and evicts any pool transaction whose nonce they precede
-    // once it mines a block, so they are sent again before the first new block.
+    // A node puts the transactions of replaced blocks back in its pool, unless
+    // it drops them. Anvil drops them, and evicts any pool transaction whose
+    // nonce they precede once it mines a block, so they are sent again before
+    // the first new block. Once a sender's transaction is dropped, so are its
+    // later ones, whose nonces follow it.
     const reorg = (depth: number, atMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
           const head = canonical.length - 1;
           const replaced = Math.min(depth, head - 1);
-          if (replaced <= 0) return [];
+          if (replaced <= 0) return { replaced: [], dropped: [] };
 
           const hashes: Hex.Hex[] = [];
-          const raws: unknown[] = [];
+          const orphaned: { hash: Hex.Hex; from: string; raw: Hex.Hex }[] = [];
           for (let number = head - replaced + 1; number <= head; number++) {
             const block = yield* getBlock(Hex.fromNumber(number), true);
             const receipts = (yield* send({
@@ -356,17 +364,16 @@ export function makeChain(): Effect.Effect<
             } as unknown as RpcRequest)) as unknown as Receipt[];
             orphans.set(block.hash, { block, receipts });
             hashes.push(block.hash);
-            for (const { hash } of block.transactions) {
+            for (const { hash, from } of block.transactions) {
               orphanedIn.set(hash, [
                 ...(orphanedIn.get(hash) ?? []),
                 block.hash,
               ]);
-              raws.push(
-                yield* send({
-                  method: "eth_getRawTransactionByHash",
-                  params: [hash],
-                } as unknown as RpcRequest),
-              );
+              const raw = (yield* send({
+                method: "eth_getRawTransactionByHash",
+                params: [hash],
+              } as unknown as RpcRequest)) as Hex.Hex;
+              orphaned.push({ hash, from: from.toLowerCase(), raw });
             }
           }
 
@@ -374,11 +381,18 @@ export function makeChain(): Effect.Effect<
             method: "anvil_rollback",
             params: [replaced],
           } as unknown as RpcRequest);
-          for (const raw of raws) {
-            yield* send({
-              method: "eth_sendRawTransaction",
-              params: [raw as Hex.Hex],
-            });
+          const dropped: Hex.Hex[] = [];
+          const droppedFrom = new Set<string>();
+          for (const { hash, from, raw } of orphaned) {
+            if (
+              droppedFrom.has(from) ||
+              random.nextDoubleUnsafe() < SIM.chain.dropRate
+            ) {
+              droppedFrom.add(from);
+              dropped.push(hash);
+              continue;
+            }
+            yield* send({ method: "eth_sendRawTransaction", params: [raw] });
           }
           yield* send({
             method: "eth_sendTransaction",
@@ -387,7 +401,7 @@ export function makeChain(): Effect.Effect<
           let hash = genesis.hash;
           for (let i = 0; i < replaced; i++) hash = yield* mineBlock(atMs);
           heads.push({ atMs, hash });
-          return hashes;
+          return { replaced: hashes, dropped };
         }),
       );
 

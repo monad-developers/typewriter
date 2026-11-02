@@ -86,6 +86,8 @@ export type SIM = {
     genesisTimestamp: number;
     /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
     reorgRate: number;
+    /** How often a reorg drops a transaction of a block it replaced, with its sender's later ones. */
+    dropRate: number;
   };
   generator: {
     /** The key type of each account. */
@@ -159,6 +161,7 @@ export const SIM: SIM = {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
     reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
+    dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
   },
   generator: {
     accounts: Array.from(
@@ -303,7 +306,7 @@ const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation").pipe(
     Effect.annotateLogs({ seed: SIM.seed, config: SIM }),
   );
-  const chain = yield* makeChain();
+  const chain = yield* makeChain(yield* makeRandom(SIM.seed, "reorgs"));
   const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
@@ -493,11 +496,15 @@ const program = Effect.gen(function* () {
           Math.floor(
             chainRandom.nextDoubleUnsafe() * SIM.typewriter.finalizedBlockDepth,
           );
-        const replaced = yield* simChain.reorg(depth, atMs);
+        const { replaced, dropped } = yield* simChain.reorg(depth, atMs);
         if (replaced.length === 0) return;
         run.reorgs.push({ replaced, timestamp });
         yield* Effect.logInfo("Reorged simulation chain").pipe(
-          Effect.annotateLogs({ depth: replaced.length, timestamp }),
+          Effect.annotateLogs({
+            depth: replaced.length,
+            dropped,
+            timestamp,
+          }),
         );
       }).pipe(Effect.forever),
     );
@@ -537,34 +544,54 @@ const program = Effect.gen(function* () {
       });
 
     /**
-     * Waits for the `enqueue` of `submission` to land, which it always does.
-     * Then, if it should execute, waits for a settlement to force-execute
-     * it, or for its authorization to expire first: the runtime gives an
-     * enqueue no events.
+     * Waits for the `enqueue` of `submission` to land, which it always does,
+     * and sends it again when a reorg drops it. Then, if it should execute,
+     * waits for a settlement to force-execute it, or for its authorization to
+     * expire first: the runtime gives an enqueue no events.
      */
-    const awaitEnqueue = ({
-      label,
-      transactionHash,
-      expected,
-      mutation,
-    }: Submission) =>
+    const awaitEnqueue = (submission: Submission, calldata: Hex.Hex) =>
       Effect.gen(function* () {
-        const receipt = yield* Effect.gen(function* () {
-          while (true) {
-            const receipt = yield* simChain.request({
-              method: "eth_getTransactionReceipt",
-              params: [transactionHash!],
+        const { label, expected, mutation } = submission;
+        const { expiration } = mutation.authorization;
+        let settledAt: bigint | undefined;
+        // A reorg can drop or move the enqueue and its settlement, so each
+        // poll reads both again.
+        while (true) {
+          yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+          const receipt = yield* simChain.request({
+            method: "eth_getTransactionReceipt",
+            params: [submission.transactionHash!],
+          });
+          if (receipt === null) {
+            const pending = yield* simChain.request({
+              method: "eth_getTransactionByHash",
+              params: [submission.transactionHash!],
             });
-            if (receipt?.status === "0x1") return receipt;
-            if (receipt !== null) {
-              return yield* Effect.die(
-                `${label}: enqueue ${transactionHash} reverted`,
-              );
+            if (pending === null) {
+              submission.transactionHash = yield* enqueue(calldata);
             }
-            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+            continue;
           }
-        });
-        if (expected.executes) {
+          if (receipt.status !== "0x1") {
+            return yield* Effect.die(
+              `${label}: enqueue ${receipt.transactionHash} reverted`,
+            );
+          }
+          const latest = (yield* simChain.request({
+            method: "eth_getBlockByNumber",
+            params: ["latest", false],
+          }))!;
+          const head = BigInt(latest.number!);
+          // No reorg replaces a block `finalizedBlockDepth` deep, so an
+          // enqueue there is never dropped.
+          const final =
+            head - BigInt(receipt.blockNumber) >=
+            BigInt(SIM.typewriter.finalizedBlockDepth);
+          if (!expected.executes) {
+            if (final) break;
+            continue;
+          }
+
           const { args } = decodeEventLog({
             abi: TYPEWRITER_ABI,
             eventName: "ForceInclusionQueued",
@@ -580,32 +607,32 @@ const program = Effect.gen(function* () {
                 params: [app.address, slot, Hex.fromNumber(block)],
               })
               .pipe(Effect.map((value) => BigInt(value) === 0n));
-          const { expiration } = mutation.authorization;
-          while (true) {
-            const latest = (yield* simChain.request({
-              method: "eth_getBlockByNumber",
-              params: ["latest", false],
-            }))!;
-            if (yield* deletedAt(BigInt(latest.number!))) break;
+          if (!(yield* deletedAt(head))) {
             // The contract rejects it in every block past its expiration.
-            if (expiration !== 0n && BigInt(latest.timestamp) > expiration) {
-              pendingEnqueues.delete(label);
-              return;
+            if (
+              final &&
+              expiration !== 0n &&
+              BigInt(latest.timestamp) > expiration
+            ) {
+              break;
             }
-            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+            continue;
           }
           // The settlement's block: the first in which the entry is gone.
           let settled = BigInt(receipt.blockNumber);
-          while (!(yield* deletedAt(settled))) settled++;
-          progressedAt = clock.currentTimeMillisUnsafe();
+          while (settled <= head && !(yield* deletedAt(settled))) settled++;
+          if (settled !== settledAt) {
+            settledAt = settled;
+            progressedAt = clock.currentTimeMillisUnsafe();
+          }
           // The settlement has no mutation events, so wait for its block's.
-          while (
-            !run.blockEvents.some(
+          if (
+            run.blockEvents.some(
               (event) =>
                 event.number === settled && event.status === "finalized",
             )
           ) {
-            yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+            break;
           }
         }
         pendingEnqueues.delete(label);
@@ -657,11 +684,10 @@ const program = Effect.gen(function* () {
         if (step.via === "execute") {
           yield* FiberSet.run(fibers, execute(submission));
         } else {
-          submission.transactionHash = yield* enqueue(
-            enqueueCalldata(manifest, step, mutation),
-          );
+          const calldata = enqueueCalldata(manifest, step, mutation);
+          submission.transactionHash = yield* enqueue(calldata);
           pendingEnqueues.add(submission.label);
-          yield* FiberSet.run(fibers, awaitEnqueue(submission));
+          yield* FiberSet.run(fibers, awaitEnqueue(submission, calldata));
         }
       }
 
