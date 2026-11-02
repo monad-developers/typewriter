@@ -41,7 +41,7 @@ import type {
   TypewriterApp,
   TypewriterManifest,
 } from "./config";
-import { Database, type Db, type DbError, type DbTransaction } from "./db";
+import { Database, type Db } from "./db";
 import {
   deploymentLockKey,
   dropSchema,
@@ -58,6 +58,7 @@ import {
   updateMutationInclusion,
 } from "./db-query";
 import type { TypewriterMutationSchema } from "./db-schema";
+import type { DbError, DbTransaction } from "./db-transport";
 import {
   encodeBatchArg,
   encodeEnqueueCalldata,
