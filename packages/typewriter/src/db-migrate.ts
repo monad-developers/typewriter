@@ -3,12 +3,13 @@ import { sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core/table";
 import { Data, Effect } from "effect";
 import { type Address, Hash, Hex } from "ox";
-import type { Db, DbError } from "./db";
+import type { Db } from "./db";
 import { selectMaxExecutionIndex } from "./db-query";
 import {
   type createTypewriterSchema,
   TYPEWRITER_SCHEMA_VERSION,
 } from "./db-schema";
+import type { DbError } from "./db-transport";
 
 type TypewriterSchema = ReturnType<typeof createTypewriterSchema>;
 

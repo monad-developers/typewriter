@@ -5,8 +5,8 @@ import { Effect } from "effect";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { ExecuteResult } from "typewriter-evm";
-import type { DbError, DbTransaction } from "./db";
 import type { createTypewriterSchema } from "./db-schema";
+import type { DbError, DbTransaction } from "./db-transport";
 import type { AcceptedMutation, Inclusion } from "./typewriter-types";
 
 /** Postgres protocol limit: 65535 bind parameters per query. */
