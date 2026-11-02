@@ -403,10 +403,13 @@ test("parseSolidity errors when the app calls an external library", () => {
 library Math {
     function double(uint256 x) external pure returns (uint256) { return 2 * x; }
 }
-${app(`
-    function add(uint256 amount) external {
-        state.total += Math.double(amount);
-    }`)}`),
+contract App is Typewriter {
+    State internal state;
+    constructor(address scheduler) Typewriter(scheduler) {}
+    function dispatch(uint8, bytes memory, bytes32) internal override {
+        state.total = Math.double(state.total);
+    }
+}`),
   ).toThrowErrorMatchingInlineSnapshot(
     `"App calls an external library function, which typewriter can't execute offchain; make the library's functions internal"`,
   );
@@ -465,14 +468,61 @@ ${app("enum Mutation { Add }")}`,
   );
 });
 
-test("parseSolidity errors when a mutation library has no Mutation entry", () => {
-  expect(() =>
-    parse(`
+test("parseSolidity allows other libraries, constants, and internal functions", () => {
+  expect(
+    mutations(`
 ${mutation("Add")}
 ${mutation("Sub")}
-${app("enum Mutation { Add }")}`),
+${app(`
+    enum Mutation { Add }
+    uint256 constant LIMIT = 10;
+    function limit() internal pure returns (uint256) { return LIMIT; }
+    function check() private pure {}`)}`),
+  ).toMatchInlineSnapshot(`
+    [
+      "Add(0): uint256 amount",
+    ]
+  `);
+});
+
+test("parseSolidity errors when the app adds entrypoints or state outside state", () => {
+  const error = (body: string) => {
+    try {
+      parse(app(`enum Mutation { Add }\n${body}`), {});
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  expect({
+    publicFunction: error(
+      "function total() public view returns (uint256) { return state.total; }",
+    ),
+    externalFunction: error("function poke() external {}"),
+    fallback: error("fallback() external {}"),
+    receive: error("receive() external payable {}"),
+    publicConstant: error("uint256 public constant LIMIT = 10;"),
+    variable: error("uint256 internal count;"),
+    immutable: error("uint256 internal immutable START = 1;"),
+  }).toMatchInlineSnapshot(`
+    {
+      "externalFunction": "App must not add public or external functions or variables, but declares \`poke\`",
+      "fallback": "App must not add public or external functions or variables, but declares \`fallback\`",
+      "immutable": "App must keep all its state in \`state\`, but declares \`START\`",
+      "publicConstant": "App must not add public or external functions or variables, but declares \`LIMIT\`",
+      "publicFunction": "App must not add public or external functions or variables, but declares \`total\`",
+      "receive": "App must not add public or external functions or variables, but declares \`receive\`",
+      "variable": "App must keep all its state in \`state\`, but declares \`count\`",
+    }
+  `);
+  expect(() =>
+    parse(`
+contract App is Typewriter {
+    State public state;
+    constructor(address scheduler) Typewriter(scheduler) {}
+    function dispatch(uint8, bytes memory, bytes32) internal override {}
+}`),
   ).toThrowErrorMatchingInlineSnapshot(
-    `"SubMutation has no \`Mutation.Sub\`; add it to the Mutation enum"`,
+    `"App must not add public or external functions or variables, but declares \`state\`"`,
   );
 });
 
@@ -517,6 +567,11 @@ test("parseSolidity errors when a mutation library lacks its struct or execute",
         "struct Add { uint256 a; }\nfunction execute(State storage, Add memory, bytes32) public {}",
       ),
     ),
+    returns: error(
+      library(
+        "struct Add { uint256 a; }\nfunction execute(State storage, Add memory, bytes32) internal returns (bool) { return true; }",
+      ),
+    ),
   }).toMatchInlineSnapshot(`
     {
       "calldata": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
@@ -526,6 +581,7 @@ test("parseSolidity errors when a mutation library lacks its struct or execute",
       "otherState": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
       "public": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
       "renamed": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "returns": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
     }
   `);
 });

@@ -38,6 +38,9 @@ type AstNode = {
   visibility: string;
   storageLocation: string;
   parameters: { parameters: AstNode[] };
+  returnParameters: { parameters: AstNode[] };
+  kind: string;
+  mutability: string;
   referencedDeclaration: number;
   typeName: AstNode;
   baseType: AstNode;
@@ -87,6 +90,30 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
     });
   }
 
+  for (const node of contract.nodes) {
+    const isVariable = node.nodeType === "VariableDeclaration";
+    if (
+      isVariable &&
+      node !== stateVariable &&
+      node.mutability !== "constant"
+    ) {
+      throw new ConfigError({
+        message: `${contract.name} must keep all its state in \`state\`, but declares \`${node.name}\``,
+      });
+    }
+    const isEntrypoint =
+      node.visibility === "public" || node.visibility === "external";
+    if (
+      isEntrypoint &&
+      (isVariable ||
+        (node.nodeType === "FunctionDefinition" && node.kind !== "constructor"))
+    ) {
+      throw new ConfigError({
+        message: `${contract.name} must not add public or external functions or variables, but declares \`${node.name || node.kind}\``,
+      });
+    }
+  }
+
   const bytecode = `0x${evm.bytecode.object}`;
   if (!Hex.validate(bytecode, { strict: true })) {
     throw new ConfigError({
@@ -108,18 +135,7 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
     });
   }
 
-  const libraries = importedLibraries(unit, nodes).filter(({ name }) =>
-    name.endsWith("Mutation"),
-  );
-  for (const library of libraries) {
-    const name = library.name.slice(0, -"Mutation".length);
-    if (!mutationEnum.members.some((member) => member.name === name)) {
-      throw new ConfigError({
-        message: `${library.name} has no \`Mutation.${name}\`; add it to the Mutation enum`,
-      });
-    }
-  }
-
+  const libraries = importedLibraries(unit, nodes);
   const mutations: SolidityApp["mutations"] = {};
   for (const [id, { name }] of mutationEnum.members.entries()) {
     if (Object.hasOwn(BUILTIN_MUTATIONS, name)) {
@@ -145,6 +161,7 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
         node.nodeType === "FunctionDefinition" &&
         node.name === "execute" &&
         node.visibility === "internal" &&
+        node.returnParameters.parameters.length === 0 &&
         node.parameters.parameters
           .map(
             (param) =>

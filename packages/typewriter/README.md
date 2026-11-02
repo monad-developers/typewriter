@@ -251,7 +251,8 @@ entrypoint file or a file it imports, with:
   permissions, expiration, nonce, and signature checks have already happened in
   the base contract.
 
-A library named `...Mutation` without a matching `Mutation` member is an error.
+`execute` returns nothing and must be `internal`: an external library function
+runs in a separately deployed library, which typewriter can't execute offchain.
 
 ```solidity
 library AddMutation {
@@ -489,9 +490,11 @@ handled entirely by the base contract.
 
 Typewriter doesn't read `dispatch`; it reads each mutation's params from its
 `XMutation` library. The app contract must inherit only
-`Typewriter` and declare `enum Mutation` inside itself. Library functions must
-be `internal`: typewriter executes only the app contract, so it rejects an app
-that links external libraries.
+`Typewriter` and declare `enum Mutation` inside itself. It can't add `public`
+or `external` functions or variables, and it keeps all its storage in `state`
+(`constant`s are allowed). Library functions must be `internal`: typewriter
+executes only the app contract, so it rejects an app that links external
+libraries.
 
 #### Determinism
 
