@@ -22,7 +22,6 @@
     "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": true,
 
-    "baseUrl": ".",
     "paths": {
       "storage-layout": ["../storage-layout/src/index.ts"]
     }
