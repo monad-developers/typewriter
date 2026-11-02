@@ -596,6 +596,129 @@ ${app("enum Mutation { Call }")}`),
   );
 });
 
+test("parseSolidity errors when a mutation can execute differently offchain", () => {
+  const error = (body: string) => {
+    try {
+      parse(`
+interface Token { function transfer(address to, uint256 amount) external returns (bool); }
+contract Other {}
+library AddMutation {
+    struct Add { address payable token; }
+    function execute(State storage state, Add memory mutation, bytes32) internal { ${body} }
+}
+${app("enum Mutation { Add }")}`);
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  expect({
+    timestamp: error("state.total = block.timestamp;"),
+    number: error("state.total = block.number;"),
+    coinbase: error("state.total = uint160(address(block.coinbase));"),
+    prevrandao: error("state.total = block.prevrandao;"),
+    basefee: error("state.total = block.basefee;"),
+    gaslimit: error("state.total = block.gaslimit;"),
+    blockhash: error("state.total = uint256(blockhash(1));"),
+    gasleft: error("if (gasleft() > 1) state.total = 1;"),
+    sender: error("state.total = uint160(msg.sender);"),
+    origin: error("state.total = uint160(tx.origin);"),
+    gasprice: error("state.total = tx.gasprice;"),
+    balance: error("state.total = mutation.token.balance;"),
+    selfBalance: error("state.total = address(this).balance;"),
+    code: error("state.total = mutation.token.code.length;"),
+    externalCall: error("Token(mutation.token).transfer(address(this), 1);"),
+    call: error('(bool ok, ) = mutation.token.call(""); ok;'),
+    staticcall: error('(bool ok, ) = mutation.token.staticcall(""); ok;'),
+    transfer: error("mutation.token.transfer(1);"),
+    create: error("new Other();"),
+    assembly: error("assembly { sstore(0, 1) }"),
+    allowed: error(
+      "state.total = block.chainid + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
+    ),
+  }).toMatchInlineSnapshot(`
+    {
+      "allowed": undefined,
+      "assembly": "AddMutation.execute uses inline assembly, which typewriter can't check; write it in Solidity",
+      "balance": "AddMutation.execute uses \`mutation.token.balance\`, but offchain, typewriter runs the app contract alone",
+      "basefee": "AddMutation.execute uses \`block.basefee\`, which can differ between offchain and onchain execution",
+      "blockhash": "AddMutation.execute uses \`blockhash\`, which can differ between offchain and onchain execution",
+      "call": "AddMutation.execute uses \`mutation.token.call\`, but offchain, typewriter runs the app contract alone",
+      "code": "AddMutation.execute uses \`mutation.token.code\`, but offchain, typewriter runs the app contract alone",
+      "coinbase": "AddMutation.execute uses \`block.coinbase\`, which can differ between offchain and onchain execution",
+      "create": "AddMutation.execute uses \`new Other\`, but offchain, typewriter runs the app contract alone",
+      "externalCall": "AddMutation.execute uses \`Token(…).transfer\`, but offchain, typewriter runs the app contract alone",
+      "gasleft": "AddMutation.execute uses \`gasleft\`, which can differ between offchain and onchain execution",
+      "gaslimit": "AddMutation.execute uses \`block.gaslimit\`, which can differ between offchain and onchain execution",
+      "gasprice": "AddMutation.execute uses \`tx.gasprice\`, which can differ between offchain and onchain execution",
+      "number": "AddMutation.execute uses \`block.number\`, which can differ between offchain and onchain execution",
+      "origin": "AddMutation.execute uses \`tx.origin\`, which can differ between offchain and onchain execution",
+      "prevrandao": "AddMutation.execute uses \`block.prevrandao\`, which can differ between offchain and onchain execution",
+      "selfBalance": "AddMutation.execute uses \`address(…).balance\`, but offchain, typewriter runs the app contract alone",
+      "sender": "AddMutation.execute uses \`msg.sender\`, which can differ between offchain and onchain execution",
+      "staticcall": "AddMutation.execute uses \`mutation.token.staticcall\`, but offchain, typewriter runs the app contract alone",
+      "timestamp": "AddMutation.execute uses \`block.timestamp\`, which can differ between offchain and onchain execution",
+      "transfer": "AddMutation.execute uses \`mutation.token.transfer\`, but offchain, typewriter runs the app contract alone",
+    }
+  `);
+});
+
+test("parseSolidity checks every function a mutation can reach", () => {
+  const error = (dispatch: string) => {
+    try {
+      parse(`
+library Helpers {
+    function unused() internal pure returns (uint256 x) { assembly { x := 1 } }
+    function time() internal view returns (uint256) { return block.timestamp; }
+    function timed(uint256 x) internal view returns (uint256) { return x + time(); }
+    modifier onlyLater() { require(block.number > 1); _; }
+    function later() internal onlyLater {}
+}
+type Amount is uint256;
+function addAmounts(Amount a, Amount b) pure returns (Amount c) {
+    assembly { c := add(a, b) }
+}
+using {addAmounts as +} for Amount global;
+using Helpers for uint256;
+${mutation("Add")}
+contract App is Typewriter {
+    State internal state;
+    enum Mutation { Add }
+    constructor(address scheduler) Typewriter(scheduler) {}
+    function dispatch(uint8, bytes memory, bytes32 accountID) internal override { ${dispatch} }
+}`);
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  expect({
+    dispatch: error("state.total = uint160(msg.sender);"),
+    call: error("state.total = Helpers.time();"),
+    attached: error("state.total = state.total.timed();"),
+    operator: error(
+      "state.total = Amount.unwrap(Amount.wrap(1) + Amount.wrap(2));",
+    ),
+    modifier: error("Helpers.later();"),
+    executionIndex: error("state.total = executionIndex;"),
+    accounts: error("state.total = accounts[accountID].activeCredentials;"),
+    nestedExecute: error('_execute(0, "", "");'),
+    allowed: error(
+      'verifySignature(KeyType.Secp256k1, bytes32(0), "", ""); state.total = uint160(SCHEDULER);',
+    ),
+  }).toMatchInlineSnapshot(`
+    {
+      "accounts": "App.dispatch uses Typewriter's \`accounts\`, which only Typewriter may read or change",
+      "allowed": undefined,
+      "attached": "Helpers.time uses \`block.timestamp\`, which can differ between offchain and onchain execution",
+      "call": "Helpers.time uses \`block.timestamp\`, which can differ between offchain and onchain execution",
+      "dispatch": "App.dispatch uses \`msg.sender\`, which can differ between offchain and onchain execution",
+      "executionIndex": "App.dispatch uses Typewriter's \`executionIndex\`, which only Typewriter may read or change",
+      "modifier": "Helpers.onlyLater uses \`block.number\`, which can differ between offchain and onchain execution",
+      "nestedExecute": "App.dispatch uses Typewriter's \`_execute\`, which only Typewriter may read or change",
+      "operator": "addAmounts uses inline assembly, which typewriter can't check; write it in Solidity",
+    }
+  `);
+});
+
 test("formatSolidityDeclaration types the entrypoint import", () => {
   expect(
     formatSolidityDeclaration({

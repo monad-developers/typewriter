@@ -490,25 +490,29 @@ The app contract must:
 - declare `enum Mutation` inside itself;
 - keep all its storage in `state` (`constant`s are allowed);
 - add no `public` or `external` functions or variables;
-- implement `dispatch` by calling `internal` library functions only, such as each mutation library's `execute`.
+- implement `dispatch` by calling `internal` library functions only, such as each mutation library's `execute`;
+- execute deterministically (see [Determinism](#determinism)).
 
 Typewriter checks these rules at startup and names the one that's broken.
 
 #### Determinism
 
-Opcodes whose values can't be reproduced offchain produce divergence between offchain and onchain state, so they are incompatible with Typewriter:
+The server executes a mutation in revm before it settles: against the app
+contract alone, in the last block the server saw, with unlimited gas and a gas
+price of 0, called by the scheduler. Code whose result depends on anything else
+can diverge onchain, so Typewriter rejects it at startup. The check covers the
+app contract's functions, each mutation library's `execute`, and every
+function, modifier, and operator they reach; it trusts Typewriter.sol. That code
+must not use:
 
-- `block.coinbase` (`COINBASE`) — the miner of the block containing the transaction is not known until inclusion.
-- `block.difficulty` / `block.prevrandao` (`PREVRANDAO`) — post-merge randomness is set by the block proposer.
-- `blockhash(n)` (`BLOCKHASH`) for blocks the server hasn't seen.
-- `blobhash(i)` (`BLOBHASH`) and `block.blobbasefee` (`BLOBBASEFEE`) — blob context belongs to the submitting transaction, not the mutation.
-- `gasleft()` (`GAS`) — gas accounting in revm does not match the live EVM, so any branch on remaining gas can diverge.
+- `block.*` other than `block.chainid`, `blockhash`, or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
+- `msg.*` or `tx.*`: the server calls as the scheduler, but anyone can call `forceExecute`, and settlement batches the calldata;
+- `gasleft()`: revm runs with unlimited gas;
+- another contract or account: external calls, `.call`/`.staticcall`/`.delegatecall`, `.send`/`.transfer`, `.balance`, `.code`/`.codehash`, `new`, or `selfdestruct`;
+- inline assembly, which the check can't read;
+- Typewriter's own state and functions (`accounts`, `queue`, `executionIndex`, `_execute`, …).
 
-`block.number` and `block.timestamp` are approximations — not guaranteed to match the block a mutation settles in. The server executes accepted mutations against the last known block's values, so what a mutation sees lags the block of inclusion by at least one. They're fine for coarse-grained checks (expiries, epoch windows) but unsafe for tight windows, sub-block timing, or logic that branches on the exact block of inclusion.
-
-`tx.origin` and `msg.sender` are stable. Both resolve to the scheduler in normal `execute` flow, and to the caller in `forceExecute`.
-
-Calls to external contracts are not allowed. The server executes mutations against its own local state, which only covers the Typewriter contract — it has no view of other contracts' storage, so any external call (or the state it depends on) cannot be reproduced offchain and will diverge.
+Library code a mutation doesn't reach, such as an unused assembly helper, isn't checked.
 
 ### Server runtime
 
