@@ -766,6 +766,12 @@ export function createTypewriterEffect<
       }
     }
 
+    // The watch finalizes at the "finalized" block, so every provider must serve it.
+    yield* rpc.requestEach({
+      method: "eth_getBlockByNumber",
+      params: ["finalized", false],
+    });
+
     const lockLost = yield* db.lock(
       deploymentLockKey(app.schemaName),
       DEPLOYMENT_LOCK_TIMEOUT_MS,
@@ -1622,9 +1628,13 @@ export function createTypewriterEffect<
       Stream.runForEach((message) =>
         Effect.gen(function* () {
           if (message._tag === "Finalized") {
-            for (const block of unfinalizedBlocks.filter(
+            const finalized = unfinalizedBlocks.filter(
               (block) => block.number <= message.block.number,
-            )) {
+            );
+            unfinalizedBlocks = unfinalizedBlocks.filter(
+              (block) => block.number > message.block.number,
+            );
+            for (const block of finalized) {
               // A reorg can replace a receipt's block before the watch sees it.
               const finalBlock = yield* requestBlock(block.number);
               if (finalBlock.hash !== block.hash) {
@@ -1666,9 +1676,6 @@ export function createTypewriterEffect<
                 }
               }
             }
-            unfinalizedBlocks = unfinalizedBlocks.filter(
-              (block) => block.status !== "finalized",
-            );
             return;
           }
 
