@@ -239,16 +239,21 @@ struct State {
 
 #### Mutations
 
-Each mutation is a Solidity library with:
-- **`struct [Mutation]` definition**, named after the `Mutation` member. The
-  app's `dispatch` callback ABI-decodes `mutationData` into this struct. Field names and order define the params
-  extracted into the manifest. Fields can be any ABI type: value types,
-  `bytes`, `string`, arrays, and nested structs. Enums become `uint8`,
-  user-defined value types their underlying type, and contracts and interfaces
-  `address`.
-- **`execute` function**. Applies the mutation to app state using the
-  authenticated `accountID`. Account lookup, permissions, expiration, nonce,
-  and signature checks have already happened in the base contract.
+Each `Mutation` member `X` needs exactly one library named `XMutation`, in the
+entrypoint file or a file it imports, with:
+- **`struct X`**. Typewriter reads the mutation's params from this struct: field
+  names and order define the params extracted into the manifest. The app's
+  `dispatch` callback ABI-decodes `mutationData` into it. Fields can be any ABI
+  type: value types, `bytes`, `string`, arrays, and nested structs. Enums
+  become `uint8`, user-defined value types their underlying type, and contracts
+  and interfaces `address`.
+- **`function execute(State storage state, X memory mutation, bytes32 accountID) internal`**,
+  where `State` is the type of the app's `state` variable. Applies the mutation
+  to app state using the authenticated `accountID`. Account lookup,
+  permissions, expiration, nonce, and signature checks have already happened in
+  the base contract.
+
+A library named `...Mutation` without a matching `Mutation` member is an error.
 
 ```solidity
 library AddMutation {
@@ -484,12 +489,11 @@ through the fixed authorization envelope, consumes the nonce, and calls
 mutation ID and ABI-decodes the mutation struct. Built-in account mutations are
 handled entirely by the base contract.
 
-Typewriter reads each mutation's params from the struct named after its
-`Mutation` member (`Mutation.Add` → `struct Add`), defined in the entrypoint
-file or a file it imports; exactly one such struct must exist. The app
-contract must inherit only `Typewriter` and declare `enum Mutation` inside
-itself. Library functions must be `internal`: typewriter executes only the app
-contract, so it rejects an app that links external libraries.
+Typewriter doesn't read `dispatch`; it reads each mutation's params from its
+`XMutation` library. The app contract must inherit only
+`Typewriter` and declare `enum Mutation` inside itself. Library functions must
+be `internal`: typewriter executes only the app contract, so it rejects an app
+that links external libraries.
 
 #### Determinism
 

@@ -8,7 +8,7 @@ library CloseOrderMutation {
         uint64 orderId;
     }
 
-    function executeCloseOrder(State storage state, CloseOrder memory closeOrder, bytes32 accountID) internal {
+    function execute(State storage state, CloseOrder memory closeOrder, bytes32 accountID) internal {
         Account storage account = state.accounts[accountID];
         Order storage order = account.orders[closeOrder.orderId];
         uint64 orderQuantity = order.quantity;

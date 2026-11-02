@@ -12,7 +12,7 @@ library AddInstrumentMutation {
         uint8 quoteLotExp;
     }
 
-    function executeAddInstrument(State storage state, AddInstrument memory instrument) internal {
+    function execute(State storage state, AddInstrument memory instrument, bytes32) internal {
         if (instrument.baseLotExp > 128 || instrument.quoteLotExp > 128) revert LotExpTooLarge();
 
         Instrument storage stored = state.instruments[instrument.instrumentId];

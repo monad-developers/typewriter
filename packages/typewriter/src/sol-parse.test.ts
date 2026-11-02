@@ -12,22 +12,31 @@ const TYPEWRITER = await Bun.file(
 ).text();
 
 /**
- * Compiles `source` as App.sol, next to Typewriter.sol and `files`, with
- * solc.
+ * Compiles `source` as App.sol with solc, next to Typewriter.sol, State.sol
+ * (`struct State`), and `files`. Every file imports Typewriter.sol and
+ * State.sol.
  */
 function compile(source: string, files: Record<string, string> = {}) {
-  const header = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.21;\n";
+  const header =
+    '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.21;\nimport "Typewriter.sol";\nimport "State.sol";\n';
   const sources = Object.fromEntries(
     Object.entries({ ...files, "App.sol": source }).map(([path, content]) => [
       path,
-      { content: `${header}import "Typewriter.sol";\n${content}` },
+      { content: `${header}${content}` },
     ]),
   );
   const output = JSON.parse(
     solc.compile(
       JSON.stringify({
         language: "Solidity",
-        sources: { "Typewriter.sol": { content: TYPEWRITER }, ...sources },
+        sources: {
+          "Typewriter.sol": { content: TYPEWRITER },
+          "State.sol": {
+            content:
+              "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.21;\nstruct State { uint256 total; }",
+          },
+          ...sources,
+        },
         settings: {
           outputSelection: {
             "*": {
@@ -62,11 +71,20 @@ function mutations(source: string, files?: Record<string, string>): string[] {
     );
 }
 
-/** A contract with `state`, the scheduler constructor, `dispatch`, and `body`. */
+/** A mutation library for `name`, whose struct has `fields`. */
+function mutation(name: string, fields = "uint256 amount;"): string {
+  return `
+library ${name}Mutation {
+    struct ${name} { ${fields} }
+
+    function execute(State storage state, ${name} memory mutation, bytes32 accountID) internal {}
+}`;
+}
+
+/** An app contract with `state`, the scheduler constructor, `dispatch`, and `body`. */
 function app(body: string, name = "App"): string {
   return `
 contract ${name} is Typewriter {
-    struct State { uint256 total; }
     State internal state;
     constructor(address scheduler) Typewriter(scheduler) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
@@ -75,19 +93,23 @@ contract ${name} is Typewriter {
 }
 
 const COUNTER = `
-struct State {
-    uint256 total;
-}
-
 library AddMutation {
     struct Add {
         uint256 amount;
+    }
+
+    function execute(State storage state, Add memory add, bytes32) internal {
+        state.total += add.amount;
     }
 }
 
 library SubMutation {
     struct Sub {
         uint256 amount;
+    }
+
+    function execute(State storage state, Sub memory sub, bytes32) internal {
+        state.total -= sub.amount;
     }
 }
 
@@ -101,13 +123,11 @@ contract Counter is Typewriter {
 
     constructor(address scheduler) Typewriter(scheduler) {}
 
-    function dispatch(uint8 mutation, bytes memory mutationData, bytes32) internal override {
+    function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.Add)) {
-            AddMutation.Add memory add = abi.decode(mutationData, (AddMutation.Add));
-            state.total += add.amount;
+            AddMutation.execute(state, abi.decode(mutationData, (AddMutation.Add)), accountID);
         } else if (mutation == uint8(Mutation.Sub)) {
-            SubMutation.Sub memory sub = abi.decode(mutationData, (SubMutation.Sub));
-            state.total -= sub.amount;
+            SubMutation.execute(state, abi.decode(mutationData, (SubMutation.Sub)), accountID);
         } else {
             revert UnknownMutation(mutation);
         }
@@ -207,23 +227,24 @@ struct Leg {
     Side side;
     Price price;
 }
-
-struct Place {
-    uint amount;
-    int delta;
-    address payable to;
-    bool flag;
-    bytes4 selector;
-    bytes data;
-    string memo;
-    Token token;
-    Side side;
-    Price price;
-    uint256[SIZE] fixedSize;
-    uint8[2][] nested;
-    Leg leg;
-    Leg[] legs;
-}
+${mutation(
+  "Place",
+  `
+        uint amount;
+        int delta;
+        address payable to;
+        bool flag;
+        bytes4 selector;
+        bytes data;
+        string memo;
+        Token token;
+        Side side;
+        Price price;
+        uint256[SIZE] fixedSize;
+        uint8[2][] nested;
+        Leg leg;
+        Leg[] legs;`,
+)}
 ${app("enum Mutation { Place }")}`),
   ).toMatchInlineSnapshot(`
     [
@@ -233,7 +254,7 @@ ${app("enum Mutation { Place }")}`),
 
   const { Place } = parse(`
 struct Inner { uint8 side; uint128 price; }
-struct Place { Inner leg; Inner[] legs; }
+${mutation("Place", "Inner leg; Inner[] legs;")}
 ${app("enum Mutation { Place }")}`).mutations;
   expect(Place).toMatchInlineSnapshot(`
     {
@@ -272,21 +293,17 @@ ${app("enum Mutation { Place }")}`).mutations;
   `);
 });
 
-test("parseSolidity finds mutation structs in libraries and imported files", () => {
+test("parseSolidity finds mutation libraries in imported files", () => {
   expect(
     mutations(
       `
-import "Mutations.sol";
-
-library SubMutation {
-    struct Sub { int256 amount; }
-}
+import "Add.sol";
+${mutation("Sub", "int256 amount;")}
 ${app("enum Mutation { Add, Sub }")}`,
       {
-        "Mutations.sol":
-          "library AddMutation { struct Add { uint256 amount; } }",
-        // App.sol doesn't import it, so its struct doesn't count.
-        "Other.sol": "struct Sub { bool unrelated; }",
+        "Add.sol": mutation("Add"),
+        // App.sol doesn't import it, so its library doesn't count.
+        "Other.sol": mutation("Other"),
       },
     ),
   ).toMatchInlineSnapshot(`
@@ -322,7 +339,6 @@ test("parseSolidity errors when the app inherits anything but Typewriter", () =>
     parse(`
 contract Ownable {}
 contract App is Typewriter, Ownable {
-    struct State { uint256 total; }
     State internal state;
     constructor(address scheduler) Typewriter(scheduler) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
@@ -334,7 +350,7 @@ contract App is Typewriter, Ownable {
 
 test("parseSolidity errors when the app contract is abstract", () => {
   expect(() =>
-    parse(`abstract ${app("enum Mutation { Add } struct Add { uint256 a; }")}`),
+    parse(`abstract ${app("enum Mutation { Add }")}`),
   ).toThrowErrorMatchingInlineSnapshot(`"App must not be abstract"`);
 });
 
@@ -372,7 +388,6 @@ contract App is Typewriter {
   expect(() =>
     parse(`
 contract App is Typewriter {
-    struct State { uint256 total; }
     State internal store;
     constructor(address scheduler) Typewriter(scheduler) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
@@ -389,9 +404,6 @@ library Math {
     function double(uint256 x) external pure returns (uint256) { return 2 * x; }
 }
 ${app(`
-    enum Mutation { Add }
-    struct Add { uint256 amount; }
-
     function add(uint256 amount) external {
         state.total += Math.double(amount);
     }`)}`),
@@ -407,7 +419,7 @@ test("parseSolidity errors when the app has no Mutation enum", () => {
   expect(() =>
     parse(`
 enum Mutation { Add }
-struct Add { uint256 amount; }
+${mutation("Add")}
 ${app("")}`),
   ).toThrowErrorMatchingInlineSnapshot(
     `"App must declare \`enum Mutation\` inside the contract, with a member for each mutation"`,
@@ -431,26 +443,97 @@ test("parseSolidity errors when Mutation has more members than IDs", () => {
   );
 });
 
-test("parseSolidity errors when a mutation has no struct, or more than one", () => {
+test("parseSolidity errors unless each mutation has one library", () => {
   expect(() =>
     parse(app("enum Mutation { Add }")),
   ).toThrowErrorMatchingInlineSnapshot(
-    `"Mutation.Add takes its params from a struct named Add, but App.sol and its imports define none"`,
+    `"Mutation.Add needs one library named AddMutation in App.sol or its imports, but there are 0"`,
   );
   expect(() =>
+    parse(
+      `
+import "Mutations.sol";
+${app("enum Mutation { Add }")}`,
+      {
+        "Mutations.sol": 'import "A.sol" as A;\nimport "B.sol" as B;',
+        "A.sol": mutation("Add"),
+        "B.sol": mutation("Add"),
+      },
+    ),
+  ).toThrowErrorMatchingInlineSnapshot(
+    `"Mutation.Add needs one library named AddMutation in App.sol or its imports, but there are 2"`,
+  );
+});
+
+test("parseSolidity errors when a mutation library has no Mutation entry", () => {
+  expect(() =>
     parse(`
-library AddMutation { struct Add { uint256 amount; } }
-library LegacyAddMutation { struct Add { uint128 amount; } }
+${mutation("Add")}
+${mutation("Sub")}
 ${app("enum Mutation { Add }")}`),
   ).toThrowErrorMatchingInlineSnapshot(
-    `"Mutation.Add takes its params from a struct named Add, but App.sol and its imports define AddMutation.Add, LegacyAddMutation.Add"`,
+    `"SubMutation has no \`Mutation.Sub\`; add it to the Mutation enum"`,
   );
+});
+
+test("parseSolidity errors when a mutation library lacks its struct or execute", () => {
+  const error = (library: string) => {
+    try {
+      parse(`${library}\n${app("enum Mutation { Add }")}`);
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+  const library = (body: string) => `library AddMutation {\n${body}\n}`;
+  expect({
+    noStruct: error(
+      library(
+        "struct Other { uint256 a; }\nfunction execute(State storage, Other memory, bytes32) internal {}",
+      ),
+    ),
+    noExecute: error(library("struct Add { uint256 a; }")),
+    renamed: error(
+      library(
+        "struct Add { uint256 a; }\nfunction executeAdd(State storage, Add memory, bytes32) internal {}",
+      ),
+    ),
+    noAccountID: error(
+      library(
+        "struct Add { uint256 a; }\nfunction execute(State storage, Add memory) internal {}",
+      ),
+    ),
+    otherState: error(
+      library(
+        "struct Other { uint256 a; }\nstruct Add { uint256 a; }\nfunction execute(Other storage, Add memory, bytes32) internal {}",
+      ),
+    ),
+    calldata: error(
+      library(
+        "struct Add { uint256 a; }\nfunction execute(State storage, Add calldata, bytes32) internal {}",
+      ),
+    ),
+    public: error(
+      library(
+        "struct Add { uint256 a; }\nfunction execute(State storage, Add memory, bytes32) public {}",
+      ),
+    ),
+  }).toMatchInlineSnapshot(`
+    {
+      "calldata": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "noAccountID": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "noExecute": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "noStruct": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "otherState": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "public": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+      "renamed": "AddMutation must declare \`struct Add\` with the mutation's params and \`function execute(State storage state, Add memory mutation, bytes32 accountID) internal\`",
+    }
+  `);
 });
 
 test("parseSolidity errors when a param has no ABI type", () => {
   expect(() =>
     parse(`
-struct Call { function() external fn; }
+${mutation("Call", "function() external fn;")}
 ${app("enum Mutation { Call }")}`),
   ).toThrowErrorMatchingInlineSnapshot(
     `"Call.fn has type function () external, which can't be a mutation param"`,

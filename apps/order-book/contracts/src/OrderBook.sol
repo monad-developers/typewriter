@@ -162,27 +162,27 @@ contract OrderBook is Typewriter {
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.CloseOrder)) {
             CloseOrderMutation.CloseOrder memory closeOrder = abi.decode(mutationData, (CloseOrderMutation.CloseOrder));
-            CloseOrderMutation.executeCloseOrder(state, closeOrder, accountID);
+            CloseOrderMutation.execute(state, closeOrder, accountID);
         } else if (mutation == uint8(Mutation.ChangeOrder)) {
             ChangeOrderMutation.ChangeOrder memory changeOrder =
                 abi.decode(mutationData, (ChangeOrderMutation.ChangeOrder));
-            ChangeOrderMutation.executeChangeOrder(state, changeOrder, accountID);
+            ChangeOrderMutation.execute(state, changeOrder, accountID);
         } else if (mutation == uint8(Mutation.LimitOrder)) {
             LimitOrderMutation.LimitOrder memory order = abi.decode(mutationData, (LimitOrderMutation.LimitOrder));
-            LimitOrderMutation.executeLimitOrder(state, order, accountID);
+            LimitOrderMutation.execute(state, order, accountID);
         } else if (mutation == uint8(Mutation.MarketOrder)) {
             MarketOrderMutation.MarketOrder memory order = abi.decode(mutationData, (MarketOrderMutation.MarketOrder));
-            MarketOrderMutation.executeMarketOrder(state, order, accountID);
+            MarketOrderMutation.execute(state, order, accountID);
         } else if (mutation == uint8(Mutation.AddInstrument)) {
             AddInstrumentMutation.AddInstrument memory instrument =
                 abi.decode(mutationData, (AddInstrumentMutation.AddInstrument));
-            AddInstrumentMutation.executeAddInstrument(state, instrument);
+            AddInstrumentMutation.execute(state, instrument, accountID);
         } else if (mutation == uint8(Mutation.Deposit)) {
             DepositMutation.Deposit memory deposit = abi.decode(mutationData, (DepositMutation.Deposit));
-            DepositMutation.executeDeposit(state, deposit, accountID);
+            DepositMutation.execute(state, deposit, accountID);
         } else if (mutation == uint8(Mutation.Withdrawal)) {
             WithdrawalMutation.Withdrawal memory withdrawal = abi.decode(mutationData, (WithdrawalMutation.Withdrawal));
-            WithdrawalMutation.executeWithdrawal(state, withdrawal, accountID);
+            WithdrawalMutation.execute(state, withdrawal, accountID);
         } else {
             revert UnknownMutation(mutation);
         }

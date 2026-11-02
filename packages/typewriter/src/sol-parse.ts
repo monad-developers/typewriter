@@ -29,12 +29,15 @@ type AstNode = {
   id: number;
   nodeType: string;
   name: string;
-  canonicalName: string;
   abstract: boolean;
+  contractKind: string;
   linearizedBaseContracts: number[];
   nodes: AstNode[];
   members: AstNode[];
   sourceUnit: number;
+  visibility: string;
+  storageLocation: string;
+  parameters: { parameters: AstNode[] };
   referencedDeclaration: number;
   typeName: AstNode;
   baseType: AstNode;
@@ -73,11 +76,12 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
     });
   }
 
-  const state = storageLayout.storage.find((item) => item.label === "state");
-  if (
-    state === undefined ||
-    storageLayout.types[state.type]?.members === undefined
-  ) {
+  const stateVariable = contract.nodes.find(
+    (node) => node.nodeType === "VariableDeclaration" && node.name === "state",
+  );
+  const stateStruct =
+    stateVariable && nodes.get(stateVariable.typeName.referencedDeclaration);
+  if (stateStruct?.nodeType !== "StructDefinition") {
     throw new ConfigError({
       message: `${contract.name} must keep its state in a struct variable named \`state\``,
     });
@@ -104,24 +108,57 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
     });
   }
 
-  const structs = importedStructs(unit, nodes);
-  const mutations: SolidityApp["mutations"] = {};
-  for (const [id, member] of mutationEnum.members.entries()) {
-    if (Object.hasOwn(BUILTIN_MUTATIONS, member.name)) {
+  const libraries = importedLibraries(unit, nodes).filter(({ name }) =>
+    name.endsWith("Mutation"),
+  );
+  for (const library of libraries) {
+    const name = library.name.slice(0, -"Mutation".length);
+    if (!mutationEnum.members.some((member) => member.name === name)) {
       throw new ConfigError({
-        message: `Mutation.${member.name} is reserved by typewriter; rename it`,
+        message: `${library.name} has no \`Mutation.${name}\`; add it to the Mutation enum`,
       });
     }
-    const matches = structs.filter(({ name }) => name === member.name);
+  }
+
+  const mutations: SolidityApp["mutations"] = {};
+  for (const [id, { name }] of mutationEnum.members.entries()) {
+    if (Object.hasOwn(BUILTIN_MUTATIONS, name)) {
+      throw new ConfigError({
+        message: `Mutation.${name} is reserved by typewriter; rename it`,
+      });
+    }
+    const matches = libraries.filter(
+      (library) => library.name === `${name}Mutation`,
+    );
     if (matches.length !== 1) {
       throw new ConfigError({
-        message: `Mutation.${member.name} takes its params from a struct named ${member.name}, but ${path} and its imports define ${matches.length === 0 ? "none" : matches.map(({ canonicalName }) => canonicalName).join(", ")}`,
+        message: `Mutation.${name} needs one library named ${name}Mutation in ${path} or its imports, but there are ${matches.length}`,
       });
     }
-    mutations[member.name] = {
-      id,
-      params: structParameters(matches[0]!, nodes),
-    };
+    const library = matches[0]!;
+    const struct = library.nodes.find(
+      (node) => node.nodeType === "StructDefinition" && node.name === name,
+    );
+    const signature = `function execute(${stateStruct.name} storage state, ${name} memory mutation, bytes32 accountID) internal`;
+    const execute = library.nodes.find(
+      (node) =>
+        node.nodeType === "FunctionDefinition" &&
+        node.name === "execute" &&
+        node.visibility === "internal" &&
+        node.parameters.parameters
+          .map(
+            (param) =>
+              `${param.typeName.referencedDeclaration ?? param.typeDescriptions.typeString} ${param.storageLocation}`,
+          )
+          .join() ===
+          `${stateStruct.id} storage,${struct?.id} memory,bytes32 default`,
+    );
+    if (struct === undefined || execute === undefined) {
+      throw new ConfigError({
+        message: `${library.name} must declare \`struct ${name}\` with the mutation's params and \`${signature}\``,
+      });
+    }
+    mutations[name] = { id, params: structParameters(struct, nodes) };
   }
   for (const [name, { id, params }] of Object.entries(BUILTIN_MUTATIONS)) {
     mutations[name] = { id, params };
@@ -174,25 +211,25 @@ function findAppContract(
   return contract;
 }
 
-/** The structs defined in `unit` and the files it imports. */
-function importedStructs(
+/** The libraries defined in `unit` and the files it imports. */
+function importedLibraries(
   unit: AstNode,
   nodes: Map<number, AstNode>,
 ): AstNode[] {
   const visited = new Set<number>();
-  const structs: AstNode[] = [];
+  const libraries: AstNode[] = [];
   const visit = (unit: AstNode) => {
     if (visited.has(unit.id)) return;
     visited.add(unit.id);
-    for (const node of descendants(unit)) {
-      if (node.nodeType === "StructDefinition") structs.push(node);
+    for (const node of unit.nodes) {
+      if (node.contractKind === "library") libraries.push(node);
       if (node.nodeType === "ImportDirective") {
         visit(nodes.get(node.sourceUnit)!);
       }
     }
   };
   visit(unit);
-  return structs;
+  return libraries;
 }
 
 function structParameters(

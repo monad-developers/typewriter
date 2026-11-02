@@ -9,7 +9,7 @@ library WithdrawalMutation {
         uint256 amount;
     }
 
-    function executeWithdrawal(State storage state, Withdrawal memory withdrawal, bytes32 accountID) internal {
+    function execute(State storage state, Withdrawal memory withdrawal, bytes32 accountID) internal {
         if (state.accounts[accountID].balances[withdrawal.asset] < withdrawal.amount) {
             revert InsufficientBalance();
         }

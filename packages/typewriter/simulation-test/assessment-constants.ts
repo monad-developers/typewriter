@@ -27,7 +27,7 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 1578,
+      astId: 1685,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,

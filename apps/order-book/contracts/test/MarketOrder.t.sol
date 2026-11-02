@@ -47,7 +47,7 @@ contract MarketOrderTest is Test {
     }
 
     function _executeMarketOrder(MarketOrderMutation.MarketOrder memory order, bytes32 account) internal {
-        MarketOrderMutation.executeMarketOrder(state, order, account);
+        MarketOrderMutation.execute(state, order, account);
     }
 
     function callMarketOrder(MarketOrderMutation.MarketOrder memory order, bytes32 account) external {

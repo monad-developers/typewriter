@@ -25,7 +25,7 @@ contract CloseOrderTest is Test {
     }
 
     function _executeCloseOrder(CloseOrderMutation.CloseOrder memory close, bytes32 account) internal {
-        CloseOrderMutation.executeCloseOrder(state, close, account);
+        CloseOrderMutation.execute(state, close, account);
     }
 
     function callCloseOrder(CloseOrderMutation.CloseOrder memory close, bytes32 account) external {
