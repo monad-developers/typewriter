@@ -6,7 +6,7 @@ Building this app hit the gaps below, ordered by how much each one weakened the 
 
 The liquidator reacts to `app.on("batch", accepted)`, signs a `Liquidate`, and calls `execute`, which queues it for the **next** batch. Typewriter has no way to add mutations to a batch based on the state that batch produced, and `batchOrder` sorts by mutation name only.
 
-So an oracle update in batch N, and every `MarketOrder` in batch N, execute against accounts that are already underwater. `Liquidate` reaches them in N+1 at the earliest, behind whatever else that batch holds. `scripts/liquidation.ts` shows the effect: the liquidation sold into the market maker's quotes from before the 8% drop, so the trader kept $935 of $988 and the maker absorbed the move. On a real venue the liquidation fills at the new price and the insurance fund keeps the penalty.
+So an oracle update in batch N, and every `MarketOrder` in batch N, execute against accounts that are already underwater. `Liquidate` reaches them in N+1 at the earliest. It sorts after N+1's `SetOraclePrices`, `CancelOrder`, and `LimitOrder`, and it only makes N+1 if the scan enqueues it before the next batch tick. (In `scripts/liquidation.ts` the trader kept $935 of $988 mostly because the dev maker requotes every 2s, so its bids were stale. A same-batch liquidation would have hit the same quotes.)
 
 **What I'd change:** a sequencing hook that runs after each batch executes locally and returns follow-up mutations for the same submission (`sequencing.afterBatch: (state) => mutations[]`). Those would be server-authored mutations (see 3), so they wouldn't need signatures. This is the one gap I'd fix first: inline liquidation is the reason to put perps on a sequencer you control.
 
