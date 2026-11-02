@@ -19,6 +19,14 @@ export function executeInputSchema(params: readonly AbiParameters.Parameter[]) {
   });
 }
 
+/**
+ * Whether a value is one of `names`. Not `name in mutations`, which finds
+ * `Object.prototype` names too.
+ */
+export function mutationNameGuard(names: readonly string[]) {
+  return Schema.is(Schema.Literals(names));
+}
+
 /** A schema that decodes with no services. */
 type Codec = Schema.Codec<unknown, unknown, never, never>;
 

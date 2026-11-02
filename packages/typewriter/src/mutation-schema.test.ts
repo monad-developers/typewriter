@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { Schema } from "effect";
 import type { AbiParameters } from "ox";
-import { executeInputSchema } from "./mutation-schema";
+import { encodeMutationCalldata } from "./encoding";
+import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 
 const AUTHORIZATION = {
   accountID:
@@ -20,6 +21,8 @@ const TYPED: readonly AbiParameters.Parameter[] = [
   { name: "pair", type: "bytes[2]" },
   { name: "small", type: "uint8" },
   { name: "signed", type: "int8" },
+  { name: "amount", type: "uint256" },
+  { name: "flag", type: "bool" },
 ];
 const TYPED_PARAMS = {
   memo: "memo",
@@ -29,7 +32,11 @@ const TYPED_PARAMS = {
   pair: ["0x", "0x01"],
   small: 7n,
   signed: -128,
+  amount: 1_000_000n,
+  flag: true,
 };
+
+const MAX_UINT256 = (1n << 256n) - 1n;
 
 function validate(
   params: unknown,
@@ -42,6 +49,27 @@ function validate(
   });
 }
 
+test("accepts only the names of the mutations", () => {
+  const isMutationName = mutationNameGuard(["Transfer", "CreateAccount"]);
+  expect(isMutationName("Transfer")).toBe(true);
+  expect(isMutationName("CreateAccount")).toBe(true);
+  for (const name of [
+    "F",
+    "",
+    "transfer",
+    "createAccount",
+    "toString",
+    "constructor",
+    "__proto__",
+    "hasOwnProperty",
+    "valueOf",
+    undefined,
+    7,
+  ]) {
+    expect(isMutationName(name)).toBe(false);
+  }
+});
+
 test("accepts any-case addresses, empty bytes, and coercible integers", () => {
   expect(() => validate(TYPED_PARAMS)).not.toThrow();
   for (const small of [7n, 7, "7", "0x07", "255"]) {
@@ -49,14 +77,38 @@ test("accepts any-case addresses, empty bytes, and coercible integers", () => {
   }
 });
 
-test("accepts params as a positional array, and extra params", () => {
-  expect(() => validate(Object.values(TYPED_PARAMS))).not.toThrow();
-  expect(() => validate({ ...TYPED_PARAMS, extra: 1n })).not.toThrow();
+test("accepted params encode to the bytes of the canonical params", () => {
+  const encode = (params: unknown) => {
+    validate(params);
+    return encodeMutationCalldata({
+      config: { id: 0, params: TYPED },
+      params,
+      authorization: AUTHORIZATION,
+    } as Parameters<typeof encodeMutationCalldata>[0]);
+  };
+  const canonical = encode(TYPED_PARAMS);
+  for (const params of [
+    { ...TYPED_PARAMS, small: "7", signed: "-128", amount: "1000000" },
+    { ...TYPED_PARAMS, small: "0x07", amount: "0xf4240" },
+    { ...TYPED_PARAMS, small: 7, amount: 1_000_000 },
+    { ...TYPED_PARAMS, to: TYPED_PARAMS.to.toLowerCase(), data: "0xFF" },
+    Object.values(TYPED_PARAMS),
+    {
+      ...TYPED_PARAMS,
+      extra: 1n,
+      execution_index: 123n,
+      authorization_nonce: 123n,
+      block_number: 123n,
+    },
+  ]) {
+    expect(encode(params)).toBe(canonical);
+  }
 });
 
 test.each([
   ["a missing string", { memo: undefined }, "Expected string"],
   ["a number as a string", { memo: 7 }, "Expected string"],
+  ["a string as a bool", { flag: "false" }, "Expected boolean"],
   ["non-hex bytes", { data: "not hex" }, "Expected even-length hex bytes"],
   ["odd-length bytes", { data: "0xabc" }, "Expected even-length hex bytes"],
   [
@@ -79,6 +131,11 @@ test.each([
   ],
   ["a padded integer string", { small: " 7" }, "Expected an integer for uint8"],
   [
+    "a word as an integer",
+    { amount: "not a number" },
+    "Expected an integer for uint256",
+  ],
+  [
     "a bool as an integer",
     { small: true },
     "Expected bigint | number | string",
@@ -96,13 +153,30 @@ test.each([
     { signed: -129n },
     "Expected int8 between -128 and 127",
   ],
+  ["a negative uint256", { amount: -1n }, "Expected uint256 between"],
+  [
+    "a uint256 above its range",
+    { amount: MAX_UINT256 + 1n },
+    "Expected uint256 between",
+  ],
 ])("rejects %s", (_, change, message) => {
   expect(() => validate({ ...TYPED_PARAMS, ...change })).toThrow(message);
 });
 
-test("rejects params that are not an object or array", () => {
-  expect(() => validate(null)).toThrow();
-  expect(() => validate("params")).toThrow();
+test("rejects params missing a field, or not an object or array", () => {
+  const { amount: _, ...missing } = TYPED_PARAMS;
+  expect(() => validate(missing)).toThrow("Missing key");
+  for (const params of [null, undefined, "params", 7]) {
+    expect(() => validate(params)).toThrow();
+  }
+});
+
+test("accepts any hex signature, which the contract checks", () => {
+  for (const signature of ["0x", "0xdead", `0x${"ab".repeat(96)}`]) {
+    expect(() =>
+      validate(TYPED_PARAMS, { ...AUTHORIZATION, signature }),
+    ).not.toThrow();
+  }
 });
 
 test.each([
@@ -116,16 +190,36 @@ test.each([
   );
 });
 
-test("rejects an authorization field out of shape", () => {
+test.each([
+  ["accountID", "0x1234", "Expected 32 hex bytes"],
+  ["accountID", `0x${"11".repeat(31)}`, "Expected 32 hex bytes"],
+  ["accountID", `0x${"11".repeat(33)}`, "Expected 32 hex bytes"],
+  ["accountID", "account", "Expected 32 hex bytes"],
+  ["credentialID", -1n, "Expected uint64 between"],
+  ["credentialID", 1n << 64n, "Expected uint64 between"],
+  ["credentialID", "zero", "Expected an integer for uint64"],
+  ["nonce", -11n, "Expected uint256 between"],
+  ["nonce", 11n + (1n << 256n), "Expected uint256 between"],
+  ["nonce", "11n", "Expected an integer for uint256"],
+  ["expiration", -1n, "Expected uint40 between"],
+  ["expiration", 1n << 40n, "Expected uint40 between"],
+  ["expiration", "never", "Expected an integer for uint40"],
+  ["credentialID", undefined, "Expected bigint | number | string"],
+  ["nonce", undefined, "Expected bigint | number | string"],
+  ["expiration", undefined, "Expected bigint | number | string"],
+  ["signature", undefined, "Expected string"],
+])("rejects an authorization %s of %p", (field, value, message) => {
   expect(() =>
-    validate(TYPED_PARAMS, { ...AUTHORIZATION, accountID: "0x1234" }),
-  ).toThrow("Expected 32 hex bytes");
-  expect(() =>
-    validate(TYPED_PARAMS, { ...AUTHORIZATION, expiration: 1n << 40n }),
-  ).toThrow("Expected uint40 between");
-  expect(() =>
-    validate(TYPED_PARAMS, { ...AUTHORIZATION, nonce: undefined }),
-  ).toThrow();
+    validate(TYPED_PARAMS, { ...AUTHORIZATION, [field]: value }),
+  ).toThrow(message);
+});
+
+test("rejects an authorization missing a field, or not an object", () => {
+  for (const field of ["credentialID", "expiration", "signature"]) {
+    const { [field as keyof typeof AUTHORIZATION]: _, ...authorization } =
+      AUTHORIZATION;
+    expect(() => validate(TYPED_PARAMS, authorization)).toThrow("Missing key");
+  }
   // The encoder spreads the authorization, so it must be an object.
   expect(() => validate(TYPED_PARAMS, Object.values(AUTHORIZATION))).toThrow();
 });

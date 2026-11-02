@@ -36,9 +36,12 @@ import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import {
   createAccount,
   deploy,
+  enqueueCalldata,
   expect,
+  type Mutation,
   makePlan,
   makeSigner,
+  sign,
   stepLabel,
   withExpiration,
 } from "./assessment";
@@ -50,7 +53,6 @@ import {
 } from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
-import { prepare } from "./malformations";
 import { int, makeRandom, pick } from "./random";
 import {
   errorName,
@@ -105,7 +107,7 @@ export type SIM = {
      * `Infinity` never expires, and repeats so most steps draw it.
      */
     expirationsS: number[];
-    /** How often a step submits a malformed mutation. See `malformations.ts`. */
+    /** How often a step enqueues bytes the contract cannot decode. */
     malformedRate: number;
   };
   typewriter: {
@@ -343,13 +345,6 @@ const program = Effect.gen(function* () {
     makeSigner(i, keyType),
   );
   const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
-  /** Signers of each key type with no account, for malformed signatures. */
-  const strangers = new Map(
-    [KeyType.Secp256k1, KeyType.P256, KeyType.WebAuthnP256].map((keyType) => [
-      keyType,
-      makeSigner(-1, keyType),
-    ]),
-  );
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
@@ -393,7 +388,8 @@ const program = Effect.gen(function* () {
   const settlementsWanted =
     signers.length +
     plan.reduce(
-      (sum, step) => sum + (expect(step).events ? (step.resubmit ? 2 : 1) : 0),
+      (sum, step) =>
+        sum + (step.via === "execute" ? (step.resubmit ? 2 : 1) : 0),
       0,
     );
   let settlements = 0;
@@ -504,25 +500,23 @@ const program = Effect.gen(function* () {
     );
 
     /**
-     * Starts `execute` of `input`. It runs here, not on the scheduler, until
-     * it first waits, so the runtime sees calls in submission order.
+     * Starts `execute` of `mutation`. It runs here, not on the scheduler,
+     * until it first waits, so the runtime sees calls in submission order.
      */
-    const startExecute = (input: unknown) =>
-      Effect.forkChild(
-        // Any shape, malformed or not.
-        Effect.exit(typewriter.execute(input as never)),
-        { startImmediately: true },
-      );
+    const startExecute = (mutation: Mutation) =>
+      Effect.forkChild(Effect.exit(typewriter.execute(mutation as never)), {
+        startImmediately: true,
+      });
 
     /**
-     * Executes `input`, and again at once if `submission` is resubmitted, and
+     * Executes `submission`, and again at once if it is resubmitted, and
      * records what each returned.
      */
-    const execute = (submission: Submission, input: unknown) =>
+    const execute = (submission: Submission) =>
       Effect.gen(function* () {
-        const first = yield* startExecute(input);
+        const first = yield* startExecute(submission.mutation);
         const second = submission.resubmitted
-          ? yield* startExecute(input)
+          ? yield* startExecute(submission.mutation)
           : undefined;
         submission.results[0] = resultOf(yield* Fiber.join(first));
         if (second !== undefined) {
@@ -616,25 +610,19 @@ const program = Effect.gen(function* () {
 
     const client = Effect.gen(function* () {
       for (const [index, signer] of signers.entries()) {
-        const mutation = createAccount(manifest, signer);
+        const mutation = deepFreeze(createAccount(manifest, signer));
         const submission: Submission = {
           label: `CreateAccount ${index}`,
           key: mutationKey(mutation.authorization),
           via: "execute",
           mutation,
-          sent: deepFreeze(mutation),
-          expected: {
-            executes: true,
-            errors: [],
-            resubmissionErrors: [],
-            events: true,
-          },
+          expected: { executes: true, errors: [], resubmissionErrors: [] },
           resubmitted: false,
           results: [],
           transactionHash: undefined,
         };
         run.submissions.push(submission);
-        yield* execute(submission, submission.sent);
+        yield* execute(submission);
         const [result] = submission.results;
         if (result !== undefined && "error" in result) {
           return yield* Effect.die(`${submission.label}: got ${result.error}`);
@@ -645,30 +633,30 @@ const program = Effect.gen(function* () {
       // one before it to settle.
       for (const step of plan) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
-        const prepared = prepare(step, {
-          manifest,
-          signer: step.signer,
-          stranger: strangers.get(step.signer.keyType)!,
-          mutation: withExpiration(step, yield* Clock.currentTimeMillis),
-          random: yield* makeRandom(SIM.seed, `step:${step.index}`),
-        });
-        const { sent } = prepared;
+        const mutation = deepFreeze(
+          sign(
+            manifest,
+            step.signer,
+            withExpiration(step, yield* Clock.currentTimeMillis),
+          ),
+        );
         const submission: Submission = {
           label: stepLabel(step),
-          key: prepared.key,
+          key: mutationKey(mutation.authorization),
           via: step.via,
-          mutation: prepared.mutation,
-          sent: deepFreeze(sent.via === "execute" ? sent.input : sent.calldata),
+          mutation,
           expected: expect(step),
           resubmitted: step.resubmit,
           results: [],
           transactionHash: undefined,
         };
         run.submissions.push(submission);
-        if (sent.via === "execute") {
-          yield* FiberSet.run(fibers, execute(submission, submission.sent));
+        if (step.via === "execute") {
+          yield* FiberSet.run(fibers, execute(submission));
         } else {
-          submission.transactionHash = yield* enqueue(sent.calldata);
+          submission.transactionHash = yield* enqueue(
+            enqueueCalldata(manifest, step, mutation),
+          );
           pendingEnqueues.add(submission.label);
           yield* FiberSet.run(fibers, awaitEnqueue(submission));
         }
@@ -821,8 +809,8 @@ function unsettled(run: Run): string[] {
   }
   return run.submissions
     .filter(
-      ({ key, expected, resubmitted }) =>
-        expected.events && (settled.get(key) ?? 0) < (resubmitted ? 2 : 1),
+      ({ key, via, resubmitted }) =>
+        via === "execute" && (settled.get(key) ?? 0) < (resubmitted ? 2 : 1),
     )
     .map(({ label }) => label);
 }
