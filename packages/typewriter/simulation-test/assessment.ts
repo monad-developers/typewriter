@@ -110,7 +110,7 @@ export function deploy({
         { from: deployer, data: Hex.concat(artifact.bytecode.object, args) },
       ],
     });
-    yield* chain.mine(SIM.chain.genesisTimestamp);
+    yield* chain.mine(SIM.chain.genesisTimestamp * 1000);
     const receipt = yield* chain.request({
       method: "eth_getTransactionReceipt",
       params: [hash],
