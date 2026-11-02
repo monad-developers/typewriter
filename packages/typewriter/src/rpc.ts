@@ -1,4 +1,5 @@
 import { Context, Data, Duration, Effect, Layer, Schedule } from "effect";
+import type { Hex } from "ox";
 import type {
   RpcMethod,
   RpcRequest,
@@ -17,7 +18,19 @@ export class RpcTimeoutError extends Data.TaggedError("RpcTimeoutError")<{
   }
 }
 
-export type RpcError = RpcTransportError | RpcTimeoutError;
+/**
+ * The provider returned `null` for a block. It may not have the block yet,
+ * when it is behind another provider, so a request retries it.
+ */
+export class BlockNotFoundError extends Data.TaggedError("BlockNotFoundError")<{
+  block: Hex.Hex | bigint | "latest";
+}> {
+  override get message() {
+    return `Block ${this.block} not found`;
+  }
+}
+
+export type RpcError = RpcTransportError | RpcTimeoutError | BlockNotFoundError;
 
 export class Rpc extends Context.Service<
   Rpc,
@@ -56,6 +69,26 @@ function shouldRetry(_method: RpcMethod, _error: RpcError): boolean {
   return true;
 }
 
+function blockFound<result>(
+  request: RpcRequest,
+  result: result,
+): Effect.Effect<result, BlockNotFoundError> {
+  const { method } = request;
+  if (
+    result !== null ||
+    (method !== "eth_getBlockByHash" && method !== "eth_getBlockByNumber")
+  ) {
+    return Effect.succeed(result);
+  }
+  const [id] = request.params as unknown as [Hex.Hex | "latest"];
+  return Effect.fail(
+    new BlockNotFoundError({
+      block:
+        method === "eth_getBlockByNumber" && id !== "latest" ? BigInt(id) : id,
+    }),
+  );
+}
+
 function makeRpc(
   transports: readonly [RpcTransport, ...RpcTransport[]],
 ): Context.Service.Shape<typeof Rpc> {
@@ -77,6 +110,7 @@ function makeRpc(
             new RpcTimeoutError({ method, origin: transport.origin }),
           ),
       }),
+      Effect.flatMap((result) => blockFound(request, result)),
       Effect.tapError((error) =>
         Effect.logDebug("Failed RPC request", error).pipe(
           Effect.annotateLogs({ method, attempt }),

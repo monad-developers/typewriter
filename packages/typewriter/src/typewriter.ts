@@ -68,7 +68,6 @@ import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 import { Rpc, type RpcError } from "./rpc";
 import {
-  type BlockNotFoundError,
   type NoDataReturnedError,
   type RequestedBlock,
   requestBlock,
@@ -303,7 +302,6 @@ export type ExecuteError =
 
 export type ProgramError =
   | WatchError
-  | BlockNotFoundError
   | DbError
   | EvmError
   | SettlementSimulationRevertedError
@@ -319,7 +317,6 @@ export type ProgramError =
 export type CreateTypewriterError =
   | DbError
   | RpcError
-  | BlockNotFoundError
   | NoDataReturnedError
   | MigrationError
   | ChainIdMismatchError
