@@ -161,8 +161,8 @@ test("a pinned spec ignores the chain's schedule", async () => {
   expect(pinned).toBe(monadNine);
 });
 
-test("createEVM fails on a chain without a Monad hardfork schedule", async () => {
-  const program = createEVM({ chain_id: 1 });
+test("createEVM fails on a chain without a hardfork schedule", async () => {
+  const program = createEVM({ chain_id: 31337 });
 
   const exit = await Effect.runPromiseExit(Effect.scoped(program));
   expect(exit).toEqual(
@@ -170,8 +170,8 @@ test("createEVM fails on a chain without a Monad hardfork schedule", async () =>
       new EvmCallError({
         method: "init",
         message:
-          "init failed: chain 1 has no known Monad hardfork schedule; pass a spec",
-        cause: "chain 1 has no known Monad hardfork schedule; pass a spec",
+          "init failed: chain 31337 has no known hardfork schedule; pass a spec",
+        cause: "chain 31337 has no known hardfork schedule; pass a spec",
       }),
     ),
   );
@@ -936,9 +936,8 @@ test("createEVM fails with an unknown spec", async () => {
       new EvmCallError({
         method: "init",
         message:
-          "init failed: parse error: unknown variant `MonadZero`, expected one of `MonadEight`, `MonadNine`, `MonadTen`, `MonadNext` at line 1 column 19",
-        cause:
-          "parse error: unknown variant `MonadZero`, expected one of `MonadEight`, `MonadNine`, `MonadTen`, `MonadNext` at line 1 column 19",
+          "init failed: parse error: unknown spec `MonadZero` at line 1 column 20",
+        cause: "parse error: unknown spec `MonadZero` at line 1 column 20",
       }),
     ),
   );

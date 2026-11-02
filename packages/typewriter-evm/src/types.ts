@@ -6,7 +6,10 @@
 
 import type { Address, Hex } from "ox";
 
-export type Spec = "MonadEight" | "MonadNine" | "MonadTen" | "MonadNext";
+export type MonadSpec = "MonadEight" | "MonadNine" | "MonadTen" | "MonadNext";
+export type EthereumSpec = "Merge" | "Shanghai" | "Cancun" | "Prague" | "Osaka";
+/** A Monad spec runs on monad-revm and an Ethereum spec on mainnet revm. */
+export type Spec = MonadSpec | EthereumSpec;
 
 export type BlockParams = {
   number?: Hex.Hex;
@@ -25,8 +28,8 @@ export type AccountParams = {
 export type InitParams = {
   /**
    * Pins the hardfork. Without it, the hardfork follows the schedule of
-   * `chain_id` (Monad mainnet or testnet) at the block timestamp, and init
-   * fails on any other chain.
+   * `chain_id` (Monad mainnet or testnet, Ethereum mainnet, Sepolia, or Hoodi)
+   * at the block timestamp, and init fails on any other chain.
    */
   spec?: Spec;
   chain_id?: number;

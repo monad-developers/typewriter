@@ -106,8 +106,15 @@ export function makeChain(
     const anvil = yield* ChildProcess.make(
       "anvil",
       [
-        "--network",
-        "monad",
+        ...(SIM.chain.network === "monad"
+          ? ["--network", "monad", "--chain-id", "143"]
+          : [
+              "--chain-id",
+              "1",
+              "--hardfork",
+              "osaka",
+              "--enable-tx-gas-limit",
+            ]),
         "--port",
         "0",
         "--no-mining",

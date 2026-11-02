@@ -6,13 +6,14 @@ use monad_revm::{
 };
 use revm::{
     bytecode::opcode,
-    context::TxEnv,
+    context::{BlockEnv, CfgEnv, Context, TxEnv},
     context_interface::{
         result::{ExecutionResult, HaltReason},
         transaction::{AccessList, AccessListItem},
-        Host, JournalTr,
+        Cfg, ContextTr, JournalTr,
     },
     database::InMemoryDB,
+    handler::{instructions::EthInstructions, EthPrecompiles, MainBuilder, MainContext},
     inspector::InspectEvm,
     interpreter::{
         interpreter::EthInterpreter,
@@ -21,12 +22,77 @@ use revm::{
     },
     primitives::{
         alloy_primitives::{B512, U64},
+        hardfork::SpecId,
         Address, Bytes, TxKind, B256, U256,
     },
     state::{AccountInfo, Bytecode, EvmState},
     DatabaseRef, ExecuteCommitEvm, ExecuteEvm, Inspector,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+// -----------------------------------------------------------------------------
+// Specs
+
+/// A Monad hardfork runs on monad-revm and an Ethereum one on mainnet revm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spec {
+    Monad(MonadHardfork),
+    Ethereum(SpecId),
+}
+
+impl Spec {
+    fn from_name(name: &str) -> Option<Self> {
+        if let Ok(spec) = name.parse() {
+            return Some(Spec::Monad(spec));
+        }
+        match name.parse::<SpecId>() {
+            Ok(spec) if (SpecId::MERGE..=SpecId::OSAKA).contains(&spec) => {
+                Some(Spec::Ethereum(spec))
+            }
+            _ => None,
+        }
+    }
+
+    /// The hardfork of a known chain at a block timestamp.
+    fn scheduled(chain_id: u64, timestamp: u64) -> Option<Self> {
+        MonadHardfork::from_chain_and_timestamp(chain_id, timestamp)
+            .map(Spec::Monad)
+            .or_else(|| ethereum_spec(chain_id, timestamp).map(Spec::Ethereum))
+    }
+}
+
+impl<'de> Deserialize<'de> for Spec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Spec::from_name(&name)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown spec `{name}`")))
+    }
+}
+
+/// Ethereum mainnet, Sepolia, and Hoodi activate Shanghai, Cancun, Prague, and
+/// Osaka at these timestamps.
+fn ethereum_spec(chain_id: u64, timestamp: u64) -> Option<SpecId> {
+    let activations: [u64; 4] = match chain_id {
+        1 => [1_681_338_455, 1_710_338_135, 1_746_612_311, 1_764_798_551],
+        11_155_111 => [1_677_557_088, 1_706_655_072, 1_741_159_776, 1_760_427_360],
+        560_048 => [0, 0, 1_742_999_832, 1_761_677_592],
+        _ => return None,
+    };
+    let specs = [
+        SpecId::SHANGHAI,
+        SpecId::CANCUN,
+        SpecId::PRAGUE,
+        SpecId::OSAKA,
+    ];
+    Some(
+        activations
+            .iter()
+            .zip(specs)
+            .rev()
+            .find(|(activation, _)| timestamp >= **activation)
+            .map_or(SpecId::MERGE, |(_, spec)| spec),
+    )
+}
 
 // -----------------------------------------------------------------------------
 // Wire types
@@ -44,7 +110,7 @@ enum Request {
 
 #[derive(Deserialize)]
 struct InitParams {
-    spec: Option<MonadHardfork>,
+    spec: Option<Spec>,
     chain_id: Option<u64>,
     block: Option<BlockParams>,
     #[serde(default)]
@@ -175,17 +241,15 @@ struct SlotWrite {
 // -----------------------------------------------------------------------------
 // Inspector
 
-type MonadCtx = monad_revm::api::default_ctx::MonadContext<InMemoryDB>;
-type Evm = monad_revm::api::builder::DefaultMonadEvm<MonadCtx, HarnessInspector>;
 type TxResult = ExecutionResult<HaltReason>;
 
-/// The gas limit must exceed gas_used in two places: SSTORE needs more than
-/// the call stipend left (EIP-2200), and a call or create keeps 1/64 of the
-/// gas it could forward (EIP-150). Gas spent after either point is already in
-/// gas_used, so each frame needs a reserve: 2,301 for its own SSTOREs, and
+/// The gas limit must exceed the gas spent in two places: SSTORE needs more
+/// than the call stipend left (EIP-2200), and a call or create keeps 1/64 of
+/// the gas it could forward (EIP-150). Gas spent after either point is already
+/// counted, so each frame needs a reserve: 2,301 for its own SSTOREs, and
 /// enough that 63/64 of its remaining gas covers each child's gas plus the
-/// child's reserve. Monad has no refunds, so gas_used is the gas spent. A
-/// halted frame uses all the gas it is given, which its need already counts.
+/// child's reserve. A halted frame uses all the gas it is given, which its
+/// need already counts.
 ///
 /// Typewriter contracts never catch a halt in a nested call: a failed call
 /// reverts the tx. The limit relies on this. Simulate runs at u64::MAX gas, so
@@ -221,8 +285,8 @@ impl HarnessInspector {
     }
 }
 
-impl Inspector<MonadCtx> for HarnessInspector {
-    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, _context: &mut MonadCtx) {
+impl<CTX: ContextTr> Inspector<CTX> for HarnessInspector {
+    fn step(&mut self, interp: &mut Interpreter<EthInterpreter>, _context: &mut CTX) {
         if interp.bytecode.opcode() != opcode::KECCAK256 {
             return;
         }
@@ -243,38 +307,152 @@ impl Inspector<MonadCtx> for HarnessInspector {
         self.keccak_preimages.push(preimage);
     }
 
-    fn call(&mut self, _context: &mut MonadCtx, _inputs: &mut CallInputs) -> Option<CallOutcome> {
+    fn call(&mut self, _context: &mut CTX, _inputs: &mut CallInputs) -> Option<CallOutcome> {
         self.frame_reserves.push(0);
         None
     }
 
-    fn call_end(&mut self, context: &mut MonadCtx, inputs: &CallInputs, outcome: &mut CallOutcome) {
+    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
         // Precompiles have fixed costs and no SSTORE.
         let sstore_reserve = if outcome.was_precompile_called {
             0
         } else {
-            context.gas_params().call_stipend() + 1
+            context.cfg().gas_params().call_stipend() + 1
         };
         self.frame_end(inputs.gas_limit, &outcome.result, sstore_reserve);
     }
 
-    fn create(
-        &mut self,
-        _context: &mut MonadCtx,
-        _inputs: &mut CreateInputs,
-    ) -> Option<CreateOutcome> {
+    fn create(&mut self, _context: &mut CTX, _inputs: &mut CreateInputs) -> Option<CreateOutcome> {
         self.frame_reserves.push(0);
         None
     }
 
     fn create_end(
         &mut self,
-        context: &mut MonadCtx,
+        context: &mut CTX,
         inputs: &CreateInputs,
         outcome: &mut CreateOutcome,
     ) {
-        let sstore_reserve = context.gas_params().call_stipend() + 1;
+        let sstore_reserve = context.cfg().gas_params().call_stipend() + 1;
         self.frame_end(inputs.gas_limit(), &outcome.result, sstore_reserve);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Backends
+
+type MonadEvm = monad_revm::api::builder::DefaultMonadEvm<
+    monad_revm::api::default_ctx::MonadContext<InMemoryDB>,
+    HarnessInspector,
+>;
+type EthereumEvm =
+    revm::handler::MainnetEvm<revm::handler::MainnetContext<InMemoryDB>, HarnessInspector>;
+
+/// The parts of an EVM the harness uses, so one harness drives either.
+trait Backend {
+    fn spec(&self) -> Spec;
+    fn set_spec(&mut self, spec: Spec) -> Result<(), String>;
+    fn chain_id(&self) -> u64;
+    fn block(&self) -> &BlockEnv;
+    fn block_mut(&mut self) -> &mut BlockEnv;
+    fn db(&self) -> &InMemoryDB;
+    fn db_mut(&mut self) -> &mut InMemoryDB;
+    fn inspector(&mut self) -> &mut HarnessInspector;
+    fn is_precompile(&self, address: &Address) -> bool;
+    fn transact(&mut self, tx: TxEnv) -> (Result<TxResult, String>, EvmState);
+    fn commit(&mut self, state: EvmState);
+}
+
+fn new_backend(spec: Spec, chain_id: u64) -> Result<Box<dyn Backend>, String> {
+    let mut backend: Box<dyn Backend> = match spec {
+        Spec::Monad(_) => {
+            let mut ctx = monad_context_with_db(InMemoryDB::default());
+            ctx.cfg.0.chain_id = chain_id;
+            Box::new(ctx.build_monad_with_inspector(HarnessInspector::default()))
+        }
+        Spec::Ethereum(_) => {
+            let mut ctx = Context::mainnet().with_db(InMemoryDB::default());
+            ctx.cfg.chain_id = chain_id;
+            Box::new(ctx.build_mainnet_with_inspector(HarnessInspector::default()))
+        }
+    };
+    backend.set_spec(spec)?;
+    Ok(backend)
+}
+
+macro_rules! backend_common {
+    ($($inner:tt)*) => {
+        fn chain_id(&self) -> u64 {
+            self$($inner)*.ctx.cfg.chain_id()
+        }
+        fn block(&self) -> &BlockEnv {
+            &self$($inner)*.ctx.block
+        }
+        fn block_mut(&mut self) -> &mut BlockEnv {
+            &mut self$($inner)*.ctx.block
+        }
+        fn db(&self) -> &InMemoryDB {
+            self$($inner)*.ctx.journaled_state.db()
+        }
+        fn db_mut(&mut self) -> &mut InMemoryDB {
+            self$($inner)*.ctx.journaled_state.db_mut()
+        }
+        fn inspector(&mut self) -> &mut HarnessInspector {
+            &mut self$($inner)*.inspector
+        }
+        fn is_precompile(&self, address: &Address) -> bool {
+            self$($inner)*.ctx.journaled_state.precompile_addresses().contains(address)
+        }
+        fn transact(&mut self, tx: TxEnv) -> (Result<TxResult, String>, EvmState) {
+            let result = self.inspect_one_tx(tx);
+            let state = self.finalize();
+            (result.map_err(|e| format!("transact: {e:?}")), state)
+        }
+        fn commit(&mut self, state: EvmState) {
+            ExecuteCommitEvm::commit(self, state);
+        }
+    };
+}
+
+impl Backend for MonadEvm {
+    backend_common!(.0);
+
+    fn spec(&self) -> Spec {
+        Spec::Monad(self.0.ctx.cfg.0.spec)
+    }
+
+    fn set_spec(&mut self, spec: Spec) -> Result<(), String> {
+        let Spec::Monad(spec) = spec else {
+            return Err(format!("{spec:?} is not a Monad hardfork"));
+        };
+        // MonadEvm reads the spec from the cfg on every frame, so replacing the
+        // cfg also switches its instructions and precompiles.
+        let mut cfg = MonadCfgEnv::new_with_spec(spec).with_chain_id(self.chain_id());
+        relax_cfg(&mut cfg.0);
+        self.0.ctx.cfg = cfg;
+        self.0.ctx.journaled_state.set_spec_id(spec.into());
+        Ok(())
+    }
+}
+
+impl Backend for EthereumEvm {
+    backend_common!();
+
+    fn spec(&self) -> Spec {
+        Spec::Ethereum(self.ctx.cfg.spec)
+    }
+
+    fn set_spec(&mut self, spec: Spec) -> Result<(), String> {
+        let Spec::Ethereum(spec) = spec else {
+            return Err(format!("{spec:?} is not an Ethereum hardfork"));
+        };
+        let mut cfg = CfgEnv::new_with_spec(spec).with_chain_id(self.chain_id());
+        relax_cfg(&mut cfg);
+        self.ctx.cfg = cfg;
+        self.ctx.journaled_state.set_spec_id(spec);
+        self.instruction = EthInstructions::new_mainnet_with_spec(spec);
+        self.precompiles = EthPrecompiles::new(spec);
+        Ok(())
     }
 }
 
@@ -343,10 +521,10 @@ impl Image {
 }
 
 pub struct EvmHarness {
-    evm: Evm,
+    evm: Box<dyn Backend>,
     /// The caller's hardfork. Without one, the hardfork follows the chain's
     /// schedule at the block timestamp.
-    pinned_spec: Option<MonadHardfork>,
+    pinned_spec: Option<Spec>,
     journals: HashMap<u64, Journal>,
     next_journal_id: u64,
 }
@@ -357,11 +535,18 @@ impl EvmHarness {
         Self::new(&params)
     }
 
+    /// The chain ID picks the network, Monad or Ethereum, unless a spec is
+    /// pinned, and the network is fixed from then on.
     fn new(params: &InitParams) -> Result<Self, String> {
-        let mut ctx = monad_context_with_db(InMemoryDB::default());
-        relax_cfg(&mut ctx.cfg);
+        let chain_id = params.chain_id.unwrap_or(1);
+        let timestamp = params
+            .block
+            .as_ref()
+            .and_then(|block| block.timestamp)
+            .map_or(0, |timestamp| timestamp.saturating_to());
+        let spec = Self::spec_at(params.spec, chain_id, timestamp)?;
         let mut harness = Self {
-            evm: ctx.build_monad_with_inspector(HarnessInspector::default()),
+            evm: new_backend(spec, chain_id)?,
             pinned_spec: params.spec,
             journals: HashMap::new(),
             next_journal_id: 1,
@@ -370,15 +555,17 @@ impl EvmHarness {
         Ok(harness)
     }
 
+    fn spec_at(pinned_spec: Option<Spec>, chain_id: u64, timestamp: u64) -> Result<Spec, String> {
+        pinned_spec
+            .or_else(|| Spec::scheduled(chain_id, timestamp))
+            .ok_or_else(|| format!("chain {chain_id} has no known hardfork schedule; pass a spec"))
+    }
+
     fn init(&mut self, params: &InitParams) -> Result<(), String> {
-        if let Some(chain_id) = params.chain_id {
-            self.evm.0.ctx.cfg.0.chain_id = chain_id;
+        if let Some(block) = &params.block {
+            self.set_block_context(block)?;
         }
-        match &params.block {
-            Some(block) => self.set_block_context(block)?,
-            None => self.update_spec()?,
-        }
-        let db = self.evm.0.ctx.journaled_state.db_mut();
+        let db = self.evm.db_mut();
         for (&address, account) in &params.accounts {
             let mut info = AccountInfo {
                 balance: account.balance,
@@ -397,7 +584,7 @@ impl EvmHarness {
     }
 
     fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
-        let block = &mut self.evm.0.ctx.block;
+        let block = self.evm.block_mut();
         if let Some(number) = params.number {
             block.number = number;
         }
@@ -414,36 +601,21 @@ impl EvmHarness {
     }
 
     /// Switches to the pinned hardfork, or else to the chain's hardfork at the
-    /// block timestamp. Fails on a chain without a known schedule, so a
-    /// non-Monad chain never runs with Monad's gas and precompiles.
+    /// block timestamp.
     fn update_spec(&mut self) -> Result<(), String> {
-        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
-        let spec = match self.pinned_spec {
-            Some(spec) => spec,
-            None => {
-                let timestamp = self.evm.0.ctx.block.timestamp.saturating_to();
-                MonadHardfork::from_chain_and_timestamp(chain_id, timestamp).ok_or_else(|| {
-                    format!("chain {chain_id} has no known Monad hardfork schedule; pass a spec")
-                })?
-            }
-        };
-        if spec == self.evm.0.ctx.cfg.0.spec {
+        let timestamp = self.evm.block().timestamp.saturating_to();
+        let spec = Self::spec_at(self.pinned_spec, self.evm.chain_id(), timestamp)?;
+        if spec == self.evm.spec() {
             return Ok(());
         }
-        // MonadEvm reads the spec from the cfg on every frame, so replacing the
-        // cfg also switches its instructions and precompiles.
-        let mut cfg = MonadCfgEnv::new_with_spec(spec).with_chain_id(chain_id);
-        relax_cfg(&mut cfg);
-        self.evm.0.ctx.cfg = cfg;
-        self.evm.0.ctx.journaled_state.set_spec_id(spec.into());
-        Ok(())
+        self.evm.set_spec(spec)
     }
 
     fn revert_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
         self.ensure_journal_ids(&params.journal_ids)?;
         for journal_id in params.journal_ids.iter().rev() {
             let journal = self.journals.remove(journal_id).expect("validated above");
-            journal.write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
+            journal.write(self.evm.db_mut(), Image::Pre);
         }
         Ok(())
     }
@@ -460,7 +632,7 @@ impl EvmHarness {
         let (result, state) = self.run_tx(tx, AccessList::default())?;
         let access_list = self.discovered_access_list(tx, &state);
         let outcome = tx_outcome(&result, access_list.clone());
-        let keccak_preimages = std::mem::take(&mut self.evm.0.inspector.keccak_preimages);
+        let keccak_preimages = std::mem::take(&mut self.evm.inspector().keccak_preimages);
         if !outcome.success() {
             return Ok(ExecuteOk {
                 outcome,
@@ -487,18 +659,18 @@ impl EvmHarness {
     fn simulate(&mut self, params: &SimulateParams) -> Result<SimulateOk, String> {
         self.ensure_journal_ids(&params.journal_ids)?;
         for journal_id in params.journal_ids.iter().rev() {
-            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
+            self.journals[journal_id].write(self.evm.db_mut(), Image::Pre);
         }
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
         let result = self.run_simulate(&params.tx, cached_access_list);
         for journal_id in &params.journal_ids {
-            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Post);
+            self.journals[journal_id].write(self.evm.db_mut(), Image::Post);
         }
         result
     }
 
     fn read_storage(&self, params: &ReadStorageParams) -> BTreeMap<B256, B256> {
-        let db = self.evm.0.ctx.journaled_state.db();
+        let db = self.evm.db();
         params
             .slots
             .iter()
@@ -531,25 +703,22 @@ impl EvmHarness {
         tx: &ExecuteParams,
         access_list: AccessList,
     ) -> Result<(TxResult, EvmState), String> {
-        self.evm.0.inspector.clear();
-        let tx_env = tx.tx_env(self.evm.0.ctx.cfg.0.chain_id, access_list);
-        let result = self.evm.inspect_one_tx(tx_env);
-        let state = self.evm.finalize();
-        let result = result.map_err(|e| format!("transact: {e:?}"))?;
-        Ok((result, state))
+        self.evm.inspector().clear();
+        let tx_env = tx.tx_env(self.evm.chain_id(), access_list);
+        let (result, state) = self.evm.transact(tx_env);
+        Ok((result?, state))
     }
 
     /// Lists the accounts and slots the tx touched, leaving out accounts the
     /// chain already warms: the sender, the recipient, the coinbase, and
     /// precompiles.
     fn discovered_access_list(&self, tx: &ExecuteParams, state: &EvmState) -> AccessList {
-        let precompiles = self.evm.0.ctx.journaled_state.precompile_addresses();
-        let coinbase = self.evm.0.ctx.block.beneficiary;
+        let coinbase = self.evm.block().beneficiary;
         let is_warm = |address: &Address| {
             *address == tx.from
                 || *address == tx.to
                 || *address == coinbase
-                || precompiles.contains(address)
+                || self.evm.is_precompile(address)
         };
         // EvmState is a HashMap, so sort for a stable order.
         let mut items: Vec<AccessListItem> = state
@@ -584,8 +753,11 @@ impl EvmHarness {
 
         let (result, _) = self.run_tx(tx, access_list.clone())?;
         let outcome = tx_outcome(&result, access_list);
+        // Ethereum refunds after execution, so the limit covers the gas spent
+        // before the refund, and at least the calldata floor (EIP-7623).
         let gas_limit = if outcome.success() {
-            result.tx_gas_used() + self.evm.0.inspector.gas_reserve
+            let gas = result.gas();
+            (gas.total_gas_spent() + self.evm.inspector().gas_reserve).max(gas.floor_gas())
         } else {
             result.tx_gas_used()
         };
@@ -656,11 +828,11 @@ fn collect_slot_writes(state: &EvmState, address: Address) -> Vec<SlotWrite> {
 
 /// The runtime orders txs and accounts for gas and balances itself, so these
 /// checks would only reject txs it has already accepted.
-fn relax_cfg(cfg: &mut MonadCfgEnv) {
-    cfg.0.disable_nonce_check = true;
-    cfg.0.disable_balance_check = true;
-    cfg.0.disable_base_fee = true;
-    cfg.0.tx_gas_limit_cap = Some(u64::MAX);
+fn relax_cfg<S>(cfg: &mut CfgEnv<S>) {
+    cfg.disable_nonce_check = true;
+    cfg.disable_balance_check = true;
+    cfg.disable_base_fee = true;
+    cfg.tx_gas_limit_cap = Some(u64::MAX);
 }
 
 // -----------------------------------------------------------------------------
@@ -766,7 +938,20 @@ mod tests {
         code
     }
 
+    const SPECS: [Spec; 2] = [
+        Spec::Monad(MonadHardfork::MonadTen),
+        Spec::Ethereum(SpecId::OSAKA),
+    ];
+
     fn harness(accounts: &[(u16, &[u8])]) -> EvmHarness {
+        harness_with(SPECS[0], accounts, &[])
+    }
+
+    fn harness_with(spec: Spec, accounts: &[(u16, &[u8])], storage: &[(u64, u64)]) -> EvmHarness {
+        let storage: BTreeMap<U256, U256> = storage
+            .iter()
+            .map(|&(slot, value)| (U256::from(slot), U256::from(value)))
+            .collect();
         let accounts = accounts
             .iter()
             .map(|&(account, code)| {
@@ -774,13 +959,13 @@ mod tests {
                     balance: U256::ZERO,
                     nonce: 0,
                     code: Some(Bytes::copy_from_slice(code)),
-                    storage: BTreeMap::new(),
+                    storage: storage.clone(),
                 };
                 (address(account), account_params)
             })
             .collect();
         EvmHarness::new(&InitParams {
-            spec: Some(MonadHardfork::MonadTen),
+            spec: Some(spec),
             chain_id: None,
             block: None,
             accounts,
@@ -802,21 +987,77 @@ mod tests {
     }
 
     fn succeeds_at(harness: &mut EvmHarness, gas_limit: u64) -> bool {
-        let chain_id = harness.evm.0.ctx.cfg.0.chain_id;
-        let mut tx_env = tx().tx_env(chain_id, AccessList::default());
+        let mut tx_env = tx().tx_env(harness.evm.chain_id(), AccessList::default());
         tx_env.gas_limit = gas_limit;
-        let result = harness.evm.inspect_one_tx(tx_env).unwrap();
-        let _ = harness.evm.finalize();
-        matches!(result, ExecutionResult::Success { .. })
+        let (result, _) = harness.evm.transact(tx_env);
+        matches!(result.unwrap(), ExecutionResult::Success { .. })
     }
 
     /// The tx fails at gas_used and succeeds at the simulated limit.
     fn assert_reserve_needed(accounts: &[(u16, &[u8])]) {
-        let mut harness = harness(accounts);
-        let result = simulate(&mut harness).unwrap();
-        assert!(result.outcome.success());
-        assert!(!succeeds_at(&mut harness, result.outcome.gas_used));
-        assert!(succeeds_at(&mut harness, result.gas_limit));
+        assert_reserve_needed_with(&SPECS, accounts, &[]);
+    }
+
+    fn assert_reserve_needed_with(
+        specs: &[Spec],
+        accounts: &[(u16, &[u8])],
+        storage: &[(u64, u64)],
+    ) {
+        for &spec in specs {
+            let mut harness = harness_with(spec, accounts, storage);
+            let result = simulate(&mut harness).unwrap();
+            assert!(result.outcome.success(), "{spec:?}");
+            assert!(
+                !succeeds_at(&mut harness, result.outcome.gas_used),
+                "{spec:?}"
+            );
+            assert!(succeeds_at(&mut harness, result.gas_limit), "{spec:?}");
+        }
+    }
+
+    #[test]
+    fn chain_id_picks_the_network() {
+        let osaka = 1_764_798_551;
+        assert_eq!(
+            Spec::scheduled(1, osaka - 1),
+            Some(Spec::Ethereum(SpecId::PRAGUE))
+        );
+        assert_eq!(
+            Spec::scheduled(1, osaka),
+            Some(Spec::Ethereum(SpecId::OSAKA))
+        );
+        assert_eq!(Spec::scheduled(1, 0), Some(Spec::Ethereum(SpecId::MERGE)));
+        assert_eq!(
+            Spec::scheduled(560_048, 0),
+            Some(Spec::Ethereum(SpecId::CANCUN))
+        );
+        assert_eq!(
+            Spec::scheduled(143, 1_788_359_400),
+            Some(Spec::Monad(MonadHardfork::MonadTen))
+        );
+        assert_eq!(Spec::scheduled(31_337, osaka), None);
+    }
+
+    #[test]
+    fn spec_names() {
+        assert_eq!(
+            Spec::from_name("MonadTen"),
+            Some(Spec::Monad(MonadHardfork::MonadTen))
+        );
+        assert_eq!(
+            Spec::from_name("Osaka"),
+            Some(Spec::Ethereum(SpecId::OSAKA))
+        );
+        assert_eq!(Spec::from_name("Amsterdam"), None);
+        assert_eq!(Spec::from_name("London"), None);
+    }
+
+    #[test]
+    fn reserve_covers_refunds() {
+        // PUSH1 0 PUSH1 0 SSTORE STOP clears slot 0, which Ethereum refunds
+        // after execution. Monad has no refunds.
+        let code: &[u8] = &[0x60, 0x00, 0x60, 0x00, 0x55, 0x00];
+        assert_reserve_needed_with(&[SPECS[1]], &[(CONTRACT, code)], &[(0, 1)]);
     }
 
     #[test]

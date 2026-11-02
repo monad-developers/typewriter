@@ -80,6 +80,8 @@ export type SIM = {
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
   ioRate: number;
   chain: {
+    /** Anvil runs the network's EVM under its mainnet chain ID, which picks typewriter's. */
+    network: "monad" | "ethereum";
     blockTimeMs: number;
     genesisTimestamp: number;
     /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
@@ -150,6 +152,8 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   process.exit(1);
 }
 
+const NETWORK = pick(SEED, "chain.network", ["monad", "ethereum"] as const);
+
 /** The configuration of a run. Each value is drawn from `SEED` and its path. */
 export const SIM: SIM = {
   seed: SEED,
@@ -159,8 +163,13 @@ export const SIM: SIM = {
   jumpsMs: [0, 0, 0, (EXPIRATION_MARGIN + 3) * 1_000],
   ioRate: pick(SEED, "ioRate", [0, 0.01, 0.1]),
   chain: {
-    blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
-    genesisTimestamp: 1_700_000_000,
+    network: NETWORK,
+    blockTimeMs:
+      NETWORK === "ethereum"
+        ? 12_000
+        : pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
+    // After MonadTen and Osaka, the hardforks Anvil runs.
+    genesisTimestamp: 1_790_000_000,
     reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
     dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
     finalizedBlockDepth: int(SEED, "chain.finalizedBlockDepth", 1, 5),
@@ -327,8 +336,6 @@ const program = Effect.gen(function* () {
       address,
       account: SCHEDULER,
       chainId,
-      // Anvil's chain has no Monad hardfork schedule.
-      hardfork: "MonadTen",
       rpcUrl: SIM.transports.map((_, index) => `sim-${index}`) as [
         string,
         ...string[],

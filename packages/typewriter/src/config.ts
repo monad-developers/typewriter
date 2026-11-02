@@ -115,8 +115,9 @@ export type TypewriterConfig<
   dev?: dev;
   /**
    * Pins the EVM hardfork that mutations execute under. By default it follows
-   * the Monad mainnet or testnet schedule for `chainId`, so it is required on
-   * any other chain, such as a local Anvil started with `--network monad`.
+   * the schedule for `chainId` of Monad mainnet or testnet, or Ethereum
+   * mainnet, Sepolia, or Hoodi, so it is required on any other chain, such as
+   * a local Anvil.
    */
   hardfork?: Spec;
   database: DatabaseOptions;
