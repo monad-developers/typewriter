@@ -23,7 +23,7 @@ export class RpcTimeoutError extends Data.TaggedError("RpcTimeoutError")<{
  * when it is behind another provider, so a request retries it.
  */
 export class BlockNotFoundError extends Data.TaggedError("BlockNotFoundError")<{
-  block: Hex.Hex | bigint | "latest";
+  block: Hex.Hex | bigint | "latest" | "finalized";
 }> {
   override get message() {
     return `Block ${this.block} not found`;
@@ -80,11 +80,13 @@ function blockFound<result>(
   ) {
     return Effect.succeed(result);
   }
-  const [id] = request.params as unknown as [Hex.Hex | "latest"];
+  const [id] = request.params as unknown as [Hex.Hex | "latest" | "finalized"];
   return Effect.fail(
     new BlockNotFoundError({
       block:
-        method === "eth_getBlockByNumber" && id !== "latest" ? BigInt(id) : id,
+        method === "eth_getBlockByNumber" && id.startsWith("0x")
+          ? BigInt(id)
+          : id,
     }),
   );
 }

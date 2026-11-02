@@ -38,6 +38,9 @@ export function startDevChain(
         "0",
         "--block-time",
         "0.25",
+        // Anvil finalizes two epochs behind the latest block.
+        "--slots-in-an-epoch",
+        "1",
         // Keep recent history only, in memory, so a long-running chain stays
         // flat; the runtime reads state only at its start block.
         "--prune-history",

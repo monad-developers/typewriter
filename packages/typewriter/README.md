@@ -66,11 +66,11 @@ The lifecycle of a mutation is as follows:
 - **received**. The server has received the mutation.
 - **accepted**. The server has ordered and executed the mutation locally.
 - **included**. The server submitted the mutation onchain and it has been included in a block.
-- **finalized**. The block that contains the mutation is `confirmations.finalizedBlockDepth` blocks deep.
+- **finalized**. The block that contains the mutation is at or below the chain's `"finalized"` block.
 
 `createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
 
-`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`, or just `database` in [dev mode](#local-development). Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs`, `confirmations`, and `sequencing`.
+`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`, or just `database` in [dev mode](#local-development). Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional runtime controls are `blockPollingIntervalMs` and `sequencing`.
 
 ```ts
 import { createTypewriter } from "typewriter";
@@ -83,9 +83,6 @@ const typewriter = await createTypewriter(Token, {
   chainId,
   rpcUrl,
   database: { url: databaseUrl },
-  confirmations: {
-    finalizedBlockDepth: 5,
-  },
   blockPollingIntervalMs: 200,
   sequencing: {
     order: "fifo",
@@ -534,7 +531,7 @@ Starts the runtime and resolves to the `Typewriter` handle (see the [Server runt
 - `rpcUrl` — `string | string[]`.
 - `database` — `{ url, maxConnections? }` (Postgres).
 
-Optional runtime controls: `blockPollingIntervalMs` (default `200`), `confirmations` (`{ finalizedBlockDepth? }`, default `5`), and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
+Optional runtime controls: `blockPollingIntervalMs` (default `200`) and `sequencing` (see [Sequencing](#sequencing); defaults to FIFO).
 
 The Solidity entrypoint must be importable by Bun. At startup, typewriter runs `forge build`, reads the compiled ABI/storage layout/AST, and derives app mutation IDs, params, and typed storage from the contract.
 
@@ -643,7 +640,7 @@ typewriter.schema: TypewriterMutationSchema;
 
 The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. typewriter owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
 
-One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted`, and its block columns are set when it is `included`; `received` and `rejected` mutations are not persisted here. A mutation is finalized once its `block_number` is `confirmations.finalizedBlockDepth` blocks behind the chain head. The tables live in the Postgres schema `typewriter_<chainId>_<address>`.
+One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted`, and its block columns are set when it is `included`; `received` and `rejected` mutations are not persisted here. A mutation is finalized once the chain's `"finalized"` block reaches its `block_number`. The tables live in the Postgres schema `typewriter_<chainId>_<address>`.
 
 Every mutation table starts with the same **lifecycle columns**:
 

@@ -121,9 +121,6 @@ export type TypewriterConfig<
   hardfork?: Spec;
   database: DatabaseOptions;
   blockPollingIntervalMs?: number;
-  confirmations?: {
-    finalizedBlockDepth?: number;
-  };
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
@@ -157,9 +154,6 @@ export type TypewriterApp = {
   typewriterSchema: TypewriterSchema;
   mutationSchema: Record<string, PgTable>;
   blockPollingIntervalMs: number;
-  confirmations: {
-    finalizedBlockDepth: number;
-  };
   sequencing:
     | {
         order: "fifo";
@@ -176,7 +170,6 @@ export type TypewriterApp = {
 /** Postgres truncates longer identifiers. */
 const MAX_IDENTIFIER_LENGTH = 63;
 
-const DEFAULT_FINALIZED_BLOCK_DEPTH = 5;
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
 const DEFAULT_SUBMIT_INTERVAL_MS = 300;
@@ -217,11 +210,6 @@ export function validateConfig(config: TypewriterConfig): void {
   assertSafeNonNegativeInteger(
     config.blockPollingIntervalMs,
     "config.blockPollingIntervalMs",
-  );
-
-  assertSafeNonNegativeInteger(
-    config.confirmations?.finalizedBlockDepth,
-    "config.confirmations.finalizedBlockDepth",
   );
 
   const hasBatchOrder =
@@ -327,11 +315,6 @@ export function createTypewriterApp(params: {
       message: `config.chainId is too long for the Postgres schema name: ${schemaName}`,
     });
   }
-  const confirmations = {
-    finalizedBlockDepth:
-      config.confirmations?.finalizedBlockDepth ??
-      DEFAULT_FINALIZED_BLOCK_DEPTH,
-  };
 
   const sequencing =
     config.sequencing?.order === "batch"
@@ -376,7 +359,6 @@ export function createTypewriterApp(params: {
     mutationSchema: createMutationSchema(schemaName, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
-    confirmations,
     sequencing,
   };
 }

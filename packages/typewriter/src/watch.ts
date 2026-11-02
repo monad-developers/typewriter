@@ -19,15 +19,18 @@ export type LocalBlock = {
   logs: LocalLog[];
 };
 
-/** A reorg is `Removed` for each replaced block, newest first, then `Added`. */
+/**
+ * A reorg is `Removed` for each replaced block, newest first, then `Added`.
+ * `Finalized` is the chain's newest finalized block, which no reorg replaces.
+ */
 export type WatchMessage =
   | { _tag: "Added"; block: LocalBlock }
-  | { _tag: "Removed"; block: LocalBlock };
+  | { _tag: "Removed"; block: LocalBlock }
+  | { _tag: "Finalized"; block: { number: bigint; hash: Hex.Hex } };
 
 export type WatchConfig = {
   /** The last block the caller has seen. The watch emits each block after it. */
   fromBlock: { number: bigint; hash: Hex.Hex };
-  maxChainDepth: number;
   pollIntervalMs: number;
   bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
@@ -104,7 +107,6 @@ export function watchChain(
             }
 
             chain = [...kept, ...added];
-            while (chain.length > config.maxChainDepth) root = chain.shift()!;
             for (const block of removed) {
               yield* Queue.offer(queue, { _tag: "Removed", block });
             }
@@ -113,17 +115,37 @@ export function watchChain(
             }
           });
 
+        const finalize = (finalized: RequestedBlock) =>
+          Effect.gen(function* () {
+            // A provider ahead of the one that served `latest`, or a chain
+            // that a reorg has yet to replace, is one a later poll reaches.
+            const index = chain.findIndex(
+              (block) => block.hash === finalized.hash,
+            );
+            if (index === -1) return;
+            root = chain[index]!;
+            chain = chain.slice(index + 1);
+            yield* Queue.offer(queue, {
+              _tag: "Finalized",
+              block: { number: root.number, hash: root.hash },
+            });
+          });
+
         const poll = Effect.gen(function* () {
+          // Requested before `latest`, so the chain up to `latest` has it.
+          const finalized = yield* requestBlock("finalized");
           const latest = yield* requestBlock("latest");
           if (
             latest.number <= root.number ||
             chain.some((block) => block.hash === latest.hash)
           ) {
+            yield* finalize(finalized);
             return;
           }
 
           if (latest.number <= tip().number + 1n) {
             yield* reconcile(yield* withLogs(latest));
+            yield* finalize(finalized);
             return;
           }
 
@@ -139,6 +161,7 @@ export function watchChain(
               { concurrency: "unbounded" },
             );
             for (const block of blocks) yield* reconcile(block);
+            yield* finalize(finalized);
           }
         });
 

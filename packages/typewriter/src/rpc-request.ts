@@ -10,7 +10,7 @@ import {
 import { Rpc, type RpcError } from "./rpc";
 import { TYPEWRITER_ABI } from "./typewriter-constants";
 
-export type BlockIdentifier = number | bigint | Hash | "latest";
+export type BlockIdentifier = number | bigint | Hash | "latest" | "finalized";
 export type RequestedBlock<includeTransactions extends boolean = false> = Block<
   bigint,
   includeTransactions,
@@ -38,7 +38,7 @@ export function requestBlock<includeTransactions extends boolean = false>(
 
     const id = typeof block === "number" ? BigInt(block) : block;
     const rpcBlock =
-      typeof id === "string" && id !== "latest"
+      typeof id === "string" && id !== "latest" && id !== "finalized"
         ? yield* rpc.request({
             method: "eth_getBlockByHash",
             params: [id, includeTransactions],
@@ -46,7 +46,7 @@ export function requestBlock<includeTransactions extends boolean = false>(
         : yield* rpc.request({
             method: "eth_getBlockByNumber",
             params: [
-              id === "latest" ? id : Hex.fromNumber(id),
+              typeof id === "string" ? id : Hex.fromNumber(id),
               includeTransactions,
             ],
           });

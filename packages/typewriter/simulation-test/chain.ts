@@ -168,7 +168,7 @@ export function makeChain(
     /** The canonical chain's hashes, by number. */
     const canonical: Hex.Hex[] = [];
     /** The canonical head after each change, in virtual time. */
-    const heads: { atMs: number; hash: Hex.Hex }[] = [];
+    const heads: { atMs: number; hash: Hex.Hex; highest: number }[] = [];
     /** The blocks that reorgs replaced, with their receipts, by hash. */
     const orphans = new Map<Hex.Hex, { block: Block; receipts: Receipt[] }>();
     /** The replaced blocks that each transaction was in, by its hash. */
@@ -187,7 +187,7 @@ export function makeChain(
 
     const genesis = yield* getBlock("0x0", false);
     record(genesis);
-    heads.push({ atMs: Number.NEGATIVE_INFINITY, hash: genesis.hash });
+    heads.push({ atMs: Number.NEGATIVE_INFINITY, hash: genesis.hash, highest });
 
     /** The canonical head at `asOfMs`. */
     const headAt = (asOfMs: number) => {
@@ -198,7 +198,7 @@ export function makeChain(
         if (heads[mid]!.atMs <= asOfMs) low = mid;
         else high = mid;
       }
-      return heads[low]!.hash;
+      return heads[low]!;
     };
 
     /** The hash of block `number` on the chain that ends at `head`. */
@@ -216,7 +216,7 @@ export function makeChain(
     const read = ((request: RpcRequest, asOfMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
-          const head = headAt(asOfMs);
+          const { hash: head, highest: highestSeen } = headAt(asOfMs);
           const seen = (hash: Hex.Hex) => {
             const block = blocks.get(hash);
             return block !== undefined && hashAt(head, block.number) === hash;
@@ -247,6 +247,13 @@ export function makeChain(
               return Hex.fromNumber(blocks.get(head)!.number);
             case "eth_getBlockByNumber": {
               const [tag, full] = params as [string, boolean];
+              if (tag === "finalized") {
+                const number = Math.max(
+                  0,
+                  highestSeen - SIM.chain.finalizedBlockDepth,
+                );
+                return yield* blockByHash(hashAt(head, number)!, full);
+              }
               if (tag !== "latest" && !tag.startsWith("0x")) {
                 return yield* send(request);
               }
@@ -344,7 +351,8 @@ export function makeChain(
     const mine = (atMs: number) =>
       lock.withPermits(1)(
         Effect.gen(function* () {
-          heads.push({ atMs, hash: yield* mineBlock(atMs) });
+          const hash = yield* mineBlock(atMs);
+          heads.push({ atMs, hash, highest });
         }),
       );
 
@@ -365,7 +373,7 @@ export function makeChain(
           const replaced = Math.min(
             depth,
             head - 1,
-            head - highest + SIM.typewriter.finalizedBlockDepth,
+            head - highest + SIM.chain.finalizedBlockDepth,
           );
           if (replaced <= 0) return { replaced: [], dropped: [] };
 
@@ -437,7 +445,7 @@ export function makeChain(
             hash = yield* mineBlock(atMs);
           }
           yield* sendAll(slots[added]!);
-          heads.push({ atMs, hash });
+          heads.push({ atMs, hash, highest });
           return { replaced: hashes, dropped };
         }),
       );

@@ -85,6 +85,8 @@ export type SIM = {
     reorgRate: number;
     /** How often a reorg drops a transaction of a block it replaced, with its sender's later ones. */
     dropRate: number;
+    /** How far below the highest head the chain finalizes. */
+    finalizedBlockDepth: number;
   };
   generator: {
     /** The key type of each account. */
@@ -112,7 +114,6 @@ export type SIM = {
   typewriter: {
     submitIntervalMs: number;
     blockPollingIntervalMs: number;
-    finalizedBlockDepth: number;
     ordering:
       | { order: "fifo" }
       | {
@@ -159,6 +160,7 @@ export const SIM: SIM = {
     genesisTimestamp: 1_700_000_000,
     reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
     dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
+    finalizedBlockDepth: int(SEED, "chain.finalizedBlockDepth", 1, 5),
   },
   generator: {
     accounts: Array.from(
@@ -201,7 +203,6 @@ export const SIM: SIM = {
       "typewriter.blockPollingIntervalMs",
       [50, 200, 1_000],
     ),
-    finalizedBlockDepth: int(SEED, "typewriter.finalizedBlockDepth", 1, 5),
     ordering:
       pick(SEED, "typewriter.ordering", ["fifo", "batch"]) === "fifo"
         ? { order: "fifo" }
@@ -330,9 +331,6 @@ const program = Effect.gen(function* () {
       ],
       database: { url: database.url },
       blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
-      confirmations: {
-        finalizedBlockDepth: SIM.typewriter.finalizedBlockDepth,
-      },
       sequencing: {
         ...SIM.typewriter.ordering,
         submitIntervalMs: SIM.typewriter.submitIntervalMs,
@@ -493,13 +491,13 @@ const program = Effect.gen(function* () {
         const depth =
           1 +
           Math.floor(
-            chainRandom.nextDoubleUnsafe() * SIM.typewriter.finalizedBlockDepth,
+            chainRandom.nextDoubleUnsafe() * SIM.chain.finalizedBlockDepth,
           );
         const added =
           1 +
           Math.floor(
             chainRandom.nextDoubleUnsafe() *
-              (SIM.typewriter.finalizedBlockDepth + 1),
+              (SIM.chain.finalizedBlockDepth + 1),
           );
         const { replaced, dropped } = yield* simChain.reorg(depth, added, atMs);
         if (replaced.length === 0) return;
@@ -592,7 +590,7 @@ const program = Effect.gen(function* () {
           // enqueue there is never dropped.
           const final =
             head - BigInt(receipt.blockNumber) >=
-            BigInt(SIM.typewriter.finalizedBlockDepth);
+            BigInt(SIM.chain.finalizedBlockDepth);
           if (!expected.executes) {
             if (final) break;
             continue;
