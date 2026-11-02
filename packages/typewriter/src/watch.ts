@@ -115,11 +115,21 @@ export function watchChain(
             }
           });
 
+        // A watch behind the chain could always see a finalized block ahead
+        // of its tip, so it keeps one until its chain reaches it.
+        let finalized = root;
         const finalize = Effect.gen(function* () {
-          const finalized = yield* requestBlock("finalized");
-          if (finalized.number <= root.number) return;
-          // A finalized block ahead of the tip, or off a chain that a reorg
-          // has yet to replace, is one that a later poll reaches.
+          if (finalized.number <= root.number) {
+            const block = yield* requestBlock("finalized");
+            finalized = { number: block.number, hash: block.hash };
+          }
+          if (
+            finalized.number <= root.number ||
+            finalized.number > tip().number
+          ) {
+            return;
+          }
+          // A chain that a reorg has yet to replace, which a later poll does.
           const index = chain.findIndex(
             (block) => block.hash === finalized.hash,
           );
