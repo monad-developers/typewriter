@@ -1,5 +1,5 @@
 import { PgDialect } from "drizzle-orm/pg-core";
-import { Clock, Duration, Effect, Random } from "effect";
+import { Clock, Data, Duration, Effect, Random, Schedule } from "effect";
 import {
   DbError,
   type DbQuery,
@@ -31,6 +31,9 @@ const noRandom: Random.Random = {
   nextIntUnsafe: outside("Random"),
   nextDoubleUnsafe: outside("Random"),
 };
+
+/** A rollback a transaction drew. It reaches the client as a `DbError`, after the latency. */
+class InjectedRollback extends Data.TaggedError("InjectedRollback") {}
 
 function statementsKey(statements: DbStatement<unknown>[]): string {
   return JSON.stringify(
@@ -75,7 +78,21 @@ export function makeSimDbTransport({
     statements: () => DbStatement<unknown>[],
   ) =>
     Effect.gen(function* () {
-      const exit = yield* Effect.exit(io(effect));
+      const exit = yield* Effect.exit(
+        io(
+          // A flake of the database retries outside the simulation, as one of
+          // Anvil does, so only drawn errors reach the runtime.
+          effect.pipe(
+            Effect.retry({
+              schedule: Schedule.exponential("10 millis"),
+              times: 5,
+              while: (error) =>
+                error instanceof DbError && error.notApplied === true,
+            }),
+            Effect.catchIf((error) => error instanceof DbError, Effect.die),
+          ),
+        ),
+      );
       const key = statementsKey(statements());
       const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
@@ -91,20 +108,14 @@ export function makeSimDbTransport({
       return yield* exit;
     });
 
-  /** Fails the transaction that ran `statements`, at the drawn rate, so it rolls back. */
-  const rollback = (statements: DbStatement<unknown>[]) =>
+  /** Whether the transaction that ran `statements` rolls back, at the drawn rate. */
+  const drawRollback = (statements: DbStatement<unknown>[]) =>
     Effect.gen(function* () {
       const key = statementsKey(statements);
       const attempt = attempts.get(key) ?? 0;
       attempts.set(key, attempt + 1);
       const random = yield* makeRandom(SIM.seed, `db:error:${key}:${attempt}`);
-      if (random.nextDoubleUnsafe() < errorRate) {
-        return yield* new DbError({
-          sql: "COMMIT",
-          cause: new Error("simulated serialization failure"),
-          notApplied: true,
-        });
-      }
+      return random.nextDoubleUnsafe() < errorRate;
     });
 
   const query: DbQuery = (build) => {
@@ -122,27 +133,49 @@ export function makeSimDbTransport({
   // `f` runs inside `io`, outside the fiber. It cannot have the simulated
   // clock, which moves only between `io` calls, so it has one that ends the
   // run instead of one that differs between runs.
-  const transaction: DbTransport["transaction"] = (f) => {
-    const statements: DbStatement<unknown>[] = [];
-    return gate(
-      // @ts-expect-error `gate` runs `f` outside the fiber, so it can't provide services. The runtime's transactions need none.
-      transport.transaction((tx) =>
-        f({
-          query: (build) =>
-            tx.query((client) => {
-              const statement = build(client);
-              statements.push(statement);
-              return statement;
-            }),
-        }).pipe(
-          Effect.provideService(Clock.Clock, noClock),
-          Effect.provideService(Random.Random, noRandom),
-          Effect.tap(() => rollback(statements)),
+  // Each run of the effect, as the client's retries run it again, starts its
+  // own statements and draw.
+  const transaction: DbTransport["transaction"] = (f) =>
+    Effect.suspend(() => {
+      let statements: DbStatement<unknown>[] = [];
+      // Drawn once, so a flake that runs `f` again draws nothing more.
+      let rollback: boolean | undefined;
+      return gate(
+        // @ts-expect-error `gate` runs `f` outside the fiber, so it can't provide services. The runtime's transactions need none.
+        transport.transaction((tx) => {
+          // A flake runs `f` again from the start.
+          statements = [];
+          return f({
+            query: (build) =>
+              tx.query((client) => {
+                const statement = build(client);
+                statements.push(statement);
+                return statement;
+              }),
+          }).pipe(
+            Effect.provideService(Clock.Clock, noClock),
+            Effect.provideService(Random.Random, noRandom),
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                rollback ??= yield* drawRollback(statements);
+                if (rollback) return yield* new InjectedRollback();
+              }),
+            ),
+          );
+        }),
+        () => statements,
+      ).pipe(
+        Effect.mapError((error) =>
+          error instanceof InjectedRollback
+            ? new DbError({
+                sql: "COMMIT",
+                cause: new Error("simulated serialization failure"),
+                notApplied: true,
+              })
+            : error,
         ),
-      ),
-      () => statements,
-    );
-  };
+      );
+    });
 
   // One runtime runs per simulation, so the lock is never contended.
   const lock: DbTransport["lock"] = () => Effect.succeed(Effect.never);
