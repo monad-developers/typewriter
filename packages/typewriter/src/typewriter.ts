@@ -1611,7 +1611,6 @@ export function createTypewriterEffect<
     const watchProgram = watchChain({
       fromBlock: startBlock,
       pollIntervalMs: app.blockPollingIntervalMs,
-      maxChainDepth: app.confirmations.finalizedBlockDepth,
       bufferSize: WATCH_BUFFER_SIZE,
       logFilter: {
         address: app.address,
@@ -1622,6 +1621,57 @@ export function createTypewriterEffect<
     }).pipe(
       Stream.runForEach((message) =>
         Effect.gen(function* () {
+          if (message._tag === "Finalized") {
+            for (const block of unfinalizedBlocks.filter(
+              (block) => block.number <= message.block.number,
+            )) {
+              // A reorg can replace a receipt's block before the watch sees it.
+              const finalBlock = yield* requestBlock(block.number);
+              if (finalBlock.hash !== block.hash) {
+                return yield* new SettlementReorgedError({
+                  blockNumber: block.number,
+                  blockHash: block.hash,
+                  transactionHash: block.transactionHash,
+                });
+              }
+
+              block.status = "finalized";
+
+              for (const batch of block.batches) {
+                batch.status = "finalized";
+                for (const mutation of batch.mutations) {
+                  updateMutationToFinalized(mutation as IncludedMutation);
+                }
+              }
+
+              yield* evm.pruneJournals({
+                journal_ids: [
+                  ...block.batches.flatMap((batch) =>
+                    batch.mutations.map((mutation) => mutation.journalId),
+                  ),
+                  ...(forceExecutedJournalIds.get(block) ?? []),
+                ],
+              });
+              forceExecutedJournalIds.delete(block);
+              for (const batch of block.batches) {
+                batchesById.delete(batch.id);
+              }
+
+              yield* emitBlock(block);
+
+              for (const batch of block.batches) {
+                yield* emitBatch(batchToEvent(batch));
+                for (const mutation of batch.mutations) {
+                  yield* emitMutation(mutationToEvent(mutation));
+                }
+              }
+            }
+            unfinalizedBlocks = unfinalizedBlocks.filter(
+              (block) => block.status !== "finalized",
+            );
+            return;
+          }
+
           if (message._tag === "Removed") {
             if (message.block.logs.length > 0) {
               return yield* new EnqueueReorgedError({
@@ -1671,61 +1721,6 @@ export function createTypewriterEffect<
 
             yield* Queue.offer(enqueuedQueue, queued.index);
           }
-
-          for (const block of unfinalizedBlocks.filter(
-            (block) => block.number < message.block.number,
-          )) {
-            const nextStatus = nextBlockStatus(
-              block,
-              message.block.number,
-              app.confirmations,
-            );
-            if (nextStatus === undefined) continue;
-
-            // A reorg can replace a receipt's block before the watch sees it.
-            const finalBlock = yield* requestBlock(block.number);
-            if (finalBlock.hash !== block.hash) {
-              return yield* new SettlementReorgedError({
-                blockNumber: block.number,
-                blockHash: block.hash,
-                transactionHash: block.transactionHash,
-              });
-            }
-
-            block.status = nextStatus;
-
-            for (const batch of block.batches) {
-              batch.status = nextStatus;
-              for (const mutation of batch.mutations) {
-                updateMutationToFinalized(mutation as IncludedMutation);
-              }
-            }
-
-            yield* evm.pruneJournals({
-              journal_ids: [
-                ...block.batches.flatMap((batch) =>
-                  batch.mutations.map((mutation) => mutation.journalId),
-                ),
-                ...(forceExecutedJournalIds.get(block) ?? []),
-              ],
-            });
-            forceExecutedJournalIds.delete(block);
-            for (const batch of block.batches) {
-              batchesById.delete(batch.id);
-            }
-
-            yield* emitBlock(block);
-
-            for (const batch of block.batches) {
-              yield* emitBatch(batchToEvent(batch));
-              for (const mutation of batch.mutations) {
-                yield* emitMutation(mutationToEvent(mutation));
-              }
-            }
-          }
-          unfinalizedBlocks = unfinalizedBlocks.filter(
-            (block) => block.status !== "finalized",
-          );
         }),
       ),
       Effect.provideService(Rpc, rpc),
@@ -1913,20 +1908,4 @@ export function createTypewriterEffect<
       program,
     } as TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>;
   });
-}
-
-export function nextBlockStatus(
-  block: Pick<RuntimeBlock<"fifo" | "batch">, "number" | "status">,
-  currentBlockNumber: bigint,
-  confirmations: TypewriterApp["confirmations"],
-): "finalized" | undefined {
-  const blockDepth = currentBlockNumber - block.number;
-  if (
-    blockDepth >= BigInt(confirmations.finalizedBlockDepth) &&
-    block.status !== "finalized"
-  ) {
-    return "finalized";
-  }
-
-  return undefined;
 }

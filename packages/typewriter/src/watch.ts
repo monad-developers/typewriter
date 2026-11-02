@@ -19,21 +19,24 @@ export type LocalBlock = {
   logs: LocalLog[];
 };
 
-/** A reorg is `Removed` for each replaced block, newest first, then `Added`. */
+/**
+ * A reorg is `Removed` for each replaced block, newest first, then `Added`.
+ * `Finalized` is the chain's newest finalized block, which no reorg replaces.
+ */
 export type WatchMessage =
   | { _tag: "Added"; block: LocalBlock }
-  | { _tag: "Removed"; block: LocalBlock };
+  | { _tag: "Removed"; block: LocalBlock }
+  | { _tag: "Finalized"; block: { number: bigint; hash: Hex.Hex } };
 
 export type WatchConfig = {
   /** The last block the caller has seen. The watch emits each block after it. */
   fromBlock: { number: bigint; hash: Hex.Hex };
-  maxChainDepth: number;
   pollIntervalMs: number;
   bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
 };
 
-/** The chain reorged deeper than the blocks the watch keeps. */
+/** The chain reorged the finalized block, or the block the watch started from. */
 export class UnrecoverableReorgError extends Data.TaggedError(
   "UnrecoverableReorgError",
 )<{
@@ -41,7 +44,7 @@ export class UnrecoverableReorgError extends Data.TaggedError(
   hash: Hex.Hex;
 }> {
   override get message() {
-    return `Detected unrecoverable reorg deeper than the local chain at block ${this.number} (${this.hash})`;
+    return `Detected unrecoverable reorg below the local chain at block ${this.number} (${this.hash})`;
   }
 }
 
@@ -78,7 +81,10 @@ export function watchChain(
         const getBlock = (id: bigint | Hex.Hex) =>
           requestBlock(id).pipe(Effect.flatMap(withLogs));
 
-        /** The block below `chain`. A reorg that replaces it is unrecoverable. */
+        /**
+         * The finalized block below `chain`, or `fromBlock` until one is. A
+         * reorg that replaces it is unrecoverable.
+         */
         let root = config.fromBlock;
         let chain: LocalBlock[] = [];
         const tip = () => chain.at(-1) ?? root;
@@ -104,7 +110,6 @@ export function watchChain(
             }
 
             chain = [...kept, ...added];
-            while (chain.length > config.maxChainDepth) root = chain.shift()!;
             for (const block of removed) {
               yield* Queue.offer(queue, { _tag: "Removed", block });
             }
@@ -112,6 +117,24 @@ export function watchChain(
               yield* Queue.offer(queue, { _tag: "Added", block });
             }
           });
+
+        /** Drops the blocks up to the finalized block, once the chain has it. */
+        const finalize = Effect.gen(function* () {
+          const finalized = yield* requestBlock("finalized");
+          if (finalized.number <= root.number) return;
+          // A finalized block ahead of the tip, or off a chain that a reorg
+          // has yet to replace, is one that a later poll reaches.
+          const index = chain.findIndex(
+            (block) => block.hash === finalized.hash,
+          );
+          if (index === -1) return;
+          root = chain[index]!;
+          chain = chain.slice(index + 1);
+          yield* Queue.offer(queue, {
+            _tag: "Finalized",
+            block: { number: root.number, hash: root.hash },
+          });
+        });
 
         const poll = Effect.gen(function* () {
           const latest = yield* requestBlock("latest");
@@ -124,6 +147,7 @@ export function watchChain(
 
           if (latest.number <= tip().number + 1n) {
             yield* reconcile(yield* withLogs(latest));
+            yield* finalize;
             return;
           }
 
@@ -139,6 +163,7 @@ export function watchChain(
               { concurrency: "unbounded" },
             );
             for (const block of blocks) yield* reconcile(block);
+            yield* finalize;
           }
         });
 
