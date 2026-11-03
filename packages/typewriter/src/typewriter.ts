@@ -721,6 +721,30 @@ function createRuntimeState(
   });
 }
 
+/**
+ * A copy of `event` for one listener. `structuredClone` turns an error into a
+ * plain `Error`, so the error is rebuilt on its own prototype from cloned fields.
+ */
+function copyEvent<event>(event: event): event {
+  if (
+    typeof event !== "object" ||
+    event === null ||
+    !("error" in event) ||
+    !(event.error instanceof Error)
+  ) {
+    return structuredClone(event);
+  }
+  const { error, ...rest } = event;
+  const fields = Object.getOwnPropertyDescriptors(error);
+  for (const field of Object.values(fields)) {
+    if ("value" in field) field.value = structuredClone(field.value);
+  }
+  return {
+    ...structuredClone(rest),
+    error: Object.create(Object.getPrototypeOf(error), fields),
+  } as event;
+}
+
 function batchBlockToFifoBlock(
   block: RuntimeBlock<"batch">,
 ): RuntimeBlock<"fifo"> {
@@ -909,7 +933,7 @@ export function createTypewriterEffect<
           (cb) =>
             Effect.try({
               try: () => {
-                const result: unknown = cb(structuredClone(event));
+                const result: unknown = cb(copyEvent(event));
                 if (Predicate.isPromise(result)) {
                   result.catch((error) =>
                     Effect.runForkWith(context)(warn(error)),
