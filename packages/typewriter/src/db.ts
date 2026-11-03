@@ -50,7 +50,8 @@ function retry<a, e, r>(effect: Effect.Effect<a, e, r>) {
     Effect.tapError((error) => Effect.logDebug("Failed database query", error)),
     Effect.retry({
       schedule: Schedule.exponential("10 millis").pipe(Schedule.jittered),
-      times: 4,
+      // About 10 seconds, so a restart of Postgres doesn't stop the runtime.
+      times: 10,
       while: (error) => error instanceof DbError && error.notApplied === true,
     }),
   );

@@ -2,9 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { jsonb } from "abipg";
 import { sql } from "drizzle-orm";
 import { bigint, numeric, pgSchema } from "drizzle-orm/pg-core";
-import { Effect } from "effect";
+import { Effect, type Scope } from "effect";
 import { makeDb } from "./db";
-import { builder, DbError } from "./db-transport";
+import {
+  builder,
+  compile,
+  DbError,
+  makePostgresTransport,
+} from "./db-transport";
 
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
 const DATABASE_URL = process.env["DATABASE_URL"];
@@ -15,7 +20,7 @@ function withTable<a, e>(
   f: (
     table: ReturnType<typeof makeTable>,
     db: Effect.Success<ReturnType<typeof makeDb>>,
-  ) => Effect.Effect<a, e>,
+  ) => Effect.Effect<a, e, Scope.Scope>,
 ) {
   return Effect.gen(function* () {
     const db = yield* makeDb({ url: DATABASE_URL!, maxConnections: 1 });
@@ -115,6 +120,184 @@ describe.skipIf(DATABASE_URL === undefined)("run", () => {
         expect(error.notApplied).toBe(true);
         expect(error.sql).toStartWith("DO $$");
         expect(yield* db.run(builder.select().from(table))).toStrictEqual([]);
+      }),
+    ));
+});
+
+type Fault =
+  /** Closes the connection instead of sending the message. */
+  | "cut"
+  /** Sends the message, then closes the connection instead of answering. */
+  | "dropReply"
+  /** Sends the message, then holds every answer until `release`. */
+  | "stallReply";
+
+/**
+ * A TCP proxy to Postgres that injects `fault` once, when the client sends a
+ * message that contains `when`.
+ */
+function makeProxy() {
+  const url = new URL(DATABASE_URL!);
+  const upstreamHost = {
+    hostname: url.hostname,
+    port: Number(url.port || 5432),
+  };
+  let armed: { when: string; fault: Fault } | undefined;
+  const held: (() => void)[] = [];
+  const server = Bun.listen<{
+    upstream?: Bun.Socket;
+    pending: Uint8Array[];
+    fault?: Fault;
+  }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(client) {
+        client.data = { pending: [] };
+        Bun.connect({
+          ...upstreamHost,
+          socket: {
+            open(upstream) {
+              client.data.upstream = upstream;
+              for (const chunk of client.data.pending) upstream.write(chunk);
+            },
+            data(upstream, chunk) {
+              const copy = new Uint8Array(chunk);
+              if (client.data.fault === "dropReply") {
+                upstream.end();
+                client.end();
+              } else if (client.data.fault === "stallReply") {
+                held.push(() => {
+                  client.data.fault = undefined;
+                  client.write(copy);
+                });
+              } else {
+                client.write(copy);
+              }
+            },
+            close() {
+              client.end();
+            },
+          },
+        });
+      },
+      data(client, chunk) {
+        const copy = new Uint8Array(chunk);
+        if (
+          armed !== undefined &&
+          Buffer.from(copy).toString("latin1").includes(armed.when)
+        ) {
+          client.data.fault = armed.fault;
+          armed = undefined;
+          if (client.data.fault === "cut") {
+            client.data.upstream?.end();
+            client.end();
+            return;
+          }
+        }
+        if (client.data.upstream === undefined) client.data.pending.push(copy);
+        else client.data.upstream.write(copy);
+      },
+      close(client) {
+        client.data.upstream?.end();
+      },
+    },
+  });
+  url.hostname = "127.0.0.1";
+  url.port = String(server.port);
+  return {
+    url: url.toString(),
+    inject: (when: string, fault: Fault) => {
+      armed = { when, fault };
+    },
+    release: () => {
+      for (const write of held.splice(0)) write();
+    },
+    stop: () => server.stop(true),
+  };
+}
+
+describe.skipIf(DATABASE_URL === undefined)("a dropped connection", () => {
+  const timeoutMs = 500;
+
+  function withProxy<a, e>(
+    f: (context: {
+      proxy: ReturnType<typeof makeProxy>;
+      transport: Effect.Success<ReturnType<typeof makePostgresTransport>>;
+      insert: ReturnType<typeof compile>;
+      count: Effect.Effect<number, DbError>;
+    }) => Effect.Effect<a, e, Scope.Scope>,
+  ) {
+    return withTable((table, db) =>
+      Effect.gen(function* () {
+        const proxy = yield* Effect.acquireRelease(
+          Effect.sync(makeProxy),
+          (proxy) => Effect.sync(proxy.stop),
+        );
+        const transport = yield* makePostgresTransport({
+          url: proxy.url,
+          maxConnections: 1,
+          statementTimeoutMs: timeoutMs,
+        });
+        // Connects, so the fault hits the run under test.
+        yield* transport.run([compile(builder.execute(sql`SELECT 1`))]);
+        const count = db
+          .run(builder.select({ id: table.id }).from(table))
+          .pipe(Effect.map((rows) => rows.length));
+        const insert = compile(
+          builder
+            .insert(table)
+            .values([{ id: 1n, amount: "1", data: { values: [] } }]),
+        );
+        return yield* f({ proxy, transport, insert, count });
+      }),
+    );
+  }
+
+  test("before COMMIT fails as not applied", () =>
+    withProxy(({ proxy, transport, insert, count }) =>
+      Effect.gen(function* () {
+        proxy.inject("insert into", "cut");
+        const error = yield* transport.run([insert]).pipe(Effect.flip);
+        expect(error.notApplied).toBe(true);
+        expect(yield* count).toBe(0);
+      }),
+    ));
+
+  test("after COMMIT fails as commit unknown", () =>
+    withProxy(({ proxy, transport, insert, count }) =>
+      Effect.gen(function* () {
+        proxy.inject("COMMIT", "dropReply");
+        const error = yield* transport.run([insert]).pipe(Effect.flip);
+        expect(error.commitUnknown).toBe(true);
+        expect(error.notApplied).toBeUndefined();
+        expect(yield* count).toBe(1);
+      }),
+    ));
+
+  test("that stops answering before COMMIT fails by the deadline and never commits", () =>
+    withProxy(({ proxy, transport, insert, count }) =>
+      Effect.gen(function* () {
+        proxy.inject("insert into", "stallReply");
+        const startedAt = Date.now();
+        const error = yield* transport.run([insert]).pipe(Effect.flip);
+        expect(Date.now() - startedAt).toBeLessThan(timeoutMs * 2);
+        expect(error.notApplied).toBe(true);
+        proxy.release();
+        // The pool's only connection, free once the late attempt rolls back.
+        yield* transport.run([compile(builder.execute(sql`SELECT 1`))]);
+        expect(yield* count).toBe(0);
+      }),
+    ));
+
+  test("that stops answering COMMIT fails by the deadline as commit unknown", () =>
+    withProxy(({ proxy, transport, insert, count }) =>
+      Effect.gen(function* () {
+        proxy.inject("COMMIT", "stallReply");
+        const error = yield* transport.run([insert]).pipe(Effect.flip);
+        expect(error.commitUnknown).toBe(true);
+        proxy.release();
+        expect(yield* count).toBe(1);
       }),
     ));
 });
