@@ -301,14 +301,14 @@ const makeDatabase = Effect.acquireRelease(
         }).pipe(
           Effect.andThen(() =>
             Effect.logInfo("Dropped simulation database").pipe(
-              Effect.annotateLogs({ database: name, wall_ms: wallMs() }),
+              Effect.annotateLogs({ database: name, duration: wallMs() }),
             ),
           ),
         )
       : Effect.logInfo("Kept simulation database").pipe(
           Effect.annotateLogs({
             database: name,
-            wall_ms: wallMs(),
+            duration: wallMs(),
             seed: SIM.seed,
             psql: `psql ${url}`,
             drop: `DROP DATABASE "${name}" WITH (FORCE)`,
@@ -318,17 +318,17 @@ const makeDatabase = Effect.acquireRelease(
 
 const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation").pipe(
-    Effect.annotateLogs({ seed: SIM.seed, config: SIM, wall_ms: wallMs() }),
+    Effect.annotateLogs({ seed: SIM.seed, config: SIM, duration: wallMs() }),
   );
   const chain = yield* makeChain(yield* makeRandom(SIM.seed, "reorgs"));
   const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
-    Effect.annotateLogs({ address, chain_id: chainId, wall_ms: wallMs() }),
+    Effect.annotateLogs({ address, chain_id: chainId, duration: wallMs() }),
   );
   const database = yield* makeDatabase;
   yield* Effect.logInfo("Created simulation database").pipe(
-    Effect.annotateLogs({ database: database.name, wall_ms: wallMs() }),
+    Effect.annotateLogs({ database: database.name, duration: wallMs() }),
   );
   const solidityApp = yield* Effect.promise(() =>
     loadSolidityApp(ASSESSMENT_ENTRYPOINT),
@@ -774,7 +774,7 @@ const program = Effect.gen(function* () {
       accounts: signers.length,
       steps: plan.length,
       transports: transports.length,
-      wall_ms: wallMs(),
+      duration: wallMs(),
     }),
   );
 
@@ -808,7 +808,7 @@ const program = Effect.gen(function* () {
     Effect.annotateLogs({
       submissions: run.submissions.length,
       virtual_ms: Math.round(clock.currentTimeMillisUnsafe() - startMs),
-      wall_ms: wallMs(),
+      duration: wallMs(),
     }),
   );
 
@@ -843,7 +843,7 @@ const program = Effect.gen(function* () {
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
-      wall_ms: wallMs(),
+      duration: wallMs(),
       total_wall_ms: Math.round(performance.now()),
     }),
   );
@@ -917,7 +917,7 @@ BunRuntime.runMain(
     Effect.tapCause((cause) =>
       Effect.logError("Failed simulation", cause).pipe(
         Effect.annotateLogs({
-          wall_ms: wallMs(),
+          duration: wallMs(),
           total_wall_ms: Math.round(performance.now()),
         }),
       ),
