@@ -376,6 +376,9 @@ const program = Effect.gen(function* () {
   // it, through `io`.
   const startMs = SIM.chain.genesisTimestamp * 1000;
   const jumpRandom = yield* makeRandom(SIM.seed, "jumps");
+  // A pause is rare, so at most one per `PAUSE_SPACING_MS` of virtual time.
+  const PAUSE_SPACING_MS = 600_000;
+  let pausedAt = -Infinity;
   const scheduler = makeSimScheduler(
     yield* makeRandom(SIM.seed, "scheduler"),
     SIM.jumpRate,
@@ -385,10 +388,14 @@ const program = Effect.gen(function* () {
         SIM.jumpsMs[
           Math.floor(jumpRandom.nextDoubleUnsafe() * SIM.jumpsMs.length)
         ]!;
+      if (jumpMs > 0 && now - pausedAt < PAUSE_SPACING_MS) return;
       const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
       if (at <= now) return;
       // A jump is a pause, not time the runtime had to make progress in.
-      if (jumpMs > 0) progressedAt += at - now;
+      if (jumpMs > 0) {
+        pausedAt = now;
+        progressedAt += at - now;
+      }
       clock.advanceTo(at);
     },
     SIM.ioRate,
