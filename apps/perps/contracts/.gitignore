@@ -1,0 +1,9 @@
+# Compiler files
+cache/
+out/
+
+# Foundry broadcast artifacts (per-run JSON logs from forge script --broadcast)
+/broadcast/
+
+# Dotenv file
+.env
