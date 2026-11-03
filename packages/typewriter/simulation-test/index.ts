@@ -295,20 +295,21 @@ const makeDatabase = Effect.acquireRelease(
   ({ name, url }, exit) =>
     Exit.isSuccess(exit)
       ? Effect.promise(async () => {
+          const start = performance.now();
           const admin = new SQL({ url: DATABASE_URL, max: 1 });
           await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
           await admin.close();
+          return Math.round(performance.now() - start);
         }).pipe(
-          Effect.andThen(() =>
+          Effect.flatMap((duration) =>
             Effect.logInfo("Dropped simulation database").pipe(
-              Effect.annotateLogs({ database: name, duration: wallMs() }),
+              Effect.annotateLogs({ database: name, duration }),
             ),
           ),
         )
       : Effect.logInfo("Kept simulation database").pipe(
           Effect.annotateLogs({
             database: name,
-            duration: wallMs(),
             seed: SIM.seed,
             psql: `psql ${url}`,
             drop: `DROP DATABASE "${name}" WITH (FORCE)`,
@@ -844,7 +845,6 @@ const program = Effect.gen(function* () {
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
       duration: wallMs(),
-      total_wall_ms: Math.round(performance.now()),
     }),
   );
 });
@@ -916,10 +916,7 @@ BunRuntime.runMain(
   program.pipe(
     Effect.tapCause((cause) =>
       Effect.logError("Failed simulation", cause).pipe(
-        Effect.annotateLogs({
-          duration: wallMs(),
-          total_wall_ms: Math.round(performance.now()),
-        }),
+        Effect.annotateLogs({ duration: wallMs() }),
       ),
     ),
     Effect.scoped,
