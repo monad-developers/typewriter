@@ -60,14 +60,6 @@ export function validate(params: Params): Effect.Effect<void> {
       submissions: run.submissions,
     });
     const check = makeCheck(run);
-    {
-      const perBlock = new Map<string, number>();
-      for (const s of onchain.settlements)
-        perBlock.set(s.blockHash, (perBlock.get(s.blockHash) ?? 0) + 1);
-      console.log(
-        `STATS settlements=${onchain.settlements.length} reverted=${onchain.settlements.filter((s) => s.reverted).length} mismatched=${onchain.settlements.filter((s) => s.mismatched).length} sharedBlocks=${[...perBlock.values()].filter((n) => n > 1).length} maxPerBlock=${Math.max(0, ...perBlock.values())}`,
-      );
-    }
 
     checkSettlements(check, onchain);
     checkOutcomes(check, run, onchain);
