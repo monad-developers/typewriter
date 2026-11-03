@@ -537,6 +537,16 @@ test("pruneJournals with an unknown journal id fails", async () => {
   expect(Exit.isFailure(exit)).toBe(true);
 });
 
+test("setBlockContext reports the hardfork's transaction gas cap", async () => {
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM({ spec: "MonadTen" });
+    return yield* evm.setBlockContext({ number: "0x1" });
+  });
+
+  const result = await Effect.runPromise(Effect.scoped(program));
+  expect(result).toEqual({ tx_gas_limit_cap: 30_000_000 });
+});
+
 test("setBlockContext updates block parameters", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
@@ -693,6 +703,45 @@ test("readStorage decodes committed token state through storage proxy", async ()
     totalSupply: INITIAL_SUPPLY,
     userBalance: TRANSFER_AMOUNT,
   });
+});
+
+test("simulate rewinds later journals but leaves them out of the access list", async () => {
+  const artifact = await loadTestToken();
+  const { params, schedulerBalanceSlot } = tokenInit(artifact);
+  const userBalanceSlot = mappingSlot(USER_ADDR, BALANCE_OF_SLOT);
+
+  const program = Effect.gen(function* () {
+    const evm = yield* createEVM(params);
+    const first = yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: TOKEN_ADDR,
+      data: transferData(USER_ADDR, TRANSFER_AMOUNT),
+    });
+    const later = yield* evm.execute({
+      from: SCHEDULER_ADDR,
+      to: TOKEN_ADDR,
+      data: transferData(RECIPIENT_ADDR, TRANSFER_AMOUNT),
+    });
+    return yield* evm.simulate({
+      from: SCHEDULER_ADDR,
+      to: TOKEN_ADDR,
+      data: transferData(USER_ADDR, TRANSFER_AMOUNT),
+      journal_ids: [journalId(first)],
+      later_journal_ids: [journalId(later)],
+    });
+  });
+
+  const simulated = await Effect.runPromise(Effect.scoped(program));
+
+  expect(simulated.status).toBe("success");
+  expect(normalizeAccessRecord(simulated.access_list)).toEqual(
+    normalizeAccessRecord([
+      {
+        address: TOKEN_ADDR,
+        storageKeys: [userBalanceSlot, schedulerBalanceSlot],
+      },
+    ]),
+  );
 });
 
 test("simulate e2e temporarily rewinds optimistic Solmate ERC20 journals", async () => {

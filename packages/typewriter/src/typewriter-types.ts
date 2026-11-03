@@ -113,6 +113,8 @@ type Execution = {
   executionIndex: bigint;
   /** The EVM journal that holds the mutation's writes. */
   journalId: number;
+  /** The gas it adds to a settlement, from its execution in revm. */
+  gas: number;
 };
 
 /** Mirrors the `block_*` and `transaction_*` columns of a mutation row. */
@@ -157,13 +159,12 @@ export type RuntimeBlock<sequence extends SequencingConfig> = {
   number: bigint;
   hash: Hex.Hex;
   timestamp: bigint;
-  transactionHash: Hex.Hex;
 } & (sequence extends "fifo"
   ? { mutations: IncludedMutation[] }
   : { batches: RuntimeBatch[] });
 
 /** Fields of a runtime mutation that listeners never see. */
-type RuntimeOnlyField = "config" | "journalId";
+type RuntimeOnlyField = "config" | "journalId" | "gas";
 
 type ToMutationEvent<
   mutation,
@@ -213,7 +214,6 @@ export type BlockEvent<
   number: bigint;
   hash: Hex.Hex;
   timestamp: bigint;
-  transactionHash: Hex.Hex;
 } & (sequence extends "fifo"
   ? { mutations: IncludedMutationEvent<mutationsConfig>[] }
   : {

@@ -22,6 +22,8 @@ export type Executed = {
 /** A settlement transaction on the canonical chain. */
 export type Settlement = Inclusion & {
   reverted: boolean;
+  /** It reverted because an earlier settlement did, so the execution index moved. */
+  mismatched: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
   expired: string[];
@@ -128,17 +130,16 @@ export function readOnchain({
           transactionHash: transaction.hash,
           transactionIndex: Number(transaction.transactionIndex),
         };
+        const [fromExecutionIndex, batches, forceExecuteIndexes] =
+          AbiFunction.decodeData(EXECUTE, transaction.input);
         const settlement: Settlement = {
           ...inclusion,
           reverted: receipt.status !== "0x1",
+          mismatched: fromExecutionIndex !== BigInt(onchain.executed.length),
           executionIndexes: [],
           expired: [],
         };
         onchain.settlements.push(settlement);
-        const [batches, forceExecuteIndexes] = AbiFunction.decodeData(
-          EXECUTE,
-          transaction.input,
-        );
         if (settlement.reverted) {
           for (const authorizationData of [
             ...batches.flatMap((batch) => batch.authorizationData),

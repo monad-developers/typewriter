@@ -159,6 +159,7 @@ abstract contract Typewriter {
     error ForceInclusionTooEarly(uint256 remainingDelay);
     error ForceInclusionAlreadyExecuted(uint256 index);
     error LengthMismatch();
+    error ExecutionIndexMismatch(uint256 expected, uint256 received);
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
@@ -183,8 +184,11 @@ abstract contract Typewriter {
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal virtual;
 
-    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
+    function execute(uint256 fromExecutionIndex, Batch[] calldata batches, uint256[] calldata forceExecuteIndexes)
+        external
+    {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
+        if (executionIndex != fromExecutionIndex) revert ExecutionIndexMismatch(executionIndex, fromExecutionIndex);
 
         for (uint256 b; b < batches.length; b++) {
             Batch calldata batch = batches[b];

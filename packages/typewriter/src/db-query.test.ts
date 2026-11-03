@@ -67,6 +67,7 @@ function roundTrip(strings: readonly string[]) {
             authorization: AUTHORIZATION,
             executionIndex: BigInt(index),
             journalId: 0,
+            gas: 0,
             config: MEMO,
           }),
         ),

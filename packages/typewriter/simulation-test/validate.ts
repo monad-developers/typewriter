@@ -60,6 +60,14 @@ export function validate(params: Params): Effect.Effect<void> {
       submissions: run.submissions,
     });
     const check = makeCheck(run);
+    {
+      const perBlock = new Map<string, number>();
+      for (const s of onchain.settlements)
+        perBlock.set(s.blockHash, (perBlock.get(s.blockHash) ?? 0) + 1);
+      console.log(
+        `STATS settlements=${onchain.settlements.length} reverted=${onchain.settlements.filter((s) => s.reverted).length} mismatched=${onchain.settlements.filter((s) => s.mismatched).length} sharedBlocks=${[...perBlock.values()].filter((n) => n > 1).length} maxPerBlock=${Math.max(0, ...perBlock.values())}`,
+      );
+    }
 
     checkSettlements(check, onchain);
     checkOutcomes(check, run, onchain);
@@ -107,17 +115,24 @@ function makeCheck(run: Run): Check {
 }
 
 /**
- * Every settlement succeeded or reverted on an expired authorization, and
- * executed only submitted mutations, each once.
+ * Every settlement succeeded, reverted on an expired authorization, or
+ * reverted right after one that reverted. Settlements executed only submitted
+ * mutations, each once.
  */
 function checkSettlements(check: Check, onchain: Onchain) {
-  for (const settlement of onchain.settlements) {
-    if (settlement.reverted && settlement.expired.length === 0) {
+  onchain.settlements.forEach((settlement, i) => {
+    if (settlement.mismatched) {
+      if (!settlement.reverted || !onchain.settlements[i - 1]?.reverted) {
+        check.fail(
+          `settlement ${settlement.transactionHash} executed from the wrong execution index, but the settlement before it did not revert`,
+        );
+      }
+    } else if (settlement.reverted && settlement.expired.length === 0) {
       check.fail(
         `settlement ${settlement.transactionHash} reverted, but no authorization in it expired before block ${settlement.blockNumber}`,
       );
     }
-  }
+  });
   const seen = new Set<string>();
   for (const { key, executionIndex } of onchain.executed) {
     const submission = check.submissions.get(key);
@@ -271,16 +286,29 @@ function checkOrder(
         : BUILTIN_ORDER.length +
             ordering.batchOrder.indexOf(name as AppMutationName);
     };
+    // A batch too large for one settlement continues in the next batches, so
+    // a run of calls can span adjacent batches.
+    const runs: string[][] = [];
+    let run: string[] = [];
+    for (const batch of onchain.batches) {
+      run.push(...batch);
+      const start = runs.flat().length;
+      const calls = called.slice(start, start + run.length);
+      if (toJson([...run].sort(byCall)) === toJson(calls)) {
+        runs.push(run);
+        run = [];
+      }
+    }
     check.equal(
-      labels(onchain.batches.flatMap((batch) => [...batch].sort(byCall))),
+      labels([...runs, run].flatMap((run) => [...run].sort(byCall))),
       labels(called),
       "batches are runs of calls",
     );
-    for (const [i, batch] of onchain.batches.entries()) {
+    for (const [i, run] of runs.entries()) {
       check.equal(
-        labels(batch),
-        labels([...batch].sort((a, b) => rank(a) - rank(b) || byCall(a, b))),
-        `batch ${i} order`,
+        labels(run),
+        labels([...run].sort((a, b) => rank(a) - rank(b) || byCall(a, b))),
+        `run ${i} order`,
       );
     }
   }
@@ -341,7 +369,11 @@ function checkQueue(
             {
               from: app.account.address,
               to: app.address,
-              data: encodeExecuteCalldata([], [queueIndex]),
+              data: encodeExecuteCalldata(
+                BigInt(onchain.executed.length),
+                [],
+                [queueIndex],
+              ),
             },
             "latest",
           ],
@@ -489,13 +521,29 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
     byHash.set(hash, [...(byHash.get(hash) ?? []), event]);
   }
 
-  const settled = new Set<string>();
+  // A block holds every settlement that succeeded in it, in transaction order.
+  const settledBlocks = new Map<
+    string,
+    { number: bigint; timestamp: bigint; executionIndexes: bigint[] }
+  >();
   for (const settlement of onchain.settlements) {
     if (settlement.reverted) continue;
     const hash = settlement.blockHash.toLowerCase();
-    settled.add(hash);
+    const block = settledBlocks.get(hash) ?? {
+      number: settlement.blockNumber,
+      timestamp: settlement.blockTimestamp,
+      executionIndexes: [],
+    };
+    // Force-executed enqueues have no events.
+    block.executionIndexes.push(
+      ...settlement.executionIndexes.filter((index) => !forced.has(index)),
+    );
+    settledBlocks.set(hash, block);
+  }
+
+  for (const [hash, block] of settledBlocks) {
     const seen = byHash.get(hash) ?? [];
-    const what = `block ${settlement.blockNumber}`;
+    const what = `block ${block.number}`;
     check.equal(
       seen.map((event) => event.status),
       ["included", "finalized"],
@@ -506,24 +554,15 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
         {
           number: event.number,
           timestamp: event.timestamp,
-          transactionHash: event.transactionHash,
           executionIndexes: executionIndexesOf(event),
         },
-        {
-          number: settlement.blockNumber,
-          timestamp: settlement.blockTimestamp,
-          transactionHash: settlement.transactionHash,
-          // Force-executed enqueues have no events.
-          executionIndexes: settlement.executionIndexes.filter(
-            (index) => !forced.has(index),
-          ),
-        },
+        block,
         `${what} ${event.status} event`,
       );
     }
   }
   for (const [hash, [event]] of byHash) {
-    if (!settled.has(hash)) {
+    if (!settledBlocks.has(hash)) {
       check.fail(
         `block ${event!.number} ${hash}: block events, but it settled nothing`,
       );

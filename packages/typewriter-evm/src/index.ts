@@ -1,5 +1,6 @@
 import { Data, Effect, Ref } from "effect";
 import type {
+  BlockContextResult,
   BlockParams,
   ExecuteParams,
   ExecuteResult,
@@ -15,6 +16,7 @@ import type {
 
 export type {
   AccountParams,
+  BlockContextResult,
   BlockParams,
   ExecuteParams,
   ExecuteResult,
@@ -69,7 +71,7 @@ export type EvmError = EvmCrashed | EvmCallError | EvmProtocolError;
 export type EVM = {
   readonly setBlockContext: (
     params: BlockParams,
-  ) => Effect.Effect<void, EvmError>;
+  ) => Effect.Effect<BlockContextResult, EvmError>;
   readonly execute: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
@@ -170,11 +172,11 @@ export const createEVM = (
 
     const evm: EVM = {
       setBlockContext: (params) =>
-        call<unknown>("setBlockContext", (id) => ({
+        call<BlockContextResult>("setBlockContext", (id) => ({
           method: "setBlockContext",
           id,
           params,
-        })).pipe(Effect.asVoid),
+        })),
       execute: (params) =>
         call<ExecuteResult>("execute", (id) => ({
           method: "execute",

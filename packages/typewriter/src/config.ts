@@ -73,12 +73,10 @@ export type TypewriterSequencingConfig<
 > =
   | {
       order: sequencingConfig extends "fifo" ? sequencingConfig : never;
-      submitIntervalMs?: number;
     }
   | {
       order: sequencingConfig extends "batch" ? sequencingConfig : never;
       batchIntervalMs?: number;
-      submitIntervalMs?: number;
       batchOrder: readonly string[];
     };
 
@@ -157,12 +155,10 @@ export type TypewriterApp = {
   sequencing:
     | {
         order: "fifo";
-        submitIntervalMs: number;
       }
     | {
         order: "batch";
         batchIntervalMs: number;
-        submitIntervalMs: number;
         batchOrder: string[];
       };
 };
@@ -172,7 +168,6 @@ const MAX_IDENTIFIER_LENGTH = 63;
 
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
-const DEFAULT_SUBMIT_INTERVAL_MS = 300;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,
@@ -322,15 +317,9 @@ export function createTypewriterApp(params: {
           order: "batch" as const,
           batchIntervalMs:
             config.sequencing.batchIntervalMs ?? DEFAULT_BATCH_INTERVAL_MS,
-          submitIntervalMs:
-            config.sequencing.submitIntervalMs ?? DEFAULT_SUBMIT_INTERVAL_MS,
           batchOrder: [...config.sequencing.batchOrder],
         }
-      : {
-          order: "fifo" as const,
-          submitIntervalMs:
-            config.sequencing?.submitIntervalMs ?? DEFAULT_SUBMIT_INTERVAL_MS,
-        };
+      : { order: "fifo" as const };
 
   return {
     dev,

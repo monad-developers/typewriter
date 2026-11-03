@@ -86,7 +86,6 @@ const typewriter = await createTypewriter(Token, {
   blockPollingIntervalMs: 200,
   sequencing: {
     order: "fifo",
-    submitIntervalMs: 300,
   },
 });
 
@@ -128,12 +127,11 @@ const app = await createTypewriter(Token, {
   // ... more config
   sequencing: {
     order: "fifo",
-    submitIntervalMs: 300,
   },
 });
 ```
 
-Each call to `typewriter.execute()` immediately executes the mutation against local state and returns the accepted mutation, or throws an error if the mutation is rejected. Every `submitIntervalMs`, all accepted mutations are submitted with a single onchain transaction.
+Each call to `typewriter.execute()` immediately executes the mutation against local state and returns the accepted mutation, or throws an error if the mutation is rejected. Accepted mutations are submitted onchain right away; see [Submission](#submission).
 
 Onchain inclusion order matches the order mutations were executed with `typewriter.execute()`.
 
@@ -147,15 +145,18 @@ const app = await createTypewriter(Token, {
   sequencing: {
     order: "batch",
     batchIntervalMs: 50,
-    submitIntervalMs: 300,
     batchOrder: ["cancelOrder", "limitOrder", "marketOrder"],
   }
 });
 ```
 
-Each call to `typewriter.execute()` enqueues the mutation and returns the accepted mutation once the next batch is processed, or throws an error if the mutation is rejected. Every `batchIntervalMs`, all enqueued mutations are gathered into a batch, ordered according to `batchOrder`, and accepted or rejected. Every `submitIntervalMs`, all batches are submitted with a single onchain transaction.
+Each call to `typewriter.execute()` enqueues the mutation and returns the accepted mutation once the next batch is processed, or throws an error if the mutation is rejected. Every `batchIntervalMs`, all enqueued mutations are gathered into a batch, ordered according to `batchOrder`, and accepted or rejected. Accepted batches are submitted onchain right away; see [Submission](#submission).
 
 Within a batch, mutations execute in `batchOrder`; across batches, batches are submitted in the order they were accepted.
+
+#### Submission
+
+Typewriter sends a settlement transaction as soon as a batch or enqueue is waiting, without waiting for earlier settlements to be included, so several land in each block. Each settlement takes everything pending, split as needed to keep each transaction under the hardfork's transaction gas cap (30M on Monad, read from revm at startup); a batch is never split across transactions, so a batch that would outgrow one continues in a new batch. Settlements use consecutive nonces, and each names the execution index it starts from, so if one reverts, every settlement sent after it reverts too, and their mutations are executed again and sent in new settlements. A mutation too large for any transaction is rejected with `MutationTooLargeError`.
 
 ## Examples
 
@@ -738,7 +739,8 @@ This status set is wider than the happy-path lifecycle in [Server runtime](#serv
 - `number` — block number (`bigint`)
 - `hash` — block hash
 - `timestamp` — block timestamp (`bigint`)
-- `transactionHash` — the settlement transaction
+
+A block event covers every settlement transaction of the app in that block, in transaction order; each mutation carries its own `transactionHash` and `transactionIndex`. Each block fires `"included"` once and `"finalized"` once.
 
 The remaining fields depend on sequencing:
 

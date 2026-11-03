@@ -41,8 +41,15 @@ export type ExecuteParams = {
   value?: Hex.Hex;
 };
 
+export type BlockContextResult = {
+  /** The most gas a transaction may take in the block's hardfork. */
+  tx_gas_limit_cap: number;
+};
+
 export type SimulateParams = ExecuteParams & {
   journal_ids: number[];
+  /** Journals newer than `journal_ids`, rewound but left out of the access list. */
+  later_journal_ids?: number[];
 };
 
 type TxResult = {

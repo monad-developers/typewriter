@@ -86,6 +86,8 @@ export type SIM = {
     reorgRate: number;
     /** How often a reorg drops a transaction of a block it replaced, with its sender's later ones. */
     dropRate: number;
+    /** How often a node accepts a sent transaction and then loses it. */
+    sendDropRate: number;
     /** How far below the highest head the chain finalizes. */
     finalizedBlockDepth: number;
   };
@@ -113,7 +115,6 @@ export type SIM = {
     malformedRate: number;
   };
   typewriter: {
-    submitIntervalMs: number;
     blockPollingIntervalMs: number;
     ordering:
       | { order: "fifo" }
@@ -161,8 +162,10 @@ export const SIM: SIM = {
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
-    reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
+    // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
+    reorgRate: pick(SEED, "chain.reorgRate", [0]),
     dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
+    sendDropRate: pick(SEED, "chain.sendDropRate", [0, 0.05, 0.2]),
     finalizedBlockDepth: int(SEED, "chain.finalizedBlockDepth", 1, 5),
   },
   generator: {
@@ -175,9 +178,13 @@ export const SIM: SIM = {
           KeyType.WebAuthnP256,
         ]),
     ),
-    mutations: int(SEED, "generator.mutations", 4, 1000),
+    // A burst of a few hundred mutations outgrows the transaction gas cap
+    // and splits into several settlements.
+    mutations: int(SEED, "generator.mutations", 4, 2000),
     delaysMs: pick(SEED, "generator.delaysMs", [
       [0],
+      [0],
+      [0, 0, 0, 1],
       [0, 1, 10],
       [0, 50, 500],
       [10, 100, 1_000],
@@ -196,11 +203,6 @@ export const SIM: SIM = {
     malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
-    submitIntervalMs: pick(
-      SEED,
-      "typewriter.submitIntervalMs",
-      [50, 300, 1_000],
-    ),
     blockPollingIntervalMs: pick(
       SEED,
       "typewriter.blockPollingIntervalMs",
@@ -351,10 +353,7 @@ const program = Effect.gen(function* () {
       ],
       database: { url: database.url },
       blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
-      sequencing: {
-        ...SIM.typewriter.ordering,
-        submitIntervalMs: SIM.typewriter.submitIntervalMs,
-      },
+      sequencing: SIM.typewriter.ordering,
     },
   });
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;

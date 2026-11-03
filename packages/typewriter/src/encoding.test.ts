@@ -43,6 +43,7 @@ function acceptedMutation(
     authorization,
     executionIndex: 0n,
     journalId: 0,
+    gas: 0,
     config,
   };
 }
@@ -131,9 +132,9 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "execute",
-    args: [[batch], []],
+    args: [3n, [batch], []],
   });
-  const actual = encodeExecuteCalldata([batch], []);
+  const actual = encodeExecuteCalldata(3n, [batch], []);
   expect(actual).toBe(expected);
 });
 

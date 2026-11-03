@@ -99,6 +99,7 @@ export const TYPEWRITER_ABI = [
     type: "function",
     name: "execute",
     inputs: [
+      { name: "fromExecutionIndex", type: "uint256" },
       {
         name: "batches",
         type: "tuple[]",
