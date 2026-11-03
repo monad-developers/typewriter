@@ -150,6 +150,17 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   process.exit(1);
 }
 
+/** When the last phase of the run ended, in wall-clock time since the process started. */
+let phaseEndMs = 0;
+
+/** Ends a phase. Returns its wall-clock duration, for its log. */
+function wallMs(): number {
+  const now = performance.now();
+  const ms = Math.round(now - phaseEndMs);
+  phaseEndMs = now;
+  return ms;
+}
+
 /** The configuration of a run. Each value is drawn from `SEED` and its path. */
 export const SIM: SIM = {
   seed: SEED,
@@ -288,15 +299,16 @@ const makeDatabase = Effect.acquireRelease(
           await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
           await admin.close();
         }).pipe(
-          Effect.andThen(
+          Effect.andThen(() =>
             Effect.logInfo("Dropped simulation database").pipe(
-              Effect.annotateLogs({ database: name }),
+              Effect.annotateLogs({ database: name, wall_ms: wallMs() }),
             ),
           ),
         )
       : Effect.logInfo("Kept simulation database").pipe(
           Effect.annotateLogs({
             database: name,
+            wall_ms: wallMs(),
             seed: SIM.seed,
             psql: `psql ${url}`,
             drop: `DROP DATABASE "${name}" WITH (FORCE)`,
@@ -306,17 +318,17 @@ const makeDatabase = Effect.acquireRelease(
 
 const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation").pipe(
-    Effect.annotateLogs({ seed: SIM.seed, config: SIM }),
+    Effect.annotateLogs({ seed: SIM.seed, config: SIM, wall_ms: wallMs() }),
   );
   const chain = yield* makeChain(yield* makeRandom(SIM.seed, "reorgs"));
   const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
-    Effect.annotateLogs({ address, chain_id: chainId }),
+    Effect.annotateLogs({ address, chain_id: chainId, wall_ms: wallMs() }),
   );
   const database = yield* makeDatabase;
   yield* Effect.logInfo("Created simulation database").pipe(
-    Effect.annotateLogs({ database: database.name }),
+    Effect.annotateLogs({ database: database.name, wall_ms: wallMs() }),
   );
   const solidityApp = yield* Effect.promise(() =>
     loadSolidityApp(ASSESSMENT_ENTRYPOINT),
@@ -762,12 +774,12 @@ const program = Effect.gen(function* () {
       accounts: signers.length,
       steps: plan.length,
       transports: transports.length,
+      wall_ms: wallMs(),
     }),
   );
 
   // The step loop: run every fiber that can run, then move the clock to the
   // next sleep.
-  const wallStart = performance.now();
   let exit:
     | Exit.Exit<Effect.Success<typeof world>, Effect.Error<typeof world>>
     | undefined;
@@ -796,7 +808,7 @@ const program = Effect.gen(function* () {
     Effect.annotateLogs({
       submissions: run.submissions.length,
       virtual_ms: Math.round(clock.currentTimeMillisUnsafe() - startMs),
-      wall_ms: Math.round(performance.now() - wallStart),
+      wall_ms: wallMs(),
     }),
   );
 
@@ -831,7 +843,8 @@ const program = Effect.gen(function* () {
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
-      wall_ms: Math.round(performance.now() - wallStart),
+      wall_ms: wallMs(),
+      total_wall_ms: Math.round(performance.now()),
     }),
   );
 });
@@ -849,7 +862,7 @@ function resultOf(
 }
 
 /** Freezes `value` and everything it holds, so the runtime cannot change what the client sent. */
-function deepFreeze<value>(value: value): value {
+export function deepFreeze<value>(value: value): value {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
     for (const entry of Object.values(value)) deepFreeze(entry);
@@ -901,7 +914,14 @@ function unsettled(run: Run): string[] {
 
 BunRuntime.runMain(
   program.pipe(
-    Effect.tapCause((cause) => Effect.logError("Failed simulation", cause)),
+    Effect.tapCause((cause) =>
+      Effect.logError("Failed simulation", cause).pipe(
+        Effect.annotateLogs({
+          wall_ms: wallMs(),
+          total_wall_ms: Math.round(performance.now()),
+        }),
+      ),
+    ),
     Effect.scoped,
     Effect.provide(Logger.layer([logger])),
     Effect.provide(BunServices.layer),
