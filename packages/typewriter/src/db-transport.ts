@@ -128,9 +128,16 @@ export function makePostgresTransport(
         const results: unknown[] = [];
         try {
           await client.begin(async (tx) => {
-            for (at = 0; at < statements.length; at++) {
-              const { sql, params } = statements[at]!;
-              results.push(await tx.unsafe(sql, params));
+            // Sent without waiting, so they share round trips.
+            const settled = await Promise.allSettled(
+              statements.map(({ sql, params }) =>
+                tx.unsafe(sql, params).execute(),
+              ),
+            );
+            for (at = 0; at < settled.length; at++) {
+              const result = settled[at]!;
+              if (result.status === "rejected") throw result.reason;
+              results.push(result.value);
             }
           });
           return Exit.succeed(results);
