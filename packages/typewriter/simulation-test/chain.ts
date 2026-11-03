@@ -15,7 +15,7 @@ import {
   RpcResponseError,
   type RpcResult,
 } from "../src/rpc-transport";
-import { SIM } from "./index";
+import { deepFreeze, SIM } from "./index";
 
 /** What a transaction changed: each account's values before and after. */
 export type StateDiff = Record<
@@ -154,8 +154,30 @@ export function makeChain(
         Effect.orDie,
       );
 
+    /** Answers of requests pinned to a block hash, which never change. */
+    const pinned = new Map<string, unknown>();
+    /** Answers that change only when Anvil mines, which it does only when asked. */
+    const atTip = new Map<string, unknown>();
+
+    const sendCached = (cache: Map<string, unknown>, request: RpcRequest) =>
+      Effect.suspend(() => {
+        const key = JSON.stringify(request);
+        if (cache.has(key)) return Effect.succeed(cache.get(key));
+        return send(request).pipe(
+          Effect.map((result) => {
+            cache.set(key, deepFreeze(result));
+            return result;
+          }),
+        );
+      });
+
     const request = ((request: RpcRequest) =>
-      lock.withPermits(1)(send(request))) as Chain["request"];
+      lock.withPermits(1)(
+        request.method === "eth_getTransactionReceipt" ||
+          request.method === "eth_getBlockByNumber"
+          ? sendCached(atTip, request)
+          : send(request),
+      )) as Chain["request"];
 
     const getBlock = (number: Hex.Hex | "latest", full: boolean) =>
       send({
@@ -183,6 +205,7 @@ export function makeChain(
       canonical.length = number;
       canonical.push(block.hash);
       highest = Math.max(highest, number);
+      atTip.clear();
     };
 
     const genesis = yield* getBlock("0x0", false);
@@ -224,7 +247,7 @@ export function makeChain(
           const blockByHash = (hash: Hex.Hex, full: boolean) => {
             const orphan = orphans.get(hash);
             if (orphan === undefined) {
-              return send({
+              return sendCached(pinned, {
                 method: "eth_getBlockByHash",
                 params: [hash, full],
               });
@@ -269,14 +292,18 @@ export function makeChain(
               if (filter.blockHash === undefined) return yield* send(request);
               if (!seen(filter.blockHash)) return undefined;
               const orphan = orphans.get(filter.blockHash);
-              if (orphan === undefined) return yield* send(request);
+              if (orphan === undefined)
+                return yield* sendCached(pinned, request);
               return orphan.receipts
                 .flatMap(({ logs }) => logs)
                 .filter((log) => matches(filter, log));
             }
             case "eth_getTransactionReceipt": {
               const [hash] = params as [Hex.Hex];
-              const receipt = (yield* send(request)) as Receipt | null;
+              const receipt = (yield* sendCached(
+                atTip,
+                request,
+              )) as Receipt | null;
               if (receipt !== null && seen(receipt.blockHash)) return receipt;
               const blockHash = orphanedIn.get(hash)?.find(seen);
               if (blockHash === undefined) return null;
@@ -310,7 +337,10 @@ export function makeChain(
           if (hash === undefined || orphans.has(hash)) return undefined;
           const at = [...params];
           at[index] = { blockHash: hash };
-          return yield* send({ ...request, params: at } as RpcRequest);
+          return yield* sendCached(pinned, {
+            ...request,
+            params: at,
+          } as RpcRequest);
         }),
       )) as Chain["read"];
 

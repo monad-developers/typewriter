@@ -284,13 +284,15 @@ const makeDatabase = Effect.acquireRelease(
   ({ name, url }, exit) =>
     Exit.isSuccess(exit)
       ? Effect.promise(async () => {
+          const start = performance.now();
           const admin = new SQL({ url: DATABASE_URL, max: 1 });
           await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
           await admin.close();
+          return Math.round(performance.now() - start);
         }).pipe(
-          Effect.andThen(
+          Effect.flatMap((duration) =>
             Effect.logInfo("Dropped simulation database").pipe(
-              Effect.annotateLogs({ database: name }),
+              Effect.annotateLogs({ database: name, duration }),
             ),
           ),
         )
@@ -306,18 +308,32 @@ const makeDatabase = Effect.acquireRelease(
 
 const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation").pipe(
-    Effect.annotateLogs({ seed: SIM.seed, config: SIM }),
+    Effect.annotateLogs({
+      seed: SIM.seed,
+      config: SIM,
+      duration: Math.round(performance.now()),
+    }),
   );
+  const deployStart = performance.now();
   const chain = yield* makeChain(yield* makeRandom(SIM.seed, "reorgs"));
   const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
-    Effect.annotateLogs({ address, chain_id: chainId }),
+    Effect.annotateLogs({
+      address,
+      chain_id: chainId,
+      duration: Math.round(performance.now() - deployStart),
+    }),
   );
+  const databaseStart = performance.now();
   const database = yield* makeDatabase;
   yield* Effect.logInfo("Created simulation database").pipe(
-    Effect.annotateLogs({ database: database.name }),
+    Effect.annotateLogs({
+      database: database.name,
+      duration: Math.round(performance.now() - databaseStart),
+    }),
   );
+  const worldStart = performance.now();
   const solidityApp = yield* Effect.promise(() =>
     loadSolidityApp(ASSESSMENT_ENTRYPOINT),
   );
@@ -762,12 +778,13 @@ const program = Effect.gen(function* () {
       accounts: signers.length,
       steps: plan.length,
       transports: transports.length,
+      duration: Math.round(performance.now() - worldStart),
     }),
   );
+  const runStart = performance.now();
 
   // The step loop: run every fiber that can run, then move the clock to the
   // next sleep.
-  const wallStart = performance.now();
   let exit:
     | Exit.Exit<Effect.Success<typeof world>, Effect.Error<typeof world>>
     | undefined;
@@ -796,9 +813,10 @@ const program = Effect.gen(function* () {
     Effect.annotateLogs({
       submissions: run.submissions.length,
       virtual_ms: Math.round(clock.currentTimeMillisUnsafe() - startMs),
-      wall_ms: Math.round(performance.now() - wallStart),
+      duration: Math.round(performance.now() - runStart),
     }),
   );
+  const validateStart = performance.now();
 
   yield* validate({
     app,
@@ -831,7 +849,7 @@ const program = Effect.gen(function* () {
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
-      wall_ms: Math.round(performance.now() - wallStart),
+      duration: Math.round(performance.now() - validateStart),
     }),
   );
 });
@@ -849,7 +867,7 @@ function resultOf(
 }
 
 /** Freezes `value` and everything it holds, so the runtime cannot change what the client sent. */
-function deepFreeze<value>(value: value): value {
+export function deepFreeze<value>(value: value): value {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
     for (const entry of Object.values(value)) deepFreeze(entry);
