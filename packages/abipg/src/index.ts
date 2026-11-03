@@ -3,15 +3,14 @@ import type { $Type, NotNull } from "drizzle-orm";
 import {
   bigint,
   char,
+  customType,
   integer,
-  jsonb,
   numeric,
   type PgBigInt64BuilderInitial,
   type PgBooleanBuilderInitial,
   type PgCharBuilderInitial,
   type PgColumnBuilderBase,
   type PgIntegerBuilderInitial,
-  type PgJsonbBuilderInitial,
   type PgNumericBuilderInitial,
   type PgSmallIntBuilderInitial,
   type PgTextBuilderInitial,
@@ -52,7 +51,16 @@ type AbiParameterToPgJsonType<Param extends AbiParameter> = AbiPgJsonValue<
 
 type PgTextBuilder = PgTextBuilderInitial<"", [string, ...string[]]>;
 
-type JsonbBuilderFor<T> = $Type<PgJsonbBuilderInitial<"">, T>;
+type JsonbBuilderFor<T> = $Type<ReturnType<typeof jsonb>, T>;
+
+/**
+ * A `jsonb` column that gives the driver its value as is, for a driver that
+ * encodes JSON itself. drizzle's `jsonb` gives it JSON text, which such a
+ * driver encodes again, as a JSON string.
+ */
+export const jsonb = customType<{ data: unknown; driverData: unknown }>({
+  dataType: () => "jsonb",
+});
 
 type HexCharBuilder = $Type<
   PgCharBuilderInitial<"", [string, ...string[]], number>,

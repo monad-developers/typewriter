@@ -111,8 +111,6 @@ export function makePostgresTransport(
             url: options.url,
             max: options.maxConnections,
             bigint: true,
-            // Prepared statements store drizzle's `jsonb` values as JSON strings.
-            prepare: false,
             connection: {
               statement_timeout: String(options.statementTimeoutMs ?? 30_000),
               idle_in_transaction_session_timeout: String(
@@ -160,11 +158,18 @@ export function makePostgresTransport(
         const results: unknown[] = [];
         try {
           await client.begin(async (tx) => {
-            for (at = 0; at < statements.length; at++) {
-              const { sql, params } = statements[at]!;
-              results.push(await tx.unsafe(sql, params));
+            // Sent without waiting, so they share round trips.
+            const settled = await Promise.allSettled(
+              [...statements, { sql: XID_SQL, params: [] }].map(
+                ({ sql, params }) => tx.unsafe(sql, params).execute(),
+              ),
+            );
+            for (at = 0; at < settled.length; at++) {
+              const result = settled[at]!;
+              if (result.status === "rejected") throw result.reason;
+              if (at < statements.length) results.push(result.value);
+              else [{ xid }] = result.value;
             }
-            [{ xid }] = await tx.unsafe(XID_SQL);
           });
           return Effect.succeed(results);
         } catch (cause) {
