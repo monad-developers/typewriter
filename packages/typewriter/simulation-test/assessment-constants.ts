@@ -3,7 +3,7 @@ import type { TypewriterSolidityEntrypoint } from "../src";
 export const STORAGE_LAYOUT = {
   storage: [
     {
-      astId: 695,
+      astId: 750,
       contract: "src/Assessment.sol:Assessment",
       label: "accounts",
       offset: 0,
@@ -11,15 +11,15 @@ export const STORAGE_LAYOUT = {
       type: "t_mapping(t_bytes32,t_struct(Account)26_storage)",
     },
     {
-      astId: 699,
+      astId: 754,
       contract: "src/Assessment.sol:Assessment",
       label: "queue",
       offset: 0,
       slot: "1",
-      type: "t_array(t_struct(QueuedMutation)657_storage)dyn_storage",
+      type: "t_array(t_struct(QueuedMutation)700_storage)dyn_storage",
     },
     {
-      astId: 701,
+      astId: 756,
       contract: "src/Assessment.sol:Assessment",
       label: "executionIndex",
       offset: 0,
@@ -27,12 +27,20 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 1685,
+      astId: 759,
+      contract: "src/Assessment.sol:Assessment",
+      label: "executionHash",
+      offset: 0,
+      slot: "3",
+      type: "t_bytes32",
+    },
+    {
+      astId: 1889,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,
-      slot: "3",
-      type: "t_struct(State)1551_storage",
+      slot: "4",
+      type: "t_struct(State)1755_storage",
     },
   ],
   types: {
@@ -42,11 +50,11 @@ export const STORAGE_LAYOUT = {
       numberOfBytes: "32",
       base: "t_struct(Credential)15_storage",
     },
-    "t_array(t_struct(QueuedMutation)657_storage)dyn_storage": {
+    "t_array(t_struct(QueuedMutation)700_storage)dyn_storage": {
       encoding: "dynamic_array",
       label: "struct Typewriter.QueuedMutation[]",
       numberOfBytes: "32",
-      base: "t_struct(QueuedMutation)657_storage",
+      base: "t_struct(QueuedMutation)700_storage",
     },
     t_bytes32: {
       encoding: "inplace",
@@ -154,13 +162,13 @@ export const STORAGE_LAYOUT = {
         },
       ],
     },
-    "t_struct(QueuedMutation)657_storage": {
+    "t_struct(QueuedMutation)700_storage": {
       encoding: "inplace",
       label: "struct Typewriter.QueuedMutation",
       numberOfBytes: "96",
       members: [
         {
-          astId: 650,
+          astId: 693,
           contract: "src/Assessment.sol:Assessment",
           label: "mutation",
           offset: 0,
@@ -168,7 +176,7 @@ export const STORAGE_LAYOUT = {
           type: "t_uint8",
         },
         {
-          astId: 652,
+          astId: 695,
           contract: "src/Assessment.sol:Assessment",
           label: "enqueuedTimestamp",
           offset: 1,
@@ -176,7 +184,7 @@ export const STORAGE_LAYOUT = {
           type: "t_uint40",
         },
         {
-          astId: 654,
+          astId: 697,
           contract: "src/Assessment.sol:Assessment",
           label: "mutationData",
           offset: 0,
@@ -184,7 +192,7 @@ export const STORAGE_LAYOUT = {
           type: "t_bytes_storage",
         },
         {
-          astId: 656,
+          astId: 699,
           contract: "src/Assessment.sol:Assessment",
           label: "authorizationData",
           offset: 0,
@@ -193,13 +201,13 @@ export const STORAGE_LAYOUT = {
         },
       ],
     },
-    "t_struct(State)1551_storage": {
+    "t_struct(State)1755_storage": {
       encoding: "inplace",
       label: "struct State",
       numberOfBytes: "64",
       members: [
         {
-          astId: 1546,
+          astId: 1750,
           contract: "src/Assessment.sol:Assessment",
           label: "accumulator",
           offset: 0,
@@ -207,7 +215,7 @@ export const STORAGE_LAYOUT = {
           type: "t_bytes32",
         },
         {
-          astId: 1550,
+          astId: 1754,
           contract: "src/Assessment.sol:Assessment",
           label: "slots",
           offset: 0,

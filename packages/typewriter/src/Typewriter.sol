@@ -181,7 +181,7 @@ abstract contract Typewriter {
     error ForceInclusionTooEarly(uint256 remainingDelay);
     error ForceInclusionAlreadyExecuted(uint256 index);
     error LengthMismatch();
-    error ExecutionIndexMismatch(uint256 expected, uint256 received);
+    error ExecutionHashMismatch(bytes32 expected, bytes32 received);
     error InvalidSettlementContext(uint256 blockNumber, uint256 timestamp);
 
     address internal immutable SCHEDULER;
@@ -191,6 +191,8 @@ abstract contract Typewriter {
     mapping(bytes32 => Account) internal accounts;
     QueuedMutation[] internal queue;
     uint256 public executionIndex;
+    /// A hash over every executed mutation, in execution order. Enqueues are not in it.
+    bytes32 public executionHash;
 
     constructor(address scheduler) {
         SCHEDULER = scheduler;
@@ -208,15 +210,17 @@ abstract contract Typewriter {
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal virtual;
 
     /// Executes at `blockNumber` and `timestamp` instead of the block's own, so the scheduler's offchain execution matches.
+    /// Reverts unless `fromExecutionHash` is the current `executionHash`, so it executes on the state the scheduler simulated.
     function execute(
-        uint256 fromExecutionIndex,
+        bytes32 fromExecutionHash,
         uint256 blockNumber,
         uint256 timestamp,
         Batch[] calldata batches,
         uint256[] calldata forceExecuteIndexes
     ) external {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
-        if (executionIndex != fromExecutionIndex) revert ExecutionIndexMismatch(executionIndex, fromExecutionIndex);
+        bytes32 hash = executionHash;
+        if (hash != fromExecutionHash) revert ExecutionHashMismatch(hash, fromExecutionHash);
         if (
             blockNumber > block.number || timestamp > block.timestamp
                 || block.timestamp - timestamp > MAX_SETTLEMENT_DELAY
@@ -237,6 +241,7 @@ abstract contract Typewriter {
                 uint256 freeMemoryPointer = _getFreeMemoryPointer();
                 _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
                 _setFreeMemoryPointer(freeMemoryPointer);
+                hash = _accumulate(hash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
                 executionIndex++;
             }
         }
@@ -250,10 +255,20 @@ abstract contract Typewriter {
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
             _execute(queued.mutation, queued.mutationData, queued.authorizationData);
             _setFreeMemoryPointer(freeMemoryPointer);
+            hash = _accumulate(hash, queued.mutation, queued.mutationData, queued.authorizationData);
             executionIndex++;
 
             delete queue[index];
         }
+        executionHash = hash;
+    }
+
+    function _accumulate(bytes32 hash, uint8 mutation, bytes memory mutationData, bytes memory authorizationData)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(hash, mutation, keccak256(mutationData), keccak256(authorizationData)));
     }
 
     function _setSettlementContext(uint256 blockNumber, uint256 settledAt) private {
@@ -304,6 +319,7 @@ abstract contract Typewriter {
         _setSettlementContext(block.number, block.timestamp);
 
         _execute(queued.mutation, queued.mutationData, queued.authorizationData);
+        executionHash = _accumulate(executionHash, queued.mutation, queued.mutationData, queued.authorizationData);
         executionIndex++;
 
         delete queue[index];

@@ -59,10 +59,11 @@ export function requestBlock<includeTransactions extends boolean = false>(
   });
 }
 
-export function requestExecutionIndex(
+function requestTypewriterView(
   address: Address.Address,
   blockHash: Hash,
-): Effect.Effect<bigint, RpcError | NoDataReturnedError, Rpc> {
+  functionName: "executionIndex" | "executionHash",
+): Effect.Effect<Hex.Hex, RpcError | NoDataReturnedError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
     const result = yield* rpc.request({
@@ -72,7 +73,7 @@ export function requestExecutionIndex(
           to: address,
           data: encodeFunctionData({
             abi: TYPEWRITER_ABI,
-            functionName: "executionIndex",
+            functionName,
           }),
         },
         { blockHash },
@@ -83,10 +84,26 @@ export function requestExecutionIndex(
       // TODO(kyle) retry `NoDataReturnedError` in `Rpc` service.
       return yield* new NoDataReturnedError({
         address,
-        functionName: "executionIndex",
+        functionName,
       });
     }
 
-    return Hex.toBigInt(result);
+    return result;
   });
+}
+
+export function requestExecutionIndex(
+  address: Address.Address,
+  blockHash: Hash,
+): Effect.Effect<bigint, RpcError | NoDataReturnedError, Rpc> {
+  return requestTypewriterView(address, blockHash, "executionIndex").pipe(
+    Effect.map(Hex.toBigInt),
+  );
+}
+
+export function requestExecutionHash(
+  address: Address.Address,
+  blockHash: Hash,
+): Effect.Effect<Hex.Hex, RpcError | NoDataReturnedError, Rpc> {
+  return requestTypewriterView(address, blockHash, "executionHash");
 }

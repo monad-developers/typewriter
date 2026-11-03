@@ -70,13 +70,13 @@ export type BatchArg = {
 export type SettlementContext = { number: bigint; timestamp: bigint };
 
 export function encodeExecuteCalldata(
-  fromExecutionIndex: bigint,
+  fromExecutionHash: Hex.Hex,
   context: SettlementContext,
   batches: readonly BatchArg[],
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
   return AbiFunction.encodeData(EXECUTE_FUNCTION, [
-    fromExecutionIndex,
+    fromExecutionHash,
     context.number,
     context.timestamp,
     batches,

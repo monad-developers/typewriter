@@ -123,6 +123,8 @@ test("fixed Authorization calldata round-trips as one Solidity struct", () => {
   expect(decodeAuthorizationCalldata(encoded)).toEqual(AUTHORIZATION);
 });
 
+const FROM_EXECUTION_HASH = `0x${"03".padStart(64, "0")}` as const;
+
 test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const batch = {
     mutations: [0],
@@ -132,10 +134,10 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "execute",
-    args: [3n, 7n, 9n, [batch], []],
+    args: [FROM_EXECUTION_HASH, 7n, 9n, [batch], []],
   });
   const actual = encodeExecuteCalldata(
-    3n,
+    FROM_EXECUTION_HASH,
     { number: 7n, timestamp: 9n },
     [batch],
     [],

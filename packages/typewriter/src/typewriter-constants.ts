@@ -98,7 +98,7 @@ export const TYPEWRITER_ABI = [
     type: "function",
     name: "execute",
     inputs: [
-      { name: "fromExecutionIndex", type: "uint256" },
+      { name: "fromExecutionHash", type: "bytes32" },
       { name: "blockNumber", type: "uint256" },
       { name: "timestamp", type: "uint256" },
       {
@@ -138,6 +138,13 @@ export const TYPEWRITER_ABI = [
     name: "executionIndex",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "executionHash",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32" }],
     stateMutability: "view",
   },
   {

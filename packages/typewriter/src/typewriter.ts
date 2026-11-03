@@ -78,6 +78,7 @@ import { Rpc, type RpcError } from "./rpc";
 import {
   type NoDataReturnedError,
   requestBlock,
+  requestExecutionHash,
   requestExecutionIndex,
 } from "./rpc-request";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "./typewriter-constants";
@@ -289,24 +290,24 @@ export class ChainIdMismatchError extends Data.TaggedError(
 }
 
 /**
- * After a resync, the chain's execution index is not where the first reverted
+ * After a resync, the chain's `executionHash` is not where the first reverted
  * settlement started, so something outside the runtime executed.
  */
 export class ResyncMismatchError extends Data.TaggedError(
   "ResyncMismatchError",
 )<{
   blockNumber: bigint;
-  expected: bigint;
-  actual: bigint;
+  expected: Hex.Hex;
+  actual: Hex.Hex;
 }> {
   override get message() {
-    return `At block ${this.blockNumber}, the execution index is ${this.actual}, but the reverted settlements start at ${this.expected}`;
+    return `At block ${this.blockNumber}, the execution hash is ${this.actual}, but the reverted settlements start at ${this.expected}`;
   }
 }
 
 /**
  * A settlement succeeded after an earlier one reverted. Each checks the
- * execution index, so only an execution outside the runtime allows it.
+ * execution hash, so only an execution outside the runtime allows it.
  */
 export class SettlementAfterRevertError extends Data.TaggedError(
   "SettlementAfterRevertError",
@@ -623,13 +624,13 @@ export type ExecuteMutationError =
 /** The `execute` calldata of `mutation`. Fails if a field is malformed. */
 export function encodeMutation(
   mutation: ReceivedMutation,
-  executionIndex: bigint,
+  fromExecutionHash: Hex.Hex,
   context: SettlementContext,
 ): Effect.Effect<Hex.Hex, EncodeMutationError> {
   return Effect.try({
     try: () =>
       encodeExecuteCalldata(
-        executionIndex,
+        fromExecutionHash,
         context,
         [encodeBatchArg([mutation])],
         [],
@@ -966,6 +967,24 @@ export function createTypewriterEffect<
       timestamp: startBlock.timestamp,
     };
     const contextOf = new WeakMap<RuntimeBatch, SettlementContext>();
+    /** The `executionHash` an execution starts from, which its settlement checks. */
+    const fromExecutionHashOf = new WeakMap<
+      { executionIndex: bigint },
+      Hex.Hex
+    >();
+    const executionHashSlot = Hex.padLeft(
+      Hex.fromNumber(
+        BigInt(
+          app.storageLayout.storage.find(
+            ({ label }) => label === "executionHash",
+          )!.slot,
+        ),
+      ),
+      32,
+    );
+    const readExecutionHash = evm
+      .readStorage({ address: app.address, slots: [executionHashSlot] })
+      .pipe(Effect.map((values) => Hex.padLeft(Object.values(values)[0]!, 32)));
 
     let batchId = 0;
     let batchPosition = 0;
@@ -1167,9 +1186,10 @@ export function createTypewriterEffect<
       return Effect.gen(function* () {
         const { executeResult, mutation: acceptedMutation } = yield* Effect.gen(
           function* () {
+            const fromExecutionHash = yield* readExecutionHash;
             const calldata = yield* encodeMutation(
               mutation,
-              nextExecutionIndex,
+              fromExecutionHash,
               context,
             );
             // The mutation encodes, so its authorization is well-formed to
@@ -1199,6 +1219,7 @@ export function createTypewriterEffect<
               );
               return yield* new MutationTooLargeError({ gas });
             }
+            fromExecutionHashOf.set(executed.mutation, fromExecutionHash);
             return executed;
           },
         ).pipe(
@@ -1247,11 +1268,12 @@ export function createTypewriterEffect<
     // like any other.
     function forceExecute(queueIndex: bigint, context: SettlementContext) {
       return Effect.gen(function* () {
+        const fromExecutionHash = yield* readExecutionHash;
         const executeResult = yield* evm.execute({
           from: app.account.address,
           to: app.address,
           data: encodeExecuteCalldata(
-            nextExecutionIndex,
+            fromExecutionHash,
             context,
             [],
             [queueIndex],
@@ -1290,6 +1312,8 @@ export function createTypewriterEffect<
         }
 
         const executionIndex = nextExecutionIndex++;
+        const mutation = { executionIndex };
+        fromExecutionHashOf.set(mutation, fromExecutionHash);
         yield* Effect.logDebug("Force-executed enqueued mutation").pipe(
           Effect.annotateLogs({
             queue_index: queueIndex,
@@ -1298,7 +1322,7 @@ export function createTypewriterEffect<
         );
         return {
           queueIndex,
-          mutation: { executionIndex },
+          mutation,
           context,
           gas,
           executeResult,
@@ -1571,14 +1595,16 @@ export function createTypewriterEffect<
     let reverted: RevertedSettlement | undefined;
     /**
      * Set from an onchain revert until every settlement sent before it lands.
-     * Each checks the execution index, so every later one reverts too.
+     * Each checks the execution hash, so every later one reverts too.
      * Nothing is sent until then.
      */
     let resync: Submitted[] | undefined;
 
-    const executionIndexOf = (settlement: Settlement) =>
-      settlement.batches[0]?.mutations[0]?.executionIndex ??
-      settlement.forceExecuted[0]!.mutation.executionIndex;
+    const firstExecution = (settlement: Settlement) =>
+      settlement.batches[0]?.mutations[0] ??
+      settlement.forceExecuted[0]!.mutation;
+    const fromExecutionHashOfSettlement = (settlement: Settlement) =>
+      fromExecutionHashOf.get(firstExecution(settlement))!;
 
     const journalIdsOf = (settlement: Settlement) => [
       ...settlement.batches.flatMap((batch) =>
@@ -1816,7 +1842,7 @@ export function createTypewriterEffect<
               // Each settlement simulates on the state the ones before it leave.
               for (const [i, settlement] of settlements.entries()) {
                 const calldata = encodeExecuteCalldata(
-                  executionIndexOf(settlement),
+                  fromExecutionHashOfSettlement(settlement),
                   settlement.context,
                   settlement.batches.map((batch) =>
                     encodeBatchArg(batch.mutations),
@@ -2050,16 +2076,18 @@ export function createTypewriterEffect<
             transactionHash: first!.hash!,
           });
         }
-        const fromExecutionIndex = executionIndexOf(first!.settlement);
+        const fromExecutionHash = fromExecutionHashOfSettlement(
+          first!.settlement,
+        );
         const onchain = yield* untilSuccess(
-          requestExecutionIndex(app.address, block.hash).pipe(
+          requestExecutionHash(app.address, block.hash).pipe(
             Effect.provideService(Rpc, rpc),
           ),
         );
-        if (onchain !== fromExecutionIndex) {
+        if (onchain !== fromExecutionHash) {
           return yield* new ResyncMismatchError({
             blockNumber: block.number,
-            expected: fromExecutionIndex,
+            expected: fromExecutionHash,
             actual: onchain,
           });
         }
@@ -2069,7 +2097,7 @@ export function createTypewriterEffect<
           Effect.annotateLogs({
             transaction_hash: first!.hash,
             reverted_count: settlements.length,
-            execution_index: fromExecutionIndex,
+            execution_index: firstExecution(first!.settlement).executionIndex,
           }),
         );
         resync = undefined;

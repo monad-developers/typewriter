@@ -903,7 +903,7 @@ function scribble(value: unknown): void {
 function queueEntrySlot(index: bigint): Hex.Hex {
   const queue = STORAGE_LAYOUT.storage.find(({ label }) => label === "queue")!;
   const entry =
-    STORAGE_LAYOUT.types["t_struct(QueuedMutation)657_storage"].numberOfBytes;
+    STORAGE_LAYOUT.types["t_struct(QueuedMutation)700_storage"].numberOfBytes;
   // A dynamic array's entries start at the keccak256 of its slot.
   const start = BigInt(
     Hash.keccak256(Hex.fromNumber(BigInt(queue.slot), { size: 32 })),

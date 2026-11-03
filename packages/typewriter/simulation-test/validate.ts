@@ -4,6 +4,7 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect, Exit } from "effect";
 import { Hash, Hex } from "ox";
 import { createStorageView, type StorageView } from "storage-layout";
+import { encodeFunctionData } from "viem";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
 import {
@@ -14,6 +15,7 @@ import {
 import { builder } from "../src/db-transport";
 import { encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
+import { TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type {
   BlockEvent,
   MutationEvent,
@@ -116,7 +118,7 @@ function checkSettlements(check: Check, onchain: Onchain) {
     if (settlement.mismatched) {
       if (!settlement.reverted || !onchain.settlements[i - 1]?.reverted) {
         check.fail(
-          `settlement ${settlement.transactionHash} executed from the wrong execution index, but the settlement before it did not revert`,
+          `settlement ${settlement.transactionHash} executed from the wrong execution hash, but the settlement before it did not revert`,
         );
       }
     } else if (settlement.reverted && !settlement.late) {
@@ -345,6 +347,24 @@ function checkQueue(
   { app, chain }: Params,
 ) {
   return Effect.gen(function* () {
+    const executionHash = yield* chain.request({
+      method: "eth_call",
+      params: [
+        {
+          to: app.address,
+          data: encodeFunctionData({
+            abi: TYPEWRITER_ABI,
+            functionName: "executionHash",
+          }),
+        },
+        "latest",
+      ],
+    });
+    check.equal(
+      executionHash,
+      onchain.executionHash,
+      "executionHash, folded from the settlements",
+    );
     const executed = executedByKey(onchain);
     for (const { label, key, via, transactionHash } of run.submissions) {
       if (via !== "enqueue" || executed.has(key)) continue;
@@ -366,7 +386,7 @@ function checkQueue(
               from: app.account.address,
               to: app.address,
               data: encodeExecuteCalldata(
-                BigInt(onchain.executed.length),
+                onchain.executionHash,
                 {
                   number: BigInt(latest!.number!),
                   timestamp: BigInt(latest!.timestamp),

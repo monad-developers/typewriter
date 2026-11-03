@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { AbiFunction, Hex } from "ox";
+import { AbiFunction, AbiParameters, Hash, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import type { TypewriterApp } from "../src/config";
 import { decodeAuthorizationCalldata } from "../src/encoding";
@@ -22,7 +22,7 @@ export type Executed = {
 /** A settlement transaction on the canonical chain. */
 export type Settlement = Inclusion & {
   reverted: boolean;
-  /** It reverted because an earlier settlement did, so the execution index moved. */
+  /** It reverted because an earlier settlement did, so the execution hash moved. */
   mismatched: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
@@ -41,7 +41,29 @@ export type Onchain = {
   queueIndexes: Map<Hex.Hex, bigint>;
   /** The hash of each canonical block, by number. */
   blockHashes: Map<bigint, Hex.Hex>;
+  /** The contract's `executionHash` after the last settlement. */
+  executionHash: Hex.Hex;
 };
+
+/** `_accumulate` in Typewriter.sol. */
+function accumulate(
+  hash: Hex.Hex,
+  mutation: number,
+  mutationData: Hex.Hex,
+  authorizationData: Hex.Hex,
+): Hex.Hex {
+  return Hash.keccak256(
+    AbiParameters.encode(
+      AbiParameters.from(["bytes32", "uint8", "bytes32", "bytes32"]),
+      [
+        hash,
+        mutation,
+        Hash.keccak256(mutationData),
+        Hash.keccak256(authorizationData),
+      ],
+    ),
+  );
+}
 
 const EXECUTE = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
 
@@ -82,9 +104,13 @@ export function readOnchain({
       batches: [],
       queueIndexes: new Map(),
       blockHashes: new Map(),
+      executionHash: `0x${"0".repeat(64)}`,
     };
     const keyByQueueIndex = new Map<bigint, string>();
-    const authorizationDataByQueueIndex = new Map<bigint, Hex.Hex>();
+    const queuedByIndex = new Map<
+      bigint,
+      { mutation: number; mutationData: Hex.Hex; authorizationData: Hex.Hex }
+    >();
 
     const head = Number(yield* chain.request({ method: "eth_blockNumber" }));
     for (let number = 0; number <= head; number++) {
@@ -111,10 +137,7 @@ export function readOnchain({
               strict: true,
             });
             onchain.queueIndexes.set(transaction.hash, args.index);
-            authorizationDataByQueueIndex.set(
-              args.index,
-              args.authorizationData,
-            );
+            queuedByIndex.set(args.index, args);
             keyByQueueIndex.set(
               args.index,
               keyByEnqueue.get(transaction.hash) ??
@@ -132,7 +155,7 @@ export function readOnchain({
           transactionIndex: Number(transaction.transactionIndex),
         };
         const [
-          fromExecutionIndex,
+          fromExecutionHash,
           pinnedNumber,
           pinnedTimestamp,
           batches,
@@ -141,7 +164,7 @@ export function readOnchain({
         const settlement: Settlement = {
           ...inclusion,
           reverted: receipt.status !== "0x1",
-          mismatched: fromExecutionIndex !== BigInt(onchain.executed.length),
+          mismatched: fromExecutionHash !== onchain.executionHash,
           executionIndexes: [],
           late:
             pinnedNumber > inclusion.blockNumber ||
@@ -161,7 +184,13 @@ export function readOnchain({
           onchain.executed.push({ ...executed, executionIndex, inclusion });
         };
         for (const batch of batches) {
-          const keys = batch.authorizationData.map((authorizationData) => {
+          const keys = batch.authorizationData.map((authorizationData, i) => {
+            onchain.executionHash = accumulate(
+              onchain.executionHash,
+              batch.mutations[i]!,
+              batch.mutationData[i]!,
+              authorizationData,
+            );
             const key = mutationKey(
               decodeAuthorizationCalldata(authorizationData),
             );
@@ -175,6 +204,13 @@ export function readOnchain({
           onchain.batches.push(keys);
         }
         for (const queueIndex of forceExecuteIndexes) {
+          const queued = queuedByIndex.get(queueIndex)!;
+          onchain.executionHash = accumulate(
+            onchain.executionHash,
+            queued.mutation,
+            queued.mutationData,
+            queued.authorizationData,
+          );
           execute({
             key:
               keyByQueueIndex.get(queueIndex) ??
