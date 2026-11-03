@@ -3,7 +3,7 @@ import { AbiFunction, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import type { TypewriterApp } from "../src/config";
 import { decodeAuthorizationCalldata } from "../src/encoding";
-import { TYPEWRITER_ABI } from "../src/typewriter-constants";
+import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type { Inclusion } from "../src/typewriter-types";
 import type { Chain } from "./chain";
 import { mutationKey, type Submission } from "./run";
@@ -26,7 +26,8 @@ export type Settlement = Inclusion & {
   mismatched: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
-  expired: string[];
+  /** It landed before the block it pinned, or more than `EXPIRATION_MARGIN` seconds after it. */
+  late: boolean;
 };
 
 /** What happened onchain, read from the canonical chain after the run. */
@@ -130,32 +131,25 @@ export function readOnchain({
           transactionHash: transaction.hash,
           transactionIndex: Number(transaction.transactionIndex),
         };
-        const [fromExecutionIndex, batches, forceExecuteIndexes] =
-          AbiFunction.decodeData(EXECUTE, transaction.input);
+        const [
+          fromExecutionIndex,
+          pinnedNumber,
+          pinnedTimestamp,
+          batches,
+          forceExecuteIndexes,
+        ] = AbiFunction.decodeData(EXECUTE, transaction.input);
         const settlement: Settlement = {
           ...inclusion,
           reverted: receipt.status !== "0x1",
           mismatched: fromExecutionIndex !== BigInt(onchain.executed.length),
           executionIndexes: [],
-          expired: [],
+          late:
+            pinnedNumber > inclusion.blockNumber ||
+            inclusion.blockTimestamp - pinnedTimestamp >
+              BigInt(EXPIRATION_MARGIN),
         };
         onchain.settlements.push(settlement);
         if (settlement.reverted) {
-          for (const authorizationData of [
-            ...batches.flatMap((batch) => batch.authorizationData),
-            ...forceExecuteIndexes.map(
-              (queueIndex) => authorizationDataByQueueIndex.get(queueIndex)!,
-            ),
-          ]) {
-            const authorization =
-              decodeAuthorizationCalldata(authorizationData);
-            if (
-              authorization.expiration !== 0n &&
-              authorization.expiration < inclusion.blockTimestamp
-            ) {
-              settlement.expired.push(mutationKey(authorization));
-            }
-          }
           continue;
         }
 

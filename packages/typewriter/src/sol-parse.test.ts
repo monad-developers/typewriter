@@ -631,7 +631,7 @@ ${app("enum Mutation { Add }")}`);
     create: error("new Other();"),
     assembly: error("assembly { sstore(0, 1) }"),
     allowed: error(
-      "state.total = block.chainid + block.timestamp + block.number + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
+      "state.total = block.chainid + settlementTimestamp() + settlementBlockNumber() + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
     ),
   }).toMatchInlineSnapshot(`
     {

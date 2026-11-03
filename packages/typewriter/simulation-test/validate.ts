@@ -115,8 +115,8 @@ function makeCheck(run: Run): Check {
 }
 
 /**
- * Every settlement succeeded, reverted on an expired authorization, or
- * reverted right after one that reverted. Settlements executed only submitted
+ * Every settlement succeeded, reverted because it landed after the delay its
+ * pinned timestamp allows, or reverted right after one that reverted. Settlements executed only submitted
  * mutations, each once.
  */
 function checkSettlements(check: Check, onchain: Onchain) {
@@ -127,9 +127,9 @@ function checkSettlements(check: Check, onchain: Onchain) {
           `settlement ${settlement.transactionHash} executed from the wrong execution index, but the settlement before it did not revert`,
         );
       }
-    } else if (settlement.reverted && settlement.expired.length === 0) {
+    } else if (settlement.reverted && !settlement.late) {
       check.fail(
-        `settlement ${settlement.transactionHash} reverted, but no authorization in it expired before block ${settlement.blockNumber}`,
+        `settlement ${settlement.transactionHash} reverted, but it landed in block ${settlement.blockNumber} within the delay its pinned timestamp allows`,
       );
     }
   });
@@ -361,6 +361,10 @@ function checkQueue(
         check.fail(`${label}: enqueue is not on the canonical chain`);
         continue;
       }
+      const latest = yield* chain.request({
+        method: "eth_getBlockByNumber",
+        params: ["latest", false],
+      });
       // Anvil answers a reverting call with an error.
       const call = yield* Effect.exit(
         chain.request({
@@ -371,6 +375,10 @@ function checkQueue(
               to: app.address,
               data: encodeExecuteCalldata(
                 BigInt(onchain.executed.length),
+                {
+                  number: BigInt(latest!.number!),
+                  timestamp: BigInt(latest!.timestamp),
+                },
                 [],
                 [queueIndex],
               ),
@@ -791,8 +799,8 @@ function executedByKey(onchain: Onchain): Map<string, Executed> {
 }
 
 /**
- * The keys of the mutations accepted, then rejected as expired when their
- * settlement reverted in revm.
+ * The keys of the mutations accepted, then rejected as expired when they
+ * executed again after a settlement reverted.
  */
 function droppedKeys(run: Run): Set<string> {
   const accepted = new Set<string>();
@@ -803,7 +811,8 @@ function droppedKeys(run: Run): Set<string> {
     if (
       event.status === "rejected" &&
       accepted.has(key) &&
-      errorName(event.error) === "AuthorizationExpired"
+      (errorName(event.error) === "AuthorizationExpired" ||
+        errorName(event.error) === "MutationExpiresTooSoonError")
     ) {
       dropped.add(key);
     }

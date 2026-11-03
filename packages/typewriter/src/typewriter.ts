@@ -1,6 +1,5 @@
 import {
   type Cause,
-  Clock,
   Data,
   Deferred,
   Duration,
@@ -71,6 +70,7 @@ import {
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
+  type SettlementContext,
 } from "./encoding";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
@@ -146,8 +146,11 @@ const DEPLOYMENT_LOCK_TIMEOUT_MS = 10_000;
 /** How many blocks a pending settlement waits before it is sent again. The lowest, which the rest wait on, waits one. */
 const REBROADCAST_BLOCKS = 3n;
 
-/** How long a settlement can go without landing after it is first sent. */
-const STUCK_MS = 120_000;
+/**
+ * How many blocks a settlement can go without landing after it is first sent.
+ * Counted in blocks, so a paused process doesn't count as a stuck settlement.
+ */
+const STUCK_BLOCKS = 300n;
 
 /** The intrinsic gas of a transaction, which every settlement pays once. */
 const TRANSACTION_BASE_GAS = 21_000;
@@ -285,6 +288,36 @@ export class ChainIdMismatchError extends Data.TaggedError(
   }
 }
 
+/**
+ * After a resync, the chain's execution index is not where the first reverted
+ * settlement started, so something outside the runtime executed.
+ */
+export class ResyncMismatchError extends Data.TaggedError(
+  "ResyncMismatchError",
+)<{
+  blockNumber: bigint;
+  expected: bigint;
+  actual: bigint;
+}> {
+  override get message() {
+    return `At block ${this.blockNumber}, the execution index is ${this.actual}, but the reverted settlements start at ${this.expected}`;
+  }
+}
+
+/**
+ * A settlement succeeded after an earlier one reverted. Each checks the
+ * execution index, so only an execution outside the runtime allows it.
+ */
+export class SettlementAfterRevertError extends Data.TaggedError(
+  "SettlementAfterRevertError",
+)<{
+  transactionHash: Hex.Hex;
+}> {
+  override get message() {
+    return `Settlement transaction ${this.transactionHash} succeeded after an earlier one reverted`;
+  }
+}
+
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
@@ -296,7 +329,7 @@ export class SettlementRevertedError extends Data.TaggedError(
   }
 }
 
-/** A settlement did not land {@link STUCK_MS} after it was first sent. */
+/** A settlement did not land {@link STUCK_BLOCKS} blocks after it was first sent. */
 export class SettlementStuckError extends Data.TaggedError(
   "SettlementStuckError",
 )<{
@@ -304,7 +337,7 @@ export class SettlementStuckError extends Data.TaggedError(
   transactionHash: Hex.Hex;
 }> {
   override get message() {
-    return `Settlement transaction ${this.transactionHash} with nonce ${this.nonce} did not land ${STUCK_MS / 1000}s after it was sent`;
+    return `Settlement transaction ${this.transactionHash} with nonce ${this.nonce} did not land ${STUCK_BLOCKS} blocks after it was sent`;
   }
 }
 
@@ -403,6 +436,8 @@ export type ProgramError =
   | SettlementSimulationRevertedError
   | SettlementSimulationHaltedError
   | SettlementRevertedError
+  | ResyncMismatchError
+  | SettlementAfterRevertError
   | SettlementReorgedError
   | SettlementStuckError
   | SettlementRejectedError
@@ -589,10 +624,16 @@ export type ExecuteMutationError =
 export function encodeMutation(
   mutation: ReceivedMutation,
   executionIndex: bigint,
+  context: SettlementContext,
 ): Effect.Effect<Hex.Hex, EncodeMutationError> {
   return Effect.try({
     try: () =>
-      encodeExecuteCalldata(executionIndex, [encodeBatchArg([mutation])], []),
+      encodeExecuteCalldata(
+        executionIndex,
+        context,
+        [encodeBatchArg([mutation])],
+        [],
+      ),
     catch: (cause) => new EncodeMutationError({ mutation, cause }),
   });
 }
@@ -919,9 +960,12 @@ export function createTypewriterEffect<
     // Settlements pack under the cap with room for the reserve that a
     // simulated gas limit adds for the gas each call keeps back.
     const settlementGas = txGasLimitCap - Math.ceil(txGasLimitCap / 32);
-    /** The timestamp of the block that mutations execute in. */
-    let blockTimestamp = startBlock.timestamp;
-    let blockNumber = startBlock.number;
+    /** The block that mutations execute in. A settlement pins the one its mutations executed in. */
+    let blockContext: SettlementContext = {
+      number: startBlock.number,
+      timestamp: startBlock.timestamp,
+    };
+    const contextOf = new WeakMap<RuntimeBatch, SettlementContext>();
 
     let batchId = 0;
     let batchPosition = 0;
@@ -1115,8 +1159,8 @@ export function createTypewriterEffect<
     // a single set of insert statements.
     function acceptMutation(
       mutation: ReceivedMutation,
-      /** Rejects the mutation if it expires before this timestamp. */
-      minExpiration?: bigint,
+      /** The block it executes in, which its settlement pins. */
+      context: SettlementContext,
       /** Rejects the mutation if a settlement of it takes more gas. */
       maxGas = settlementGas,
     ): Effect.Effect<AcceptedExecution, ExecuteMutationError> {
@@ -1126,12 +1170,14 @@ export function createTypewriterEffect<
             const calldata = yield* encodeMutation(
               mutation,
               nextExecutionIndex,
+              context,
             );
             // The mutation encodes, so its authorization is well-formed to
             // read the account state with.
-            if (minExpiration !== undefined) {
-              yield* checkExpiration(mutation, minExpiration);
-            }
+            yield* checkExpiration(
+              mutation,
+              context.timestamp + BigInt(EXPIRATION_MARGIN),
+            );
             // TODO: Validate the fixed Authorization against the mirrored
             // account state before entering revm, then retain contract
             // execution as the final authority. The static wire shape makes
@@ -1199,12 +1245,17 @@ export function createTypewriterEffect<
     // an enqueue: revm runs the contract on its bytes and decides whether it
     // executes. It has no event and no mutation row, but its writes settle
     // like any other.
-    function forceExecute(queueIndex: bigint) {
+    function forceExecute(queueIndex: bigint, context: SettlementContext) {
       return Effect.gen(function* () {
         const executeResult = yield* evm.execute({
           from: app.account.address,
           to: app.address,
-          data: encodeExecuteCalldata(nextExecutionIndex, [], [queueIndex]),
+          data: encodeExecuteCalldata(
+            nextExecutionIndex,
+            context,
+            [],
+            [queueIndex],
+          ),
         });
         if (executeResult.status !== "success") {
           yield* Effect.logWarning(
@@ -1248,6 +1299,7 @@ export function createTypewriterEffect<
         return {
           queueIndex,
           mutation: { executionIndex },
+          context,
           gas,
           executeResult,
           preimages: recordExecution(executeResult),
@@ -1295,10 +1347,11 @@ export function createTypewriterEffect<
             deferred: AcceptDeferred;
           })[] = [];
 
-          const minExpiration = blockTimestamp + BigInt(EXPIRATION_MARGIN);
+          // The watch moves the block outside the lock, so the batch keeps one.
+          const context = blockContext;
           for (const { mutation, deferred } of submittedMutations) {
             const result = yield* Effect.result(
-              acceptMutation(mutation, minExpiration),
+              acceptMutation(mutation, context),
             );
             if (Result.isSuccess(result)) {
               acceptedMutations.push({ ...result.success, deferred });
@@ -1335,6 +1388,7 @@ export function createTypewriterEffect<
               }),
             );
             batchesById.set(batch.id, batch);
+            contextOf.set(batch, context);
             yield* emitBatch(batchToEvent(batch));
           }
 
@@ -1391,9 +1445,15 @@ export function createTypewriterEffect<
         });
         invalidateStorageCache();
         nextExecutionIndex = fromExecutionIndex;
+        // They execute again in the current block, so a settlement of them pins it.
+        const context = blockContext;
+        const repinned =
+          batches.some((batch) => contextOf.get(batch) !== context) ||
+          forceExecuted.some((execution) => execution.context !== context);
 
         const executed: AcceptedExecution[] = [];
         for (const batch of batches) {
+          contextOf.set(batch, context);
           const kept: AcceptedMutation[] = [];
           // Gas depends on state, so a batch can outgrow a settlement now.
           let batchGas = 0;
@@ -1401,7 +1461,7 @@ export function createTypewriterEffect<
             const result = yield* Effect.result(
               acceptMutation(
                 toUnexecuted(mutation),
-                undefined,
+                context,
                 settlementGas - batchGas,
               ),
             );
@@ -1417,7 +1477,7 @@ export function createTypewriterEffect<
         // frees what it held, such as a nonce.
         const keptForceExecuted: ForceExecution[] = [];
         for (const queueIndex of queueIndexes) {
-          const reexecuted = yield* forceExecute(queueIndex);
+          const reexecuted = yield* forceExecute(queueIndex, context);
           if (reexecuted !== undefined) keptForceExecuted.push(reexecuted);
         }
 
@@ -1450,9 +1510,9 @@ export function createTypewriterEffect<
           pending.length -
           executed.length -
           forceExecuted.filter(({ queueIndex }) => kept.has(queueIndex)).length;
-        if (droppedCount === 0) return yield* error;
+        if (droppedCount === 0 && !repinned) return yield* error;
         yield* Effect.logWarning(
-          "Dropped mutations from a reverted settlement",
+          "Executed reverted mutations again",
           error,
         ).pipe(
           Effect.annotateLogs({
@@ -1477,6 +1537,7 @@ export function createTypewriterEffect<
 
     /** One settlement transaction. */
     type Settlement = {
+      context: SettlementContext;
       batches: RuntimeBatch[];
       forceExecuted: ForceExecution[];
       /** Enqueues that failed in revm when it was packed, to try again after a revert. */
@@ -1492,12 +1553,11 @@ export function createTypewriterEffect<
       raw?: Hex.Hex;
       /** The block number when it was last broadcast. */
       sentAt: bigint;
-      /** When it was first broadcast, in milliseconds. */
-      firstSentAtMs?: number;
-      /** `doomed` is pending after a revert of an earlier nonce, so it reverts too. */
-      status: "pending" | "doomed" | "included" | "reverted";
+      /** The block number when it was first broadcast. */
+      firstSentAt?: bigint;
+      status: "pending" | "included" | "reverted";
       /** The block it landed in. */
-      block?: { number: bigint; hash: Hex.Hex };
+      block?: { number: bigint; hash: Hex.Hex; timestamp: bigint };
     };
 
     /** By nonce, in nonce order. */
@@ -1509,6 +1569,16 @@ export function createTypewriterEffect<
     >();
     /** The settlements of an onchain revert, which `settle` executes again first. */
     let reverted: RevertedSettlement | undefined;
+    /**
+     * Set from an onchain revert until every settlement sent before it lands.
+     * Each checks the execution index, so every later one reverts too.
+     * Nothing is sent until then.
+     */
+    let resync: Submitted[] | undefined;
+
+    const executionIndexOf = (settlement: Settlement) =>
+      settlement.batches[0]?.mutations[0]?.executionIndex ??
+      settlement.forceExecuted[0]!.mutation.executionIndex;
 
     const journalIdsOf = (settlement: Settlement) => [
       ...settlement.batches.flatMap((batch) =>
@@ -1519,27 +1589,45 @@ export function createTypewriterEffect<
       ),
     ];
 
-    // Fills each settlement up to the cap, in execution order.
+    // Fills each settlement up to the cap, in execution order. A settlement
+    // pins one block, so items that executed in different blocks split.
     const pack = (
       batches: RuntimeBatch[],
       forceExecuted: ForceExecution[],
-    ): Settlement[] =>
-      chunkByGas<RuntimeBatch | ForceExecution>(
-        [...batches, ...forceExecuted],
-        settlementGas,
-        (item) =>
-          "queueIndex" in item
-            ? item.gas
-            : item.mutations.reduce((gas, mutation) => gas + mutation.gas, 0),
-      ).map((items) => ({
-        batches: items.filter(
-          (item): item is RuntimeBatch => !("queueIndex" in item),
-        ),
-        forceExecuted: items.filter(
-          (item): item is ForceExecution => "queueIndex" in item,
-        ),
-        discardedQueueIndexes: [],
-      }));
+    ): Settlement[] => {
+      const contextOfItem = (item: RuntimeBatch | ForceExecution) =>
+        "queueIndex" in item ? item.context : contextOf.get(item)!;
+      const runs: (RuntimeBatch | ForceExecution)[][] = [];
+      for (const item of [...batches, ...forceExecuted]) {
+        const run = runs.at(-1);
+        if (
+          run !== undefined &&
+          contextOfItem(run[0]!) === contextOfItem(item)
+        ) {
+          run.push(item);
+        } else {
+          runs.push([item]);
+        }
+      }
+      return runs
+        .flatMap((run) =>
+          chunkByGas(run, settlementGas, (item) =>
+            "queueIndex" in item
+              ? item.gas
+              : item.mutations.reduce((gas, mutation) => gas + mutation.gas, 0),
+          ),
+        )
+        .map((items) => ({
+          context: contextOfItem(items[0]!),
+          batches: items.filter(
+            (item): item is RuntimeBatch => !("queueIndex" in item),
+          ),
+          forceExecuted: items.filter(
+            (item): item is ForceExecution => "queueIndex" in item,
+          ),
+          discardedQueueIndexes: [],
+        }));
+    };
 
     const sign = (
       calldata: Hex.Hex,
@@ -1583,8 +1671,8 @@ export function createTypewriterEffect<
     // Any other failure is a lost transaction, which is sent again.
     const broadcast = (entry: Submitted) =>
       Effect.gen(function* () {
-        entry.sentAt = blockNumber;
-        entry.firstSentAtMs ??= yield* Clock.currentTimeMillis;
+        entry.sentAt = blockContext.number;
+        entry.firstSentAt ??= blockContext.number;
         const { nonce, hash: transactionHash } = entry as Submitted & {
           hash: Hex.Hex;
         };
@@ -1646,6 +1734,7 @@ export function createTypewriterEffect<
       Effect.gen(function* () {
         const simulation = yield* withSpeculativeStateLock(
           Effect.gen(function* () {
+            if (resync !== undefined) return undefined;
             const resubmit = reverted;
             reverted = undefined;
             const acceptedBatches = yield* Queue.clear(acceptedBatchesQueue);
@@ -1667,8 +1756,9 @@ export function createTypewriterEffect<
             // After an onchain revert, `reexecute` runs them on the rewound state.
             if (resubmit === undefined) {
               const executed: ForceExecution[] = [];
+              const context = blockContext;
               for (const queueIndex of queueIndexes) {
-                const execution = yield* forceExecute(queueIndex);
+                const execution = yield* forceExecute(queueIndex, context);
                 if (execution !== undefined) executed.push(execution);
               }
               forceExecuted = executed;
@@ -1726,8 +1816,8 @@ export function createTypewriterEffect<
               // Each settlement simulates on the state the ones before it leave.
               for (const [i, settlement] of settlements.entries()) {
                 const calldata = encodeExecuteCalldata(
-                  settlement.batches[0]?.mutations[0]?.executionIndex ??
-                    settlement.forceExecuted[0]!.mutation.executionIndex,
+                  executionIndexOf(settlement),
+                  settlement.context,
                   settlement.batches.map((batch) =>
                     encodeBatchArg(batch.mutations),
                   ),
@@ -1851,7 +1941,7 @@ export function createTypewriterEffect<
     type Receipt = ReturnType<typeof formatTransactionReceipt>;
 
     // Like the watch's poll, a request on its path retries until it succeeds.
-    const untilSuccess = <value>(effect: Effect.Effect<value, RpcError>) =>
+    const untilSuccess = <value, error>(effect: Effect.Effect<value, error>) =>
       effect.pipe(
         Effect.tapError((error) =>
           Effect.logWarning("Failed to request for a block", error),
@@ -1861,6 +1951,8 @@ export function createTypewriterEffect<
             Duration.millis(app.blockPollingIntervalMs),
           ),
         }),
+        // A forever schedule never gives up.
+        Effect.orDie,
       );
 
     const requestReceipt = (hash: Hex.Hex, block: LocalBlock) =>
@@ -1934,37 +2026,63 @@ export function createTypewriterEffect<
         );
       });
 
-    // Each settlement checks the execution index, so once one reverts, every
-    // settlement with a later nonce reverts too. They execute again together.
-    const doomFrom = (entry: Submitted, receipt: Receipt) =>
+    // Once every settlement has landed, the chain is at the first reverted
+    // one, and the reverted settlements execute again from there.
+    const resynchronize = (block: LocalBlock) =>
       Effect.gen(function* () {
-        if (reverted !== undefined) {
-          return yield* Effect.die("A settlement reverted before a resubmit");
+        const settlements = resync!;
+        if (
+          [...submitted.values()].some(
+            ({ status, raw }) => status === "pending" || raw === undefined,
+          )
+        ) {
+          return;
         }
-        const settlements = [entry.settlement];
-        for (const later of submitted.values()) {
-          if (later.nonce <= entry.nonce) continue;
-          later.status = "doomed";
-          settlements.push(later.settlement);
+        const [first] = settlements;
+        const { context } = first!.settlement;
+        const landed = first!.block!;
+        // Only a late landing is fixed by executing again in a newer block.
+        if (
+          context.number <= landed.number &&
+          landed.timestamp - context.timestamp <= BigInt(EXPIRATION_MARGIN)
+        ) {
+          return yield* new SettlementRevertedError({
+            transactionHash: first!.hash!,
+          });
         }
-        yield* Effect.logDebug("Reverted settlement transaction").pipe(
+        const fromExecutionIndex = executionIndexOf(first!.settlement);
+        const onchain = yield* untilSuccess(
+          requestExecutionIndex(app.address, block.hash).pipe(
+            Effect.provideService(Rpc, rpc),
+          ),
+        );
+        if (onchain !== fromExecutionIndex) {
+          return yield* new ResyncMismatchError({
+            blockNumber: block.number,
+            expected: fromExecutionIndex,
+            actual: onchain,
+          });
+        }
+        yield* Effect.logWarning(
+          "Resynchronized after a reverted settlement",
+        ).pipe(
           Effect.annotateLogs({
-            transaction_hash: receipt.transactionHash,
-            doomed_count: settlements.length - 1,
+            transaction_hash: first!.hash,
+            reverted_count: settlements.length,
+            execution_index: fromExecutionIndex,
           }),
         );
+        resync = undefined;
         reverted = {
-          error: new SettlementRevertedError({
-            transactionHash: receipt.transactionHash,
-          }),
-          batches: settlements.flatMap(({ batches }) => batches),
+          error: new SettlementRevertedError({ transactionHash: first!.hash! }),
+          batches: settlements.flatMap(({ settlement }) => settlement.batches),
           forceExecuted: settlements.flatMap(
-            ({ forceExecuted }) => forceExecuted,
+            ({ settlement }) => settlement.forceExecuted,
           ),
           queueIndexes: settlements
-            .flatMap(({ forceExecuted, discardedQueueIndexes }) => [
-              ...forceExecuted.map(({ queueIndex }) => queueIndex),
-              ...discardedQueueIndexes,
+            .flatMap(({ settlement }) => [
+              ...settlement.forceExecuted.map(({ queueIndex }) => queueIndex),
+              ...settlement.discardedQueueIndexes,
             ])
             .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
         };
@@ -1976,9 +2094,7 @@ export function createTypewriterEffect<
     const settleBlock = (block: LocalBlock) =>
       Effect.gen(function* () {
         const unlanded = () =>
-          [...submitted.values()].filter(
-            ({ status }) => status === "pending" || status === "doomed",
-          );
+          [...submitted.values()].filter(({ status }) => status === "pending");
         const byHash = new Map(unlanded().map((entry) => [entry.hash, entry]));
         const ours = block.transactions.flatMap(
           (hash) => byHash.get(hash) ?? [],
@@ -2001,31 +2117,44 @@ export function createTypewriterEffect<
             let settled = false;
             for (const [i, entry] of ours.entries()) {
               const receipt = receipts[i]!;
-              const doomed = entry.status === "doomed";
-              entry.block = { number: block.number, hash: block.hash };
+              entry.block = {
+                number: block.number,
+                hash: block.hash,
+                timestamp: block.timestamp,
+              };
               if (receipt.status === "success") {
-                if (doomed) {
-                  return yield* Effect.die(
-                    "A settlement succeeded after an earlier one reverted",
-                  );
+                if (resync !== undefined) {
+                  return yield* new SettlementAfterRevertError({
+                    transactionHash: receipt.transactionHash,
+                  });
                 }
                 entry.status = "included";
                 yield* include(entry.settlement, receipt, runtimeBlock);
                 settled = true;
               } else {
                 entry.status = "reverted";
-                if (!doomed) yield* doomFrom(entry, receipt);
+                if (resync === undefined) {
+                  yield* Effect.logWarning(
+                    "Settlement transaction reverted onchain",
+                  ).pipe(
+                    Effect.annotateLogs({
+                      transaction_hash: receipt.transactionHash,
+                    }),
+                  );
+                }
+                resync ??= [];
+                resync.push(entry);
               }
             }
             if (settled) {
               yield* emitBlockEvents(runtimeBlock);
               unfinalizedBlocks.push(runtimeBlock);
             }
+            if (resync !== undefined) yield* resynchronize(block);
           }),
         );
 
         // A node can lose a transaction, and every later nonce waits on it.
-        const now = yield* Clock.currentTimeMillis;
         for (const [i, entry] of unlanded().entries()) {
           if (
             entry.raw === undefined ||
@@ -2033,7 +2162,7 @@ export function createTypewriterEffect<
           ) {
             continue;
           }
-          if (now - entry.firstSentAtMs! > STUCK_MS) {
+          if (block.number - entry.firstSentAt! > STUCK_BLOCKS) {
             // The watch can be behind the chain, where it already landed.
             const receipt = yield* untilSuccess(
               rpc.request({
@@ -2047,7 +2176,7 @@ export function createTypewriterEffect<
                 transactionHash: entry.hash!,
               });
             }
-            entry.firstSentAtMs = now;
+            entry.firstSentAt = block.number;
           }
           yield* broadcast(entry);
         }
@@ -2117,8 +2246,10 @@ export function createTypewriterEffect<
             number: Hex.fromNumber(message.block.number),
             timestamp: Hex.fromNumber(message.block.timestamp),
           });
-          blockTimestamp = message.block.timestamp;
-          blockNumber = message.block.number;
+          blockContext = {
+            number: message.block.number,
+            timestamp: message.block.timestamp,
+          };
 
           for (const log of message.block.logs) {
             const queued = decodeForceInclusionQueued(log);

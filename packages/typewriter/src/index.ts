@@ -75,6 +75,8 @@ export {
   PendingTransactionsError,
   type ProgramError,
   ProgramStoppedError,
+  ResyncMismatchError,
+  SettlementAfterRevertError,
   SettlementNonceTakenError,
   SettlementRejectedError,
   SettlementReorgedError,

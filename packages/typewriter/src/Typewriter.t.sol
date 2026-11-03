@@ -465,7 +465,7 @@ contract AccountTest {
         uint256[] memory forceExecuteIndexes = new uint256[](1);
         forceExecuteIndexes[0] = queuedIndex;
 
-        nativeHarness.execute(nativeHarness.executionIndex(), batches, forceExecuteIndexes);
+        nativeHarness.execute(nativeHarness.executionIndex(), block.number, block.timestamp, batches, forceExecuteIndexes);
 
         require(nativeHarness.value() == 55, "queued dispatch");
         require(nativeHarness.nonce(accountID, 0) == 1, "queued nonce");
@@ -475,7 +475,7 @@ contract AccountTest {
         uint256 executionIndex = nativeHarness.executionIndex();
         (bool ok, bytes memory ret) = address(nativeHarness)
             .call(
-                abi.encodeCall(nativeHarness.execute, (executionIndex + 1, new Typewriter.Batch[](0), new uint256[](0)))
+                abi.encodeCall(nativeHarness.execute, (executionIndex + 1, block.number, block.timestamp, new Typewriter.Batch[](0), new uint256[](0)))
             );
         require(!ok, "expected execute to revert");
         require(
@@ -585,7 +585,7 @@ contract AccountTest {
     function _executeNative(uint8 mutation, bytes memory mutationData, Authorization memory authorization) internal {
         Typewriter.Batch[] memory batches = _nativeBatch(mutation, mutationData, authorization);
         uint256[] memory forceExecuteIndexes = new uint256[](0);
-        nativeHarness.execute(nativeHarness.executionIndex(), batches, forceExecuteIndexes);
+        nativeHarness.execute(nativeHarness.executionIndex(), block.number, block.timestamp, batches, forceExecuteIndexes);
     }
 
     function _expectNativeRevert(
@@ -597,7 +597,7 @@ contract AccountTest {
         Typewriter.Batch[] memory batches = _nativeBatch(mutation, mutationData, authorization);
         uint256[] memory forceExecuteIndexes = new uint256[](0);
         (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(abi.encodeCall(nativeHarness.execute, (nativeHarness.executionIndex(), batches, forceExecuteIndexes)));
+            .call(abi.encodeCall(nativeHarness.execute, (nativeHarness.executionIndex(), block.number, block.timestamp, batches, forceExecuteIndexes)));
         require(!ok, "expected native execution to revert");
         require(keccak256(ret) == keccak256(expectedRevert), "wrong native revert");
     }

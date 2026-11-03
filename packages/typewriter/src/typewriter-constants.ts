@@ -78,12 +78,11 @@ export const BUILTIN_MUTATIONS = {
 export const FIRST_BUILTIN_MUTATION_ID = 253;
 
 /**
- * The seconds past the latest block's timestamp that an authorization or
- * credential must stay valid for a mutation to be accepted. A mutation that
- * expires before its settlement lands reverts the settlement, so this covers
- * the time from acceptance to inclusion.
+ * `MAX_SETTLEMENT_DELAY` in Typewriter.sol: how many seconds after its pinned
+ * timestamp a settlement can land. An authorization must outlast it, so none
+ * executes after it expires.
  */
-export const EXPIRATION_MARGIN = 5;
+export const EXPIRATION_MARGIN = 60;
 
 /** `struct Authorization`. */
 export const AUTHORIZATION_ABI_PARAMS = [
@@ -100,6 +99,8 @@ export const TYPEWRITER_ABI = [
     name: "execute",
     inputs: [
       { name: "fromExecutionIndex", type: "uint256" },
+      { name: "blockNumber", type: "uint256" },
+      { name: "timestamp", type: "uint256" },
       {
         name: "batches",
         type: "tuple[]",

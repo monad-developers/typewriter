@@ -74,7 +74,8 @@ export type SIM = {
   /**
    * How far past now a jump moves the clock, at least to the next sleep, that
    * a jump draws from. A jump past `EXPIRATION_MARGIN` moves the next block's
-   * timestamp past expirations the runtime accepted against the block before.
+   * timestamp past expirations the runtime accepted against the block before,
+   * and past the delay that settlements in flight pinned, so they revert.
    */
   jumpsMs: number[];
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
@@ -107,7 +108,7 @@ export type SIM = {
      * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
      * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the runtime's
      * latest block is behind the clock, and `EXPIRATION_MARGIN` and above are
-     * accepted, and expire if the clock jumps before their settlement.
+     * accepted, and expire if the clock jumps before they execute again.
      * `Infinity` never expires, and repeats so most steps draw it.
      */
     expirationsS: number[];
@@ -385,7 +386,10 @@ const program = Effect.gen(function* () {
           Math.floor(jumpRandom.nextDoubleUnsafe() * SIM.jumpsMs.length)
         ]!;
       const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
-      if (at > now) clock.advanceTo(at);
+      if (at <= now) return;
+      // A jump is a pause, not time the runtime had to make progress in.
+      if (jumpMs > 0) progressedAt += at - now;
+      clock.advanceTo(at);
     },
     SIM.ioRate,
   );

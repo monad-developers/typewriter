@@ -156,7 +156,7 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 
 #### Submission
 
-Typewriter sends a settlement transaction as soon as a batch or enqueue is waiting, without waiting for earlier settlements to be included, so several land in each block. Each settlement takes everything pending, split as needed to keep each transaction under the hardfork's transaction gas cap (30M on Monad, read from revm at startup); a batch is never split across transactions, so a batch that would outgrow one continues in a new batch. Settlements use consecutive nonces, and each names the execution index it starts from, so if one reverts, every settlement sent after it reverts too, and their mutations are executed again and sent in new settlements. A mutation too large for any transaction is rejected with `MutationTooLargeError`.
+Typewriter sends a settlement transaction as soon as a batch or enqueue is waiting, without waiting for earlier settlements to be included, so several land in each block. Each settlement takes everything pending, split as needed to keep each transaction under the hardfork's transaction gas cap (30M on Monad, read from revm at startup); a batch is never split across transactions, so a batch that would outgrow one continues in a new batch. Settlements use consecutive nonces, and each names the execution index it starts from and the block it executed at. A settlement executes onchain exactly as the server simulated it, so it reverts only when it lands more than `MAX_SETTLEMENT_DELAY` seconds late. Then every settlement sent after it reverts too, because the execution index moved. The server stops sending, waits for every settlement in flight to land, checks the execution index onchain, and executes the reverted mutations again in the current block; those that fail now, for example because their authorization expires too soon, are rejected. A signed nonce is never signed again, only sent again. A mutation too large for any transaction is rejected with `MutationTooLargeError`.
 
 ## Examples
 
@@ -197,13 +197,10 @@ If the server is completely offline, the user may call `forceExecute()` on their
 
 Mutations are executed and accepted on the server before they are executed onchain. Onchain divergence happens when the server's local execution environment accepts a mutation, but the same mutation behaves differently (and reverts) when executed onchain.
 
-This can happen when the execution depends on EVM environment opcodes whose values differ from the values used in the mined transaction, or on state the server cannot reproduce locally, such as another contract's storage (see [Determinism](#determinism)).
+Typewriter rules out its causes: the contract runs each settlement at the block number and timestamp the server executed it at, and the app contract can't read other contracts or environment values that differ onchain (see [Determinism](#determinism)). A settlement can still revert when it lands too late; see [Submission](#submission).
 
 When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "received"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorganization.
 
-The server execution environment uses values from the last known block for EVM environment opcodes. Certain EVM environment opcodes, such as `COINBASE` or `PREVRANDAO`, can make divergence more likely or even guaranteed. For a full list of unsupported opcodes, see [contract requirements](#contract-requirements).
-
-> Coming soon: If onchain execution results in a different state transition than the server accepted, the transaction will revert instead of settling a mismatched result.
 
 ### Crash recovery
 
@@ -362,7 +359,7 @@ Both P-256 paths use the precompile at `0x100` and require it to return `1`.
 checks before executing the mutation:
 
 1. The account exists, and `credentialID` selects a credential that has not been removed.
-2. Neither the authorization nor the credential has expired. Both expirations are Unix timestamps in seconds; `0` means no expiration, and nonzero values must be greater than or equal to `block.timestamp`.
+2. Neither the authorization nor the credential has expired. Both expirations are Unix timestamps in seconds; `0` means no expiration, and nonzero values must be greater than or equal to the settlement's timestamp (see below).
 3. The credential permits the mutation: `permissions & (uint256(1) << mutation)` is nonzero.
 4. The nonce sequence matches the account's next expected sequence for its lane and is less than `type(uint64).max`.
 5. The signature is valid for the EIP-712 digest and the credential's key.
@@ -503,7 +500,7 @@ app contract's functions, each mutation library's `execute`, and every
 function, modifier, and operator they reach; it trusts Typewriter.sol. That code
 must not use:
 
-- `block.*` other than `block.chainid`, `block.number`, and `block.timestamp`, or `blockhash` or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
+- `block.*` other than `block.chainid`, or `blockhash` or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
 - `msg.*` or `tx.*`: the server calls as the scheduler, but anyone can call `forceExecute`, and settlement batches the calldata;
 - `gasleft()`: revm runs with unlimited gas;
 - another contract or account: external calls, `.call`/`.staticcall`/`.delegatecall`, `.send`/`.transfer`, `.balance`, `.code`/`.codehash`, `new`, or `selfdestruct`;
@@ -512,14 +509,16 @@ must not use:
 
 Library code a mutation doesn't reach, such as an unused assembly helper, isn't checked.
 
-`block.number` and `block.timestamp` are allowed, but use them only in
-conditions that revert, such as `require(block.timestamp <= deadline)`. The
-server executes with the last block it saw, so they lag the block a mutation
-settles in. When a check like this passes offchain but reverts onchain, the
-settlement reverts and typewriter drops the mutation. Typewriter doesn't check
-this rule. Storing these values, or branching on them without reverting
-(`if (block.timestamp > deadline) state.x = 1;`), leaves different state
-offchain than onchain, and nothing detects it.
+Use `settlementBlockNumber()` and `settlementTimestamp()` from Typewriter.sol
+instead of `block.number` and `block.timestamp`. A settlement carries the block
+number and timestamp the server executed it at, and the contract runs every
+mutation in it at those values, so offchain and onchain execution see the same
+ones. The contract rejects a settlement whose block number or timestamp is
+ahead of the block it lands in, or whose timestamp is more than
+`MAX_SETTLEMENT_DELAY` (60) seconds behind it. The server accepts only
+authorizations and credentials that expire at least that long after the block
+it executes them in, so none executes after it expires. `forceExecute` runs at
+the block it lands in. Outside `execute` and `forceExecute`, both read `0`.
 
 ### Server runtime
 
