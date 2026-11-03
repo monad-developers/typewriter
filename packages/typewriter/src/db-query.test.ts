@@ -5,6 +5,7 @@ import { makeDb } from "./db";
 import { dropSchema, migrate } from "./db-migrate";
 import { insertMutations } from "./db-query";
 import { createMutationSchema, createTypewriterSchema } from "./db-schema";
+import { builder } from "./db-transport";
 import type { AcceptedMutation, Authorization } from "./typewriter-types";
 
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
@@ -55,9 +56,8 @@ function roundTrip(strings: readonly string[]) {
       ),
       () => dropSchema(db, schemaName).pipe(Effect.orDie),
     );
-    yield* db.transaction((tx) =>
+    yield* db.run(
       insertMutations(
-        tx,
         mutationSchema,
         strings.map(
           (memo, index): AcceptedMutation => ({
@@ -73,8 +73,8 @@ function roundTrip(strings: readonly string[]) {
       ),
     );
     const table = mutationSchema.memo_mutations;
-    const rows = yield* db.query((d) =>
-      d.select().from(table).orderBy(asc(table.execution_index)),
+    const rows = yield* db.run(
+      builder.select().from(table).orderBy(asc(table.execution_index)),
     );
     return rows.map(({ memo, memos }) => ({ memo, memos }));
   }).pipe(Effect.scoped, Effect.runPromise);

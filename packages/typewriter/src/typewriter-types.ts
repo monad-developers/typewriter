@@ -14,8 +14,7 @@ export type { KeyType };
 
 // TODO(kyle) type the `uint40` `expiration` fields here as `number`, as abitype,
 // ox, viem and storage-layout do. Then drop the `Number(...)` in
-// `getAuthorizationPayload`, the `BigInt(...)` in `decodeAuthorizationCalldata`,
-// and use `mode: "number"` for `authorization_expiration` in `db-schema.ts`.
+// `getAuthorizationPayload` and the `BigInt(...)` in `decodeAuthorizationCalldata`.
 export type Credential = {
   expiration: bigint;
   keyType: KeyType;

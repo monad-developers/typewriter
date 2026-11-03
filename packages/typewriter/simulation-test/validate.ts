@@ -6,7 +6,12 @@ import { Hash, Hex } from "ox";
 import { createStorageView, type StorageView } from "storage-layout";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
-import { selectKeccakPreimages, selectStorageSlots } from "../src/db-query";
+import {
+  accountStorage,
+  selectKeccakPreimages,
+  selectStorageSlots,
+} from "../src/db-query";
+import { builder } from "../src/db-transport";
 import { encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
 import type {
@@ -548,9 +553,7 @@ function checkDatabase(
         execution_index: never;
       };
       const found = yield* db
-        .query((d) =>
-          d.select().from(table).orderBy(asc(table.execution_index)),
-        )
+        .run(builder.select().from(table).orderBy(asc(table.execution_index)))
         .pipe(Effect.orDie);
       for (const row of found as MutationRow[]) {
         rows.set(row.execution_index, { name, row });
@@ -573,7 +576,7 @@ function checkDatabase(
         execution_index: executionIndex,
         authorization_account_id: authorization.accountID,
         authorization_credential_id: authorization.credentialID,
-        authorization_nonce: authorization.nonce,
+        authorization_nonce: authorization.nonce.toString(),
         authorization_expiration: authorization.expiration,
         authorization_signature: authorization.signature,
         ...abiParametersToValues(app.mutations[name]!.params, params as never),
@@ -592,9 +595,11 @@ function checkDatabase(
       );
     }
 
-    const storage = yield* db
-      .transaction((tx) => selectStorageSlots(tx, app.typewriterSchema))
-      .pipe(Effect.orDie);
+    const storage = accountStorage(
+      yield* db
+        .run(selectStorageSlots(app.typewriterSchema))
+        .pipe(Effect.orDie),
+    );
     const stored = new Set(
       Object.keys(storage).map((slot) => slot.toLowerCase()),
     );
@@ -629,7 +634,7 @@ function checkDatabase(
     }
 
     const metadata = yield* db
-      .query((d) => d.select().from(app.typewriterSchema.typewriterMetadata))
+      .run(builder.select().from(app.typewriterSchema.typewriterMetadata))
       .pipe(Effect.orDie);
     const code = yield* chain.request({
       method: "eth_getCode",
@@ -641,7 +646,7 @@ function checkDatabase(
         {
           schema_version: 1,
           address: app.address,
-          chain_id: app.chainId,
+          chain_id: BigInt(app.chainId),
           code_hash: Hash.keccak256(code),
         },
       ],
@@ -703,9 +708,9 @@ function checkRuntimeState(
   { app, chain, db, typewriter }: Params,
 ) {
   return Effect.gen(function* () {
-    const preimages = yield* db
-      .transaction((tx) => selectKeccakPreimages(tx, app.typewriterSchema))
-      .pipe(Effect.orDie);
+    const preimages = (yield* db
+      .run(selectKeccakPreimages(app.typewriterSchema))
+      .pipe(Effect.orDie)).map((row) => row.preimage);
     const chainStorage = createStorageView(
       app.storageLayout,
       (slots) => Effect.runPromise(storageValues(chain, app, slots)),
