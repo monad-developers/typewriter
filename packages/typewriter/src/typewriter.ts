@@ -49,16 +49,25 @@ import {
   migrate,
 } from "./db-migrate";
 import {
+  accountStorage,
+  claimOwnership,
   deleteExecutionsFrom,
+  fence,
   insertKeccakPreimages,
   insertMutations,
   insertStorageSlots,
+  selectFence,
   selectKeccakPreimages,
   selectStorageSlots,
   updateMutationInclusion,
 } from "./db-query";
 import type { TypewriterMutationSchema } from "./db-schema";
-import type { DbError, DbTransaction } from "./db-transport";
+import {
+  type CompiledStatement,
+  compile,
+  type DbError,
+  type DbStatement,
+} from "./db-transport";
 import {
   encodeBatchArg,
   encodeEnqueueCalldata,
@@ -630,23 +639,12 @@ function createRuntimeState(
   DbError | EvmError
 > {
   return Effect.gen(function* () {
-    const { initialAccountStorage, preimages } = yield* db.transaction((tx) =>
-      Effect.gen(function* () {
-        const preimages = yield* selectKeccakPreimages(
-          tx,
-          app.typewriterSchema,
-        );
-        const initialAccountStorage = yield* selectStorageSlots(
-          tx,
-          app.typewriterSchema,
-        );
-
-        return {
-          preimages: new Set(preimages),
-          initialAccountStorage,
-        };
-      }),
-    );
+    const [preimageRows, storageRows] = yield* db.run([
+      selectKeccakPreimages(app.typewriterSchema),
+      selectStorageSlots(app.typewriterSchema),
+    ]);
+    const preimages = new Set(preimageRows.map((row) => row.preimage));
+    const initialAccountStorage = accountStorage(storageRows);
 
     if (code === "0x") {
       yield* Effect.logWarning(
@@ -811,6 +809,9 @@ export function createTypewriterEffect<
       },
       nextExecutionIndex,
     );
+    const [owner] = yield* db.run(claimOwnership(app.typewriterSchema));
+    const ownerEpoch = owner!.owner_epoch;
+    let batchSeq = owner!.batch_seq;
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
       yield* createRuntimeState(app, db, code, startBlock);
@@ -844,7 +845,7 @@ export function createTypewriterEffect<
       committed: Deferred.Deferred<void>;
     }>();
     const persistQueue = yield* Queue.unbounded<{
-      write: (tx: DbTransaction) => Effect.Effect<void, DbError>;
+      statements: CompiledStatement[];
       committed: Deferred.Deferred<void>;
     }>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
@@ -1106,14 +1107,14 @@ export function createTypewriterEffect<
       Effect.Success<ReturnType<typeof forceExecute>>
     >;
 
-    const persist = (
-      write: (tx: DbTransaction) => Effect.Effect<void, DbError>,
-    ) =>
-      Effect.gen(function* () {
+    const persist = (statements: DbStatement<unknown>[]) => {
+      const compiled = statements.map(compile);
+      return Effect.gen(function* () {
         const committed = yield* Deferred.make<void>();
-        yield* Queue.offer(persistQueue, { write, committed });
+        yield* Queue.offer(persistQueue, { statements: compiled, committed });
         return committed;
       });
+    };
 
     const acceptBatch = (
       submittedMutations: {
@@ -1176,25 +1177,17 @@ export function createTypewriterEffect<
 
           yield* emitBatch(batchToEvent(batch));
 
-          const committed = yield* persist((tx) =>
-            Effect.gen(function* () {
-              yield* insertMutations(
-                tx,
-                app.mutationSchema,
-                acceptedMutations.map((entry) => entry.mutation),
-              );
-              yield* insertStorageSlots(
-                tx,
-                app.typewriterSchema,
-                acceptedMutations,
-              );
-              yield* insertKeccakPreimages(
-                tx,
-                app.typewriterSchema,
-                acceptedMutations.flatMap(({ preimages }) => preimages),
-              );
-            }),
-          );
+          const committed = yield* persist([
+            ...insertMutations(
+              app.mutationSchema,
+              acceptedMutations.map((entry) => entry.mutation),
+            ),
+            ...insertStorageSlots(app.typewriterSchema, acceptedMutations),
+            ...insertKeccakPreimages(
+              app.typewriterSchema,
+              acceptedMutations.flatMap(({ preimages }) => preimages),
+            ),
+          ]);
           yield* Queue.offer(acceptedBatchesQueue, { id: batch.id, committed });
           for (const { mutation, deferred } of acceptedMutations) {
             yield* Deferred.succeed(deferred, { mutation, committed });
@@ -1254,32 +1247,27 @@ export function createTypewriterEffect<
           if (reexecuted !== undefined) keptForceExecuted.push(reexecuted);
         }
 
-        const committed = yield* persist((tx) =>
-          Effect.gen(function* () {
-            yield* deleteExecutionsFrom(
-              tx,
-              app.mutationSchema,
-              app.typewriterSchema,
-              fromExecutionIndex,
-            );
-            yield* insertMutations(
-              tx,
-              app.mutationSchema,
-              executed.map((entry) => entry.mutation),
-            );
-            yield* insertStorageSlots(tx, app.typewriterSchema, [
-              ...executed,
-              ...keptForceExecuted,
-            ]);
-            yield* insertKeccakPreimages(
-              tx,
-              app.typewriterSchema,
-              [...executed, ...keptForceExecuted].flatMap(
-                ({ preimages }) => preimages,
-              ),
-            );
-          }),
-        );
+        const committed = yield* persist([
+          ...deleteExecutionsFrom(
+            app.mutationSchema,
+            app.typewriterSchema,
+            fromExecutionIndex,
+          ),
+          ...insertMutations(
+            app.mutationSchema,
+            executed.map((entry) => entry.mutation),
+          ),
+          ...insertStorageSlots(app.typewriterSchema, [
+            ...executed,
+            ...keptForceExecuted,
+          ]),
+          ...insertKeccakPreimages(
+            app.typewriterSchema,
+            [...executed, ...keptForceExecuted].flatMap(
+              ({ preimages }) => preimages,
+            ),
+          ),
+        ]);
 
         const kept = new Set(
           keptForceExecuted.map(({ queueIndex }) => queueIndex),
@@ -1345,20 +1333,13 @@ export function createTypewriterEffect<
 
               if (executed.length > 0) {
                 commits.push(
-                  yield* persist((tx) =>
-                    Effect.gen(function* () {
-                      yield* insertStorageSlots(
-                        tx,
-                        app.typewriterSchema,
-                        executed,
-                      );
-                      yield* insertKeccakPreimages(
-                        tx,
-                        app.typewriterSchema,
-                        executed.flatMap(({ preimages }) => preimages),
-                      );
-                    }),
-                  ),
+                  yield* persist([
+                    ...insertStorageSlots(app.typewriterSchema, executed),
+                    ...insertKeccakPreimages(
+                      app.typewriterSchema,
+                      executed.flatMap(({ preimages }) => preimages),
+                    ),
+                  ]),
                 );
               }
             }
@@ -1585,13 +1566,8 @@ export function createTypewriterEffect<
 
         const mutations = batches.flatMap((batch) => batch.mutations);
         yield* Deferred.await(
-          yield* persist((tx) =>
-            updateMutationInclusion(
-              tx,
-              app.mutationSchema,
-              mutations,
-              inclusion,
-            ),
+          yield* persist(
+            updateMutationInclusion(app.mutationSchema, mutations, inclusion),
           ),
         );
 
@@ -1764,13 +1740,45 @@ export function createTypewriterEffect<
       ),
     );
 
+    /**
+     * Commits `statements`, which start with the fence for `seq`. On a failure,
+     * the fence row tells whether they committed, and runs them again if
+     * `COMMIT` got no answer and they did not.
+     */
+    const commitBatch = (
+      statements: CompiledStatement[],
+      seq: bigint,
+    ): Effect.Effect<void, DbError> =>
+      db.run(statements).pipe(
+        Effect.asVoid,
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            const [row] = yield* db.run(selectFence(app.typewriterSchema));
+            if (row?.owner_epoch !== ownerEpoch) {
+              return yield* Effect.fail(error);
+            }
+            if (row.batch_seq === seq) return;
+            if (error.commitUnknown && row.batch_seq === seq - 1n) {
+              return yield* commitBatch(statements, seq);
+            }
+            return yield* Effect.fail(error);
+          }),
+        ),
+      );
+
     const persistProgram = Effect.forever(
       Effect.gen(function* () {
         const jobs = yield* Queue.takeAll(persistQueue);
         const persistStartedAt = yield* startTimer;
-        yield* db.transaction((tx) =>
-          Effect.forEach(jobs, ({ write }) => write(tx), { discard: true }),
+        const seq = batchSeq + 1n;
+        yield* commitBatch(
+          [
+            compile(fence(app.schemaName, ownerEpoch, seq)),
+            ...jobs.flatMap(({ statements }) => statements),
+          ],
+          seq,
         );
+        batchSeq = seq;
         for (const { committed } of jobs) {
           yield* Deferred.succeed(committed, undefined);
         }

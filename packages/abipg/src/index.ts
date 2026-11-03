@@ -3,16 +3,15 @@ import type { $Type, NotNull } from "drizzle-orm";
 import {
   bigint,
   char,
+  customType,
   integer,
-  jsonb,
   numeric,
   type PgBigInt64BuilderInitial,
   type PgBooleanBuilderInitial,
   type PgCharBuilderInitial,
   type PgColumnBuilderBase,
   type PgIntegerBuilderInitial,
-  type PgJsonbBuilderInitial,
-  type PgNumericBigIntBuilderInitial,
+  type PgNumericBuilderInitial,
   type PgSmallIntBuilderInitial,
   type PgTextBuilderInitial,
   boolean as pgBoolean,
@@ -52,7 +51,16 @@ type AbiParameterToPgJsonType<Param extends AbiParameter> = AbiPgJsonValue<
 
 type PgTextBuilder = PgTextBuilderInitial<"", [string, ...string[]]>;
 
-type JsonbBuilderFor<T> = $Type<PgJsonbBuilderInitial<"">, T>;
+type JsonbBuilderFor<T> = $Type<ReturnType<typeof jsonb>, T>;
+
+/**
+ * A `jsonb` column that gives the driver its value as is, for a driver that
+ * encodes JSON itself. drizzle's `jsonb` gives it JSON text, which such a
+ * driver encodes again, as a JSON string.
+ */
+export const jsonb = customType<{ data: unknown; driverData: unknown }>({
+  dataType: () => "jsonb",
+});
 
 type HexCharBuilder = $Type<
   PgCharBuilderInitial<"", [string, ...string[]], number>,
@@ -80,7 +88,7 @@ export type AbiParameterToColumn<Param extends AbiParameter> =
                 | "int64"
             ? NotNullBuilder<PgBigInt64BuilderInitial<"">>
             : Param["type"] extends `uint${string}` | `int${string}`
-              ? NotNullBuilder<PgNumericBigIntBuilderInitial<"">>
+              ? NotNullBuilder<PgNumericBuilderInitial<"">>
               : Param["type"] extends "bytes"
                 ? NotNullBuilder<HexTextBuilder>
                 : Param["type"] extends "string"
@@ -184,8 +192,9 @@ function pgValue(param: AbiParameter, value: unknown): unknown {
     case "integer":
       return Number(value);
     case "bigint":
-    case "numeric(78,0)":
       return BigInt(value as string | number | bigint);
+    case "numeric(78,0)":
+      return BigInt(value as string | number | bigint).toString();
     case "jsonb":
       return jsonValue(param, value);
     default:
@@ -285,11 +294,9 @@ function columnForInfo<Param extends AbiParameter>(
     case "integer":
       return integer();
     case "bigint":
-      // TODO(kyle) abitype gives (u)int33-48 values as number, but this column
-      // reads them back as bigint. Use `bigint({ mode: "number" })` for them.
       return bigint({ mode: "bigint" });
     case "numeric(78,0)":
-      return numeric({ precision: 78, scale: 0, mode: "bigint" });
+      return numeric({ precision: 78, scale: 0 });
     case "text":
       return info.hex ? text().$type<Hex>() : text();
     case "jsonb":

@@ -3,8 +3,16 @@ import { asc } from "drizzle-orm";
 import { Effect } from "effect";
 import { makeDb } from "./db";
 import { dropSchema, migrate } from "./db-migrate";
-import { insertMutations } from "./db-query";
+import {
+  claimOwnership,
+  fence,
+  insertKeccakPreimages,
+  insertMutations,
+  selectFence,
+  selectKeccakPreimages,
+} from "./db-query";
 import { createMutationSchema, createTypewriterSchema } from "./db-schema";
+import { builder, DbError } from "./db-transport";
 import type { AcceptedMutation, Authorization } from "./typewriter-types";
 
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
@@ -29,22 +37,28 @@ const AUTHORIZATION = {
 
 let schemas = 0;
 
-/**
- * Inserts a mutation row for each string, in a `text` column and in a `jsonb`
- * array, as the runtime does, and reads the rows back.
- */
-function roundTrip(strings: readonly string[]) {
+const memoSchema = (schemaName: string) =>
+  createMutationSchema(schemaName, { mutations: { Memo: MEMO } });
+
+/** Runs `f` on a new, migrated schema, which it drops after. */
+function withSchema<a, e>(
+  f: (schema: {
+    db: Effect.Success<ReturnType<typeof makeDb>>;
+    schemaName: string;
+    typewriterSchema: ReturnType<typeof createTypewriterSchema>;
+    mutationSchema: ReturnType<typeof memoSchema>;
+  }) => Effect.Effect<a, e>,
+) {
   return Effect.gen(function* () {
     const db = yield* makeDb({ url: DATABASE_URL!, maxConnections: 1 });
     const schemaName = `typewriter_test_${process.pid}_${schemas++}`;
-    const mutationSchema = createMutationSchema(schemaName, {
-      mutations: { Memo: MEMO },
-    });
+    const typewriterSchema = createTypewriterSchema(schemaName);
+    const mutationSchema = memoSchema(schemaName);
     yield* Effect.acquireRelease(
       migrate(
         db,
         schemaName,
-        createTypewriterSchema(schemaName),
+        typewriterSchema,
         mutationSchema,
         {
           chainId: 1,
@@ -55,29 +69,40 @@ function roundTrip(strings: readonly string[]) {
       ),
       () => dropSchema(db, schemaName).pipe(Effect.orDie),
     );
-    yield* db.transaction((tx) =>
-      insertMutations(
-        tx,
-        mutationSchema,
-        strings.map(
-          (memo, index): AcceptedMutation => ({
-            status: "accepted",
-            name: "Memo",
-            params: { memo, memos: [memo] },
-            authorization: AUTHORIZATION,
-            executionIndex: BigInt(index),
-            journalId: 0,
-            config: MEMO,
-          }),
-        ),
-      ),
-    );
-    const table = mutationSchema.memo_mutations;
-    const rows = yield* db.query((d) =>
-      d.select().from(table).orderBy(asc(table.execution_index)),
-    );
-    return rows.map(({ memo, memos }) => ({ memo, memos }));
+    return yield* f({ db, schemaName, typewriterSchema, mutationSchema });
   }).pipe(Effect.scoped, Effect.runPromise);
+}
+
+/**
+ * Inserts a mutation row for each string, in a `text` column and in a `jsonb`
+ * array, as the runtime does, and reads the rows back.
+ */
+function roundTrip(strings: readonly string[]) {
+  return withSchema(({ db, mutationSchema }) =>
+    Effect.gen(function* () {
+      yield* db.run(
+        insertMutations(
+          mutationSchema,
+          strings.map(
+            (memo, index): AcceptedMutation => ({
+              status: "accepted",
+              name: "Memo",
+              params: { memo, memos: [memo] },
+              authorization: AUTHORIZATION,
+              executionIndex: BigInt(index),
+              journalId: 0,
+              config: MEMO,
+            }),
+          ),
+        ),
+      );
+      const table = mutationSchema.memo_mutations;
+      const rows = yield* db.run(
+        builder.select().from(table).orderBy(asc(table.execution_index)),
+      );
+      return rows.map(({ memo, memos }) => ({ memo, memos }));
+    }),
+  );
 }
 
 const rowsOf = (strings: readonly string[]) =>
@@ -134,4 +159,37 @@ describe.skipIf(DATABASE_URL === undefined)("mutation rows", () => {
     const strings = ["\u0000", "a\u0000b"];
     expect(await roundTrip(strings)).toStrictEqual(rowsOf(strings));
   });
+});
+
+describe.skipIf(DATABASE_URL === undefined)("fence", () => {
+  test("commits only the owner's next batch", () =>
+    withSchema(({ db, schemaName, typewriterSchema }) =>
+      Effect.gen(function* () {
+        const [first] = yield* db.run(claimOwnership(typewriterSchema));
+        yield* db.run([fence(schemaName, first!.owner_epoch, 1n)]);
+        const skipped = yield* db
+          .run([fence(schemaName, first!.owner_epoch, 3n)])
+          .pipe(Effect.flip);
+        expect(skipped).toBeInstanceOf(DbError);
+
+        const [second] = yield* db.run(claimOwnership(typewriterSchema));
+        const stale = yield* db
+          .run([
+            fence(schemaName, first!.owner_epoch, 2n),
+            ...insertKeccakPreimages(typewriterSchema, [
+              `0x${"ab".repeat(64)}`,
+            ]),
+          ])
+          .pipe(Effect.flip);
+        expect(stale).toBeInstanceOf(DbError);
+        expect([
+          ...(yield* db.run(selectKeccakPreimages(typewriterSchema))),
+        ]).toStrictEqual([]);
+
+        yield* db.run([fence(schemaName, second!.owner_epoch, 2n)]);
+        expect([
+          ...(yield* db.run(selectFence(typewriterSchema))),
+        ]).toStrictEqual([{ owner_epoch: 2n, batch_seq: 2n }]);
+      }),
+    ));
 });

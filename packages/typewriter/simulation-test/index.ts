@@ -132,8 +132,10 @@ export type SIM = {
   }[];
   db: {
     latencyMs: [number, number];
-    /** How often a transaction rolls back after `f` ran, so the runtime runs it again. */
+    /** How often the retry of a transaction rolls back, so the runtime runs it again. */
     errorRate: number;
+    /** How often the retry of a transaction loses the reply to its `COMMIT`. */
+    commitLostRate: number;
   };
 };
 
@@ -246,6 +248,7 @@ export const SIM: SIM = {
       [10, 100],
     ] as [number, number][]),
     errorRate: pick(SEED, "db.errorRate", [0, 0.01, 0.05]),
+    commitLostRate: pick(SEED, "db.commitLostRate", [0.05, 0.2]),
   },
 };
 

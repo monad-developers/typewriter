@@ -1,8 +1,8 @@
 import { SQL } from "bun";
 import { DrizzleQueryError, type SQLWrapper } from "drizzle-orm";
-import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
+import { drizzle } from "drizzle-orm/bun-sql";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { Data, Deferred, Effect, Exit, Schedule, type Scope } from "effect";
+import { Data, Deferred, Effect, Exit, type Scope } from "effect";
 
 export type PostgresOptions = {
   url: string;
@@ -11,28 +11,18 @@ export type PostgresOptions = {
   idleInTransactionTimeoutMs?: number;
 };
 
-export type Drizzle = BunSQLDatabase;
+/** Builds statements for `Db.run`. It cannot run them. */
+export const builder = drizzle.mock();
 
 export type DbStatement<result> = PromiseLike<result> & SQLWrapper;
-
-/** `build` must only build the statement, not run it. */
-export type DbQuery = <result>(
-  build: (db: Drizzle) => DbStatement<result>,
-) => Effect.Effect<result, DbError>;
-
-export type DbTransaction = {
-  query: DbQuery;
-};
 
 /**
  * Runs statements on one database driver. A transport does not retry: it sets
  * `notApplied` on a failure that is safe to retry.
  */
 export type DbTransport = {
-  query: DbQuery;
-  transaction: <a, e, r>(
-    f: (tx: DbTransaction) => Effect.Effect<a, e, r>,
-  ) => Effect.Effect<a, e | DbError, r>;
+  /** Runs `statements` in one transaction, in order, and returns their results. */
+  run: (statements: CompiledStatement[]) => Effect.Effect<unknown[], DbError>;
   /**
    * Hold the advisory lock `key` until the scope closes. The result fails when
    * the lock is lost, so run it in a race with the work that needs the lock.
@@ -48,6 +38,8 @@ export class DbError extends Data.TaggedError("DbError")<{
   cause: unknown;
   /** Set when the work is known to have not applied, so a retry is safe. */
   notApplied?: boolean;
+  /** Set when `COMMIT` got no answer, so the transaction may have committed. */
+  commitUnknown?: boolean;
 }> {
   override get message() {
     const sql = this.sql.replaceAll(/\s+/g, " ").trim();
@@ -55,16 +47,20 @@ export class DbError extends Data.TaggedError("DbError")<{
   }
 }
 
+const LOCK_SQL = "SELECT pg_advisory_lock($1::bigint)";
+
+/** A statement whose SQL and parameters are fixed. */
+export type CompiledStatement = { sql: string; params: unknown[] };
+
 const dialect = new PgDialect();
 
-const LOCK_SQL = "SELECT pg_advisory_lock($1::bigint)";
-const COMMIT_STATUS_SQL = "select pg_xact_status($1::xid8) as status";
-
-/** The transaction's `COMMIT` hasn't finished, so check its status again. */
-class CommitInProgressError extends Data.TaggedError("CommitInProgressError") {}
-
-export function statementSql(statement: SQLWrapper): string {
-  return dialect.sqlToQuery(statement.getSQL()).sql;
+/**
+ * Fixes the SQL and parameters of `statement` now, so later changes to the
+ * values it was built from don't reach the database.
+ */
+export function compile(statement: SQLWrapper): CompiledStatement {
+  const { sql, params } = dialect.sqlToQuery(statement.getSQL());
+  return { sql, params: structuredClone(params) };
 }
 
 /** Codes after which a statement did not apply. */
@@ -99,24 +95,6 @@ function hasCode(cause: unknown, codes: Set<string>): boolean {
   );
 }
 
-function makeQuery(db: Drizzle, inTransaction: boolean): DbQuery {
-  return (build) =>
-    Effect.suspend(() => {
-      const statement = build(db);
-      return Effect.tryPromise({
-        try: () => statement,
-        catch: (cause) =>
-          new DbError({
-            sql: statementSql(statement),
-            cause,
-            notApplied:
-              hasCode(cause, NOT_APPLIED) ||
-              (inTransaction && hasCode(cause, CONNECTION_LOST)),
-          }),
-      });
-    });
-}
-
 export function makePostgresTransport(
   options: PostgresOptions,
 ): Effect.Effect<DbTransport, never, Scope.Scope> {
@@ -129,8 +107,7 @@ export function makePostgresTransport(
           new SQL({
             url: options.url,
             max: options.maxConnections,
-            // Prepared statements store drizzle's `jsonb` values as JSON strings.
-            prepare: false,
+            bigint: true,
             connection: {
               statement_timeout: String(options.statementTimeoutMs ?? 30_000),
               idle_in_transaction_session_timeout: String(
@@ -142,134 +119,53 @@ export function makePostgresTransport(
       (client) => Effect.promise(() => client.close()),
     );
 
-    const query = makeQuery(drizzle({ client }), false);
-
-    // The status of a transaction whose `COMMIT` got no answer, or `undefined`.
-    // It uses its own connection, since the pool may be busy or failing.
-    const commitStatus = (xid: string) =>
-      Effect.acquireUseRelease(
-        Effect.sync(
-          () => new SQL({ url: options.url, max: 1, prepare: false }),
-        ),
-        (checker) =>
-          Effect.gen(function* () {
-            const [row] = yield* Effect.tryPromise({
-              try: () => checker`select pg_xact_status(${xid}::xid8) as status`,
-              catch: (cause) => new DbError({ sql: COMMIT_STATUS_SQL, cause }),
-            });
-            // Postgres aborts a transaction whose session ends before `COMMIT`.
-            if (row?.status === "in progress") {
-              return yield* new CommitInProgressError();
-            }
-            return row?.status as string | null | undefined;
-          }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis") })),
-        (checker) => Effect.promise(() => checker.close()),
-      ).pipe(
-        Effect.timeout(idleInTransactionTimeoutMs + 5_000),
-        Effect.orElseSucceed(() => undefined),
-      );
-
     // Not `reserve`: after a lost connection, a reserved connection can run
     // later statements on another session.
-    const transaction: DbTransport["transaction"] = <a, e, r>(
-      f: (tx: DbTransaction) => Effect.Effect<a, e, r>,
-    ) =>
-      Effect.flatMap(Effect.context<r>(), (context) =>
-        Effect.callback<a, e | DbError>((resume) => {
-          const controller = new AbortController();
-          let exit: Exit.Exit<a, e> | undefined;
-          // A failed statement aborts the transaction, even if `f` recovers.
-          let failed: DbError | undefined;
-          // Set before `COMMIT`. A transaction without an id wrote nothing.
-          let xid: string | null | undefined;
-          const done = client
-            .begin(async (tx) => {
-              const query = makeQuery(drizzle({ client: tx }), true);
-              exit = await Effect.runPromiseExitWith(context)(
-                Effect.suspend(() =>
-                  f({
-                    query: (build) =>
-                      query(build).pipe(
-                        Effect.tapError((error) =>
-                          Effect.sync(() => {
-                            failed ??= error;
-                          }),
-                        ),
-                      ),
-                  }),
-                ),
-                { signal: controller.signal },
-              );
-              if (Exit.isFailure(exit)) throw exit;
-              if (failed !== undefined) throw failed;
-              [{ xid }] =
-                await tx`select pg_current_xact_id_if_assigned()::text as xid`;
-              return exit.value;
-            })
-            .then(
-              (value) => resume(Effect.succeed(value as a)),
-              (cause) => {
-                if (exit !== undefined && Exit.isFailure(exit)) {
-                  return resume(exit);
-                }
-                if (failed !== undefined) return resume(Effect.fail(failed));
-                // Postgres rolls back unless it ran `COMMIT`.
-                if (exit === undefined || xid === undefined) {
-                  return resume(
-                    Effect.fail(
-                      new DbError({
-                        sql:
-                          exit === undefined
-                            ? "BEGIN"
-                            : "select pg_current_xact_id_if_assigned()",
-                        cause,
-                        notApplied: true,
-                      }),
-                    ),
-                  );
-                }
-                // Postgres answered `COMMIT` with an error, so it rolled back.
-                if (
-                  hasCode(cause, SERVER_ERROR) &&
-                  !hasCode(cause, CONNECTION_LOST)
-                ) {
-                  return resume(
-                    Effect.fail(
-                      new DbError({
-                        sql: "COMMIT",
-                        cause,
-                        notApplied: hasCode(cause, NOT_APPLIED),
-                      }),
-                    ),
-                  );
-                }
-                const value = exit.value;
-                if (xid === null) return resume(Effect.succeed(value));
-                // `COMMIT` may have run.
-                resume(
-                  commitStatus(xid).pipe(
-                    Effect.flatMap((status) =>
-                      status === "committed"
-                        ? Effect.succeed(value)
-                        : Effect.fail(
-                            new DbError({
-                              sql: "COMMIT",
-                              cause,
-                              notApplied: status === "aborted",
-                            }),
-                          ),
-                    ),
-                  ),
-                );
-              },
-            )
-            .finally(() => controller.abort());
-          return Effect.promise(() => {
-            controller.abort();
-            return done;
+    const run: DbTransport["run"] = (statements) =>
+      Effect.promise(async () => {
+        // The statement that runs: -1 for `BEGIN`, `statements.length` for `COMMIT`.
+        let at = -1;
+        const results: unknown[] = [];
+        try {
+          await client.begin(async (tx) => {
+            for (at = 0; at < statements.length; at++) {
+              const { sql, params } = statements[at]!;
+              results.push(await tx.unsafe(sql, params));
+            }
           });
-        }),
-      );
+          return Exit.succeed(results);
+        } catch (cause) {
+          // Postgres rolls back unless it ran `COMMIT`.
+          if (at < statements.length) {
+            return Exit.fail(
+              new DbError({
+                sql: statements[at]?.sql ?? "BEGIN",
+                cause,
+                notApplied:
+                  at < 0 ||
+                  hasCode(cause, NOT_APPLIED) ||
+                  hasCode(cause, CONNECTION_LOST),
+              }),
+            );
+          }
+          // Postgres answered `COMMIT` with an error, so it rolled back.
+          if (
+            hasCode(cause, SERVER_ERROR) &&
+            !hasCode(cause, CONNECTION_LOST)
+          ) {
+            return Exit.fail(
+              new DbError({
+                sql: "COMMIT",
+                cause,
+                notApplied: hasCode(cause, NOT_APPLIED),
+              }),
+            );
+          }
+          return Exit.fail(
+            new DbError({ sql: "COMMIT", cause, commitUnknown: true }),
+          );
+        }
+      }).pipe(Effect.flatten, Effect.uninterruptible);
 
     // The lock belongs to one session, so it has its own connection, which
     // Bun must not close. Closing it ends the session and releases the lock.
@@ -302,10 +198,6 @@ export function makePostgresTransport(
         return Deferred.await(lost);
       });
 
-    return {
-      query,
-      transaction,
-      lock,
-    };
+    return { run, lock };
   });
 }

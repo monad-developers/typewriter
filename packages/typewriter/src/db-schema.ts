@@ -16,7 +16,7 @@ import type { PgTable } from "drizzle-orm/pg-core/table";
 import type { Hex } from "ox";
 import type { MutationsConfig } from "./config";
 
-const uint256 = () => numeric({ precision: 78, scale: 0, mode: "bigint" });
+const uint256 = () => numeric({ precision: 78, scale: 0 });
 const bytes32 = () => char({ length: 66 }).$type<Hex.Hex>();
 
 const mutationColumns = () => ({
@@ -34,7 +34,6 @@ const authorizationColumns = () => ({
   authorization_account_id: bytes32().notNull(),
   authorization_credential_id: bigint({ mode: "bigint" }).notNull(),
   authorization_nonce: uint256().notNull(),
-  // TODO(kyle) `mode: "number"`, see `Credential` in `typewriter-types.ts`.
   authorization_expiration: bigint({ mode: "bigint" }).notNull(),
   authorization_signature: text().$type<Hex.Hex>().notNull(),
 });
@@ -91,8 +90,10 @@ export function createTypewriterSchema(schemaName: string) {
         .notNull()
         .$defaultFn(() => TYPEWRITER_SCHEMA_VERSION),
       address: char({ length: 42 }).$type<Hex.Hex>().notNull(),
-      chain_id: bigint({ mode: "number" }).notNull(),
+      chain_id: bigint({ mode: "bigint" }).notNull(),
       code_hash: bytes32().notNull(),
+      owner_epoch: bigint({ mode: "bigint" }).notNull().default(0n),
+      batch_seq: bigint({ mode: "bigint" }).notNull().default(0n),
     }),
   };
 }
