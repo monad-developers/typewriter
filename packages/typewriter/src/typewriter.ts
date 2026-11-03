@@ -897,6 +897,7 @@ export function createTypewriterEffect<
       name: "mutation" | "batch" | "block",
       listeners: ReadonlySet<(event: event) => void>,
       event: event,
+      copy: (event: event) => event = structuredClone,
     ) =>
       Effect.gen(function* () {
         const context = yield* Effect.context<never>();
@@ -909,7 +910,7 @@ export function createTypewriterEffect<
           (cb) =>
             Effect.try({
               try: () => {
-                const result: unknown = cb(structuredClone(event));
+                const result: unknown = cb(copy(event));
                 if (Predicate.isPromise(result)) {
                   result.catch((error) =>
                     Effect.runForkWith(context)(warn(error)),
@@ -922,8 +923,13 @@ export function createTypewriterEffect<
         );
       });
 
+    // `structuredClone` would turn the error into a plain `Error`.
     const emitMutation = (event: MutationEvent) =>
-      emit("mutation", mutationListeners, event);
+      emit("mutation", mutationListeners, event, (event) => {
+        if (event.status !== "rejected") return structuredClone(event);
+        const { error, ...rest } = event;
+        return { ...structuredClone(rest), error };
+      });
 
     const emitBatch = (event: BatchEvent) =>
       app.sequencing.order === "batch"
