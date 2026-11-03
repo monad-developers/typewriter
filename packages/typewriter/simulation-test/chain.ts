@@ -4,7 +4,6 @@ import {
   type Random,
   Schedule,
   type Scope,
-  Semaphore,
   Stream,
 } from "effect";
 import { ChildProcess, type ChildProcessSpawner } from "effect/process";
@@ -142,7 +141,7 @@ export function makeChain(
     const port = yield* Deferred.await(listening);
 
     const transport = makeHttpTransport(`http://127.0.0.1:${port}`);
-    const lock = yield* Semaphore.make(1);
+    const lock = makeFifoLock();
 
     const send = (request: RpcRequest) =>
       transport.request(request).pipe(
@@ -172,7 +171,7 @@ export function makeChain(
       });
 
     const request = ((request: RpcRequest) =>
-      lock.withPermits(1)(
+      lock(
         request.method === "eth_getTransactionReceipt" ||
           request.method === "eth_getBlockByNumber"
           ? sendCached(atTip, request)
@@ -237,7 +236,7 @@ export function makeChain(
     };
 
     const read = ((request: RpcRequest, asOfMs: number) =>
-      lock.withPermits(1)(
+      lock(
         Effect.gen(function* () {
           const { hash: head, highest: highestSeen } = headAt(asOfMs);
           const seen = (hash: Hex.Hex) => {
@@ -379,7 +378,7 @@ export function makeChain(
       stateDiffs.get(stateDiffKey(blockHash, transactionHash));
 
     const mine = (atMs: number) =>
-      lock.withPermits(1)(
+      lock(
         Effect.gen(function* () {
           const hash = yield* mineBlock(atMs);
           heads.push({ atMs, hash, highest });
@@ -395,7 +394,7 @@ export function makeChain(
     // block after them, in a shuffled order. Anvil holds a transaction whose
     // nonce is ahead until the one before it arrives.
     const reorg = (depth: number, added: number, atMs: number) =>
-      lock.withPermits(1)(
+      lock(
         Effect.gen(function* () {
           const head = canonical.length - 1;
           // The runtime finalized every block `finalizedBlockDepth` below the
@@ -502,4 +501,38 @@ function matches(
     (address === undefined || has(address, log.address)) &&
     topics.every((topic, i) => topic === null || has(topic, log.topics[i]))
   );
+}
+
+/**
+ * Runs effects one at a time, in the order they ask. Effect's `Semaphore` frees
+ * a permit before it wakes the next waiter, so a caller that asks in between
+ * goes first, and whether one does depends on wall-clock time.
+ */
+function makeFifoLock() {
+  const waiters: (() => void)[] = [];
+  let held = false;
+  const acquire = Effect.callback<void>((resume) => {
+    if (!held) {
+      held = true;
+      resume(Effect.void);
+      return;
+    }
+    const waiter = () => resume(Effect.void);
+    waiters.push(waiter);
+    return Effect.sync(() => {
+      const index = waiters.indexOf(waiter);
+      if (index !== -1) waiters.splice(index, 1);
+    });
+  });
+  const release = Effect.sync(() => {
+    const next = waiters.shift();
+    if (next === undefined) held = false;
+    else next();
+  });
+  return <a, e, r>(effect: Effect.Effect<a, e, r>) =>
+    Effect.acquireUseRelease(
+      acquire,
+      () => effect,
+      () => release,
+    );
 }
