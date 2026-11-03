@@ -57,6 +57,16 @@ export class UnrecoverableReorgError extends Data.TaggedError(
   }
 }
 
+/** A provider served a block off the finalized chain, from a stale view. */
+class StaleBlockError extends Data.TaggedError("StaleBlockError")<{
+  number: bigint;
+  hash: Hex.Hex;
+}> {
+  override get message() {
+    return `Block ${this.number} (${this.hash}) does not descend from the finalized block`;
+  }
+}
+
 export type WatchError = RpcError | UnrecoverableReorgError;
 
 export function watchChain(
@@ -108,10 +118,11 @@ export function watchChain(
             while (added[0]!.parentHash !== (kept.at(-1) ?? root).hash) {
               const replaced = kept.pop();
               if (replaced === undefined) {
-                return yield* new UnrecoverableReorgError({
-                  number: top.number,
-                  hash: top.hash,
-                });
+                const error = { number: top.number, hash: top.hash };
+                // No reorg replaces a finalized root, so `top` is from a stale view.
+                return yield* root === config.fromBlock
+                  ? new UnrecoverableReorgError(error)
+                  : new StaleBlockError(error);
               }
               removed.push(replaced);
               added.unshift(yield* getBlock(added[0]!.parentHash));
@@ -181,6 +192,9 @@ export function watchChain(
         });
 
         yield* poll.pipe(
+          Effect.catchTag("StaleBlockError", (error) =>
+            Effect.logWarning("Ignored a stale view of the chain", error),
+          ),
           // A block can leave the chain between requests. `reconcile` changes
           // nothing until it succeeds, so the next poll starts over.
           Effect.tapError((error) =>
