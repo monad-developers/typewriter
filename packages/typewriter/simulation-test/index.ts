@@ -150,17 +150,6 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   process.exit(1);
 }
 
-/** When the last phase of the run ended, in wall-clock time since the process started. */
-let phaseEndMs = 0;
-
-/** Ends a phase. Returns its wall-clock duration, for its log. */
-function wallMs(): number {
-  const now = performance.now();
-  const ms = Math.round(now - phaseEndMs);
-  phaseEndMs = now;
-  return ms;
-}
-
 /** The configuration of a run. Each value is drawn from `SEED` and its path. */
 export const SIM: SIM = {
   seed: SEED,
@@ -319,18 +308,32 @@ const makeDatabase = Effect.acquireRelease(
 
 const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation").pipe(
-    Effect.annotateLogs({ seed: SIM.seed, config: SIM, duration: wallMs() }),
+    Effect.annotateLogs({
+      seed: SIM.seed,
+      config: SIM,
+      duration: Math.round(performance.now()),
+    }),
   );
+  const deployStart = performance.now();
   const chain = yield* makeChain(yield* makeRandom(SIM.seed, "reorgs"));
   const address = yield* deploy({ chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
-    Effect.annotateLogs({ address, chain_id: chainId, duration: wallMs() }),
+    Effect.annotateLogs({
+      address,
+      chain_id: chainId,
+      duration: Math.round(performance.now() - deployStart),
+    }),
   );
+  const databaseStart = performance.now();
   const database = yield* makeDatabase;
   yield* Effect.logInfo("Created simulation database").pipe(
-    Effect.annotateLogs({ database: database.name, duration: wallMs() }),
+    Effect.annotateLogs({
+      database: database.name,
+      duration: Math.round(performance.now() - databaseStart),
+    }),
   );
+  const worldStart = performance.now();
   const solidityApp = yield* Effect.promise(() =>
     loadSolidityApp(ASSESSMENT_ENTRYPOINT),
   );
@@ -775,9 +778,10 @@ const program = Effect.gen(function* () {
       accounts: signers.length,
       steps: plan.length,
       transports: transports.length,
-      duration: wallMs(),
+      duration: Math.round(performance.now() - worldStart),
     }),
   );
+  const runStart = performance.now();
 
   // The step loop: run every fiber that can run, then move the clock to the
   // next sleep.
@@ -809,9 +813,10 @@ const program = Effect.gen(function* () {
     Effect.annotateLogs({
       submissions: run.submissions.length,
       virtual_ms: Math.round(clock.currentTimeMillisUnsafe() - startMs),
-      duration: wallMs(),
+      duration: Math.round(performance.now() - runStart),
     }),
   );
+  const validateStart = performance.now();
 
   yield* validate({
     app,
@@ -844,7 +849,7 @@ const program = Effect.gen(function* () {
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
-      duration: wallMs(),
+      duration: Math.round(performance.now() - validateStart),
     }),
   );
 });
@@ -914,11 +919,7 @@ function unsettled(run: Run): string[] {
 
 BunRuntime.runMain(
   program.pipe(
-    Effect.tapCause((cause) =>
-      Effect.logError("Failed simulation", cause).pipe(
-        Effect.annotateLogs({ duration: wallMs() }),
-      ),
-    ),
+    Effect.tapCause((cause) => Effect.logError("Failed simulation", cause)),
     Effect.scoped,
     Effect.provide(Logger.layer([logger])),
     Effect.provide(BunServices.layer),
