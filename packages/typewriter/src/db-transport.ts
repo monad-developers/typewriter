@@ -7,6 +7,7 @@ import { Data, Deferred, Effect, Schedule, type Scope } from "effect";
 export type PostgresOptions = {
   url: string;
   maxConnections?: number;
+  /** Postgres's `statement_timeout`, and how long a whole `run` waits for an answer. */
   statementTimeoutMs?: number;
   idleInTransactionTimeoutMs?: number;
 };
@@ -102,6 +103,7 @@ export function makePostgresTransport(
   options: PostgresOptions,
 ): Effect.Effect<DbTransport, never, Scope.Scope> {
   return Effect.gen(function* () {
+    const timeoutMs = options.statementTimeoutMs ?? 30_000;
     const idleInTransactionTimeoutMs =
       options.idleInTransactionTimeoutMs ?? 30_000;
     const client = yield* Effect.acquireRelease(
@@ -112,14 +114,15 @@ export function makePostgresTransport(
             max: options.maxConnections,
             bigint: true,
             connection: {
-              statement_timeout: String(options.statementTimeoutMs ?? 30_000),
+              statement_timeout: String(timeoutMs),
               idle_in_transaction_session_timeout: String(
                 idleInTransactionTimeoutMs,
               ),
             },
           }),
       ),
-      (client) => Effect.promise(() => client.close()),
+      // Runs are uninterruptible, so only those past their deadline remain.
+      (client) => Effect.promise(() => client.close({ timeout: 0 })),
     );
 
     // The status of a transaction whose `COMMIT` got no answer, or `undefined`.
@@ -155,22 +158,35 @@ export function makePostgresTransport(
         let at = -1;
         // Set before `COMMIT`. A transaction without an id wrote nothing.
         let xid: string | null | undefined;
+        let expired = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const results: unknown[] = [];
         try {
-          await client.begin(async (tx) => {
-            // Sent without waiting, so they share round trips.
-            const settled = await Promise.allSettled(
-              [...statements, { sql: XID_SQL, params: [] }].map(
-                ({ sql, params }) => tx.unsafe(sql, params).execute(),
-              ),
-            );
-            for (at = 0; at < settled.length; at++) {
-              const result = settled[at]!;
-              if (result.status === "rejected") throw result.reason;
-              if (at < statements.length) results.push(result.value);
-              else [{ xid }] = result.value;
-            }
-          });
+          await Promise.race([
+            client.begin(async (tx) => {
+              // Sent without waiting, so they share round trips.
+              const settled = await Promise.allSettled(
+                [...statements, { sql: XID_SQL, params: [] }].map(
+                  ({ sql, params }) => tx.unsafe(sql, params).execute(),
+                ),
+              );
+              for (at = 0; at < settled.length; at++) {
+                const result = settled[at]!;
+                if (result.status === "rejected") throw result.reason;
+                if (at < statements.length) results.push(result.value);
+                else [{ xid }] = result.value;
+              }
+              // The run already failed as not applied, so it must not commit.
+              if (expired) throw new Error("Deadline passed before COMMIT");
+            }),
+            // A silently dropped connection never answers.
+            new Promise((_, reject) => {
+              timer = setTimeout(() => {
+                expired = true;
+                reject(new Error(`No answer within ${timeoutMs}ms`));
+              }, timeoutMs);
+            }),
+          ]);
           return Effect.succeed(results);
         } catch (cause) {
           // Postgres rolls back unless it ran `COMMIT`.
@@ -215,6 +231,8 @@ export function makePostgresTransport(
                   ),
             ),
           );
+        } finally {
+          clearTimeout(timer);
         }
       }).pipe(Effect.flatten, Effect.uninterruptible);
 
