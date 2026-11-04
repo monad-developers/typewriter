@@ -62,6 +62,7 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
 } from "./encoding";
+import { groupByGas, SETTLEMENT_GAS, settlementGasLimit } from "./gas";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 import { Rpc } from "./rpc";
@@ -71,11 +72,7 @@ import {
   requestExecutionIndex,
   requestNonce,
 } from "./rpc-request";
-import {
-  EXPIRATION_MARGIN,
-  TX_GAS_LIMIT_CAP,
-  TYPEWRITER_ABI,
-} from "./typewriter-constants";
+import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "./typewriter-constants";
 import {
   ChainIdMismatchError,
   type CreateTypewriterError,
@@ -162,29 +159,6 @@ const DEPLOYMENT_LOCK_TIMEOUT_MS = 10_000;
 const WATCH_BUFFER_SIZE = 16;
 
 const SLOT_CACHE_MAX_ENTRIES = 200_000;
-
-/** The intrinsic gas of a transaction, which a settlement pays once. */
-const TRANSACTION_BASE_GAS = 21_000;
-
-/** Monad's storage pages hold `2 ** PAGE_SHIFT` slots. */
-const PAGE_SHIFT = 7n;
-/** What Monad saves on a page already read in the transaction. */
-const COLD_READ_SAVING = 8_000;
-/** What Monad saves on a page the transaction already wrote. */
-const PAGE_WRITE_SAVING = 2_800;
-
-/** The gas an SSTORE requires left, which a gas limit must leave. */
-const SSTORE_SENTRY_GAS = 2_300;
-
-/** The gas limit for `gas`: the 1/64 each call keeps back, and the SSTORE sentry. */
-function gasLimitFor(gas: number): number {
-  return gas + Math.ceil(gas / 64) + SSTORE_SENTRY_GAS;
-}
-
-/** The most gas a settlement can take, so its gas limit fits a transaction. */
-const SETTLEMENT_GAS = Math.floor(
-  ((TX_GAS_LIMIT_CAP - SSTORE_SENTRY_GAS) * 64) / 65,
-);
 
 /** How many blocks a sent settlement waits before it is sent again. The lowest nonce, which the rest wait on, waits one. */
 const REBROADCAST_BLOCKS = 3n;
@@ -350,30 +324,6 @@ function decodeForceInclusionQueued(log: LocalLog): ForceInclusionQueued {
     data: log.data,
     strict: true,
   }).args;
-}
-
-/**
- * Groups `items` in order so each group's gas stays under `gasCap`. An item
- * over the cap on its own gets a group of its own.
- *
- * @dev Settlements are not capped in bytes.
- */
-function chunkByGas<item>(
-  items: readonly item[],
-  gasCap: number,
-  gasOf: (item: item) => number,
-): item[][] {
-  const groups: item[][] = [];
-  let gas = 0;
-  for (const item of items) {
-    gas += gasOf(item);
-    if (groups.length === 0 || gas > gasCap) {
-      groups.push([]);
-      gas = gasOf(item);
-    }
-    groups.at(-1)!.push(item);
-  }
-  return groups;
 }
 
 function createRuntimeState(
@@ -825,52 +775,6 @@ export function createTypewriterEffect<
         ),
       ]);
 
-    // Groups executions so each settlement fits a transaction. Alone, each
-    // paid the base gas a settlement pays once.
-    const groupByGas = <execution extends Execution>(executions: execution[]) =>
-      chunkByGas(
-        executions,
-        SETTLEMENT_GAS - TRANSACTION_BASE_GAS,
-        ({ executeResult }) => executeResult.gas_used - TRANSACTION_BASE_GAS,
-      );
-
-    // A group's gas as one transaction: its executions' gas alone, less what
-    // they share. The base gas is paid once, and each storage page is cold
-    // once and first written once. It never comes in under the chain's.
-    const estimateGas = (group: Execution[]) => {
-      let gas = TRANSACTION_BASE_GAS;
-      const reads = new Map<string, number>();
-      const writes = new Map<string, number>();
-      const count = (counts: Map<string, number>, keys: Set<string>) => {
-        for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
-      };
-      for (const { executeResult } of group) {
-        gas += executeResult.gas_used - TRANSACTION_BASE_GAS;
-        count(
-          reads,
-          new Set(
-            executeResult.access_list.flatMap(({ address, storageKeys }) =>
-              storageKeys.map(
-                (key) =>
-                  `${address.toLowerCase()}:${BigInt(key) >> PAGE_SHIFT}`,
-              ),
-            ),
-          ),
-        );
-        count(
-          writes,
-          new Set(
-            executeResult.slot_writes.map(
-              ({ slot }) => `${BigInt(slot) >> PAGE_SHIFT}`,
-            ),
-          ),
-        );
-      }
-      for (const n of reads.values()) gas -= (n - 1) * COLD_READ_SAVING;
-      for (const n of writes.values()) gas -= (n - 1) * PAGE_WRITE_SAVING;
-      return gas;
-    };
-
     const toSettlement = (
       group: Execution[],
       timestamp: bigint,
@@ -883,7 +787,9 @@ export function createTypewriterEffect<
       fromExecutionHash: group[0]!.fromExecutionHash,
       fromExecutionIndex: group[0]!.mutation.executionIndex,
       journalIds: group.map(({ executeResult }) => executeResult.journal_id),
-      gasLimit: gasLimitFor(estimateGas(group)),
+      gasLimit: settlementGasLimit(
+        group.map(({ executeResult }) => executeResult),
+      ),
       committed,
     });
 
@@ -919,7 +825,10 @@ export function createTypewriterEffect<
         );
         const committed = yield* persistExecutions(accepted);
         const settled: Settlement[] = [];
-        for (const [i, group] of groupByGas(accepted).entries()) {
+        for (const [i, group] of groupByGas(
+          accepted,
+          ({ executeResult }) => executeResult,
+        ).entries()) {
           const mutations = group.map(({ mutation }) => mutation);
           const reused = i === 0 ? batch : undefined;
           const groupBatch: RuntimeBatch =
@@ -993,11 +902,12 @@ export function createTypewriterEffect<
         if (executed.length === 0) return [];
 
         const committed = yield* persistExecutions(executed);
-        return groupByGas(executed).map((group) =>
-          toSettlement(group, timestamp, committed, {
-            batch: undefined,
-            queueIndexes: group.map(({ queueIndex }) => queueIndex),
-          }),
+        return groupByGas(executed, ({ executeResult }) => executeResult).map(
+          (group) =>
+            toSettlement(group, timestamp, committed, {
+              batch: undefined,
+              queueIndexes: group.map(({ queueIndex }) => queueIndex),
+            }),
         );
       });
 
