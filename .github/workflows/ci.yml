@@ -78,3 +78,37 @@ jobs:
           version: stable
       - run: bun install --frozen-lockfile
       - run: bun run test
+
+  simulation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+      - run: bun install --frozen-lockfile
+      - run: bun run --filter typewriter-evm build
+      # Short seeds that pass on main: fifo and batch, each with rejections.
+      - name: Simulate fixed seeds
+        working-directory: packages/typewriter
+        run: |
+          for seed in 0x0b 0x49 0x5b; do
+            SEED=$seed bun simulation-test/index.ts
+          done
