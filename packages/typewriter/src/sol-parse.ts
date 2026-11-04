@@ -219,7 +219,7 @@ const ENVIRONMENT_GLOBALS = new Set([
   "blockhash",
   "blobhash",
 ]);
-const ALLOWED_BLOCK_MEMBERS = new Set(["chainid", "number", "timestamp"]);
+const ALLOWED_BLOCK_MEMBERS = new Set(["chainid"]);
 const ACCOUNT_MEMBERS = new Set([
   "balance",
   "code",

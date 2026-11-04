@@ -12,7 +12,6 @@ export const RECIPIENT_ADDR =
 
 export const INITIAL_SUPPLY = 1_000_000_000_000_000_000_000n;
 export const TRANSFER_AMOUNT = 123_000_000_000_000_000_000n;
-export const SIMULATE_AMOUNT = 456_000_000_000_000_000_000n;
 
 export const TOTAL_SUPPLY_SLOT = Hex.fromNumber(2n, { size: 32 });
 export const BALANCE_OF_SLOT = 3n;
@@ -89,18 +88,6 @@ export async function loadTestToken(): Promise<ForgeArtifact> {
   ).json()) as ForgeArtifact;
 }
 
-export async function loadCallGasCallee(): Promise<ForgeArtifact> {
-  return (await Bun.file(
-    `${import.meta.dir}/contracts/out/CallGas.sol/CallGasCallee.json`,
-  ).json()) as ForgeArtifact;
-}
-
-export async function loadCallGasCaller(): Promise<ForgeArtifact> {
-  return (await Bun.file(
-    `${import.meta.dir}/contracts/out/CallGas.sol/CallGasCaller.json`,
-  ).json()) as ForgeArtifact;
-}
-
 export async function loadPrecompileCaller(): Promise<ForgeArtifact> {
   return (await Bun.file(
     `${import.meta.dir}/contracts/out/PrecompileCaller.sol/PrecompileCaller.json`,
@@ -147,13 +134,6 @@ export function transferData(to: Address.Address, amount: bigint): Hex.Hex {
     "function transfer(address to, uint256 amount) returns (bool)",
   );
   return AbiFunction.encodeData(transfer, [to, amount]);
-}
-
-export function callBurnData(target: Address.Address, count: bigint): Hex.Hex {
-  const callBurn = AbiFunction.from(
-    "function callBurn(address target, uint256 count) returns (uint256)",
-  );
-  return AbiFunction.encodeData(callBurn, [target, count]);
 }
 
 // eth_sendRawTransactionSync returns the receipt once the tx is mined. Anvil

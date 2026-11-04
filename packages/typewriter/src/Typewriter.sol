@@ -72,6 +72,8 @@ error InvalidNonce(bytes32 accountID, uint192 lane, uint64 expected, uint64 rece
 error NonceOverflow(bytes32 accountID, uint192 lane);
 error LastCredential(bytes32 accountID);
 
+uint256 constant MAX_SETTLEMENT_DELAY = 60;
+
 function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view {
     if (keyType == KeyType.Secp256k1) {
         verifySecp256k1(digest, publicKey, signature);
@@ -159,6 +161,8 @@ abstract contract Typewriter {
     error ForceInclusionTooEarly(uint256 remainingDelay);
     error ForceInclusionAlreadyExecuted(uint256 index);
     error LengthMismatch();
+    error ExecutionHashMismatch(bytes32 expected, bytes32 received);
+    error InvalidSettlementTimestamp(uint256 timestamp);
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
@@ -167,6 +171,7 @@ abstract contract Typewriter {
     mapping(bytes32 => Account) internal accounts;
     QueuedMutation[] internal queue;
     uint256 public executionIndex;
+    bytes32 public executionHash;
 
     constructor(address scheduler) {
         SCHEDULER = scheduler;
@@ -183,23 +188,31 @@ abstract contract Typewriter {
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal virtual;
 
-    function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external {
+    function execute(
+        bytes32 fromExecutionHash,
+        uint40 timestamp,
+        Batch calldata batch,
+        uint256[] calldata forceExecuteIndexes
+    ) external {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
+        bytes32 _executionHash = executionHash;
+        if (_executionHash != fromExecutionHash) revert ExecutionHashMismatch(_executionHash, fromExecutionHash);
+        if (timestamp > block.timestamp || block.timestamp - timestamp > MAX_SETTLEMENT_DELAY) {
+            revert InvalidSettlementTimestamp(timestamp);
+        }
+        if (
+            batch.mutations.length != batch.mutationData.length
+                || batch.mutations.length != batch.authorizationData.length
+        ) {
+            revert LengthMismatch();
+        }
 
-        for (uint256 b; b < batches.length; b++) {
-            Batch calldata batch = batches[b];
-            if (
-                batch.mutations.length != batch.mutationData.length
-                    || batch.mutations.length != batch.authorizationData.length
-            ) {
-                revert LengthMismatch();
-            }
-            for (uint256 i; i < batch.mutations.length; i++) {
-                uint256 freeMemoryPointer = _getFreeMemoryPointer();
-                _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
-                _setFreeMemoryPointer(freeMemoryPointer);
-                executionIndex++;
-            }
+        for (uint256 i; i < batch.mutations.length; i++) {
+            uint256 freeMemoryPointer = _getFreeMemoryPointer();
+            _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i], timestamp);
+            _setFreeMemoryPointer(freeMemoryPointer);
+            _executionHash = _accumulate(_executionHash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
+            executionIndex++;
         }
 
         for (uint256 i; i < forceExecuteIndexes.length; i++) {
@@ -209,12 +222,23 @@ abstract contract Typewriter {
             if (queued.enqueuedTimestamp == 0) revert ForceInclusionAlreadyExecuted(index);
 
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
-            _execute(queued.mutation, queued.mutationData, queued.authorizationData);
+            _execute(queued.mutation, queued.mutationData, queued.authorizationData, timestamp);
             _setFreeMemoryPointer(freeMemoryPointer);
+            _executionHash = _accumulate(_executionHash, queued.mutation, queued.mutationData, queued.authorizationData);
             executionIndex++;
 
             delete queue[index];
         }
+        
+        executionHash = _executionHash;
+    }
+
+    function _accumulate(bytes32 hash, uint8 mutation, bytes memory mutationData, bytes memory authorizationData)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(hash, mutation, keccak256(mutationData), keccak256(authorizationData)));
     }
 
     function _getFreeMemoryPointer() private pure returns (uint256 pointer) {
@@ -254,13 +278,16 @@ abstract contract Typewriter {
         uint256 executableAt = queued.enqueuedTimestamp + FORCE_INCLUSION_DELAY;
         if (block.timestamp < executableAt) revert ForceInclusionTooEarly(executableAt - block.timestamp);
 
-        _execute(queued.mutation, queued.mutationData, queued.authorizationData);
+        _execute(queued.mutation, queued.mutationData, queued.authorizationData, block.timestamp);
+        executionHash = _accumulate(executionHash, queued.mutation, queued.mutationData, queued.authorizationData);
         executionIndex++;
 
         delete queue[index];
     }
 
-    function _execute(uint8 mutation, bytes memory mutationData, bytes memory authorizationData) internal {
+    function _execute(uint8 mutation, bytes memory mutationData, bytes memory authorizationData, uint256 timestamp)
+        internal
+    {
         Authorization memory authorization = abi.decode(authorizationData, (Authorization));
         Account storage account;
         CreateAccount memory createAccount;
@@ -295,10 +322,10 @@ abstract contract Typewriter {
             if (credential.publicKey.length == 0) {
                 revert CredentialNotFound(authorization.accountID, authorization.credentialID);
             }
-            if (authorization.expiration != 0 && authorization.expiration < block.timestamp) {
+            if (authorization.expiration != 0 && authorization.expiration < timestamp) {
                 revert AuthorizationExpired(authorization.expiration);
             }
-            if (credential.expiration != 0 && credential.expiration < block.timestamp) {
+            if (credential.expiration != 0 && credential.expiration < timestamp) {
                 revert CredentialExpired(credential.expiration);
             }
             if (credential.permissions & (uint256(1) << mutation) == 0) {

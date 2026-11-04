@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use monad_revm::{
     api::{builder::MonadBuilder, default_ctx::monad_context_with_db},
@@ -10,14 +10,14 @@ use revm::{
     context_interface::{
         result::{ExecutionResult, HaltReason},
         transaction::{AccessList, AccessListItem},
-        Host, JournalTr,
+        JournalTr,
     },
     database::InMemoryDB,
     inspector::InspectEvm,
     interpreter::{
         interpreter::EthInterpreter,
         interpreter_types::{Jumps, MemoryTr},
-        CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult,
+        Interpreter,
     },
     primitives::{
         alloy_primitives::{B512, U64},
@@ -36,7 +36,6 @@ use serde::{Deserialize, Serialize};
 enum Request {
     SetBlockContext { id: u64, params: BlockParams },
     Execute { id: u64, params: ExecuteParams },
-    Simulate { id: u64, params: SimulateParams },
     ReadStorage { id: u64, params: ReadStorageParams },
     RevertJournals { id: u64, params: JournalIdsParams },
     PruneJournals { id: u64, params: JournalIdsParams },
@@ -95,13 +94,6 @@ impl ExecuteParams {
 }
 
 #[derive(Deserialize)]
-struct SimulateParams {
-    #[serde(flatten)]
-    tx: ExecuteParams,
-    journal_ids: Vec<u64>,
-}
-
-#[derive(Deserialize)]
 struct ReadStorageParams {
     address: Address,
     slots: Vec<U256>,
@@ -121,6 +113,8 @@ struct TxOutcome {
     gas_used: u64,
     /// Sorted by address, then storage key.
     access_list: AccessList,
+    /// The hardfork it executed under.
+    spec: MonadHardfork,
 }
 
 impl TxOutcome {
@@ -158,14 +152,6 @@ struct ExecuteOk {
     keccak_preimages: Vec<B512>,
 }
 
-/// gas_used is with the access list warm, as the chain charges it.
-#[derive(Serialize)]
-struct SimulateOk {
-    #[serde(flatten)]
-    outcome: TxOutcome,
-    gas_limit: u64,
-}
-
 #[derive(Serialize)]
 struct SlotWrite {
     slot: B256,
@@ -179,45 +165,14 @@ type MonadCtx = monad_revm::api::default_ctx::MonadContext<InMemoryDB>;
 type Evm = monad_revm::api::builder::DefaultMonadEvm<MonadCtx, HarnessInspector>;
 type TxResult = ExecutionResult<HaltReason>;
 
-/// The gas limit must exceed gas_used in two places: SSTORE needs more than
-/// the call stipend left (EIP-2200), and a call or create keeps 1/64 of the
-/// gas it could forward (EIP-150). Gas spent after either point is already in
-/// gas_used, so each frame needs a reserve: 2,301 for its own SSTOREs, and
-/// enough that 63/64 of its remaining gas covers each child's gas plus the
-/// child's reserve. Monad has no refunds, so gas_used is the gas spent. A
-/// halted frame uses all the gas it is given, which its need already counts.
-///
-/// Typewriter contracts never catch a halt in a nested call: a failed call
-/// reverts the tx. The limit relies on this. Simulate runs at u64::MAX gas, so
-/// a caught halt in a call that forwards all its gas burns nearly all of it,
-/// and gas_limit comes out near u64::MAX, which the node rejects.
 #[derive(Default)]
 struct HarnessInspector {
     keccak_preimages: Vec<B512>,
-    frame_reserves: Vec<u64>,
-    gas_reserve: u64,
 }
 
 impl HarnessInspector {
     fn clear(&mut self) {
         *self = Self::default();
-    }
-
-    /// Ends a call or create frame and raises its caller's reserve to cover it.
-    fn frame_end(&mut self, gas_limit: u64, result: &InterpreterResult, sstore_reserve: u64) {
-        let Some(mut reserve) = self.frame_reserves.pop() else {
-            return;
-        };
-        reserve = reserve.max(sstore_reserve);
-        // The gas this frame needs to be given: what it spent plus its reserve.
-        let need = gas_limit - result.gas.remaining() + reserve;
-        match self.frame_reserves.last_mut() {
-            // The caller keeps 1/64 of its gas back from the call, so to give
-            // `need` it must hold this frame's reserve plus about need/63 more.
-            Some(parent) => *parent = (*parent).max(reserve + need.div_ceil(63) + 1),
-            // The top frame's reserve is the tx's.
-            None => self.gas_reserve = reserve,
-        }
     }
 }
 
@@ -242,64 +197,24 @@ impl Inspector<MonadCtx> for HarnessInspector {
         }
         self.keccak_preimages.push(preimage);
     }
-
-    fn call(&mut self, _context: &mut MonadCtx, _inputs: &mut CallInputs) -> Option<CallOutcome> {
-        self.frame_reserves.push(0);
-        None
-    }
-
-    fn call_end(&mut self, context: &mut MonadCtx, inputs: &CallInputs, outcome: &mut CallOutcome) {
-        // Precompiles have fixed costs and no SSTORE.
-        let sstore_reserve = if outcome.was_precompile_called {
-            0
-        } else {
-            context.gas_params().call_stipend() + 1
-        };
-        self.frame_end(inputs.gas_limit, &outcome.result, sstore_reserve);
-    }
-
-    fn create(
-        &mut self,
-        _context: &mut MonadCtx,
-        _inputs: &mut CreateInputs,
-    ) -> Option<CreateOutcome> {
-        self.frame_reserves.push(0);
-        None
-    }
-
-    fn create_end(
-        &mut self,
-        context: &mut MonadCtx,
-        inputs: &CreateInputs,
-        outcome: &mut CreateOutcome,
-    ) {
-        let sstore_reserve = context.gas_params().call_stipend() + 1;
-        self.frame_end(inputs.gas_limit(), &outcome.result, sstore_reserve);
-    }
 }
 
 // -----------------------------------------------------------------------------
 // Harness
 
-/// revm clears its own journal when a tx succeeds, so each tx's pre/post images
-/// are kept here to revert or temporarily undo it later.
+/// revm clears its own journal when a tx succeeds, so each tx's pre-images
+/// are kept here to undo it later.
 #[derive(Default)]
 struct Journal {
-    accounts: HashMap<Address, (AccountInfo, AccountInfo)>,
-    storage: HashMap<(Address, U256), (U256, U256)>,
-    access_list: AccessList,
+    accounts: HashMap<Address, AccountInfo>,
+    storage: HashMap<(Address, U256), U256>,
 }
 
 impl Journal {
-    fn from_state(state: &EvmState, access_list: AccessList) -> Self {
-        let mut journal = Journal {
-            access_list,
-            ..Default::default()
-        };
+    fn from_state(state: &EvmState) -> Self {
+        let mut journal = Journal::default();
         for (address, account) in state {
-            journal
-                .accounts
-                .insert(*address, (account.original_info(), account.info.clone()));
+            journal.accounts.insert(*address, account.original_info());
             // Only writes: undoing a slot the tx just read would overwrite
             // what a later tx, whose journal stays, wrote to it.
             for (slot, value) in account
@@ -307,37 +222,20 @@ impl Journal {
                 .iter()
                 .filter(|(_, value)| value.is_changed())
             {
-                journal.storage.insert(
-                    (*address, *slot),
-                    (value.original_value(), value.present_value()),
-                );
+                journal
+                    .storage
+                    .insert((*address, *slot), value.original_value());
             }
         }
         journal
     }
 
-    fn write(&self, db: &mut InMemoryDB, image: Image) {
-        for (address, images) in &self.accounts {
-            db.insert_account_info(*address, image.pick(images).clone());
+    fn undo(&self, db: &mut InMemoryDB) {
+        for (address, info) in &self.accounts {
+            db.insert_account_info(*address, info.clone());
         }
-        for ((address, slot), images) in &self.storage {
-            let Ok(()) = db.insert_account_storage(*address, *slot, *image.pick(images));
-        }
-    }
-}
-
-/// Which side of a tx a journal writes: Pre undoes the tx, Post redoes it.
-#[derive(Clone, Copy)]
-enum Image {
-    Pre,
-    Post,
-}
-
-impl Image {
-    fn pick<T>(self, (pre, post): &(T, T)) -> &T {
-        match self {
-            Image::Pre => pre,
-            Image::Post => post,
+        for ((address, slot), value) in &self.storage {
+            let Ok(()) = db.insert_account_storage(*address, *slot, *value);
         }
     }
 }
@@ -443,7 +341,7 @@ impl EvmHarness {
         self.ensure_journal_ids(&params.journal_ids)?;
         for journal_id in params.journal_ids.iter().rev() {
             let journal = self.journals.remove(journal_id).expect("validated above");
-            journal.write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
+            journal.undo(self.evm.0.ctx.journaled_state.db_mut());
         }
         Ok(())
     }
@@ -459,7 +357,7 @@ impl EvmHarness {
     fn execute(&mut self, tx: &ExecuteParams) -> Result<ExecuteOk, String> {
         let (result, state) = self.run_tx(tx, AccessList::default())?;
         let access_list = self.discovered_access_list(tx, &state);
-        let outcome = tx_outcome(&result, access_list.clone());
+        let outcome = tx_outcome(&result, access_list, self.evm.0.ctx.cfg.0.spec);
         let keccak_preimages = std::mem::take(&mut self.evm.0.inspector.keccak_preimages);
         if !outcome.success() {
             return Ok(ExecuteOk {
@@ -471,7 +369,7 @@ impl EvmHarness {
         }
 
         let slot_writes = collect_slot_writes(&state, tx.to);
-        let journal = Journal::from_state(&state, access_list);
+        let journal = Journal::from_state(&state);
         self.evm.commit(state);
         let journal_id = self.next_journal_id;
         self.next_journal_id += 1;
@@ -482,19 +380,6 @@ impl EvmHarness {
             slot_writes,
             keccak_preimages,
         })
-    }
-
-    fn simulate(&mut self, params: &SimulateParams) -> Result<SimulateOk, String> {
-        self.ensure_journal_ids(&params.journal_ids)?;
-        for journal_id in params.journal_ids.iter().rev() {
-            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
-        }
-        let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
-        let result = self.run_simulate(&params.tx, cached_access_list);
-        for journal_id in &params.journal_ids {
-            self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Post);
-        }
-        result
     }
 
     fn read_storage(&self, params: &ReadStorageParams) -> BTreeMap<B256, B256> {
@@ -568,59 +453,12 @@ impl EvmHarness {
         items.sort_by_key(|item| item.address);
         AccessList(items)
     }
-
-    fn run_simulate(
-        &mut self,
-        tx: &ExecuteParams,
-        cached_access_list: Option<AccessList>,
-    ) -> Result<SimulateOk, String> {
-        let access_list = match cached_access_list {
-            Some(access_list) => access_list,
-            None => {
-                let (_, state) = self.run_tx(tx, AccessList::default())?;
-                self.discovered_access_list(tx, &state)
-            }
-        };
-
-        let (result, _) = self.run_tx(tx, access_list.clone())?;
-        let outcome = tx_outcome(&result, access_list);
-        let gas_limit = if outcome.success() {
-            result.tx_gas_used() + self.evm.0.inspector.gas_reserve
-        } else {
-            result.tx_gas_used()
-        };
-        Ok(SimulateOk { outcome, gas_limit })
-    }
-
-    fn merge_journal_access_lists(&self, journal_ids: &[u64]) -> Option<AccessList> {
-        if journal_ids.is_empty() {
-            return None;
-        }
-        let mut merged: BTreeMap<Address, BTreeSet<B256>> = BTreeMap::new();
-        for journal_id in journal_ids {
-            for item in &self.journals[journal_id].access_list.0 {
-                merged
-                    .entry(item.address)
-                    .or_default()
-                    .extend(&item.storage_keys);
-            }
-        }
-        Some(AccessList(
-            merged
-                .into_iter()
-                .map(|(address, keys)| AccessListItem {
-                    address,
-                    storage_keys: keys.into_iter().collect(),
-                })
-                .collect(),
-        ))
-    }
 }
 
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-fn tx_outcome(result: &TxResult, access_list: AccessList) -> TxOutcome {
+fn tx_outcome(result: &TxResult, access_list: AccessList, spec: MonadHardfork) -> TxOutcome {
     let status = match result {
         ExecutionResult::Success { .. } => TxStatus::Success,
         ExecutionResult::Revert { output, .. } => TxStatus::Revert {
@@ -634,6 +472,7 @@ fn tx_outcome(result: &TxResult, access_list: AccessList) -> TxOutcome {
         status,
         gas_used: result.tx_gas_used(),
         access_list,
+        spec,
     }
 }
 
@@ -702,7 +541,6 @@ pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
             respond(id, empty(harness.set_block_context(&params)))
         }
         Request::Execute { id, params } => respond(id, harness.execute(&params)),
-        Request::Simulate { id, params } => respond(id, harness.simulate(&params)),
         Request::ReadStorage { id, params } => respond(id, Ok(harness.read_storage(&params))),
         Request::RevertJournals { id, params } => {
             respond(id, empty(harness.revert_journals(&params)))
@@ -734,36 +572,14 @@ mod tests {
 
     const CALLER: u16 = 0xca11;
     const CONTRACT: u16 = 0x0c01;
-    const CALLEE: u16 = 0x0c02;
-    const INNER: u16 = 0x0c03;
 
     /// PUSH1 0 DUP1 SLOAD PUSH1 1 ADD SWAP1 SSTORE STOP.
     const COUNTER: &[u8] = &[0x60, 0x00, 0x80, 0x54, 0x60, 0x01, 0x01, 0x90, 0x55, 0x00];
-    const CALL: u8 = 0xf1;
-    const STATICCALL: u8 = 0xfa;
-    const GAS: &[u8] = &[0x5a];
 
     fn address(n: u16) -> Address {
         let mut bytes = [0u8; 20];
         bytes[18..].copy_from_slice(&n.to_be_bytes());
         Address::from(bytes)
-    }
-
-    /// Calls `target` with no calldata and the `gas` operand.
-    fn call(op: u8, target: u16, gas: &[u8]) -> Vec<u8> {
-        let mut code = [0x60, 0x00].repeat(if op == CALL { 5 } else { 4 });
-        code.push(0x73);
-        code.extend_from_slice(address(target).as_slice());
-        code.extend_from_slice(gas);
-        code.push(op);
-        code
-    }
-
-    /// Reverts unless the call succeeded, then stops.
-    fn require_success(mut code: Vec<u8>) -> Vec<u8> {
-        let revert = u8::try_from(code.len() + 5).unwrap();
-        code.extend_from_slice(&[0x15, 0x60, revert, 0x57, 0x00, 0x5b, 0x60, 0x00, 0x80, 0xfd]);
-        code
     }
 
     fn harness(accounts: &[(u16, &[u8])]) -> EvmHarness {
@@ -797,28 +613,6 @@ mod tests {
         }
     }
 
-    fn simulate(harness: &mut EvmHarness) -> Result<SimulateOk, String> {
-        harness.run_simulate(&tx(), Some(AccessList::default()))
-    }
-
-    fn succeeds_at(harness: &mut EvmHarness, gas_limit: u64) -> bool {
-        let chain_id = harness.evm.0.ctx.cfg.0.chain_id;
-        let mut tx_env = tx().tx_env(chain_id, AccessList::default());
-        tx_env.gas_limit = gas_limit;
-        let result = harness.evm.inspect_one_tx(tx_env).unwrap();
-        let _ = harness.evm.finalize();
-        matches!(result, ExecutionResult::Success { .. })
-    }
-
-    /// The tx fails at gas_used and succeeds at the simulated limit.
-    fn assert_reserve_needed(accounts: &[(u16, &[u8])]) {
-        let mut harness = harness(accounts);
-        let result = simulate(&mut harness).unwrap();
-        assert!(result.outcome.success());
-        assert!(!succeeds_at(&mut harness, result.outcome.gas_used));
-        assert!(succeeds_at(&mut harness, result.gas_limit));
-    }
-
     #[test]
     fn bad_params_answer_with_the_request_id() {
         let request = r#"{"method":"readStorage","id":7,"params":{"address":"0x12","slots":[]}}"#;
@@ -826,28 +620,6 @@ mod tests {
             serde_json::from_str(&dispatch_json(&mut harness(&[]), request)).unwrap();
         assert_eq!(response["id"], 7);
         assert_eq!(response["ok"], false);
-    }
-
-    #[test]
-    fn reserve_covers_sstore_sentry() {
-        // PUSH1 0 SLOAD PUSH1 0 SSTORE STOP: the warm no-op SSTORE costs less
-        // than the 2,301 gas that must remain before it.
-        assert_reserve_needed(&[(CONTRACT, &[0x60, 0x00, 0x54, 0x60, 0x00, 0x55, 0x00])]);
-    }
-
-    #[test]
-    fn reserve_covers_precompile_calls() {
-        for precompile in [0x01, 0x100] {
-            let code = require_success(call(STATICCALL, precompile, GAS));
-            assert_reserve_needed(&[(CONTRACT, &code)]);
-        }
-    }
-
-    #[test]
-    fn reserve_covers_nested_calls() {
-        let outer = require_success(call(CALL, CALLEE, GAS));
-        let middle = require_success(call(CALL, INNER, GAS));
-        assert_reserve_needed(&[(CONTRACT, &outer), (CALLEE, &middle), (INNER, COUNTER)]);
     }
 
     #[test]
@@ -880,16 +652,5 @@ mod tests {
             slots: vec![U256::ZERO],
         });
         assert_eq!(storage[&B256::ZERO], B256::from(U256::from(1)));
-    }
-
-    #[test]
-    fn reserve_covers_caught_halt() {
-        // ecrecover with 1 gas halts; the caller ignores the failure.
-        let mut code = call(STATICCALL, 0x01, &[0x60, 0x01]);
-        code.push(0x00);
-        let mut harness = harness(&[(CONTRACT, &code)]);
-        let result = simulate(&mut harness).unwrap();
-        assert!(result.outcome.success());
-        assert!(succeeds_at(&mut harness, result.gas_limit));
     }
 }

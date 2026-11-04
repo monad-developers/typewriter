@@ -60,16 +60,29 @@ export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
   return { ...authorization, expiration: BigInt(authorization.expiration) };
 }
 
+export type BatchArg = {
+  mutations: readonly number[];
+  mutationData: readonly Hex.Hex[];
+  authorizationData: readonly Hex.Hex[];
+};
+
+export const EMPTY_BATCH: BatchArg = {
+  mutations: [],
+  mutationData: [],
+  authorizationData: [],
+};
+
+/** `timestamp` is the one the settlement executes at, which the contract checks against its block's. */
 export function encodeExecuteCalldata(
-  batches: readonly {
-    mutations: readonly number[];
-    mutationData: readonly Hex.Hex[];
-    authorizationData: readonly Hex.Hex[];
-  }[],
+  fromExecutionHash: Hex.Hex,
+  timestamp: bigint,
+  batch: BatchArg,
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
   return AbiFunction.encodeData(EXECUTE_FUNCTION, [
-    batches,
+    fromExecutionHash,
+    Number(timestamp),
+    batch,
     forceExecuteIndexes,
   ]);
 }
@@ -86,11 +99,9 @@ export function encodeEnqueueCalldata(args: {
   ]);
 }
 
-export function encodeBatchArg(mutations: readonly EncodableMutation[]): {
-  mutations: readonly number[];
-  mutationData: readonly Hex.Hex[];
-  authorizationData: readonly Hex.Hex[];
-} {
+export function encodeBatchArg(
+  mutations: readonly EncodableMutation[],
+): BatchArg {
   return {
     mutations: mutations.map((mutation) => mutation.config.id),
     mutationData: mutations.map((m) => encodeMutationCalldata(m)),

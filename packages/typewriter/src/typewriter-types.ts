@@ -1,4 +1,5 @@
 import type { AbiParameter } from "abitype";
+import type { Deferred } from "effect";
 import type { Hex } from "ox";
 import type {
   AbiParametersToValue,
@@ -7,8 +8,8 @@ import type {
   ResolvedTypewriterMutationConfig,
   SequencingConfig,
 } from "./config";
-import type { ExecuteMutationError } from "./typewriter";
 import type { KeyType } from "./typewriter-constants";
+import type { ExecuteMutationError } from "./typewriter-errors";
 
 export type { KeyType };
 
@@ -111,8 +112,6 @@ type MutationBase = {
 type Execution = {
   /** The `execution_index` primary key of the mutation's row. */
   executionIndex: bigint;
-  /** The EVM journal that holds the mutation's writes. */
-  journalId: number;
 };
 
 /** Mirrors the `block_*` and `transaction_*` columns of a mutation row. */
@@ -148,22 +147,59 @@ export type RuntimeMutation =
 export type RuntimeBatch = {
   status: BatchStatus;
   id: number;
-  position: number;
   mutations: (AcceptedMutation | IncludedMutation)[];
 };
 
-export type RuntimeBlock<sequence extends SequencingConfig> = {
+export type RuntimeBlock = {
   status: BlockStatus;
   number: bigint;
   hash: Hex.Hex;
   timestamp: bigint;
-  transactionHash: Hex.Hex;
-} & (sequence extends "fifo"
-  ? { mutations: IncludedMutation[] }
-  : { batches: RuntimeBatch[] });
+  batches: RuntimeBatch[];
+};
+
+type SettlementBase = {
+  /** The timestamp it executes at, onchain as in revm. */
+  timestamp: bigint;
+  /** The `executionHash` and `executionIndex` it starts from. */
+  fromExecutionHash: Hex.Hex;
+  fromExecutionIndex: bigint;
+  batch: RuntimeBatch | undefined;
+  queueIndexes: bigint[];
+  /** The revm journals of its executions. */
+  journalIds: number[];
+  gasLimit: number;
+  /** Resolves once its executions' rows commit. */
+  committed: Deferred.Deferred<void>;
+};
+
+type Transmission = {
+  nonce: number;
+  raw: Hex.Hex;
+  hash: Hex.Hex;
+  /** The block numbers when it was last and first broadcast. */
+  sentAt: bigint;
+  firstSentAt: bigint;
+};
+
+/** One settlement transaction: a batch, then the enqueues it force-executes. */
+export type ExecutedSettlement = SettlementBase & { status: "executed" };
+export type SigningSettlement = SettlementBase & {
+  status: "signing";
+  nonce: number;
+};
+export type SentSettlement = SettlementBase & Transmission & { status: "sent" };
+export type LandedSettlement = SettlementBase &
+  Transmission & { status: "included" | "reverted"; block: RuntimeBlock };
+
+export type RuntimeSettlement =
+  | ExecutedSettlement
+  | SigningSettlement
+  | SentSettlement
+  | LandedSettlement;
 
 /** Fields of a runtime mutation that listeners never see. */
-type RuntimeOnlyField = "config" | "journalId";
+type RuntimeOnlyField = "config";
 
 type ToMutationEvent<
   mutation,
@@ -197,7 +233,7 @@ type IncludedMutationEvent<mutationsConfig extends MutationsConfig> = Extract<
 
 export type BatchEvent<
   mutationsConfig extends MutationsConfig = MutationsConfig,
-> = { id: number; position: number } & (
+> = { id: number } & (
   | { status: "accepted"; mutations: AcceptedMutationEvent<mutationsConfig>[] }
   | {
       status: "included" | "finalized";
@@ -213,7 +249,6 @@ export type BlockEvent<
   number: bigint;
   hash: Hex.Hex;
   timestamp: bigint;
-  transactionHash: Hex.Hex;
 } & (sequence extends "fifo"
   ? { mutations: IncludedMutationEvent<mutationsConfig>[] }
   : {

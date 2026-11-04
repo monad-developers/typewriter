@@ -71,16 +71,19 @@ export {
   type ExecuteMutationError,
   MutationHaltedError,
   MutationRevertedError,
+  MutationTooLargeError,
+  PendingTransactionsError,
   type ProgramError,
   ProgramStoppedError,
+  ResyncMismatchError,
+  SettlementAfterRevertError,
   SettlementReorgedError,
   SettlementRevertedError,
-  SettlementSimulationHaltedError,
-  SettlementSimulationRevertedError,
+  SettlementStuckError,
   SignTransactionError,
   TypewriterStoppedError,
   UnknownMutationError,
-} from "./typewriter";
+} from "./typewriter-errors";
 export type {
   Account,
   AddCredentialParams,

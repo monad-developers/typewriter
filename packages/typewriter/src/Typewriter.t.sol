@@ -461,14 +461,29 @@ contract AccountTest {
         Authorization memory authorization =
             _signNativeAuthorization(accountID, 0, 0, 0, 0, abi.encode(setValue), SECP256K1_PK);
         uint256 queuedIndex = nativeHarness.enqueue(0, abi.encode(setValue), abi.encode(authorization));
-        Typewriter.Batch[] memory batches = new Typewriter.Batch[](0);
+        Typewriter.Batch memory batch;
         uint256[] memory forceExecuteIndexes = new uint256[](1);
         forceExecuteIndexes[0] = queuedIndex;
 
-        nativeHarness.execute(batches, forceExecuteIndexes);
+        nativeHarness.execute(nativeHarness.executionHash(), uint40(block.timestamp), batch, forceExecuteIndexes);
 
         require(nativeHarness.value() == 55, "queued dispatch");
         require(nativeHarness.nonce(accountID, 0) == 1, "queued nonce");
+    }
+
+    function test_execute_rejectsAnotherExecutionHash() external {
+        bytes32 executionHash = nativeHarness.executionHash();
+        bytes32 other = keccak256("other");
+        (bool ok, bytes memory ret) = address(nativeHarness)
+            .call(
+                abi.encodeCall(nativeHarness.execute, (other, uint40(block.timestamp), _emptyBatch(), new uint256[](0)))
+            );
+        require(!ok, "expected execute to revert");
+        require(
+            keccak256(ret)
+                == keccak256(abi.encodeWithSelector(Typewriter.ExecutionHashMismatch.selector, executionHash, other)),
+            "wrong revert"
+        );
     }
 
     function test_forceExecute_waitsForTheDelayInSeconds() external {
@@ -565,9 +580,9 @@ contract AccountTest {
     }
 
     function _executeNative(uint8 mutation, bytes memory mutationData, Authorization memory authorization) internal {
-        Typewriter.Batch[] memory batches = _nativeBatch(mutation, mutationData, authorization);
+        Typewriter.Batch memory batch = _nativeBatch(mutation, mutationData, authorization);
         uint256[] memory forceExecuteIndexes = new uint256[](0);
-        nativeHarness.execute(batches, forceExecuteIndexes);
+        nativeHarness.execute(nativeHarness.executionHash(), uint40(block.timestamp), batch, forceExecuteIndexes);
     }
 
     function _expectNativeRevert(
@@ -576,10 +591,10 @@ contract AccountTest {
         Authorization memory authorization,
         bytes memory expectedRevert
     ) internal {
-        Typewriter.Batch[] memory batches = _nativeBatch(mutation, mutationData, authorization);
+        Typewriter.Batch memory batch = _nativeBatch(mutation, mutationData, authorization);
         uint256[] memory forceExecuteIndexes = new uint256[](0);
         (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(abi.encodeWithSelector(nativeHarness.execute.selector, batches, forceExecuteIndexes));
+            .call(abi.encodeCall(nativeHarness.execute, (nativeHarness.executionHash(), uint40(block.timestamp), batch, forceExecuteIndexes)));
         require(!ok, "expected native execution to revert");
         require(keccak256(ret) == keccak256(expectedRevert), "wrong native revert");
     }
@@ -587,14 +602,15 @@ contract AccountTest {
     function _nativeBatch(uint8 mutation, bytes memory mutationData, Authorization memory authorization)
         internal
         pure
-        returns (Typewriter.Batch[] memory batches)
+        returns (Typewriter.Batch memory batch)
     {
-        batches = new Typewriter.Batch[](1);
-        batches[0].mutations = new uint8[](1);
-        batches[0].mutationData = new bytes[](1);
-        batches[0].authorizationData = new bytes[](1);
-        batches[0].mutations[0] = mutation;
-        batches[0].mutationData[0] = mutationData;
-        batches[0].authorizationData[0] = abi.encode(authorization);
+        batch.mutations = new uint8[](1);
+        batch.mutationData = new bytes[](1);
+        batch.authorizationData = new bytes[](1);
+        batch.mutations[0] = mutation;
+        batch.mutationData[0] = mutationData;
+        batch.authorizationData[0] = abi.encode(authorization);
     }
+
+    function _emptyBatch() internal pure returns (Typewriter.Batch memory batch) {}
 }

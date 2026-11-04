@@ -4,6 +4,7 @@ import type { PgTable } from "drizzle-orm/pg-core";
 import { Effect, Exit } from "effect";
 import { Hash, Hex } from "ox";
 import { createStorageView, type StorageView } from "storage-layout";
+import { encodeFunctionData } from "viem";
 import type { TypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
 import {
@@ -12,8 +13,9 @@ import {
   selectStorageSlots,
 } from "../src/db-query";
 import { builder } from "../src/db-transport";
-import { encodeExecuteCalldata } from "../src/encoding";
+import { EMPTY_BATCH, encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
+import { TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type {
   BlockEvent,
   MutationEvent,
@@ -107,17 +109,24 @@ function makeCheck(run: Run): Check {
 }
 
 /**
- * Every settlement succeeded or reverted on an expired authorization, and
- * executed only submitted mutations, each once.
+ * Every settlement succeeded, reverted because it landed after the delay its
+ * pinned timestamp allows, or reverted right after one that reverted. Settlements executed only submitted
+ * mutations, each once.
  */
 function checkSettlements(check: Check, onchain: Onchain) {
-  for (const settlement of onchain.settlements) {
-    if (settlement.reverted && settlement.expired.length === 0) {
+  onchain.settlements.forEach((settlement, i) => {
+    if (settlement.mismatched) {
+      if (!settlement.reverted || !onchain.settlements[i - 1]?.reverted) {
+        check.fail(
+          `settlement ${settlement.transactionHash} executed from the wrong execution hash, but the settlement before it did not revert`,
+        );
+      }
+    } else if (settlement.reverted && !settlement.late) {
       check.fail(
-        `settlement ${settlement.transactionHash} reverted, but no authorization in it expired before block ${settlement.blockNumber}`,
+        `settlement ${settlement.transactionHash} reverted, but it landed in block ${settlement.blockNumber} within the delay its pinned timestamp allows`,
       );
     }
-  }
+  });
   const seen = new Set<string>();
   for (const { key, executionIndex } of onchain.executed) {
     const submission = check.submissions.get(key);
@@ -271,16 +280,29 @@ function checkOrder(
         : BUILTIN_ORDER.length +
             ordering.batchOrder.indexOf(name as AppMutationName);
     };
+    // A batch too large for one settlement continues in the next batches, so
+    // a run of calls can span adjacent batches.
+    const runs: string[][] = [];
+    let run: string[] = [];
+    for (const batch of onchain.batches) {
+      run.push(...batch);
+      const start = runs.flat().length;
+      const calls = called.slice(start, start + run.length);
+      if (toJson([...run].sort(byCall)) === toJson(calls)) {
+        runs.push(run);
+        run = [];
+      }
+    }
     check.equal(
-      labels(onchain.batches.flatMap((batch) => [...batch].sort(byCall))),
+      labels([...runs, run].flatMap((run) => [...run].sort(byCall))),
       labels(called),
       "batches are runs of calls",
     );
-    for (const [i, batch] of onchain.batches.entries()) {
+    for (const [i, run] of runs.entries()) {
       check.equal(
-        labels(batch),
-        labels([...batch].sort((a, b) => rank(a) - rank(b) || byCall(a, b))),
-        `batch ${i} order`,
+        labels(run),
+        labels([...run].sort((a, b) => rank(a) - rank(b) || byCall(a, b))),
+        `run ${i} order`,
       );
     }
   }
@@ -325,6 +347,24 @@ function checkQueue(
   { app, chain }: Params,
 ) {
   return Effect.gen(function* () {
+    const executionHash = yield* chain.request({
+      method: "eth_call",
+      params: [
+        {
+          to: app.address,
+          data: encodeFunctionData({
+            abi: TYPEWRITER_ABI,
+            functionName: "executionHash",
+          }),
+        },
+        "latest",
+      ],
+    });
+    check.equal(
+      executionHash,
+      onchain.executionHash,
+      "executionHash, folded from the settlements",
+    );
     const executed = executedByKey(onchain);
     for (const { label, key, via, transactionHash } of run.submissions) {
       if (via !== "enqueue" || executed.has(key)) continue;
@@ -333,6 +373,10 @@ function checkQueue(
         check.fail(`${label}: enqueue is not on the canonical chain`);
         continue;
       }
+      const latest = yield* chain.request({
+        method: "eth_getBlockByNumber",
+        params: ["latest", false],
+      });
       // Anvil answers a reverting call with an error.
       const call = yield* Effect.exit(
         chain.request({
@@ -341,7 +385,12 @@ function checkQueue(
             {
               from: app.account.address,
               to: app.address,
-              data: encodeExecuteCalldata([], [queueIndex]),
+              data: encodeExecuteCalldata(
+                onchain.executionHash,
+                BigInt(latest!.timestamp),
+                EMPTY_BATCH,
+                [queueIndex],
+              ),
             },
             "latest",
           ],
@@ -489,13 +538,29 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
     byHash.set(hash, [...(byHash.get(hash) ?? []), event]);
   }
 
-  const settled = new Set<string>();
+  // A block holds every settlement that succeeded in it, in transaction order.
+  const settledBlocks = new Map<
+    string,
+    { number: bigint; timestamp: bigint; executionIndexes: bigint[] }
+  >();
   for (const settlement of onchain.settlements) {
     if (settlement.reverted) continue;
     const hash = settlement.blockHash.toLowerCase();
-    settled.add(hash);
+    const block = settledBlocks.get(hash) ?? {
+      number: settlement.blockNumber,
+      timestamp: settlement.blockTimestamp,
+      executionIndexes: [],
+    };
+    // Force-executed enqueues have no events.
+    block.executionIndexes.push(
+      ...settlement.executionIndexes.filter((index) => !forced.has(index)),
+    );
+    settledBlocks.set(hash, block);
+  }
+
+  for (const [hash, block] of settledBlocks) {
     const seen = byHash.get(hash) ?? [];
-    const what = `block ${settlement.blockNumber}`;
+    const what = `block ${block.number}`;
     check.equal(
       seen.map((event) => event.status),
       ["included", "finalized"],
@@ -506,24 +571,15 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
         {
           number: event.number,
           timestamp: event.timestamp,
-          transactionHash: event.transactionHash,
           executionIndexes: executionIndexesOf(event),
         },
-        {
-          number: settlement.blockNumber,
-          timestamp: settlement.blockTimestamp,
-          transactionHash: settlement.transactionHash,
-          // Force-executed enqueues have no events.
-          executionIndexes: settlement.executionIndexes.filter(
-            (index) => !forced.has(index),
-          ),
-        },
+        block,
         `${what} ${event.status} event`,
       );
     }
   }
   for (const [hash, [event]] of byHash) {
-    if (!settled.has(hash)) {
+    if (!settledBlocks.has(hash)) {
       check.fail(
         `block ${event!.number} ${hash}: block events, but it settled nothing`,
       );
@@ -752,8 +808,8 @@ function executedByKey(onchain: Onchain): Map<string, Executed> {
 }
 
 /**
- * The keys of the mutations accepted, then rejected as expired when their
- * settlement reverted in revm.
+ * The keys of the mutations accepted, then rejected as expired when they
+ * executed again after a settlement reverted.
  */
 function droppedKeys(run: Run): Set<string> {
   const accepted = new Set<string>();
@@ -764,7 +820,8 @@ function droppedKeys(run: Run): Set<string> {
     if (
       event.status === "rejected" &&
       accepted.has(key) &&
-      errorName(event.error) === "AuthorizationExpired"
+      (errorName(event.error) === "AuthorizationExpired" ||
+        errorName(event.error) === "MutationExpiresTooSoonError")
     ) {
       dropped.add(key);
     }

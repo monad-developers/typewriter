@@ -1,4 +1,12 @@
-import { Context, Data, Duration, Effect, Layer, Schedule } from "effect";
+import {
+  Context,
+  Data,
+  Duration,
+  Effect,
+  Layer,
+  Result,
+  Schedule,
+} from "effect";
 import type { Hex } from "ox";
 import type {
   RpcMethod,
@@ -53,6 +61,10 @@ export class Rpc extends Context.Service<
       { origin: string; result: RpcResult<request["method"]> }[],
       RpcError
     >;
+    /** Sends to every provider at once, each once. Fails only if every one fails. */
+    requestAll: <request extends RpcRequest>(
+      request: request,
+    ) => Effect.Effect<RpcResult<request["method"]>, RpcError>;
   }
 >()("typewriter/Rpc") {}
 
@@ -155,9 +167,26 @@ function makeRpc(
       ).pipe(Effect.map((result) => ({ origin: transport.origin, result })));
     });
 
+  const requestAll = (request: RpcRequest) =>
+    Effect.forEach(
+      transports,
+      (transport) => Effect.result(send(transport, request, 1)),
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.flatMap((results) => {
+        const failures = [];
+        for (const result of results) {
+          if (Result.isSuccess(result)) return Effect.succeed(result.success);
+          failures.push(result.failure);
+        }
+        return Effect.fail(failures[0]!);
+      }),
+    );
+
   return Rpc.of({
     request: request as Rpc["Service"]["request"],
     requestEach: requestEach as Rpc["Service"]["requestEach"],
+    requestAll: requestAll as Rpc["Service"]["requestAll"],
   });
 }
 

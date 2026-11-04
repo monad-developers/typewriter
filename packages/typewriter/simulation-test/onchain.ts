@@ -1,9 +1,9 @@
 import { Effect } from "effect";
-import { AbiFunction, Hex } from "ox";
+import { AbiFunction, AbiParameters, Hash, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import type { TypewriterApp } from "../src/config";
 import { decodeAuthorizationCalldata } from "../src/encoding";
-import { TYPEWRITER_ABI } from "../src/typewriter-constants";
+import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type { Inclusion } from "../src/typewriter-types";
 import type { Chain } from "./chain";
 import { mutationKey, type Submission } from "./run";
@@ -22,9 +22,12 @@ export type Executed = {
 /** A settlement transaction on the canonical chain. */
 export type Settlement = Inclusion & {
   reverted: boolean;
+  /** It reverted because an earlier settlement did, so the execution hash moved. */
+  mismatched: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
-  expired: string[];
+  /** It landed before the timestamp it pinned, or more than `EXPIRATION_MARGIN` seconds after it. */
+  late: boolean;
 };
 
 /** What happened onchain, read from the canonical chain after the run. */
@@ -38,7 +41,29 @@ export type Onchain = {
   queueIndexes: Map<Hex.Hex, bigint>;
   /** The hash of each canonical block, by number. */
   blockHashes: Map<bigint, Hex.Hex>;
+  /** The contract's `executionHash` after the last settlement. */
+  executionHash: Hex.Hex;
 };
+
+/** `_accumulate` in Typewriter.sol. */
+function accumulate(
+  hash: Hex.Hex,
+  mutation: number,
+  mutationData: Hex.Hex,
+  authorizationData: Hex.Hex,
+): Hex.Hex {
+  return Hash.keccak256(
+    AbiParameters.encode(
+      AbiParameters.from(["bytes32", "uint8", "bytes32", "bytes32"]),
+      [
+        hash,
+        mutation,
+        Hash.keccak256(mutationData),
+        Hash.keccak256(authorizationData),
+      ],
+    ),
+  );
+}
 
 const EXECUTE = AbiFunction.fromAbi(TYPEWRITER_ABI, "execute");
 
@@ -79,9 +104,13 @@ export function readOnchain({
       batches: [],
       queueIndexes: new Map(),
       blockHashes: new Map(),
+      executionHash: `0x${"0".repeat(64)}`,
     };
     const keyByQueueIndex = new Map<bigint, string>();
-    const authorizationDataByQueueIndex = new Map<bigint, Hex.Hex>();
+    const queuedByIndex = new Map<
+      bigint,
+      { mutation: number; mutationData: Hex.Hex; authorizationData: Hex.Hex }
+    >();
 
     const head = Number(yield* chain.request({ method: "eth_blockNumber" }));
     for (let number = 0; number <= head; number++) {
@@ -108,10 +137,7 @@ export function readOnchain({
               strict: true,
             });
             onchain.queueIndexes.set(transaction.hash, args.index);
-            authorizationDataByQueueIndex.set(
-              args.index,
-              args.authorizationData,
-            );
+            queuedByIndex.set(args.index, args);
             keyByQueueIndex.set(
               args.index,
               keyByEnqueue.get(transaction.hash) ??
@@ -128,33 +154,20 @@ export function readOnchain({
           transactionHash: transaction.hash,
           transactionIndex: Number(transaction.transactionIndex),
         };
+        const [fromExecutionHash, pinnedTimestamp, batch, forceExecuteIndexes] =
+          AbiFunction.decodeData(EXECUTE, transaction.input);
         const settlement: Settlement = {
           ...inclusion,
           reverted: receipt.status !== "0x1",
+          mismatched: fromExecutionHash !== onchain.executionHash,
           executionIndexes: [],
-          expired: [],
+          late:
+            BigInt(pinnedTimestamp) > inclusion.blockTimestamp ||
+            inclusion.blockTimestamp - BigInt(pinnedTimestamp) >
+              BigInt(EXPIRATION_MARGIN),
         };
         onchain.settlements.push(settlement);
-        const [batches, forceExecuteIndexes] = AbiFunction.decodeData(
-          EXECUTE,
-          transaction.input,
-        );
         if (settlement.reverted) {
-          for (const authorizationData of [
-            ...batches.flatMap((batch) => batch.authorizationData),
-            ...forceExecuteIndexes.map(
-              (queueIndex) => authorizationDataByQueueIndex.get(queueIndex)!,
-            ),
-          ]) {
-            const authorization =
-              decodeAuthorizationCalldata(authorizationData);
-            if (
-              authorization.expiration !== 0n &&
-              authorization.expiration < inclusion.blockTimestamp
-            ) {
-              settlement.expired.push(mutationKey(authorization));
-            }
-          }
           continue;
         }
 
@@ -165,8 +178,14 @@ export function readOnchain({
           settlement.executionIndexes.push(executionIndex);
           onchain.executed.push({ ...executed, executionIndex, inclusion });
         };
-        for (const batch of batches) {
-          const keys = batch.authorizationData.map((authorizationData) => {
+        if (batch.mutations.length > 0) {
+          const keys = batch.authorizationData.map((authorizationData, i) => {
+            onchain.executionHash = accumulate(
+              onchain.executionHash,
+              batch.mutations[i]!,
+              batch.mutationData[i]!,
+              authorizationData,
+            );
             const key = mutationKey(
               decodeAuthorizationCalldata(authorizationData),
             );
@@ -180,6 +199,13 @@ export function readOnchain({
           onchain.batches.push(keys);
         }
         for (const queueIndex of forceExecuteIndexes) {
+          const queued = queuedByIndex.get(queueIndex)!;
+          onchain.executionHash = accumulate(
+            onchain.executionHash,
+            queued.mutation,
+            queued.mutationData,
+            queued.authorizationData,
+          );
           execute({
             key:
               keyByQueueIndex.get(queueIndex) ??

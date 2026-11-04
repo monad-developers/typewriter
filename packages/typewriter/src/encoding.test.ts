@@ -42,7 +42,6 @@ function acceptedMutation(
     params,
     authorization,
     executionIndex: 0n,
-    journalId: 0,
     config,
   };
 }
@@ -122,6 +121,8 @@ test("fixed Authorization calldata round-trips as one Solidity struct", () => {
   expect(decodeAuthorizationCalldata(encoded)).toEqual(AUTHORIZATION);
 });
 
+const FROM_EXECUTION_HASH = `0x${"03".padStart(64, "0")}` as const;
+
 test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const batch = {
     mutations: [0],
@@ -131,9 +132,9 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "execute",
-    args: [[batch], []],
+    args: [FROM_EXECUTION_HASH, 9, batch, []],
   });
-  const actual = encodeExecuteCalldata([batch], []);
+  const actual = encodeExecuteCalldata(FROM_EXECUTION_HASH, 9n, batch, []);
   expect(actual).toBe(expected);
 });
 

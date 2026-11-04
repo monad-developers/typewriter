@@ -17,6 +17,8 @@ export type LocalBlock = {
   parentHash: Hex.Hex;
   timestamp: bigint;
   logs: LocalLog[];
+  /** The hashes of its transactions, in order. */
+  transactions: Hex.Hex[];
 };
 
 /**
@@ -74,6 +76,7 @@ export function watchChain(
               parentHash: block.parentHash,
               timestamp: block.timestamp,
               logs: logs.map((log) => ({ topics: log.topics, data: log.data })),
+              transactions: block.transactions,
             };
             return localBlock;
           });

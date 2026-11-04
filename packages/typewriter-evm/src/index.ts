@@ -9,8 +9,6 @@ import type {
   ReadStorageResult,
   Request,
   Response,
-  SimulateParams,
-  SimulateResult,
 } from "./types";
 
 export type {
@@ -22,8 +20,6 @@ export type {
   JournalIdsParams,
   ReadStorageParams,
   ReadStorageResult,
-  SimulateParams,
-  SimulateResult,
   Spec,
 } from "./types";
 
@@ -73,9 +69,6 @@ export type EVM = {
   readonly execute: (
     params: ExecuteParams,
   ) => Effect.Effect<ExecuteResult, EvmError>;
-  readonly simulate: (
-    params: SimulateParams,
-  ) => Effect.Effect<SimulateResult, EvmError>;
   readonly readStorage: (
     params: ReadStorageParams,
   ) => Effect.Effect<ReadStorageResult, EvmError>;
@@ -178,12 +171,6 @@ export const createEVM = (
       execute: (params) =>
         call<ExecuteResult>("execute", (id) => ({
           method: "execute",
-          id,
-          params,
-        })),
-      simulate: (params) =>
-        call<SimulateResult>("simulate", (id) => ({
-          method: "simulate",
           id,
           params,
         })),

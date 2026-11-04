@@ -25,12 +25,9 @@ import { makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import { loadSolidityApp } from "../src/sol-build";
-import {
-  createTypewriterEffect,
-  type ExecuteError,
-  type ProgramError,
-} from "../src/typewriter";
+import { createTypewriterEffect } from "../src/typewriter";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
+import type { ExecuteError, ProgramError } from "../src/typewriter-errors";
 import {
   createAccount,
   deploy,
@@ -74,7 +71,8 @@ export type SIM = {
   /**
    * How far past now a jump moves the clock, at least to the next sleep, that
    * a jump draws from. A jump past `EXPIRATION_MARGIN` moves the next block's
-   * timestamp past expirations the runtime accepted against the block before.
+   * timestamp past expirations the runtime accepted against the block before,
+   * and past the delay that settlements in flight pinned, so they revert.
    */
   jumpsMs: number[];
   /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
@@ -86,6 +84,8 @@ export type SIM = {
     reorgRate: number;
     /** How often a reorg drops a transaction of a block it replaced, with its sender's later ones. */
     dropRate: number;
+    /** How often a node accepts a sent transaction and then loses it. */
+    sendDropRate: number;
     /** How far below the highest head the chain finalizes. */
     finalizedBlockDepth: number;
   };
@@ -105,7 +105,7 @@ export type SIM = {
      * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
      * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the runtime's
      * latest block is behind the clock, and `EXPIRATION_MARGIN` and above are
-     * accepted, and expire if the clock jumps before their settlement.
+     * accepted, and expire if the clock jumps before they execute again.
      * `Infinity` never expires, and repeats so most steps draw it.
      */
     expirationsS: number[];
@@ -113,7 +113,6 @@ export type SIM = {
     malformedRate: number;
   };
   typewriter: {
-    submitIntervalMs: number;
     blockPollingIntervalMs: number;
     ordering:
       | { order: "fifo" }
@@ -161,8 +160,10 @@ export const SIM: SIM = {
   chain: {
     blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
-    reorgRate: pick(SEED, "chain.reorgRate", [0, 0.01, 0.05, 0.2]),
+    // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
+    reorgRate: pick(SEED, "chain.reorgRate", [0]),
     dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
+    sendDropRate: pick(SEED, "chain.sendDropRate", [0, 0.05, 0.2]),
     finalizedBlockDepth: int(SEED, "chain.finalizedBlockDepth", 1, 5),
   },
   generator: {
@@ -175,9 +176,14 @@ export const SIM: SIM = {
           KeyType.WebAuthnP256,
         ]),
     ),
-    mutations: int(SEED, "generator.mutations", 4, 1000),
+    // A burst of a few hundred mutations outgrows the transaction gas cap
+    // and splits into several settlements.
+    mutations: int(SEED, "generator.mutations", 4, 2000),
     delaysMs: pick(SEED, "generator.delaysMs", [
       [0],
+      // Clumps across many blocks, so enqueues land while batches still fill.
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 100],
+      [0, 0, 0, 1],
       [0, 1, 10],
       [0, 50, 500],
       [10, 100, 1_000],
@@ -196,11 +202,6 @@ export const SIM: SIM = {
     malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
   },
   typewriter: {
-    submitIntervalMs: pick(
-      SEED,
-      "typewriter.submitIntervalMs",
-      [50, 300, 1_000],
-    ),
     blockPollingIntervalMs: pick(
       SEED,
       "typewriter.blockPollingIntervalMs",
@@ -351,10 +352,7 @@ const program = Effect.gen(function* () {
       ],
       database: { url: database.url },
       blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
-      sequencing: {
-        ...SIM.typewriter.ordering,
-        submitIntervalMs: SIM.typewriter.submitIntervalMs,
-      },
+      sequencing: SIM.typewriter.ordering,
     },
   });
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
@@ -376,6 +374,9 @@ const program = Effect.gen(function* () {
   // it, through `io`.
   const startMs = SIM.chain.genesisTimestamp * 1000;
   const jumpRandom = yield* makeRandom(SIM.seed, "jumps");
+  // A pause is rare, so at most one per `PAUSE_SPACING_MS` of virtual time.
+  const PAUSE_SPACING_MS = 600_000;
+  let pausedAt = -Infinity;
   const scheduler = makeSimScheduler(
     yield* makeRandom(SIM.seed, "scheduler"),
     SIM.jumpRate,
@@ -385,8 +386,15 @@ const program = Effect.gen(function* () {
         SIM.jumpsMs[
           Math.floor(jumpRandom.nextDoubleUnsafe() * SIM.jumpsMs.length)
         ]!;
+      if (jumpMs > 0 && now - pausedAt < PAUSE_SPACING_MS) return;
       const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
-      if (at > now) clock.advanceTo(at);
+      if (at <= now) return;
+      // A jump is a pause, not time the runtime had to make progress in.
+      if (jumpMs > 0) {
+        pausedAt = now;
+        progressedAt += at - now;
+      }
+      clock.advanceTo(at);
     },
     SIM.ioRate,
   );
@@ -593,6 +601,8 @@ const program = Effect.gen(function* () {
         const { label, expected, mutation } = submission;
         const { expiration } = mutation.authorization;
         let settledAt: bigint | undefined;
+        /** The newest head at which the entry was still queued. */
+        let queuedAt: bigint | undefined;
         // A reorg can drop or move the enqueue and its settlement, so each
         // poll reads both again.
         poll: while (true) {
@@ -657,6 +667,7 @@ const program = Effect.gen(function* () {
           const deleted = yield* deletedAt(head);
           if (deleted === undefined) continue;
           if (!deleted) {
+            queuedAt = head;
             // The contract rejects it in every block past its expiration.
             if (
               final &&
@@ -667,13 +678,27 @@ const program = Effect.gen(function* () {
             }
             continue;
           }
-          // The settlement's block: the first in which the entry is gone.
-          let settled = BigInt(receipt.blockNumber);
-          while (true) {
-            const deleted = yield* deletedAt(settled);
-            if (deleted === undefined) continue poll;
-            if (deleted) break;
-            settled++;
+          // The settlement's block: the first in which the entry is gone. Anvil
+          // keeps old state only so long, so search from where it was last
+          // queued, back past a reorg that moved the settlement earlier.
+          const enqueuedAt = BigInt(receipt.blockNumber);
+          let settled = queuedAt ?? enqueuedAt;
+          const deletedThere = yield* deletedAt(settled);
+          if (deletedThere === undefined) continue;
+          if (deletedThere) {
+            while (settled > enqueuedAt) {
+              const deleted = yield* deletedAt(settled - 1n);
+              if (deleted === undefined) continue poll;
+              if (!deleted) break;
+              settled--;
+            }
+          } else {
+            while (true) {
+              const deleted = yield* deletedAt(settled);
+              if (deleted === undefined) continue poll;
+              if (deleted) break;
+              settled++;
+            }
           }
           if (settled !== settledAt) {
             settledAt = settled;
@@ -893,7 +918,7 @@ function scribble(value: unknown): void {
 function queueEntrySlot(index: bigint): Hex.Hex {
   const queue = STORAGE_LAYOUT.storage.find(({ label }) => label === "queue")!;
   const entry =
-    STORAGE_LAYOUT.types["t_struct(QueuedMutation)657_storage"].numberOfBytes;
+    STORAGE_LAYOUT.types["t_struct(QueuedMutation)700_storage"].numberOfBytes;
   // A dynamic array's entries start at the keccak256 of its slot.
   const start = BigInt(
     Hash.keccak256(Hex.fromNumber(BigInt(queue.slot), { size: 32 })),

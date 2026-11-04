@@ -78,12 +78,14 @@ export const BUILTIN_MUTATIONS = {
 export const FIRST_BUILTIN_MUTATION_ID = 253;
 
 /**
- * The seconds past the latest block's timestamp that an authorization or
- * credential must stay valid for a mutation to be accepted. A mutation that
- * expires before its settlement lands reverts the settlement, so this covers
- * the time from acceptance to inclusion.
+ * `MAX_SETTLEMENT_DELAY` in Typewriter.sol: how many seconds after its pinned
+ * timestamp a settlement can land. An authorization must outlast it, so none
+ * executes after it expires.
  */
-export const EXPIRATION_MARGIN = 5;
+/** Monad's per-transaction gas cap, the same in every Monad hardfork. */
+export const TX_GAS_LIMIT_CAP = 30_000_000;
+
+export const EXPIRATION_MARGIN = 60;
 
 /** `struct Authorization`. */
 export const AUTHORIZATION_ABI_PARAMS = [
@@ -99,9 +101,11 @@ export const TYPEWRITER_ABI = [
     type: "function",
     name: "execute",
     inputs: [
+      { name: "fromExecutionHash", type: "bytes32" },
+      { name: "timestamp", type: "uint40" },
       {
-        name: "batches",
-        type: "tuple[]",
+        name: "batch",
+        type: "tuple",
         components: [
           { name: "mutations", type: "uint8[]" },
           { name: "mutationData", type: "bytes[]" },
@@ -136,6 +140,13 @@ export const TYPEWRITER_ABI = [
     name: "executionIndex",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "executionHash",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32" }],
     stateMutability: "view",
   },
   {
