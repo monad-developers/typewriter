@@ -678,19 +678,26 @@ const program = Effect.gen(function* () {
             continue;
           }
           // The settlement's block: the first in which the entry is gone. Anvil
-          // keeps old state only so long, so start where it was last queued.
-          let settled = BigInt(receipt.blockNumber);
-          if (
-            queuedAt !== undefined &&
-            (yield* deletedAt(queuedAt)) === false
-          ) {
-            settled = queuedAt;
-          }
-          while (true) {
-            const deleted = yield* deletedAt(settled);
-            if (deleted === undefined) continue poll;
-            if (deleted) break;
-            settled++;
+          // keeps old state only so long, so search from where it was last
+          // queued, back past a reorg that moved the settlement earlier.
+          const enqueuedAt = BigInt(receipt.blockNumber);
+          let settled = queuedAt ?? enqueuedAt;
+          const deletedThere = yield* deletedAt(settled);
+          if (deletedThere === undefined) continue;
+          if (deletedThere) {
+            while (settled > enqueuedAt) {
+              const deleted = yield* deletedAt(settled - 1n);
+              if (deleted === undefined) continue poll;
+              if (!deleted) break;
+              settled--;
+            }
+          } else {
+            while (true) {
+              const deleted = yield* deletedAt(settled);
+              if (deleted === undefined) continue poll;
+              if (deleted) break;
+              settled++;
+            }
           }
           if (settled !== settledAt) {
             settledAt = settled;
