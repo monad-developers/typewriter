@@ -1,4 +1,5 @@
 import type { AbiParameter } from "abitype";
+import type { Deferred } from "effect";
 import type { Hex } from "ox";
 import type {
   AbiParametersToValue,
@@ -156,6 +157,46 @@ export type RuntimeBlock = {
   timestamp: bigint;
   batches: RuntimeBatch[];
 };
+
+type SettlementBase = {
+  /** The timestamp it executes at, onchain as in revm. */
+  timestamp: bigint;
+  /** The `executionHash` and `executionIndex` it starts from. */
+  fromExecutionHash: Hex.Hex;
+  fromExecutionIndex: bigint;
+  batch: RuntimeBatch | undefined;
+  queueIndexes: bigint[];
+  /** The revm journals of its executions. */
+  journalIds: number[];
+  gasLimit: number;
+  /** Resolves once its executions' rows commit. */
+  committed: Deferred.Deferred<void>;
+};
+
+type Transmission = {
+  nonce: number;
+  raw: Hex.Hex;
+  hash: Hex.Hex;
+  /** The block numbers when it was last and first broadcast. */
+  sentAt: bigint;
+  firstSentAt: bigint;
+};
+
+/** One settlement transaction: a batch, then the enqueues it force-executes. */
+export type ExecutedSettlement = SettlementBase & { status: "executed" };
+export type SigningSettlement = SettlementBase & {
+  status: "signing";
+  nonce: number;
+};
+export type SentSettlement = SettlementBase & Transmission & { status: "sent" };
+export type LandedSettlement = SettlementBase &
+  Transmission & { status: "included" | "reverted"; block: RuntimeBlock };
+
+export type RuntimeSettlement =
+  | ExecutedSettlement
+  | SigningSettlement
+  | SentSettlement
+  | LandedSettlement;
 
 /** Fields of a runtime mutation that listeners never see. */
 type RuntimeOnlyField = "config";
