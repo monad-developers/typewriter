@@ -11,7 +11,7 @@ import {
   type PgCharBuilderInitial,
   type PgColumnBuilderBase,
   type PgIntegerBuilderInitial,
-  type PgNumericBuilderInitial,
+  type PgNumericBigIntBuilderInitial,
   type PgSmallIntBuilderInitial,
   type PgTextBuilderInitial,
   boolean as pgBoolean,
@@ -88,7 +88,7 @@ export type AbiParameterToColumn<Param extends AbiParameter> =
                 | "int64"
             ? NotNullBuilder<PgBigInt64BuilderInitial<"">>
             : Param["type"] extends `uint${string}` | `int${string}`
-              ? NotNullBuilder<PgNumericBuilderInitial<"">>
+              ? NotNullBuilder<PgNumericBigIntBuilderInitial<"">>
               : Param["type"] extends "bytes"
                 ? NotNullBuilder<HexTextBuilder>
                 : Param["type"] extends "string"
@@ -192,9 +192,8 @@ function pgValue(param: AbiParameter, value: unknown): unknown {
     case "integer":
       return Number(value);
     case "bigint":
-      return BigInt(value as string | number | bigint);
     case "numeric(78,0)":
-      return BigInt(value as string | number | bigint).toString();
+      return BigInt(value as string | number | bigint);
     case "jsonb":
       return jsonValue(param, value);
     default:
@@ -294,9 +293,11 @@ function columnForInfo<Param extends AbiParameter>(
     case "integer":
       return integer();
     case "bigint":
+      // TODO(kyle) abitype gives (u)int33-48 values as number, but this column
+      // reads them back as bigint. Use `bigint({ mode: "number" })` for them.
       return bigint({ mode: "bigint" });
     case "numeric(78,0)":
-      return numeric({ precision: 78, scale: 0 });
+      return numeric({ precision: 78, scale: 0, mode: "bigint" });
     case "text":
       return info.hex ? text().$type<Hex>() : text();
     case "jsonb":

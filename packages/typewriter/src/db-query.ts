@@ -53,7 +53,7 @@ function mutationRow(mutation: AcceptedMutation): Record<string, unknown> {
     execution_index: mutation.executionIndex,
     authorization_account_id: authorization.accountID,
     authorization_credential_id: authorization.credentialID,
-    authorization_nonce: authorization.nonce.toString(),
+    authorization_nonce: authorization.nonce,
     authorization_expiration: authorization.expiration,
     authorization_signature: authorization.signature,
     ...abiParametersToValues(

@@ -1,4 +1,5 @@
 import { SQL } from "bun";
+import * as drizzleOrm from "drizzle-orm";
 import { DrizzleQueryError, type SQLWrapper } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -54,9 +55,27 @@ const COMMIT_STATUS_SQL = "select pg_xact_status($1::xid8) as status";
 class CommitInProgressError extends Data.TaggedError("CommitInProgressError") {}
 
 /** A statement whose SQL and parameters are fixed. */
-export type CompiledStatement = { sql: string; params: unknown[] };
+export type CompiledStatement = {
+  sql: string;
+  params: unknown[];
+  /** Maps rows read as arrays to the values of their columns' modes. */
+  decode?: (rows: unknown[][]) => unknown[];
+};
 
 const dialect = new PgDialect();
+
+// drizzle's Bun driver decodes rows with these, but doesn't type them.
+const { mapResultRow } = drizzleOrm as unknown as {
+  mapResultRow: (
+    fields: unknown,
+    row: unknown[],
+    joinsNotNullableMap: Record<string, boolean> | undefined,
+  ) => unknown;
+};
+type Prepared = {
+  fields?: unknown;
+  joinsNotNullableMap?: Record<string, boolean>;
+};
 
 /**
  * Fixes the SQL and parameters of `statement` now, so later changes to the
@@ -64,7 +83,17 @@ const dialect = new PgDialect();
  */
 export function compile(statement: SQLWrapper): CompiledStatement {
   const { sql, params } = dialect.sqlToQuery(statement.getSQL());
-  return { sql, params: structuredClone(params) };
+  // The fields that drizzle's own prepared query decodes rows with.
+  const { fields, joinsNotNullableMap } =
+    (statement as { _prepare?: () => Prepared })._prepare?.() ?? {};
+  return {
+    sql,
+    params: structuredClone(params),
+    ...(fields !== undefined && {
+      decode: (rows) =>
+        rows.map((row) => mapResultRow(fields, row, joinsNotNullableMap)),
+    }),
+  };
 }
 
 /** Codes after which a statement did not apply. */
@@ -167,7 +196,12 @@ export function makePostgresTransport(
               // Sent without waiting, so they share round trips.
               const settled = await Promise.allSettled(
                 [...statements, { sql: XID_SQL, params: [] }].map(
-                  ({ sql, params }) => tx.unsafe(sql, params).execute(),
+                  ({ sql, params, decode }: CompiledStatement) => {
+                    const query = tx.unsafe(sql, params);
+                    return (decode ? query.values() : query)
+                      .execute()
+                      .then((rows) => (decode ? decode(rows) : rows));
+                  },
                 ),
               );
               for (at = 0; at < settled.length; at++) {

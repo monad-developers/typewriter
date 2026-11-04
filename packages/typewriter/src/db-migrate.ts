@@ -87,7 +87,7 @@ export function migrate(
     });
     const metadata = {
       address: deployment.address.toLowerCase() as Hex.Hex,
-      chain_id: BigInt(deployment.chainId),
+      chain_id: deployment.chainId,
       code_hash: deployment.codeHash.toLowerCase() as Hex.Hex,
     };
 
