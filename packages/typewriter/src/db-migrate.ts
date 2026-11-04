@@ -9,7 +9,7 @@ import {
   type createTypewriterSchema,
   TYPEWRITER_SCHEMA_VERSION,
 } from "./db-schema";
-import type { DbError } from "./db-transport";
+import { builder, type DbError } from "./db-transport";
 
 type TypewriterSchema = ReturnType<typeof createTypewriterSchema>;
 
@@ -50,8 +50,8 @@ export function dropSchema(
   schemaName: string,
 ): Effect.Effect<void, DbError> {
   return db
-    .query((db) =>
-      db.execute(
+    .run(
+      builder.execute(
         sql`DROP SCHEMA IF EXISTS ${sql.identifier(schemaName)} CASCADE`,
       ),
     )
@@ -91,16 +91,12 @@ export function migrate(
       code_hash: deployment.codeHash.toLowerCase() as Hex.Hex,
     };
 
-    return yield* db.transaction((tx) =>
-      Effect.gen(function* () {
-        yield* tx.query((db) =>
-          db.execute(
-            sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(schemaName)}`,
-          ),
-        );
-
-        yield* tx.query((db) =>
-          db.execute(sql`
+    const { typewriterMetadata } = typewriterSchema;
+    const [, , [row]] = yield* db.run([
+      builder.execute(
+        sql`CREATE SCHEMA IF NOT EXISTS ${sql.identifier(schemaName)}`,
+      ),
+      builder.execute(sql`
 CREATE TABLE IF NOT EXISTS ${sql.identifier(schemaName)}.typewriter_metadata (
   schema_version integer NOT NULL,
   address char(42) NOT NULL,
@@ -108,59 +104,55 @@ CREATE TABLE IF NOT EXISTS ${sql.identifier(schemaName)}.typewriter_metadata (
   code_hash char(66) NOT NULL
 )
   `),
-        );
-        const [row] = yield* tx.query((db) =>
-          db
-            .select({
-              schema_version:
-                typewriterSchema.typewriterMetadata.schema_version,
-            })
-            .from(typewriterSchema.typewriterMetadata),
-        );
-        const version = row?.schema_version;
+      builder
+        .select({ schema_version: typewriterMetadata.schema_version })
+        .from(typewriterMetadata),
+    ]);
+    const version = row?.schema_version;
 
-        if (version === undefined) {
-          for (const statement of createStatements) {
-            yield* tx.query((db) => db.execute(statement));
-          }
-          yield* tx.query((db) =>
-            db.insert(typewriterSchema.typewriterMetadata).values(metadata),
-          );
-        } else if (version > TYPEWRITER_SCHEMA_VERSION) {
-          return yield* new MigrationError({
-            message: `Schema ${schemaName} has schema_version=${version}, which is newer than this Typewriter (${TYPEWRITER_SCHEMA_VERSION})`,
-          });
-        } else {
-          // Note: There's currently only one schema version, no migration is possible.
-          // TODO(kyle) check metadata matches expected values
-        }
+    if (version !== undefined && version > TYPEWRITER_SCHEMA_VERSION) {
+      return yield* new MigrationError({
+        message: `Schema ${schemaName} has schema_version=${version}, which is newer than this Typewriter (${TYPEWRITER_SCHEMA_VERSION})`,
+      });
+    }
+    // Note: There's currently only one schema version, no migration is possible.
+    // TODO(kyle) check metadata matches expected values
 
-        // TODO(kyle) check that execution indexes start at 0 and have no gaps.
-        const max = yield* selectMaxExecutionIndex(tx, mutationSchema);
-        const nextExecutionIndex = max === undefined ? 0n : max + 1n;
+    // TODO(kyle) check that execution indexes start at 0 and have no gaps.
+    // A new schema has no mutation tables yet, so nothing has executed.
+    const [{ max = null } = {}] =
+      version === undefined
+        ? []
+        : yield* db.run(selectMaxExecutionIndex(mutationSchema));
+    const nextExecutionIndex = max === null ? 0n : max + 1n;
 
-        // TODO(kyle) check the length of the force-inclusion queue in storage
-        // against the queue onchain at the startup block, as well as the
-        // execution index. A missing or extra entry shifts every later
-        // enqueued mutation, so `execute` runs a different queued mutation
-        // onchain than the one revm accepted.
-        if (nextExecutionIndex < executionIndex) {
-          // TODO(kyle) catch up from calldata and `ForceInclusionQueued` logs
-          // instead of failing.
-          return yield* new MigrationError({
-            message: `Schema ${schemaName} is behind the chain: next=${nextExecutionIndex} onchain=${executionIndex}`,
-          });
-        }
+    // TODO(kyle) check the length of the force-inclusion queue in storage
+    // against the queue onchain at the startup block, as well as the
+    // execution index. A missing or extra entry shifts every later
+    // enqueued mutation, so `execute` runs a different queued mutation
+    // onchain than the one revm accepted.
+    if (nextExecutionIndex < executionIndex) {
+      // TODO(kyle) catch up from calldata and `ForceInclusionQueued` logs
+      // instead of failing.
+      return yield* new MigrationError({
+        message: `Schema ${schemaName} is behind the chain: next=${nextExecutionIndex} onchain=${executionIndex}`,
+      });
+    }
 
-        // TODO(kyle) UNDECIDED, decide with the simulation tests:
-        // - Rows with an index at or above `chainExecutionIndex` are not
-        //   onchain at the startup block: send them again, or drop them.
-        // - Rows below it are onchain at the startup block, but not final.
-        // - Whether the runtime replays all unfinalized rows from finalized
-        //   storage, so a reorg uses the same path.
-        // - How far back to scan `ForceInclusionQueued` logs (a stored
-        //   checkpoint, or a contract getter for the queue).
-      }),
-    );
+    // TODO(kyle) UNDECIDED, decide with the simulation tests:
+    // - Rows with an index at or above `chainExecutionIndex` are not
+    //   onchain at the startup block: send them again, or drop them.
+    // - Rows below it are onchain at the startup block, but not final.
+    // - Whether the runtime replays all unfinalized rows from finalized
+    //   storage, so a reorg uses the same path.
+    // - How far back to scan `ForceInclusionQueued` logs (a stored
+    //   checkpoint, or a contract getter for the queue).
+
+    if (version === undefined) {
+      yield* db.run([
+        ...createStatements.map((statement) => builder.execute(statement)),
+        builder.insert(typewriterMetadata).values(metadata),
+      ]);
+    }
   });
 }

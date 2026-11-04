@@ -1,12 +1,11 @@
 import { abiParametersToValues } from "abipg";
 import { desc, getTableColumns, gte, inArray, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
-import { Effect } from "effect";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
 import type { ExecuteResult } from "typewriter-evm";
 import type { createTypewriterSchema } from "./db-schema";
-import type { DbError, DbTransaction } from "./db-transport";
+import { builder } from "./db-transport";
 import type { AcceptedMutation, Inclusion } from "./typewriter-types";
 
 /** Postgres protocol limit: 65535 bind parameters per query. */
@@ -26,33 +25,26 @@ function chunkRows<T extends Record<string, unknown>>(
 }
 
 export function insertMutations(
-  tx: DbTransaction,
   schema: Record<string, PgTable>,
   mutations: readonly AcceptedMutation[],
-): Effect.Effect<void, DbError> {
-  return Effect.gen(function* () {
-    if (mutations.length === 0) return;
-
-    const rowsByTable = new Map<
-      string,
-      { table: PgTable; rows: Record<string, unknown>[] }
-    >();
-    for (const mutation of mutations) {
-      const tableName = `${mutation.name.toLowerCase()}_mutations`;
-      let group = rowsByTable.get(tableName);
-      if (group === undefined) {
-        group = { table: getMutationTable(schema, mutation.name), rows: [] };
-        rowsByTable.set(tableName, group);
-      }
-      group.rows.push(mutationRow(mutation));
+) {
+  const rowsByTable = new Map<
+    string,
+    { table: PgTable; rows: Record<string, unknown>[] }
+  >();
+  for (const mutation of mutations) {
+    const tableName = `${mutation.name.toLowerCase()}_mutations`;
+    let group = rowsByTable.get(tableName);
+    if (group === undefined) {
+      group = { table: getMutationTable(schema, mutation.name), rows: [] };
+      rowsByTable.set(tableName, group);
     }
+    group.rows.push(mutationRow(mutation));
+  }
 
-    for (const { table, rows } of rowsByTable.values()) {
-      for (const batch of chunkRows(rows)) {
-        yield* tx.query((db) => db.insert(table).values(batch));
-      }
-    }
-  });
+  return [...rowsByTable.values()].flatMap(({ table, rows }) =>
+    chunkRows(rows).map((batch) => builder.insert(table).values(batch)),
+  );
 }
 
 function mutationRow(mutation: AcceptedMutation): Record<string, unknown> {
@@ -76,42 +68,44 @@ function mutationRow(mutation: AcceptedMutation): Record<string, unknown> {
  * settlement transaction included. Running it again writes the same values.
  */
 export function updateMutationInclusion(
-  tx: DbTransaction,
   schema: Record<string, PgTable>,
   mutations: readonly Pick<AcceptedMutation, "name" | "executionIndex">[],
   inclusion: Inclusion,
-): Effect.Effect<void, DbError> {
-  return Effect.gen(function* () {
-    const indexesByTable = new Map<PgTable, bigint[]>();
-    for (const mutation of mutations) {
-      const table = getMutationTable(schema, mutation.name);
-      let indexes = indexesByTable.get(table);
-      if (indexes === undefined) {
-        indexes = [];
-        indexesByTable.set(table, indexes);
-      }
-      indexes.push(mutation.executionIndex);
+) {
+  const indexesByTable = new Map<PgTable, bigint[]>();
+  for (const mutation of mutations) {
+    const table = getMutationTable(schema, mutation.name);
+    let indexes = indexesByTable.get(table);
+    if (indexes === undefined) {
+      indexes = [];
+      indexesByTable.set(table, indexes);
     }
+    indexes.push(mutation.executionIndex);
+  }
 
-    const values = {
-      block_number: inclusion.blockNumber,
-      block_hash: inclusion.blockHash,
-      block_timestamp: inclusion.blockTimestamp,
-      transaction_hash: inclusion.transactionHash,
-      transaction_index: inclusion.transactionIndex,
-    };
-    // The `SET` values take bind parameters too.
-    const size = MAX_PG_PARAMS - Object.keys(values).length;
+  const values = {
+    block_number: inclusion.blockNumber,
+    block_hash: inclusion.blockHash,
+    block_timestamp: inclusion.blockTimestamp,
+    transaction_hash: inclusion.transactionHash,
+    transaction_index: inclusion.transactionIndex,
+  };
+  // The `SET` values take bind parameters too.
+  const size = MAX_PG_PARAMS - Object.keys(values).length;
 
-    for (const [table, indexes] of indexesByTable) {
-      const { execution_index } = getTableColumns(table);
-      for (let i = 0; i < indexes.length; i += size) {
-        const batch = indexes.slice(i, i + size);
-        yield* tx.query((db) =>
-          db.update(table).set(values).where(inArray(execution_index!, batch)),
-        );
-      }
+  return [...indexesByTable].flatMap(([table, indexes]) => {
+    const { execution_index } = getTableColumns(table);
+    const statements = [];
+    for (let i = 0; i < indexes.length; i += size) {
+      const batch = indexes.slice(i, i + size);
+      statements.push(
+        builder
+          .update(table)
+          .set(values)
+          .where(inArray(execution_index!, batch)),
+      );
     }
+    return statements;
   });
 }
 
@@ -120,118 +114,92 @@ export function updateMutationInclusion(
  * mutations that execute again in their place can insert theirs.
  */
 export function deleteExecutionsFrom(
-  tx: DbTransaction,
   schema: Record<string, PgTable>,
   { storageSlots }: ReturnType<typeof createTypewriterSchema>,
   executionIndex: bigint,
-): Effect.Effect<void, DbError> {
-  return Effect.gen(function* () {
-    for (const table of [...Object.values(schema), storageSlots]) {
-      const { execution_index } = getTableColumns(table);
-      yield* tx.query((db) =>
-        db.delete(table).where(gte(execution_index!, executionIndex)),
-      );
-    }
+) {
+  return [...Object.values(schema), storageSlots].map((table) => {
+    const { execution_index } = getTableColumns(table);
+    return builder.delete(table).where(gte(execution_index!, executionIndex));
   });
 }
 
-/** The largest execution index over all mutation tables, or `undefined` if they are empty. */
-export function selectMaxExecutionIndex(
-  tx: DbTransaction,
-  schema: Record<string, PgTable>,
-): Effect.Effect<bigint | undefined, DbError> {
-  return Effect.gen(function* () {
-    const tables = Object.values(schema);
-    if (tables.length === 0) return undefined;
-
-    // One `max` per table, so each uses its primary key index.
-    const maxes = sql.join(
-      tables.map((table) => {
-        const { execution_index } = getTableColumns(table);
-        return sql`SELECT max(${execution_index}) AS max FROM ${table}`;
-      }),
-      sql` UNION ALL `,
-    );
-    const [{ max = null } = {}] = yield* tx.query((db) =>
-      db.execute<{ max: string | null }>(
-        sql`SELECT max(max) AS max FROM (${maxes}) AS mutations`,
-      ),
-    );
-    return max === null ? undefined : BigInt(max);
-  });
+/** The largest execution index over all mutation tables, `null` if they are empty. */
+export function selectMaxExecutionIndex(schema: Record<string, PgTable>) {
+  const tables = Object.values(schema);
+  // One `max` per table, so each uses its primary key index.
+  const maxes =
+    tables.length === 0
+      ? sql`SELECT NULL AS max`
+      : sql.join(
+          tables.map((table) => {
+            const { execution_index } = getTableColumns(table);
+            return sql`SELECT max(${execution_index}) AS max FROM ${table}`;
+          }),
+          sql` UNION ALL `,
+        );
+  return builder.execute<{ max: bigint | null }>(
+    sql`SELECT max(max) AS max FROM (${maxes}) AS mutations`,
+  );
 }
 
 export function insertStorageSlots(
-  tx: DbTransaction,
   { storageSlots }: ReturnType<typeof createTypewriterSchema>,
   mutationsWithResults: readonly {
     mutation: Pick<AcceptedMutation, "executionIndex">;
     executeResult: Pick<ExecuteResult, "slot_writes">;
   }[],
-): Effect.Effect<void, DbError> {
-  return Effect.gen(function* () {
-    const rows = mutationsWithResults.flatMap(({ mutation, executeResult }) =>
-      executeResult.slot_writes.map((write) => ({
-        execution_index: mutation.executionIndex,
-        slot: write.slot,
-        value: write.value,
-      })),
-    );
-
-    for (const batch of chunkRows(rows)) {
-      yield* tx.query((db) => db.insert(storageSlots).values(batch));
-    }
-  });
+) {
+  const rows = mutationsWithResults.flatMap(({ mutation, executeResult }) =>
+    executeResult.slot_writes.map((write) => ({
+      execution_index: mutation.executionIndex,
+      slot: write.slot,
+      value: write.value,
+    })),
+  );
+  return chunkRows(rows).map((batch) =>
+    builder.insert(storageSlots).values(batch),
+  );
 }
 
 export function insertKeccakPreimages(
-  tx: DbTransaction,
   { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
   preimages: readonly Hex.Hex[],
-): Effect.Effect<void, DbError> {
-  return Effect.gen(function* () {
-    const rows = preimages.map((preimage) => ({ preimage }));
-    for (const batch of chunkRows(rows)) {
-      yield* tx.query((db) =>
-        db.insert(keccakPreimages).values(batch).onConflictDoNothing(),
-      );
-    }
-  });
+) {
+  const rows = preimages.map((preimage) => ({ preimage }));
+  return chunkRows(rows).map((batch) =>
+    builder.insert(keccakPreimages).values(batch).onConflictDoNothing(),
+  );
 }
 
-export function selectStorageSlots(
-  tx: DbTransaction,
-  { storageSlots }: ReturnType<typeof createTypewriterSchema>,
-): Effect.Effect<AccountStorage, DbError> {
-  return Effect.gen(function* () {
-    const rows = yield* tx.query((db) =>
-      db
-        .selectDistinctOn([storageSlots.slot], {
-          slot: storageSlots.slot,
-          value: storageSlots.value,
-        })
-        .from(storageSlots)
-        .orderBy(desc(storageSlots.slot), desc(storageSlots.execution_index)),
-    );
-
-    const storage: AccountStorage = {};
-    for (const row of rows) {
-      storage[row.slot] = row.value;
-    }
-    return storage;
-  });
+export function selectStorageSlots({
+  storageSlots,
+}: ReturnType<typeof createTypewriterSchema>) {
+  return builder
+    .selectDistinctOn([storageSlots.slot], {
+      slot: storageSlots.slot,
+      value: storageSlots.value,
+    })
+    .from(storageSlots)
+    .orderBy(desc(storageSlots.slot), desc(storageSlots.execution_index));
 }
 
-export function selectKeccakPreimages(
-  tx: DbTransaction,
-  { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
-): Effect.Effect<Hex.Hex[], DbError> {
-  return Effect.gen(function* () {
-    const rows = yield* tx.query((db) =>
-      db.select({ preimage: keccakPreimages.preimage }).from(keccakPreimages),
-    );
-    return rows.map((row) => row.preimage);
-  });
+export function accountStorage(
+  rows: readonly { slot: Hex.Hex; value: Hex.Hex }[],
+): AccountStorage {
+  const storage: AccountStorage = {};
+  for (const row of rows) {
+    storage[row.slot] = row.value;
+  }
+  return storage;
+}
+
+export function selectKeccakPreimages({
+  keccakPreimages,
+}: ReturnType<typeof createTypewriterSchema>) {
+  return builder
+    .select({ preimage: keccakPreimages.preimage })
+    .from(keccakPreimages);
 }
 
 function getMutationTable(

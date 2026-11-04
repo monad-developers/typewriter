@@ -132,7 +132,7 @@ export type SIM = {
   }[];
   db: {
     latencyMs: [number, number];
-    /** How often a transaction rolls back after `f` ran, so the runtime runs it again. */
+    /** How often a transaction rolls back at a drawn statement, so the runtime runs it again. */
     errorRate: number;
   };
 };
