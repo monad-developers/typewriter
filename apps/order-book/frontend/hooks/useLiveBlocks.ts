@@ -4,7 +4,6 @@ import { request } from "../lib/api";
 
 export type LiveBatch = {
   id: number;
-  position: number;
   mutationCount: number;
 };
 

@@ -28,7 +28,7 @@ const TPS_WINDOW_MS = 10000;
 const LIVE_BATCH_COUNT = 8;
 const LIVE_BLOCK_COUNT = 8;
 
-type LiveBatch = { id: number; position: number; mutationCount: number };
+type LiveBatch = { id: number; mutationCount: number };
 
 // The mutation tables have no status column; derive it from `block_number`
 // and the latest finalized block. Until a block finalizes after startup,
@@ -42,16 +42,8 @@ let includedBlocks: {
   batches: LiveBatch[];
 }[] = [];
 
-function liveBatch(batch: {
-  id: number;
-  position: number;
-  mutations: unknown[];
-}): LiveBatch {
-  return {
-    id: batch.id,
-    position: batch.position,
-    mutationCount: batch.mutations.length,
-  };
+function liveBatch(batch: { id: number; mutations: unknown[] }): LiveBatch {
+  return { id: batch.id, mutationCount: batch.mutations.length };
 }
 
 app.on("batch", (batch) => {

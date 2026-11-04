@@ -18,7 +18,11 @@ import {Token} from "../src/Token.sol";
 import {TransferMutation} from "../src/Transfer.sol";
 
 contract TokenHarness is Token {
-    constructor(address scheduler) Token(scheduler) {}
+    constructor() Token(address(this)) {}
+
+    function settle(Batch calldata batch) external {
+        this.execute(executionHash, uint40(block.timestamp), batch, new uint256[](0));
+    }
 
     function totalSupply() external view returns (uint256) {
         return state.totalSupply;
@@ -44,7 +48,7 @@ contract TokenTest is Test {
     bytes32 internal recipientAccountID;
 
     function setUp() public {
-        token = new TokenHarness(address(this));
+        token = new TokenHarness();
         domainSeparator = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
@@ -141,13 +145,13 @@ contract TokenTest is Test {
     }
 
     function execute(uint8 mutation, bytes memory mutationData, Authorization memory auth) internal {
-        Typewriter.Batch[] memory batches = new Typewriter.Batch[](1);
-        batches[0].mutations = new uint8[](1);
-        batches[0].mutationData = new bytes[](1);
-        batches[0].authorizationData = new bytes[](1);
-        batches[0].mutations[0] = mutation;
-        batches[0].mutationData[0] = mutationData;
-        batches[0].authorizationData[0] = abi.encode(auth);
-        token.execute(batches, new uint256[](0));
+        Typewriter.Batch memory batch;
+        batch.mutations = new uint8[](1);
+        batch.mutationData = new bytes[](1);
+        batch.authorizationData = new bytes[](1);
+        batch.mutations[0] = mutation;
+        batch.mutationData[0] = mutationData;
+        batch.authorizationData[0] = abi.encode(auth);
+        token.settle(batch);
     }
 }
