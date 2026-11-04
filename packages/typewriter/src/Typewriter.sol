@@ -72,7 +72,6 @@ error InvalidNonce(bytes32 accountID, uint192 lane, uint64 expected, uint64 rece
 error NonceOverflow(bytes32 accountID, uint192 lane);
 error LastCredential(bytes32 accountID);
 
-// How long after its pinned timestamp a settlement can land. The scheduler accepts only authorizations that outlast it.
 uint256 constant MAX_SETTLEMENT_DELAY = 60;
 
 function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view {
@@ -172,7 +171,6 @@ abstract contract Typewriter {
     mapping(bytes32 => Account) internal accounts;
     QueuedMutation[] internal queue;
     uint256 public executionIndex;
-    /// A hash over every executed mutation, in execution order. Enqueues are not in it.
     bytes32 public executionHash;
 
     constructor(address scheduler) {
@@ -190,8 +188,6 @@ abstract contract Typewriter {
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal virtual;
 
-    /// Executes at `timestamp` instead of the block's own, so the scheduler's offchain execution matches.
-    /// Reverts unless `fromExecutionHash` is the current `executionHash`, so it executes on the state the scheduler simulated.
     function execute(
         bytes32 fromExecutionHash,
         uint40 timestamp,
@@ -199,8 +195,8 @@ abstract contract Typewriter {
         uint256[] calldata forceExecuteIndexes
     ) external {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
-        bytes32 hash = executionHash;
-        if (hash != fromExecutionHash) revert ExecutionHashMismatch(hash, fromExecutionHash);
+        bytes32 _executionHash = executionHash;
+        if (_executionHash != fromExecutionHash) revert ExecutionHashMismatch(_executionHash, fromExecutionHash);
         if (timestamp > block.timestamp || block.timestamp - timestamp > MAX_SETTLEMENT_DELAY) {
             revert InvalidSettlementTimestamp(timestamp);
         }
@@ -215,7 +211,7 @@ abstract contract Typewriter {
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
             _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i], timestamp);
             _setFreeMemoryPointer(freeMemoryPointer);
-            hash = _accumulate(hash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
+            _executionHash = _accumulate(_executionHash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
             executionIndex++;
         }
 
@@ -228,12 +224,13 @@ abstract contract Typewriter {
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
             _execute(queued.mutation, queued.mutationData, queued.authorizationData, timestamp);
             _setFreeMemoryPointer(freeMemoryPointer);
-            hash = _accumulate(hash, queued.mutation, queued.mutationData, queued.authorizationData);
+            _executionHash = _accumulate(_executionHash, queued.mutation, queued.mutationData, queued.authorizationData);
             executionIndex++;
 
             delete queue[index];
         }
-        executionHash = hash;
+        
+        executionHash = _executionHash;
     }
 
     function _accumulate(bytes32 hash, uint8 mutation, bytes memory mutationData, bytes memory authorizationData)

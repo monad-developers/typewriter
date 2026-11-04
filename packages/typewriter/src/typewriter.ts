@@ -169,9 +169,7 @@ const SSTORE_SENTRY_GAS = 2_300;
  * Groups `items` in order so each group's gas stays under `gasCap`. An item
  * over the cap on its own gets a group of its own.
  *
- * Settlements are not capped in bytes. A geth pool rejects a transaction over
- * 128 KiB (calldata, access list and signature), and a settlement near the gas
- * cap can pass that. Monad documents no byte limit.
+ * @dev Settlements are not capped in bytes.
  */
 function chunkByGas<item>(
   items: readonly item[],
@@ -864,8 +862,6 @@ export function createTypewriterEffect<
     const rpc = yield* Rpc;
     const scope = yield* Scope.Scope;
 
-    // revm picks its hardfork from `app.chainId`, so every provider must serve
-    // that chain.
     const chainIds = yield* rpc.requestEach({ method: "eth_chainId" });
     for (const { origin, result } of chainIds) {
       const actual = Hex.toNumber(result);
@@ -878,7 +874,6 @@ export function createTypewriterEffect<
       }
     }
 
-    // The watch finalizes at the "finalized" block, so every provider must serve it.
     yield* rpc.requestEach({
       method: "eth_getBlockByNumber",
       params: ["finalized", false],
@@ -926,14 +921,12 @@ export function createTypewriterEffect<
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
       yield* createRuntimeState(app, db, code);
-    // Until the watch reports the next block, mutations execute in the start
-    // block, so checks against `block.timestamp`, such as authorization
-    // expiry, see a real time.
+
     yield* evm.setBlockContext({
       number: Hex.fromNumber(startBlock.number),
       timestamp: Hex.fromNumber(startBlock.timestamp),
     });
-    /** The block that mutations execute in. A settlement pins its timestamp. */
+
     let blockContext = {
       number: startBlock.number,
       timestamp: startBlock.timestamp,
@@ -989,8 +982,6 @@ export function createTypewriterEffect<
     let batchPosition = 0;
 
     const batchesById = new Map<number, RuntimeBatch>();
-    // `execute` checks a mutation's name, then the shape of its input,
-    // before it queues it: an input that passes encodes to the bytes it means.
     const isMutationName = mutationNameGuard(Object.keys(app.mutations));
     const executeInputSchemas = new Map(
       Object.entries(app.mutations).map(([name, config]) => [
@@ -998,13 +989,11 @@ export function createTypewriterEffect<
         executeInputSchema(config.params),
       ]),
     );
-    /** The journals of each block's force-executed enqueues, pruned with it. */
     const forceExecutedJournalIds = new Map<RuntimeBlock<"batch">, number[]>();
     const receivedMutationQueue = yield* Queue.unbounded<{
       mutation: ReceivedMutation;
       deferred: AcceptDeferred;
     }>();
-    /** The queue index of each `enqueue` the watch has seen, in order. */
     const enqueuedQueue = yield* Queue.unbounded<bigint>();
     const acceptedBatchesQueue = yield* Queue.unbounded<{
       id: number;
@@ -1024,7 +1013,6 @@ export function createTypewriterEffect<
       yield* Semaphore.make(1),
       1,
     );
-    /** Wakes `settle` when a batch or an enqueue is waiting. */
     const submitSignal = yield* Queue.sliding<void>(1);
     yield* Scope.addFinalizer(scope, Queue.shutdown(submitSignal));
 
@@ -1068,10 +1056,6 @@ export function createTypewriterEffect<
     const batchListeners = new Set<BatchListener>();
     const blockListeners = new Set<BlockListener<"fifo" | "batch">>();
 
-    // A listener is the caller's code, so its error can't stop the runtime.
-    // Nothing else sees the error, so it is a warning. A listener typed to
-    // return `void` can still be async, and its rejection would otherwise
-    // crash the process.
     const emit = <event>(
       name: "mutation" | "batch" | "block",
       listeners: ReadonlySet<(event: event) => void>,
@@ -1102,7 +1086,6 @@ export function createTypewriterEffect<
         );
       });
 
-    // `structuredClone` would turn the error into a plain `Error`.
     const emitMutation = (event: MutationEvent) =>
       emit("mutation", mutationListeners, event, (event) => {
         if (event.status !== "rejected") return structuredClone(event);
@@ -1124,9 +1107,6 @@ export function createTypewriterEffect<
           : batchBlockToEvent(block)) as BlockEvent<"fifo" | "batch">,
       );
 
-    // Fails if the authorization or its credential expires before
-    // `minExpiration`. The credential is read from speculative state, so one
-    // added earlier in the batch counts. A missing credential is left to revm.
     function checkExpiration(
       mutation: ReceivedMutation,
       minExpiration: bigint,
@@ -1171,10 +1151,6 @@ export function createTypewriterEffect<
       });
     }
 
-    // Executes a mutation against speculative state and updates in-memory
-    // bookkeeping, but performs no database writes. Persistence is batched by
-    // the caller (`acceptBatch`, `submit`, and `watch`) so many mutations share
-    // a single set of insert statements.
     function acceptMutation(
       mutation: ReceivedMutation,
       /** The timestamp it executes at, which its settlement pins. */
@@ -1191,8 +1167,6 @@ export function createTypewriterEffect<
               fromExecutionHash,
               timestamp,
             );
-            // The mutation encodes, so its authorization is well-formed to
-            // read the account state with.
             yield* checkExpiration(
               mutation,
               timestamp + BigInt(EXPIRATION_MARGIN),
@@ -1265,10 +1239,6 @@ export function createTypewriterEffect<
       return newPreimages;
     }
 
-    // Force-executes the enqueue at `queueIndex`. The runtime never decodes
-    // an enqueue: revm runs the contract on its bytes and decides whether it
-    // executes. It has no event and no mutation row, but its writes settle
-    // like any other.
     function forceExecute(queueIndex: bigint, timestamp: bigint) {
       return Effect.gen(function* () {
         const fromExecutionHash = yield* readExecutionHash;
@@ -1338,7 +1308,6 @@ export function createTypewriterEffect<
       });
     }
 
-    /** An enqueue that executed against the speculative state. */
     type ForceExecution = NonNullable<
       Effect.Success<ReturnType<typeof forceExecute>>
     >;
@@ -1378,7 +1347,6 @@ export function createTypewriterEffect<
             deferred: AcceptDeferred;
           })[] = [];
 
-          // The watch moves the block outside the lock, so the batch keeps one.
           const { timestamp } = blockContext;
           for (const { mutation, deferred } of submittedMutations) {
             const result = yield* Effect.result(
@@ -1395,8 +1363,6 @@ export function createTypewriterEffect<
             return;
           }
 
-          // A batch settles in one transaction, so one that outgrows it
-          // continues in the next batch.
           const batches = chunkByGas(
             acceptedMutations.map(({ mutation }) => mutation),
             settlementGas,
@@ -1423,7 +1389,6 @@ export function createTypewriterEffect<
             yield* emitBatch(batchToEvent(batch));
           }
 
-          // Only the last holds the newest journals; a split batch's others use the bound.
           const last = batches.at(-1)!;
           planOf.set(last, yield* price(batchSettlement(last)));
 
@@ -1713,7 +1678,7 @@ export function createTypewriterEffect<
       calldata: Hex.Hex,
       gasLimit: number,
       accessList: AccessList,
-      settlementNonce: number,
+      nonce: number,
     ) =>
       Effect.gen(function* () {
         const filled = yield* rpc.request({
@@ -1724,7 +1689,7 @@ export function createTypewriterEffect<
               to: app.address,
               data: calldata,
               gas: Hex.fromNumber(gasLimit),
-              nonce: Hex.fromNumber(settlementNonce),
+              nonce: Hex.fromNumber(nonce),
               accessList,
             },
           ],
