@@ -66,20 +66,23 @@ export type BatchArg = {
   authorizationData: readonly Hex.Hex[];
 };
 
-/** The block a settlement executes at, which the contract checks against its own. */
-export type SettlementContext = { number: bigint; timestamp: bigint };
+export const EMPTY_BATCH: BatchArg = {
+  mutations: [],
+  mutationData: [],
+  authorizationData: [],
+};
 
+/** `timestamp` is the one the settlement executes at, which the contract checks against its block's. */
 export function encodeExecuteCalldata(
   fromExecutionHash: Hex.Hex,
-  context: SettlementContext,
-  batches: readonly BatchArg[],
+  timestamp: bigint,
+  batch: BatchArg,
   forceExecuteIndexes: readonly bigint[],
 ): Hex.Hex {
   return AbiFunction.encodeData(EXECUTE_FUNCTION, [
     fromExecutionHash,
-    context.number,
-    context.timestamp,
-    batches,
+    Number(timestamp),
+    batch,
     forceExecuteIndexes,
   ]);
 }

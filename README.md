@@ -161,7 +161,7 @@ Within a batch, mutations execute in `batchOrder`; across batches, batches are s
 
 #### Submission
 
-Typewriter sends a settlement transaction as soon as a batch or enqueue is waiting, without waiting for earlier settlements to be included, so several land in each block. Each settlement takes everything pending, split as needed to keep each transaction under the hardfork's transaction gas cap (30M on Monad, read from revm at startup); a batch is never split across transactions, so a batch that would outgrow one continues in a new batch. Settlements use consecutive nonces, and each names the `executionHash` it starts from and the block it executed at. `executionHash` accumulates every executed mutation, including force-executed ones but not enqueues, so a settlement executes only on exactly the state the server simulated it against; a mutation executed outside the server, such as a `forceExecute`, changes it. A settlement executes onchain exactly as the server simulated it, so it reverts only when it lands more than `MAX_SETTLEMENT_DELAY` seconds late. Then every settlement sent after it reverts too, because the execution hash moved. The server stops sending, waits for every settlement in flight to land, checks the execution hash onchain, and executes the reverted mutations again in the current block; those that fail now, for example because their authorization expires too soon, are rejected. A signed nonce is never signed again, only sent again. A mutation too large for any transaction is rejected with `MutationTooLargeError`.
+Typewriter sends a settlement transaction as soon as a batch or enqueue is waiting, without waiting for earlier settlements to be included, so several land in each block. Each batch settles in its own transaction, and the enqueues waiting at the same time in one after them. A batch that would outgrow Monad's 30M transaction gas cap continues in a new batch, and a mutation too large for any transaction is rejected with `MutationTooLargeError`. revm prices each settlement when its batch is accepted, so its gas limit counts the storage its mutations share. Settlements use consecutive nonces, and each names the `executionHash` it starts from and the timestamp it executed at. `executionHash` accumulates every executed mutation, including force-executed ones but not enqueues, so a settlement executes only on exactly the state the server simulated it against; a mutation executed outside the server, such as a `forceExecute`, changes it. A settlement is sent to every RPC provider at once and sent again until it lands, so a provider that fails or answers wrongly costs nothing; a signed nonce is never signed again, only sent again. A settlement executes onchain exactly as the server simulated it, so it reverts only when it lands more than `MAX_SETTLEMENT_DELAY` seconds late. Then every settlement sent after it reverts too, because the execution hash moved. The server stops sending, waits for every settlement in flight to land, checks the execution hash onchain, and executes the reverted mutations again in the current block; those that fail now, for example because their authorization expires too soon, are rejected.
 
 ## Examples
 
@@ -202,7 +202,7 @@ If the server is completely offline, the user may call `forceExecute()` on their
 
 Mutations are executed and accepted on the server before they are executed onchain. Onchain divergence happens when the server's local execution environment accepts a mutation, but the same mutation behaves differently (and reverts) when executed onchain.
 
-Typewriter rules out its causes: the contract runs each settlement at the block number and timestamp the server executed it at, and the app contract can't read other contracts or environment values that differ onchain (see [Determinism](#determinism)). A settlement can still revert when it lands too late; see [Submission](#submission).
+Typewriter rules out its causes: the contract runs each settlement at the timestamp the server executed it at, and the app contract can't read other contracts or environment values that differ onchain (see [Determinism](#determinism)). A settlement can still revert when it lands too late; see [Submission](#submission).
 
 When a server-submitted transaction reverts, "accepted" mutations may move backwards in the mutation lifecycle (to "received"). They are re-processed against the current canonical chain state and re-emitted with their updated lifecycle status. From the user's perspective, this is no different than a chain reorganization.
 
@@ -444,9 +444,10 @@ constructor(address _scheduler) {
 **Inherited external ABI.** `execute`, `enqueue`, and `forceExecute` are implemented by `Typewriter` (no app code), but they define the contract's external surface that the runtime and clients depend on:
 
 ```solidity
-// Scheduler-gated settlement. `forceExecuteIndexes` settles queued
-// force-included mutations alongside the batches.
-function execute(Batch[] calldata batches, uint256[] calldata forceExecuteIndexes) external;
+// Scheduler-gated settlement of one batch at `timestamp`, from the state
+// `fromExecutionHash` names. `forceExecuteIndexes` settles queued
+// force-included mutations after it.
+function execute(bytes32 fromExecutionHash, uint40 timestamp, Batch calldata batch, uint256[] calldata forceExecuteIndexes) external;
 
 // User force-inclusion entry point. Pushes a `QueuedMutation` and emits
 // `ForceInclusionQueued`.
@@ -504,16 +505,14 @@ Opcodes whose values can't be reproduced offchain produce divergence between off
 - `blobhash(i)` (`BLOBHASH`) and `block.blobbasefee` (`BLOBBASEFEE`) — blob context belongs to the submitting transaction, not the mutation.
 - `gasleft()` (`GAS`) — gas accounting in revm does not match the live EVM, so any branch on remaining gas can diverge.
 
-`block.number` and `block.timestamp` are rejected too. Use `settlementBlockNumber()` and `settlementTimestamp()` from Typewriter.sol
-instead of `block.number` and `block.timestamp`. A settlement carries the block
-number and timestamp the server executed it at, and the contract runs every
-mutation in it at those values, so offchain and onchain execution see the same
-ones. The contract rejects a settlement whose block number or timestamp is
-ahead of the block it lands in, or whose timestamp is more than
+`block.number` and `block.timestamp` are rejected too. `block.number` and `block.timestamp` are rejected too: a settlement carries
+the timestamp the server executed it at, and the contract checks expirations
+against it, but app code doesn't see it. The contract rejects a settlement
+whose timestamp is ahead of the block it lands in, or more than
 `MAX_SETTLEMENT_DELAY` (60) seconds behind it. The server accepts only
 authorizations and credentials that expire at least that long after the block
-it executes them in, so none executes after it expires. `forceExecute` runs at
-the block it lands in. Outside `execute` and `forceExecute`, both read `0`.
+it executes them in, so none executes after it expires. `forceExecute` checks
+expirations against the block it lands in.
 
 `tx.origin` and `msg.sender` are stable. Both resolve to the scheduler in normal `execute` flow, and to the caller in `forceExecute`.
 

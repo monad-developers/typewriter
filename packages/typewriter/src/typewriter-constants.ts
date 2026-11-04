@@ -82,6 +82,9 @@ export const FIRST_BUILTIN_MUTATION_ID = 253;
  * timestamp a settlement can land. An authorization must outlast it, so none
  * executes after it expires.
  */
+/** Monad's per-transaction gas cap, the same in every Monad hardfork. */
+export const TX_GAS_LIMIT_CAP = 30_000_000;
+
 export const EXPIRATION_MARGIN = 60;
 
 /** `struct Authorization`. */
@@ -99,11 +102,10 @@ export const TYPEWRITER_ABI = [
     name: "execute",
     inputs: [
       { name: "fromExecutionHash", type: "bytes32" },
-      { name: "blockNumber", type: "uint256" },
-      { name: "timestamp", type: "uint256" },
+      { name: "timestamp", type: "uint40" },
       {
-        name: "batches",
-        type: "tuple[]",
+        name: "batch",
+        type: "tuple",
         components: [
           { name: "mutations", type: "uint8[]" },
           { name: "mutationData", type: "bytes[]" },

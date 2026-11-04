@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.21;
 
 enum KeyType {
     P256,
@@ -74,25 +74,6 @@ error LastCredential(bytes32 accountID);
 
 // How long after its pinned timestamp a settlement can land. The scheduler accepts only authorizations that outlast it.
 uint256 constant MAX_SETTLEMENT_DELAY = 60;
-
-uint256 constant SETTLEMENT_BLOCK_NUMBER_SLOT = uint256(keccak256("typewriter.settlement.blockNumber"));
-uint256 constant SETTLEMENT_TIMESTAMP_SLOT = uint256(keccak256("typewriter.settlement.timestamp"));
-
-/// The block number a mutation executes at. Use it instead of `block.number`, which differs between offchain and onchain execution.
-function settlementBlockNumber() view returns (uint256 blockNumber) {
-    uint256 slot = SETTLEMENT_BLOCK_NUMBER_SLOT;
-    assembly ("memory-safe") {
-        blockNumber := tload(slot)
-    }
-}
-
-/// The timestamp a mutation executes at. Use it instead of `block.timestamp`, which differs between offchain and onchain execution.
-function settlementTimestamp() view returns (uint256 settledAt) {
-    uint256 slot = SETTLEMENT_TIMESTAMP_SLOT;
-    assembly ("memory-safe") {
-        settledAt := tload(slot)
-    }
-}
 
 function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey, bytes memory signature) view {
     if (keyType == KeyType.Secp256k1) {
@@ -182,7 +163,7 @@ abstract contract Typewriter {
     error ForceInclusionAlreadyExecuted(uint256 index);
     error LengthMismatch();
     error ExecutionHashMismatch(bytes32 expected, bytes32 received);
-    error InvalidSettlementContext(uint256 blockNumber, uint256 timestamp);
+    error InvalidSettlementTimestamp(uint256 timestamp);
 
     address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
@@ -209,41 +190,33 @@ abstract contract Typewriter {
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal virtual;
 
-    /// Executes at `blockNumber` and `timestamp` instead of the block's own, so the scheduler's offchain execution matches.
+    /// Executes at `timestamp` instead of the block's own, so the scheduler's offchain execution matches.
     /// Reverts unless `fromExecutionHash` is the current `executionHash`, so it executes on the state the scheduler simulated.
     function execute(
         bytes32 fromExecutionHash,
-        uint256 blockNumber,
-        uint256 timestamp,
-        Batch[] calldata batches,
+        uint40 timestamp,
+        Batch calldata batch,
         uint256[] calldata forceExecuteIndexes
     ) external {
         if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
         bytes32 hash = executionHash;
         if (hash != fromExecutionHash) revert ExecutionHashMismatch(hash, fromExecutionHash);
-        if (
-            blockNumber > block.number || timestamp > block.timestamp
-                || block.timestamp - timestamp > MAX_SETTLEMENT_DELAY
-        ) {
-            revert InvalidSettlementContext(blockNumber, timestamp);
+        if (timestamp > block.timestamp || block.timestamp - timestamp > MAX_SETTLEMENT_DELAY) {
+            revert InvalidSettlementTimestamp(timestamp);
         }
-        _setSettlementContext(blockNumber, timestamp);
+        if (
+            batch.mutations.length != batch.mutationData.length
+                || batch.mutations.length != batch.authorizationData.length
+        ) {
+            revert LengthMismatch();
+        }
 
-        for (uint256 b; b < batches.length; b++) {
-            Batch calldata batch = batches[b];
-            if (
-                batch.mutations.length != batch.mutationData.length
-                    || batch.mutations.length != batch.authorizationData.length
-            ) {
-                revert LengthMismatch();
-            }
-            for (uint256 i; i < batch.mutations.length; i++) {
-                uint256 freeMemoryPointer = _getFreeMemoryPointer();
-                _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
-                _setFreeMemoryPointer(freeMemoryPointer);
-                hash = _accumulate(hash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
-                executionIndex++;
-            }
+        for (uint256 i; i < batch.mutations.length; i++) {
+            uint256 freeMemoryPointer = _getFreeMemoryPointer();
+            _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i], timestamp);
+            _setFreeMemoryPointer(freeMemoryPointer);
+            hash = _accumulate(hash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
+            executionIndex++;
         }
 
         for (uint256 i; i < forceExecuteIndexes.length; i++) {
@@ -253,7 +226,7 @@ abstract contract Typewriter {
             if (queued.enqueuedTimestamp == 0) revert ForceInclusionAlreadyExecuted(index);
 
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
-            _execute(queued.mutation, queued.mutationData, queued.authorizationData);
+            _execute(queued.mutation, queued.mutationData, queued.authorizationData, timestamp);
             _setFreeMemoryPointer(freeMemoryPointer);
             hash = _accumulate(hash, queued.mutation, queued.mutationData, queued.authorizationData);
             executionIndex++;
@@ -269,15 +242,6 @@ abstract contract Typewriter {
         returns (bytes32)
     {
         return keccak256(abi.encode(hash, mutation, keccak256(mutationData), keccak256(authorizationData)));
-    }
-
-    function _setSettlementContext(uint256 blockNumber, uint256 settledAt) private {
-        uint256 numberSlot = SETTLEMENT_BLOCK_NUMBER_SLOT;
-        uint256 timestampSlot = SETTLEMENT_TIMESTAMP_SLOT;
-        assembly ("memory-safe") {
-            tstore(numberSlot, blockNumber)
-            tstore(timestampSlot, settledAt)
-        }
     }
 
     function _getFreeMemoryPointer() private pure returns (uint256 pointer) {
@@ -316,16 +280,17 @@ abstract contract Typewriter {
         if (queued.enqueuedTimestamp == 0) revert ForceInclusionAlreadyExecuted(index);
         uint256 executableAt = queued.enqueuedTimestamp + FORCE_INCLUSION_DELAY;
         if (block.timestamp < executableAt) revert ForceInclusionTooEarly(executableAt - block.timestamp);
-        _setSettlementContext(block.number, block.timestamp);
 
-        _execute(queued.mutation, queued.mutationData, queued.authorizationData);
+        _execute(queued.mutation, queued.mutationData, queued.authorizationData, block.timestamp);
         executionHash = _accumulate(executionHash, queued.mutation, queued.mutationData, queued.authorizationData);
         executionIndex++;
 
         delete queue[index];
     }
 
-    function _execute(uint8 mutation, bytes memory mutationData, bytes memory authorizationData) internal {
+    function _execute(uint8 mutation, bytes memory mutationData, bytes memory authorizationData, uint256 timestamp)
+        internal
+    {
         Authorization memory authorization = abi.decode(authorizationData, (Authorization));
         Account storage account;
         CreateAccount memory createAccount;
@@ -360,10 +325,10 @@ abstract contract Typewriter {
             if (credential.publicKey.length == 0) {
                 revert CredentialNotFound(authorization.accountID, authorization.credentialID);
             }
-            if (authorization.expiration != 0 && authorization.expiration < settlementTimestamp()) {
+            if (authorization.expiration != 0 && authorization.expiration < timestamp) {
                 revert AuthorizationExpired(authorization.expiration);
             }
-            if (credential.expiration != 0 && credential.expiration < settlementTimestamp()) {
+            if (credential.expiration != 0 && credential.expiration < timestamp) {
                 revert CredentialExpired(credential.expiration);
             }
             if (credential.permissions & (uint256(1) << mutation) == 0) {

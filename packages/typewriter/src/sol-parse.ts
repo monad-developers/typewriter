@@ -220,11 +220,6 @@ const ENVIRONMENT_GLOBALS = new Set([
   "blobhash",
 ]);
 const ALLOWED_BLOCK_MEMBERS = new Set(["chainid"]);
-/** Typewriter.sol's replacements for block members that differ onchain. */
-const SETTLEMENT_BLOCK_MEMBERS: Record<string, string> = {
-  number: "settlementBlockNumber()",
-  timestamp: "settlementTimestamp()",
-};
 const ACCOUNT_MEMBERS = new Set([
   "balance",
   "code",
@@ -295,15 +290,6 @@ function checkDeterminism(
           base.referencedDeclaration < 0 &&
           ENVIRONMENT_GLOBALS.has(base.name)
         ) {
-          const replacement =
-            base.name === "block"
-              ? SETTLEMENT_BLOCK_MEMBERS[node.memberName]
-              : undefined;
-          if (replacement !== undefined) {
-            fail(
-              `uses \`${describe(node)}\`, which differs between offchain and onchain execution; use \`${replacement}\` from Typewriter.sol`,
-            );
-          }
           if (
             base.name !== "block" ||
             !ALLOWED_BLOCK_MEMBERS.has(node.memberName)

@@ -24,7 +24,6 @@ import {
   type EVM,
   type EvmError,
   type ExecuteResult,
-  type SimulateResult,
 } from "typewriter-evm";
 import {
   type Abi,
@@ -67,10 +66,10 @@ import {
   type DbStatement,
 } from "./db-transport";
 import {
+  EMPTY_BATCH,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
-  type SettlementContext,
 } from "./encoding";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
@@ -81,7 +80,11 @@ import {
   requestExecutionHash,
   requestExecutionIndex,
 } from "./rpc-request";
-import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "./typewriter-constants";
+import {
+  EXPIRATION_MARGIN,
+  TX_GAS_LIMIT_CAP,
+  TYPEWRITER_ABI,
+} from "./typewriter-constants";
 import type {
   AcceptedMutation,
   Authorization,
@@ -156,9 +159,15 @@ const STUCK_BLOCKS = 300n;
 /** The intrinsic gas of a transaction, which every settlement pays once. */
 const TRANSACTION_BASE_GAS = 21_000;
 
+/** What an access list charges for each address it names. */
+const ACCESS_LIST_ADDRESS_GAS = 2_400;
+
+/** The gas an SSTORE needs left, which a gas limit must leave. */
+const SSTORE_SENTRY_GAS = 2_300;
+
 /**
- * Groups `items` in order so each group's settlement stays under `gasCap`. An
- * item over the cap on its own gets a group of its own.
+ * Groups `items` in order so each group's gas stays under `gasCap`. An item
+ * over the cap on its own gets a group of its own.
  *
  * Settlements are not capped in bytes. A geth pool rejects a transaction over
  * 128 KiB (calldata, access list and signature), and a settlement near the gas
@@ -175,14 +184,14 @@ function chunkByGas<item>(
     gas += gasOf(item);
     if (groups.length === 0 || gas > gasCap) {
       groups.push([]);
-      gas = TRANSACTION_BASE_GAS + gasOf(item);
+      gas = gasOf(item);
     }
     groups.at(-1)!.push(item);
   }
   return groups;
 }
 
-type SimulatedSettlement = Extract<SimulateResult, { status: "success" }>;
+type AccessList = { address: Hex.Hex; storageKeys: Hex.Hex[] }[];
 
 const WATCH_BUFFER_SIZE = 16;
 
@@ -235,26 +244,6 @@ export class ProgramStoppedError extends Data.TaggedError(
 ) {
   override get message() {
     return "Typewriter program stopped unexpectedly";
-  }
-}
-
-/** A settlement transaction reverted when simulated in revm. */
-export class SettlementSimulationRevertedError extends Data.TaggedError(
-  "SettlementSimulationRevertedError",
-)<Revert> {
-  override get message() {
-    return revertMessage("Settlement transaction reverted in revm", this);
-  }
-}
-
-/** A settlement transaction halted when simulated in revm. */
-export class SettlementSimulationHaltedError extends Data.TaggedError(
-  "SettlementSimulationHaltedError",
-)<{
-  reason: string;
-}> {
-  override get message() {
-    return `Settlement transaction halted in revm with ${this.reason}`;
   }
 }
 
@@ -355,18 +344,6 @@ export class SettlementRejectedError extends Data.TaggedError(
   }
 }
 
-/** Another transaction from the scheduler took a settlement's nonce. */
-export class SettlementNonceTakenError extends Data.TaggedError(
-  "SettlementNonceTakenError",
-)<{
-  nonce: number;
-  transactionHash: Hex.Hex;
-}> {
-  override get message() {
-    return `Another transaction took nonce ${this.nonce} of settlement transaction ${this.transactionHash}`;
-  }
-}
-
 /** The scheduler has pending transactions at startup, e.g. from a previous process. */
 export class PendingTransactionsError extends Data.TaggedError(
   "PendingTransactionsError",
@@ -434,15 +411,11 @@ export type ProgramError =
   | WatchError
   | DbError
   | EvmError
-  | SettlementSimulationRevertedError
-  | SettlementSimulationHaltedError
   | SettlementRevertedError
   | ResyncMismatchError
   | SettlementAfterRevertError
   | SettlementReorgedError
   | SettlementStuckError
-  | SettlementRejectedError
-  | SettlementNonceTakenError
   | EnqueueRevertedError
   | EnqueueHaltedError
   | EnqueueReorgedError
@@ -625,14 +598,14 @@ export type ExecuteMutationError =
 export function encodeMutation(
   mutation: ReceivedMutation,
   fromExecutionHash: Hex.Hex,
-  context: SettlementContext,
+  timestamp: bigint,
 ): Effect.Effect<Hex.Hex, EncodeMutationError> {
   return Effect.try({
     try: () =>
       encodeExecuteCalldata(
         fromExecutionHash,
-        context,
-        [encodeBatchArg([mutation])],
+        timestamp,
+        encodeBatchArg([mutation]),
         [],
       ),
     catch: (cause) => new EncodeMutationError({ mutation, cause }),
@@ -647,6 +620,8 @@ export function executeMutation(params: {
   calldata: Hex.Hex;
   /** The index the mutation takes if it executes. */
   executionIndex: bigint;
+  /** The gas of a settlement with nothing in it. */
+  settlementOverhead: number;
 }): Effect.Effect<
   {
     mutation: AcceptedMutation;
@@ -674,7 +649,7 @@ export function executeMutation(params: {
     const acceptedMutation = updateMutationToAccepted(params.mutation, {
       executionIndex: params.executionIndex,
       journalId: executeResult.journal_id,
-      gas: executeResult.gas_used - TRANSACTION_BASE_GAS,
+      gas: executeResult.gas_used - params.settlementOverhead,
     });
 
     yield* Effect.logDebug("Executed mutation").pipe(
@@ -954,24 +929,23 @@ export function createTypewriterEffect<
     // Until the watch reports the next block, mutations execute in the start
     // block, so checks against `block.timestamp`, such as authorization
     // expiry, see a real time.
-    const { tx_gas_limit_cap: txGasLimitCap } = yield* evm.setBlockContext({
+    yield* evm.setBlockContext({
       number: Hex.fromNumber(startBlock.number),
       timestamp: Hex.fromNumber(startBlock.timestamp),
     });
-    // Settlements pack under the cap with room for the reserve that a
-    // simulated gas limit adds for the gas each call keeps back.
-    const settlementGas = txGasLimitCap - Math.ceil(txGasLimitCap / 32);
-    /** The block that mutations execute in. A settlement pins the one its mutations executed in. */
-    let blockContext: SettlementContext = {
+    /** The block that mutations execute in. A settlement pins its timestamp. */
+    let blockContext = {
       number: startBlock.number,
       timestamp: startBlock.timestamp,
     };
-    const contextOf = new WeakMap<RuntimeBatch, SettlementContext>();
-    /** The `executionHash` an execution starts from, which its settlement checks. */
-    const fromExecutionHashOf = new WeakMap<
+    /** The timestamp each batch executed at, which its settlement pins. */
+    const timestampOf = new WeakMap<RuntimeBatch, bigint>();
+    /** The `executionHash` an execution starts from, and the slots it touched. */
+    const executionOf = new WeakMap<
       { executionIndex: bigint },
-      Hex.Hex
+      { fromExecutionHash: Hex.Hex; accessList: AccessList }
     >();
+    const forceJournalIds = new WeakMap<{ executionIndex: bigint }, number>();
     const executionHashSlot = Hex.padLeft(
       Hex.fromNumber(
         BigInt(
@@ -985,6 +959,31 @@ export function createTypewriterEffect<
     const readExecutionHash = evm
       .readStorage({ address: app.address, slots: [executionHashSlot] })
       .pipe(Effect.map((values) => Hex.padLeft(Object.values(values)[0]!, 32)));
+    // A mutation's gas in revm, less this, bounds the gas it adds to a
+    // settlement: alone, it paid for every slot cold.
+    const settlementOverhead = yield* evm
+      .execute({
+        from: app.account.address,
+        to: app.address,
+        data: encodeExecuteCalldata(
+          yield* readExecutionHash,
+          startBlock.timestamp,
+          EMPTY_BATCH,
+          [],
+        ),
+      })
+      .pipe(
+        Effect.flatMap((result) =>
+          result.status === "success"
+            ? evm
+                .pruneJournals({ journal_ids: [result.journal_id] })
+                .pipe(Effect.as(result.gas_used))
+            : Effect.succeed(TRANSACTION_BASE_GAS),
+        ),
+      );
+    /** The most gas the executions of one settlement can add. */
+    const settlementGas =
+      TX_GAS_LIMIT_CAP - Math.ceil(TX_GAS_LIMIT_CAP / 32) - settlementOverhead;
 
     let batchId = 0;
     let batchPosition = 0;
@@ -1178,8 +1177,8 @@ export function createTypewriterEffect<
     // a single set of insert statements.
     function acceptMutation(
       mutation: ReceivedMutation,
-      /** The block it executes in, which its settlement pins. */
-      context: SettlementContext,
+      /** The timestamp it executes at, which its settlement pins. */
+      timestamp: bigint,
       /** Rejects the mutation if a settlement of it takes more gas. */
       maxGas = settlementGas,
     ): Effect.Effect<AcceptedExecution, ExecuteMutationError> {
@@ -1190,13 +1189,13 @@ export function createTypewriterEffect<
             const calldata = yield* encodeMutation(
               mutation,
               fromExecutionHash,
-              context,
+              timestamp,
             );
             // The mutation encodes, so its authorization is well-formed to
             // read the account state with.
             yield* checkExpiration(
               mutation,
-              context.timestamp + BigInt(EXPIRATION_MARGIN),
+              timestamp + BigInt(EXPIRATION_MARGIN),
             );
             // TODO: Validate the fixed Authorization against the mirrored
             // account state before entering revm, then retain contract
@@ -1208,9 +1207,10 @@ export function createTypewriterEffect<
               mutation,
               calldata,
               executionIndex: nextExecutionIndex,
+              settlementOverhead,
             });
             const { gas } = executed.mutation;
-            if (TRANSACTION_BASE_GAS + gas > maxGas) {
+            if (gas > maxGas) {
               yield* evm.revertJournals({
                 journal_ids: [executed.mutation.journalId],
               });
@@ -1219,7 +1219,10 @@ export function createTypewriterEffect<
               );
               return yield* new MutationTooLargeError({ gas });
             }
-            fromExecutionHashOf.set(executed.mutation, fromExecutionHash);
+            executionOf.set(executed.mutation, {
+              fromExecutionHash,
+              accessList: executed.executeResult.access_list,
+            });
             return executed;
           },
         ).pipe(
@@ -1266,7 +1269,7 @@ export function createTypewriterEffect<
     // an enqueue: revm runs the contract on its bytes and decides whether it
     // executes. It has no event and no mutation row, but its writes settle
     // like any other.
-    function forceExecute(queueIndex: bigint, context: SettlementContext) {
+    function forceExecute(queueIndex: bigint, timestamp: bigint) {
       return Effect.gen(function* () {
         const fromExecutionHash = yield* readExecutionHash;
         const executeResult = yield* evm.execute({
@@ -1274,8 +1277,8 @@ export function createTypewriterEffect<
           to: app.address,
           data: encodeExecuteCalldata(
             fromExecutionHash,
-            context,
-            [],
+            timestamp,
+            EMPTY_BATCH,
             [queueIndex],
           ),
         });
@@ -1297,8 +1300,8 @@ export function createTypewriterEffect<
           return undefined;
         }
 
-        const gas = executeResult.gas_used - TRANSACTION_BASE_GAS;
-        if (TRANSACTION_BASE_GAS + gas > settlementGas) {
+        const gas = executeResult.gas_used - settlementOverhead;
+        if (gas > settlementGas) {
           yield* evm.revertJournals({
             journal_ids: [executeResult.journal_id],
           });
@@ -1313,7 +1316,11 @@ export function createTypewriterEffect<
 
         const executionIndex = nextExecutionIndex++;
         const mutation = { executionIndex };
-        fromExecutionHashOf.set(mutation, fromExecutionHash);
+        executionOf.set(mutation, {
+          fromExecutionHash,
+          accessList: executeResult.access_list,
+        });
+        forceJournalIds.set(mutation, executeResult.journal_id);
         yield* Effect.logDebug("Force-executed enqueued mutation").pipe(
           Effect.annotateLogs({
             queue_index: queueIndex,
@@ -1323,7 +1330,7 @@ export function createTypewriterEffect<
         return {
           queueIndex,
           mutation,
-          context,
+          timestamp,
           gas,
           executeResult,
           preimages: recordExecution(executeResult),
@@ -1372,10 +1379,10 @@ export function createTypewriterEffect<
           })[] = [];
 
           // The watch moves the block outside the lock, so the batch keeps one.
-          const context = blockContext;
+          const { timestamp } = blockContext;
           for (const { mutation, deferred } of submittedMutations) {
             const result = yield* Effect.result(
-              acceptMutation(mutation, context),
+              acceptMutation(mutation, timestamp),
             );
             if (Result.isSuccess(result)) {
               acceptedMutations.push({ ...result.success, deferred });
@@ -1412,9 +1419,13 @@ export function createTypewriterEffect<
               }),
             );
             batchesById.set(batch.id, batch);
-            contextOf.set(batch, context);
+            timestampOf.set(batch, timestamp);
             yield* emitBatch(batchToEvent(batch));
           }
+
+          // Only the last holds the newest journals; a split batch's others use the bound.
+          const last = batches.at(-1)!;
+          planOf.set(last, yield* price(batchSettlement(last)));
 
           const committed = yield* persist([
             ...insertMutations(
@@ -1449,7 +1460,6 @@ export function createTypewriterEffect<
     // TODO(kyle) `execute` already returned the old execution index, and a
     // dropped mutation goes from `accepted` to `rejected`.
     const reexecute = (
-      error: SettlementSimulationRevertedError | SettlementRevertedError,
       batches: RuntimeBatch[],
       forceExecuted: ForceExecution[],
       queueIndexes: bigint[],
@@ -1470,14 +1480,11 @@ export function createTypewriterEffect<
         invalidateStorageCache();
         nextExecutionIndex = fromExecutionIndex;
         // They execute again in the current block, so a settlement of them pins it.
-        const context = blockContext;
-        const repinned =
-          batches.some((batch) => contextOf.get(batch) !== context) ||
-          forceExecuted.some((execution) => execution.context !== context);
+        const { timestamp } = blockContext;
 
         const executed: AcceptedExecution[] = [];
         for (const batch of batches) {
-          contextOf.set(batch, context);
+          timestampOf.set(batch, timestamp);
           const kept: AcceptedMutation[] = [];
           // Gas depends on state, so a batch can outgrow a settlement now.
           let batchGas = 0;
@@ -1485,7 +1492,7 @@ export function createTypewriterEffect<
             const result = yield* Effect.result(
               acceptMutation(
                 toUnexecuted(mutation),
-                context,
+                timestamp,
                 settlementGas - batchGas,
               ),
             );
@@ -1495,13 +1502,17 @@ export function createTypewriterEffect<
             batchGas += result.success.mutation.gas;
           }
           batch.mutations = kept;
-          if (batch.mutations.length === 0) batchesById.delete(batch.id);
+          if (batch.mutations.length === 0) {
+            batchesById.delete(batch.id);
+          } else {
+            planOf.set(batch, yield* price(batchSettlement(batch)));
+          }
         }
         // An enqueue that failed before can execute once a dropped mutation
         // frees what it held, such as a nonce.
         const keptForceExecuted: ForceExecution[] = [];
         for (const queueIndex of queueIndexes) {
-          const reexecuted = yield* forceExecute(queueIndex, context);
+          const reexecuted = yield* forceExecute(queueIndex, timestamp);
           if (reexecuted !== undefined) keptForceExecuted.push(reexecuted);
         }
 
@@ -1534,11 +1545,7 @@ export function createTypewriterEffect<
           pending.length -
           executed.length -
           forceExecuted.filter(({ queueIndex }) => kept.has(queueIndex)).length;
-        if (droppedCount === 0 && !repinned) return yield* error;
-        yield* Effect.logWarning(
-          "Executed reverted mutations again",
-          error,
-        ).pipe(
+        yield* Effect.logWarning("Executed mutations again").pipe(
           Effect.annotateLogs({
             dropped_count: droppedCount,
             mutation_count: pending.length,
@@ -1553,17 +1560,18 @@ export function createTypewriterEffect<
       });
 
     type RevertedSettlement = {
-      error: SettlementRevertedError;
       batches: RuntimeBatch[];
       forceExecuted: ForceExecution[];
       queueIndexes: bigint[];
     };
 
-    /** One settlement transaction. */
+    /** One settlement transaction: one batch, or the enqueues it force-executes. */
     type Settlement = {
-      context: SettlementContext;
-      batches: RuntimeBatch[];
+      timestamp: bigint;
+      batch: RuntimeBatch | undefined;
       forceExecuted: ForceExecution[];
+      /** Its gas limit and access list, from revm, once it is priced. */
+      plan?: Plan;
       /** Enqueues that failed in revm when it was packed, to try again after a revert. */
       discardedQueueIndexes: bigint[];
     };
@@ -1575,6 +1583,7 @@ export function createTypewriterEffect<
       /** Set once it is signed. */
       hash?: Hex.Hex;
       raw?: Hex.Hex;
+      gasLimit: number;
       /** The block number when it was last broadcast. */
       sentAt: bigint;
       /** The block number when it was first broadcast. */
@@ -1586,11 +1595,6 @@ export function createTypewriterEffect<
 
     /** By nonce, in nonce order. */
     const submitted = new Map<number, Submitted>();
-    /** Fails the program on a broadcast that sending again can't fix. */
-    const rejected = yield* Deferred.make<
-      never,
-      SettlementRejectedError | SettlementNonceTakenError
-    >();
     /** The settlements of an onchain revert, which `settle` executes again first. */
     let reverted: RevertedSettlement | undefined;
     /**
@@ -1600,64 +1604,115 @@ export function createTypewriterEffect<
      */
     let resync: Submitted[] | undefined;
 
-    const firstExecution = (settlement: Settlement) =>
-      settlement.batches[0]?.mutations[0] ??
-      settlement.forceExecuted[0]!.mutation;
+    const journalIdOf = (execution: { executionIndex: bigint }) =>
+      "journalId" in execution
+        ? (execution as AcceptedMutation).journalId
+        : forceJournalIds.get(execution);
+    const executionsOf = (settlement: Settlement) => [
+      ...(settlement.batch?.mutations ?? []),
+      ...settlement.forceExecuted.map(({ mutation }) => mutation),
+    ];
     const fromExecutionHashOfSettlement = (settlement: Settlement) =>
-      fromExecutionHashOf.get(firstExecution(settlement))!;
+      executionOf.get(executionsOf(settlement)[0]!)!.fromExecutionHash;
 
-    const journalIdsOf = (settlement: Settlement) => [
-      ...settlement.batches.flatMap((batch) =>
-        batch.mutations.map((mutation) => mutation.journalId),
-      ),
-      ...settlement.forceExecuted.map(
-        ({ executeResult }) => executeResult.journal_id,
+    // Every slot an execution touched, so the settlement pays for each once.
+    const accessListOf = (settlement: Settlement): AccessList => {
+      const slots = new Map<Hex.Hex, Set<Hex.Hex>>();
+      for (const execution of executionsOf(settlement)) {
+        for (const { address, storageKeys } of executionOf.get(execution)!
+          .accessList) {
+          const keys = slots.get(address) ?? new Set();
+          for (const key of storageKeys) keys.add(key);
+          slots.set(address, keys);
+        }
+      }
+      return [...slots].map(([address, keys]) => ({
+        address,
+        storageKeys: [...keys].sort(),
+      }));
+    };
+
+    type Plan = { gasLimit: number; accessList: AccessList };
+    const planOf = new WeakMap<RuntimeBatch, Plan>();
+
+    const calldataOf = (settlement: Settlement) =>
+      encodeExecuteCalldata(
+        fromExecutionHashOfSettlement(settlement),
+        settlement.timestamp,
+        settlement.batch === undefined
+          ? EMPTY_BATCH
+          : encodeBatchArg(settlement.batch.mutations),
+        settlement.forceExecuted.map(({ queueIndex }) => queueIndex),
+      );
+
+    // Each execution's gas alone bounds what it adds to the settlement, and
+    // the call reserve and SSTORE sentry leave room the chain requires.
+    const boundedPlan = (settlement: Settlement): Plan => {
+      const accessList = accessListOf(settlement);
+      return { accessList, gasLimit: gasLimitOf(settlement, accessList) };
+    };
+
+    // Simulates the settlement in revm while its executions are the newest
+    // journals, so its gas counts the slots they share. Falls back to the bound.
+    const price = (settlement: Settlement) =>
+      evm
+        .simulate({
+          from: app.account.address,
+          to: app.address,
+          data: calldataOf(settlement),
+          journal_ids: executionsOf(settlement).map(
+            (execution) => journalIdOf(execution)!,
+          ),
+        })
+        .pipe(
+          Effect.map(
+            (result): Plan =>
+              result.status === "success"
+                ? { gasLimit: result.gas_limit, accessList: result.access_list }
+                : boundedPlan(settlement),
+          ),
+        );
+
+    const batchSettlement = (batch: RuntimeBatch): Settlement => ({
+      timestamp: timestampOf.get(batch)!,
+      batch,
+      forceExecuted: [],
+      discardedQueueIndexes: [],
+      plan: planOf.get(batch),
+    });
+
+    const gasLimitOf = (settlement: Settlement, accessList: AccessList) => {
+      const gas =
+        settlementOverhead +
+        ACCESS_LIST_ADDRESS_GAS * accessList.length +
+        (settlement.batch?.mutations ?? []).reduce(
+          (sum, mutation) => sum + mutation.gas,
+          0,
+        ) +
+        settlement.forceExecuted.reduce((sum, { gas }) => sum + gas, 0);
+      return gas + Math.ceil(gas / 64) + SSTORE_SENTRY_GAS;
+    };
+
+    // Each batch settles in its own transaction, and the enqueues after them.
+    const toSettlements = (
+      batches: RuntimeBatch[],
+      forceExecuted: ForceExecution[],
+    ): Settlement[] => [
+      ...batches.map(batchSettlement),
+      ...chunkByGas(forceExecuted, settlementGas, ({ gas }) => gas).map(
+        (executions) => ({
+          timestamp: executions[0]!.timestamp,
+          batch: undefined,
+          forceExecuted: executions,
+          discardedQueueIndexes: [],
+        }),
       ),
     ];
 
-    // Fills each settlement up to the cap, in execution order. A settlement
-    // pins one block, so items that executed in different blocks split.
-    const pack = (
-      batches: RuntimeBatch[],
-      forceExecuted: ForceExecution[],
-    ): Settlement[] => {
-      const contextOfItem = (item: RuntimeBatch | ForceExecution) =>
-        "queueIndex" in item ? item.context : contextOf.get(item)!;
-      const runs: (RuntimeBatch | ForceExecution)[][] = [];
-      for (const item of [...batches, ...forceExecuted]) {
-        const run = runs.at(-1);
-        if (
-          run !== undefined &&
-          contextOfItem(run[0]!) === contextOfItem(item)
-        ) {
-          run.push(item);
-        } else {
-          runs.push([item]);
-        }
-      }
-      return runs
-        .flatMap((run) =>
-          chunkByGas(run, settlementGas, (item) =>
-            "queueIndex" in item
-              ? item.gas
-              : item.mutations.reduce((gas, mutation) => gas + mutation.gas, 0),
-          ),
-        )
-        .map((items) => ({
-          context: contextOfItem(items[0]!),
-          batches: items.filter(
-            (item): item is RuntimeBatch => !("queueIndex" in item),
-          ),
-          forceExecuted: items.filter(
-            (item): item is ForceExecution => "queueIndex" in item,
-          ),
-          discardedQueueIndexes: [],
-        }));
-    };
-
     const sign = (
       calldata: Hex.Hex,
-      simulateResult: SimulatedSettlement,
+      gasLimit: number,
+      accessList: AccessList,
       settlementNonce: number,
     ) =>
       Effect.gen(function* () {
@@ -1668,9 +1723,9 @@ export function createTypewriterEffect<
               from: app.account.address,
               to: app.address,
               data: calldata,
-              gas: Hex.fromNumber(simulateResult.gas_limit),
+              gas: Hex.fromNumber(gasLimit),
               nonce: Hex.fromNumber(settlementNonce),
-              accessList: simulateResult.access_list,
+              accessList,
             },
           ],
         });
@@ -1678,11 +1733,6 @@ export function createTypewriterEffect<
         // `eth_fillTransaction` returns an already-signed `raw`; strip its
         // signature fields so the account re-signs over the correct payload.
         const transaction = parseTransaction(filled.raw);
-        // The RPC backing `eth_fillTransaction` can be out of sync with the one
-        // backing the send, so the nonce it fills may be stale and override our
-        // clamp. Force our locally reconciled nonce onto the transaction so the
-        // broadcast nonce is exactly the value we tracked, independent of fill's
-        // view of the pending pool.
         delete transaction.r;
         delete transaction.s;
         delete transaction.v;
@@ -1694,71 +1744,32 @@ export function createTypewriterEffect<
         return signed as Hex.Hex;
       });
 
-    // Any other failure is a lost transaction, which is sent again.
+    // Sends to every node, and is sent again until it lands, so a node that
+    // fails or answers wrongly costs nothing.
     const broadcast = (entry: Submitted) =>
       Effect.gen(function* () {
         entry.sentAt = blockContext.number;
         entry.firstSentAt ??= blockContext.number;
-        const { nonce, hash: transactionHash } = entry as Submitted & {
-          hash: Hex.Hex;
-        };
         yield* rpc
-          .request({ method: "eth_sendRawTransaction", params: [entry.raw!] })
+          .requestAll({
+            method: "eth_sendRawTransaction",
+            params: [entry.raw!],
+          })
           .pipe(
             Effect.catch((error) =>
-              Effect.gen(function* () {
-                const reason =
-                  error._tag === "RpcResponseError"
-                    ? String(error.error.message)
-                    : "";
-                if (
-                  /insufficient funds|underpriced|base fee|intrinsic gas too low|exceeds block gas limit/i.test(
-                    reason,
-                  )
-                ) {
-                  return yield* new SettlementRejectedError({
-                    nonce,
-                    transactionHash,
-                    reason,
-                  });
-                }
-                if (/nonce too low/i.test(reason)) {
-                  // Another provider can be behind the one that has it.
-                  for (let attempt = 0; attempt < 10; attempt++) {
-                    const transaction = yield* rpc
-                      .request({
-                        method: "eth_getTransactionByHash",
-                        params: [transactionHash],
-                      })
-                      .pipe(Effect.orElseSucceed(() => null));
-                    if (transaction !== null) return;
-                    yield* Effect.sleep(
-                      Duration.millis(app.blockPollingIntervalMs),
-                    );
-                  }
-                  return yield* new SettlementNonceTakenError({
-                    nonce,
-                    transactionHash,
-                  });
-                }
-                yield* Effect.logDebug(
-                  "Failed settlement broadcast",
-                  error,
-                ).pipe(
-                  Effect.annotateLogs({ transaction_hash: transactionHash }),
-                );
-              }),
+              Effect.logDebug("Failed settlement broadcast", error).pipe(
+                Effect.annotateLogs({ transaction_hash: entry.hash }),
+              ),
             ),
-            Effect.catch((error) => Deferred.fail(rejected, error)),
             Effect.forkIn(scope),
           );
       });
 
-    // Packs the reverted settlements, then what is waiting, into settlements,
-    // simulates them, and sends them without waiting for their receipts.
+    // Splits what is waiting into settlements and sends them without waiting
+    // for their receipts.
     const settle = () =>
       Effect.gen(function* () {
-        const simulation = yield* withSpeculativeStateLock(
+        const prepared = yield* withSpeculativeStateLock(
           Effect.gen(function* () {
             if (resync !== undefined) return undefined;
             const resubmit = reverted;
@@ -1779,12 +1790,11 @@ export function createTypewriterEffect<
 
             /** The enqueues that execute, in the order the settlements run them. */
             let forceExecuted: ForceExecution[] = resubmit?.forceExecuted ?? [];
-            // After an onchain revert, `reexecute` runs them on the rewound state.
             if (resubmit === undefined) {
               const executed: ForceExecution[] = [];
-              const context = blockContext;
+              const { timestamp } = blockContext;
               for (const queueIndex of queueIndexes) {
-                const execution = yield* forceExecute(queueIndex, context);
+                const execution = yield* forceExecute(queueIndex, timestamp);
                 if (execution !== undefined) executed.push(execution);
               }
               forceExecuted = executed;
@@ -1802,126 +1812,84 @@ export function createTypewriterEffect<
               }
             }
 
-            // Each mutation executed when it was accepted, so a settlement
-            // reverts only when one fails in a later block, e.g. on an
-            // authorization that expired since. Then execute them again, drop
-            // the ones that fail, and simulate what is left.
-            let revert:
-              | SettlementSimulationRevertedError
-              | SettlementRevertedError
-              | undefined = resubmit?.error;
-            while (true) {
-              if (revert !== undefined) {
-                const reexecuted = yield* reexecute(
-                  revert,
-                  batches,
-                  forceExecuted,
-                  queueIndexes,
-                );
-                batches = reexecuted.batches;
-                forceExecuted = reexecuted.forceExecuted;
-                commits.push(reexecuted.committed);
-                revert = undefined;
-              }
-              if (batches.length === 0 && forceExecuted.length === 0) {
-                return undefined;
-              }
-
-              const settlements = pack(batches, forceExecuted);
-              const executedQueueIndexes = new Set(
-                forceExecuted.map(({ queueIndex }) => queueIndex),
+            // A settlement lands only within MAX_SETTLEMENT_DELAY of the
+            // timestamp it pins, so reverted or stale ones execute again now.
+            const stale = (timestamp: bigint) =>
+              blockContext.timestamp - timestamp >
+              BigInt(EXPIRATION_MARGIN / 2);
+            if (
+              resubmit !== undefined ||
+              batches.some((batch) => stale(timestampOf.get(batch)!)) ||
+              forceExecuted.some(({ timestamp }) => stale(timestamp))
+            ) {
+              const reexecuted = yield* reexecute(
+                batches,
+                forceExecuted,
+                queueIndexes,
               );
-              settlements.at(-1)!.discardedQueueIndexes = queueIndexes.filter(
-                (queueIndex) => !executedQueueIndexes.has(queueIndex),
-              );
-              const simulated: {
-                entry: Submitted;
-                calldata: Hex.Hex;
-                simulateResult: SimulatedSettlement;
-              }[] = [];
-              // Each settlement simulates on the state the ones before it leave.
-              for (const [i, settlement] of settlements.entries()) {
-                const calldata = encodeExecuteCalldata(
-                  fromExecutionHashOfSettlement(settlement),
-                  settlement.context,
-                  settlement.batches.map((batch) =>
-                    encodeBatchArg(batch.mutations),
-                  ),
-                  settlement.forceExecuted.map(({ queueIndex }) => queueIndex),
-                );
-
-                const simulationStartedAt = yield* startTimer;
-                const simulateResult = yield* evm.simulate({
-                  from: app.account.address,
-                  to: app.address,
-                  data: calldata,
-                  journal_ids: journalIdsOf(settlement),
-                  later_journal_ids: settlements
-                    .slice(i + 1)
-                    .flatMap(journalIdsOf),
-                });
-                const duration = yield* durationMs(simulationStartedAt);
-                if (simulateResult.status === "halt") {
-                  return yield* new SettlementSimulationHaltedError({
-                    reason: simulateResult.reason,
-                  });
-                }
-                if (simulateResult.status === "revert") {
-                  revert = new SettlementSimulationRevertedError(
-                    decodeRevert(app.abi, simulateResult.data),
-                  );
-                  break;
-                }
-                if (simulateResult.gas_limit > txGasLimitCap) {
-                  return yield* Effect.die(
-                    `A settlement needs ${simulateResult.gas_limit} gas, over the cap of ${txGasLimitCap}`,
-                  );
-                }
-
-                yield* Effect.logDebug("Simulated settlement transaction").pipe(
-                  Effect.annotateLogs({
-                    gas_limit: simulateResult.gas_limit,
-                    size: Hex.size(calldata),
-                    batch_count: settlement.batches.length,
-                    enqueue_count: settlement.forceExecuted.length,
-                    duration,
-                  }),
-                );
-                simulated.push({
-                  entry: {
-                    settlement,
-                    nonce: 0,
-                    sentAt: 0n,
-                    status: "pending",
-                  },
-                  calldata,
-                  simulateResult,
-                });
-              }
-              if (revert !== undefined) continue;
-
-              // Submitted under the lock, so an onchain revert dooms them.
-              for (const { entry } of simulated) {
-                entry.nonce = nonce++;
-                submitted.set(entry.nonce, entry);
-              }
-              return { simulated, commits };
+              batches = reexecuted.batches;
+              forceExecuted = reexecuted.forceExecuted;
+              commits.push(reexecuted.committed);
             }
+
+            const settlements = toSettlements(batches, forceExecuted);
+            if (settlements.length === 0) return undefined;
+            const last = settlements.at(-1)!;
+            if (last.batch === undefined) last.plan = yield* price(last);
+            const executedQueueIndexes = new Set(
+              forceExecuted.map(({ queueIndex }) => queueIndex),
+            );
+            settlements.at(-1)!.discardedQueueIndexes = queueIndexes.filter(
+              (queueIndex) => !executedQueueIndexes.has(queueIndex),
+            );
+
+            // Given nonces under the lock, so an onchain revert stops them all.
+            return {
+              commits,
+              transactions: settlements.map((settlement) => {
+                const { gasLimit, accessList } =
+                  settlement.plan ?? boundedPlan(settlement);
+                const entry: Submitted = {
+                  settlement,
+                  nonce: nonce++,
+                  gasLimit,
+                  sentAt: 0n,
+                  status: "pending",
+                };
+                submitted.set(entry.nonce, entry);
+                return {
+                  entry,
+                  accessList,
+                  gasLimit,
+                  calldata: calldataOf(settlement),
+                };
+              }),
+            };
           }),
         );
 
-        if (simulation === undefined) return;
+        if (prepared === undefined) return;
 
-        yield* Effect.forEach(simulation.commits, Deferred.await, {
+        yield* Effect.forEach(prepared.commits, Deferred.await, {
           discard: true,
         });
 
         for (const {
           entry,
+          accessList,
+          gasLimit,
           calldata,
-          simulateResult,
-        } of simulation.simulated) {
-          entry.raw = yield* sign(calldata, simulateResult, entry.nonce);
+        } of prepared.transactions) {
+          yield* Effect.logDebug("Sending settlement transaction").pipe(
+            Effect.annotateLogs({
+              nonce: entry.nonce,
+              gas_limit: gasLimit,
+              size: Hex.size(calldata),
+              mutation_count: entry.settlement.batch?.mutations.length ?? 0,
+              enqueue_count: entry.settlement.forceExecuted.length,
+            }),
+          );
+          entry.raw = yield* sign(calldata, gasLimit, accessList, entry.nonce);
           entry.hash = Hash.keccak256(entry.raw);
           yield* broadcast(entry);
         }
@@ -2025,13 +1993,15 @@ export function createTypewriterEffect<
           transactionHash: receipt.transactionHash,
           transactionIndex: receipt.transactionIndex,
         };
-        for (const batch of settlement.batches) {
+        const batches =
+          settlement.batch === undefined ? [] : [settlement.batch];
+        for (const batch of batches) {
           batch.status = "included";
           for (const mutation of batch.mutations) {
             updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
           }
         }
-        runtimeBlock.batches.push(...settlement.batches);
+        runtimeBlock.batches.push(...batches);
         if (settlement.forceExecuted.length > 0) {
           forceExecutedJournalIds.set(runtimeBlock, [
             ...(forceExecutedJournalIds.get(runtimeBlock) ?? []),
@@ -2045,7 +2015,7 @@ export function createTypewriterEffect<
           yield* persist(
             updateMutationInclusion(
               app.mutationSchema,
-              settlement.batches.flatMap((batch) => batch.mutations),
+              batches.flatMap((batch) => batch.mutations),
               inclusion,
             ),
           ),
@@ -2065,12 +2035,12 @@ export function createTypewriterEffect<
           return;
         }
         const [first] = settlements;
-        const { context } = first!.settlement;
+        const { timestamp } = first!.settlement;
         const landed = first!.block!;
         // Only a late landing is fixed by executing again in a newer block.
         if (
-          context.number <= landed.number &&
-          landed.timestamp - context.timestamp <= BigInt(EXPIRATION_MARGIN)
+          timestamp <= landed.timestamp &&
+          landed.timestamp - timestamp <= BigInt(EXPIRATION_MARGIN)
         ) {
           return yield* new SettlementRevertedError({
             transactionHash: first!.hash!,
@@ -2097,13 +2067,14 @@ export function createTypewriterEffect<
           Effect.annotateLogs({
             transaction_hash: first!.hash,
             reverted_count: settlements.length,
-            execution_index: firstExecution(first!.settlement).executionIndex,
+            execution_index: executionsOf(first!.settlement)[0]!.executionIndex,
           }),
         );
         resync = undefined;
         reverted = {
-          error: new SettlementRevertedError({ transactionHash: first!.hash! }),
-          batches: settlements.flatMap(({ settlement }) => settlement.batches),
+          batches: settlements.flatMap(({ settlement }) =>
+            settlement.batch === undefined ? [] : [settlement.batch],
+          ),
           forceExecuted: settlements.flatMap(
             ({ settlement }) => settlement.forceExecuted,
           ),
@@ -2150,6 +2121,14 @@ export function createTypewriterEffect<
                 hash: block.hash,
                 timestamp: block.timestamp,
               };
+              yield* Effect.logDebug("Landed settlement transaction").pipe(
+                Effect.annotateLogs({
+                  transaction_hash: receipt.transactionHash,
+                  status: receipt.status,
+                  gas_limit: entry.gasLimit,
+                  gas_used: receipt.gasUsed,
+                }),
+              );
               if (receipt.status === "success") {
                 if (resync !== undefined) {
                   return yield* new SettlementAfterRevertError({
@@ -2358,7 +2337,6 @@ export function createTypewriterEffect<
     ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
       Effect.raceFirst(lockLost),
-      Effect.raceFirst(Deferred.await(rejected)),
       // Mutations waiting for the program would otherwise wait forever.
       Effect.onError((cause) =>
         Deferred.fail(stopped, new TypewriterStoppedError({ cause })),

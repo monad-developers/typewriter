@@ -631,7 +631,7 @@ ${app("enum Mutation { Add }")}`);
     create: error("new Other();"),
     assembly: error("assembly { sstore(0, 1) }"),
     allowed: error(
-      "state.total = block.chainid + settlementTimestamp() + settlementBlockNumber() + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
+      "state.total = block.chainid + uint160(address(this)) + uint256(keccak256(abi.encode(mutation.token)));",
     ),
   }).toMatchInlineSnapshot(`
     {
@@ -696,7 +696,7 @@ contract App is Typewriter {
     modifier: error("Helpers.later();"),
     executionIndex: error("state.total = executionIndex;"),
     accounts: error("state.total = accounts[accountID].activeCredentials;"),
-    nestedExecute: error('_execute(0, "", "");'),
+    nestedExecute: error('_execute(0, "", "", 0);'),
     allowed: error(
       'verifySignature(KeyType.Secp256k1, bytes32(0), "", ""); state.total = uint160(SCHEDULER);',
     ),

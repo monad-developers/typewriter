@@ -13,7 +13,7 @@ import {
   selectStorageSlots,
 } from "../src/db-query";
 import { builder } from "../src/db-transport";
-import { encodeExecuteCalldata } from "../src/encoding";
+import { EMPTY_BATCH, encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
 import { TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type {
@@ -387,11 +387,8 @@ function checkQueue(
               to: app.address,
               data: encodeExecuteCalldata(
                 onchain.executionHash,
-                {
-                  number: BigInt(latest!.number!),
-                  timestamp: BigInt(latest!.timestamp),
-                },
-                [],
+                BigInt(latest!.timestamp),
+                EMPTY_BATCH,
                 [queueIndex],
               ),
             },

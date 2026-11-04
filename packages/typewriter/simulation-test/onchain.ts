@@ -26,7 +26,7 @@ export type Settlement = Inclusion & {
   mismatched: boolean;
   /** The execution indexes of its mutations, in execution order. */
   executionIndexes: bigint[];
-  /** It landed before the block it pinned, or more than `EXPIRATION_MARGIN` seconds after it. */
+  /** It landed before the timestamp it pinned, or more than `EXPIRATION_MARGIN` seconds after it. */
   late: boolean;
 };
 
@@ -154,21 +154,16 @@ export function readOnchain({
           transactionHash: transaction.hash,
           transactionIndex: Number(transaction.transactionIndex),
         };
-        const [
-          fromExecutionHash,
-          pinnedNumber,
-          pinnedTimestamp,
-          batches,
-          forceExecuteIndexes,
-        ] = AbiFunction.decodeData(EXECUTE, transaction.input);
+        const [fromExecutionHash, pinnedTimestamp, batch, forceExecuteIndexes] =
+          AbiFunction.decodeData(EXECUTE, transaction.input);
         const settlement: Settlement = {
           ...inclusion,
           reverted: receipt.status !== "0x1",
           mismatched: fromExecutionHash !== onchain.executionHash,
           executionIndexes: [],
           late:
-            pinnedNumber > inclusion.blockNumber ||
-            inclusion.blockTimestamp - pinnedTimestamp >
+            BigInt(pinnedTimestamp) > inclusion.blockTimestamp ||
+            inclusion.blockTimestamp - BigInt(pinnedTimestamp) >
               BigInt(EXPIRATION_MARGIN),
         };
         onchain.settlements.push(settlement);
@@ -183,7 +178,7 @@ export function readOnchain({
           settlement.executionIndexes.push(executionIndex);
           onchain.executed.push({ ...executed, executionIndex, inclusion });
         };
-        for (const batch of batches) {
+        if (batch.mutations.length > 0) {
           const keys = batch.authorizationData.map((authorizationData, i) => {
             onchain.executionHash = accumulate(
               onchain.executionHash,

@@ -10,7 +10,7 @@ use revm::{
     context_interface::{
         result::{ExecutionResult, HaltReason},
         transaction::{AccessList, AccessListItem},
-        Cfg, Host, JournalTr,
+        Host, JournalTr,
     },
     database::InMemoryDB,
     inspector::InspectEvm,
@@ -99,9 +99,6 @@ struct SimulateParams {
     #[serde(flatten)]
     tx: ExecuteParams,
     journal_ids: Vec<u64>,
-    /// Journals newer than `journal_ids`, rewound but left out of the access list.
-    #[serde(default)]
-    later_journal_ids: Vec<u64>,
 }
 
 #[derive(Deserialize)]
@@ -159,12 +156,6 @@ struct ExecuteOk {
     slot_writes: Vec<SlotWrite>,
     /// The 64-byte KECCAK256 inputs: a mapping key and the mapping's slot.
     keccak_preimages: Vec<B512>,
-}
-
-#[derive(Serialize)]
-struct BlockContextOk {
-    /// The most gas a transaction may take in the block's hardfork.
-    tx_gas_limit_cap: u64,
 }
 
 /// gas_used is with the access list warm, as the chain charges it.
@@ -384,9 +375,7 @@ impl EvmHarness {
             self.evm.0.ctx.cfg.0.chain_id = chain_id;
         }
         match &params.block {
-            Some(block) => {
-                self.set_block_context(block)?;
-            }
+            Some(block) => self.set_block_context(block)?,
             None => self.update_spec()?,
         }
         let db = self.evm.0.ctx.journaled_state.db_mut();
@@ -407,7 +396,7 @@ impl EvmHarness {
         Ok(())
     }
 
-    fn set_block_context(&mut self, params: &BlockParams) -> Result<BlockContextOk, String> {
+    fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
         let block = &mut self.evm.0.ctx.block;
         if let Some(number) = params.number {
             block.number = number;
@@ -421,13 +410,7 @@ impl EvmHarness {
         if let Some(coinbase) = params.coinbase {
             block.beneficiary = coinbase;
         }
-        self.update_spec()?;
-        // relax_cfg lifts the cap for the harness's own runs, so read the
-        // hardfork's from a fresh cfg.
-        let spec = self.evm.0.ctx.cfg.0.spec;
-        Ok(BlockContextOk {
-            tx_gas_limit_cap: MonadCfgEnv::new_with_spec(spec).tx_gas_limit_cap(),
-        })
+        self.update_spec()
     }
 
     /// Switches to the pinned hardfork, or else to the chain's hardfork at the
@@ -503,14 +486,12 @@ impl EvmHarness {
 
     fn simulate(&mut self, params: &SimulateParams) -> Result<SimulateOk, String> {
         self.ensure_journal_ids(&params.journal_ids)?;
-        self.ensure_journal_ids(&params.later_journal_ids)?;
-        let rewound = || params.journal_ids.iter().chain(&params.later_journal_ids);
-        for journal_id in rewound().rev() {
+        for journal_id in params.journal_ids.iter().rev() {
             self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Pre);
         }
         let cached_access_list = self.merge_journal_access_lists(&params.journal_ids);
         let result = self.run_simulate(&params.tx, cached_access_list);
-        for journal_id in rewound() {
+        for journal_id in &params.journal_ids {
             self.journals[journal_id].write(self.evm.0.ctx.journaled_state.db_mut(), Image::Post);
         }
         result
@@ -718,7 +699,7 @@ pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
     let empty = |result: Result<(), String>| result.map(|()| EmptyResult {});
     match request {
         Request::SetBlockContext { id, params } => {
-            respond(id, harness.set_block_context(&params))
+            respond(id, empty(harness.set_block_context(&params)))
         }
         Request::Execute { id, params } => respond(id, harness.execute(&params)),
         Request::Simulate { id, params } => respond(id, harness.simulate(&params)),

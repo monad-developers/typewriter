@@ -134,14 +134,9 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "execute",
-    args: [FROM_EXECUTION_HASH, 7n, 9n, [batch], []],
+    args: [FROM_EXECUTION_HASH, 9, batch, []],
   });
-  const actual = encodeExecuteCalldata(
-    FROM_EXECUTION_HASH,
-    { number: 7n, timestamp: 9n },
-    [batch],
-    [],
-  );
+  const actual = encodeExecuteCalldata(FROM_EXECUTION_HASH, 9n, batch, []);
   expect(actual).toBe(expected);
 });
 
