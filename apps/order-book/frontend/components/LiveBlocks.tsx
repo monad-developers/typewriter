@@ -21,8 +21,8 @@ const BLOCK_INNER_KEYS = ["a", "b", "c", "d", "e", "f", "g", "h"];
 
 function BatchSlots({ batches }: { batches: LiveBatch[] }) {
   const bySlot = new Array<LiveBatch | undefined>(BLOCK_INNER_SLOTS);
-  for (const b of batches) {
-    bySlot[b.position % BLOCK_INNER_SLOTS] = b;
+  for (const [i, b] of batches.entries()) {
+    bySlot[i % BLOCK_INNER_SLOTS] = b;
   }
 
   return (
