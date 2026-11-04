@@ -166,11 +166,25 @@ const SLOT_CACHE_MAX_ENTRIES = 200_000;
 /** The intrinsic gas of a transaction, which a settlement pays once. */
 const TRANSACTION_BASE_GAS = 21_000;
 
-/** A settlement's gas limit is its gas in revm, and this much more. */
-const GAS_LIMIT_BUFFER = 1.1;
+/** Monad's storage pages hold `2 ** PAGE_SHIFT` slots. */
+const PAGE_SHIFT = 7n;
+/** What Monad saves on a page already read in the transaction. */
+const COLD_READ_SAVING = 8_000;
+/** What Monad saves on a page the transaction already wrote. */
+const PAGE_WRITE_SAVING = 2_800;
 
-/** The most gas a settlement can use in revm, so its gas limit fits a transaction. */
-const SETTLEMENT_GAS = Math.floor(TX_GAS_LIMIT_CAP / GAS_LIMIT_BUFFER);
+/** The gas an SSTORE requires left, which a gas limit must leave. */
+const SSTORE_SENTRY_GAS = 2_300;
+
+/** The gas limit for `gas`: the 1/64 each call keeps back, and the SSTORE sentry. */
+function gasLimitFor(gas: number): number {
+  return gas + Math.ceil(gas / 64) + SSTORE_SENTRY_GAS;
+}
+
+/** The most gas a settlement can take, so its gas limit fits a transaction. */
+const SETTLEMENT_GAS = Math.floor(
+  ((TX_GAS_LIMIT_CAP - SSTORE_SENTRY_GAS) * 64) / 65,
+);
 
 /** How many blocks a sent settlement waits before it is sent again. The lowest nonce, which the rest wait on, waits one. */
 const REBROADCAST_BLOCKS = 3n;
@@ -190,9 +204,11 @@ type AcceptDeferred = Deferred.Deferred<
   ExecuteMutationError
 >;
 
-/** One execution that ran alone in revm, before it settles with others. */
+/** One execution in revm, alone, before it settles with others. */
 type Execution = {
   mutation: { executionIndex: bigint };
+  /** The `executionHash` it executed from. */
+  fromExecutionHash: Hex.Hex;
   executeResult: Extract<ExecuteResult, { status: "success" }>;
 };
 
@@ -210,8 +226,8 @@ type Settlement = {
   fromExecutionIndex: bigint;
   batch: RuntimeBatch | undefined;
   queueIndexes: bigint[];
-  /** The revm journal of the whole settlement. */
-  journalId: number;
+  /** The revm journals of its executions. */
+  journalIds: number[];
   gasLimit: number;
   /** Resolves once its executions' rows commit. */
   committed: Deferred.Deferred<void>;
@@ -752,9 +768,10 @@ export function createTypewriterEffect<
 
     const executeAlone = (mutation: ReceivedMutation, timestamp: bigint) =>
       Effect.gen(function* () {
+        const fromExecutionHash = yield* readExecutionHash;
         const calldata = yield* encodeMutation(
           mutation,
-          yield* readExecutionHash,
+          fromExecutionHash,
           timestamp,
         );
         yield* checkExpiration(mutation, timestamp + BigInt(EXPIRATION_MARGIN));
@@ -788,7 +805,7 @@ export function createTypewriterEffect<
           nextExecutionIndex++,
         );
         yield* emitMutation(accepted);
-        return { mutation: accepted, executeResult };
+        return { mutation: accepted, fromExecutionHash, executeResult };
       }).pipe(
         Effect.tapError((error) =>
           Effect.suspend(() =>
@@ -797,65 +814,78 @@ export function createTypewriterEffect<
         ),
       );
 
-    // Undoes `executions`, the newest in revm, after persisting what they wrote.
-    const rewind = (executions: Execution[]) =>
-      Effect.gen(function* () {
-        yield* evm.revertJournals({
-          journal_ids: executions.map(
-            ({ executeResult }) => executeResult.journal_id,
+    const persistExecutions = (executions: Execution[]) =>
+      persist([
+        ...insertStorageSlots(app.typewriterSchema, executions),
+        ...insertKeccakPreimages(
+          app.typewriterSchema,
+          executions.flatMap(
+            ({ executeResult }) => executeResult.keccak_preimages,
           ),
-        });
-        invalidateStorageCache();
-        return yield* persist([
-          ...insertStorageSlots(app.typewriterSchema, executions),
-          ...insertKeccakPreimages(
-            app.typewriterSchema,
-            executions.flatMap(
-              ({ executeResult }) => executeResult.keccak_preimages,
-            ),
-          ),
-        ]);
-      });
+        ),
+      ]);
 
     // Groups executions so each settlement fits a transaction. Alone, each
-    // paid the base gas a settlement pays once, and every slot cold.
+    // paid the base gas a settlement pays once.
     const groupByGas = <execution extends Execution>(executions: execution[]) =>
       chunkByGas(
         executions,
-        SETTLEMENT_GAS,
+        SETTLEMENT_GAS - TRANSACTION_BASE_GAS,
         ({ executeResult }) => executeResult.gas_used - TRANSACTION_BASE_GAS,
       );
 
-    // Runs a settlement in revm as the chain will, for its gas.
-    const executeSettlement = (
-      settlement: Pick<
-        Settlement,
-        "timestamp" | "fromExecutionIndex" | "batch" | "queueIndexes"
-      >,
+    // A group's gas as one transaction: its executions' gas alone, less what
+    // they share. The base gas is paid once, and each storage page is cold
+    // once and first written once. It never comes in under the chain's.
+    const estimateGas = (group: Execution[]) => {
+      let gas = TRANSACTION_BASE_GAS;
+      const reads = new Map<string, number>();
+      const writes = new Map<string, number>();
+      const count = (counts: Map<string, number>, keys: Set<string>) => {
+        for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+      };
+      for (const { executeResult } of group) {
+        gas += executeResult.gas_used - TRANSACTION_BASE_GAS;
+        count(
+          reads,
+          new Set(
+            executeResult.access_list.flatMap(({ address, storageKeys }) =>
+              storageKeys.map(
+                (key) =>
+                  `${address.toLowerCase()}:${BigInt(key) >> PAGE_SHIFT}`,
+              ),
+            ),
+          ),
+        );
+        count(
+          writes,
+          new Set(
+            executeResult.slot_writes.map(
+              ({ slot }) => `${BigInt(slot) >> PAGE_SHIFT}`,
+            ),
+          ),
+        );
+      }
+      for (const n of reads.values()) gas -= (n - 1) * COLD_READ_SAVING;
+      for (const n of writes.values()) gas -= (n - 1) * PAGE_WRITE_SAVING;
+      return gas;
+    };
+
+    const toSettlement = (
+      group: Execution[],
+      timestamp: bigint,
       committed: Deferred.Deferred<void>,
-    ) =>
-      Effect.gen(function* () {
-        const fromExecutionHash = yield* readExecutionHash;
-        const result = yield* evm.execute({
-          from: app.account.address,
-          to: app.address,
-          data: settlementCalldata({ ...settlement, fromExecutionHash }),
-        });
-        if (result.status !== "success") {
-          return yield* Effect.die(
-            "A settlement failed in revm, but each of its executions succeeded alone",
-          );
-        }
-        invalidateStorageCache(result.slot_writes.map((write) => write.slot));
-        return {
-          ...settlement,
-          status: "executed",
-          fromExecutionHash,
-          journalId: result.journal_id,
-          gasLimit: Math.ceil(result.gas_used * GAS_LIMIT_BUFFER),
-          committed,
-        } satisfies Settlement as Settlement;
-      });
+      contents: Pick<Settlement, "batch" | "queueIndexes">,
+    ): Settlement => ({
+      ...contents,
+      status: "executed",
+      timestamp,
+      fromExecutionHash: group[0]!.fromExecutionHash,
+      fromExecutionIndex: group[0]!.mutation.executionIndex,
+      journalIds: group.map(({ executeResult }) => executeResult.journal_id),
+      gasLimit: gasLimitFor(estimateGas(group)),
+      committed,
+    });
 
     // Accepts the mutations that execute, and settles them in batches. When
     // they execute again, the first batch is `batch`, which keeps its id.
@@ -887,7 +917,7 @@ export function createTypewriterEffect<
             accepted.map(({ mutation }) => mutation),
           ),
         );
-        const committed = yield* rewind(accepted);
+        const committed = yield* persistExecutions(accepted);
         const settled: Settlement[] = [];
         for (const [i, group] of groupByGas(accepted).entries()) {
           const mutations = group.map(({ mutation }) => mutation);
@@ -898,15 +928,10 @@ export function createTypewriterEffect<
               : Object.assign(reused, { mutations });
           if (reused === undefined) yield* emitBatch(groupBatch);
           settled.push(
-            yield* executeSettlement(
-              {
-                timestamp,
-                fromExecutionIndex: mutations[0]!.executionIndex,
-                batch: groupBatch,
-                queueIndexes: [],
-              },
-              committed,
-            ),
+            toSettlement(group, timestamp, committed, {
+              batch: groupBatch,
+              queueIndexes: [],
+            }),
           );
         }
         for (const { mutation, deferred } of accepted) {
@@ -925,11 +950,12 @@ export function createTypewriterEffect<
         const { timestamp } = blockContext;
         const executed: (Execution & { queueIndex: bigint })[] = [];
         for (const queueIndex of queueIndexes) {
+          const fromExecutionHash = yield* readExecutionHash;
           const executeResult = yield* evm.execute({
             from: app.account.address,
             to: app.address,
             data: encodeExecuteCalldata(
-              yield* readExecutionHash,
+              fromExecutionHash,
               timestamp,
               EMPTY_BATCH,
               [queueIndex],
@@ -960,27 +986,19 @@ export function createTypewriterEffect<
           executed.push({
             queueIndex,
             mutation: { executionIndex: nextExecutionIndex++ },
+            fromExecutionHash,
             executeResult,
           });
         }
         if (executed.length === 0) return [];
 
-        const committed = yield* rewind(executed);
-        const settled: Settlement[] = [];
-        for (const group of groupByGas(executed)) {
-          settled.push(
-            yield* executeSettlement(
-              {
-                timestamp,
-                fromExecutionIndex: group[0]!.mutation.executionIndex,
-                batch: undefined,
-                queueIndexes: group.map(({ queueIndex }) => queueIndex),
-              },
-              committed,
-            ),
-          );
-        }
-        return settled;
+        const committed = yield* persistExecutions(executed);
+        return groupByGas(executed).map((group) =>
+          toSettlement(group, timestamp, committed, {
+            batch: undefined,
+            queueIndexes: group.map(({ queueIndex }) => queueIndex),
+          }),
+        );
       });
 
     // Rewinds revm to before `settlements[from]` and executes that settlement
@@ -992,7 +1010,7 @@ export function createTypewriterEffect<
         const rewound = settlements.slice(from);
         settlements = settlements.slice(0, from);
         yield* evm.revertJournals({
-          journal_ids: rewound.map(({ journalId }) => journalId),
+          journal_ids: rewound.flatMap(({ journalIds }) => journalIds),
         });
         invalidateStorageCache();
         nextExecutionIndex = rewound[0]!.fromExecutionIndex;
@@ -1379,7 +1397,7 @@ export function createTypewriterEffect<
           );
           if (final.length > 0) {
             yield* evm.pruneJournals({
-              journal_ids: final.map(({ journalId }) => journalId),
+              journal_ids: final.flatMap(({ journalIds }) => journalIds),
             });
             settlements = settlements.filter(
               (settlement) => !final.includes(settlement),
