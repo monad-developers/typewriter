@@ -1,14 +1,17 @@
-import type { ExecuteResult } from "typewriter-evm";
+import type { ExecuteResult, Spec } from "typewriter-evm";
 import { TX_GAS_LIMIT_CAP } from "./typewriter-constants";
 
 /** What a settlement's gas is priced from: one execution's run alone in revm. */
 type Execution = Pick<
   Extract<ExecuteResult, { status: "success" }>,
-  "gas_used" | "access_list" | "slot_writes"
+  "gas_used" | "access_list" | "slot_writes" | "spec"
 >;
 
 /** The intrinsic gas of a transaction, which a settlement pays once. */
 const TRANSACTION_BASE_GAS = 21_000;
+
+/** The hardforks that price storage per page (MIP-8). */
+const PAGE_PRICED_SPECS: ReadonlySet<Spec> = new Set(["MonadTen", "MonadNext"]);
 
 /** Monad's storage pages hold `2 ** PAGE_SHIFT` slots. */
 const PAGE_SHIFT = 7n;
@@ -61,13 +64,17 @@ export function groupByGas<item>(
  */
 function estimateGas(executions: readonly Execution[]): number {
   let gas = TRANSACTION_BASE_GAS;
+  for (const execution of executions) {
+    gas += execution.gas_used - TRANSACTION_BASE_GAS;
+  }
+  if (executions.some(({ spec }) => !PAGE_PRICED_SPECS.has(spec))) return gas;
+
   const reads = new Map<string, number>();
   const writes = new Map<string, number>();
   const count = (counts: Map<string, number>, keys: Set<string>) => {
     for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
   };
   for (const execution of executions) {
-    gas += execution.gas_used - TRANSACTION_BASE_GAS;
     count(
       reads,
       new Set(

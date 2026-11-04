@@ -113,6 +113,8 @@ struct TxOutcome {
     gas_used: u64,
     /// Sorted by address, then storage key.
     access_list: AccessList,
+    /// The hardfork it executed under.
+    spec: MonadHardfork,
 }
 
 impl TxOutcome {
@@ -172,7 +174,6 @@ impl HarnessInspector {
     fn clear(&mut self) {
         *self = Self::default();
     }
-
 }
 
 impl Inspector<MonadCtx> for HarnessInspector {
@@ -196,7 +197,6 @@ impl Inspector<MonadCtx> for HarnessInspector {
         }
         self.keccak_preimages.push(preimage);
     }
-
 }
 
 // -----------------------------------------------------------------------------
@@ -357,7 +357,7 @@ impl EvmHarness {
     fn execute(&mut self, tx: &ExecuteParams) -> Result<ExecuteOk, String> {
         let (result, state) = self.run_tx(tx, AccessList::default())?;
         let access_list = self.discovered_access_list(tx, &state);
-        let outcome = tx_outcome(&result, access_list);
+        let outcome = tx_outcome(&result, access_list, self.evm.0.ctx.cfg.0.spec);
         let keccak_preimages = std::mem::take(&mut self.evm.0.inspector.keccak_preimages);
         if !outcome.success() {
             return Ok(ExecuteOk {
@@ -453,13 +453,12 @@ impl EvmHarness {
         items.sort_by_key(|item| item.address);
         AccessList(items)
     }
-
 }
 
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-fn tx_outcome(result: &TxResult, access_list: AccessList) -> TxOutcome {
+fn tx_outcome(result: &TxResult, access_list: AccessList, spec: MonadHardfork) -> TxOutcome {
     let status = match result {
         ExecutionResult::Success { .. } => TxStatus::Success,
         ExecutionResult::Revert { output, .. } => TxStatus::Revert {
@@ -473,6 +472,7 @@ fn tx_outcome(result: &TxResult, access_list: AccessList) -> TxOutcome {
         status,
         gas_used: result.tx_gas_used(),
         access_list,
+        spec,
     }
 }
 

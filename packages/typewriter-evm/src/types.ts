@@ -44,6 +44,8 @@ export type ExecuteParams = {
 type TxResult = {
   gas_used: number;
   access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
+  /** The hardfork it executed under. */
+  spec: Spec;
 };
 
 type Revert = { status: "revert"; data: Hex.Hex };
