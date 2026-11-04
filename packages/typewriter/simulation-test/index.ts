@@ -181,7 +181,8 @@ export const SIM: SIM = {
     mutations: int(SEED, "generator.mutations", 4, 2000),
     delaysMs: pick(SEED, "generator.delaysMs", [
       [0],
-      [0],
+      // Clumps across many blocks, so enqueues land while batches still fill.
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 100],
       [0, 0, 0, 1],
       [0, 1, 10],
       [0, 50, 500],
