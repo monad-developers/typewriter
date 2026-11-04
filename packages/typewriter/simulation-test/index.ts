@@ -603,6 +603,8 @@ const program = Effect.gen(function* () {
         const { label, expected, mutation } = submission;
         const { expiration } = mutation.authorization;
         let settledAt: bigint | undefined;
+        /** The newest head at which the entry was still queued. */
+        let queuedAt: bigint | undefined;
         // A reorg can drop or move the enqueue and its settlement, so each
         // poll reads both again.
         poll: while (true) {
@@ -667,6 +669,7 @@ const program = Effect.gen(function* () {
           const deleted = yield* deletedAt(head);
           if (deleted === undefined) continue;
           if (!deleted) {
+            queuedAt = head;
             // The contract rejects it in every block past its expiration.
             if (
               final &&
@@ -677,8 +680,15 @@ const program = Effect.gen(function* () {
             }
             continue;
           }
-          // The settlement's block: the first in which the entry is gone.
+          // The settlement's block: the first in which the entry is gone. Anvil
+          // keeps old state only so long, so start where it was last queued.
           let settled = BigInt(receipt.blockNumber);
+          if (
+            queuedAt !== undefined &&
+            (yield* deletedAt(queuedAt)) === false
+          ) {
+            settled = queuedAt;
+          }
           while (true) {
             const deleted = yield* deletedAt(settled);
             if (deleted === undefined) continue poll;
