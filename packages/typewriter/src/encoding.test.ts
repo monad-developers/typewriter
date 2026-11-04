@@ -42,8 +42,6 @@ function acceptedMutation(
     params,
     authorization,
     executionIndex: 0n,
-    journalId: 0,
-    gas: 0,
     config,
   };
 }

@@ -83,7 +83,7 @@ export {
   SignTransactionError,
   TypewriterStoppedError,
   UnknownMutationError,
-} from "./typewriter";
+} from "./typewriter-errors";
 export type {
   Account,
   AddCredentialParams,

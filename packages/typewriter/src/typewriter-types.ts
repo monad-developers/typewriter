@@ -7,8 +7,8 @@ import type {
   ResolvedTypewriterMutationConfig,
   SequencingConfig,
 } from "./config";
-import type { ExecuteMutationError } from "./typewriter";
 import type { KeyType } from "./typewriter-constants";
+import type { ExecuteMutationError } from "./typewriter-errors";
 
 export type { KeyType };
 
@@ -111,10 +111,6 @@ type MutationBase = {
 type Execution = {
   /** The `execution_index` primary key of the mutation's row. */
   executionIndex: bigint;
-  /** The EVM journal that holds the mutation's writes. */
-  journalId: number;
-  /** The gas it adds to a settlement, from its execution in revm. */
-  gas: number;
 };
 
 /** Mirrors the `block_*` and `transaction_*` columns of a mutation row. */
@@ -150,21 +146,19 @@ export type RuntimeMutation =
 export type RuntimeBatch = {
   status: BatchStatus;
   id: number;
-  position: number;
   mutations: (AcceptedMutation | IncludedMutation)[];
 };
 
-export type RuntimeBlock<sequence extends SequencingConfig> = {
+export type RuntimeBlock = {
   status: BlockStatus;
   number: bigint;
   hash: Hex.Hex;
   timestamp: bigint;
-} & (sequence extends "fifo"
-  ? { mutations: IncludedMutation[] }
-  : { batches: RuntimeBatch[] });
+  batches: RuntimeBatch[];
+};
 
 /** Fields of a runtime mutation that listeners never see. */
-type RuntimeOnlyField = "config" | "journalId" | "gas";
+type RuntimeOnlyField = "config";
 
 type ToMutationEvent<
   mutation,
@@ -198,7 +192,7 @@ type IncludedMutationEvent<mutationsConfig extends MutationsConfig> = Extract<
 
 export type BatchEvent<
   mutationsConfig extends MutationsConfig = MutationsConfig,
-> = { id: number; position: number } & (
+> = { id: number } & (
   | { status: "accepted"; mutations: AcceptedMutationEvent<mutationsConfig>[] }
   | {
       status: "included" | "finalized";

@@ -25,12 +25,9 @@ import { makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import { loadSolidityApp } from "../src/sol-build";
-import {
-  createTypewriterEffect,
-  type ExecuteError,
-  type ProgramError,
-} from "../src/typewriter";
+import { createTypewriterEffect } from "../src/typewriter";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
+import type { ExecuteError, ProgramError } from "../src/typewriter-errors";
 import {
   createAccount,
   deploy,

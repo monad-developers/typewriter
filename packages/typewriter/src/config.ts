@@ -263,6 +263,25 @@ function validateMutationDefinitions(mutations: {
   }
 }
 
+/** `batchOrder` after the built-in mutations, which always come first. */
+function resolveBatchOrder(
+  batchOrder: readonly string[],
+  mutations: { readonly [name: string]: ResolvedTypewriterMutationConfig },
+): string[] {
+  for (const name of batchOrder) {
+    if (!Object.hasOwn(mutations, name)) {
+      throw new ConfigError({
+        message: `config.sequencing.batchOrder names ${name}, which is not a mutation`,
+      });
+    }
+  }
+  const builtIns = Object.keys(BUILTIN_MUTATIONS);
+  return [
+    ...builtIns,
+    ...batchOrder.filter((name) => !builtIns.includes(name)),
+  ];
+}
+
 export function createTypewriterApp(params: {
   config: TypewriterConfig;
   abi: Abi;
@@ -317,7 +336,10 @@ export function createTypewriterApp(params: {
           order: "batch" as const,
           batchIntervalMs:
             config.sequencing.batchIntervalMs ?? DEFAULT_BATCH_INTERVAL_MS,
-          batchOrder: [...config.sequencing.batchOrder],
+          batchOrder: resolveBatchOrder(
+            config.sequencing.batchOrder,
+            mutations,
+          ),
         }
       : { order: "fifo" as const };
 
