@@ -163,6 +163,9 @@ const WATCH_BUFFER_SIZE = 16;
 
 const SLOT_CACHE_MAX_ENTRIES = 200_000;
 
+/** The intrinsic gas of a transaction, which a settlement pays once. */
+const TRANSACTION_BASE_GAS = 21_000;
+
 /** A settlement's gas limit is its gas in revm, and this much more. */
 const GAS_LIMIT_BUFFER = 1.1;
 
@@ -794,15 +797,8 @@ export function createTypewriterEffect<
         ),
       );
 
-    // Rewinds `executions`, the newest in revm, and runs them again in
-    // settlements that each fit a transaction.
-    const settle = (
-      executions: Execution[],
-      timestamp: bigint,
-      toSettlement: (
-        executions: Execution[],
-      ) => Pick<Settlement, "batch" | "queueIndexes">,
-    ) =>
+    // Undoes `executions`, the newest in revm, after persisting what they wrote.
+    const rewind = (executions: Execution[]) =>
       Effect.gen(function* () {
         yield* evm.revertJournals({
           journal_ids: executions.map(
@@ -810,7 +806,7 @@ export function createTypewriterEffect<
           ),
         });
         invalidateStorageCache();
-        const committed = yield* persist([
+        return yield* persist([
           ...insertStorageSlots(app.typewriterSchema, executions),
           ...insertKeccakPreimages(
             app.typewriterSchema,
@@ -819,43 +815,50 @@ export function createTypewriterEffect<
             ),
           ),
         ]);
-
-        const settled: Settlement[] = [];
-        for (const group of chunkByGas(
-          executions,
-          SETTLEMENT_GAS,
-          ({ executeResult }) => executeResult.gas_used,
-        )) {
-          const draft = {
-            ...toSettlement(group),
-            timestamp,
-            fromExecutionHash: yield* readExecutionHash,
-            fromExecutionIndex: group[0]!.mutation.executionIndex,
-          };
-          const result = yield* evm.execute({
-            from: app.account.address,
-            to: app.address,
-            data: settlementCalldata(draft),
-          });
-          if (result.status !== "success") {
-            return yield* Effect.die(
-              "A settlement failed in revm, but each of its executions succeeded alone",
-            );
-          }
-          invalidateStorageCache(result.slot_writes.map((write) => write.slot));
-          settled.push({
-            ...draft,
-            status: "executed",
-            journalId: result.journal_id,
-            gasLimit: Math.ceil(result.gas_used * GAS_LIMIT_BUFFER),
-            committed,
-          });
-        }
-        return settled;
       });
 
-    // Accepts the mutations that execute, in batches. `batch` keeps its id
-    // when its mutations execute again.
+    // Groups executions so each settlement fits a transaction. Alone, each
+    // paid the base gas a settlement pays once, and every slot cold.
+    const groupByGas = <execution extends Execution>(executions: execution[]) =>
+      chunkByGas(
+        executions,
+        SETTLEMENT_GAS,
+        ({ executeResult }) => executeResult.gas_used - TRANSACTION_BASE_GAS,
+      );
+
+    // Runs a settlement in revm as the chain will, for its gas.
+    const executeSettlement = (
+      settlement: Pick<
+        Settlement,
+        "timestamp" | "fromExecutionIndex" | "batch" | "queueIndexes"
+      >,
+      committed: Deferred.Deferred<void>,
+    ) =>
+      Effect.gen(function* () {
+        const fromExecutionHash = yield* readExecutionHash;
+        const result = yield* evm.execute({
+          from: app.account.address,
+          to: app.address,
+          data: settlementCalldata({ ...settlement, fromExecutionHash }),
+        });
+        if (result.status !== "success") {
+          return yield* Effect.die(
+            "A settlement failed in revm, but each of its executions succeeded alone",
+          );
+        }
+        invalidateStorageCache(result.slot_writes.map((write) => write.slot));
+        return {
+          ...settlement,
+          status: "executed",
+          fromExecutionHash,
+          journalId: result.journal_id,
+          gasLimit: Math.ceil(result.gas_used * GAS_LIMIT_BUFFER),
+          committed,
+        } satisfies Settlement as Settlement;
+      });
+
+    // Accepts the mutations that execute, and settles them in batches. When
+    // they execute again, the first batch is `batch`, which keeps its id.
     const acceptMutations = (
       received: { mutation: ReceivedMutation; deferred?: AcceptDeferred }[],
       batch?: RuntimeBatch,
@@ -876,7 +879,6 @@ export function createTypewriterEffect<
             yield* Deferred.fail(deferred, result.failure);
           }
         }
-        if (batch !== undefined) batch.mutations = [];
         if (accepted.length === 0) return [];
 
         const rows = yield* persist(
@@ -885,22 +887,27 @@ export function createTypewriterEffect<
             accepted.map(({ mutation }) => mutation),
           ),
         );
-        let reuse = batch;
-        const settled = yield* settle(accepted, timestamp, (group) => {
-          const mutations = group.map(
-            ({ mutation }) => mutation as AcceptedMutation,
+        const committed = yield* rewind(accepted);
+        const settled: Settlement[] = [];
+        for (const [i, group] of groupByGas(accepted).entries()) {
+          const mutations = group.map(({ mutation }) => mutation);
+          const reused = i === 0 ? batch : undefined;
+          const groupBatch: RuntimeBatch =
+            reused === undefined
+              ? { status: "accepted", id: nextBatchId++, mutations }
+              : Object.assign(reused, { mutations });
+          if (reused === undefined) yield* emitBatch(groupBatch);
+          settled.push(
+            yield* executeSettlement(
+              {
+                timestamp,
+                fromExecutionIndex: mutations[0]!.executionIndex,
+                batch: groupBatch,
+                queueIndexes: [],
+              },
+              committed,
+            ),
           );
-          const runtimeBatch = reuse ?? {
-            status: "accepted" as const,
-            id: nextBatchId++,
-            mutations: [],
-          };
-          reuse = undefined;
-          runtimeBatch.mutations = mutations;
-          return { batch: runtimeBatch, queueIndexes: [] };
-        });
-        for (const settlement of settled) {
-          if (settlement.batch !== batch) yield* emitBatch(settlement.batch!);
         }
         for (const { mutation, deferred } of accepted) {
           if (deferred !== undefined) {
@@ -957,12 +964,23 @@ export function createTypewriterEffect<
           });
         }
         if (executed.length === 0) return [];
-        return yield* settle(executed, timestamp, (group) => ({
-          batch: undefined,
-          queueIndexes: group.map(
-            (execution) => (execution as (typeof executed)[number]).queueIndex,
-          ),
-        }));
+
+        const committed = yield* rewind(executed);
+        const settled: Settlement[] = [];
+        for (const group of groupByGas(executed)) {
+          settled.push(
+            yield* executeSettlement(
+              {
+                timestamp,
+                fromExecutionIndex: group[0]!.mutation.executionIndex,
+                batch: undefined,
+                queueIndexes: group.map(({ queueIndex }) => queueIndex),
+              },
+              committed,
+            ),
+          );
+        }
+        return settled;
       });
 
     // Rewinds revm to before `settlements[from]` and executes that settlement
@@ -1325,9 +1343,9 @@ export function createTypewriterEffect<
         const sent = settlements.filter(({ status }) => status === "sent");
         for (const [i, settlement] of sent.entries()) {
           if (
-            settlement.raw === undefined ||
+            settlement.sentAt === undefined ||
             block.number <
-              settlement.sentAt! + (i === 0 ? 1n : REBROADCAST_BLOCKS)
+              settlement.sentAt + (i === 0 ? 1n : REBROADCAST_BLOCKS)
           ) {
             continue;
           }
