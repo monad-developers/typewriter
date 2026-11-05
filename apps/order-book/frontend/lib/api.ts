@@ -38,7 +38,11 @@ export async function request<T>(
         ? undefined
         : { "Content-Type": "application/json" },
     body:
-      params.body === undefined ? undefined : superjson.stringify(params.body),
+      params.body === undefined
+        ? undefined
+        : JSON.stringify(params.body, (_, value) =>
+            typeof value === "bigint" ? value.toString() : value,
+          ),
   });
   const text = await response.text();
   if (!response.ok) {

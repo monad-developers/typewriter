@@ -44,7 +44,7 @@ const server = Bun.serve({
     "/api/manifest": () => jsonResponse(typewriter.manifest),
     "/api": {
       POST: async (req) => {
-        const body = superjson.parse(await req.text());
+        const body = await req.json();
         const mutation = await typewriter.execute(
           body as Parameters<typeof typewriter.execute>[0],
         );

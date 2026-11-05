@@ -113,7 +113,7 @@ const server = serve({
       json({ pong: true }, { headers: { "Cache-Control": "no-store" } }),
     "/api": {
       POST: async (req) => {
-        const parsedBody = superjson.parse(await req.text());
+        const parsedBody: unknown = await req.json();
         const body =
           parsedBody !== null && typeof parsedBody === "object"
             ? (parsedBody as Record<string, unknown>)
@@ -256,14 +256,14 @@ const server = serve({
     },
     "/api/ticks": {
       POST: async (req) => {
-        const body = superjson.parse(await req.text()) as {
-          instrumentId?: number | bigint;
-          queries?: { side: Side; priceQ32: bigint }[];
+        const body = (await req.json()) as {
+          instrumentId?: number | string;
+          queries?: { side: Side; priceQ32: string }[];
         };
         const { instrumentId, queries } = body;
         if (
           (typeof instrumentId !== "number" &&
-            typeof instrumentId !== "bigint") ||
+            typeof instrumentId !== "string") ||
           !Array.isArray(queries)
         ) {
           return badRequest("instrumentId and queries required");
