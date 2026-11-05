@@ -4,7 +4,7 @@ import { Rpc, type RpcError } from "./rpc";
 import { type RequestedBlock, requestBlock } from "./rpc-request";
 
 /** How many blocks the watch requests at once when it falls behind. */
-const CATCH_UP_CONCURRENCY = 16;
+const CATCH_UP_CONCURRENCY = 25;
 
 export type LocalLog = {
   topics: [] | [signature: Hex.Hex, ...args: Hex.Hex[]];
