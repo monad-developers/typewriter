@@ -6,7 +6,7 @@ import {
   compile,
   type DbTransport,
 } from "../src/db-transport";
-import { SIM } from "./index";
+import type { SIM } from "./plan";
 import { makeRandom } from "./random";
 import type { SimScheduler } from "./scheduler";
 
@@ -38,16 +38,18 @@ function statementsKey(statements: CompiledStatement[]): string {
  * out of retries.
  */
 export function makeSimDbTransport({
+  sim,
   transport,
   io,
 }: {
+  sim: SIM;
   transport: DbTransport;
   io: SimScheduler["io"];
 }): DbTransport {
   const {
     latencyMs: [latencyMin, latencyMax],
     errorRate,
-  } = SIM.db;
+  } = sim.db;
 
   const occurrences = new Map<string, number>();
   const attempts = new Map<string, number>();
@@ -63,7 +65,7 @@ export function makeSimDbTransport({
       const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
       const random = yield* makeRandom(
-        SIM.seed,
+        sim.seed,
         `db:latency:${key}:${occurrence}`,
       );
       yield* Effect.sleep(
@@ -103,7 +105,7 @@ export function makeSimDbTransport({
       return Effect.gen(function* () {
         const seen = attempts.get(key) ?? 0;
         attempts.set(key, seen + 1);
-        const random = yield* makeRandom(SIM.seed, `db:error:${key}:${seen}`);
+        const random = yield* makeRandom(sim.seed, `db:error:${key}:${seen}`);
         const draw = random.nextDoubleUnsafe();
         const at = Math.floor(
           random.nextDoubleUnsafe() * (statements.length + 1),

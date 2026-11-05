@@ -9,7 +9,7 @@ import {
   type RpcTransportError,
 } from "../src/rpc-transport";
 import type { Chain } from "./chain";
-import { SIM } from "./index";
+import type { SIM } from "./plan";
 import { makeRandom } from "./random";
 
 /** Past the runtime's 5s request timeout. */
@@ -20,9 +20,11 @@ const SLOW_MS = [6_000, 10_000] as const;
  * generator, keyed by the request and how many times the endpoint saw it.
  */
 export function makeSimTransport({
+  sim,
   chain,
   index,
 }: {
+  sim: SIM;
   chain: Chain;
   index: number;
 }): RpcTransport {
@@ -33,7 +35,7 @@ export function makeSimTransport({
     applyThenErrorRate,
     lagMs,
     slowRate,
-  } = SIM.transports[index]!;
+  } = sim.transports[index]!;
 
   const occurrences = new Map<string, number>();
 
@@ -44,7 +46,7 @@ export function makeSimTransport({
     Effect.gen(function* () {
       const asOfMs = Math.max(
         (yield* Clock.currentTimeMillis) - lagMs,
-        SIM.chain.genesisTimestamp * 1000,
+        sim.chain.genesisTimestamp * 1000,
       );
       const result = yield* chain.read(request, asOfMs);
       if (result !== undefined) return result;
@@ -64,7 +66,7 @@ export function makeSimTransport({
       const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
       const random = yield* makeRandom(
-        SIM.seed,
+        sim.seed,
         `${index}:${key}:${occurrence}`,
       );
       const between = (min: number, max: number) =>
@@ -104,7 +106,7 @@ export function makeSimTransport({
       // A node that accepts a transaction and then loses it.
       if (
         method === "eth_sendRawTransaction" &&
-        random.nextDoubleUnsafe() < SIM.chain.sendDropRate
+        random.nextDoubleUnsafe() < sim.chain.sendDropRate
       ) {
         return Hash.keccak256((request.params as [Hex.Hex])[0]);
       }
@@ -113,7 +115,7 @@ export function makeSimTransport({
       if (slowRate > 0) {
         // Its own generator, so seeds without slow requests draw as before.
         const slow = yield* makeRandom(
-          SIM.seed,
+          sim.seed,
           `${index}:${key}:${occurrence}:slow`,
         );
         if (slow.nextDoubleUnsafe() < slowRate) {

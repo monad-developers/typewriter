@@ -32,7 +32,7 @@ import {
   type AssessmentMutations,
 } from "./assessment-constants";
 import type { Chain } from "./chain";
-import { SIM } from "./index";
+import type { SIM } from "./plan";
 import type { Expected } from "./run";
 import { TEMPLATES, type Template } from "./templates";
 
@@ -82,35 +82,40 @@ export function stepLabel({
 }
 
 /** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
+let artifact: Promise<{ bytecode: { object: Hex.Hex } }> | undefined;
+
 export function deploy({
+  sim,
   chain,
   deployer,
 }: {
+  sim: SIM;
   chain: Chain;
   deployer: Address.Address;
 }): Effect.Effect<Address.Address, never, Scope.Scope> {
   return Effect.gen(function* () {
-    // A private build directory, so that parallel runs do not share artifacts.
-    const out = yield* Effect.acquireRelease(
-      Effect.promise(() => mkdtemp(join(tmpdir(), "typewriter-sim-"))),
-      (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+    // Once per process, in a private build directory, so that parallel runs do not share artifacts.
+    artifact ??= mkdtemp(join(tmpdir(), "typewriter-sim-")).then(
+      async (out) => {
+        try {
+          await $`forge build --root ${ASSESSMENT_PROJECT} --out ${out}/out --cache-path ${out}/cache`.quiet();
+          return await Bun.file(
+            `${out}/out/Assessment.sol/Assessment.json`,
+          ).json();
+        } finally {
+          await rm(out, { recursive: true, force: true });
+        }
+      },
     );
-    yield* Effect.promise(() =>
-      $`forge build --root ${ASSESSMENT_PROJECT} --out ${out}/out --cache-path ${out}/cache`.quiet(),
-    );
-    const artifact = yield* Effect.promise(() =>
-      Bun.file(`${out}/out/Assessment.sol/Assessment.json`).json(),
-    );
+    const { bytecode } = yield* Effect.promise(() => artifact!);
     const args = AbiParameters.encode(AbiParameters.from(["address"]), [
       deployer,
     ]);
     const hash = yield* chain.request({
       method: "eth_sendTransaction",
-      params: [
-        { from: deployer, data: Hex.concat(artifact.bytecode.object, args) },
-      ],
+      params: [{ from: deployer, data: Hex.concat(bytecode.object, args) }],
     });
-    yield* chain.mine(SIM.chain.genesisTimestamp * 1000);
+    yield* chain.mine(sim.chain.genesisTimestamp * 1000);
     const receipt = yield* chain.request({
       method: "eth_getTransactionReceipt",
       params: [hash],
@@ -160,9 +165,9 @@ const AUTHENTICATOR_DATA = Hex.concat(
 );
 
 /** Makes the signer of account `index` from the seed. */
-export function makeSigner(index: number, keyType: KeyType): Signer {
+export function makeSigner(sim: SIM, index: number, keyType: KeyType): Signer {
   const privateKey = Hash.keccak256(
-    Hex.fromString(`${SIM.seed}:account:${index}`),
+    Hex.fromString(`${sim.seed}:account:${index}`),
   );
 
   switch (keyType) {
@@ -329,6 +334,7 @@ export function stepNonce(index: number): bigint {
  * before every block, and an infinite one never expires.
  */
 export function withExpiration(
+  sim: SIM,
   step: Step,
   nowMs: number,
 ): Mutation<AppMutationName> {
@@ -336,7 +342,7 @@ export function withExpiration(
   const expiration = !Number.isFinite(expiresInS)
     ? 0
     : expiresInS < 0
-      ? SIM.chain.genesisTimestamp - 1
+      ? sim.chain.genesisTimestamp - 1
       : Math.floor(nowMs / 1000) + expiresInS;
   return {
     ...mutation,
@@ -400,6 +406,7 @@ function fromTemplate(
 
 /** Draws the plan of `SIM.generator.mutations` steps from {@link TEMPLATES}. */
 export function makePlan(
+  sim: SIM,
   signers: readonly Signer[],
   random: Random.Random,
 ): Step[] {
@@ -411,7 +418,7 @@ export function makePlan(
     resubmitRate,
     expirationsS,
     malformedRate,
-  } = SIM.generator;
+  } = sim.generator;
   const plan = Array.from({ length: mutations }, (_, index): Step => {
     const delayMs = delaysMs[below(random, delaysMs.length)]!;
     const signer = signers[below(random, signers.length)]!;

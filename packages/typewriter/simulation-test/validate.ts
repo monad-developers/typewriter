@@ -27,8 +27,8 @@ import type {
   AssessmentStorage,
 } from "./assessment-constants";
 import type { Chain, StateDiff } from "./chain";
-import type { SIM } from "./index";
 import { type Executed, type Onchain, readOnchain } from "./onchain";
+import type { SIM } from "./plan";
 import {
   errorName,
   mutationKey,

@@ -14,7 +14,8 @@ import {
   RpcResponseError,
   type RpcResult,
 } from "../src/rpc-transport";
-import { deepFreeze, SIM } from "./index";
+import type { SIM } from "./plan";
+import { deepFreeze } from "./run";
 
 /** What a transaction changed: each account's values before and after. */
 export type StateDiff = Record<
@@ -99,6 +100,7 @@ const STATE_BLOCK_PARAM: Record<string, number | undefined> = {
 const REORG = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 
 export function makeChain(
+  sim: SIM,
   random: Random.Random,
 ): Effect.Effect<
   Chain,
@@ -116,7 +118,7 @@ export function makeChain(
         "0",
         "--no-mining",
         "--timestamp",
-        String(SIM.chain.genesisTimestamp),
+        String(sim.chain.genesisTimestamp),
       ],
       { stderr: "inherit" },
     ).pipe(Effect.orDie);
@@ -272,7 +274,7 @@ export function makeChain(
               if (tag === "finalized") {
                 const number = Math.max(
                   0,
-                  highestSeen - SIM.chain.finalizedBlockDepth,
+                  highestSeen - sim.chain.finalizedBlockDepth,
                 );
                 return yield* blockByHash(hashAt(head, number)!, full);
               }
@@ -431,7 +433,7 @@ export function makeChain(
           const replaced = Math.min(
             depth,
             head - 1,
-            head - highest + SIM.chain.finalizedBlockDepth,
+            head - highest + sim.chain.finalizedBlockDepth,
           );
           if (replaced <= 0) return { replaced: [], dropped: [] };
 
@@ -470,7 +472,7 @@ export function makeChain(
             if (from === REORG.toLowerCase()) continue;
             if (
               droppedFrom.has(from) ||
-              random.nextDoubleUnsafe() < SIM.chain.dropRate
+              random.nextDoubleUnsafe() < sim.chain.dropRate
             ) {
               droppedFrom.add(from);
               dropped.push(hash);
