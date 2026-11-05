@@ -27,7 +27,6 @@ import {
   decodeEventLog,
   formatTransactionReceipt,
   getAbiItem,
-  parseTransaction,
   toEventSelector,
 } from "viem";
 import type {
@@ -491,6 +490,13 @@ export function createTypewriterEffect<
     };
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
+    /** Settlements are signed with the newest watched block's base fee. */
+    let baseFeePerGas = startBlock.baseFeePerGas ?? 0n;
+    const requestPriorityFee = rpc
+      .request({ method: "eth_maxPriorityFeePerGas" })
+      .pipe(Effect.map(Hex.toBigInt));
+    let maxPriorityFeePerGas = yield* requestPriorityFee;
+    let refreshingPriorityFee = false;
     let nextBatchId = 0;
     /** Every settlement not yet final, in execution order, which is nonce order. */
     let settlements: RuntimeSettlement[] = [];
@@ -900,27 +906,19 @@ export function createTypewriterEffect<
 
     const sign = (settlement: SigningSettlement) =>
       Effect.gen(function* () {
-        const filled = yield* rpc.request({
-          method: "eth_fillTransaction",
-          params: [
-            {
-              from: app.account.address,
+        const signed = yield* Effect.tryPromise({
+          try: () =>
+            app.account.signTransaction({
+              type: "eip1559",
+              chainId: app.chainId,
+              nonce: settlement.nonce,
               to: app.address,
               data: settlementCalldata(settlement),
-              gas: Hex.fromNumber(settlement.gasLimit),
-              nonce: Hex.fromNumber(settlement.nonce),
-            },
-          ],
-        });
-        // `eth_fillTransaction` returns an already-signed `raw`; strip its
-        // signature fields so the account re-signs over the correct payload.
-        const transaction = parseTransaction(filled.raw);
-        delete transaction.r;
-        delete transaction.s;
-        delete transaction.v;
-        delete transaction.yParity;
-        const signed = yield* Effect.tryPromise({
-          try: () => app.account.signTransaction(transaction),
+              gas: BigInt(settlement.gasLimit),
+              // Room for the base fee to double before it lands.
+              maxFeePerGas: 2n * baseFeePerGas + maxPriorityFeePerGas,
+              maxPriorityFeePerGas,
+            }),
           catch: (cause) => new SignTransactionError({ cause }),
         });
         return signed as Hex.Hex;
@@ -1369,6 +1367,23 @@ export function createTypewriterEffect<
             return;
           }
 
+          baseFeePerGas = message.block.baseFeePerGas;
+          if (!refreshingPriorityFee) {
+            refreshingPriorityFee = true;
+            yield* Effect.gen(function* () {
+              maxPriorityFeePerGas = yield* requestPriorityFee;
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logDebug("Failed to refresh the priority fee", error),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  refreshingPriorityFee = false;
+                }),
+              ),
+              Effect.forkIn(scope),
+            );
+          }
           yield* evm.setBlockContext({
             number: Hex.fromNumber(message.block.number),
             timestamp: Hex.fromNumber(message.block.timestamp),
