@@ -1,11 +1,4 @@
-import {
-  Deferred,
-  Effect,
-  type Random,
-  Schedule,
-  type Scope,
-  Stream,
-} from "effect";
+import { Deferred, Effect, Schedule, type Scope, Stream } from "effect";
 import { ChildProcess, type ChildProcessSpawner } from "effect/process";
 import { Hex } from "ox";
 import {
@@ -14,7 +7,9 @@ import {
   RpcResponseError,
   type RpcResult,
 } from "../src/rpc-transport";
-import { deepFreeze, SIM } from "./index";
+import type { Plan } from "./plan";
+import type { Rng } from "./random";
+import { deepFreeze } from "./run";
 
 /** What a transaction changed: each account's values before and after. */
 export type StateDiff = Record<
@@ -99,7 +94,8 @@ const STATE_BLOCK_PARAM: Record<string, number | undefined> = {
 const REORG = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 
 export function makeChain(
-  random: Random.Random,
+  plan: Plan,
+  random: Rng,
 ): Effect.Effect<
   Chain,
   never,
@@ -116,7 +112,7 @@ export function makeChain(
         "0",
         "--no-mining",
         "--timestamp",
-        String(SIM.chain.genesisTimestamp),
+        String(plan.chain.genesisTimestamp),
       ],
       { stderr: "inherit" },
     ).pipe(Effect.orDie);
@@ -272,7 +268,7 @@ export function makeChain(
               if (tag === "finalized") {
                 const number = Math.max(
                   0,
-                  highestSeen - SIM.chain.finalizedBlockDepth,
+                  highestSeen - plan.chain.finalizedBlockDepth,
                 );
                 return yield* blockByHash(hashAt(head, number)!, full);
               }
@@ -431,7 +427,7 @@ export function makeChain(
           const replaced = Math.min(
             depth,
             head - 1,
-            head - highest + SIM.chain.finalizedBlockDepth,
+            head - highest + plan.chain.finalizedBlockDepth,
           );
           if (replaced <= 0) return { replaced: [], dropped: [] };
 
@@ -468,21 +464,16 @@ export function makeChain(
           for (const { hash, from, raw } of orphaned) {
             // A new marker takes the nonce of the first replaced one.
             if (from === REORG.toLowerCase()) continue;
-            if (
-              droppedFrom.has(from) ||
-              random.nextDoubleUnsafe() < SIM.chain.dropRate
-            ) {
+            if (droppedFrom.has(from) || random.bool(plan.chain.dropRate)) {
               droppedFrom.add(from);
               dropped.push(hash);
               continue;
             }
-            slots[Math.floor(random.nextDoubleUnsafe() * slots.length)]!.push(
-              raw,
-            );
+            random.pick(slots).push(raw);
           }
           const sendAll = (raws: Hex.Hex[]) =>
             Effect.forEach(
-              shuffle(random, raws),
+              random.shuffle(raws),
               (raw) =>
                 send({ method: "eth_sendRawTransaction", params: [raw] }),
               { discard: true },
@@ -510,14 +501,6 @@ export function makeChain(
 
     return { request, read, stateDiff, clearedAt, mine, reorg };
   });
-}
-
-function shuffle<value>(random: Random.Random, values: value[]): value[] {
-  for (let i = values.length - 1; i > 0; i--) {
-    const j = Math.floor(random.nextDoubleUnsafe() * (i + 1));
-    [values[i], values[j]] = [values[j]!, values[i]!];
-  }
-  return values;
 }
 
 function matches(

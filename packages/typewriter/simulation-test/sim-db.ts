@@ -6,8 +6,8 @@ import {
   compile,
   type DbTransport,
 } from "../src/db-transport";
-import { SIM } from "./index";
-import { makeRandom } from "./random";
+import type { Plan } from "./plan";
+import { Rng } from "./random";
 import type { SimScheduler } from "./scheduler";
 
 /** Postgres fails it as a serialization failure, so its transaction rolls back. */
@@ -38,16 +38,18 @@ function statementsKey(statements: CompiledStatement[]): string {
  * out of retries.
  */
 export function makeSimDbTransport({
+  plan,
   transport,
   io,
 }: {
+  plan: Plan;
   transport: DbTransport;
   io: SimScheduler["io"];
 }): DbTransport {
   const {
     latencyMs: [latencyMin, latencyMax],
     errorRate,
-  } = SIM.db;
+  } = plan.db;
 
   const occurrences = new Map<string, number>();
   const attempts = new Map<string, number>();
@@ -62,14 +64,9 @@ export function makeSimDbTransport({
       const exit = yield* Effect.exit(io(effect));
       const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
-      const random = yield* makeRandom(
-        SIM.seed,
-        `db:latency:${key}:${occurrence}`,
-      );
+      const random = new Rng(plan.seed, `db:latency:${key}:${occurrence}`);
       yield* Effect.sleep(
-        Duration.millis(
-          latencyMin + random.nextDoubleUnsafe() * (latencyMax - latencyMin),
-        ),
+        Duration.millis(latencyMin + random.next() * (latencyMax - latencyMin)),
       );
       return yield* exit;
     });
@@ -103,11 +100,9 @@ export function makeSimDbTransport({
       return Effect.gen(function* () {
         const seen = attempts.get(key) ?? 0;
         attempts.set(key, seen + 1);
-        const random = yield* makeRandom(SIM.seed, `db:error:${key}:${seen}`);
-        const draw = random.nextDoubleUnsafe();
-        const at = Math.floor(
-          random.nextDoubleUnsafe() * (statements.length + 1),
-        );
+        const random = new Rng(plan.seed, `db:error:${key}:${seen}`);
+        const draw = random.next();
+        const at = Math.floor(random.next() * (statements.length + 1));
         if (current < 2 && draw < errorRate) {
           return yield* rollback(statements.slice(0, at), key);
         }

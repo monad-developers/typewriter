@@ -1,4 +1,5 @@
-import { Effect, type Exit, type Random, Scheduler } from "effect";
+import { Effect, type Exit, Scheduler } from "effect";
+import type { Rng } from "./random";
 
 type Task = { run: () => void; priority: number };
 
@@ -21,7 +22,7 @@ export type SimScheduler = Scheduler.Scheduler & {
 };
 
 export function makeSimScheduler(
-  random: Random.Random,
+  random: Rng,
   jumpRate: number,
   jump: () => void,
   ioRate: number,
@@ -31,14 +32,14 @@ export function makeSimScheduler(
 
   /** Runs one task of the lowest priority, picked at random. */
   const runOne = () => {
-    if (jumpRate > 0 && random.nextDoubleUnsafe() < jumpRate) jump();
+    if (jumpRate > 0 && random.bool(jumpRate)) jump();
     let priority = Number.POSITIVE_INFINITY;
     for (const task of tasks) priority = Math.min(priority, task.priority);
     const ready: number[] = [];
     for (let i = 0; i < tasks.length; i++) {
       if (tasks[i]!.priority === priority) ready.push(i);
     }
-    const index = ready[Math.floor(random.nextDoubleUnsafe() * ready.length)]!;
+    const index = random.pick(ready);
     const [task] = tasks.splice(index, 1);
     task!.run();
   };
@@ -68,7 +69,7 @@ export function makeSimScheduler(
    * reach their fibers in the seeded order, not the order they finished.
    */
   const release = async () => {
-    const index = Math.floor(random.nextDoubleUnsafe() * inFlight.length);
+    const index = random.int(0, inFlight.length - 1);
     const [next] = inFlight.splice(index, 1);
     const exit = await next!.exit;
     // Tasks that promises outside `io` queued during the wait go first, so
@@ -81,11 +82,7 @@ export function makeSimScheduler(
     while (true) {
       if (tasks.length > 0) {
         // While tasks are ready, an I/O sometimes finishes before them.
-        if (
-          inFlight.length > 0 &&
-          ioRate > 0 &&
-          random.nextDoubleUnsafe() < ioRate
-        ) {
+        if (inFlight.length > 0 && ioRate > 0 && random.bool(ioRate)) {
           await release();
         } else runOne();
         continue;

@@ -34,8 +34,8 @@ import {
   enqueueCalldata,
   expect,
   type Mutation,
-  makePlan,
   makeSigner,
+  makeSteps,
   sign,
   stepLabel,
   withExpiration,
@@ -48,8 +48,10 @@ import {
 } from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
-import { int, makeRandom, pick } from "./random";
+import { makePlan, type Plan } from "./plan";
+import { Rng } from "./random";
 import {
+  deepFreeze,
   errorName,
   makeRun,
   mutationKey,
@@ -62,85 +64,23 @@ import { makeSimDbTransport } from "./sim-db";
 import { makeSimTransport } from "./sim-rpc";
 import { validate } from "./validate";
 
-export type SIM = {
-  seed: string;
-  /** The run fails when the runtime emits no mutation event for this much virtual time. */
-  stallTimeoutMs: number;
-  /** How often the scheduler jumps the clock before a pick, while tasks are ready. */
-  jumpRate: number;
-  /**
-   * How far past now a jump moves the clock, at least to the next sleep, that
-   * a jump draws from. A jump past `EXPIRATION_MARGIN` moves the next block's
-   * timestamp past expirations the runtime accepted against the block before,
-   * and past the delay that settlements in flight pinned, so they revert.
-   */
-  jumpsMs: number[];
-  /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
-  ioRate: number;
-  chain: {
-    blockTimeMs: number;
-    genesisTimestamp: number;
-    /** How often a block is a reorg, which replaces up to `finalizedBlockDepth` blocks. */
-    reorgRate: number;
-    /** How often a reorg drops a transaction of a block it replaced, with its sender's later ones. */
-    dropRate: number;
-    /** How often a node accepts a sent transaction and then loses it. */
-    sendDropRate: number;
-    /** How far below the highest head the chain finalizes. */
-    finalizedBlockDepth: number;
-  };
-  generator: {
-    /** The key type of each account. */
-    accounts: KeyType[];
-    mutations: number;
-    /** The delays between submissions that a step draws from. */
-    delaysMs: number[];
-    revertRate: number;
-    enqueueRate: number;
-    /** How often an executed step is executed again as soon as it is received. */
-    resubmitRate: number;
-    /**
-     * The seconds from a step's submission to its authorization's expiration
-     * that a step draws from. `-1` expires before genesis, so it always fails.
-     * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
-     * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the runtime's
-     * latest block is behind the clock, and `EXPIRATION_MARGIN` and above are
-     * accepted, and expire if the clock jumps before they execute again.
-     * `Infinity` never expires, and repeats so most steps draw it.
-     */
-    expirationsS: number[];
-    /** How often a step enqueues bytes the contract cannot decode. */
-    malformedRate: number;
-  };
-  typewriter: {
-    blockPollingIntervalMs: number;
-    ordering:
-      | { order: "fifo" }
-      | {
-          order: "batch";
-          batchIntervalMs: number;
-          batchOrder: ["A", "B"] | ["B", "A"];
-        };
-  };
-  transports: {
-    latencyMs: [number, number];
-    errorRate: number;
-    applyThenErrorRate: number;
-    /** How far behind the chain the endpoint's view is, in virtual time. */
-    lagMs: number;
-    /** How often a request applies, then answers after the runtime's request timeout. */
-    slowRate: number;
-  }[];
-  db: {
-    latencyMs: [number, number];
-    /** How often a transaction rolls back at a drawn statement, so the runtime runs it again. */
-    errorRate: number;
-  };
-};
+/**
+ * Usage: `SEED=<seed> bun simulation-test/index.ts [--plan <file>] [--print-plan]`
+ *
+ * Without `--plan`, the plan is generated from the seed.
+ */
+const args = process.argv.slice(2);
+const planFile = args.includes("--plan")
+  ? args[args.indexOf("--plan") + 1]
+  : undefined;
+const { SEED } = process.env;
 
-/** The seed for every draw in a run. Set `SEED` to repeat a run. */
-// biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
-const SEED = process.env["SEED"] || Hex.random(32);
+const plan: Plan =
+  planFile === undefined
+    ? makePlan(SEED || Hex.random(32))
+    : await Bun.file(planFile).json();
+
+if (args.includes("--print-plan")) console.log(JSON.stringify(plan, null, 2));
 
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
 const DATABASE_URL = process.env["DATABASE_URL"];
@@ -150,108 +90,6 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   );
   process.exit(1);
 }
-
-/** The configuration of a run. Each value is drawn from `SEED` and its path. */
-export const SIM: SIM = {
-  seed: SEED,
-  stallTimeoutMs: 300_000,
-  jumpRate: pick(SEED, "jumpRate", [0, 0.0001, 0.001]),
-  // The long jump passes the latest finite expiration, `EXPIRATION_MARGIN + 2`.
-  jumpsMs: [0, 0, 0, (EXPIRATION_MARGIN + 3) * 1_000],
-  ioRate: pick(SEED, "ioRate", [0, 0.01, 0.1]),
-  chain: {
-    blockTimeMs: pick(SEED, "chain.blockTimeMs", [100, 300, 400, 1_000]),
-    genesisTimestamp: 1_700_000_000,
-    // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
-    reorgRate: pick(SEED, "chain.reorgRate", [0]),
-    dropRate: pick(SEED, "chain.dropRate", [0, 0.05, 0.25]),
-    sendDropRate: pick(SEED, "chain.sendDropRate", [0, 0.05, 0.2]),
-    finalizedBlockDepth: int(SEED, "chain.finalizedBlockDepth", 1, 5),
-  },
-  generator: {
-    accounts: Array.from(
-      { length: int(SEED, "generator.accounts", 1, 6) },
-      (_, i) =>
-        pick(SEED, `generator.accounts.${i}`, [
-          KeyType.Secp256k1,
-          KeyType.P256,
-          KeyType.WebAuthnP256,
-        ]),
-    ),
-    // A burst of a few hundred mutations outgrows the transaction gas cap
-    // and splits into several settlements.
-    mutations: int(SEED, "generator.mutations", 4, 2000),
-    delaysMs: pick(SEED, "generator.delaysMs", [
-      [0],
-      // Clumps across many blocks, so enqueues land while batches still fill.
-      [0, 0, 0, 0, 0, 0, 0, 0, 0, 100],
-      [0, 0, 0, 1],
-      [0, 1, 10],
-      [0, 50, 500],
-      [10, 100, 1_000],
-    ]),
-    revertRate: pick(SEED, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
-    enqueueRate: pick(SEED, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
-    resubmitRate: pick(SEED, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
-    expirationsS: [
-      -1,
-      0,
-      EXPIRATION_MARGIN - 2,
-      EXPIRATION_MARGIN,
-      EXPIRATION_MARGIN + 2,
-      ...Array<number>(20).fill(Infinity),
-    ],
-    malformedRate: pick(SEED, "generator.malformedRate", [0, 0.01, 0.05, 0.2]),
-  },
-  typewriter: {
-    blockPollingIntervalMs: pick(
-      SEED,
-      "typewriter.blockPollingIntervalMs",
-      [50, 200, 1_000],
-    ),
-    ordering:
-      pick(SEED, "typewriter.ordering", ["fifo", "batch"]) === "fifo"
-        ? { order: "fifo" }
-        : {
-            order: "batch",
-            batchIntervalMs: pick(
-              SEED,
-              "typewriter.ordering.batchIntervalMs",
-              [10, 50, 300],
-            ),
-            batchOrder: pick(SEED, "typewriter.ordering.batchOrder", [
-              ["A", "B"],
-              ["B", "A"],
-            ] as (["A", "B"] | ["B", "A"])[]),
-          },
-  },
-  transports: Array.from(
-    { length: int(SEED, "transports.length", 1, 3) },
-    (_, i) => ({
-      latencyMs: pick(SEED, `transports.${i}.latencyMs`, [
-        [1, 5],
-        [5, 50],
-        [50, 500],
-      ] as [number, number][]),
-      errorRate: pick(SEED, `transports.${i}.errorRate`, [0, 0.01, 0.1]),
-      applyThenErrorRate: pick(
-        SEED,
-        `transports.${i}.applyThenErrorRate`,
-        [0, 0.01, 0.1],
-      ),
-      lagMs: pick(SEED, `transports.${i}.lagMs`, [0, 0, 100, 1_000]),
-      slowRate: pick(SEED, `transports.${i}.slowRate`, [0, 0.01, 0.05]),
-    }),
-  ),
-  db: {
-    latencyMs: pick(SEED, "db.latencyMs", [
-      [0, 1],
-      [1, 10],
-      [10, 100],
-    ] as [number, number][]),
-    errorRate: pick(SEED, "db.errorRate", [0, 0.01, 0.05]),
-  },
-};
 
 /** The first Anvil account. */
 const SCHEDULER = privateKeyToAccount(
@@ -272,55 +110,61 @@ const ENQUEUE_GAS = Hex.fromNumber(1_000_000);
  * A database of its own for the run. It is dropped when the run passes, and
  * kept for inspection when it fails or is interrupted.
  */
-const makeDatabase = Effect.acquireRelease(
-  Effect.promise(async () => {
-    const name = `typewriter_sim_${process.pid}_${Date.now()}`;
-    const admin = new SQL({ url: DATABASE_URL, max: 1 });
-    await admin.unsafe(`CREATE DATABASE "${name}"`);
-    // The run never survives a Postgres crash, so commits need not wait for
-    // the WAL flush.
-    await admin.unsafe(`ALTER DATABASE "${name}" SET synchronous_commit = off`);
-    await admin.close();
-    const url = new URL(DATABASE_URL);
-    url.pathname = `/${name}`;
-    return { name, url: url.toString() };
-  }),
-  ({ name, url }, exit) =>
-    Exit.isSuccess(exit)
-      ? Effect.promise(async () => {
-          const start = performance.now();
-          const admin = new SQL({ url: DATABASE_URL, max: 1 });
-          await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-          await admin.close();
-          return Math.round(performance.now() - start);
-        }).pipe(
-          Effect.flatMap((duration) =>
-            Effect.logInfo("Dropped simulation database").pipe(
-              Effect.annotateLogs({ database: name, duration }),
+const makeDatabase = (seed: string) =>
+  Effect.acquireRelease(
+    Effect.promise(async () => {
+      const name = `typewriter_sim_${process.pid}_${Date.now()}`;
+      const admin = new SQL({ url: DATABASE_URL, max: 1 });
+      await admin.unsafe(`CREATE DATABASE "${name}"`);
+      // The run never survives a Postgres crash, so commits need not wait for
+      // the WAL flush.
+      await admin.unsafe(
+        `ALTER DATABASE "${name}" SET synchronous_commit = off`,
+      );
+      await admin.close();
+      const url = new URL(DATABASE_URL);
+      url.pathname = `/${name}`;
+      return { name, url: url.toString() };
+    }),
+    ({ name, url }, exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.promise(async () => {
+            const start = performance.now();
+            const admin = new SQL({ url: DATABASE_URL, max: 1 });
+            await admin.unsafe(
+              `DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`,
+            );
+            await admin.close();
+            return Math.round(performance.now() - start);
+          }).pipe(
+            Effect.flatMap((duration) =>
+              Effect.logInfo("Dropped simulation database").pipe(
+                Effect.annotateLogs({ database: name, duration }),
+              ),
             ),
+          )
+        : Effect.logInfo("Kept simulation database").pipe(
+            Effect.annotateLogs({
+              database: name,
+              seed,
+              psql: `psql ${url}`,
+              drop: `DROP DATABASE "${name}" WITH (FORCE)`,
+            }),
           ),
-        )
-      : Effect.logInfo("Kept simulation database").pipe(
-          Effect.annotateLogs({
-            database: name,
-            seed: SIM.seed,
-            psql: `psql ${url}`,
-            drop: `DROP DATABASE "${name}" WITH (FORCE)`,
-          }),
-        ),
-);
+  );
 
-const program = Effect.gen(function* () {
+const simulate = Effect.fnUntraced(function* (plan: Plan) {
+  const simStart = performance.now();
   yield* Effect.logInfo("Started simulation").pipe(
     Effect.annotateLogs({
-      seed: SIM.seed,
-      config: SIM,
-      duration: Math.round(performance.now()),
+      seed: plan.seed,
+      config: plan,
+      duration: Math.round(performance.now() - simStart),
     }),
   );
   const deployStart = performance.now();
-  const chain = yield* makeChain(yield* makeRandom(SIM.seed, "reorgs"));
-  const address = yield* deploy({ chain, deployer: SCHEDULER.address });
+  const chain = yield* makeChain(plan, new Rng(plan.seed, "reorgs"));
+  const address = yield* deploy({ plan, chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
     Effect.annotateLogs({
@@ -330,7 +174,7 @@ const program = Effect.gen(function* () {
     }),
   );
   const databaseStart = performance.now();
-  const database = yield* makeDatabase;
+  const database = yield* makeDatabase(plan.seed);
   yield* Effect.logInfo("Created simulation database").pipe(
     Effect.annotateLogs({
       database: database.name,
@@ -349,13 +193,13 @@ const program = Effect.gen(function* () {
       chainId,
       // Anvil's chain has no Monad hardfork schedule.
       hardfork: "MonadTen",
-      rpcUrl: SIM.transports.map((_, index) => `sim-${index}`) as [
+      rpcUrl: plan.transports.map((_, index) => `sim-${index}`) as [
         string,
         ...string[],
       ],
       database: { url: database.url },
-      blockPollingIntervalMs: SIM.typewriter.blockPollingIntervalMs,
-      sequencing: SIM.typewriter.ordering,
+      blockPollingIntervalMs: plan.typewriter.blockPollingIntervalMs,
+      sequencing: plan.typewriter.ordering,
     },
   });
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
@@ -367,28 +211,25 @@ const program = Effect.gen(function* () {
   });
   const db = makeDbClient(transport);
 
-  const signers = SIM.generator.accounts.map((keyType, i) =>
-    makeSigner(i, keyType),
+  const signers = plan.generator.accounts.map((keyType, i) =>
+    makeSigner(plan, i, KeyType[keyType]),
   );
-  const plan = makePlan(signers, yield* makeRandom(SIM.seed, "generator"));
+  const steps = makeSteps(plan, signers, new Rng(plan.seed, "generator"));
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
   // it, through `io`.
-  const startMs = SIM.chain.genesisTimestamp * 1000;
-  const jumpRandom = yield* makeRandom(SIM.seed, "jumps");
+  const startMs = plan.chain.genesisTimestamp * 1000;
+  const jumpRandom = new Rng(plan.seed, "jumps");
   // A pause is rare, so at most one per `PAUSE_SPACING_MS` of virtual time.
   const PAUSE_SPACING_MS = 600_000;
   let pausedAt = -Infinity;
   const scheduler = makeSimScheduler(
-    yield* makeRandom(SIM.seed, "scheduler"),
-    SIM.jumpRate,
+    new Rng(plan.seed, "scheduler"),
+    plan.scheduler.jumpRate,
     () => {
       const now = clock.currentTimeMillisUnsafe();
-      const jumpMs =
-        SIM.jumpsMs[
-          Math.floor(jumpRandom.nextDoubleUnsafe() * SIM.jumpsMs.length)
-        ]!;
+      const jumpMs = jumpRandom.weighted(plan.scheduler.jumpsMs);
       if (jumpMs > 0 && now - pausedAt < PAUSE_SPACING_MS) return;
       const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
       if (at <= now) return;
@@ -399,7 +240,7 @@ const program = Effect.gen(function* () {
       }
       clock.advanceTo(at);
     },
-    SIM.ioRate,
+    plan.scheduler.ioRate,
   );
   const clock = makeSimClock(startMs, scheduler.schedule);
   const simChain: Chain = {
@@ -411,9 +252,9 @@ const program = Effect.gen(function* () {
     reorg: (depth, added, atMs) =>
       scheduler.io(chain.reorg(depth, added, atMs)),
   };
-  const chainRandom = yield* makeRandom(SIM.seed, "chain");
-  const transports = SIM.transports.map((_, index) =>
-    makeSimTransport({ chain: simChain, index }),
+  const chainRandom = new Rng(plan.seed, "chain");
+  const transports = plan.transports.map((_, index) =>
+    makeSimTransport({ plan, chain: simChain, index }),
   ) as [
     ReturnType<typeof makeSimTransport>,
     ...ReturnType<typeof makeSimTransport>[],
@@ -425,7 +266,7 @@ const program = Effect.gen(function* () {
   // every resubmission. The run drains when all of them have.
   const settlementsWanted =
     signers.length +
-    plan.reduce(
+    steps.reduce(
       (sum, step) =>
         sum + (step.via === "execute" ? (step.resubmit ? 2 : 1) : 0),
       0,
@@ -519,26 +360,17 @@ const program = Effect.gen(function* () {
     yield* FiberSet.run(
       fibers,
       Effect.gen(function* () {
-        yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
         const atMs = yield* Clock.currentTimeMillis;
         const timestamp = Math.floor(atMs / 1000);
-        if (chainRandom.nextDoubleUnsafe() >= SIM.chain.reorgRate) {
+        if (!chainRandom.bool(plan.chain.reorgRate)) {
           yield* simChain.mine(atMs);
           return;
         }
         // A reorg of at most `finalizedBlockDepth` replaces no finalized block.
         // The new chain can be shorter or longer than the one it replaces.
-        const depth =
-          1 +
-          Math.floor(
-            chainRandom.nextDoubleUnsafe() * SIM.chain.finalizedBlockDepth,
-          );
-        const added =
-          1 +
-          Math.floor(
-            chainRandom.nextDoubleUnsafe() *
-              (SIM.chain.finalizedBlockDepth + 1),
-          );
+        const depth = chainRandom.int(1, plan.chain.finalizedBlockDepth);
+        const added = chainRandom.int(1, plan.chain.finalizedBlockDepth + 1);
         const { replaced, dropped } = yield* simChain.reorg(depth, added, atMs);
         if (replaced.length === 0) return;
         run.reorgs.push({ replaced, timestamp });
@@ -608,7 +440,7 @@ const program = Effect.gen(function* () {
         // A reorg can drop or move the enqueue and its settlement, so each
         // poll reads both again.
         while (true) {
-          yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+          yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
           const receipt = yield* simChain.request({
             method: "eth_getTransactionReceipt",
             params: [submission.transactionHash!],
@@ -637,7 +469,7 @@ const program = Effect.gen(function* () {
           // enqueue there is never dropped.
           const final =
             head - BigInt(receipt.blockNumber) >=
-            BigInt(SIM.chain.finalizedBlockDepth);
+            BigInt(plan.chain.finalizedBlockDepth);
           if (!expected.executes) {
             if (final) break;
             continue;
@@ -707,13 +539,13 @@ const program = Effect.gen(function* () {
 
       // Each step comes from its own client, so a step does not wait for the
       // one before it to settle.
-      for (const step of plan) {
+      for (const step of steps) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
         const mutation = deepFreeze(
           sign(
             manifest,
             step.signer,
-            withExpiration(step, yield* Clock.currentTimeMillis),
+            withExpiration(plan, step, yield* Clock.currentTimeMillis),
           ),
         );
         const submission: Submission = {
@@ -739,7 +571,7 @@ const program = Effect.gen(function* () {
 
       yield* Deferred.await(drained);
       while (pendingEnqueues.size > 0) {
-        yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
+        yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
       }
       yield* FiberSet.awaitEmpty(expiryChecks);
       return typewriter;
@@ -753,12 +585,12 @@ const program = Effect.gen(function* () {
     Scope.provide(scope),
     Effect.provideService(
       Database,
-      makeDbClient(makeSimDbTransport({ transport, io: scheduler.io })),
+      makeDbClient(makeSimDbTransport({ plan, transport, io: scheduler.io })),
     ),
     Effect.provide(layerRpc(transports)),
     Effect.provideService(Clock.Clock, clock),
     Effect.provide(
-      Layer.effect(Random.Random, makeRandom(SIM.seed, "runtime")),
+      Layer.succeed(Random.Random, new Rng(plan.seed, "runtime").toRandom()),
     ),
     // `TYPEWRITER_LOG_LEVEL` applies to the runtime only. The run's own logs
     // print at every level.
@@ -768,7 +600,7 @@ const program = Effect.gen(function* () {
   yield* Effect.logInfo("Started simulation world").pipe(
     Effect.annotateLogs({
       accounts: signers.length,
-      steps: plan.length,
+      steps: steps.length,
       transports: transports.length,
       duration: Math.round(performance.now() - worldStart),
     }),
@@ -793,9 +625,9 @@ const program = Effect.gen(function* () {
         "deadlock: no fiber can run and no sleep is pending",
       );
     }
-    if (next - progressedAt > SIM.stallTimeoutMs) {
+    if (next - progressedAt > plan.stallTimeoutMs) {
       return yield* Effect.die(
-        `stalled for ${SIM.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...pendingEnqueues].join(", ")}`,
+        `stalled for ${plan.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...pendingEnqueues].join(", ")}`,
       );
     }
     clock.advanceTo(next);
@@ -816,7 +648,7 @@ const program = Effect.gen(function* () {
     db,
     run,
     typewriter,
-    ordering: SIM.typewriter.ordering,
+    ordering: plan.typewriter.ordering,
   });
 
   // Mutations accepted, then dropped when their settlement reverted in revm.
@@ -856,15 +688,6 @@ function resultOf(
   return {
     error: error === undefined ? Cause.pretty(exit.cause) : errorName(error),
   };
-}
-
-/** Freezes `value` and everything it holds, so the runtime cannot change what the client sent. */
-export function deepFreeze<value>(value: value): value {
-  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const entry of Object.values(value)) deepFreeze(entry);
-  }
-  return value;
 }
 
 /** Changes every bigint, number, boolean, and hex string that `value` holds. */
@@ -910,8 +733,17 @@ function unsettled(run: Run): string[] {
 }
 
 BunRuntime.runMain(
-  program.pipe(
-    Effect.tapCause((cause) => Effect.logError("Failed simulation", cause)),
+  simulate(plan).pipe(
+    Effect.tapCause((cause) =>
+      Effect.logError("Failed simulation", cause).pipe(
+        Effect.annotateLogs({
+          reproduce:
+            planFile === undefined
+              ? `SEED=${plan.seed} bun simulation-test/index.ts`
+              : `bun simulation-test/index.ts --plan ${planFile}`,
+        }),
+      ),
+    ),
     Effect.scoped,
     Effect.provide(Logger.layer([logger])),
     Effect.provide(BunServices.layer),

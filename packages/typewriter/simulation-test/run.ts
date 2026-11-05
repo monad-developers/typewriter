@@ -97,3 +97,12 @@ export function makeRun(): Run {
     expiryChecks: [],
   };
 }
+
+/** Freezes `value` and everything it holds, so the runtime cannot change what the client sent. */
+export function deepFreeze<value>(value: value): value {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const entry of Object.values(value)) deepFreeze(entry);
+  }
+  return value;
+}

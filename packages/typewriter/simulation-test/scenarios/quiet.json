@@ -1,0 +1,48 @@
+{
+  "seed": "quiet",
+  "stallTimeoutMs": 300000,
+  "scheduler": {
+    "jumpRate": 0,
+    "jumpsMs": [[0, 1]],
+    "ioRate": 0
+  },
+  "chain": {
+    "blockTimeMs": 400,
+    "genesisTimestamp": 1700000000,
+    "reorgRate": 0,
+    "dropRate": 0,
+    "sendDropRate": 0,
+    "finalizedBlockDepth": 3
+  },
+  "generator": {
+    "accounts": ["Secp256k1", "P256", "WebAuthnP256"],
+    "mutations": 200,
+    "delaysMs": [[0, 3], [10, 1]],
+    "revertRate": 0.05,
+    "enqueueRate": 0.05,
+    "resubmitRate": 0.01,
+    "expirationsS": [[null, 1]],
+    "malformedRate": 0
+  },
+  "typewriter": {
+    "blockPollingIntervalMs": 200,
+    "ordering": {
+      "order": "batch",
+      "batchIntervalMs": 50,
+      "batchOrder": ["A", "B"]
+    }
+  },
+  "transports": [
+    {
+      "latencyMs": [5, 50],
+      "errorRate": 0,
+      "applyThenErrorRate": 0,
+      "lagMs": 0,
+      "slowRate": 0
+    }
+  ],
+  "db": {
+    "latencyMs": [1, 10],
+    "errorRate": 0
+  }
+}
