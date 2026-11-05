@@ -900,18 +900,20 @@ export function createTypewriterEffect<
 
     const sign = (settlement: SigningSettlement) =>
       Effect.gen(function* () {
-        const filled = yield* rpc.request({
-          method: "eth_fillTransaction",
-          params: [
-            {
-              from: app.account.address,
-              to: app.address,
-              data: settlementCalldata(settlement),
-              gas: Hex.fromNumber(settlement.gasLimit),
-              nonce: Hex.fromNumber(settlement.nonce),
-            },
-          ],
-        });
+        const filled = yield* untilSuccess(
+          rpc.request({
+            method: "eth_fillTransaction",
+            params: [
+              {
+                from: app.account.address,
+                to: app.address,
+                data: settlementCalldata(settlement),
+                gas: Hex.fromNumber(settlement.gasLimit),
+                nonce: Hex.fromNumber(settlement.nonce),
+              },
+            ],
+          }),
+        );
         // `eth_fillTransaction` returns an already-signed `raw`; strip its
         // signature fields so the account re-signs over the correct payload.
         const transaction = parseTransaction(filled.raw);
@@ -998,7 +1000,7 @@ export function createTypewriterEffect<
     const untilSuccess = <value, error>(effect: Effect.Effect<value, error>) =>
       effect.pipe(
         Effect.tapError((error) =>
-          Effect.logWarning("Failed to request for a block", error),
+          Effect.logWarning("Failed an RPC request", error),
         ),
         Effect.retry({
           schedule: Schedule.spaced(
