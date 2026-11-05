@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
-import { Effect, type Random, type Scope } from "effect";
+import { Effect, type Scope } from "effect";
 import {
   AbiParameters,
   Address,
@@ -32,7 +32,8 @@ import {
   type AssessmentMutations,
 } from "./assessment-constants";
 import type { Chain } from "./chain";
-import type { SIM } from "./plan";
+import type { Plan } from "./plan";
+import type { Rng } from "./random";
 import type { Expected } from "./run";
 import { TEMPLATES, type Template } from "./templates";
 
@@ -62,7 +63,7 @@ export type Step = {
   via: "execute" | "enqueue";
   /** Executes the mutation again as soon as it is received. The second `execute` fails. */
   resubmit: boolean;
-  /** Drawn from `SIM.generator.expirationsS`. See {@link withExpiration}. */
+  /** Drawn from `Plan.generator.expirationsS`. See {@link withExpiration}. */
   expiresInS: number;
   signer: Signer;
   /** Unsigned, with a `0x` signature, until it is submitted. */
@@ -85,11 +86,11 @@ export function stepLabel({
 let artifact: Promise<{ bytecode: { object: Hex.Hex } }> | undefined;
 
 export function deploy({
-  sim,
+  plan,
   chain,
   deployer,
 }: {
-  sim: SIM;
+  plan: Plan;
   chain: Chain;
   deployer: Address.Address;
 }): Effect.Effect<Address.Address, never, Scope.Scope> {
@@ -115,7 +116,7 @@ export function deploy({
       method: "eth_sendTransaction",
       params: [{ from: deployer, data: Hex.concat(bytecode.object, args) }],
     });
-    yield* chain.mine(sim.chain.genesisTimestamp * 1000);
+    yield* chain.mine(plan.chain.genesisTimestamp * 1000);
     const receipt = yield* chain.request({
       method: "eth_getTransactionReceipt",
       params: [hash],
@@ -165,9 +166,13 @@ const AUTHENTICATOR_DATA = Hex.concat(
 );
 
 /** Makes the signer of account `index` from the seed. */
-export function makeSigner(sim: SIM, index: number, keyType: KeyType): Signer {
+export function makeSigner(
+  plan: Plan,
+  index: number,
+  keyType: KeyType,
+): Signer {
   const privateKey = Hash.keccak256(
-    Hex.fromString(`${sim.seed}:account:${index}`),
+    Hex.fromString(`${plan.seed}:account:${index}`),
   );
 
   switch (keyType) {
@@ -334,7 +339,7 @@ export function stepNonce(index: number): bigint {
  * before every block, and an infinite one never expires.
  */
 export function withExpiration(
-  sim: SIM,
+  plan: Plan,
   step: Step,
   nowMs: number,
 ): Mutation<AppMutationName> {
@@ -342,7 +347,7 @@ export function withExpiration(
   const expiration = !Number.isFinite(expiresInS)
     ? 0
     : expiresInS < 0
-      ? sim.chain.genesisTimestamp - 1
+      ? plan.chain.genesisTimestamp - 1
       : Math.floor(nowMs / 1000) + expiresInS;
   return {
     ...mutation,
@@ -386,10 +391,6 @@ export function expect(step: Step): Expected {
       };
 }
 
-function below(random: Random.Random, length: number): number {
-  return Math.floor(random.nextDoubleUnsafe() * length);
-}
-
 /** The well-formed mutation of `template`, unsigned. */
 function fromTemplate(
   signer: Signer,
@@ -404,11 +405,11 @@ function fromTemplate(
   } as Pick<Mutation<AppMutationName>, "name" | "params"> & { nonce: bigint });
 }
 
-/** Draws the plan of `SIM.generator.mutations` steps from {@link TEMPLATES}. */
-export function makePlan(
-  sim: SIM,
+/** Draws the plan of `Plan.generator.mutations` steps from {@link TEMPLATES}. */
+export function makeSteps(
+  plan: Plan,
   signers: readonly Signer[],
-  random: Random.Random,
+  random: Rng,
 ): Step[] {
   const {
     mutations,
@@ -418,12 +419,12 @@ export function makePlan(
     resubmitRate,
     expirationsS,
     malformedRate,
-  } = sim.generator;
-  const plan = Array.from({ length: mutations }, (_, index): Step => {
-    const delayMs = delaysMs[below(random, delaysMs.length)]!;
-    const signer = signers[below(random, signers.length)]!;
-    const template = TEMPLATES[below(random, TEMPLATES.length)]!;
-    if (random.nextDoubleUnsafe() < malformedRate) {
+  } = plan.generator;
+  const steps = Array.from({ length: mutations }, (_, index): Step => {
+    const delayMs = random.weighted(delaysMs);
+    const signer = random.pick(signers);
+    const template = random.pick(TEMPLATES);
+    if (random.bool(malformedRate)) {
       // No one can execute a malformed enqueue, so the mutation it starts
       // from neither reverts nor expires.
       return {
@@ -434,17 +435,17 @@ export function makePlan(
         expiresInS: Infinity,
         signer,
         mutation: fromTemplate(signer, template, false, index),
-        malformation: MALFORMATIONS[below(random, MALFORMATIONS.length)],
+        malformation: random.pick(MALFORMATIONS),
       };
     }
-    const shouldRevert = random.nextDoubleUnsafe() < revertRate;
-    const via = random.nextDoubleUnsafe() < enqueueRate ? "enqueue" : "execute";
+    const shouldRevert = random.bool(revertRate);
+    const via = random.bool(enqueueRate) ? "enqueue" : "execute";
     return {
       index,
       delayMs,
       via,
-      resubmit: via === "execute" && random.nextDoubleUnsafe() < resubmitRate,
-      expiresInS: expirationsS[below(random, expirationsS.length)]!,
+      resubmit: via === "execute" && random.bool(resubmitRate),
+      expiresInS: random.weighted(expirationsS) ?? Infinity,
       signer,
       mutation: fromTemplate(signer, template, shouldRevert, index),
       malformation: undefined,
@@ -454,10 +455,10 @@ export function makePlan(
   // Nothing shows the runtime read a malformed enqueue's log. A well-formed
   // enqueue after it executes onchain: the runtime force-executes enqueues
   // in queue order.
-  if (plan.some((step) => step.malformation !== undefined)) {
-    const index = plan.length;
-    const signer = signers[below(random, signers.length)]!;
-    plan.push({
+  if (steps.some((step) => step.malformation !== undefined)) {
+    const index = steps.length;
+    const signer = random.pick(signers);
+    steps.push({
       index,
       delayMs: 0,
       via: "enqueue",
@@ -468,5 +469,5 @@ export function makePlan(
       malformation: undefined,
     });
   }
-  return plan;
+  return steps;
 }

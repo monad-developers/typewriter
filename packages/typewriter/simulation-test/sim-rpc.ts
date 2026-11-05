@@ -9,8 +9,8 @@ import {
   type RpcTransportError,
 } from "../src/rpc-transport";
 import type { Chain } from "./chain";
-import type { SIM } from "./plan";
-import { makeRandom } from "./random";
+import type { Plan } from "./plan";
+import { Rng } from "./random";
 
 /** Past the runtime's 5s request timeout. */
 const SLOW_MS = [6_000, 10_000] as const;
@@ -20,11 +20,11 @@ const SLOW_MS = [6_000, 10_000] as const;
  * generator, keyed by the request and how many times the endpoint saw it.
  */
 export function makeSimTransport({
-  sim,
+  plan,
   chain,
   index,
 }: {
-  sim: SIM;
+  plan: Plan;
   chain: Chain;
   index: number;
 }): RpcTransport {
@@ -35,7 +35,7 @@ export function makeSimTransport({
     applyThenErrorRate,
     lagMs,
     slowRate,
-  } = sim.transports[index]!;
+  } = plan.transports[index]!;
 
   const occurrences = new Map<string, number>();
 
@@ -46,7 +46,7 @@ export function makeSimTransport({
     Effect.gen(function* () {
       const asOfMs = Math.max(
         (yield* Clock.currentTimeMillis) - lagMs,
-        sim.chain.genesisTimestamp * 1000,
+        plan.chain.genesisTimestamp * 1000,
       );
       const result = yield* chain.read(request, asOfMs);
       if (result !== undefined) return result;
@@ -65,17 +65,11 @@ export function makeSimTransport({
       const key = JSON.stringify([method, request.params]);
       const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
-      const random = yield* makeRandom(
-        sim.seed,
-        `${index}:${key}:${occurrence}`,
-      );
-      const between = (min: number, max: number) =>
-        min + random.nextDoubleUnsafe() * (max - min);
-
-      const draw = random.nextDoubleUnsafe();
+      const random = new Rng(plan.seed, `${index}:${key}:${occurrence}`);
+      const draw = random.next();
 
       const injected = (): RpcTransportError => {
-        const kind = random.nextDoubleUnsafe();
+        const kind = random.next();
         if (kind < 1 / 3) {
           return new RpcResponseError({
             method,
@@ -99,14 +93,14 @@ export function makeSimTransport({
         });
       };
 
-      const latency = between(latencyMin, latencyMax);
+      const latency = random.float(latencyMin, latencyMax);
       yield* Effect.sleep(Duration.millis(latency));
 
       if (draw < errorRate) return yield* injected();
       // A node that accepts a transaction and then loses it.
       if (
         method === "eth_sendRawTransaction" &&
-        random.nextDoubleUnsafe() < sim.chain.sendDropRate
+        random.bool(plan.chain.sendDropRate)
       ) {
         return Hash.keccak256((request.params as [Hex.Hex])[0]);
       }
@@ -114,15 +108,10 @@ export function makeSimTransport({
       if (draw < errorRate + applyThenErrorRate) return yield* injected();
       if (slowRate > 0) {
         // Its own generator, so seeds without slow requests draw as before.
-        const slow = yield* makeRandom(
-          sim.seed,
-          `${index}:${key}:${occurrence}:slow`,
-        );
-        if (slow.nextDoubleUnsafe() < slowRate) {
+        const slow = new Rng(plan.seed, `${index}:${key}:${occurrence}:slow`);
+        if (slow.bool(slowRate)) {
           yield* Effect.sleep(
-            Duration.millis(
-              SLOW_MS[0] + slow.nextDoubleUnsafe() * (SLOW_MS[1] - SLOW_MS[0]),
-            ),
+            Duration.millis(slow.float(SLOW_MS[0], SLOW_MS[1])),
           );
         }
       }

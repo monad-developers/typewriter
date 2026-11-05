@@ -28,7 +28,7 @@ import type {
 } from "./assessment-constants";
 import type { Chain, StateDiff } from "./chain";
 import { type Executed, type Onchain, readOnchain } from "./onchain";
-import type { SIM } from "./plan";
+import type { Plan } from "./plan";
 import {
   errorName,
   mutationKey,
@@ -44,7 +44,7 @@ type Params = {
   run: Run;
   /** The runtime, still alive after the drain, to read its views. */
   typewriter: Pick<StorageView<AssessmentStorage, false>, "state" | "accounts">;
-  ordering: SIM["typewriter"]["ordering"];
+  ordering: Plan["typewriter"]["ordering"];
 };
 
 /**
@@ -254,7 +254,7 @@ function checkOrder(
   check: Check,
   run: Run,
   onchain: Onchain,
-  ordering: SIM["typewriter"]["ordering"],
+  ordering: Plan["typewriter"]["ordering"],
 ) {
   const executed = executedByKey(onchain);
   const called = run.submissions.flatMap(({ key, via }) =>
@@ -495,7 +495,7 @@ function checkBatchEvents(
   check: Check,
   run: Run,
   onchain: Onchain,
-  ordering: SIM["typewriter"]["ordering"],
+  ordering: Plan["typewriter"]["ordering"],
 ) {
   if (ordering.order === "fifo") {
     check.equal(run.batchEvents.length, 0, "batch events with FIFO sequencing");

@@ -18,6 +18,7 @@ import {
 import { Hash, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { KeyType } from "../src/client";
 import { createTypewriterApp, type TypewriterManifest } from "../src/config";
 import { Database, makeDbClient } from "../src/db";
 import { makePostgresTransport } from "../src/db-transport";
@@ -33,8 +34,8 @@ import {
   enqueueCalldata,
   expect,
   type Mutation,
-  makePlan,
   makeSigner,
+  makeSteps,
   sign,
   stepLabel,
   withExpiration,
@@ -47,8 +48,8 @@ import {
 } from "./assessment-constants";
 import { type Chain, makeChain } from "./chain";
 import { makeSimClock } from "./clock";
-import { makeSim, type SIM } from "./plan";
-import { makeRandom } from "./random";
+import { makePlan, type Plan } from "./plan";
+import { Rng } from "./random";
 import {
   deepFreeze,
   errorName,
@@ -63,9 +64,18 @@ import { makeSimDbTransport } from "./sim-db";
 import { makeSimTransport } from "./sim-rpc";
 import { validate } from "./validate";
 
+/**
+ * Usage: `SEED=<seed> bun simulation-test/index.ts [--plan <file>] [--print-plan]`
+ *
+ * Without `--plan`, the plan is generated from the seed. `SEEDS=0x01-0x40` or
+ * `SEEDS=0x0b,0x49` runs each seed in turn, in one process.
+ */
+const args = process.argv.slice(2);
+const planFile = args.includes("--plan")
+  ? args[args.indexOf("--plan") + 1]
+  : undefined;
 const { SEED, SEEDS } = process.env;
 
-/** `SEEDS=0x01-0x40` or `SEEDS=0x0b,0x49` runs each seed in turn, in one process. */
 function parseSeeds(spec: string): string[] {
   return spec.split(",").flatMap((part) => {
     const [from, to] = part.split("-");
@@ -77,10 +87,13 @@ function parseSeeds(spec: string): string[] {
   });
 }
 
-const seeds = SEEDS ? parseSeeds(SEEDS) : [SEED || Hex.random(32)];
+const plans: Plan[] =
+  planFile === undefined
+    ? (SEEDS ? parseSeeds(SEEDS) : [SEED || Hex.random(32)]).map(makePlan)
+    : [await Bun.file(planFile).json()];
 
-if (process.argv.includes("--plan")) {
-  for (const seed of seeds) console.log(JSON.stringify(makeSim(seed), null, 2));
+if (args.includes("--print-plan")) {
+  for (const plan of plans) console.log(JSON.stringify(plan, null, 2));
   process.exit(0);
 }
 
@@ -158,18 +171,18 @@ const makeDatabase = (seed: string) =>
           ),
   );
 
-const simulate = Effect.fnUntraced(function* (sim: SIM) {
+const simulate = Effect.fnUntraced(function* (plan: Plan) {
   const simStart = performance.now();
   yield* Effect.logInfo("Started simulation").pipe(
     Effect.annotateLogs({
-      seed: sim.seed,
-      config: sim,
+      seed: plan.seed,
+      config: plan,
       duration: Math.round(performance.now() - simStart),
     }),
   );
   const deployStart = performance.now();
-  const chain = yield* makeChain(sim, yield* makeRandom(sim.seed, "reorgs"));
-  const address = yield* deploy({ sim, chain, deployer: SCHEDULER.address });
+  const chain = yield* makeChain(plan, new Rng(plan.seed, "reorgs"));
+  const address = yield* deploy({ plan, chain, deployer: SCHEDULER.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.logInfo("Deployed simulation contract").pipe(
     Effect.annotateLogs({
@@ -179,7 +192,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
     }),
   );
   const databaseStart = performance.now();
-  const database = yield* makeDatabase(sim.seed);
+  const database = yield* makeDatabase(plan.seed);
   yield* Effect.logInfo("Created simulation database").pipe(
     Effect.annotateLogs({
       database: database.name,
@@ -198,13 +211,13 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
       chainId,
       // Anvil's chain has no Monad hardfork schedule.
       hardfork: "MonadTen",
-      rpcUrl: sim.transports.map((_, index) => `sim-${index}`) as [
+      rpcUrl: plan.transports.map((_, index) => `sim-${index}`) as [
         string,
         ...string[],
       ],
       database: { url: database.url },
-      blockPollingIntervalMs: sim.typewriter.blockPollingIntervalMs,
-      sequencing: sim.typewriter.ordering,
+      blockPollingIntervalMs: plan.typewriter.blockPollingIntervalMs,
+      sequencing: plan.typewriter.ordering,
     },
   });
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
@@ -216,28 +229,25 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
   });
   const db = makeDbClient(transport);
 
-  const signers = sim.generator.accounts.map((keyType, i) =>
-    makeSigner(sim, i, keyType),
+  const signers = plan.generator.accounts.map((keyType, i) =>
+    makeSigner(plan, i, KeyType[keyType]),
   );
-  const plan = makePlan(sim, signers, yield* makeRandom(sim.seed, "generator"));
+  const steps = makeSteps(plan, signers, new Rng(plan.seed, "generator"));
 
   // The simulation: a seeded scheduler, and a clock that moves when no fiber
   // can run, or when the scheduler jumps it. Anvil and Postgres run outside
   // it, through `io`.
-  const startMs = sim.chain.genesisTimestamp * 1000;
-  const jumpRandom = yield* makeRandom(sim.seed, "jumps");
+  const startMs = plan.chain.genesisTimestamp * 1000;
+  const jumpRandom = new Rng(plan.seed, "jumps");
   // A pause is rare, so at most one per `PAUSE_SPACING_MS` of virtual time.
   const PAUSE_SPACING_MS = 600_000;
   let pausedAt = -Infinity;
   const scheduler = makeSimScheduler(
-    yield* makeRandom(sim.seed, "scheduler"),
-    sim.jumpRate,
+    new Rng(plan.seed, "scheduler"),
+    plan.scheduler.jumpRate,
     () => {
       const now = clock.currentTimeMillisUnsafe();
-      const jumpMs =
-        sim.jumpsMs[
-          Math.floor(jumpRandom.nextDoubleUnsafe() * sim.jumpsMs.length)
-        ]!;
+      const jumpMs = jumpRandom.weighted(plan.scheduler.jumpsMs);
       if (jumpMs > 0 && now - pausedAt < PAUSE_SPACING_MS) return;
       const at = Math.max(clock.nextWakeup() ?? now, now + jumpMs);
       if (at <= now) return;
@@ -248,7 +258,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
       }
       clock.advanceTo(at);
     },
-    sim.ioRate,
+    plan.scheduler.ioRate,
   );
   const clock = makeSimClock(startMs, scheduler.schedule);
   const simChain: Chain = {
@@ -260,9 +270,9 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
     reorg: (depth, added, atMs) =>
       scheduler.io(chain.reorg(depth, added, atMs)),
   };
-  const chainRandom = yield* makeRandom(sim.seed, "chain");
-  const transports = sim.transports.map((_, index) =>
-    makeSimTransport({ sim, chain: simChain, index }),
+  const chainRandom = new Rng(plan.seed, "chain");
+  const transports = plan.transports.map((_, index) =>
+    makeSimTransport({ plan, chain: simChain, index }),
   ) as [
     ReturnType<typeof makeSimTransport>,
     ...ReturnType<typeof makeSimTransport>[],
@@ -274,7 +284,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
   // every resubmission. The run drains when all of them have.
   const settlementsWanted =
     signers.length +
-    plan.reduce(
+    steps.reduce(
       (sum, step) =>
         sum + (step.via === "execute" ? (step.resubmit ? 2 : 1) : 0),
       0,
@@ -368,26 +378,17 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
     yield* FiberSet.run(
       fibers,
       Effect.gen(function* () {
-        yield* Effect.sleep(Duration.millis(sim.chain.blockTimeMs));
+        yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
         const atMs = yield* Clock.currentTimeMillis;
         const timestamp = Math.floor(atMs / 1000);
-        if (chainRandom.nextDoubleUnsafe() >= sim.chain.reorgRate) {
+        if (!chainRandom.bool(plan.chain.reorgRate)) {
           yield* simChain.mine(atMs);
           return;
         }
         // A reorg of at most `finalizedBlockDepth` replaces no finalized block.
         // The new chain can be shorter or longer than the one it replaces.
-        const depth =
-          1 +
-          Math.floor(
-            chainRandom.nextDoubleUnsafe() * sim.chain.finalizedBlockDepth,
-          );
-        const added =
-          1 +
-          Math.floor(
-            chainRandom.nextDoubleUnsafe() *
-              (sim.chain.finalizedBlockDepth + 1),
-          );
+        const depth = chainRandom.int(1, plan.chain.finalizedBlockDepth);
+        const added = chainRandom.int(1, plan.chain.finalizedBlockDepth + 1);
         const { replaced, dropped } = yield* simChain.reorg(depth, added, atMs);
         if (replaced.length === 0) return;
         run.reorgs.push({ replaced, timestamp });
@@ -457,7 +458,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
         // A reorg can drop or move the enqueue and its settlement, so each
         // poll reads both again.
         while (true) {
-          yield* Effect.sleep(Duration.millis(sim.chain.blockTimeMs));
+          yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
           const receipt = yield* simChain.request({
             method: "eth_getTransactionReceipt",
             params: [submission.transactionHash!],
@@ -486,7 +487,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
           // enqueue there is never dropped.
           const final =
             head - BigInt(receipt.blockNumber) >=
-            BigInt(sim.chain.finalizedBlockDepth);
+            BigInt(plan.chain.finalizedBlockDepth);
           if (!expected.executes) {
             if (final) break;
             continue;
@@ -556,13 +557,13 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
 
       // Each step comes from its own client, so a step does not wait for the
       // one before it to settle.
-      for (const step of plan) {
+      for (const step of steps) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
         const mutation = deepFreeze(
           sign(
             manifest,
             step.signer,
-            withExpiration(sim, step, yield* Clock.currentTimeMillis),
+            withExpiration(plan, step, yield* Clock.currentTimeMillis),
           ),
         );
         const submission: Submission = {
@@ -588,7 +589,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
 
       yield* Deferred.await(drained);
       while (pendingEnqueues.size > 0) {
-        yield* Effect.sleep(Duration.millis(sim.chain.blockTimeMs));
+        yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
       }
       yield* FiberSet.awaitEmpty(expiryChecks);
       return typewriter;
@@ -602,12 +603,12 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
     Scope.provide(scope),
     Effect.provideService(
       Database,
-      makeDbClient(makeSimDbTransport({ sim, transport, io: scheduler.io })),
+      makeDbClient(makeSimDbTransport({ plan, transport, io: scheduler.io })),
     ),
     Effect.provide(layerRpc(transports)),
     Effect.provideService(Clock.Clock, clock),
     Effect.provide(
-      Layer.effect(Random.Random, makeRandom(sim.seed, "runtime")),
+      Layer.succeed(Random.Random, new Rng(plan.seed, "runtime").toRandom()),
     ),
     // `TYPEWRITER_LOG_LEVEL` applies to the runtime only. The run's own logs
     // print at every level.
@@ -617,7 +618,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
   yield* Effect.logInfo("Started simulation world").pipe(
     Effect.annotateLogs({
       accounts: signers.length,
-      steps: plan.length,
+      steps: steps.length,
       transports: transports.length,
       duration: Math.round(performance.now() - worldStart),
     }),
@@ -642,9 +643,9 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
         "deadlock: no fiber can run and no sleep is pending",
       );
     }
-    if (next - progressedAt > sim.stallTimeoutMs) {
+    if (next - progressedAt > plan.stallTimeoutMs) {
       return yield* Effect.die(
-        `stalled for ${sim.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...pendingEnqueues].join(", ")}`,
+        `stalled for ${plan.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...pendingEnqueues].join(", ")}`,
       );
     }
     clock.advanceTo(next);
@@ -665,7 +666,7 @@ const simulate = Effect.fnUntraced(function* (sim: SIM) {
     db,
     run,
     typewriter,
-    ordering: sim.typewriter.ordering,
+    ordering: plan.typewriter.ordering,
   });
 
   // Mutations accepted, then dropped when their settlement reverted in revm.
@@ -751,22 +752,27 @@ function unsettled(run: Run): string[] {
 
 const sweep = Effect.gen(function* () {
   const failed: string[] = [];
-  for (const seed of seeds) {
-    const exit = yield* simulate(makeSim(seed)).pipe(
+  for (const plan of plans) {
+    const exit = yield* simulate(plan).pipe(
       Effect.tapCause((cause) =>
         Effect.logError("Failed simulation", cause).pipe(
-          Effect.annotateLogs({ seed }),
+          Effect.annotateLogs({
+            reproduce:
+              planFile === undefined
+                ? `SEED=${plan.seed} bun simulation-test/index.ts`
+                : `bun simulation-test/index.ts --plan ${planFile}`,
+          }),
         ),
       ),
       Effect.scoped,
       Effect.exit,
     );
-    if (Exit.isFailure(exit)) failed.push(seed);
+    if (Exit.isFailure(exit)) failed.push(plan.seed);
   }
-  if (seeds.length > 1) {
+  if (plans.length > 1) {
     yield* Effect.logInfo("Swept simulation seeds").pipe(
       Effect.annotateLogs({
-        passed: seeds.length - failed.length,
+        passed: plans.length - failed.length,
         failed: failed.join(","),
       }),
     );

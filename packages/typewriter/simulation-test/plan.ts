@@ -1,22 +1,32 @@
-import { KeyType } from "../src/client";
+import type { KeyType } from "../src/client";
 import { EXPIRATION_MARGIN } from "../src/typewriter-constants";
-import { int, pick } from "./random";
+import { Rng } from "./random";
 
-export type SIM = {
+/** `[value, weight]`: a draw picks a value with probability proportional to its weight. */
+export type Weighted<value> = [value, number][];
+
+/**
+ * Everything about a simulation is decided by its plan, and the plan is
+ * decided by the seed alone, or read from a file.
+ */
+export type Plan = {
+  /** Seeds the run's own draws, such as each request's latency. */
   seed: string;
   /** The run fails when the runtime emits no mutation event for this much virtual time. */
   stallTimeoutMs: number;
-  /** How often the scheduler jumps the clock before a pick, while tasks are ready. */
-  jumpRate: number;
-  /**
-   * How far past now a jump moves the clock, at least to the next sleep, that
-   * a jump draws from. A jump past `EXPIRATION_MARGIN` moves the next block's
-   * timestamp past expirations the runtime accepted against the block before,
-   * and past the delay that settlements in flight pinned, so they revert.
-   */
-  jumpsMs: number[];
-  /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
-  ioRate: number;
+  scheduler: {
+    /** How often the scheduler jumps the clock before a pick, while tasks are ready. */
+    jumpRate: number;
+    /**
+     * How far past now a jump moves the clock, at least to the next sleep. A
+     * jump past `EXPIRATION_MARGIN` moves the next block's timestamp past
+     * expirations the runtime accepted against the block before, and past the
+     * delay that settlements in flight pinned, so they revert.
+     */
+    jumpsMs: Weighted<number>;
+    /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
+    ioRate: number;
+  };
   chain: {
     blockTimeMs: number;
     genesisTimestamp: number;
@@ -31,24 +41,24 @@ export type SIM = {
   };
   generator: {
     /** The key type of each account. */
-    accounts: KeyType[];
+    accounts: (keyof typeof KeyType)[];
     mutations: number;
-    /** The delays between submissions that a step draws from. */
-    delaysMs: number[];
+    /** The delays between submissions. */
+    delaysMs: Weighted<number>;
     revertRate: number;
     enqueueRate: number;
     /** How often an executed step is executed again as soon as it is received. */
     resubmitRate: number;
     /**
-     * The seconds from a step's submission to its authorization's expiration
-     * that a step draws from. `-1` expires before genesis, so it always fails.
-     * The runtime rejects one within `EXPIRATION_MARGIN` of the latest block,
-     * so `0` and `EXPIRATION_MARGIN - 2` are rejected unless the runtime's
-     * latest block is behind the clock, and `EXPIRATION_MARGIN` and above are
-     * accepted, and expire if the clock jumps before they execute again.
-     * `Infinity` never expires, and repeats so most steps draw it.
+     * The seconds from a step's submission to its authorization's expiration.
+     * `-1` expires before genesis, so it always fails. The runtime rejects one
+     * within `EXPIRATION_MARGIN` of the latest block, so `0` and
+     * `EXPIRATION_MARGIN - 2` are rejected unless the runtime's latest block
+     * is behind the clock, and `EXPIRATION_MARGIN` and above are accepted, and
+     * expire if the clock jumps before they execute again. `null` never
+     * expires.
      */
-    expirationsS: number[];
+    expirationsS: Weighted<number | null>;
     /** How often a step enqueues bytes the contract cannot decode. */
     malformedRate: number;
   };
@@ -62,15 +72,7 @@ export type SIM = {
           batchOrder: ["A", "B"] | ["B", "A"];
         };
   };
-  transports: {
-    latencyMs: [number, number];
-    errorRate: number;
-    applyThenErrorRate: number;
-    /** How far behind the chain the endpoint's view is, in virtual time. */
-    lagMs: number;
-    /** How often a request applies, then answers after the runtime's request timeout. */
-    slowRate: number;
-  }[];
+  transports: TransportPlan[];
   db: {
     latencyMs: [number, number];
     /** How often a transaction rolls back at a drawn statement, so the runtime runs it again. */
@@ -78,110 +80,150 @@ export type SIM = {
   };
 };
 
-/** The configuration of a run. Each value is drawn from `seed` and its path. */
-export function makeSim(seed: string): SIM {
-  return {
-    seed,
-    stallTimeoutMs: 300_000,
-    jumpRate: pick(seed, "jumpRate", [0, 0.0001, 0.001]),
-    // The long jump passes the latest finite expiration, `EXPIRATION_MARGIN + 2`.
-    jumpsMs: [0, 0, 0, (EXPIRATION_MARGIN + 3) * 1_000],
-    ioRate: pick(seed, "ioRate", [0, 0.01, 0.1]),
-    chain: {
-      blockTimeMs: pick(seed, "chain.blockTimeMs", [100, 300, 400, 1_000]),
-      genesisTimestamp: 1_700_000_000,
-      // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
-      reorgRate: pick(seed, "chain.reorgRate", [0]),
-      dropRate: pick(seed, "chain.dropRate", [0, 0.05, 0.25]),
-      sendDropRate: pick(seed, "chain.sendDropRate", [0, 0.05, 0.2]),
-      finalizedBlockDepth: int(seed, "chain.finalizedBlockDepth", 1, 5),
-    },
-    generator: {
-      accounts: Array.from(
-        { length: int(seed, "generator.accounts", 1, 6) },
-        (_, i) =>
-          pick(seed, `generator.accounts.${i}`, [
-            KeyType.Secp256k1,
-            KeyType.P256,
-            KeyType.WebAuthnP256,
-          ]),
-      ),
-      // A burst of a few hundred mutations outgrows the transaction gas cap
-      // and splits into several settlements.
-      mutations: int(seed, "generator.mutations", 4, 2000),
-      delaysMs: pick(seed, "generator.delaysMs", [
-        [0],
-        // Clumps across many blocks, so enqueues land while batches still fill.
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 100],
-        [0, 0, 0, 1],
-        [0, 1, 10],
-        [0, 50, 500],
-        [10, 100, 1_000],
-      ]),
-      revertRate: pick(seed, "generator.revertRate", [0, 0.01, 0.05, 0.1]),
-      enqueueRate: pick(seed, "generator.enqueueRate", [0, 0.01, 0.05, 0.1]),
-      resubmitRate: pick(seed, "generator.resubmitRate", [0, 0.01, 0.1, 1]),
-      expirationsS: [
-        -1,
-        0,
-        EXPIRATION_MARGIN - 2,
-        EXPIRATION_MARGIN,
-        EXPIRATION_MARGIN + 2,
-        ...Array<number>(20).fill(Infinity),
+export type TransportPlan = {
+  latencyMs: [number, number];
+  errorRate: number;
+  applyThenErrorRate: number;
+  /** How far behind the chain the endpoint's view is, in virtual time. */
+  lagMs: number;
+  /** How often a request applies, then answers after the runtime's request timeout. */
+  slowRate: number;
+};
+
+export function makePlan(seed: string): Plan {
+  const rng = new Rng(seed, "plan");
+
+  const chainRng = rng.fork("chain");
+  // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
+  const reorgRate = chainRng.pick([0]);
+  const chain: Plan["chain"] = {
+    blockTimeMs: chainRng.pick([100, 300, 400, 1_000]),
+    genesisTimestamp: 1_700_000_000,
+    reorgRate,
+    dropRate: reorgRate === 0 ? 0 : chainRng.pick([0, 0.05, 0.25]),
+    sendDropRate: chainRng.pick([0, 0.05, 0.2]),
+    finalizedBlockDepth: chainRng.int(1, 5),
+  };
+
+  const generatorRng = rng.fork("generator");
+  const generator: Plan["generator"] = {
+    accounts: Array.from({ length: generatorRng.int(1, 6) }, () =>
+      generatorRng.pick(["Secp256k1", "P256", "WebAuthnP256"] as const),
+    ),
+    // A burst of a few hundred mutations outgrows the transaction gas cap
+    // and splits into several settlements.
+    mutations: generatorRng.weighted([
+      [generatorRng.int(4, 50), 3],
+      [generatorRng.int(51, 400), 3],
+      [generatorRng.int(401, 2000), 1],
+    ]),
+    delaysMs: generatorRng.pick([
+      [[0, 1]],
+      // Clumps across many blocks, so enqueues land while batches still fill.
+      [
+        [0, 9],
+        [100, 1],
       ],
-      malformedRate: pick(
-        seed,
-        "generator.malformedRate",
-        [0, 0.01, 0.05, 0.2],
-      ),
+      [
+        [0, 3],
+        [1, 1],
+      ],
+      [
+        [0, 1],
+        [1, 1],
+        [10, 1],
+      ],
+      [
+        [0, 1],
+        [50, 1],
+        [500, 1],
+      ],
+      [
+        [10, 1],
+        [100, 1],
+        [1_000, 1],
+      ],
+    ] as Weighted<number>[]),
+    revertRate: generatorRng.pick([0, 0.01, 0.05, 0.1]),
+    enqueueRate: generatorRng.pick([0, 0.01, 0.05, 0.1]),
+    resubmitRate: generatorRng.pick([0, 0.01, 0.1, 1]),
+    expirationsS: [
+      [-1, 1],
+      [0, 1],
+      [EXPIRATION_MARGIN - 2, 1],
+      [EXPIRATION_MARGIN, 1],
+      [EXPIRATION_MARGIN + 2, 1],
+      [null, 20],
+    ],
+    malformedRate: generatorRng.pick([0, 0.01, 0.05, 0.2]),
+  };
+
+  const typewriterRng = rng.fork("typewriter");
+  const typewriter: Plan["typewriter"] = {
+    blockPollingIntervalMs: typewriterRng.pick([50, 200, 1_000]),
+    ordering: typewriterRng.bool()
+      ? { order: "fifo" }
+      : {
+          order: "batch",
+          batchIntervalMs: typewriterRng.pick([10, 50, 300]),
+          batchOrder: typewriterRng.pick([
+            ["A", "B"],
+            ["B", "A"],
+          ] as (["A", "B"] | ["B", "A"])[]),
+        },
+  };
+
+  const transports = Array.from(
+    {
+      length: rng.weighted([
+        [1, 2],
+        [2, 2],
+        [3, 1],
+      ] as Weighted<number>),
     },
-    typewriter: {
-      blockPollingIntervalMs: pick(
-        seed,
-        "typewriter.blockPollingIntervalMs",
-        [50, 200, 1_000],
-      ),
-      ordering:
-        pick(seed, "typewriter.ordering", ["fifo", "batch"]) === "fifo"
-          ? { order: "fifo" }
-          : {
-              order: "batch",
-              batchIntervalMs: pick(
-                seed,
-                "typewriter.ordering.batchIntervalMs",
-                [10, 50, 300],
-              ),
-              batchOrder: pick(seed, "typewriter.ordering.batchOrder", [
-                ["A", "B"],
-                ["B", "A"],
-              ] as (["A", "B"] | ["B", "A"])[]),
-            },
-    },
-    transports: Array.from(
-      { length: int(seed, "transports.length", 1, 3) },
-      (_, i) => ({
-        latencyMs: pick(seed, `transports.${i}.latencyMs`, [
+    (_, i): TransportPlan => {
+      const r = rng.fork(`transport:${i}`);
+      return {
+        latencyMs: r.pick([
           [1, 5],
           [5, 50],
           [50, 500],
         ] as [number, number][]),
-        errorRate: pick(seed, `transports.${i}.errorRate`, [0, 0.01, 0.1]),
-        applyThenErrorRate: pick(
-          seed,
-          `transports.${i}.applyThenErrorRate`,
-          [0, 0.01, 0.1],
-        ),
-        lagMs: pick(seed, `transports.${i}.lagMs`, [0, 0, 100, 1_000]),
-        slowRate: pick(seed, `transports.${i}.slowRate`, [0, 0.01, 0.05]),
-      }),
-    ),
-    db: {
-      latencyMs: pick(seed, "db.latencyMs", [
-        [0, 1],
-        [1, 10],
-        [10, 100],
-      ] as [number, number][]),
-      errorRate: pick(seed, "db.errorRate", [0, 0.01, 0.05]),
+        errorRate: r.pick([0, 0.01, 0.1]),
+        applyThenErrorRate: r.pick([0, 0.01, 0.1]),
+        lagMs: r.pick([0, 0, 100, 1_000]),
+        slowRate: r.pick([0, 0.01, 0.05]),
+      };
     },
+  );
+
+  const dbRng = rng.fork("db");
+  const db: Plan["db"] = {
+    latencyMs: dbRng.pick([
+      [0, 1],
+      [1, 10],
+      [10, 100],
+    ] as [number, number][]),
+    errorRate: dbRng.pick([0, 0.01, 0.05]),
+  };
+
+  const schedulerRng = rng.fork("scheduler");
+  return {
+    seed,
+    stallTimeoutMs: 300_000,
+    scheduler: {
+      jumpRate: schedulerRng.pick([0, 0.0001, 0.001]),
+      // The long jump passes the latest finite expiration, `EXPIRATION_MARGIN + 2`.
+      jumpsMs: [
+        [0, 3],
+        [(EXPIRATION_MARGIN + 3) * 1_000, 1],
+      ],
+      ioRate: schedulerRng.pick([0, 0.01, 0.1]),
+    },
+    chain,
+    generator,
+    typewriter,
+    transports,
+    db,
   };
 }
