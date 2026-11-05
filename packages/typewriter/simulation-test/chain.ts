@@ -113,6 +113,9 @@ export function makeChain(
         "--port",
         "0",
         "--no-mining",
+        // Monad's block gas limit.
+        "--gas-limit",
+        "200000000",
         "--timestamp",
         String(plan.chain.genesisTimestamp),
       ],
