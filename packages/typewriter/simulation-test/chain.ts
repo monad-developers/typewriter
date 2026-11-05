@@ -44,6 +44,11 @@ export type Chain = {
     request: request,
     asOfMs: number,
   ) => Effect.Effect<RpcResult<request["method"]> | undefined>;
+  /** The first block of the canonical chain in which a transaction zeroed `slot` of `address`. */
+  clearedAt: (
+    address: Hex.Hex,
+    slot: Hex.Hex,
+  ) => Effect.Effect<bigint | undefined>;
   /** Mines one block at `atMs`, in virtual time. */
   mine: (atMs: number) => Effect.Effect<void>;
   /**
@@ -342,6 +347,8 @@ export function makeChain(
     const stateDiffs = new Map<string, StateDiff>();
     const stateDiffKey = (blockHash: Hex.Hex, transactionHash: Hex.Hex) =>
       `${blockHash}:${transactionHash}`.toLowerCase();
+    /** The blocks that zeroed each slot, by address and slot, lowercase. */
+    const clears = new Map<string, Hex.Hex[]>();
 
     // Mines one block and traces its transactions, while Anvil still has the
     // state before it.
@@ -365,12 +372,39 @@ export function makeChain(
             ],
           } as unknown as RpcRequest)) as unknown as StateDiff;
           stateDiffs.set(stateDiffKey(block.hash, hash), diff);
+          for (const [address, { storage = {} }] of Object.entries(diff.pre)) {
+            const post = diff.post[address]?.storage ?? {};
+            for (const [slot, value] of Object.entries(storage)) {
+              if (BigInt(value) === 0n || BigInt(post[slot] ?? 0) !== 0n)
+                continue;
+              const key = `${address}:${slot}`.toLowerCase();
+              clears.set(key, [...(clears.get(key) ?? []), block.hash]);
+            }
+          }
         }
         return block.hash;
       });
 
     const stateDiff = (blockHash: Hex.Hex, transactionHash: Hex.Hex) =>
       stateDiffs.get(stateDiffKey(blockHash, transactionHash));
+
+    const clearedAt = (address: Hex.Hex, slot: Hex.Hex) =>
+      lock(
+        Effect.sync(() => {
+          let first: number | undefined;
+          for (const hash of clears.get(`${address}:${slot}`.toLowerCase()) ??
+            []) {
+            const { number } = blocks.get(hash)!;
+            if (
+              canonical[number] === hash &&
+              (first === undefined || number < first)
+            ) {
+              first = number;
+            }
+          }
+          return first === undefined ? undefined : BigInt(first);
+        }),
+      );
 
     const mine = (atMs: number) =>
       lock(
@@ -474,7 +508,7 @@ export function makeChain(
         }),
       );
 
-    return { request, read, stateDiff, mine, reorg };
+    return { request, read, stateDiff, clearedAt, mine, reorg };
   });
 }
 

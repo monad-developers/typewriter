@@ -406,6 +406,7 @@ const program = Effect.gen(function* () {
     request: (request) => scheduler.io(chain.request(request)),
     read: (request, asOfMs) => scheduler.io(chain.read(request, asOfMs)),
     stateDiff: chain.stateDiff,
+    clearedAt: (address, slot) => scheduler.io(chain.clearedAt(address, slot)),
     mine: (atMs) => scheduler.io(chain.mine(atMs)),
     reorg: (depth, added, atMs) =>
       scheduler.io(chain.reorg(depth, added, atMs)),
@@ -604,11 +605,9 @@ const program = Effect.gen(function* () {
         const { label, expected, mutation } = submission;
         const { expiration } = mutation.authorization;
         let settledAt: bigint | undefined;
-        /** The newest head at which the entry was still queued. */
-        let queuedAt: bigint | undefined;
         // A reorg can drop or move the enqueue and its settlement, so each
         // poll reads both again.
-        poll: while (true) {
+        while (true) {
           yield* Effect.sleep(Duration.millis(SIM.chain.blockTimeMs));
           const receipt = yield* simChain.request({
             method: "eth_getTransactionReceipt",
@@ -651,26 +650,11 @@ const program = Effect.gen(function* () {
             data: receipt.logs[0]!.data,
             strict: true,
           });
-          const slot = queueEntrySlot(args.index);
-          // `undefined` for a block that a reorg removed since `latest`.
-          const deletedAt = (block: bigint) =>
-            simChain
-              .read(
-                {
-                  method: "eth_getStorageAt",
-                  params: [app.address, slot, Hex.fromNumber(block)],
-                },
-                Number.POSITIVE_INFINITY,
-              )
-              .pipe(
-                Effect.map((value) =>
-                  value === undefined ? undefined : BigInt(value) === 0n,
-                ),
-              );
-          const deleted = yield* deletedAt(head);
-          if (deleted === undefined) continue;
-          if (!deleted) {
-            queuedAt = head;
+          const settled = yield* simChain.clearedAt(
+            app.address,
+            queueEntrySlot(args.index),
+          );
+          if (settled === undefined) {
             // The contract rejects it in every block past its expiration.
             if (
               final &&
@@ -681,28 +665,8 @@ const program = Effect.gen(function* () {
             }
             continue;
           }
-          // The settlement's block: the first in which the entry is gone. Anvil
-          // keeps old state only so long, so search from where it was last
-          // queued, back past a reorg that moved the settlement earlier.
-          const enqueuedAt = BigInt(receipt.blockNumber);
-          let settled = queuedAt ?? enqueuedAt;
-          const deletedThere = yield* deletedAt(settled);
-          if (deletedThere === undefined) continue;
-          if (deletedThere) {
-            while (settled > enqueuedAt) {
-              const deleted = yield* deletedAt(settled - 1n);
-              if (deleted === undefined) continue poll;
-              if (!deleted) break;
-              settled--;
-            }
-          } else {
-            while (true) {
-              const deleted = yield* deletedAt(settled);
-              if (deleted === undefined) continue poll;
-              if (deleted) break;
-              settled++;
-            }
-          }
+          // A reorg since `latest` moved the settlement past it.
+          if (settled > head) continue;
           if (settled !== settledAt) {
             settledAt = settled;
             progressedAt = clock.currentTimeMillisUnsafe();
