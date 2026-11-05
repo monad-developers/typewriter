@@ -485,11 +485,13 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // State
 
-    /** The block revm executes in: the newest the watch has seen. */
+    /** The newest block the watch has processed. */
     let blockContext = {
       number: startBlock.number,
       timestamp: startBlock.timestamp,
     };
+    /** The chain's newest block, which settlements execute at, so a lagging watch can't make them land late. */
+    let latest = blockContext;
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
     /** Settlements are signed with the newest watched block's base fee. */
@@ -779,7 +781,11 @@ export function createTypewriterEffect<
       batch?: RuntimeBatch,
     ) =>
       Effect.gen(function* () {
-        const { timestamp } = blockContext;
+        const { number, timestamp } = latest;
+        yield* evm.setBlockContext({
+          number: Hex.fromNumber(number),
+          timestamp: Hex.fromNumber(timestamp),
+        });
         const accepted: (Execution & {
           mutation: AcceptedMutation;
           deferred?: AcceptDeferred;
@@ -1292,10 +1298,16 @@ export function createTypewriterEffect<
 
     // Every enqueue takes a queue index onchain, so revm replays each one
     // with its bytes. The next batch force-executes it.
-    const replayEnqueues = (logs: readonly LocalLog[]) =>
+    const replayEnqueues = (block: LocalBlock) =>
       withStateLock(
         Effect.gen(function* () {
-          for (const log of logs) {
+          if (block.logs.length === 0) return;
+          // An enqueue records its block's timestamp.
+          yield* evm.setBlockContext({
+            number: Hex.fromNumber(block.number),
+            timestamp: Hex.fromNumber(block.timestamp),
+          });
+          for (const log of block.logs) {
             const queued = decodeForceInclusionQueued(log);
             const executeResult = yield* evm.execute({
               from: "0x0000000000000000000000000000000000000000",
@@ -1334,6 +1346,9 @@ export function createTypewriterEffect<
         selector: toEventSelector(
           getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
         ),
+      },
+      onLatest: ({ number, timestamp }) => {
+        if (number > latest.number) latest = { number, timestamp };
       },
     }).pipe(
       Stream.runForEach((message) =>
@@ -1381,15 +1396,12 @@ export function createTypewriterEffect<
               Effect.forkIn(scope),
             );
           }
-          yield* evm.setBlockContext({
-            number: Hex.fromNumber(message.block.number),
-            timestamp: Hex.fromNumber(message.block.timestamp),
-          });
           blockContext = {
             number: message.block.number,
             timestamp: message.block.timestamp,
           };
-          yield* replayEnqueues(message.block.logs);
+          if (blockContext.number >= latest.number) latest = blockContext;
+          yield* replayEnqueues(message.block);
           yield* land(message.block);
           yield* rebroadcast(message.block);
         }),
