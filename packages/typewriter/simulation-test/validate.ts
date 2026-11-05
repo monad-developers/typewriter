@@ -363,11 +363,7 @@ function replacedHashes(run: Run): Set<string> {
 
 /** A finalized block is on the canonical chain, and no reorg replaced it. */
 function checkFinality(check: Check, run: Run, onchain: Onchain) {
-  const replaced = new Set(
-    run.reorgs.flatMap(({ replaced }) =>
-      replaced.map((hash) => hash.toLowerCase()),
-    ),
-  );
+  const replaced = replacedHashes(run);
   for (const { status, number, hash } of run.blockEvents) {
     if (status !== "finalized") continue;
     if (replaced.has(hash.toLowerCase())) {
@@ -494,8 +490,8 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           ? ["received", "accepted", "included", "finalized"]
           : ["received", "rejected"];
     // When a settlement reverts in revm, its mutations execute again: each is
-    // accepted again, maybe at another index, or dropped. A reorg that
-    // replaces its block makes it accepted again too.
+    // accepted again, maybe at another index, or dropped. A reorg undoes an
+    // inclusion in a block it replaced.
     const seenStatuses = seen
       .filter(
         (event) =>
@@ -564,12 +560,7 @@ function checkBatchEvents(
   const dropped = droppedKeys(run);
   const replaced = replacedHashes(run);
   const accepted = run.batchEvents
-    // A reorg that replaces its block makes a batch accepted again.
-    .filter(
-      (event, i, all) =>
-        event.status === "accepted" &&
-        all.findIndex((other) => other.id === event.id) === i,
-    )
+    .filter((event) => event.status === "accepted")
     .map(({ id, mutations }) => ({
       id,
       keys: mutations
@@ -593,11 +584,7 @@ function checkBatchEvents(
               replaced.has(event.mutations[0]!.blockHash!.toLowerCase())
             ),
         )
-        .map((event) => event.status)
-        .filter(
-          (status, i, all) =>
-            status !== "accepted" || i === 0 || all[i - 1] !== status,
-        ),
+        .map((event) => event.status),
       ["accepted", "included", "finalized"],
       `batch ${id} event statuses`,
     );
@@ -928,6 +915,7 @@ function eventsByKey(
 function executionIndexesOf(
   event: BlockEvent<"fifo" | "batch", AssessmentMutations>,
 ) {
+  if (event.status === "removed") return [];
   const mutations =
     "mutations" in event
       ? event.mutations

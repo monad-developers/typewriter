@@ -103,7 +103,6 @@ export type MutationStatus =
   | "finalized";
 
 export type BatchStatus = "accepted" | "included" | "finalized";
-/** `removed` once a reorg replaces an included block. */
 export type BlockStatus = "included" | "finalized" | "removed";
 
 type MutationBase = {
@@ -156,7 +155,7 @@ export type RuntimeBatch = {
 };
 
 export type RuntimeBlock = {
-  status: BlockStatus;
+  status: "included" | "finalized";
   number: bigint;
   hash: Hex.Hex;
   timestamp: bigint;
@@ -249,19 +248,27 @@ export type BatchEvent<
 export type BlockEvent<
   sequence extends SequencingConfig = SequencingConfig,
   mutationsConfig extends MutationsConfig = MutationsConfig,
-> = {
-  status: BlockStatus;
-  number: bigint;
-  hash: Hex.Hex;
-  timestamp: bigint;
-} & (sequence extends "fifo"
-  ? { mutations: IncludedMutationEvent<mutationsConfig>[] }
-  : {
-      batches: Extract<
-        BatchEvent<mutationsConfig>,
-        { status: "included" | "finalized" }
-      >[];
-    });
+> =
+  | ({
+      status: "included" | "finalized";
+      number: bigint;
+      hash: Hex.Hex;
+      timestamp: bigint;
+    } & (sequence extends "fifo"
+      ? { mutations: IncludedMutationEvent<mutationsConfig>[] }
+      : {
+          batches: Extract<
+            BatchEvent<mutationsConfig>,
+            { status: "included" | "finalized" }
+          >[];
+        }))
+  | {
+      /** A reorg replaced a block that was `included`. */
+      status: "removed";
+      number: bigint;
+      hash: Hex.Hex;
+      timestamp: bigint;
+    };
 
 export type MutationListener<
   mutationsConfig extends MutationsConfig = MutationsConfig,
