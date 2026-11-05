@@ -1,4 +1,4 @@
-import { Schema, SchemaGetter } from "effect";
+import { Effect, Schema, SchemaGetter, SchemaIssue } from "effect";
 import type { AbiParameters } from "ox";
 import { AUTHORIZATION_ABI_PARAMS } from "./typewriter-constants";
 
@@ -93,31 +93,42 @@ const AUTHORIZATION_SCHEMA = structSchema(AUTHORIZATION_ABI_PARAMS);
 const INTEGER_STRING = /^(?:-?\d+|0x[0-9a-fA-F]+)$/;
 
 /**
- * An integer in range: a bigint, a safe integer, or a decimal or `0x`
- * string. Not `""`, `true`, or a number past 2^53, which `ox` would encode
- * as some other integer.
+ * An integer in range, decoded to a bigint from a bigint, a safe integer, or
+ * a decimal or `0x` string. Not `""`, `true`, or a number past 2^53, which
+ * `ox` would encode as some other integer.
  */
-function integerSchema(signed: boolean, bits: number) {
+function integerSchema(
+  signed: boolean,
+  bits: number,
+): Schema.Codec<bigint, bigint | number | string> {
   const min = signed ? -(1n << BigInt(bits - 1)) : 0n;
   const max = (1n << BigInt(signed ? bits - 1 : bits)) - 1n;
   const type = `${signed ? "int" : "uint"}${bits}`;
-  return Schema.Union([Schema.BigInt, Schema.Number, Schema.String])
-    .check(
-      Schema.makeFilter((value) => {
-        const integer = toInteger(value);
-        if (integer === undefined) return `Expected an integer for ${type}`;
-        return (
-          (integer >= min && integer <= max) ||
-          `Expected ${type} between ${min} and ${max}`
-        );
-      }),
-    )
-    .pipe(
-      Schema.decodeTo(Schema.BigInt, {
-        decode: SchemaGetter.transform((value) => toInteger(value)!),
-        encode: SchemaGetter.transform((value) => value),
-      }),
-    );
+  return Schema.Union([Schema.BigInt, Schema.Number, Schema.String]).pipe(
+    Schema.decodeTo(
+      Schema.BigInt.check(
+        Schema.makeFilter(
+          (integer) =>
+            (integer >= min && integer <= max) ||
+            `Expected ${type} between ${min} and ${max}`,
+        ),
+      ),
+      {
+        decode: SchemaGetter.transformEffect((value) => {
+          const integer = toInteger(value);
+          return integer === undefined
+            ? Effect.fail(
+                new SchemaIssue.InvalidValue(
+                  { message: `Expected an integer for ${type}` },
+                  value,
+                ),
+              )
+            : Effect.succeed(integer);
+        }),
+        encode: SchemaGetter.transform((integer) => integer),
+      },
+    ),
+  );
 }
 
 function toInteger(value: bigint | number | string): bigint | undefined {
