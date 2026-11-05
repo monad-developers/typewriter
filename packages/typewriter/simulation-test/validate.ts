@@ -15,13 +15,12 @@ import {
 import { builder } from "../src/db-transport";
 import { EMPTY_BATCH, encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
-import { TYPEWRITER_ABI } from "../src/typewriter-constants";
+import { TX_GAS_LIMIT_CAP, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type {
   BlockEvent,
   MutationEvent,
   MutationStatus,
 } from "../src/typewriter-types";
-import type { AppMutationName } from "./assessment";
 import type {
   AssessmentMutations,
   AssessmentStorage,
@@ -278,7 +277,7 @@ function checkOrder(
       return builtin >= 0
         ? builtin
         : BUILTIN_ORDER.length +
-            ordering.batchOrder.indexOf(name as AppMutationName);
+            (ordering.batchOrder as readonly string[]).indexOf(name);
     };
     // A batch too large for one settlement continues in the next batches, so
     // a run of calls can span adjacent batches.
@@ -384,6 +383,7 @@ function checkQueue(
           params: [
             {
               from: app.account.address,
+              gas: Hex.fromNumber(TX_GAS_LIMIT_CAP),
               to: app.address,
               data: encodeExecuteCalldata(
                 onchain.executionHash,

@@ -27,4 +27,6 @@ export const TEMPLATES: Template[] = [
   { name: "B", params: { slot: 1n, value: 42n } },
   { name: "B", params: { slot: 2n, value: MAX_UINT256 } },
   { name: "B", params: { slot: 3n, value: 1n << 128n } },
+  // Too much gas for a settlement, so it never executes.
+  { name: "C", params: { count: 5_000n } },
 ];
