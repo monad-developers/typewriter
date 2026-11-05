@@ -96,6 +96,8 @@ const REORG = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 export function makeChain(
   plan: Plan,
   random: Rng,
+  /** Traces each block's state diffs, for `stateDiff` and `clearedAt`. */
+  trace = true,
 ): Effect.Effect<
   Chain,
   never,
@@ -358,7 +360,9 @@ export function makeChain(
         } as unknown as RpcRequest);
         const block = yield* getBlock("latest", false);
         record(block);
-        for (const hash of block.transactions as unknown as Hex.Hex[]) {
+        for (const hash of (trace
+          ? block.transactions
+          : []) as unknown as Hex.Hex[]) {
           // `PublicRpcSchema` does not include `debug_traceTransaction`.
           const diff = (yield* send({
             method: "debug_traceTransaction",
