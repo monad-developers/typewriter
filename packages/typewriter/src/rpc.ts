@@ -46,7 +46,7 @@ export class Rpc extends Context.Service<
     /**
      * Round-robins requests across the configured providers. Each attempt has
      * a {@link REQUEST_TIMEOUT} timeout, and retries advance to the next
-     * provider.
+     * provider. An attempt slower than {@link HEDGE_DELAY} races a second one.
      */
     request: <request extends RpcRequest>(
       request: request,
@@ -69,6 +69,8 @@ export class Rpc extends Context.Service<
 >()("typewriter/Rpc") {}
 
 const REQUEST_TIMEOUT = Duration.seconds(5);
+/** How long an attempt runs before a second one starts on the next provider. */
+const HEDGE_DELAY = Duration.seconds(1);
 const RETRY_TIMES = 8;
 const RETRY_SCHEDULE = Schedule.min([
   Schedule.exponential(Duration.millis(10)),
@@ -144,14 +146,15 @@ function makeRpc(
 
   const request = (request: RpcRequest) => {
     let attempt = 0;
+    const next = Effect.suspend(() => {
+      const transport = transports[cursor % transports.length]!;
+      cursor += 1;
+      attempt += 1;
+      return send(transport, request, attempt);
+    });
     return retry(
       request.method,
-      Effect.suspend(() => {
-        const transport = transports[cursor % transports.length]!;
-        cursor += 1;
-        attempt += 1;
-        return send(transport, request, attempt);
-      }),
+      Effect.raceFirst(next, Effect.delay(next, HEDGE_DELAY)),
     );
   };
 
