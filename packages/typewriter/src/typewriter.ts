@@ -1475,7 +1475,7 @@ export function createTypewriterEffect<
 
         yield* emitMutation(runtimeMutation);
 
-        yield* Schema.decodeUnknownEffect(
+        const decoded = yield* Schema.decodeUnknownEffect(
           executeInputSchemas.get(mutation.name)!,
         )(mutation).pipe(
           Effect.mapError(
@@ -1494,7 +1494,11 @@ export function createTypewriterEffect<
         const acceptStartedAt = yield* startTimer;
 
         yield* Queue.offer(receivedMutationQueue, {
-          mutation: runtimeMutation,
+          mutation: {
+            ...runtimeMutation,
+            params: decoded.params,
+            authorization: decoded.authorization as Authorization,
+          },
           deferred,
         });
         yield* Queue.offer(acceptSignal, undefined);

@@ -77,6 +77,23 @@ test("accepts any-case addresses, empty bytes, and coercible integers", () => {
   }
 });
 
+test("decodes integers to bigints", () => {
+  const decoded = validate(
+    { ...TYPED_PARAMS, small: "0x07", signed: -128, amount: "1000000" },
+    { ...AUTHORIZATION, credentialID: 7, nonce: "11", expiration: "0" },
+  );
+  expect(decoded.params).toMatchObject({
+    small: 7n,
+    signed: -128n,
+    amount: 1_000_000n,
+  });
+  expect(decoded.authorization).toMatchObject({
+    credentialID: 7n,
+    nonce: 11n,
+    expiration: 0n,
+  });
+});
+
 test("accepted params encode to the bytes of the canonical params", () => {
   const encode = (params: unknown) => {
     validate(params);

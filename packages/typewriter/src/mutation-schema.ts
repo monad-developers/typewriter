@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaGetter } from "effect";
 import type { AbiParameters } from "ox";
 import { AUTHORIZATION_ABI_PARAMS } from "./typewriter-constants";
 
@@ -9,8 +9,9 @@ import { AUTHORIZATION_ABI_PARAMS } from "./typewriter-constants";
  * the calldata as `bytes`, `bytesN` or `address` without checking it is hex,
  * and turns `""` or `true` into an integer.
  *
- * It only checks the shape. Whether the signature verifies, and its length
- * for the credential's key type, is the contract's to decide.
+ * It checks the shape, and decodes integers to bigints. Whether the
+ * signature verifies, and its length for the credential's key type, is the
+ * contract's to decide.
  */
 export function executeInputSchema(params: readonly AbiParameters.Parameter[]) {
   return Schema.Struct({
@@ -100,16 +101,23 @@ function integerSchema(signed: boolean, bits: number) {
   const min = signed ? -(1n << BigInt(bits - 1)) : 0n;
   const max = (1n << BigInt(signed ? bits - 1 : bits)) - 1n;
   const type = `${signed ? "int" : "uint"}${bits}`;
-  return Schema.Union([Schema.BigInt, Schema.Number, Schema.String]).check(
-    Schema.makeFilter((value) => {
-      const integer = toInteger(value);
-      if (integer === undefined) return `Expected an integer for ${type}`;
-      return (
-        (integer >= min && integer <= max) ||
-        `Expected ${type} between ${min} and ${max}`
-      );
-    }),
-  );
+  return Schema.Union([Schema.BigInt, Schema.Number, Schema.String])
+    .check(
+      Schema.makeFilter((value) => {
+        const integer = toInteger(value);
+        if (integer === undefined) return `Expected an integer for ${type}`;
+        return (
+          (integer >= min && integer <= max) ||
+          `Expected ${type} between ${min} and ${max}`
+        );
+      }),
+    )
+    .pipe(
+      Schema.decodeTo(Schema.BigInt, {
+        decode: SchemaGetter.transform((value) => toInteger(value)!),
+        encode: SchemaGetter.transform((value) => value),
+      }),
+    );
 }
 
 function toInteger(value: bigint | number | string): bigint | undefined {
