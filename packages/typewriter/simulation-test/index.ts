@@ -128,6 +128,8 @@ export type SIM = {
     applyThenErrorRate: number;
     /** How far behind the chain the endpoint's view is, in virtual time. */
     lagMs: number;
+    /** The endpoint fails every request for `durationMs`, about every `everyMs`. */
+    outages: { everyMs: number; durationMs: number };
   }[];
   db: {
     latencyMs: [number, number];
@@ -238,6 +240,19 @@ export const SIM: SIM = {
         [0, 0.01, 0.1],
       ),
       lagMs: pick(SEED, `transports.${i}.lagMs`, [0, 0, 100, 1_000]),
+      outages: {
+        everyMs: pick(SEED, `transports.${i}.outages.everyMs`, [
+          Infinity,
+          Infinity,
+          120_000,
+          600_000,
+        ]),
+        durationMs: pick(
+          SEED,
+          `transports.${i}.outages.durationMs`,
+          [2_000, 10_000, 30_000],
+        ),
+      },
     }),
   ),
   db: {

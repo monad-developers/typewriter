@@ -29,9 +29,26 @@ export function makeSimTransport({
     errorRate,
     applyThenErrorRate,
     lagMs,
+    outages,
   } = SIM.transports[index]!;
 
   const occurrences = new Map<string, number>();
+
+  const outageRandom = Effect.runSync(makeRandom(SIM.seed, `${index}:outages`));
+  const outageStarts: number[] = [];
+  const inOutage = (nowMs: number) => {
+    if (outages.everyMs === Infinity) return false;
+    while ((outageStarts.at(-1) ?? 0) <= nowMs) {
+      outageStarts.push(
+        (outageStarts.at(-1) ?? SIM.chain.genesisTimestamp * 1000) +
+          outages.durationMs +
+          outageRandom.nextDoubleUnsafe() * 2 * outages.everyMs,
+      );
+    }
+    return outageStarts.some(
+      (start) => start <= nowMs && nowMs < start + outages.durationMs,
+    );
+  };
 
   // The endpoint sees the chain as it was `lagMs` ago, but never before the
   // run started, when the contract is deployed. It fails a read of a block it
@@ -96,6 +113,13 @@ export function makeSimTransport({
       const latency = between(latencyMin, latencyMax);
       yield* Effect.sleep(Duration.millis(latency));
 
+      if (inOutage(yield* Clock.currentTimeMillis)) {
+        return yield* new RpcNetworkError({
+          method,
+          origin,
+          cause: new Error("simulated outage"),
+        });
+      }
       if (draw < errorRate) return yield* injected();
       // A node that accepts a transaction and then loses it.
       if (
