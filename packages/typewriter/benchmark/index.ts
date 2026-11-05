@@ -150,17 +150,12 @@ const benchmark = Effect.gen(function* () {
     stderr: "inherit",
   }).pipe(Effect.orDie);
 
-  const stats = Effect.tryPromise(() =>
-    fetch(`${typewriterUrl}/stats`).then(
-      (response) =>
-        response.json() as Promise<{
-          included: number;
-          unincluded: number;
-          heapMb: number;
-        }>,
+  const included = Effect.tryPromise(() =>
+    fetch(`${typewriterUrl}/included`).then(
+      (response) => response.json() as Promise<number>,
     ),
   );
-  yield* stats.pipe(
+  yield* included.pipe(
     Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
     Effect.orDie,
   );
@@ -201,22 +196,18 @@ const benchmark = Effect.gen(function* () {
 
   const steps = makeSteps(plan, signers, new Rng(plan.seed, "generator"));
   const samples: { ms: number; error?: string }[] = [];
-  let maxUnincluded = 0;
-  let latest = yield* Effect.orDie(stats);
-  // Each second: whether inclusions keep up with executes, and what the
-  // runtime holds that no transaction has included yet.
+  let sent = signers.length;
+  let latest = yield* Effect.orDie(included);
   yield* Effect.gen(function* () {
     const executed = samples.length;
     yield* Effect.sleep("1 second");
     const previous = latest;
-    latest = yield* Effect.orDie(stats);
-    maxUnincluded = Math.max(maxUnincluded, latest.unincluded);
+    latest = yield* Effect.orDie(included);
     yield* Effect.logInfo("Measured typewriter").pipe(
       Effect.annotateLogs({
         executes: samples.length - executed,
-        included: latest.included - previous.included,
-        unincluded: latest.unincluded,
-        heap_mb: latest.heapMb,
+        included: latest - previous,
+        backlog: sent - latest,
       }),
     );
   }).pipe(Effect.forever, Effect.forkScoped);
@@ -245,6 +236,7 @@ const benchmark = Effect.gen(function* () {
       continue;
     }
     for (let i = 0; i < (step.resubmit ? 2 : 1); i++) {
+      sent++;
       yield* FiberSet.run(
         executes,
         execute(mutation).pipe(Effect.map((sample) => samples.push(sample))),
@@ -252,21 +244,23 @@ const benchmark = Effect.gen(function* () {
     }
   }
   yield* FiberSet.awaitEmpty(executes);
-  const executedMs = performance.now() - start;
 
+  // A rejected execute is never included.
+  const errors = samples.filter(({ error }) => error !== undefined).length;
+  let total = yield* Effect.orDie(included);
   let progressedAt = performance.now();
-  let current = yield* Effect.orDie(stats);
-  while (current.unincluded > 0) {
+  while (total < sent - errors) {
     yield* Effect.sleep("100 millis");
-    const previous = current;
-    current = yield* Effect.orDie(stats);
-    if (current.included > previous.included) progressedAt = performance.now();
+    const previous = total;
+    total = yield* Effect.orDie(included);
+    if (total > previous) progressedAt = performance.now();
     if (performance.now() - progressedAt > plan.stallTimeoutMs) {
       return yield* Effect.die(
-        `stalled with ${current.unincluded} mutations unincluded`,
+        `stalled with ${sent - errors - total} mutations unincluded`,
       );
     }
   }
+  const includedMs = performance.now() - start;
 
   const latencies = samples.map(({ ms }) => ms).toSorted((a, b) => a - b);
   const at = (p: number) =>
@@ -274,13 +268,12 @@ const benchmark = Effect.gen(function* () {
   yield* Effect.logInfo("Benchmarked typewriter").pipe(
     Effect.annotateLogs({
       executes: samples.length,
-      errors: samples.filter(({ error }) => error !== undefined).length,
-      executes_per_second: Math.round((samples.length / executedMs) * 1000),
+      errors,
+      included_per_second: Math.round((total / includedMs) * 1000),
       execute_p50_ms: at(0.5),
       execute_p90_ms: at(0.9),
       execute_p99_ms: at(0.99),
       execute_max_ms: at(1),
-      max_unincluded: maxUnincluded,
     }),
   );
 });

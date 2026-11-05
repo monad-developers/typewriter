@@ -26,28 +26,15 @@ const typewriter = await createTypewriter(ASSESSMENT_ENTRYPOINT, {
   sequencing: plan.typewriter.ordering,
 });
 
-// Accepted mutations that no transaction has included yet.
-const unincluded = new Set<bigint>();
 let included = 0;
-typewriter.on("mutation", (event) => {
-  const { executionIndex } = event as { executionIndex?: bigint };
-  if (executionIndex === undefined) return;
-  if (event.status === "accepted") unincluded.add(executionIndex);
-  if (event.status === "included" && unincluded.delete(executionIndex)) {
-    included++;
-  }
-  if (event.status === "rejected") unincluded.delete(executionIndex);
+typewriter.on("mutation", ({ status }) => {
+  if (status === "included") included++;
 });
 
 Bun.serve({
   port,
   routes: {
-    "/stats": () =>
-      Response.json({
-        included,
-        unincluded: unincluded.size,
-        heapMb: Math.round(process.memoryUsage().heapUsed / 1e6),
-      }),
+    "/included": () => Response.json(included),
     "/execute": {
       POST: async (req) => {
         const mutation = await req.json();
