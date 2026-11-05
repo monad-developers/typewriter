@@ -41,7 +41,7 @@ export function useDemoSignUp() {
       const add = authorizeWithSecp256k1(manifest, rootPrivateKey, {
         name: "AddCredential",
         params: {
-          expiration: 0n,
+          expiration: 0,
           keyType: KeyType.P256,
           permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
           publicKey: sessionPublicKey,
@@ -49,7 +49,7 @@ export function useDemoSignUp() {
         accountID,
         credentialID: 0n,
         nonce: randomNonce(),
-        expiration: 0n,
+        expiration: 0,
       });
       await request("/api", { method: "POST", body: add });
       const stored = { accountId: accountID, keyPair };

@@ -203,7 +203,7 @@ export function App() {
         accountID: accountId,
         credentialID: 0n,
         nonce: 0n,
-        expiration: 0n,
+        expiration: 0,
       } as const satisfies TypedMutation<typeof manifest, "CreateAccount">;
       const createSignature = await signPayload(
         keyPair,
@@ -223,7 +223,7 @@ export function App() {
         accountID: accountId,
         credentialID: 0n,
         nonce: 0n,
-        expiration: BigInt(Math.floor(Date.now() / 1000) + 60),
+        expiration: Math.floor(Date.now() / 1000) + 60,
       } as const satisfies TypedMutation<typeof manifest, "Mint">;
       const mintSignature = await signPayload(
         keyPair,
@@ -276,7 +276,7 @@ export function App() {
         accountID: account.accountId,
         credentialID: 0n,
         nonce: account.nonce,
-        expiration: BigInt(Math.floor(Date.now() / 1000) + 60),
+        expiration: Math.floor(Date.now() / 1000) + 60,
       } as const satisfies TypedMutation<typeof manifest, "Transfer">;
       const transferSignature = await signPayload(
         account.keyPair,

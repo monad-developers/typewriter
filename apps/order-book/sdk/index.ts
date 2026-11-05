@@ -237,7 +237,7 @@ export function createSecp256k1Account(
     accountID,
     credentialID: 0n,
     nonce: 0n,
-    expiration: 0n,
+    expiration: 0,
   });
   return { accountID, mutation };
 }

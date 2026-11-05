@@ -30,7 +30,7 @@ export async function signMutation<const name extends OrderBookMutationName>(
     // Sign-up adds the session key after the root credential.
     credentialID: 1n,
     nonce: account.nonce,
-    expiration: 0n,
+    expiration: 0,
   };
   const signature = await signP256(
     account.keyPair,
