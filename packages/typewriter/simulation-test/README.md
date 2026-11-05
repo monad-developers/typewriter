@@ -9,7 +9,6 @@ bun simulation-test/index.ts                                    # a random seed
 SEED=0x0b bun simulation-test/index.ts                          # reproduce a seed
 SEED=0x0b bun simulation-test/index.ts --print-plan             # print its plan
 bun simulation-test/index.ts --plan simulation-test/scenarios/quiet.json  # a plan from a file
-SEEDS=0x01-0x40 bun simulation-test/index.ts                    # a sweep, in one process
 ```
 
 Each run creates its own database, dropped when the run passes and kept for inspection when it fails. `TYPEWRITER_LOG_LEVEL=debug` shows the runtime's logs.

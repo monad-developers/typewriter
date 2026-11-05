@@ -83,8 +83,6 @@ export function stepLabel({
 }
 
 /** The deployment, with a `FORCE_INCLUSION_DELAY` the runtime cannot reach. */
-let artifact: Promise<{ bytecode: { object: Hex.Hex } }> | undefined;
-
 export function deploy({
   plan,
   chain,
@@ -95,26 +93,25 @@ export function deploy({
   deployer: Address.Address;
 }): Effect.Effect<Address.Address, never, Scope.Scope> {
   return Effect.gen(function* () {
-    // Once per process, in a private build directory, so that parallel runs do not share artifacts.
-    artifact ??= mkdtemp(join(tmpdir(), "typewriter-sim-")).then(
-      async (out) => {
-        try {
-          await $`forge build --root ${ASSESSMENT_PROJECT} --out ${out}/out --cache-path ${out}/cache`.quiet();
-          return await Bun.file(
-            `${out}/out/Assessment.sol/Assessment.json`,
-          ).json();
-        } finally {
-          await rm(out, { recursive: true, force: true });
-        }
-      },
+    // A private build directory, so that parallel runs do not share artifacts.
+    const out = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "typewriter-sim-"))),
+      (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
     );
-    const { bytecode } = yield* Effect.promise(() => artifact!);
+    yield* Effect.promise(() =>
+      $`forge build --root ${ASSESSMENT_PROJECT} --out ${out}/out --cache-path ${out}/cache`.quiet(),
+    );
+    const artifact = yield* Effect.promise(() =>
+      Bun.file(`${out}/out/Assessment.sol/Assessment.json`).json(),
+    );
     const args = AbiParameters.encode(AbiParameters.from(["address"]), [
       deployer,
     ]);
     const hash = yield* chain.request({
       method: "eth_sendTransaction",
-      params: [{ from: deployer, data: Hex.concat(bytecode.object, args) }],
+      params: [
+        { from: deployer, data: Hex.concat(artifact.bytecode.object, args) },
+      ],
     });
     yield* chain.mine(plan.chain.genesisTimestamp * 1000);
     const receipt = yield* chain.request({

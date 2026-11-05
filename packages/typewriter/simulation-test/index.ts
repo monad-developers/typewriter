@@ -67,33 +67,21 @@ import { validate } from "./validate";
 /**
  * Usage: `SEED=<seed> bun simulation-test/index.ts [--plan <file>] [--print-plan]`
  *
- * Without `--plan`, the plan is generated from the seed. `SEEDS=0x01-0x40` or
- * `SEEDS=0x0b,0x49` runs each seed in turn, in one process.
+ * Without `--plan`, the plan is generated from the seed.
  */
 const args = process.argv.slice(2);
 const planFile = args.includes("--plan")
   ? args[args.indexOf("--plan") + 1]
   : undefined;
-const { SEED, SEEDS } = process.env;
+const { SEED } = process.env;
 
-function parseSeeds(spec: string): string[] {
-  return spec.split(",").flatMap((part) => {
-    const [from, to] = part.split("-");
-    if (to === undefined) return [from!];
-    return Array.from(
-      { length: Number(to) - Number(from) + 1 },
-      (_, i) => `0x${(Number(from) + i).toString(16).padStart(2, "0")}`,
-    );
-  });
-}
-
-const plans: Plan[] =
+const plan: Plan =
   planFile === undefined
-    ? (SEEDS ? parseSeeds(SEEDS) : [SEED || Hex.random(32)]).map(makePlan)
-    : [await Bun.file(planFile).json()];
+    ? makePlan(SEED || Hex.random(32))
+    : await Bun.file(planFile).json();
 
 if (args.includes("--print-plan")) {
-  for (const plan of plans) console.log(JSON.stringify(plan, null, 2));
+  console.log(JSON.stringify(plan, null, 2));
   process.exit(0);
 }
 
@@ -105,9 +93,6 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   );
   process.exit(1);
 }
-
-/** Built once per process. */
-let solidityBuild: ReturnType<typeof loadSolidityApp> | undefined;
 
 /** The first Anvil account. */
 const SCHEDULER = privateKeyToAccount(
@@ -200,8 +185,8 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     }),
   );
   const worldStart = performance.now();
-  const solidityApp = yield* Effect.promise(
-    () => (solidityBuild ??= loadSolidityApp(ASSESSMENT_ENTRYPOINT)),
+  const solidityApp = yield* Effect.promise(() =>
+    loadSolidityApp(ASSESSMENT_ENTRYPOINT),
   );
   const app = createTypewriterApp({
     ...solidityApp,
@@ -750,38 +735,19 @@ function unsettled(run: Run): string[] {
     .map(({ label }) => label);
 }
 
-const sweep = Effect.gen(function* () {
-  const failed: string[] = [];
-  for (const plan of plans) {
-    const exit = yield* simulate(plan).pipe(
-      Effect.tapCause((cause) =>
-        Effect.logError("Failed simulation", cause).pipe(
-          Effect.annotateLogs({
-            reproduce:
-              planFile === undefined
-                ? `SEED=${plan.seed} bun simulation-test/index.ts`
-                : `bun simulation-test/index.ts --plan ${planFile}`,
-          }),
-        ),
-      ),
-      Effect.scoped,
-      Effect.exit,
-    );
-    if (Exit.isFailure(exit)) failed.push(plan.seed);
-  }
-  if (plans.length > 1) {
-    yield* Effect.logInfo("Swept simulation seeds").pipe(
-      Effect.annotateLogs({
-        passed: plans.length - failed.length,
-        failed: failed.join(","),
-      }),
-    );
-  }
-  if (failed.length > 0) return yield* Effect.die(`failed seeds: ${failed}`);
-});
-
 BunRuntime.runMain(
-  sweep.pipe(
+  simulate(plan).pipe(
+    Effect.tapCause((cause) =>
+      Effect.logError("Failed simulation", cause).pipe(
+        Effect.annotateLogs({
+          reproduce:
+            planFile === undefined
+              ? `SEED=${plan.seed} bun simulation-test/index.ts`
+              : `bun simulation-test/index.ts --plan ${planFile}`,
+        }),
+      ),
+    ),
+    Effect.scoped,
     Effect.provide(Logger.layer([logger])),
     Effect.provide(BunServices.layer),
   ),
