@@ -14,7 +14,7 @@ const AUTHORIZATION = {
     "0x1111111111111111111111111111111111111111111111111111111111111111",
   credentialID: 7n,
   nonce: 11n,
-  expiration: 1_900_000_000n,
+  expiration: 1_900_000_000,
   signature: "0xdeadbeef",
 };
 
@@ -35,7 +35,7 @@ const TYPED_PARAMS = {
   tag: "0xabcd",
   to: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
   pair: ["0x", "0x01"],
-  small: 7n,
+  small: 7,
   signed: -128,
   amount: 1_000_000n,
   flag: true,
@@ -75,27 +75,23 @@ test("accepts only the names of the mutations", () => {
   }
 });
 
-test("accepts any-case addresses, empty bytes, and coercible integers", () => {
+test("accepts any-case addresses, empty bytes, and decimal strings for bigints", () => {
   expect(() => validate(TYPED_PARAMS)).not.toThrow();
-  for (const small of [7n, 7, "7", "0x07", "255"]) {
-    expect(() => validate({ ...TYPED_PARAMS, small })).not.toThrow();
+  for (const amount of [1n, "1", "-0", "007", MAX_UINT256.toString()]) {
+    expect(() => validate({ ...TYPED_PARAMS, amount })).not.toThrow();
   }
 });
 
-test("decodes integers to bigints", () => {
+test("decodes decimal strings to bigints", () => {
   const decoded = validate(
-    { ...TYPED_PARAMS, small: "0x07", signed: -128, amount: "1000000" },
-    { ...AUTHORIZATION, credentialID: 7, nonce: "11", expiration: "0" },
+    { ...TYPED_PARAMS, amount: "1000000" },
+    { ...AUTHORIZATION, credentialID: "7", nonce: "11" },
   );
-  expect(decoded.params).toMatchObject({
-    small: 7n,
-    signed: -128n,
-    amount: 1_000_000n,
-  });
+  expect(decoded.params).toMatchObject({ small: 7, amount: 1_000_000n });
   expect(decoded.authorization).toMatchObject({
     credentialID: 7n,
     nonce: 11n,
-    expiration: 0n,
+    expiration: 1_900_000_000,
   });
 });
 
@@ -110,9 +106,7 @@ test("accepted params encode to the bytes of the canonical params", () => {
   };
   const canonical = encode(TYPED_PARAMS);
   for (const params of [
-    { ...TYPED_PARAMS, small: "7", signed: "-128", amount: "1000000" },
-    { ...TYPED_PARAMS, small: "0x07", amount: "0xf4240" },
-    { ...TYPED_PARAMS, small: 7, amount: 1_000_000 },
+    { ...TYPED_PARAMS, amount: "1000000" },
     { ...TYPED_PARAMS, to: TYPED_PARAMS.to.toLowerCase(), data: "0xFF" },
     {
       ...TYPED_PARAMS,
@@ -145,33 +139,40 @@ test.each([
     { pair: ["0x", "zz"] },
     "Expected even-length hex bytes",
   ],
-  [
-    "an empty string as an integer",
-    { small: "" },
-    "Expected an integer for uint8",
-  ],
-  ["a padded integer string", { small: " 7" }, "Expected an integer for uint8"],
-  [
-    "a word as an integer",
-    { amount: "not a number" },
-    "Expected an integer for uint256",
-  ],
-  [
-    "a bool as an integer",
-    { small: true },
-    "Expected bigint | number | string",
-  ],
+  ["a string as a number", { small: "7" }, "Expected number"],
+  ["a bigint as a number", { small: 7n }, "Expected number"],
   ["a fraction", { small: 1.5 }, "Expected an integer for uint8"],
-  ["a number past 2^53", { small: 2 ** 53 }, "Expected an integer for uint8"],
   [
     "a uint8 above its range",
-    { small: 256n },
+    { small: 256 },
     "Expected uint8 between 0 and 255",
+  ],
+  ["a number as a bigint", { amount: 1_000_000 }, "Expected bigint | string"],
+  ["a bool as a bigint", { amount: true }, "Expected bigint | string"],
+  [
+    "an empty string as a bigint",
+    { amount: "" },
+    "Expected a decimal string for uint256",
+  ],
+  [
+    "a padded decimal string",
+    { amount: " 7" },
+    "Expected a decimal string for uint256",
+  ],
+  [
+    "a hex string as a bigint",
+    { amount: "0xf4240" },
+    "Expected a decimal string for uint256",
+  ],
+  [
+    "a word as a bigint",
+    { amount: "not a number" },
+    "Expected a decimal string for uint256",
   ],
   ["a negative uint8", { small: -1 }, "Expected uint8 between 0 and 255"],
   [
     "an int8 below its range",
-    { signed: -129n },
+    { signed: -129 },
     "Expected int8 between -128 and 127",
   ],
   ["a negative uint256", { amount: -1n }, "Expected uint256 between"],
@@ -224,16 +225,17 @@ test.each([
   ["accountID", "account", "Expected 32 hex bytes"],
   ["credentialID", -1n, "Expected uint64 between"],
   ["credentialID", 1n << 64n, "Expected uint64 between"],
-  ["credentialID", "zero", "Expected an integer for uint64"],
+  ["credentialID", "zero", "Expected a decimal string for uint64"],
   ["nonce", -11n, "Expected uint256 between"],
   ["nonce", 11n + (1n << 256n), "Expected uint256 between"],
-  ["nonce", "11n", "Expected an integer for uint256"],
-  ["expiration", -1n, "Expected uint40 between"],
-  ["expiration", 1n << 40n, "Expected uint40 between"],
-  ["expiration", "never", "Expected an integer for uint40"],
-  ["credentialID", undefined, "Expected bigint | number | string"],
-  ["nonce", undefined, "Expected bigint | number | string"],
-  ["expiration", undefined, "Expected bigint | number | string"],
+  ["nonce", "11n", "Expected a decimal string for uint256"],
+  ["expiration", -1, "Expected uint40 between"],
+  ["expiration", 2 ** 40, "Expected uint40 between"],
+  ["expiration", "0", "Expected number"],
+  ["expiration", 0n, "Expected number"],
+  ["credentialID", undefined, "Expected bigint | string"],
+  ["nonce", undefined, "Expected bigint | string"],
+  ["expiration", undefined, "Expected number"],
   ["signature", undefined, "Expected even-length hex bytes"],
 ])("rejects an authorization %s of %p", (field, value, message) => {
   expect(() =>
@@ -270,22 +272,19 @@ test("accepts nested structs as objects, and checks their fields", () => {
   };
 
   const canonical = encode({
-    leg: { side: 1n, price: 100n },
-    legs: [{ side: 0n, price: 5n }],
+    leg: { side: 1, price: 100n },
+    legs: [{ side: 0, price: 5n }],
   });
   expect(
-    encode({
-      leg: { side: 1, price: "100" },
-      legs: [{ side: 0, price: "0x05" }],
-    }),
+    encode({ leg: { side: 1, price: "100" }, legs: [{ side: 0, price: "5" }] }),
   ).toBe(canonical);
 
   for (const [params, message] of [
-    [{ leg: { side: 256n, price: 0n }, legs: [] }, "Expected uint8 between"],
-    [{ leg: { side: 0n }, legs: [] }, "Missing key"],
-    [{ leg: { side: 0n, price: 0n }, legs: [{ side: 0n }] }, "Missing key"],
-    [{ leg: { side: 0n, price: 0n }, legs: {} }, "Expected array"],
-    [{ leg: [1n, 100n], legs: [] }, "Expected object"],
+    [{ leg: { side: 256, price: 0n }, legs: [] }, "Expected uint8 between"],
+    [{ leg: { side: 0 }, legs: [] }, "Missing key"],
+    [{ leg: { side: 0, price: 0n }, legs: [{ side: 0 }] }, "Missing key"],
+    [{ leg: { side: 0, price: 0n }, legs: {} }, "Expected array"],
+    [{ leg: [1, 100n], legs: [] }, "Expected object"],
   ] as const) {
     expect(() => validate(params, AUTHORIZATION, nested)).toThrow(message);
   }
@@ -299,13 +298,13 @@ test("decodes built-in params, with only the protocol's key types", () => {
 
   expect(
     decode("AddCredential", {
-      expiration: "0",
+      expiration: 0,
       keyType: 2,
-      permissions: 1,
+      permissions: "1",
       publicKey: "0x03",
     }),
-  ).toEqual({ expiration: 0n, keyType: 2, permissions: 1n, publicKey: "0x03" });
-  expect(decode("RemoveCredential", { credentialID: "0x01" })).toEqual({
+  ).toEqual({ expiration: 0, keyType: 2, permissions: 1n, publicKey: "0x03" });
+  expect(decode("RemoveCredential", { credentialID: "1" })).toEqual({
     credentialID: 1n,
   });
   for (const keyType of [3, 2n, "2"]) {
@@ -345,11 +344,21 @@ test("takes what `execute` takes, and decodes to what the runtime uses", () => {
     Check<"App">["encoded"]
   >();
   expectTypeOf<Codecs["App"]["Type"]>().toEqualTypeOf<Check<"App">["type"]>();
-  expectTypeOf<Codecs["App"]["Type"]["params"]>().toEqualTypeOf<{
-    small: bigint;
+  type Params = Codecs["App"]["Type"]["params"];
+  expectTypeOf<{ [key in keyof Params]: Params[key] }>().toEqualTypeOf<{
+    small: number;
     amount: bigint;
     to: `0x${string}`;
     legs: readonly { price: bigint }[];
+  }>();
+  type ParamsInput = Codecs["App"]["Encoded"]["params"];
+  expectTypeOf<{
+    [key in keyof ParamsInput]: ParamsInput[key];
+  }>().toEqualTypeOf<{
+    small: number;
+    amount: bigint | string;
+    to: `0x${string}`;
+    legs: readonly { price: bigint | string }[];
   }>();
   expectTypeOf<Codecs["AddCredential"]["Encoded"]>().toEqualTypeOf<
     Check<"AddCredential">["encoded"]

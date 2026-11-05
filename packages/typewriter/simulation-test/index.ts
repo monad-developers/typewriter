@@ -304,7 +304,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
      * mutation as expired. The authorization must have expired by then, or
      * expire within `margin` seconds of it.
      */
-    const checkExpiry = (key: string, expiration: bigint, margin: bigint) =>
+    const checkExpiry = (key: string, expiration: number, margin: number) =>
       Effect.gen(function* () {
         const latest = yield* simChain.request({
           method: "eth_getBlockByNumber",
@@ -314,7 +314,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
           key,
           expiration,
           margin,
-          latestTimestamp: BigInt(latest!.timestamp),
+          latestTimestamp: Number(latest!.timestamp),
         });
       });
 
@@ -326,9 +326,9 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
         event.status !== "rejected"
           ? undefined
           : errorName(event.error) === "AuthorizationExpired"
-            ? 0n
+            ? 0
             : errorName(event.error) === "MutationExpiresTooSoonError"
-              ? BigInt(EXPIRATION_MARGIN)
+              ? EXPIRATION_MARGIN
               : undefined;
       if (margin !== undefined) {
         runExpiryCheck(
@@ -494,8 +494,8 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
             // The contract rejects it in every block past its expiration.
             if (
               final &&
-              expiration !== 0n &&
-              BigInt(latest.timestamp) > expiration
+              expiration !== 0 &&
+              Number(latest.timestamp) > expiration
             ) {
               break;
             }

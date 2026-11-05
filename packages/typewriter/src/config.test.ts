@@ -87,7 +87,7 @@ const AUTHORIZATION = {
   accountID: "0x01",
   credentialID: 0n,
   nonce: 0n,
-  expiration: 0n,
+  expiration: 0,
   signature: "0x02",
 } as const satisfies Authorization;
 

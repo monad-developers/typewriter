@@ -267,7 +267,7 @@ function unsigned<const name extends keyof AssessmentMutations & string>(
       ...mutation,
       accountID: signer.accountID,
       credentialID: signer.credentialID,
-      expiration: 0n,
+      expiration: 0,
     },
     "0x",
   );
@@ -347,13 +347,11 @@ export function withExpiration(
 ): Mutation<StepMutationName> {
   const { mutation } = step;
   const at = (expiresInS: number) =>
-    BigInt(
-      !Number.isFinite(expiresInS)
-        ? 0
-        : expiresInS < 0
-          ? plan.chain.genesisTimestamp - 1
-          : Math.floor(nowMs / 1000) + expiresInS,
-    );
+    !Number.isFinite(expiresInS)
+      ? 0
+      : expiresInS < 0
+        ? plan.chain.genesisTimestamp - 1
+        : Math.floor(nowMs / 1000) + expiresInS;
   return {
     ...mutation,
     ...(mutation.name === "AddCredential" && {
@@ -512,7 +510,7 @@ export function makeSteps(
           mutation: unsigned(signer, {
             name: "AddCredential",
             params: {
-              expiration: 0n,
+              expiration: 0,
               keyType,
               permissions: (1n << 256n) - 1n,
               publicKey: added.publicKey,

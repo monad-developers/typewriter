@@ -27,7 +27,7 @@ const AUTHORIZATION = {
     "0x1111111111111111111111111111111111111111111111111111111111111111",
   credentialID: 7n,
   nonce: 11n,
-  expiration: 1_900_000_000n,
+  expiration: 1_900_000_000,
   signature: "0xdeadbeef",
 } as const satisfies Authorization;
 
