@@ -676,14 +676,11 @@ export function createTypewriterEffect<
           accounts as unknown as Record<
             Hex.Hex,
             {
-              credentials: {
-                length: number;
-                [index: number]: { expiration: number };
-              };
+              credentials: { [index: number]: { expiration: number } };
             }
           >
         )[authorization.accountID]!;
-        if (authorization.credentialID >= BigInt(credentials.length)) return;
+        // Past the last credential, the view reads zeros, and revm reverts `CredentialNotFound`.
         const credentialExpiration = BigInt(
           credentials[Number(authorization.credentialID)]!.expiration,
         );
