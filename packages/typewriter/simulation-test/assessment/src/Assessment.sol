@@ -12,6 +12,7 @@ struct State {
 error InvalidScheduler();
 error AError();
 error BError();
+error CError();
 
 /// A mutation reverts when `shouldRevert` is set, so a failure depends only on the input.
 library AMutation {
@@ -42,12 +43,29 @@ library BMutation {
     }
 }
 
+/// Writes `count` slots, so a large count outgrows a settlement.
+library CMutation {
+    struct C {
+        uint256 count;
+        bool shouldRevert;
+    }
+
+    function execute(State storage state, C memory c, bytes32 accountID) internal {
+        if (c.shouldRevert) revert CError();
+        for (uint256 i = 0; i < c.count; i++) {
+            state.slots[type(uint128).max + i] = bytes32(i + 1);
+        }
+        state.accumulator = keccak256(abi.encode(state.accumulator, uint8(2), accountID, c.count));
+    }
+}
+
 contract Assessment is Typewriter {
     State internal state;
 
     enum Mutation {
         A,
-        B
+        B,
+        C
     }
 
     constructor(address _scheduler) Typewriter(_scheduler) {
@@ -60,6 +78,8 @@ contract Assessment is Typewriter {
             AMutation.execute(state, abi.decode(mutationData, (AMutation.A)), accountID);
         } else if (mutation == uint8(Mutation.B)) {
             BMutation.execute(state, abi.decode(mutationData, (BMutation.B)), accountID);
+        } else if (mutation == uint8(Mutation.C)) {
+            CMutation.execute(state, abi.decode(mutationData, (CMutation.C)), accountID);
         } else {
             revert UnknownMutation(mutation);
         }

@@ -38,7 +38,7 @@ import type { Expected } from "./run";
 import { TEMPLATES, type Template } from "./templates";
 
 /** The mutations of `Assessment.sol`, without the built-in ones. */
-export type AppMutationName = "A" | "B";
+export type AppMutationName = "A" | "B" | "C";
 
 /**
  * The `enqueue` field that a malformed step leaves empty, so that the
@@ -374,6 +374,13 @@ export function expect(step: Step): Expected {
     ? ["AuthorizationExpired", ...(tooSoon === undefined ? [] : [tooSoon])]
     : [];
   const revert = `${mutation.name}Error`;
+  if (mutation.name === "C") {
+    const errors = [
+      mutation.params.shouldRevert ? revert : "MutationTooLargeError",
+      ...expired,
+    ];
+    return { executes: false, errors, resubmissionErrors: errors };
+  }
   return mutation.params.shouldRevert
     ? {
         executes: false,

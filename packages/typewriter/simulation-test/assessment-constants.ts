@@ -287,6 +287,19 @@ export const MUTATIONS = {
       },
     ],
   },
+  C: {
+    id: 2,
+    params: [
+      {
+        name: "count",
+        type: "uint256",
+      },
+      {
+        name: "shouldRevert",
+        type: "bool",
+      },
+    ],
+  },
   CreateAccount: {
     id: 253,
     params: [
