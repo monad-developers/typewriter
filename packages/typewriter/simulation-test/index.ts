@@ -417,6 +417,7 @@ const program = Effect.gen(function* () {
 
   // What the run recorded, for `validate`.
   const run = makeRun();
+  const digest = new Bun.CryptoHasher("sha256");
   // Every mutation with events ends finalized or rejected once, and so does
   // every resubmission. The run drains when all of them have.
   const settlementsWanted =
@@ -506,6 +507,17 @@ const program = Effect.gen(function* () {
     yield* typewriter.on("block", (event) => {
       run.blockEvents.push(event);
     });
+    // A rerun of the seed must emit the same events at the same virtual times.
+    const record = (kind: string) => (event: unknown) =>
+      digest.update(
+        JSON.stringify(
+          [kind, clock.currentTimeMillisUnsafe(), event],
+          (_, v) => (typeof v === "bigint" ? v.toString() : v),
+        ),
+      );
+    yield* typewriter.on("mutation", record("mutation"));
+    yield* typewriter.on("batch", record("batch"));
+    yield* typewriter.on("block", record("block"));
     // A listener may change its event, so each must get its own copy.
     yield* typewriter.on("mutation", scribble);
     yield* typewriter.on("batch", scribble);
@@ -874,6 +886,7 @@ const program = Effect.gen(function* () {
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
+      digest: digest.digest("hex"),
       duration: Math.round(performance.now() - validateStart),
     }),
   );

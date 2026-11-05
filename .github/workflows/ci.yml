@@ -112,3 +112,11 @@ jobs:
           for seed in 0x0b 0x49 0x5b; do
             SEED=$seed bun simulation-test/index.ts
           done
+      # A rerun of a seed must emit the same events at the same virtual times.
+      - name: Simulate a seed twice
+        working-directory: packages/typewriter
+        run: |
+          first=$(SEED=0x41 bun simulation-test/index.ts 2>&1 | grep -o 'digest=[0-9a-f]*')
+          second=$(SEED=0x41 bun simulation-test/index.ts 2>&1 | grep -o 'digest=[0-9a-f]*')
+          echo "$first $second"
+          test -n "$first" && test "$first" = "$second"
