@@ -68,7 +68,7 @@ export function useSignUp() {
         accountID: accountId,
         credentialID: 0n,
         nonce: 0n,
-        expiration: 0n,
+        expiration: 0,
       } satisfies TypedMutation<OrderBookManifest, "CreateAccount">;
       const createAssertion = await ClientAuthentication.sign({
         rpId: RP_ID,
@@ -86,7 +86,7 @@ export function useSignUp() {
       const addMutation = {
         name: "AddCredential",
         params: {
-          expiration: 0n,
+          expiration: 0,
           keyType: KeyType.P256,
           permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
           publicKey: sessionPublicKey,
@@ -94,7 +94,7 @@ export function useSignUp() {
         accountID: accountId,
         credentialID: 0n,
         nonce: randomNonce(),
-        expiration: 0n,
+        expiration: 0,
       } satisfies TypedMutation<OrderBookManifest, "AddCredential">;
       const addAssertion = await ClientAuthentication.sign({
         rpId: RP_ID,

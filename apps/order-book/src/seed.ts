@@ -45,7 +45,7 @@ export async function seed(
       accountID: account.accountID,
       credentialID: 0n,
       nonce: randomNonce(),
-      expiration: 0n,
+      expiration: 0,
     });
 
   const names = Object.keys(INSTRUMENTS) as (keyof typeof INSTRUMENTS)[];

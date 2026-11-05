@@ -107,7 +107,7 @@ async function submit<const name extends OrderBookMutationName>(
     accountID: account.accountID,
     credentialID: 0n,
     nonce,
-    expiration: 0n,
+    expiration: 0,
   });
   try {
     return await post<{ executionIndex: bigint }>("/api", mutation);

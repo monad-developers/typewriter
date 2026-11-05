@@ -17,7 +17,7 @@ export type ApiMutation = {
   authorization_account_id: Hex;
   authorization_credential_id: bigint;
   authorization_nonce: bigint;
-  authorization_expiration: bigint;
+  authorization_expiration: number;
   authorization_signature: Hex;
   [column: string]: unknown;
 };
