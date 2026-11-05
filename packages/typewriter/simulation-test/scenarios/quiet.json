@@ -22,7 +22,9 @@
     "enqueueRate": 0.05,
     "resubmitRate": 0.01,
     "expirationsS": [[null, 1]],
-    "malformedRate": 0
+    "malformedRate": 0,
+    "credentialRate": 0,
+    "credentialExpirationsS": [[null, 1]]
   },
   "typewriter": {
     "blockPollingIntervalMs": 200,
