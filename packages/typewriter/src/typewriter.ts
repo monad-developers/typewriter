@@ -680,7 +680,6 @@ export function createTypewriterEffect<
             }
           >
         )[authorization.accountID]!;
-        // Past the last credential, the view reads zeros, and revm reverts `CredentialNotFound`.
         const credentialExpiration = BigInt(
           credentials[Number(authorization.credentialID)]!.expiration,
         );
