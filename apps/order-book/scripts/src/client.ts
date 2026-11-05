@@ -43,7 +43,9 @@ export function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: superjson.stringify(body),
+    body: JSON.stringify(body, (_, value) =>
+      typeof value === "bigint" ? value.toString() : value,
+    ),
   });
 }
 
