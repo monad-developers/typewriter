@@ -54,12 +54,47 @@ export type RemoveCredentialParams = {
   credentialID: bigint;
 };
 
-type MutationParams<mutationConfig extends MutationConfig> =
-  readonly AbiParameter[] extends mutationConfig["params"]
-    ? unknown
-    : AbiParametersToValue<mutationConfig["params"]>;
+/**
+ * An integer as `execute` takes it: a bigint, a safe integer, or a decimal or
+ * `0x` string. `execute` decodes it to a bigint.
+ */
+export type IntegerInput = bigint | number | string;
 
-type MutationParamsForName<
+export type AuthorizationInput = {
+  accountID: Hex.Hex;
+  credentialID: IntegerInput;
+  nonce: IntegerInput;
+  expiration: IntegerInput;
+  signature: Hex.Hex;
+};
+
+export type AddCredentialParamsInput = {
+  expiration: IntegerInput;
+  keyType: KeyType;
+  permissions: IntegerInput;
+  publicKey: Hex.Hex;
+};
+
+export type RemoveCredentialParamsInput = {
+  credentialID: IntegerInput;
+};
+
+/** `value` with each integer as `integer`. */
+type WithIntegers<value, integer> = value extends bigint | number
+  ? integer
+  : value extends object
+    ? { [key in keyof value]: WithIntegers<value[key], integer> }
+    : value;
+
+type MutationParams<
+  mutationConfig extends MutationConfig,
+  integer,
+> = readonly AbiParameter[] extends mutationConfig["params"]
+  ? unknown
+  : WithIntegers<AbiParametersToValue<mutationConfig["params"]>, integer>;
+
+/** The params of a mutation as `execute` decodes them. */
+export type MutationParamsForName<
   name extends string,
   mutationConfig extends MutationConfig,
 > = name extends "CreateAccount"
@@ -68,7 +103,19 @@ type MutationParamsForName<
     ? AddCredentialParams
     : name extends "RemoveCredential"
       ? RemoveCredentialParams
-      : MutationParams<mutationConfig>;
+      : MutationParams<mutationConfig, bigint>;
+
+/** The params of a mutation as `execute` takes them. */
+export type MutationParamsInputForName<
+  name extends string,
+  mutationConfig extends MutationConfig,
+> = name extends "CreateAccount"
+  ? CreateAccountParams
+  : name extends "AddCredential"
+    ? AddCredentialParamsInput
+    : name extends "RemoveCredential"
+      ? RemoveCredentialParamsInput
+      : MutationParams<mutationConfig, IntegerInput>;
 
 export type TypewriterMutation<
   name extends string = string,
@@ -83,10 +130,11 @@ export type TypewriterMutationInput<
   mutationsConfig extends Record<string, MutationConfig>,
   name extends keyof mutationsConfig & string = keyof mutationsConfig & string,
 > = {
-  [name in keyof mutationsConfig & string]: TypewriterMutation<
-    name,
-    mutationsConfig[name]
-  >;
+  [name in keyof mutationsConfig & string]: {
+    name: name;
+    params: MutationParamsInputForName<name, mutationsConfig[name]>;
+    authorization: AuthorizationInput;
+  };
 }[name];
 
 export type TypewriterMutationResult = { executionIndex: bigint };

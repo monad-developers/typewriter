@@ -47,6 +47,18 @@ export class UnknownMutationError extends Data.TaggedError(
   }
 }
 
+/** `execute` got params or an authorization that its mutation does not take. */
+export class InvalidMutationError extends Data.TaggedError(
+  "InvalidMutationError",
+)<{
+  mutation: string;
+  cause: unknown;
+}> {
+  override get message() {
+    return `Invalid '${this.mutation}' mutation`;
+  }
+}
+
 export class EncodeMutationError extends Data.TaggedError(
   "EncodeMutationError",
 )<{
@@ -267,6 +279,7 @@ export type ExecuteMutationError =
 /** Why `execute` did not accept a mutation. */
 export type ExecuteError =
   | UnknownMutationError
+  | InvalidMutationError
   | ExecuteMutationError
   | TypewriterStoppedError;
 
