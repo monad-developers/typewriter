@@ -17,7 +17,7 @@
   "generator": {
     "accounts": ["Secp256k1", "P256", "WebAuthnP256"],
     "mutations": 20000,
-    "delaysMs": [[1, 1]],
+    "delaysMs": [[0.25, 1]],
     "revertRate": 0,
     "enqueueRate": 0,
     "resubmitRate": 0,

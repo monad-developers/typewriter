@@ -9,6 +9,7 @@ import {
   FiberSet,
   Logger,
   Schedule,
+  Semaphore,
 } from "effect";
 import { ChildProcess } from "effect/process";
 import { Hex } from "ox";
@@ -67,9 +68,11 @@ const benchmark = Effect.gen(function* () {
   const address = yield* deploy({ plan, chain, deployer: scheduler.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.gen(function* () {
-    yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
     yield* chain.mine(yield* Clock.currentTimeMillis);
-  }).pipe(Effect.forever, Effect.forkScoped);
+  }).pipe(
+    Effect.repeat(Schedule.fixed(Duration.millis(plan.chain.blockTimeMs))),
+    Effect.forkScoped,
+  );
 
   // Each of the plan's transports, with its faults, at `/<index>`.
   const transports = plan.transports.map((_, index) =>
@@ -194,7 +197,24 @@ const benchmark = Effect.gen(function* () {
     }
   }
 
-  const steps = makeSteps(plan, signers, new Rng(plan.seed, "generator"));
+  // Signed up front, so that signing does not slow the sends. Each expires
+  // from when it is due to be sent.
+  const signedAt = yield* Clock.currentTimeMillis;
+  let dueMs = 0;
+  const steps = makeSteps(plan, signers, new Rng(plan.seed, "generator")).map(
+    (step) => {
+      dueMs += step.delayMs;
+      return {
+        step,
+        dueMs,
+        mutation: sign(
+          manifest,
+          step.signer,
+          withExpiration(plan, step, signedAt + dueMs),
+        ),
+      };
+    },
+  );
   const samples: { ms: number; error?: string }[] = [];
   let sent = signers.length;
   let latest = yield* Effect.orDie(included);
@@ -213,14 +233,13 @@ const benchmark = Effect.gen(function* () {
   }).pipe(Effect.forever, Effect.forkScoped);
 
   const executes = yield* FiberSet.make();
+  // Bun sends at most 256 requests at once, and the chain's share that limit.
+  const inFlight = yield* Semaphore.make(240);
   const start = performance.now();
-  for (const step of steps) {
-    yield* Effect.sleep(Duration.millis(step.delayMs));
-    const mutation = sign(
-      manifest,
-      step.signer,
-      withExpiration(plan, step, yield* Clock.currentTimeMillis),
-    );
+  for (const { step, dueMs, mutation } of steps) {
+    // Sent on schedule, and at once when behind it.
+    const aheadMs = start + dueMs - performance.now();
+    if (aheadMs > 0) yield* Effect.sleep(Duration.millis(aheadMs));
     if (step.via === "enqueue") {
       yield* chain.request({
         method: "eth_sendTransaction",
@@ -237,9 +256,13 @@ const benchmark = Effect.gen(function* () {
     }
     for (let i = 0; i < (step.resubmit ? 2 : 1); i++) {
       sent++;
+      yield* Semaphore.take(inFlight, 1);
       yield* FiberSet.run(
         executes,
-        execute(mutation).pipe(Effect.map((sample) => samples.push(sample))),
+        execute(mutation).pipe(
+          Effect.map((sample) => samples.push(sample)),
+          Effect.ensuring(Semaphore.release(inFlight, 1)),
+        ),
       );
     }
   }
