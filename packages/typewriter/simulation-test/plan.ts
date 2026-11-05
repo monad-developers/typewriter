@@ -91,33 +91,34 @@ export type TransportPlan = {
 };
 
 export function makePlan(seed: string): Plan {
-  const rng = new Rng(seed, "plan");
+  // Each field draws from its own generator, so a new draw shifts no other field.
+  const at = (path: string) => new Rng(seed, `plan:${path}`);
 
-  const chainRng = rng.fork("chain");
   // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
-  const reorgRate = chainRng.pick([0]);
+  const reorgRate = at("chain.reorgRate").pick([0]);
   const chain: Plan["chain"] = {
-    blockTimeMs: chainRng.pick([100, 300, 400, 1_000]),
+    blockTimeMs: at("chain.blockTimeMs").pick([100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,
     reorgRate,
-    dropRate: reorgRate === 0 ? 0 : chainRng.pick([0, 0.05, 0.25]),
-    sendDropRate: chainRng.pick([0, 0.05, 0.2]),
-    finalizedBlockDepth: chainRng.int(1, 5),
+    dropRate: reorgRate === 0 ? 0 : at("chain.dropRate").pick([0, 0.05, 0.25]),
+    sendDropRate: at("chain.sendDropRate").pick([0, 0.05, 0.2]),
+    finalizedBlockDepth: at("chain.finalizedBlockDepth").int(1, 5),
   };
 
-  const generatorRng = rng.fork("generator");
+  const accounts = at("generator.accounts");
+  const mutations = at("generator.mutations");
   const generator: Plan["generator"] = {
-    accounts: Array.from({ length: generatorRng.int(1, 6) }, () =>
-      generatorRng.pick(["Secp256k1", "P256", "WebAuthnP256"] as const),
+    accounts: Array.from({ length: accounts.int(1, 6) }, () =>
+      accounts.pick(["Secp256k1", "P256", "WebAuthnP256"] as const),
     ),
     // A burst of a few hundred mutations outgrows the transaction gas cap
     // and splits into several settlements.
-    mutations: generatorRng.weighted([
-      [generatorRng.int(4, 50), 3],
-      [generatorRng.int(51, 400), 3],
-      [generatorRng.int(401, 2000), 1],
+    mutations: mutations.weighted([
+      [mutations.int(4, 50), 3],
+      [mutations.int(51, 400), 3],
+      [mutations.int(401, 2000), 1],
     ]),
-    delaysMs: generatorRng.pick([
+    delaysMs: at("generator.delaysMs").pick([
       [[0, 1]],
       // Clumps across many blocks, so enqueues land while batches still fill.
       [
@@ -144,9 +145,9 @@ export function makePlan(seed: string): Plan {
         [1_000, 1],
       ],
     ] as Weighted<number>[]),
-    revertRate: generatorRng.pick([0, 0.01, 0.05, 0.1]),
-    enqueueRate: generatorRng.pick([0, 0.01, 0.05, 0.1]),
-    resubmitRate: generatorRng.pick([0, 0.01, 0.1, 1]),
+    revertRate: at("generator.revertRate").pick([0, 0.01, 0.05, 0.1]),
+    enqueueRate: at("generator.enqueueRate").pick([0, 0.01, 0.05, 0.1]),
+    resubmitRate: at("generator.resubmitRate").pick([0, 0.01, 0.1, 1]),
     expirationsS: [
       [-1, 1],
       [0, 1],
@@ -155,18 +156,19 @@ export function makePlan(seed: string): Plan {
       [EXPIRATION_MARGIN + 2, 1],
       [null, 20],
     ],
-    malformedRate: generatorRng.pick([0, 0.01, 0.05, 0.2]),
+    malformedRate: at("generator.malformedRate").pick([0, 0.01, 0.05, 0.2]),
   };
 
-  const typewriterRng = rng.fork("typewriter");
   const typewriter: Plan["typewriter"] = {
-    blockPollingIntervalMs: typewriterRng.pick([50, 200, 1_000]),
-    ordering: typewriterRng.bool()
+    blockPollingIntervalMs: at("typewriter.blockPollingIntervalMs").pick([
+      50, 200, 1_000,
+    ]),
+    ordering: at("typewriter.ordering").bool()
       ? { order: "fifo" }
       : {
           order: "batch",
-          batchIntervalMs: typewriterRng.pick([10, 50, 300]),
-          batchOrder: typewriterRng.pick([
+          batchIntervalMs: at("typewriter.batchIntervalMs").pick([10, 50, 300]),
+          batchOrder: at("typewriter.batchOrder").pick([
             ["A", "B"],
             ["B", "A"],
           ] as (["A", "B"] | ["B", "A"])[]),
@@ -175,50 +177,48 @@ export function makePlan(seed: string): Plan {
 
   const transports = Array.from(
     {
-      length: rng.weighted([
+      length: at("transports.length").weighted([
         [1, 2],
         [2, 2],
         [3, 1],
       ] as Weighted<number>),
     },
     (_, i): TransportPlan => {
-      const r = rng.fork(`transport:${i}`);
+      const field = (name: string) => at(`transports.${i}.${name}`);
       return {
-        latencyMs: r.pick([
+        latencyMs: field("latencyMs").pick([
           [1, 5],
           [5, 50],
           [50, 500],
         ] as [number, number][]),
-        errorRate: r.pick([0, 0.01, 0.1]),
-        applyThenErrorRate: r.pick([0, 0.01, 0.1]),
-        lagMs: r.pick([0, 0, 100, 1_000]),
-        slowRate: r.pick([0, 0.01, 0.05]),
+        errorRate: field("errorRate").pick([0, 0.01, 0.1]),
+        applyThenErrorRate: field("applyThenErrorRate").pick([0, 0.01, 0.1]),
+        lagMs: field("lagMs").pick([0, 0, 100, 1_000]),
+        slowRate: field("slowRate").pick([0, 0.01, 0.05]),
       };
     },
   );
 
-  const dbRng = rng.fork("db");
   const db: Plan["db"] = {
-    latencyMs: dbRng.pick([
+    latencyMs: at("db.latencyMs").pick([
       [0, 1],
       [1, 10],
       [10, 100],
     ] as [number, number][]),
-    errorRate: dbRng.pick([0, 0.01, 0.05]),
+    errorRate: at("db.errorRate").pick([0, 0.01, 0.05]),
   };
 
-  const schedulerRng = rng.fork("scheduler");
   return {
     seed,
     stallTimeoutMs: 300_000,
     scheduler: {
-      jumpRate: schedulerRng.pick([0, 0.0001, 0.001]),
+      jumpRate: at("scheduler.jumpRate").pick([0, 0.0001, 0.001]),
       // The long jump passes the latest finite expiration, `EXPIRATION_MARGIN + 2`.
       jumpsMs: [
         [0, 3],
         [(EXPIRATION_MARGIN + 3) * 1_000, 1],
       ],
-      ioRate: schedulerRng.pick([0, 0.01, 0.1]),
+      ioRate: at("scheduler.ioRate").pick([0, 0.01, 0.1]),
     },
     chain,
     generator,

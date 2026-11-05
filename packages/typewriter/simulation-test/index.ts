@@ -80,10 +80,7 @@ const plan: Plan =
     ? makePlan(SEED || Hex.random(32))
     : await Bun.file(planFile).json();
 
-if (args.includes("--print-plan")) {
-  console.log(JSON.stringify(plan, null, 2));
-  process.exit(0);
-}
+if (args.includes("--print-plan")) console.log(JSON.stringify(plan, null, 2));
 
 // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
 const DATABASE_URL = process.env["DATABASE_URL"];

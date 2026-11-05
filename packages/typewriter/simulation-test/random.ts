@@ -108,11 +108,6 @@ export class Rng {
     return result;
   }
 
-  /** A child generator for `domain`. */
-  fork(domain: string): Rng {
-    return new Rng(`${this.int(0, 2 ** 31)}`, domain);
-  }
-
   /** The generator as the `Random` service of Effect. */
   toRandom(): Random.Random {
     return {

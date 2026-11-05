@@ -7,7 +7,7 @@ Requires Bun, Foundry (`anvil`, `forge`), the `typewriter-evm` addon (`bun run -
 ```sh
 bun simulation-test/index.ts                                    # a random seed
 SEED=0x0b bun simulation-test/index.ts                          # reproduce a seed
-SEED=0x0b bun simulation-test/index.ts --print-plan             # print its plan
+SEED=0x0b bun simulation-test/index.ts --print-plan             # print its plan, then run it
 bun simulation-test/index.ts --plan simulation-test/scenarios/quiet.json  # a plan from a file
 ```
 
