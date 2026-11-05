@@ -1156,8 +1156,8 @@ export function createTypewriterEffect<
         yield* Queue.offer(sendSignal, undefined);
       });
 
-    // Records where our transactions in `block` landed, in order.
-    const land = (block: LocalBlock) =>
+    // Ahead of `land`, which takes blocks one at a time.
+    const requestLanded = (block: LocalBlock) =>
       Effect.gen(function* () {
         const sentByHash = new Map(
           settlements
@@ -1175,7 +1175,15 @@ export function createTypewriterEffect<
           (settlement) => requestReceipt(settlement.hash, block),
           { concurrency: "unbounded" },
         );
+        return { landed, receipts };
+      });
 
+    // Records where our transactions in `block` landed, in order.
+    const land = (
+      block: LocalBlock,
+      { landed, receipts }: Effect.Success<ReturnType<typeof requestLanded>>,
+    ) =>
+      Effect.gen(function* () {
         yield* withStateLock(
           Effect.gen(function* () {
             const runtimeBlock: RuntimeBlock = {
@@ -1351,7 +1359,18 @@ export function createTypewriterEffect<
         if (number > latest.number) latest = { number, timestamp };
       },
     }).pipe(
-      Stream.runForEach((message) =>
+      Stream.mapEffect(
+        (message) =>
+          Effect.gen(function* () {
+            const landed =
+              message._tag === "Added"
+                ? yield* requestLanded(message.block)
+                : undefined;
+            return { message, landed };
+          }),
+        { concurrency: WATCH_BUFFER_SIZE },
+      ),
+      Stream.runForEach(({ message, landed }) =>
         Effect.gen(function* () {
           if (message._tag === "Finalized") {
             return yield* finalize(message.block.number);
@@ -1402,7 +1421,7 @@ export function createTypewriterEffect<
           };
           if (blockContext.number >= latest.number) latest = blockContext;
           yield* replayEnqueues(message.block);
-          yield* land(message.block);
+          yield* land(message.block, landed!);
           yield* rebroadcast(message.block);
         }),
       ),
