@@ -1,8 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, expectTypeOf, test } from "bun:test";
 import { Schema } from "effect";
 import type { AbiParameters } from "ox";
 import { encodeMutationCalldata } from "./encoding";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
+import { BUILTIN_MUTATIONS } from "./typewriter-constants";
+import type {
+  TypewriterMutation,
+  TypewriterMutationInput,
+} from "./typewriter-types";
 
 const AUTHORIZATION = {
   accountID:
@@ -43,7 +48,7 @@ function validate(
   authorization: unknown = AUTHORIZATION,
   abi: readonly AbiParameters.Parameter[] = TYPED,
 ) {
-  return Schema.decodeUnknownSync(executeInputSchema(abi))({
+  return Schema.decodeUnknownSync(executeInputSchema("App", abi))({
     params,
     authorization,
   });
@@ -109,7 +114,6 @@ test("accepted params encode to the bytes of the canonical params", () => {
     { ...TYPED_PARAMS, small: "0x07", amount: "0xf4240" },
     { ...TYPED_PARAMS, small: 7, amount: 1_000_000 },
     { ...TYPED_PARAMS, to: TYPED_PARAMS.to.toLowerCase(), data: "0xFF" },
-    Object.values(TYPED_PARAMS),
     {
       ...TYPED_PARAMS,
       extra: 1n,
@@ -180,10 +184,16 @@ test.each([
   expect(() => validate({ ...TYPED_PARAMS, ...change })).toThrow(message);
 });
 
-test("rejects params missing a field, or not an object or array", () => {
+test("rejects params missing a field, or not an object", () => {
   const { amount: _, ...missing } = TYPED_PARAMS;
   expect(() => validate(missing)).toThrow("Missing key");
-  for (const params of [null, undefined, "params", 7]) {
+  for (const params of [
+    null,
+    undefined,
+    "params",
+    7,
+    Object.values(TYPED_PARAMS),
+  ]) {
     expect(() => validate(params)).toThrow();
   }
 });
@@ -224,7 +234,7 @@ test.each([
   ["credentialID", undefined, "Expected bigint | number | string"],
   ["nonce", undefined, "Expected bigint | number | string"],
   ["expiration", undefined, "Expected bigint | number | string"],
-  ["signature", undefined, "Expected string"],
+  ["signature", undefined, "Expected even-length hex bytes"],
 ])("rejects an authorization %s of %p", (field, value, message) => {
   expect(() =>
     validate(TYPED_PARAMS, { ...AUTHORIZATION, [field]: value }),
@@ -241,7 +251,7 @@ test("rejects an authorization missing a field, or not an object", () => {
   expect(() => validate(TYPED_PARAMS, Object.values(AUTHORIZATION))).toThrow();
 });
 
-test("accepts nested structs as objects or arrays, and checks their fields", () => {
+test("accepts nested structs as objects, and checks their fields", () => {
   const leg = [
     { name: "side", type: "uint8" },
     { name: "price", type: "uint128" },
@@ -263,17 +273,88 @@ test("accepts nested structs as objects or arrays, and checks their fields", () 
     leg: { side: 1n, price: 100n },
     legs: [{ side: 0n, price: 5n }],
   });
-  expect(encode([[1, "100"], [[0, "0x05"]]])).toBe(canonical);
-  expect(encode({ leg: [1n, 100n], legs: [{ side: 0n, price: 5n }] })).toBe(
-    canonical,
-  );
+  expect(
+    encode({
+      leg: { side: 1, price: "100" },
+      legs: [{ side: 0, price: "0x05" }],
+    }),
+  ).toBe(canonical);
 
   for (const [params, message] of [
     [{ leg: { side: 256n, price: 0n }, legs: [] }, "Expected uint8 between"],
     [{ leg: { side: 0n }, legs: [] }, "Missing key"],
     [{ leg: { side: 0n, price: 0n }, legs: [{ side: 0n }] }, "Missing key"],
     [{ leg: { side: 0n, price: 0n }, legs: {} }, "Expected array"],
+    [{ leg: [1n, 100n], legs: [] }, "Expected object"],
   ] as const) {
     expect(() => validate(params, AUTHORIZATION, nested)).toThrow(message);
   }
+});
+
+test("decodes built-in params, with only the protocol's key types", () => {
+  const decode = (name: keyof typeof BUILTIN_MUTATIONS, params: unknown) =>
+    Schema.decodeUnknownSync(
+      executeInputSchema(name, BUILTIN_MUTATIONS[name].params),
+    )({ params, authorization: AUTHORIZATION }).params;
+
+  expect(
+    decode("AddCredential", {
+      expiration: "0",
+      keyType: 2,
+      permissions: 1,
+      publicKey: "0x03",
+    }),
+  ).toEqual({ expiration: 0n, keyType: 2, permissions: 1n, publicKey: "0x03" });
+  expect(decode("RemoveCredential", { credentialID: "0x01" })).toEqual({
+    credentialID: 1n,
+  });
+  for (const keyType of [3, 2n, "2"]) {
+    expect(() =>
+      decode("CreateAccount", { keyType, publicKey: "0x03" }),
+    ).toThrow();
+  }
+});
+
+test("takes what `execute` takes, and decodes to what the runtime uses", () => {
+  const MUTATIONS = {
+    ...BUILTIN_MUTATIONS,
+    App: {
+      params: [
+        { name: "small", type: "uint8" },
+        { name: "amount", type: "uint256" },
+        { name: "to", type: "address" },
+        {
+          name: "legs",
+          type: "tuple[]",
+          components: [{ name: "price", type: "uint128" }],
+        },
+      ],
+    },
+  } as const;
+  type Codecs = {
+    [name in keyof typeof MUTATIONS]: ReturnType<
+      typeof executeInputSchema<name, (typeof MUTATIONS)[name]["params"]>
+    >;
+  };
+  type Check<name extends keyof typeof MUTATIONS> = {
+    encoded: Omit<TypewriterMutationInput<typeof MUTATIONS, name>, "name">;
+    type: Omit<TypewriterMutation<name, (typeof MUTATIONS)[name]>, "name">;
+  };
+
+  expectTypeOf<Codecs["App"]["Encoded"]>().toEqualTypeOf<
+    Check<"App">["encoded"]
+  >();
+  expectTypeOf<Codecs["App"]["Type"]>().toEqualTypeOf<Check<"App">["type"]>();
+  expectTypeOf<Codecs["App"]["Type"]["params"]>().toEqualTypeOf<{
+    small: bigint;
+    amount: bigint;
+    to: `0x${string}`;
+    legs: readonly { price: bigint }[];
+  }>();
+  expectTypeOf<Codecs["AddCredential"]["Encoded"]>().toEqualTypeOf<
+    Check<"AddCredential">["encoded"]
+  >();
+  expectTypeOf<Codecs["AddCredential"]["Type"]>().toEqualTypeOf<
+    Check<"AddCredential">["type"]
+  >();
 });

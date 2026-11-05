@@ -82,6 +82,7 @@ import {
   EnqueueRevertedError,
   type ExecuteError,
   type ExecuteMutationError,
+  InvalidMutationError,
   MutationExpiresTooSoonError,
   MutationHaltedError,
   MutationRevertedError,
@@ -100,7 +101,7 @@ import {
 } from "./typewriter-errors";
 import type {
   AcceptedMutation,
-  Authorization,
+  AuthorizationInput,
   BatchEvent,
   BatchListener,
   BlockEvent,
@@ -173,7 +174,7 @@ const STUCK_BLOCKS = 300n;
 type RuntimeExecuteInput = {
   name: string;
   params: unknown;
-  authorization: Authorization;
+  authorization: AuthorizationInput;
 };
 
 /** Resolves once a mutation executes. Its row commits later, at `committed`. */
@@ -536,7 +537,7 @@ export function createTypewriterEffect<
     const executeInputSchemas = new Map(
       Object.entries(app.mutations).map(([name, config]) => [
         name,
-        executeInputSchema(config.params),
+        executeInputSchema(name, config.params),
       ]),
     );
     const batchOrderByName = new Map(
@@ -1458,10 +1459,19 @@ export function createTypewriterEffect<
           return yield* new UnknownMutationError({ mutation: mutation.name });
         }
 
+        const { params, authorization } = yield* Schema.decodeUnknownEffect(
+          executeInputSchemas.get(mutation.name)!,
+        )(mutation).pipe(
+          Effect.mapError(
+            (cause) =>
+              new InvalidMutationError({ mutation: mutation.name, cause }),
+          ),
+        );
+
         const runtimeMutation = {
           name: mutation.name,
-          params: mutation.params,
-          authorization: mutation.authorization,
+          params,
+          authorization,
           status: "received",
           config: app.mutations[mutation.name]!,
         } as const satisfies ReceivedMutation;
@@ -1475,18 +1485,6 @@ export function createTypewriterEffect<
 
         yield* emitMutation(runtimeMutation);
 
-        const decoded = yield* Schema.decodeUnknownEffect(
-          executeInputSchemas.get(mutation.name)!,
-        )(mutation).pipe(
-          Effect.mapError(
-            (cause) =>
-              new EncodeMutationError({ mutation: runtimeMutation, cause }),
-          ),
-          Effect.tapError((error) =>
-            emitMutation(updateMutationToRejected(runtimeMutation, error)),
-          ),
-        );
-
         const deferred = yield* Deferred.make<
           { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
           ExecuteMutationError
@@ -1494,11 +1492,7 @@ export function createTypewriterEffect<
         const acceptStartedAt = yield* startTimer;
 
         yield* Queue.offer(receivedMutationQueue, {
-          mutation: {
-            ...runtimeMutation,
-            params: decoded.params,
-            authorization: decoded.authorization as Authorization,
-          },
+          mutation: runtimeMutation,
           deferred,
         });
         yield* Queue.offer(acceptSignal, undefined);

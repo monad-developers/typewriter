@@ -1,23 +1,48 @@
+import type { AbiParameter } from "abitype";
 import { Effect, Schema, SchemaGetter, SchemaIssue } from "effect";
-import type { AbiParameters } from "ox";
-import { AUTHORIZATION_ABI_PARAMS } from "./typewriter-constants";
+import type { Hex } from "ox";
+import { KeyType } from "./typewriter-constants";
+import type {
+  Authorization,
+  AuthorizationInput,
+  MutationParamsForName,
+  MutationParamsInputForName,
+} from "./typewriter-types";
 
 /**
- * The schema of an `execute` input for a mutation with `params`. A value
- * that passes encodes with `ox` to the bytes it means. Without it, `ox`
- * encodes a missing or non-string `string` as text, copies any string into
- * the calldata as `bytes`, `bytesN` or `address` without checking it is hex,
- * and turns `""` or `true` into an integer.
+ * The schema of an `execute` input for the mutation `name` with `params`. It
+ * decodes a `TypewriterMutationInput` to a `TypewriterMutation`, with each
+ * integer as a bigint, and encodes with `ox` to the bytes it means. Without
+ * it, `ox` encodes a missing or non-string `string` as text, copies any
+ * string into the calldata as `bytes`, `bytesN` or `address` without checking
+ * it is hex, and turns `""` or `true` into an integer.
  *
- * It checks the shape, and decodes integers to bigints. Whether the
- * signature verifies, and its length for the credential's key type, is the
- * contract's to decide.
+ * Whether the signature verifies, and its length for the credential's key
+ * type, is the contract's to decide.
  */
-export function executeInputSchema(params: readonly AbiParameters.Parameter[]) {
+export function executeInputSchema<
+  const name extends string,
+  const params extends readonly AbiParameter[],
+>(
+  name: name,
+  params: params,
+): Schema.Codec<
+  {
+    params: MutationParamsForName<name, { params: params }>;
+    authorization: Authorization;
+  },
+  {
+    params: MutationParamsInputForName<name, { params: params }>;
+    authorization: AuthorizationInput;
+  }
+> {
+  // An app's `params` are only known at runtime, so their types are too.
   return Schema.Struct({
-    params: tupleSchema(params),
+    params: Object.hasOwn(BUILTIN_PARAMS_SCHEMAS, name)
+      ? BUILTIN_PARAMS_SCHEMAS[name as keyof typeof BUILTIN_PARAMS_SCHEMAS]
+      : tupleSchema(params),
     authorization: AUTHORIZATION_SCHEMA,
-  });
+  }) as never;
 }
 
 /**
@@ -32,7 +57,7 @@ export function mutationNameGuard(names: readonly string[]) {
 type Codec = Schema.Codec<unknown, unknown, never, never>;
 
 /** A value of `param`, in a shape `ox` encodes. */
-function abiParameterSchema(param: AbiParameters.Parameter): Codec {
+function abiParameterSchema(param: AbiParameter): Codec {
   const array = /^(.*)\[(\d*)\]$/.exec(param.type);
   if (array !== null) {
     const items = Schema.Array(
@@ -44,23 +69,16 @@ function abiParameterSchema(param: AbiParameters.Parameter): Codec {
   }
   if (param.type === "tuple") {
     const { components } = param as {
-      components: readonly AbiParameters.Parameter[];
+      components: readonly AbiParameter[];
     };
     return tupleSchema(components);
   }
   if (param.type === "bool") return Schema.Boolean;
   if (param.type === "string") return Schema.String;
-  if (param.type === "address") {
-    return matching(/^0x[0-9a-fA-F]{40}$/, "an address");
-  }
+  if (param.type === "address") return ADDRESS_SCHEMA;
   const bytes = /^bytes(\d*)$/.exec(param.type);
   if (bytes !== null) {
-    return bytes[1] === ""
-      ? matching(/^0x(?:[0-9a-fA-F]{2})*$/, "even-length hex bytes")
-      : matching(
-          new RegExp(`^0x[0-9a-fA-F]{${2 * Number(bytes[1])}}$`),
-          `${bytes[1]} hex bytes`,
-        );
+    return bytes[1] === "" ? BYTES_SCHEMA : bytesNSchema(Number(bytes[1]));
   }
   const integer = /^(u?)int(\d*)$/.exec(param.type);
   if (integer !== null) {
@@ -69,14 +87,11 @@ function abiParameterSchema(param: AbiParameters.Parameter): Codec {
   throw new Error(`unsupported ABI type ${param.type}`);
 }
 
-/** A tuple, as an object by component name, or an array by position. */
-function tupleSchema(components: readonly AbiParameters.Parameter[]) {
-  const positional = Schema.Tuple(components.map(abiParameterSchema));
-  if (components.some(({ name }) => !name)) return positional;
-  return Schema.Union([structSchema(components), positional]);
-}
-
-function structSchema(components: readonly AbiParameters.Parameter[]) {
+/** A tuple, as an object by component name, or an array by position if a component has no name. */
+function tupleSchema(components: readonly AbiParameter[]): Codec {
+  if (components.some(({ name }) => !name)) {
+    return Schema.Tuple(components.map(abiParameterSchema));
+  }
   return Schema.Struct(
     Object.fromEntries(
       components.map((component) => [
@@ -86,9 +101,6 @@ function structSchema(components: readonly AbiParameters.Parameter[]) {
     ),
   );
 }
-
-// An object only: the encoder spreads it.
-const AUTHORIZATION_SCHEMA = structSchema(AUTHORIZATION_ABI_PARAMS);
 
 const INTEGER_STRING = /^(?:-?\d+|0x[0-9a-fA-F]+)$/;
 
@@ -139,8 +151,54 @@ function toInteger(value: bigint | number | string): bigint | undefined {
   return INTEGER_STRING.test(value) ? BigInt(value) : undefined;
 }
 
-function matching(pattern: RegExp, expected: string) {
-  return Schema.String.check(
-    Schema.makeFilter((value) => pattern.test(value) || `Expected ${expected}`),
+function hexSchema(pattern: RegExp, expected: string) {
+  return Schema.declare(
+    (value): value is Hex.Hex =>
+      typeof value === "string" && pattern.test(value),
+    { expected },
   );
 }
+
+const ADDRESS_SCHEMA = hexSchema(/^0x[0-9a-fA-F]{40}$/, "an address");
+
+const BYTES_SCHEMA = hexSchema(
+  /^0x(?:[0-9a-fA-F]{2})*$/,
+  "even-length hex bytes",
+);
+
+function bytesNSchema(size: number) {
+  return hexSchema(
+    new RegExp(`^0x[0-9a-fA-F]{${2 * size}}$`),
+    `${size} hex bytes`,
+  );
+}
+
+const KEY_TYPE_SCHEMA = Schema.Literals([
+  KeyType.P256,
+  KeyType.WebAuthnP256,
+  KeyType.Secp256k1,
+]);
+
+const AUTHORIZATION_SCHEMA = Schema.Struct({
+  accountID: bytesNSchema(32),
+  credentialID: integerSchema(false, 64),
+  nonce: integerSchema(false, 256),
+  expiration: integerSchema(false, 40),
+  signature: BYTES_SCHEMA,
+});
+
+const BUILTIN_PARAMS_SCHEMAS = {
+  CreateAccount: Schema.Struct({
+    keyType: KEY_TYPE_SCHEMA,
+    publicKey: BYTES_SCHEMA,
+  }),
+  AddCredential: Schema.Struct({
+    expiration: integerSchema(false, 40),
+    keyType: KEY_TYPE_SCHEMA,
+    permissions: integerSchema(false, 256),
+    publicKey: BYTES_SCHEMA,
+  }),
+  RemoveCredential: Schema.Struct({
+    credentialID: integerSchema(false, 64),
+  }),
+};
