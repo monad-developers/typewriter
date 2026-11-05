@@ -61,6 +61,10 @@ export type Plan = {
     expirationsS: Weighted<number | null>;
     /** How often a step enqueues bytes the contract cannot decode. */
     malformedRate: number;
+    /** How often a step adds or removes a credential, and how often an `execute` signs with a later one. */
+    credentialRate: number;
+    /** The seconds from an `AddCredential`'s submission to its credential's expiration, as in `expirationsS`. */
+    credentialExpirationsS: Weighted<number | null>;
   };
   typewriter: {
     blockPollingIntervalMs: number;
@@ -157,6 +161,13 @@ export function makePlan(seed: string): Plan {
       [null, 20],
     ],
     malformedRate: at("generator.malformedRate").pick([0, 0.01, 0.05, 0.2]),
+    credentialRate: at("generator.credentialRate").pick([0, 0.01, 0.05]),
+    credentialExpirationsS: [
+      [-1, 1],
+      [EXPIRATION_MARGIN + 2, 1],
+      [EXPIRATION_MARGIN * 10, 1],
+      [null, 3],
+    ],
   };
 
   const typewriter: Plan["typewriter"] = {

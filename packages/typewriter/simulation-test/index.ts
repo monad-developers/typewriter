@@ -212,7 +212,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
   const db = makeDbClient(transport);
 
   const signers = plan.generator.accounts.map((keyType, i) =>
-    makeSigner(plan, i, KeyType[keyType]),
+    makeSigner(plan, `account:${i}`, KeyType[keyType]),
   );
   const steps = makeSteps(plan, signers, new Rng(plan.seed, "generator"));
 
@@ -334,7 +334,11 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
         runExpiryCheck(
           checkExpiry(
             mutationKey(event.authorization),
-            event.authorization.expiration,
+            // The authorization's, or the credential's.
+            event.status === "rejected" &&
+              event.error._tag === "MutationExpiresTooSoonError"
+              ? event.error.expiration
+              : event.authorization.expiration,
             margin,
           ),
         );
@@ -539,6 +543,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
 
       // Each step comes from its own client, so a step does not wait for the
       // one before it to settle.
+      const executing: Fiber.Fiber<void, ProgramError>[] = [];
       for (const step of steps) {
         yield* Effect.sleep(Duration.millis(step.delayMs));
         const mutation = deepFreeze(
@@ -559,8 +564,16 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
           transactionHash: undefined,
         };
         run.submissions.push(submission);
-        if (step.via === "execute") {
-          yield* FiberSet.run(fibers, execute(submission));
+        if (
+          step.mutation.name === "AddCredential" ||
+          step.mutation.name === "RemoveCredential"
+        ) {
+          // Batch sequencing runs built-in mutations first, before steps
+          // submitted earlier that may sign with the credential.
+          yield* Fiber.joinAll(executing.splice(0));
+          yield* execute(submission);
+        } else if (step.via === "execute") {
+          executing.push(yield* FiberSet.run(fibers, execute(submission)));
         } else {
           const calldata = enqueueCalldata(manifest, step, mutation);
           submission.transactionHash = yield* enqueue(calldata);

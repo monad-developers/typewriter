@@ -33,12 +33,17 @@ import {
 } from "./assessment-constants";
 import type { Chain } from "./chain";
 import type { Plan } from "./plan";
-import type { Rng } from "./random";
+import { Rng } from "./random";
 import type { Expected } from "./run";
 import { TEMPLATES, type Template } from "./templates";
 
 /** The mutations of `Assessment.sol`, without the built-in ones. */
 export type AppMutationName = "A" | "B";
+
+export type StepMutationName =
+  | AppMutationName
+  | "AddCredential"
+  | "RemoveCredential";
 
 /**
  * The `enqueue` field that a malformed step leaves empty, so that the
@@ -65,9 +70,11 @@ export type Step = {
   resubmit: boolean;
   /** Drawn from `Plan.generator.expirationsS`. See {@link withExpiration}. */
   expiresInS: number;
+  /** Of the credential it signs with, adds, or removes; `undefined` if removed or never added. */
+  credentialExpiresInS: number | undefined;
   signer: Signer;
   /** Unsigned, with a `0x` signature, until it is submitted. */
-  mutation: Mutation<AppMutationName>;
+  mutation: Mutation<StepMutationName>;
   malformation: Malformation | undefined;
 };
 
@@ -128,6 +135,7 @@ export function deploy({
 export type Signer = {
   keyType: KeyType;
   accountID: Hex.Hex;
+  credentialID: bigint;
   publicKey: Hex.Hex;
   /** Signs the EIP-712 payload of an authorization, in the encoding of `keyType`. */
   sign: (payload: Hex.Hex) => Hex.Hex;
@@ -162,15 +170,9 @@ const AUTHENTICATOR_DATA = Hex.concat(
   "0x00000000",
 );
 
-/** Makes the signer of account `index` from the seed. */
-export function makeSigner(
-  plan: Plan,
-  index: number,
-  keyType: KeyType,
-): Signer {
-  const privateKey = Hash.keccak256(
-    Hex.fromString(`${plan.seed}:account:${index}`),
-  );
+/** Makes the signer of the first credential of a new account, with the key `name` from the seed. */
+export function makeSigner(plan: Plan, name: string, keyType: KeyType): Signer {
+  const privateKey = Hash.keccak256(Hex.fromString(`${plan.seed}:${name}`));
 
   switch (keyType) {
     case KeyType.Secp256k1: {
@@ -185,6 +187,7 @@ export function makeSigner(
       return {
         keyType,
         accountID,
+        credentialID: 0n,
         publicKey,
         sign: (payload) => {
           const { r, s, yParity } = Secp256k1.sign({ payload, privateKey });
@@ -207,6 +210,7 @@ export function makeSigner(
       return {
         keyType,
         accountID,
+        credentialID: 0n,
         publicKey,
         // `verifyP256` checks the signature over `sha256(digest)`.
         sign: (payload) => {
@@ -226,6 +230,7 @@ export function makeSigner(
       return {
         keyType,
         accountID,
+        credentialID: 0n,
         publicKey,
         // `verifyWebAuthnP256` finds the base64url digest at `challengeOffset` in
         // `clientDataJSON`, and checks the signature over
@@ -261,7 +266,7 @@ function unsigned<const name extends keyof AssessmentMutations & string>(
     {
       ...mutation,
       accountID: signer.accountID,
-      credentialID: 0n,
+      credentialID: signer.credentialID,
       expiration: 0n,
     },
     "0x",
@@ -297,7 +302,7 @@ export function createAccount(manifest: Manifest, signer: Signer) {
 export function enqueueCalldata(
   manifest: Manifest,
   step: Step,
-  mutation: Mutation<AppMutationName>,
+  mutation: Mutation<StepMutationName>,
 ): Hex.Hex {
   const config = manifest.mutations[mutation.name];
   let mutationData = encodeMutationCalldata({ ...mutation, config });
@@ -339,42 +344,71 @@ export function withExpiration(
   plan: Plan,
   step: Step,
   nowMs: number,
-): Mutation<AppMutationName> {
-  const { expiresInS, mutation } = step;
-  const expiration = !Number.isFinite(expiresInS)
-    ? 0
-    : expiresInS < 0
-      ? plan.chain.genesisTimestamp - 1
-      : Math.floor(nowMs / 1000) + expiresInS;
+): Mutation<StepMutationName> {
+  const { mutation } = step;
+  const at = (expiresInS: number) =>
+    BigInt(
+      !Number.isFinite(expiresInS)
+        ? 0
+        : expiresInS < 0
+          ? plan.chain.genesisTimestamp - 1
+          : Math.floor(nowMs / 1000) + expiresInS,
+    );
   return {
     ...mutation,
+    ...(mutation.name === "AddCredential" && {
+      params: {
+        ...mutation.params,
+        expiration: at(step.credentialExpiresInS!),
+      },
+    }),
     authorization: {
       ...mutation.authorization,
-      expiration: BigInt(expiration),
+      expiration: at(step.expiresInS),
     },
-  };
+  } as Mutation<StepMutationName>;
 }
 
 /** How `step` must end. */
 export function expect(step: Step): Expected {
-  const { mutation, malformation, expiresInS, via } = step;
+  const { mutation, malformation, expiresInS, credentialExpiresInS, via } =
+    step;
   if (malformation !== undefined) {
     return { executes: false, errors: [], resubmissionErrors: [] };
+  }
+  if (mutation.name === "AddCredential") {
+    return { executes: true, errors: [], resubmissionErrors: [] };
+  }
+  if (mutation.name === "RemoveCredential") {
+    return credentialExpiresInS === undefined
+      ? {
+          executes: false,
+          errors: ["CredentialNotFound"],
+          resubmissionErrors: ["CredentialNotFound"],
+        }
+      : { executes: true, errors: [], resubmissionErrors: ["InvalidNonce"] };
   }
   // The runtime rejects an `execute` that expires within its margin before
   // it executes. An enqueue is already onchain, so only revm rejects it.
   const tooSoon = via === "execute" ? "MutationExpiresTooSoonError" : undefined;
-  if (expiresInS < 0) {
+  if (expiresInS < 0 || (credentialExpiresInS ?? 0) < 0) {
     const errors = [tooSoon ?? "AuthorizationExpired"];
     return { executes: false, errors, resubmissionErrors: errors };
   }
   // A finite authorization can be rejected within the margin, or expire
   // after it is accepted, before the runtime simulates its settlement.
-  const expired = Number.isFinite(expiresInS)
-    ? ["AuthorizationExpired", ...(tooSoon === undefined ? [] : [tooSoon])]
-    : [];
-  const revert = `${mutation.name}Error`;
-  return mutation.params.shouldRevert
+  const expired = [
+    ...(Number.isFinite(expiresInS) ? ["AuthorizationExpired"] : []),
+    ...(Number.isFinite(credentialExpiresInS) ? ["CredentialExpired"] : []),
+  ];
+  if (expired.length > 0 && tooSoon !== undefined) expired.push(tooSoon);
+  const revert =
+    credentialExpiresInS === undefined
+      ? "CredentialNotFound"
+      : (mutation as Mutation<AppMutationName>).params.shouldRevert
+        ? `${mutation.name}Error`
+        : undefined;
+  return revert !== undefined
     ? {
         executes: false,
         errors: [revert, ...expired],
@@ -416,38 +450,127 @@ export function makeSteps(
     resubmitRate,
     expirationsS,
     malformedRate,
+    credentialRate,
+    credentialExpirationsS,
   } = plan.generator;
-  const steps = Array.from({ length: mutations }, (_, index): Step => {
+  // Its own generator, so the other draws are those of a plan without credentials.
+  const credentialRandom = new Rng(plan.seed, "generator.credentials");
+  // The credentials of each account, by ID.
+  const credentials = new Map(
+    signers.map((signer) => [
+      signer,
+      [{ signer, expiresInS: Infinity as number | undefined }],
+    ]),
+  );
+  const steps: Step[] = [];
+  for (let i = 0; i < mutations; i++) {
     const delayMs = random.weighted(delaysMs);
     const signer = random.pick(signers);
     const template = random.pick(TEMPLATES);
+    const own = credentials.get(signer)!;
+    if (credentialRandom.bool(credentialRate)) {
+      const index = steps.length;
+      const step = {
+        index,
+        delayMs: 0,
+        via: "execute",
+        resubmit: false,
+        expiresInS: Infinity,
+        signer,
+        malformation: undefined,
+      } as const;
+      if (own.length > 1 && credentialRandom.bool()) {
+        // Never the first, so `LastCredential` never reverts. The ID past the last was never added.
+        const credentialID = credentialRandom.int(1, own.length);
+        const removed = own[credentialID];
+        steps.push({
+          ...step,
+          credentialExpiresInS: removed?.expiresInS,
+          mutation: unsigned(signer, {
+            name: "RemoveCredential",
+            params: { credentialID: BigInt(credentialID) },
+            nonce: stepNonce(index),
+          }),
+        });
+        if (removed !== undefined) removed.expiresInS = undefined;
+      } else {
+        const keyType = credentialRandom.pick([
+          KeyType.Secp256k1,
+          KeyType.P256,
+          KeyType.WebAuthnP256,
+        ]);
+        const added = makeSigner(
+          plan,
+          `account:${signers.indexOf(signer)}:credential:${own.length}`,
+          keyType,
+        );
+        const expiresInS =
+          credentialRandom.weighted(credentialExpirationsS) ?? Infinity;
+        steps.push({
+          ...step,
+          credentialExpiresInS: expiresInS,
+          mutation: unsigned(signer, {
+            name: "AddCredential",
+            params: {
+              expiration: 0n,
+              keyType,
+              permissions: (1n << 256n) - 1n,
+              publicKey: added.publicKey,
+            },
+            nonce: stepNonce(index),
+          }),
+        });
+        own.push({
+          signer: {
+            ...added,
+            accountID: signer.accountID,
+            credentialID: BigInt(own.length),
+          },
+          expiresInS,
+        });
+      }
+    }
+
+    const index = steps.length;
     if (random.bool(malformedRate)) {
       // No one can execute a malformed enqueue, so the mutation it starts
       // from neither reverts nor expires.
-      return {
+      steps.push({
         index,
         delayMs,
         via: "enqueue",
         resubmit: false,
         expiresInS: Infinity,
+        credentialExpiresInS: Infinity,
         signer,
         mutation: fromTemplate(signer, template, false, index),
         malformation: random.pick(MALFORMATIONS),
-      };
+      });
+      continue;
     }
     const shouldRevert = random.bool(revertRate);
     const via = random.bool(enqueueRate) ? "enqueue" : "execute";
-    return {
+    // The ID past the last was never added.
+    const credentialID =
+      via === "execute" && credentialRandom.bool(credentialRate)
+        ? credentialRandom.int(1, own.length)
+        : 0;
+    const credential = own[credentialID] ?? {
+      signer: { ...signer, credentialID: BigInt(credentialID) },
+      expiresInS: undefined,
+    };
+    steps.push({
       index,
       delayMs,
       via,
       resubmit: via === "execute" && random.bool(resubmitRate),
       expiresInS: random.weighted(expirationsS) ?? Infinity,
-      signer,
-      mutation: fromTemplate(signer, template, shouldRevert, index),
+      credentialExpiresInS: credential.expiresInS,
+      signer: credential.signer,
+      mutation: fromTemplate(credential.signer, template, shouldRevert, index),
       malformation: undefined,
-    };
-  });
+    });
+  }
 
   // Nothing shows the runtime read a malformed enqueue's log. A well-formed
   // enqueue after it executes onchain: the runtime force-executes enqueues
@@ -461,6 +584,7 @@ export function makeSteps(
       via: "enqueue",
       resubmit: false,
       expiresInS: Infinity,
+      credentialExpiresInS: Infinity,
       signer,
       mutation: fromTemplate(signer, TEMPLATES[0]!, false, index),
       malformation: undefined,
