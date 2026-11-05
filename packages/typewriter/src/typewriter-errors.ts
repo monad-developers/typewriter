@@ -94,8 +94,8 @@ export class MutationHaltedError extends Data.TaggedError(
 export class MutationExpiresTooSoonError extends Data.TaggedError(
   "MutationExpiresTooSoonError",
 )<{
-  expiration: bigint;
-  minExpiration: bigint;
+  expiration: number;
+  minExpiration: number;
 }> {
   override get message() {
     return `Mutation expires at ${this.expiration}, before ${this.minExpiration}`;

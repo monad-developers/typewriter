@@ -101,12 +101,13 @@ import {
 } from "./typewriter-errors";
 import type {
   AcceptedMutation,
-  AuthorizationInput,
+  Authorization,
   BatchEvent,
   BatchListener,
   BlockEvent,
   BlockListener,
   ExecutedSettlement,
+  ExecuteInput,
   IncludedMutation,
   Inclusion,
   LandedSettlement,
@@ -174,7 +175,7 @@ const STUCK_BLOCKS = 300n;
 type RuntimeExecuteInput = {
   name: string;
   params: unknown;
-  authorization: AuthorizationInput;
+  authorization: ExecuteInput<Authorization>;
 };
 
 /** Resolves once a mutation executes. Its row commits later, at `committed`. */
@@ -658,12 +659,12 @@ export function createTypewriterEffect<
     /** Rejects a mutation whose authorization or credential expires before `minExpiration`. */
     const checkExpiration = (
       mutation: ReceivedMutation,
-      minExpiration: bigint,
+      minExpiration: number,
     ): Effect.Effect<void, MutationExpiresTooSoonError> =>
       Effect.gen(function* () {
         const { authorization } = mutation;
         if (
-          authorization.expiration !== 0n &&
+          authorization.expiration !== 0 &&
           authorization.expiration < minExpiration
         ) {
           return yield* new MutationExpiresTooSoonError({
@@ -681,11 +682,10 @@ export function createTypewriterEffect<
             }
           >
         )[authorization.accountID]!;
-        const credentialExpiration = BigInt(
-          credentials[Number(authorization.credentialID)]!.expiration,
-        );
+        const credentialExpiration =
+          credentials[Number(authorization.credentialID)]!.expiration;
         if (
-          credentialExpiration !== 0n &&
+          credentialExpiration !== 0 &&
           credentialExpiration < minExpiration
         ) {
           return yield* new MutationExpiresTooSoonError({
@@ -703,7 +703,7 @@ export function createTypewriterEffect<
           fromExecutionHash,
           timestamp,
         );
-        yield* checkExpiration(mutation, timestamp + BigInt(EXPIRATION_MARGIN));
+        yield* checkExpiration(mutation, Number(timestamp) + EXPIRATION_MARGIN);
         const executeResult = yield* evm.execute({
           from: app.account.address,
           to: app.address,

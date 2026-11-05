@@ -39,7 +39,7 @@ test("signs a generic authorization over the exact mutation calldata encoding", 
       "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     credentialID: 3n,
     nonce: (9n << 64n) | 4n,
-    expiration: 1_900_000_000n,
+    expiration: 1_900_000_000,
   } as const;
   const payload = getAuthorizationPayload(manifest, mutation);
   const prepared = authorizeMutation(mutation, "0x1234");
@@ -58,7 +58,7 @@ test("signs a generic authorization over the exact mutation calldata encoding", 
         "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       credentialID: 3n,
       nonce: (9n << 64n) | 4n,
-      expiration: 1_900_000_000n,
+      expiration: 1_900_000_000,
       signature: "0x1234",
     },
   });
@@ -73,7 +73,7 @@ test("signs CreateAccount calldata with the derived accountID", async () => {
     accountID,
     credentialID: 0n,
     nonce: 0n,
-    expiration: 0n,
+    expiration: 0,
   } as const;
   const payload = getAuthorizationPayload(manifest, mutation);
   const prepared = authorizeMutation(mutation, "0xabcd");
@@ -89,7 +89,7 @@ test("signs CreateAccount calldata with the derived accountID", async () => {
       "0xd690045981ca381a50cc9ecab2e603d4ee6a72cd6f39a8c6525464851ddfaafe",
     credentialID: 0n,
     nonce: 0n,
-    expiration: 0n,
+    expiration: 0,
     signature: "0xabcd",
   });
 });

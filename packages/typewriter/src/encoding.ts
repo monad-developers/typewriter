@@ -44,9 +44,8 @@ export function decodeMutationCalldata(
 export function encodeAuthorizationCalldata(
   authorization: Authorization,
 ): Hex.Hex {
-  // ox types `uint40` as a number.
   return AbiParameters.encode(calldataStructParams(AUTHORIZATION_ABI_PARAMS), [
-    { ...authorization, expiration: Number(authorization.expiration) },
+    authorization,
   ]);
 }
 
@@ -56,8 +55,7 @@ export function decodeAuthorizationCalldata(calldata: Hex.Hex): Authorization {
     calldata,
     { checksumAddress: false },
   );
-  // ox decodes `uint40` as a number.
-  return { ...authorization, expiration: BigInt(authorization.expiration) };
+  return authorization;
 }
 
 export type BatchArg = {

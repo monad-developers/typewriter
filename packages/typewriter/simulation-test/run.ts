@@ -65,14 +65,14 @@ export type Reorg = {
 /** The chain's latest block right after the runtime rejected a mutation as expired. */
 export type ExpiryCheck = {
   key: string;
-  expiration: bigint;
+  expiration: number;
   /**
    * The seconds before the latest block that the authorization must expire
    * by: `0` for `AuthorizationExpired`, and `EXPIRATION_MARGIN` for
    * `MutationExpiresTooSoonError`.
    */
-  margin: bigint;
-  latestTimestamp: bigint;
+  margin: number;
+  latestTimestamp: number;
 };
 
 /** Everything the run recorded, for validation against the chain. */

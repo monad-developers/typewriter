@@ -13,12 +13,8 @@ import type { ExecuteMutationError } from "./typewriter-errors";
 
 export type { KeyType };
 
-// TODO(kyle) type the `uint40` `expiration` fields here as `number`, as abitype,
-// ox, viem and storage-layout do. Then drop the `Number(...)` in
-// `getAuthorizationPayload`, the `BigInt(...)` in `decodeAuthorizationCalldata`,
-// and use `mode: "number"` for `authorization_expiration` in `db-schema.ts`.
 export type Credential = {
-  expiration: bigint;
+  expiration: number;
   keyType: KeyType;
   permissions: bigint;
   publicKey: Hex.Hex;
@@ -28,7 +24,7 @@ export type Authorization = {
   accountID: Hex.Hex;
   credentialID: bigint;
   nonce: bigint;
-  expiration: bigint;
+  expiration: number;
   signature: Hex.Hex;
 };
 
@@ -44,7 +40,7 @@ export type CreateAccountParams = {
 };
 
 export type AddCredentialParams = {
-  expiration: bigint;
+  expiration: number;
   keyType: KeyType;
   permissions: bigint;
   publicKey: Hex.Hex;
@@ -54,46 +50,18 @@ export type RemoveCredentialParams = {
   credentialID: bigint;
 };
 
-/**
- * An integer as `execute` takes it: a bigint, a safe integer, or a decimal or
- * `0x` string. `execute` decodes it to a bigint.
- */
-export type IntegerInput = bigint | number | string;
-
-export type AuthorizationInput = {
-  accountID: Hex.Hex;
-  credentialID: IntegerInput;
-  nonce: IntegerInput;
-  expiration: IntegerInput;
-  signature: Hex.Hex;
-};
-
-export type AddCredentialParamsInput = {
-  expiration: IntegerInput;
-  keyType: KeyType;
-  permissions: IntegerInput;
-  publicKey: Hex.Hex;
-};
-
-export type RemoveCredentialParamsInput = {
-  credentialID: IntegerInput;
-};
-
-/** `value` with each integer as `integer`. */
-type WithIntegers<value, integer> = value extends bigint | number
-  ? integer
+/** `value` as `execute` takes it: each bigint can also be a decimal string. */
+export type ExecuteInput<value> = value extends bigint
+  ? bigint | string
   : value extends object
-    ? { [key in keyof value]: WithIntegers<value[key], integer> }
+    ? { [key in keyof value]: ExecuteInput<value[key]> }
     : value;
 
-type MutationParams<
-  mutationConfig extends MutationConfig,
-  integer,
-> = readonly AbiParameter[] extends mutationConfig["params"]
-  ? unknown
-  : WithIntegers<AbiParametersToValue<mutationConfig["params"]>, integer>;
+type MutationParams<mutationConfig extends MutationConfig> =
+  readonly AbiParameter[] extends mutationConfig["params"]
+    ? unknown
+    : AbiParametersToValue<mutationConfig["params"]>;
 
-/** The params of a mutation as `execute` decodes them. */
 export type MutationParamsForName<
   name extends string,
   mutationConfig extends MutationConfig,
@@ -103,19 +71,7 @@ export type MutationParamsForName<
     ? AddCredentialParams
     : name extends "RemoveCredential"
       ? RemoveCredentialParams
-      : MutationParams<mutationConfig, bigint>;
-
-/** The params of a mutation as `execute` takes them. */
-export type MutationParamsInputForName<
-  name extends string,
-  mutationConfig extends MutationConfig,
-> = name extends "CreateAccount"
-  ? CreateAccountParams
-  : name extends "AddCredential"
-    ? AddCredentialParamsInput
-    : name extends "RemoveCredential"
-      ? RemoveCredentialParamsInput
-      : MutationParams<mutationConfig, IntegerInput>;
+      : MutationParams<mutationConfig>;
 
 export type TypewriterMutation<
   name extends string = string,
@@ -132,8 +88,8 @@ export type TypewriterMutationInput<
 > = {
   [name in keyof mutationsConfig & string]: {
     name: name;
-    params: MutationParamsInputForName<name, mutationsConfig[name]>;
-    authorization: AuthorizationInput;
+    params: ExecuteInput<MutationParamsForName<name, mutationsConfig[name]>>;
+    authorization: ExecuteInput<Authorization>;
   };
 }[name];
 

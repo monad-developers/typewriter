@@ -67,7 +67,7 @@ export type TypedMutation<
   accountID: Hex.Hex;
   credentialID: bigint;
   nonce: bigint;
-  expiration: bigint;
+  expiration: number;
 };
 
 export type AuthorizedMutation<
@@ -155,8 +155,7 @@ export function getAuthorizationPayload<
       accountID: mutation.accountID,
       credentialID: mutation.credentialID,
       nonce: mutation.nonce,
-      // ox types `uint40` as a number.
-      expiration: Number(mutation.expiration),
+      expiration: mutation.expiration,
       mutation: config.id,
       mutationData,
     },

@@ -4,15 +4,14 @@ import type { Hex } from "ox";
 import { KeyType } from "./typewriter-constants";
 import type {
   Authorization,
-  AuthorizationInput,
+  ExecuteInput,
   MutationParamsForName,
-  MutationParamsInputForName,
 } from "./typewriter-types";
 
 /**
  * The schema of an `execute` input for the mutation `name` with `params`. It
  * decodes a `TypewriterMutationInput` to a `TypewriterMutation`, with each
- * integer as a bigint, and encodes with `ox` to the bytes it means. Without
+ * decimal string as a bigint, and encodes with `ox` to the bytes it means. Without
  * it, `ox` encodes a missing or non-string `string` as text, copies any
  * string into the calldata as `bytes`, `bytesN` or `address` without checking
  * it is hex, and turns `""` or `true` into an integer.
@@ -27,14 +26,8 @@ export function executeInputSchema<
   name: name,
   params: params,
 ): Schema.Codec<
-  {
-    params: MutationParamsForName<name, { params: params }>;
-    authorization: Authorization;
-  },
-  {
-    params: MutationParamsInputForName<name, { params: params }>;
-    authorization: AuthorizationInput;
-  }
+  TypewriterMutationFields<name, params>,
+  ExecuteInput<TypewriterMutationFields<name, params>>
 > {
   // An app's `params` are only known at runtime, so their types are too.
   return Schema.Struct({
@@ -44,6 +37,14 @@ export function executeInputSchema<
     authorization: AUTHORIZATION_SCHEMA,
   }) as never;
 }
+
+type TypewriterMutationFields<
+  name extends string,
+  params extends readonly AbiParameter[],
+> = {
+  params: MutationParamsForName<name, { params: params }>;
+  authorization: Authorization;
+};
 
 /**
  * Whether a value is one of `names`. Not `name in mutations`, which finds
@@ -82,7 +83,11 @@ function abiParameterSchema(param: AbiParameter): Codec {
   }
   const integer = /^(u?)int(\d*)$/.exec(param.type);
   if (integer !== null) {
-    return integerSchema(integer[1] === "", Number(integer[2] || 256));
+    const signed = integer[1] === "";
+    const bits = Number(integer[2] || 256);
+    return bits <= 48
+      ? smallIntegerSchema(signed, bits)
+      : bigIntegerSchema(signed, bits);
   }
   throw new Error(`unsupported ABI type ${param.type}`);
 }
@@ -102,53 +107,54 @@ function tupleSchema(components: readonly AbiParameter[]): Codec {
   );
 }
 
-const INTEGER_STRING = /^(?:-?\d+|0x[0-9a-fA-F]+)$/;
-
-/**
- * An integer in range, decoded to a bigint from a bigint, a safe integer, or
- * a decimal or `0x` string. Not `""`, `true`, or a number past 2^53, which
- * `ox` would encode as some other integer.
- */
-function integerSchema(
-  signed: boolean,
-  bits: number,
-): Schema.Codec<bigint, bigint | number | string> {
+function integerRange(signed: boolean, bits: number) {
   const min = signed ? -(1n << BigInt(bits - 1)) : 0n;
   const max = (1n << BigInt(signed ? bits - 1 : bits)) - 1n;
   const type = `${signed ? "int" : "uint"}${bits}`;
-  return Schema.Union([Schema.BigInt, Schema.Number, Schema.String]).pipe(
-    Schema.decodeTo(
-      Schema.BigInt.check(
-        Schema.makeFilter(
-          (integer) =>
-            (integer >= min && integer <= max) ||
-            `Expected ${type} between ${min} and ${max}`,
-        ),
-      ),
-      {
-        decode: SchemaGetter.transformEffect((value) => {
-          const integer = toInteger(value);
-          return integer === undefined
-            ? Effect.fail(
-                new SchemaIssue.InvalidValue(
-                  { message: `Expected an integer for ${type}` },
-                  value,
-                ),
-              )
-            : Effect.succeed(integer);
-        }),
-        encode: SchemaGetter.transform((integer) => integer),
-      },
-    ),
+  return Schema.makeFilter(
+    (integer: bigint | number) =>
+      (integer >= min && integer <= max) ||
+      `Expected ${type} between ${min} and ${max}`,
   );
 }
 
-function toInteger(value: bigint | number | string): bigint | undefined {
-  if (typeof value === "bigint") return value;
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) ? BigInt(value) : undefined;
-  }
-  return INTEGER_STRING.test(value) ? BigInt(value) : undefined;
+/** An integer of up to 48 bits, a number as in abitype. */
+function smallIntegerSchema(
+  signed: boolean,
+  bits: number,
+): Schema.Codec<number, number> {
+  return Schema.Number.check(
+    Schema.makeFilter(
+      (value) =>
+        Number.isInteger(value) ||
+        `Expected an integer for ${signed ? "int" : "uint"}${bits}`,
+    ),
+    integerRange(signed, bits),
+  );
+}
+
+/** An integer of over 48 bits, a bigint as in abitype, or a decimal string. */
+function bigIntegerSchema(
+  signed: boolean,
+  bits: number,
+): Schema.Codec<bigint, bigint | string> {
+  return Schema.Union([Schema.BigInt, Schema.String]).pipe(
+    Schema.decodeTo(Schema.BigInt.check(integerRange(signed, bits)), {
+      decode: SchemaGetter.transformEffect((value) =>
+        typeof value === "bigint" || /^-?\d+$/.test(value)
+          ? Effect.succeed(BigInt(value))
+          : Effect.fail(
+              new SchemaIssue.InvalidValue(
+                {
+                  message: `Expected a decimal string for ${signed ? "int" : "uint"}${bits}`,
+                },
+                value,
+              ),
+            ),
+      ),
+      encode: SchemaGetter.transform((integer) => integer),
+    }),
+  );
 }
 
 function hexSchema(pattern: RegExp, expected: string) {
@@ -181,9 +187,9 @@ const KEY_TYPE_SCHEMA = Schema.Literals([
 
 const AUTHORIZATION_SCHEMA = Schema.Struct({
   accountID: bytesNSchema(32),
-  credentialID: integerSchema(false, 64),
-  nonce: integerSchema(false, 256),
-  expiration: integerSchema(false, 40),
+  credentialID: bigIntegerSchema(false, 64),
+  nonce: bigIntegerSchema(false, 256),
+  expiration: smallIntegerSchema(false, 40),
   signature: BYTES_SCHEMA,
 });
 
@@ -193,12 +199,12 @@ const BUILTIN_PARAMS_SCHEMAS = {
     publicKey: BYTES_SCHEMA,
   }),
   AddCredential: Schema.Struct({
-    expiration: integerSchema(false, 40),
+    expiration: smallIntegerSchema(false, 40),
     keyType: KEY_TYPE_SCHEMA,
-    permissions: integerSchema(false, 256),
+    permissions: bigIntegerSchema(false, 256),
     publicKey: BYTES_SCHEMA,
   }),
   RemoveCredential: Schema.Struct({
-    credentialID: integerSchema(false, 64),
+    credentialID: bigIntegerSchema(false, 64),
   }),
 };

@@ -214,7 +214,7 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
   }
 
   // Each account's credentials execute in submission order, after its first.
-  const credentialExpirations = new Map<string, bigint>();
+  const credentialExpirations = new Map<string, number>();
   const added = new Map<string, number>();
   for (const { mutation } of run.submissions) {
     if (mutation.name !== "AddCredential") continue;
@@ -237,10 +237,10 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
       credential:
         credentialExpirations.get(
           `${accountID.toLowerCase()}:${credentialID}`,
-        ) ?? 0n,
+        ) ?? 0,
     };
     for (const [what, at] of Object.entries(expirations)) {
-      if (at !== 0n && at < timestamp + BigInt(EXPIRATION_MARGIN)) {
+      if (at !== 0 && at < Number(timestamp) + EXPIRATION_MARGIN) {
         check.fail(
           `${submission.label}: executed at ${timestamp}, but its ${what} expires at ${at}, within the margin`,
         );
@@ -250,7 +250,7 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
 
   for (const { key, expiration, margin, latestTimestamp } of run.expiryChecks) {
     // The contract expires an authorization once `block.timestamp` passes it.
-    if (expiration === 0n || expiration >= latestTimestamp + margin) {
+    if (expiration === 0 || expiration >= latestTimestamp + margin) {
       check.fail(
         `${check.label(key)}: rejected as expired at ${expiration}, but the latest block is at ${latestTimestamp} (margin ${margin}s)`,
       );

@@ -35,7 +35,7 @@ const authorizationColumns = () => ({
   authorization_credential_id: bigint({ mode: "bigint" }).notNull(),
   authorization_nonce: uint256().notNull(),
   // TODO(kyle) `mode: "number"`, see `Credential` in `typewriter-types.ts`.
-  authorization_expiration: bigint({ mode: "bigint" }).notNull(),
+  authorization_expiration: bigint({ mode: "number" }).notNull(),
   authorization_signature: text().$type<Hex.Hex>().notNull(),
 });
 
