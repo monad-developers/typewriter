@@ -570,7 +570,8 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       }
 
       yield* Deferred.await(drained);
-      while (pendingEnqueues.size > 0) {
+      // A rejection's event comes before `execute` returns, and every `execute` must return.
+      while (unreturned(run).length > 0 || pendingEnqueues.size > 0) {
         yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
       }
       yield* FiberSet.awaitEmpty(expiryChecks);
@@ -627,7 +628,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     }
     if (next - progressedAt > plan.stallTimeoutMs) {
       return yield* Effect.die(
-        `stalled for ${plan.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...pendingEnqueues].join(", ")}`,
+        `stalled for ${plan.stallTimeoutMs}ms of virtual time, waiting on: ${[...unsettled(run), ...unreturned(run), ...pendingEnqueues].join(", ")}`,
       );
     }
     clock.advanceTo(next);
@@ -730,6 +731,16 @@ function unsettled(run: Run): string[] {
         via === "execute" && (settled.get(key) ?? 0) < (resubmitted ? 2 : 1),
     )
     .map(({ label }) => label);
+}
+
+/** The executes, and resubmissions, that have not returned. */
+function unreturned(run: Run): string[] {
+  return run.submissions
+    .filter(
+      ({ via, resubmitted, results }) =>
+        via === "execute" && results.length < (resubmitted ? 2 : 1),
+    )
+    .map(({ label }) => `${label} never returned`);
 }
 
 BunRuntime.runMain(
