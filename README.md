@@ -30,6 +30,17 @@ struct State {
 }
 ```
 
+The server keeps its own copy of this state, updated as soon as it accepts each mutation.
+
+```ts
+const typewriter = await createTypewriter(Token, config);
+
+typewriter.state.totalSupply;
+//               ^? bigint
+typewriter.state.balances[accountID];
+//                       ^? bigint
+```
+
 ### Mutations
 
 Mutations are app-defined state transitions requested by a user and executed onchain. Updates to application state are done with mutations.
@@ -50,19 +61,25 @@ library TransferMutation {
 }
 ```
 
+Users sign mutations and send them to the server, which submits them with `typewriter.execute()`. It resolves as soon as the server accepts the mutation, and throws if the mutation is rejected:
+
+```ts
+await typewriter.execute({
+  name: "Transfer",
+  params: { to, amount: 10n * 10n ** 18n },
+  authorization, // the user's signature, see below
+});
+```
+
 ### Accounts and Signatures
 
-Typewriter provides a built-in account system. An account represents a user and is identified by a stable `bytes32` ID. Each account can have multiple credentials, which can be added or removed without changing its identity.
+Typewriter has a built-in account system. An account is identified by a stable `bytes32` ID and holds credentials: P-256, WebAuthn-P256, or secp256k1 keys, each limited to certain mutations and optionally expiring. Credentials can be added and removed without changing the account's ID.
 
-A credential grants permission to act on behalf of an account. It contains a public key, permissions specifying which mutations it can authorize, and an optional expiration. Typewriter supports three signature types: P-256, WebAuthn-P256, and secp256k1.
-
-Users sign mutations with a credential to create authorizations. Before executing the mutation onchain, Typewriter verifies the signature, checks permissions, and enforces expirations and replay protection.
-
-Accounts use two-dimensional nonces: a lane and a sequence number within that lane. Separate clients can use independent lanes to submit mutations for the same account without coordinating a single sequence.
+Users sign each mutation with a credential. The contract checks the signature, permissions, expiration, and nonce before executing it. Nonces have a lane and a sequence within it, so separate clients can sign for the same account without coordinating.
 
 ### Server runtime
 
-A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. The server executes each mutation against its own copy of the contract's state, and once it knows the mutation will succeed onchain it responds `accepted` — usually within milliseconds, before a block is produced.
+A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. The server executes each mutation against its own copy of the contract's state, and once it knows the mutation will succeed onchain it responds `accepted`, before a transaction is created or signed.
 
 The lifecycle of a mutation is as follows:
 - **received**. The server has received the mutation.
@@ -72,9 +89,7 @@ The lifecycle of a mutation is as follows:
 
 A mutation the server can't accept is **rejected** instead.
 
-`createTypewriter` starts the runtime and returns a handle for submitting mutations, reading state, and subscribing to events.
-
-`createTypewriter` takes a Solidity entrypoint and runtime config. `TypewriterConfig` requires `address`, `account`, `chainId`, `rpcUrl`, and `database`, or just `database` in [dev mode](#local-development). Contract metadata (`storageLayout` and app mutations) is derived from the Solidity entrypoint; native account mutations are added automatically. Optional fields are `hardfork`, `blockPollingIntervalMs`, and `sequencing`.
+`createTypewriter` starts the runtime from a contract and a config, and returns a handle for submitting mutations, reading state, and subscribing to events. See [`createTypewriter()`](#createtypewriter) for every option.
 
 ```ts
 import { createTypewriter } from "typewriter";
@@ -82,24 +97,17 @@ import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 
 const typewriter = await createTypewriter(Token, {
-  address, // the deployed Typewriter contract
-  account: privateKeyToAccount(privateKey), // the transaction submitter
+  address, // the deployed contract
+  account: privateKeyToAccount(privateKey), // the scheduler, which submits transactions
   chainId,
   rpcUrl,
   database: { url: databaseUrl },
-  blockPollingIntervalMs: 200,
-  sequencing: {
-    order: "fifo",
-  },
 });
 
-// ... setup web server
+// ... serve `typewriter.execute()` and `typewriter.state`
 
-// submit a signed mutation; resolves once accepted
-const accepted = await typewriter.execute({
-  name: "Transfer",
-  params,
-  authorization,
+typewriter.on("mutation", (mutation) => {
+  console.log(mutation.name, mutation.status);
 });
 ```
 
@@ -107,7 +115,7 @@ const accepted = await typewriter.execute({
 
 #### Local development
 
-With `dev: true`, typewriter starts its own Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the scheduler, and fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork` itself. Leave `address`, `account`, `chainId`, and `rpcUrl` unset; setting any of them with `dev` is an error.
+With `dev: true`, typewriter starts a local Anvil, deploys the contract to it, and fills in the chain config itself, so only a database is needed:
 
 ```ts
 const typewriter = await createTypewriter(Token, {
@@ -116,9 +124,7 @@ const typewriter = await createTypewriter(Token, {
 });
 ```
 
-Dev mode is ephemeral: each process deploys to a new chain and keeps its state in its own database schema, `typewriter_dev_<random>`, and gives clients the matching `manifest.deploymentKey`, so several dev processes can share one database. Stopping the process drops the schema and stops Anvil. Anvil keeps only recent history, in memory, so a long-running dev chain stays the same size; reads of old blocks fail. It needs `anvil` from Foundry on the `PATH`.
-
-To run against an Anvil you start yourself, use `anvil --network monad` and set `hardfork` (for example `"MonadTen"`), since Anvil's chain ID has no Monad hardfork schedule.
+Each dev process gets a fresh chain and its own database schema, both gone when it stops, so several can share one database. It needs `anvil` from [Foundry](https://getfoundry.sh) on the `PATH`.
 
 #### Sequencing
 
@@ -127,50 +133,38 @@ Sequencing controls the order mutations are accepted by the server and included 
 ##### FIFO
 
 ```ts
-import { createTypewriter } from "typewriter";
-
-const app = await createTypewriter(Token, {
+const typewriter = await createTypewriter(Token, {
   // ... more config
-  sequencing: {
-    order: "fifo",
-  },
+  sequencing: { order: "fifo" },
 });
 ```
 
-Each call to `typewriter.execute()` immediately executes the mutation against local state and returns the accepted mutation, or throws an error if the mutation is rejected. Accepted mutations are submitted onchain right away; see [Submission](#submission).
-
-Onchain inclusion order matches the order mutations were executed with `typewriter.execute()`.
+Each call to `typewriter.execute()` executes the mutation right away. Mutations are included onchain in the order they were accepted.
 
 ##### Batch
 
 ```ts
-import { createTypewriter } from "typewriter";
-
-const app = await createTypewriter(OrderBook, {
+const typewriter = await createTypewriter(OrderBook, {
   // ... more config
   sequencing: {
     order: "batch",
     batchIntervalMs: 50,
     batchOrder: ["CloseOrder", "LimitOrder", "MarketOrder"],
-  }
+  },
 });
 ```
 
-Each call to `typewriter.execute()` enqueues the mutation and returns the accepted mutation once the next batch is processed, or throws an error if the mutation is rejected. Every `batchIntervalMs` (default `50`), all enqueued mutations are gathered into a batch, ordered according to `batchOrder`, and accepted or rejected. Accepted batches are submitted onchain right away; see [Submission](#submission).
+Mutations wait for the next batch. Every `batchIntervalMs`, the server gathers them, orders them by `batchOrder` (here, every close before any limit order, and every limit order before any market order), and accepts or rejects each one. `typewriter.execute()` resolves when its batch is processed.
 
-`batchOrder` lists `Mutation` enum member names. Built-in account mutations always come first, and mutations not in `batchOrder` come last, in the order they were received. Within a batch, mutations execute in that order; across batches, batches are submitted in the order they were accepted.
+#### Submitting transactions
 
-#### Submission
+The server submits accepted mutations onchain itself, in transactions signed and paid for by the scheduler account, so users never need gas. It sends a transaction as soon as mutations are accepted, without waiting for earlier ones to be included, so several land in each block.
 
-Typewriter sends a settlement transaction as soon as a batch is accepted, without waiting for earlier settlements to be included, so several land in each block. Each batch settles in its own transaction, followed in that transaction by any [force-included](#force-inclusion) mutations waiting at the time. A batch that would outgrow Monad's 30M transaction gas cap continues in a new batch, and a mutation too large for any transaction is rejected with `MutationTooLargeError`.
-
-Each settlement names the contract's `executionHash` it starts from and the timestamp the server executed it at. `executionHash` accumulates every executed mutation, so a settlement executes only on exactly the state the server simulated it against. A settlement is sent to every RPC provider at once and sent again until it lands.
-
-A settlement reverts only when it lands more than `MAX_SETTLEMENT_DELAY` (60) seconds late, and then every settlement sent after it reverts too. The server stops sending, waits for every settlement in flight to land, and executes the reverted mutations again at the current block. Each one emits `accepted` again, possibly with a new `executionIndex`, or `rejected` if it fails now, for example because its authorization expires too soon. Any other revert stops the server.
+Typewriter manages the scheduler's nonces, estimates gas and fees, splits batches too big for one transaction, rebroadcasts transactions until they land, and follows them through reorgs to finality. If a transaction lands too late to execute, Typewriter executes its mutations again.
 
 ## Examples
 
-- [`token`](https://github.com/monad-developers/typewriter/tree/main/apps/token) is a minimal token application that demonstrates native P-256 accounts, batch sequencing, minting, and account-owned transfers.
+- [`token`](https://github.com/monad-developers/typewriter/tree/main/apps/token) is a minimal token application that demonstrates native P-256 accounts, minting, and account-owned transfers.
 - [`order-book`](https://github.com/monad-developers/typewriter/tree/main/apps/order-book) is a full order-book application with custom sequencing, WebAuthn account bootstrap, session keys, deposits, withdrawals, and onchain settlement.
 
 ## Failure modes
@@ -179,7 +173,9 @@ A settlement reverts only when it lands more than `MAX_SETTLEMENT_DELAY` (60) se
 
 A mutation can be included in a block and later removed by a [chain reorganization](https://www.alchemy.com/overviews/what-is-a-reorg). By definition, this only affects mutations that have not reached the `finalized` state.
 
-The server does not yet recover from a reorg that removes a block containing its settlements or enqueued mutations: it stops with `SettlementReorgedError` or `EnqueueReorgedError`.
+When a reorg is detected, mutations may move backwards in the mutation lifecycle (accepted => included => finalized). They are re-processed against the new canonical chain and re-emitted with their updated lifecycle status.
+
+> Coming soon: As a protection against exposing user-facing data that may be reorged, apps can choose to use later lifecycle stages, such as `"included"` or `"finalized"`, to serve read requests or resolve `execute()` promises.
 
 ### Force inclusion
 
@@ -187,7 +183,7 @@ Users can bypass the server entirely and submit their mutations directly to the 
 
 Force inclusion uses a two-stage, enqueue then execute, mechanism. First, a user registers their mutation onchain by calling the `enqueue()` function.
 
-When the server sees an enqueued mutation, it executes it and settles it onchain after the next batch. Enqueued mutations don't emit `"mutation"` events or get rows in the [mutation tables](#typewriterschema).
+When the server sees an enqueued mutation, it executes it and settles it onchain with the next batch. Enqueued mutations don't emit `"mutation"` events or get rows in the [mutation tables](#typewriterschema).
 
 If the server is completely offline, the user may call `forceExecute()` on their queued mutation after the `FORCE_INCLUSION_DELAY`.
 
@@ -195,7 +191,7 @@ If the server is completely offline, the user may call `forceExecute()` on their
 
 Mutations are executed and accepted on the server before they are executed onchain. Onchain divergence happens when the server accepts a mutation, but the same mutation behaves differently (and reverts) when executed onchain.
 
-Typewriter rules out its causes: the contract runs each settlement at the timestamp the server executed it at, and the app contract can't read other contracts or environment values that differ onchain (see [Determinism](#determinism)). A settlement can still revert when it lands too late; see [Submission](#submission).
+Typewriter rules out its causes: the contract runs each settlement at the timestamp the server executed it at, and the app contract can't read other contracts or environment values that differ onchain (see [Determinism](#determinism)). A transaction can still revert when it lands too late; see [Submitting transactions](#submitting-transactions).
 
 ### Restarts
 
@@ -347,19 +343,27 @@ address matching the stored address. For `P256`, it verifies `(r, s)` over
 `sha256(digest)`. For `WebAuthnP256`, it checks that the 43-byte, unpadded
 base64url encoding of `digest` appears in `clientDataJSON` at `challengeOffset`,
 then verifies `(r, s)` over `sha256(authData || sha256(clientDataJSON))`.
-Both P-256 paths need the chain's P-256 precompile at `0x100`, which Monad provides.
+Both P-256 paths need the chain's P-256 precompile at `0x100`.
 
 **Verification.** For an existing account, the base contract performs these
 checks before executing the mutation:
 
 1. The account exists, and `credentialID` selects a credential that has not been removed.
-2. Neither the authorization nor the credential has expired. Both expirations are Unix timestamps in seconds; `0` means no expiration, and nonzero values must be greater than or equal to the settlement's timestamp (see below).
+2. Neither the authorization nor the credential has expired. Both expirations are Unix timestamps in seconds; `0` means no expiration, and nonzero values must be greater than or equal to the settlement's timestamp (see **Expirations** under [Authorization](#authorization)).
 3. The credential permits the mutation: `permissions & (uint256(1) << mutation)` is nonzero.
 4. The nonce sequence matches the account's next expected sequence for its lane and is less than `type(uint64).max`.
 5. The signature is valid for the EIP-712 digest and the credential's key.
 
 If any check fails, execution reverts. After verification, Typewriter increments
 the lane's sequence and executes the mutation.
+
+**Expirations.** A settlement carries the timestamp the server executed it at,
+and the contract checks expirations against that timestamp, so a mutation
+executes onchain exactly as the server accepted it. A settlement that lands
+more than `MAX_SETTLEMENT_DELAY` (60) seconds after its timestamp reverts, so
+the server only accepts authorizations and credentials that expire at least 60
+seconds after its latest block. `forceExecute` checks expirations against the
+block it lands in.
 
 **Two-dimensional nonces.** The nonce packs a `uint192` lane into its high bits
 and a `uint64` sequence into its low bits:
@@ -455,7 +459,7 @@ The entrypoint file must define exactly one contract that inherits
 `Typewriter`. That contract must:
 
 - inherit only `Typewriter`, and not be abstract;
-- declare exactly `constructor(address scheduler)` and pass `scheduler` to `Typewriter(scheduler)`; the body may do more, but it takes no other arguments, so typewriter can deploy any app;
+- declare exactly `constructor(address scheduler)` and pass `scheduler` to `Typewriter(scheduler)`; the body may do more, but it takes no other arguments;
 - declare `enum Mutation` inside itself, with at most 253 members and none named like a built-in mutation;
 - keep all its storage in `state` (`constant`s are allowed), with no function-typed fields;
 - add no `public` or `external` functions or variables;
@@ -466,31 +470,19 @@ Typewriter checks these rules at startup and names the one that's broken.
 
 #### Determinism
 
-The server executes a mutation before it settles: against the app contract
-alone, in the last block the server saw, with unlimited gas and a gas price of
-0, called by the scheduler. Code whose result depends on anything else can
-diverge onchain, so Typewriter rejects it at startup. The check covers the app
+The server executes a mutation locally before it settles. Code whose result
+depends on anything but the app's state and the mutation can diverge onchain,
+so Typewriter rejects it at startup. The check covers the app
 contract's functions, each mutation library's `execute`, and every function,
 modifier, and operator they reach; it trusts Typewriter.sol. That code must not
 use:
 
 - `block.*` other than `block.chainid`, or `blockhash` or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
 - `msg.*` or `tx.*`: the server calls as the scheduler, but anyone can call `forceExecute`, and settlement batches the calldata;
-- `gasleft()`: the server runs with unlimited gas;
+- `gasleft()`;
 - another contract or account: external calls, `.call`/`.staticcall`/`.delegatecall`, `.send`/`.transfer`, `.balance`, `.code`/`.codehash`, `new`, or `selfdestruct`;
 - inline assembly, which the check can't read;
 - Typewriter's own state and functions (`accounts`, `queue`, `executionIndex`, `executionHash`, `_execute`, …).
-
-Library code a mutation doesn't reach, such as an unused assembly helper, isn't checked.
-
-`block.number` and `block.timestamp` are rejected too: a settlement carries
-the timestamp the server executed it at, and the contract checks expirations
-against it, but app code doesn't see it. The contract rejects a settlement
-whose timestamp is ahead of the block it lands in, or more than
-`MAX_SETTLEMENT_DELAY` (60) seconds behind it. The server accepts only
-authorizations and credentials that expire at least that long after the block
-it executes them in, so none executes after it expires. `forceExecute` checks
-expirations against the block it lands in.
 
 ### Server runtime
 
@@ -520,9 +512,10 @@ Starts the runtime and resolves to the `Typewriter` handle once it is ready to a
 
 Optional fields:
 
-- `hardfork` — the EVM hardfork mutations execute under. It defaults to the Monad mainnet or testnet schedule for `chainId`, so any other chain, such as your own Anvil, needs it.
+- `dev` — starts Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the scheduler, and fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork`. Setting any of the first four with `dev` is an error. The deployment lives in the database schema `typewriter_dev_<random>`, which is dropped with Anvil when the process stops. Anvil keeps only recent history, so reads of old blocks fail.
+- `hardfork` — the EVM hardfork mutations execute under. It defaults to the Monad mainnet or testnet schedule for `chainId`, so any other chain, such as a separately started Anvil, needs it (for example `"MonadTen"`).
 - `blockPollingIntervalMs` — default `200`.
-- `sequencing` — see [Sequencing](#sequencing); defaults to FIFO.
+- `sequencing` — `{ order: "fifo" }` (the default) or `{ order: "batch", batchIntervalMs?, batchOrder }`; see [Sequencing](#sequencing). `batchIntervalMs` defaults to `50`. `batchOrder` lists `Mutation` names; built-in account mutations always come first, and mutations not listed come last, in the order they were received.
 
 The Solidity entrypoint must be importable by Bun and belong to a Foundry project, with `forge` on the `PATH`. At startup, typewriter builds the project and derives mutation IDs, params, and typed storage from the contract.
 
@@ -583,19 +576,11 @@ member (or built-in mutation name), `params` matches its struct, and
 `authorization` has the fixed native shape. It resolves once the mutation is
 accepted and persisted. `executionIndex` (`bigint`) is the mutation's position
 in the onchain execution order and the primary key of its row in the mutation
-tables; a [late settlement](#submission) can move it.
-
-It rejects with:
-
-- `UnknownMutationError` — `name` is not a mutation.
-- `EncodeMutationError` — `params` or `authorization` doesn't match its ABI shape.
-- `MutationRevertedError` or `MutationHaltedError` — contract execution failed, for example on a bad signature or nonce.
-- `MutationTooLargeError` — the mutation needs more gas than a transaction allows.
-- `TypewriterStoppedError` — the runtime stopped before accepting it.
+tables; it's not fixed until the mutation is finalized.
 
 The server also rejects an authorization or credential that expires less than
 `MAX_SETTLEMENT_DELAY` seconds after the current block (see
-[Determinism](#determinism)).
+**Expirations** under [Authorization](#authorization)).
 
 ```ts
 const accepted = await typewriter.execute({
@@ -710,7 +695,7 @@ Subscribes to runtime events; returns an unsubscribe function. There are three e
 | `"included"` / `"finalized"` | `executionIndex`, `blockNumber`, `blockHash`, `blockTimestamp`, `transactionHash`, `transactionIndex` |
 | `"rejected"` | `error` |
 
-`executionIndex` and the block fields match the `execution_index`, `block_*` and `transaction_*` columns of the mutation's row. [Force-included](#force-inclusion) mutations don't emit events.
+> [Force-included](#force-inclusion) mutations don't emit events.
 
 **`"batch"` → `BatchEvent`** — fires when a batch changes status; batch sequencing only. Fields:
 
