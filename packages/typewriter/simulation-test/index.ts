@@ -128,6 +128,8 @@ export type SIM = {
     applyThenErrorRate: number;
     /** How far behind the chain the endpoint's view is, in virtual time. */
     lagMs: number;
+    /** How often a request applies, then answers after the runtime's request timeout. */
+    slowRate: number;
   }[];
   db: {
     latencyMs: [number, number];
@@ -238,6 +240,7 @@ export const SIM: SIM = {
         [0, 0.01, 0.1],
       ),
       lagMs: pick(SEED, `transports.${i}.lagMs`, [0, 0, 100, 1_000]),
+      slowRate: pick(SEED, `transports.${i}.slowRate`, [0, 0.01, 0.05]),
     }),
   ),
   db: {

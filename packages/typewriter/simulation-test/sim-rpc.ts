@@ -12,6 +12,9 @@ import type { Chain } from "./chain";
 import { SIM } from "./index";
 import { makeRandom } from "./random";
 
+/** Past the runtime's 5s request timeout. */
+const SLOW_MS = [6_000, 10_000] as const;
+
 /**
  * An `RpcTransport` for one simulated endpoint. Each call draws from its own
  * generator, keyed by the request and how many times the endpoint saw it.
@@ -29,6 +32,7 @@ export function makeSimTransport({
     errorRate,
     applyThenErrorRate,
     lagMs,
+    slowRate,
   } = SIM.transports[index]!;
 
   const occurrences = new Map<string, number>();
@@ -106,6 +110,20 @@ export function makeSimTransport({
       }
       const result = yield* read(request);
       if (draw < errorRate + applyThenErrorRate) return yield* injected();
+      if (slowRate > 0) {
+        // Its own generator, so seeds without slow requests draw as before.
+        const slow = yield* makeRandom(
+          SIM.seed,
+          `${index}:${key}:${occurrence}:slow`,
+        );
+        if (slow.nextDoubleUnsafe() < slowRate) {
+          yield* Effect.sleep(
+            Duration.millis(
+              SLOW_MS[0] + slow.nextDoubleUnsafe() * (SLOW_MS[1] - SLOW_MS[0]),
+            ),
+          );
+        }
+      }
       return result;
     });
 
