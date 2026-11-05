@@ -26,7 +26,12 @@ export type LocalBlock = {
  * `Finalized` is the chain's newest finalized block, which no reorg replaces.
  */
 export type WatchMessage =
-  | { _tag: "Added"; block: LocalBlock }
+  | {
+      _tag: "Added";
+      block: LocalBlock;
+      /** The newest head's timestamp, ahead of `block`'s while the watch catches up. */
+      headTimestamp: bigint;
+    }
   | { _tag: "Removed"; block: LocalBlock }
   | { _tag: "Finalized"; block: { number: bigint; hash: Hex.Hex } };
 
@@ -88,6 +93,7 @@ export function watchChain(
         let root = config.fromBlock;
         let chain: LocalBlock[] = [];
         const tip = () => chain.at(-1) ?? root;
+        let headTimestamp = 0n;
 
         /** Puts `top` on the chain, removing the blocks a reorg replaced. */
         const reconcile = (top: LocalBlock) =>
@@ -114,7 +120,14 @@ export function watchChain(
               yield* Queue.offer(queue, { _tag: "Removed", block });
             }
             for (const block of added) {
-              yield* Queue.offer(queue, { _tag: "Added", block });
+              yield* Queue.offer(queue, {
+                _tag: "Added",
+                block,
+                headTimestamp:
+                  headTimestamp > block.timestamp
+                    ? headTimestamp
+                    : block.timestamp,
+              });
             }
           });
 
@@ -138,6 +151,8 @@ export function watchChain(
           // Requested before `latest`, so the chain up to `latest` has it.
           const finalized = yield* requestBlock("finalized");
           const latest = yield* requestBlock("latest");
+          if (latest.timestamp > headTimestamp)
+            headTimestamp = latest.timestamp;
           if (
             latest.number <= root.number ||
             chain.some((block) => block.hash === latest.hash)

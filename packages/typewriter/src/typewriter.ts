@@ -1369,13 +1369,14 @@ export function createTypewriterEffect<
             return;
           }
 
+          // A settlement lands within `EXPIRATION_MARGIN` of the head, not of a block the watch is catching up on.
           yield* evm.setBlockContext({
             number: Hex.fromNumber(message.block.number),
-            timestamp: Hex.fromNumber(message.block.timestamp),
+            timestamp: Hex.fromNumber(message.headTimestamp),
           });
           blockContext = {
             number: message.block.number,
-            timestamp: message.block.timestamp,
+            timestamp: message.headTimestamp,
           };
           yield* replayEnqueues(message.block.logs);
           yield* land(message.block);
