@@ -15,13 +15,13 @@ import {
 import { builder } from "../src/db-transport";
 import { EMPTY_BATCH, encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
-import { TYPEWRITER_ABI } from "../src/typewriter-constants";
+import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type {
   BlockEvent,
   MutationEvent,
   MutationStatus,
 } from "../src/typewriter-types";
-import type { AppMutationName } from "./assessment";
+import type { AppMutationName, Mutation } from "./assessment";
 import type {
   AssessmentMutations,
   AssessmentStorage,
@@ -144,7 +144,8 @@ function checkSettlements(check: Check, onchain: Onchain) {
 /**
  * Each submission ended as expected: it executed onchain, or it was rejected
  * with an error its submission explains. An expiry is checked against the
- * chain at the time of the rejection.
+ * chain at the time of the rejection, and an executed mutation's expirations
+ * against the timestamp it executed at.
  */
 function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
   const executed = executedByKey(onchain);
@@ -209,6 +210,41 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
         expected.resubmissionErrors,
         undefined,
       );
+    }
+  }
+
+  // Each account's credentials execute in submission order, after its first.
+  const credentialExpirations = new Map<string, bigint>();
+  const added = new Map<string, number>();
+  for (const { mutation } of run.submissions) {
+    if (mutation.name !== "AddCredential") continue;
+    const accountID = mutation.authorization.accountID.toLowerCase();
+    const credentialID = (added.get(accountID) ?? 0) + 1;
+    added.set(accountID, credentialID);
+    credentialExpirations.set(
+      `${accountID}:${credentialID}`,
+      (mutation as Mutation<"AddCredential">).params.expiration,
+    );
+  }
+  for (const { key, queueIndex, timestamp } of onchain.executed) {
+    const submission = check.submissions.get(key);
+    // Only the contract checks an enqueue's expiration.
+    if (queueIndex !== undefined || submission === undefined) continue;
+    const { accountID, credentialID, expiration } =
+      submission.mutation.authorization;
+    const expirations = {
+      authorization: expiration,
+      credential:
+        credentialExpirations.get(
+          `${accountID.toLowerCase()}:${credentialID}`,
+        ) ?? 0n,
+    };
+    for (const [what, at] of Object.entries(expirations)) {
+      if (at !== 0n && at < timestamp + BigInt(EXPIRATION_MARGIN)) {
+        check.fail(
+          `${submission.label}: executed at ${timestamp}, but its ${what} expires at ${at}, within the margin`,
+        );
+      }
     }
   }
 
@@ -821,6 +857,7 @@ function droppedKeys(run: Run): Set<string> {
       event.status === "rejected" &&
       accepted.has(key) &&
       (errorName(event.error) === "AuthorizationExpired" ||
+        errorName(event.error) === "CredentialExpired" ||
         errorName(event.error) === "MutationExpiresTooSoonError")
     ) {
       dropped.add(key);
@@ -861,7 +898,13 @@ type Views = {
     string,
     {
       nonces: Record<string, bigint>;
-      credentials: { keyType: number; publicKey: Hex.Hex }[];
+      credentials: {
+        expiration: number;
+        keyType: number;
+        permissions: bigint;
+        publicKey: Hex.Hex;
+      }[];
+      activeCredentials: bigint;
     }
   >;
 };
@@ -890,11 +933,17 @@ async function snapshot<isAsync extends boolean>(
     for (let i = 0; i < length; i++) {
       const credential = account.credentials[i]!;
       credentials.push({
+        expiration: Number(await credential.expiration),
         keyType: Number(await credential.keyType),
+        permissions: await credential.permissions,
         publicKey: await credential.publicKey,
       });
     }
-    result[accountID] = { nonces, credentials };
+    result[accountID] = {
+      nonces,
+      credentials,
+      activeCredentials: await account.activeCredentials,
+    };
   }
 
   return {

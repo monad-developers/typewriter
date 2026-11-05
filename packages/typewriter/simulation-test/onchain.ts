@@ -13,6 +13,8 @@ export type Executed = {
   key: string;
   executionIndex: bigint;
   inclusion: Inclusion;
+  /** The timestamp its settlement pinned. */
+  timestamp: bigint;
   /** Its batch, counted across settlements. Unset when force-executed. */
   batch: number | undefined;
   /** Its queue index when force-executed. */
@@ -176,7 +178,12 @@ export function readOnchain({
         ) => {
           const executionIndex = BigInt(onchain.executed.length);
           settlement.executionIndexes.push(executionIndex);
-          onchain.executed.push({ ...executed, executionIndex, inclusion });
+          onchain.executed.push({
+            ...executed,
+            executionIndex,
+            inclusion,
+            timestamp: BigInt(pinnedTimestamp),
+          });
         };
         if (batch.mutations.length > 0) {
           const keys = batch.authorizationData.map((authorizationData, i) => {
