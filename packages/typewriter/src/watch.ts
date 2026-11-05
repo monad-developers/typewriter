@@ -38,7 +38,11 @@ export type WatchConfig = {
   bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
   /** Called with the chain's newest block while the watch catches up to it. */
-  onLatest: (block: { number: bigint; timestamp: bigint }) => void;
+  onLatest: (block: {
+    number: bigint;
+    timestamp: bigint;
+    baseFeePerGas: bigint | null;
+  }) => void;
 };
 
 /** The chain reorged deeper than the blocks the watch keeps. */

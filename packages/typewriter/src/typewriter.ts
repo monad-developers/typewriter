@@ -490,12 +490,13 @@ export function createTypewriterEffect<
       number: startBlock.number,
       timestamp: startBlock.timestamp,
     };
-    /** The chain's newest block, which settlements execute at, so a lagging watch can't make them land late. */
-    let latest = blockContext;
+    /** The chain's newest block, which settlements execute at and are signed with the base fee of, so a lagging watch can't make them land late. */
+    let latest = {
+      ...blockContext,
+      baseFeePerGas: startBlock.baseFeePerGas ?? 0n,
+    };
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
-    /** Settlements are signed with the newest watched block's base fee. */
-    let baseFeePerGas = startBlock.baseFeePerGas ?? 0n;
     const requestPriorityFee = rpc
       .request({ method: "eth_maxPriorityFeePerGas" })
       .pipe(Effect.map(Hex.toBigInt));
@@ -919,7 +920,7 @@ export function createTypewriterEffect<
               data: settlementCalldata(settlement),
               gas: BigInt(settlement.gasLimit),
               // Room for the base fee to double before it lands.
-              maxFeePerGas: 2n * baseFeePerGas + maxPriorityFeePerGas,
+              maxFeePerGas: 2n * latest.baseFeePerGas + maxPriorityFeePerGas,
               maxPriorityFeePerGas,
             }),
           catch: (cause) => new SignTransactionError({ cause }),
@@ -1355,8 +1356,10 @@ export function createTypewriterEffect<
           getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
         ),
       },
-      onLatest: ({ number, timestamp }) => {
-        if (number > latest.number) latest = { number, timestamp };
+      onLatest: ({ number, timestamp, baseFeePerGas }) => {
+        if (number > latest.number) {
+          latest = { number, timestamp, baseFeePerGas: baseFeePerGas ?? 0n };
+        }
       },
     }).pipe(
       Stream.mapEffect(
@@ -1398,7 +1401,6 @@ export function createTypewriterEffect<
             return;
           }
 
-          baseFeePerGas = message.block.baseFeePerGas;
           if (!refreshingPriorityFee) {
             refreshingPriorityFee = true;
             yield* Effect.gen(function* () {
@@ -1419,7 +1421,12 @@ export function createTypewriterEffect<
             number: message.block.number,
             timestamp: message.block.timestamp,
           };
-          if (blockContext.number >= latest.number) latest = blockContext;
+          if (blockContext.number >= latest.number) {
+            latest = {
+              ...blockContext,
+              baseFeePerGas: message.block.baseFeePerGas,
+            };
+          }
           yield* replayEnqueues(message.block);
           yield* land(message.block, landed!);
           yield* rebroadcast(message.block);
