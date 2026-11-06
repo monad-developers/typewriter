@@ -80,11 +80,11 @@ const runSamePageWrites = (
         [PAGE_WRITES_ADDR]: { code: SAME_PAGE_WRITES_CODE },
       },
     });
-    if (block !== undefined) yield* evm.setBlockContext(block);
     return yield* evm.execute({
       from: CALLER,
       to: PAGE_WRITES_ADDR,
       data: "0x",
+      block,
     });
   });
 
@@ -125,7 +125,7 @@ test("the hardfork follows the chain's schedule at the block timestamp", async (
   expect(at).toBe(monadTen);
 });
 
-test("setBlockContext switches the hardfork across an activation", async () => {
+test("execute switches the hardfork across an activation", async () => {
   const [monadNine, monadTen, forward, backward] = await Promise.all([
     samePageWritesGas({ spec: "MonadNine" }),
     samePageWritesGas({ spec: "MonadTen" }),
@@ -450,7 +450,7 @@ test("pruneJournals with an unknown journal id fails", async () => {
   expect(Exit.isFailure(exit)).toBe(true);
 });
 
-test("setBlockContext updates block parameters", async () => {
+test("execute updates block parameters", async () => {
   const program = Effect.gen(function* () {
     const evm = yield* createEVM({
       spec: "MonadTen",
@@ -461,18 +461,18 @@ test("setBlockContext updates block parameters", async () => {
         coinbase: "0x0000000000000000000000000000000000000001",
       },
     });
-    yield* evm.setBlockContext({
-      number: "0x2",
-      timestamp: "0xc8",
-      basefee: "0x14",
-      coinbase: "0x0000000000000000000000000000000000000002",
-    });
     // No stateful assertion possible with the counter contract,
     // but the call should not error.
     const exec = yield* evm.execute({
       from: CALLER,
       to: COUNTER_ADDR,
       data: "0x",
+      block: {
+        number: "0x2",
+        timestamp: "0xc8",
+        basefee: "0x14",
+        coinbase: "0x0000000000000000000000000000000000000002",
+      },
     });
     return exec;
   });

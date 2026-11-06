@@ -34,7 +34,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase")]
 enum Request {
-    SetBlockContext { id: u64, params: BlockParams },
     Execute { id: u64, params: ExecuteParams },
     ReadStorage { id: u64, params: ReadStorageParams },
     RevertJournals { id: u64, params: JournalIdsParams },
@@ -76,6 +75,8 @@ struct ExecuteParams {
     data: Bytes,
     #[serde(default)]
     value: U256,
+    /// Applied before the tx, and kept for later ones.
+    block: Option<BlockParams>,
 }
 
 impl ExecuteParams {
@@ -355,6 +356,9 @@ impl EvmHarness {
     }
 
     fn execute(&mut self, tx: &ExecuteParams) -> Result<ExecuteOk, String> {
+        if let Some(block) = &tx.block {
+            self.set_block_context(block)?;
+        }
         let (result, state) = self.run_tx(tx, AccessList::default())?;
         let access_list = self.discovered_access_list(tx, &state);
         let outcome = tx_outcome(&result, access_list, self.evm.0.ctx.cfg.0.spec);
@@ -537,9 +541,6 @@ pub fn dispatch_json(harness: &mut EvmHarness, request_json: &str) -> String {
     };
     let empty = |result: Result<(), String>| result.map(|()| EmptyResult {});
     match request {
-        Request::SetBlockContext { id, params } => {
-            respond(id, empty(harness.set_block_context(&params)))
-        }
         Request::Execute { id, params } => respond(id, harness.execute(&params)),
         Request::ReadStorage { id, params } => respond(id, Ok(harness.read_storage(&params))),
         Request::RevertJournals { id, params } => {
@@ -610,6 +611,7 @@ mod tests {
             to: address(CONTRACT),
             data: Bytes::new(),
             value: U256::ZERO,
+            block: None,
         }
     }
 

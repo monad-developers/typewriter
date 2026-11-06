@@ -270,6 +270,13 @@ function encodeMutation(
   });
 }
 
+function toBlockParams(block: { number: bigint; timestamp: bigint }) {
+  return {
+    number: Hex.fromNumber(block.number),
+    timestamp: Hex.fromNumber(block.timestamp),
+  };
+}
+
 function settlementCalldata(
   settlement: Pick<
     RuntimeSettlement,
@@ -473,11 +480,6 @@ export function createTypewriterEffect<
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
       yield* createRuntimeState(app, db, code);
-    yield* evm.setBlockContext({
-      number: Hex.fromNumber(startBlock.number),
-      timestamp: Hex.fromNumber(startBlock.timestamp),
-    });
-
     const startNonce = yield* requestNonce(app.account.address).pipe(
       Effect.provideService(Rpc, rpc),
     );
@@ -485,15 +487,16 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // State
 
-    /** The block revm executes in: the newest the watch has seen. */
-    let blockContext = {
+    /** The chain's newest block, not the watch's, so a lagging watch can't make settlements land late. */
+    let latest = {
       number: startBlock.number,
       timestamp: startBlock.timestamp,
+      baseFeePerGas: startBlock.baseFeePerGas ?? 0n,
     };
+    /** The newest block the watch has processed, which rebroadcasts count from. */
+    let watched = startBlock.number;
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
-    /** Settlements are signed with the newest watched block's base fee. */
-    let baseFeePerGas = startBlock.baseFeePerGas ?? 0n;
     const requestPriorityFee = rpc
       .request({ method: "eth_maxPriorityFeePerGas" })
       .pipe(Effect.map(Hex.toBigInt));
@@ -695,8 +698,12 @@ export function createTypewriterEffect<
         }
       });
 
-    const executeMutation = (mutation: ReceivedMutation, timestamp: bigint) =>
+    const executeMutation = (
+      mutation: ReceivedMutation,
+      block: { number: bigint; timestamp: bigint },
+    ) =>
       Effect.gen(function* () {
+        const { timestamp } = block;
         const fromExecutionHash = yield* readExecutionHash;
         const calldata = yield* encodeMutation(
           mutation,
@@ -708,6 +715,7 @@ export function createTypewriterEffect<
           from: app.account.address,
           to: app.address,
           data: calldata,
+          block: toBlockParams(block),
         });
         if (executeResult.status === "revert") {
           return yield* new MutationRevertedError(
@@ -779,15 +787,14 @@ export function createTypewriterEffect<
       batch?: RuntimeBatch,
     ) =>
       Effect.gen(function* () {
-        const { timestamp } = blockContext;
+        const block = latest;
+        const { timestamp } = block;
         const accepted: (Execution & {
           mutation: AcceptedMutation;
           deferred?: AcceptDeferred;
         })[] = [];
         for (const { mutation, deferred } of received) {
-          const result = yield* Effect.result(
-            executeMutation(mutation, timestamp),
-          );
+          const result = yield* Effect.result(executeMutation(mutation, block));
           if (Result.isSuccess(result)) {
             accepted.push({ ...result.success, deferred });
           } else if (deferred !== undefined) {
@@ -807,6 +814,7 @@ export function createTypewriterEffect<
               EMPTY_BATCH,
               [queueIndex],
             ),
+            block: toBlockParams(block),
           });
           if (
             executeResult.status !== "success" ||
@@ -913,7 +921,7 @@ export function createTypewriterEffect<
               data: settlementCalldata(settlement),
               gas: BigInt(settlement.gasLimit),
               // Room for the base fee to double before it lands.
-              maxFeePerGas: 2n * baseFeePerGas + maxPriorityFeePerGas,
+              maxFeePerGas: 2n * latest.baseFeePerGas + maxPriorityFeePerGas,
               maxPriorityFeePerGas,
             }),
           catch: (cause) => new SignTransactionError({ cause }),
@@ -969,8 +977,8 @@ export function createTypewriterEffect<
             status: "sent",
             raw,
             hash: Hash.keccak256(raw),
-            sentAt: blockContext.number,
-            firstSentAt: blockContext.number,
+            sentAt: watched,
+            firstSentAt: watched,
           },
         );
         yield* Effect.logDebug("Sending settlement transaction").pipe(
@@ -1150,8 +1158,8 @@ export function createTypewriterEffect<
         yield* Queue.offer(sendSignal, undefined);
       });
 
-    // Records where our transactions in `block` landed, in order.
-    const land = (block: LocalBlock) =>
+    // Ahead of `land`, which takes blocks one at a time.
+    const requestLanded = (block: LocalBlock) =>
       Effect.gen(function* () {
         const sentByHash = new Map(
           settlements
@@ -1169,7 +1177,15 @@ export function createTypewriterEffect<
           (settlement) => requestReceipt(settlement.hash, block),
           { concurrency: "unbounded" },
         );
+        return { landed, receipts };
+      });
 
+    // Records where our transactions in `block` landed, in order.
+    const land = (
+      block: LocalBlock,
+      { landed, receipts }: Effect.Success<ReturnType<typeof requestLanded>>,
+    ) =>
+      Effect.gen(function* () {
         yield* withStateLock(
           Effect.gen(function* () {
             const runtimeBlock: RuntimeBlock = {
@@ -1292,15 +1308,17 @@ export function createTypewriterEffect<
 
     // Every enqueue takes a queue index onchain, so revm replays each one
     // with its bytes. The next batch force-executes it.
-    const replayEnqueues = (logs: readonly LocalLog[]) =>
+    const replayEnqueues = (block: LocalBlock) =>
       withStateLock(
         Effect.gen(function* () {
-          for (const log of logs) {
+          for (const log of block.logs) {
             const queued = decodeForceInclusionQueued(log);
             const executeResult = yield* evm.execute({
               from: "0x0000000000000000000000000000000000000000",
               to: app.address,
               data: encodeEnqueueCalldata(queued),
+              // An enqueue records its block's timestamp.
+              block: toBlockParams(block),
             });
             if (executeResult.status === "revert") {
               return yield* new EnqueueRevertedError(
@@ -1335,8 +1353,24 @@ export function createTypewriterEffect<
           getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
         ),
       },
+      onLatest: ({ number, timestamp, baseFeePerGas }) => {
+        if (number > latest.number) {
+          latest = { number, timestamp, baseFeePerGas: baseFeePerGas ?? 0n };
+        }
+      },
     }).pipe(
-      Stream.runForEach((message) =>
+      Stream.mapEffect(
+        (message) =>
+          Effect.gen(function* () {
+            const landed =
+              message._tag === "Added"
+                ? yield* requestLanded(message.block)
+                : undefined;
+            return { message, landed };
+          }),
+        { concurrency: WATCH_BUFFER_SIZE },
+      ),
+      Stream.runForEach(({ message, landed }) =>
         Effect.gen(function* () {
           if (message._tag === "Finalized") {
             return yield* finalize(message.block.number);
@@ -1364,7 +1398,6 @@ export function createTypewriterEffect<
             return;
           }
 
-          baseFeePerGas = message.block.baseFeePerGas;
           if (!refreshingPriorityFee) {
             refreshingPriorityFee = true;
             yield* Effect.gen(function* () {
@@ -1381,16 +1414,9 @@ export function createTypewriterEffect<
               Effect.forkIn(scope),
             );
           }
-          yield* evm.setBlockContext({
-            number: Hex.fromNumber(message.block.number),
-            timestamp: Hex.fromNumber(message.block.timestamp),
-          });
-          blockContext = {
-            number: message.block.number,
-            timestamp: message.block.timestamp,
-          };
-          yield* replayEnqueues(message.block.logs);
-          yield* land(message.block);
+          watched = message.block.number;
+          yield* replayEnqueues(message.block);
+          yield* land(message.block, landed!);
           yield* rebroadcast(message.block);
         }),
       ),

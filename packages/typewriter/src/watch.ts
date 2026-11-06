@@ -4,7 +4,7 @@ import { Rpc, type RpcError } from "./rpc";
 import { type RequestedBlock, requestBlock } from "./rpc-request";
 
 /** How many blocks the watch requests at once when it falls behind. */
-const CATCH_UP_CONCURRENCY = 16;
+const CATCH_UP_CONCURRENCY = 25;
 
 export type LocalLog = {
   topics: [] | [signature: Hex.Hex, ...args: Hex.Hex[]];
@@ -37,6 +37,12 @@ export type WatchConfig = {
   pollIntervalMs: number;
   bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
+  /** Called with each newest block the watch requests, before it catches up to it. */
+  onLatest: (block: {
+    number: bigint;
+    timestamp: bigint;
+    baseFeePerGas: bigint | null;
+  }) => void;
 };
 
 /** The chain reorged deeper than the blocks the watch keeps. */
@@ -140,6 +146,7 @@ export function watchChain(
           // Requested before `latest`, so the chain up to `latest` has it.
           const finalized = yield* requestBlock("finalized");
           const latest = yield* requestBlock("latest");
+          config.onLatest(latest);
           if (
             latest.number <= root.number ||
             chain.some((block) => block.hash === latest.hash)
@@ -167,6 +174,9 @@ export function watchChain(
             );
             for (const block of blocks) yield* reconcile(block);
             yield* finalize(finalized);
+            if (tip().number < latest.number) {
+              config.onLatest(yield* requestBlock("latest"));
+            }
           }
         });
 
