@@ -37,7 +37,7 @@ export type WatchConfig = {
   pollIntervalMs: number;
   bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
-  /** Called with the chain's newest block while the watch catches up to it. */
+  /** Called with each newest block the watch requests, before it catches up to it. */
   onLatest: (block: {
     number: bigint;
     timestamp: bigint;
@@ -146,6 +146,7 @@ export function watchChain(
           // Requested before `latest`, so the chain up to `latest` has it.
           const finalized = yield* requestBlock("finalized");
           const latest = yield* requestBlock("latest");
+          config.onLatest(latest);
           if (
             latest.number <= root.number ||
             chain.some((block) => block.hash === latest.hash)
@@ -160,7 +161,6 @@ export function watchChain(
             return;
           }
 
-          config.onLatest(latest);
           while (tip().number < latest.number) {
             const start = tip().number + 1n;
             const count = Math.min(

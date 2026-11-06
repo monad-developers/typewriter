@@ -39,6 +39,8 @@ export type ExecuteParams = {
   to: Address.Address;
   data: Hex.Hex;
   value?: Hex.Hex;
+  /** Applied before the call, and kept for later ones. */
+  block?: BlockParams;
 };
 
 type TxResult = {
@@ -71,7 +73,6 @@ export type JournalIdsParams = {
 };
 
 export type Request =
-  | { method: "setBlockContext"; id: number; params: BlockParams }
   | { method: "execute"; id: number; params: ExecuteParams }
   | { method: "readStorage"; id: number; params: ReadStorageParams }
   | { method: "revertJournals"; id: number; params: JournalIdsParams }
