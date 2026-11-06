@@ -103,7 +103,8 @@ export type MutationStatus =
   | "finalized";
 
 export type BatchStatus = "accepted" | "included" | "finalized";
-export type BlockStatus = "included" | "finalized";
+/** `removed` once a reorg replaces an included block. */
+export type BlockStatus = "included" | "finalized" | "removed";
 
 type MutationBase = {
   name: string;

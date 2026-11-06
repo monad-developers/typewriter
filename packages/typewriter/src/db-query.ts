@@ -70,7 +70,8 @@ function mutationRow(mutation: AcceptedMutation): Record<string, unknown> {
 export function updateMutationInclusion(
   schema: Record<string, PgTable>,
   mutations: readonly Pick<AcceptedMutation, "name" | "executionIndex">[],
-  inclusion: Inclusion,
+  /** `undefined` clears it, for mutations whose block a reorg replaced. */
+  inclusion: Inclusion | undefined,
 ) {
   const indexesByTable = new Map<PgTable, bigint[]>();
   for (const mutation of mutations) {
@@ -84,11 +85,11 @@ export function updateMutationInclusion(
   }
 
   const values = {
-    block_number: inclusion.blockNumber,
-    block_hash: inclusion.blockHash,
-    block_timestamp: inclusion.blockTimestamp,
-    transaction_hash: inclusion.transactionHash,
-    transaction_index: inclusion.transactionIndex,
+    block_number: inclusion?.blockNumber ?? null,
+    block_hash: inclusion?.blockHash ?? null,
+    block_timestamp: inclusion?.blockTimestamp ?? null,
+    transaction_hash: inclusion?.transactionHash ?? null,
+    transaction_index: inclusion?.transactionIndex ?? null,
   };
   // The `SET` values take bind parameters too.
   const size = MAX_PG_PARAMS - Object.keys(values).length;

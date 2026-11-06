@@ -78,7 +78,6 @@ import {
   decodeRevert,
   EncodeMutationError,
   EnqueueHaltedError,
-  EnqueueReorgedError,
   EnqueueRevertedError,
   type ExecuteError,
   type ExecuteMutationError,
@@ -92,7 +91,6 @@ import {
   ResyncMismatchError,
   revertMessage,
   SettlementAfterRevertError,
-  SettlementReorgedError,
   SettlementRevertedError,
   SettlementStuckError,
   SignTransactionError,
@@ -232,6 +230,19 @@ function updateMutationToIncluded(
     ...inclusion,
     status: "included",
   });
+}
+
+function updateMutationToUnincluded(
+  mutation: IncludedMutation,
+): AcceptedMutation {
+  const unincluded = mutation as Partial<IncludedMutation>;
+  delete unincluded.blockNumber;
+  delete unincluded.blockHash;
+  delete unincluded.blockTimestamp;
+  delete unincluded.transactionHash;
+  delete unincluded.transactionIndex;
+  unincluded.status = "accepted" as never;
+  return unincluded as unknown as AcceptedMutation;
 }
 
 /** `mutation` as it was before it executed, to execute it again. */
@@ -505,8 +516,10 @@ export function createTypewriterEffect<
     let nextBatchId = 0;
     /** Every settlement not yet final, in execution order, which is nonce order. */
     let settlements: RuntimeSettlement[] = [];
-    /** From an onchain revert until every settlement sent before it lands. Nothing is sent meanwhile. */
+    /** From an onchain revert until every settlement sent before it is final. Nothing is sent meanwhile. */
     let resyncing = false;
+    /** Blocks with enqueues, which revm replays once they are final. */
+    let unfinalizedEnqueues: LocalBlock[] = [];
     /** Enqueues replayed in revm, to force-execute in the next batch. */
     let pendingQueueIndexes: bigint[] = [];
     /** Enqueues that failed in revm, to try again after a resync frees what they need. */
@@ -1013,10 +1026,6 @@ export function createTypewriterEffect<
 
     const requestReceipt = (hash: Hex.Hex, block: LocalBlock) =>
       Effect.gen(function* () {
-        const reorged = new SettlementReorgedError({
-          blockNumber: block.number,
-          blockHash: block.hash,
-        });
         for (let attempt = 1; ; attempt++) {
           const receipt = yield* untilSuccess(
             rpc.request({
@@ -1027,13 +1036,13 @@ export function createTypewriterEffect<
           if (receipt?.blockHash === block.hash) {
             return formatTransactionReceipt(receipt);
           }
-          if (receipt !== null) return yield* reorged;
-          // A provider behind the watch's has no receipt yet, unless a reorg removed the block.
+          // A provider behind the watch's, or on another fork, has another
+          // answer, unless a reorg removed the block.
           if (attempt % 10 === 0) {
             const canonical = yield* untilSuccess(
               requestBlock(block.number).pipe(Effect.provideService(Rpc, rpc)),
             );
-            if (canonical.hash !== block.hash) return yield* reorged;
+            if (canonical.hash !== block.hash) return undefined;
             yield* Effect.logWarning("Waiting for a settlement receipt").pipe(
               Effect.annotateLogs({ transaction_hash: hash, attempt }),
             );
@@ -1077,14 +1086,18 @@ export function createTypewriterEffect<
         );
       });
 
-    // Once every settlement sent before the first revert has landed, the
+    // Once every settlement sent before the first revert is final, the
     // chain is where that settlement started, and it and every later one
-    // execute again.
-    const resync = (block: LocalBlock) =>
+    // execute again. A reorg can't undo a final revert.
+    const resync = (block: { number: bigint; hash: Hex.Hex }) =>
       Effect.gen(function* () {
         if (
-          settlements.some(
-            ({ status }) => status === "signing" || status === "sent",
+          !resyncing ||
+          !settlements.every(
+            (settlement) =>
+              settlement.status === "executed" ||
+              (settlement.status === "reverted" &&
+                settlement.block.number <= block.number),
           )
         ) {
           return;
@@ -1159,19 +1172,21 @@ export function createTypewriterEffect<
       });
 
     // Ahead of `land`, which takes blocks one at a time.
+    const sentIn = (block: LocalBlock) => {
+      const sentByHash = new Map(
+        settlements
+          .filter(
+            (settlement): settlement is SentSettlement =>
+              settlement.status === "sent",
+          )
+          .map((settlement) => [settlement.hash, settlement]),
+      );
+      return block.transactions.flatMap((hash) => sentByHash.get(hash) ?? []);
+    };
+
     const requestLanded = (block: LocalBlock) =>
       Effect.gen(function* () {
-        const sentByHash = new Map(
-          settlements
-            .filter(
-              (settlement): settlement is SentSettlement =>
-                settlement.status === "sent",
-            )
-            .map((settlement) => [settlement.hash, settlement]),
-        );
-        const landed = block.transactions.flatMap(
-          (hash) => sentByHash.get(hash) ?? [],
-        );
+        const landed = sentIn(block);
         const receipts = yield* Effect.forEach(
           landed,
           (settlement) => requestReceipt(settlement.hash, block),
@@ -1183,9 +1198,17 @@ export function createTypewriterEffect<
     // Records where our transactions in `block` landed, in order.
     const land = (
       block: LocalBlock,
-      { landed, receipts }: Effect.Success<ReturnType<typeof requestLanded>>,
+      requested: Effect.Success<ReturnType<typeof requestLanded>>,
     ) =>
       Effect.gen(function* () {
+        // A removed block's settlements are sent again after `requested`.
+        const { landed, receipts } =
+          sentIn(block).length === requested.landed.length
+            ? requested
+            : yield* requestLanded(block);
+        // The watch removes the block.
+        if (receipts.includes(undefined)) return;
+
         yield* withStateLock(
           Effect.gen(function* () {
             const runtimeBlock: RuntimeBlock = {
@@ -1233,13 +1256,61 @@ export function createTypewriterEffect<
                 runtimeBlock,
               );
             }
-            if (receipts.some(({ status }) => status === "success")) {
+            if (receipts.some((receipt) => receipt!.status === "success")) {
               yield* emitBlock(runtimeBlock);
             }
-            if (resyncing) yield* resync(block);
           }),
         );
       });
+
+    // A reorg replaced `block`. Its settlements are sent again as signed, and
+    // land with the same result, since each pins its timestamp.
+    const unland = (block: LocalBlock) =>
+      withStateLock(
+        Effect.gen(function* () {
+          const removed = settlements.filter(
+            (settlement): settlement is LandedSettlement =>
+              (settlement.status === "included" ||
+                settlement.status === "reverted") &&
+              settlement.block.hash === block.hash,
+          );
+          if (removed.length === 0) return 0;
+          const runtimeBlock = removed[0]!.block;
+          const included = removed.some(({ status }) => status === "included");
+          for (const settlement of removed) {
+            delete (settlement as Partial<LandedSettlement>).block;
+            const sent = updateStatus<LandedSettlement, SentSettlement>(
+              settlement,
+              { status: "sent" },
+            );
+            sent.sentAt = 0n;
+            sent.firstSentAt = watched;
+          }
+          resyncing = settlements.some(({ status }) => status === "reverted");
+          yield* Queue.offer(sendSignal, undefined);
+          if (!included) return removed.length;
+
+          const mutations = runtimeBlock.batches.flatMap((batch) => {
+            batch.status = "accepted";
+            return batch.mutations.map((mutation) =>
+              updateMutationToUnincluded(mutation as IncludedMutation),
+            );
+          });
+          yield* Deferred.await(
+            yield* persist(
+              updateMutationInclusion(app.mutationSchema, mutations, undefined),
+            ),
+          );
+          const { number, hash, timestamp } = runtimeBlock;
+          yield* emit("block", blockListeners, {
+            status: "removed",
+            number,
+            hash,
+            timestamp,
+          } as BlockEvent<"fifo" | "batch">);
+          return removed.length;
+        }),
+      );
 
     const rebroadcast = (block: LocalBlock) =>
       Effect.gen(function* () {
@@ -1276,18 +1347,19 @@ export function createTypewriterEffect<
         if (due.length > 0) yield* broadcast(due);
       });
 
-    const finalize = (finalized: bigint) =>
+    const finalize = (finalized: { number: bigint; hash: Hex.Hex }) =>
       withStateLock(
         Effect.gen(function* () {
           const final = settlements.filter(
             (settlement): settlement is LandedSettlement =>
               settlement.status === "included" &&
-              settlement.block.number <= finalized,
+              settlement.block.number <= finalized.number,
           );
-          if (final.length === 0) return;
-          yield* evm.pruneJournals({
-            journal_ids: final.flatMap(({ journalIds }) => journalIds),
-          });
+          if (final.length > 0) {
+            yield* evm.pruneJournals({
+              journal_ids: final.flatMap(({ journalIds }) => journalIds),
+            });
+          }
           const isFinal = new Set<RuntimeSettlement>(final);
           settlements = settlements.filter(
             (settlement) => !isFinal.has(settlement),
@@ -1303,42 +1375,52 @@ export function createTypewriterEffect<
             }
             yield* emitBlock(block);
           }
+          yield* resync(finalized);
         }),
       );
 
     // Every enqueue takes a queue index onchain, so revm replays each one
-    // with its bytes. The next batch force-executes it.
-    const replayEnqueues = (block: LocalBlock) =>
+    // with its bytes, once its block is final, so no reorg undoes it. The
+    // next batch force-executes it.
+    const replayEnqueues = (finalized: bigint) =>
       withStateLock(
         Effect.gen(function* () {
-          for (const log of block.logs) {
-            const queued = decodeForceInclusionQueued(log);
-            const executeResult = yield* evm.execute({
-              from: "0x0000000000000000000000000000000000000000",
-              to: app.address,
-              data: encodeEnqueueCalldata(queued),
-              // An enqueue records its block's timestamp.
-              block: toBlockParams(block),
-            });
-            if (executeResult.status === "revert") {
-              return yield* new EnqueueRevertedError(
-                decodeRevert(app.abi, executeResult.data),
-              );
-            }
-            if (executeResult.status === "halt") {
-              return yield* new EnqueueHaltedError({
-                reason: executeResult.reason,
+          const final = unfinalizedEnqueues.filter(
+            ({ number }) => number <= finalized,
+          );
+          unfinalizedEnqueues = unfinalizedEnqueues.filter(
+            ({ number }) => number > finalized,
+          );
+          for (const block of final) {
+            for (const log of block.logs) {
+              const queued = decodeForceInclusionQueued(log);
+              const executeResult = yield* evm.execute({
+                from: "0x0000000000000000000000000000000000000000",
+                to: app.address,
+                data: encodeEnqueueCalldata(queued),
+                // An enqueue records its block's timestamp.
+                block: toBlockParams(block),
               });
+              if (executeResult.status === "revert") {
+                return yield* new EnqueueRevertedError(
+                  decodeRevert(app.abi, executeResult.data),
+                );
+              }
+              if (executeResult.status === "halt") {
+                return yield* new EnqueueHaltedError({
+                  reason: executeResult.reason,
+                });
+              }
+              // The enqueue is already onchain, so nothing rewinds it.
+              yield* evm.pruneJournals({
+                journal_ids: [executeResult.journal_id],
+              });
+              invalidateStorageCache(
+                executeResult.slot_writes.map((write) => write.slot),
+              );
+              pendingQueueIndexes.push(queued.index);
+              yield* Queue.offer(acceptSignal, undefined);
             }
-            // The enqueue is already onchain, so nothing rewinds it.
-            yield* evm.pruneJournals({
-              journal_ids: [executeResult.journal_id],
-            });
-            invalidateStorageCache(
-              executeResult.slot_writes.map((write) => write.slot),
-            );
-            pendingQueueIndexes.push(queued.index);
-            yield* Queue.offer(acceptSignal, undefined);
           }
         }),
       );
@@ -1373,28 +1455,21 @@ export function createTypewriterEffect<
       Stream.runForEach(({ message, landed }) =>
         Effect.gen(function* () {
           if (message._tag === "Finalized") {
-            return yield* finalize(message.block.number);
+            yield* replayEnqueues(message.block.number);
+            return yield* finalize(message.block);
           }
           if (message._tag === "Removed") {
-            if (
-              settlements.some(
-                (settlement) =>
-                  (settlement.status === "included" ||
-                    settlement.status === "reverted") &&
-                  settlement.block.hash === message.block.hash,
-              )
-            ) {
-              return yield* new SettlementReorgedError({
-                blockNumber: message.block.number,
-                blockHash: message.block.hash,
-              });
-            }
-            if (message.block.logs.length > 0) {
-              return yield* new EnqueueReorgedError({
-                blockNumber: message.block.number,
-                blockHash: message.block.hash,
-              });
-            }
+            const { hash } = message.block;
+            unfinalizedEnqueues = unfinalizedEnqueues.filter(
+              (block) => block.hash !== hash,
+            );
+            yield* Effect.logInfo("Removed reorged block").pipe(
+              Effect.annotateLogs({
+                block_number: message.block.number,
+                block_hash: hash,
+                settlement_count: yield* unland(message.block),
+              }),
+            );
             return;
           }
 
@@ -1415,7 +1490,9 @@ export function createTypewriterEffect<
             );
           }
           watched = message.block.number;
-          yield* replayEnqueues(message.block);
+          if (message.block.logs.length > 0) {
+            unfinalizedEnqueues.push(message.block);
+          }
           yield* land(message.block, landed!);
           yield* rebroadcast(message.block);
         }),

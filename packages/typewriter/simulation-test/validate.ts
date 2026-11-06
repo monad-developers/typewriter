@@ -352,6 +352,15 @@ function checkOrder(
 /** The runtime sorts built-in mutations first in a batch. */
 const BUILTIN_ORDER = ["CreateAccount", "AddCredential", "RemoveCredential"];
 
+/** The hashes of the blocks reorgs replaced, in lowercase. */
+function replacedHashes(run: Run): Set<string> {
+  return new Set(
+    run.reorgs.flatMap(({ replaced }) =>
+      replaced.map((hash) => hash.toLowerCase()),
+    ),
+  );
+}
+
 /** A finalized block is on the canonical chain, and no reorg replaced it. */
 function checkFinality(check: Check, run: Run, onchain: Onchain) {
   const replaced = new Set(
@@ -449,6 +458,7 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
   const executed = executedByKey(onchain);
   const events = eventsByKey(run);
   const dropped = droppedKeys(run);
+  const replaced = replacedHashes(run);
   for (const key of events.keys()) {
     if (!check.submissions.has(key)) {
       check.fail(`mutation events for a mutation no one submitted: ${key}`);
@@ -484,8 +494,14 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           ? ["received", "accepted", "included", "finalized"]
           : ["received", "rejected"];
     // When a settlement reverts in revm, its mutations execute again: each is
-    // accepted again, maybe at another index, or dropped.
+    // accepted again, maybe at another index, or dropped. A reorg that
+    // replaces its block makes it accepted again too.
     const seenStatuses = seen
+      .filter(
+        (event) =>
+          event.status !== "included" ||
+          !replaced.has(event.blockHash.toLowerCase()),
+      )
       .map((event) => event.status)
       .filter(
         (status, i, all) => status !== "accepted" || all[i - 1] !== status,
@@ -509,7 +525,11 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           `${label} ${event.status} event executionIndex`,
         );
       }
-      if (event.status === "included" || event.status === "finalized") {
+      if (
+        (event.status === "included" &&
+          !replaced.has(event.blockHash.toLowerCase())) ||
+        event.status === "finalized"
+      ) {
         check.equal(
           {
             blockNumber: event.blockNumber,
@@ -540,8 +560,14 @@ function checkBatchEvents(
   // A mutation dropped from a reverted settlement leaves its batch, and a
   // batch it empties is never included.
   const dropped = droppedKeys(run);
+  const replaced = replacedHashes(run);
   const accepted = run.batchEvents
-    .filter((event) => event.status === "accepted")
+    // A reorg that replaces its block makes a batch accepted again.
+    .filter(
+      (event, i, all) =>
+        event.status === "accepted" &&
+        all.findIndex((other) => other.id === event.id) === i,
+    )
     .map(({ id, mutations }) => ({
       id,
       keys: mutations
@@ -557,8 +583,19 @@ function checkBatchEvents(
   for (const { id } of accepted) {
     check.equal(
       run.batchEvents
-        .filter((event) => event.id === id)
-        .map((event) => event.status),
+        .filter(
+          (event) =>
+            event.id === id &&
+            !(
+              event.status === "included" &&
+              replaced.has(event.mutations[0]!.blockHash!.toLowerCase())
+            ),
+        )
+        .map((event) => event.status)
+        .filter(
+          (status, i, all) =>
+            status !== "accepted" || i === 0 || all[i - 1] !== status,
+        ),
       ["accepted", "included", "finalized"],
       `batch ${id} event statuses`,
     );
@@ -614,12 +651,21 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
       );
     }
   }
-  for (const [hash, [event]] of byHash) {
-    if (!settledBlocks.has(hash)) {
+  // A block a reorg replaced is included, then removed.
+  const replaced = replacedHashes(run);
+  for (const [hash, seen] of byHash) {
+    if (settledBlocks.has(hash)) continue;
+    if (!replaced.has(hash)) {
       check.fail(
-        `block ${event!.number} ${hash}: block events, but it settled nothing`,
+        `block ${seen[0]!.number} ${hash}: block events, but it settled nothing`,
       );
+      continue;
     }
+    check.equal(
+      seen.map((event) => event.status),
+      ["included", "removed"],
+      `replaced block ${seen[0]!.number} event statuses`,
+    );
   }
 }
 
