@@ -27,14 +27,22 @@ const typewriter = await createTypewriter(ASSESSMENT_ENTRYPOINT, {
 });
 
 let included = 0;
-typewriter.on("mutation", ({ status }) => {
-  if (status === "included") included++;
+const acceptedAt = new Map<bigint, number>();
+const inclusionMs: number[] = [];
+typewriter.on("mutation", (event) => {
+  if (event.status === "accepted") {
+    acceptedAt.set(event.executionIndex, performance.now());
+  } else if (event.status === "included") {
+    included++;
+    inclusionMs.push(performance.now() - acceptedAt.get(event.executionIndex)!);
+  }
 });
 
 Bun.serve({
   port,
   routes: {
     "/included": () => Response.json(included),
+    "/inclusion": () => Response.json(inclusionMs),
     "/execute": {
       POST: async (req) => {
         const mutation = await req.json();

@@ -22,11 +22,17 @@ export type LocalBlock = {
   transactions: Hex.Hex[];
 };
 
+/** A block before its logs. */
+export type FetchedBlock = Omit<LocalBlock, "logs">;
+
 /**
  * A reorg is `Removed` for each replaced block, newest first, then `Added`.
  * `Finalized` is the chain's newest finalized block, which no reorg replaces.
+ * `Fetched` is a block as soon as the watch has it, before its logs. It can
+ * repeat, and a block from a stale view or a reorg is never `Added`.
  */
 export type WatchMessage =
+  | { _tag: "Fetched"; block: FetchedBlock }
   | { _tag: "Added"; block: LocalBlock }
   | { _tag: "Removed"; block: LocalBlock }
   | { _tag: "Finalized"; block: { number: bigint; hash: Hex.Hex } };
@@ -37,12 +43,6 @@ export type WatchConfig = {
   pollIntervalMs: number;
   bufferSize: number;
   logFilter: { address: Hex.Hex; selector: Hex.Hex };
-  /** Called with each newest block the watch requests, before it catches up to it. */
-  onLatest: (block: {
-    number: bigint;
-    timestamp: bigint;
-    baseFeePerGas: bigint | null;
-  }) => void;
 };
 
 /** The chain reorged deeper than the blocks the watch keeps. */
@@ -81,26 +81,38 @@ export function watchChain(
           Duration.millis(config.pollIntervalMs),
         );
 
-        const withLogs = (block: RequestedBlock) =>
+        const fetched = (block: RequestedBlock) =>
+          Effect.gen(function* () {
+            const fetchedBlock: FetchedBlock = {
+              number: block.number,
+              hash: block.hash,
+              parentHash: block.parentHash,
+              timestamp: block.timestamp,
+              baseFeePerGas: block.baseFeePerGas ?? 0n,
+              transactions: block.transactions,
+            };
+            yield* Queue.offer(queue, { _tag: "Fetched", block: fetchedBlock });
+            return fetchedBlock;
+          });
+
+        const withLogs = (block: FetchedBlock) =>
           Effect.gen(function* () {
             const logs = yield* rpc.request({
               method: "eth_getLogs",
               params: [{ blockHash: block.hash, address, topics: [selector] }],
             });
             const localBlock: LocalBlock = {
-              number: block.number,
-              hash: block.hash,
-              parentHash: block.parentHash,
-              timestamp: block.timestamp,
-              baseFeePerGas: block.baseFeePerGas ?? 0n,
+              ...block,
               logs: logs.map((log) => ({ topics: log.topics, data: log.data })),
-              transactions: block.transactions,
             };
             return localBlock;
           });
 
         const getBlock = (id: bigint | Hex.Hex) =>
-          requestBlock(id).pipe(Effect.flatMap(withLogs));
+          requestBlock(id).pipe(
+            Effect.flatMap(fetched),
+            Effect.flatMap(withLogs),
+          );
 
         /** The block below `chain`. A reorg that replaces it is unrecoverable. */
         let root = config.fromBlock;
@@ -154,18 +166,20 @@ export function watchChain(
           });
 
         const poll = Effect.gen(function* () {
-          // Requested before `latest`, so the chain up to `latest` has it.
-          const finalized = yield* requestBlock("finalized");
-          const latest = yield* requestBlock("latest");
-          config.onLatest(latest);
+          // A finalized block past `latest` is one a later poll finalizes.
+          const [finalized, latest] = yield* Effect.all(
+            [requestBlock("finalized"), requestBlock("latest")],
+            { concurrency: "unbounded" },
+          );
           // A stale view can serve an orphaned block, so only a longer chain reorgs.
           if (latest.number <= tip().number) {
             yield* finalize(finalized);
             return;
           }
 
+          const head = yield* fetched(latest);
           if (latest.number === tip().number + 1n) {
-            yield* reconcile(yield* withLogs(latest));
+            yield* reconcile(yield* withLogs(head));
             yield* finalize(finalized);
             return;
           }
@@ -184,7 +198,7 @@ export function watchChain(
             for (const block of blocks) yield* reconcile(block);
             yield* finalize(finalized);
             if (tip().number < latest.number) {
-              config.onLatest(yield* requestBlock("latest"));
+              yield* fetched(yield* requestBlock("latest"));
             }
           }
         });
@@ -202,7 +216,7 @@ export function watchChain(
             while: (error) => error._tag !== "UnrecoverableReorgError",
             schedule: pollInterval,
           }),
-          Effect.repeat(pollInterval),
+          Effect.repeat(Schedule.fixed(Duration.millis(config.pollIntervalMs))),
         );
       }),
     { bufferSize: config.bufferSize, strategy: "suspend" },
