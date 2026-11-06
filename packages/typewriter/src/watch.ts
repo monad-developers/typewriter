@@ -158,15 +158,13 @@ export function watchChain(
           const finalized = yield* requestBlock("finalized");
           const latest = yield* requestBlock("latest");
           config.onLatest(latest);
-          if (
-            latest.number <= root.number ||
-            chain.some((block) => block.hash === latest.hash)
-          ) {
+          // A stale view can serve an orphaned block, so only a longer chain reorgs.
+          if (latest.number <= tip().number) {
             yield* finalize(finalized);
             return;
           }
 
-          if (latest.number <= tip().number + 1n) {
+          if (latest.number === tip().number + 1n) {
             yield* reconcile(yield* withLogs(latest));
             yield* finalize(finalized);
             return;
