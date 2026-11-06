@@ -285,9 +285,20 @@ const benchmark = Effect.gen(function* () {
   }
   const includedMs = performance.now() - start;
 
-  const latencies = samples.map(({ ms }) => ms).toSorted((a, b) => a - b);
-  const at = (p: number) =>
-    Math.round(latencies[Math.floor(p * (latencies.length - 1))]! * 10) / 10;
+  const inclusions = yield* Effect.orDie(
+    Effect.tryPromise(() =>
+      fetch(`${typewriterUrl}/inclusion`).then(
+        (response) => response.json() as Promise<number[]>,
+      ),
+    ),
+  );
+  const percentile = (values: number[]) => {
+    const sorted = values.toSorted((a, b) => a - b);
+    return (p: number) =>
+      Math.round(sorted[Math.floor(p * (sorted.length - 1))]! * 10) / 10;
+  };
+  const at = percentile(samples.map(({ ms }) => ms));
+  const inclusionAt = percentile(inclusions);
   yield* Effect.logInfo("Benchmarked typewriter").pipe(
     Effect.annotateLogs({
       executes: samples.length,
@@ -297,6 +308,9 @@ const benchmark = Effect.gen(function* () {
       execute_p90_ms: at(0.9),
       execute_p99_ms: at(0.99),
       execute_max_ms: at(1),
+      inclusion_p50_ms: inclusionAt(0.5),
+      inclusion_p90_ms: inclusionAt(0.9),
+      inclusion_p99_ms: inclusionAt(0.99),
     }),
   );
 });
