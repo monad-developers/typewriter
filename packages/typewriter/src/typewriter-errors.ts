@@ -230,30 +230,6 @@ export class SettlementStuckError extends Data.TaggedError(
   }
 }
 
-/** A reorg replaced a block with settlements before it was final. */
-export class SettlementReorgedError extends Data.TaggedError(
-  "SettlementReorgedError",
-)<{
-  blockNumber: bigint;
-  blockHash: Hex.Hex;
-}> {
-  override get message() {
-    return `Settlements were reorged out of block ${this.blockNumber} (${this.blockHash})`;
-  }
-}
-
-/** A reorg replaced a block with enqueues that revm replayed. */
-export class EnqueueReorgedError extends Data.TaggedError(
-  "EnqueueReorgedError",
-)<{
-  blockNumber: bigint;
-  blockHash: Hex.Hex;
-}> {
-  override get message() {
-    return `Block ${this.blockNumber} (${this.blockHash}) with enqueued mutations was reorged out`;
-  }
-}
-
 /**
  * `program` stopped, so a waiting `execute` will never get an answer. `cause`
  * is how the program exited: a {@link ProgramError}, or an interruption.
@@ -290,11 +266,9 @@ export type ProgramError =
   | SettlementRevertedError
   | SettlementAfterRevertError
   | ResyncMismatchError
-  | SettlementReorgedError
   | SettlementStuckError
   | EnqueueRevertedError
   | EnqueueHaltedError
-  | EnqueueReorgedError
   | SignTransactionError
   | ProgramStoppedError;
 

@@ -352,13 +352,18 @@ function checkOrder(
 /** The runtime sorts built-in mutations first in a batch. */
 const BUILTIN_ORDER = ["CreateAccount", "AddCredential", "RemoveCredential"];
 
-/** A finalized block is on the canonical chain, and no reorg replaced it. */
-function checkFinality(check: Check, run: Run, onchain: Onchain) {
-  const replaced = new Set(
+/** The hashes of the blocks reorgs replaced, in lowercase. */
+function replacedHashes(run: Run): Set<string> {
+  return new Set(
     run.reorgs.flatMap(({ replaced }) =>
       replaced.map((hash) => hash.toLowerCase()),
     ),
   );
+}
+
+/** A finalized block is on the canonical chain, and no reorg replaced it. */
+function checkFinality(check: Check, run: Run, onchain: Onchain) {
+  const replaced = replacedHashes(run);
   for (const { status, number, hash } of run.blockEvents) {
     if (status !== "finalized") continue;
     if (replaced.has(hash.toLowerCase())) {
@@ -449,6 +454,7 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
   const executed = executedByKey(onchain);
   const events = eventsByKey(run);
   const dropped = droppedKeys(run);
+  const replaced = replacedHashes(run);
   for (const key of events.keys()) {
     if (!check.submissions.has(key)) {
       check.fail(`mutation events for a mutation no one submitted: ${key}`);
@@ -484,8 +490,14 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
           ? ["received", "accepted", "included", "finalized"]
           : ["received", "rejected"];
     // When a settlement reverts in revm, its mutations execute again: each is
-    // accepted again, maybe at another index, or dropped.
+    // accepted again, maybe at another index, or dropped. A reorg undoes an
+    // inclusion in a block it replaced.
     const seenStatuses = seen
+      .filter(
+        (event) =>
+          event.status !== "included" ||
+          !replaced.has(event.blockHash.toLowerCase()),
+      )
       .map((event) => event.status)
       .filter(
         (status, i, all) => status !== "accepted" || all[i - 1] !== status,
@@ -502,6 +514,12 @@ function checkMutationEvents(check: Check, run: Run, onchain: Onchain) {
     const lastAccepted = seen.findLast((event) => event.status === "accepted");
     for (const event of seen) {
       if (event.status === "accepted" && event !== lastAccepted) continue;
+      if (
+        event.status === "included" &&
+        replaced.has(event.blockHash.toLowerCase())
+      ) {
+        continue;
+      }
       if ("executionIndex" in event) {
         check.equal(
           event.executionIndex,
@@ -540,6 +558,7 @@ function checkBatchEvents(
   // A mutation dropped from a reverted settlement leaves its batch, and a
   // batch it empties is never included.
   const dropped = droppedKeys(run);
+  const replaced = replacedHashes(run);
   const accepted = run.batchEvents
     .filter((event) => event.status === "accepted")
     .map(({ id, mutations }) => ({
@@ -557,7 +576,14 @@ function checkBatchEvents(
   for (const { id } of accepted) {
     check.equal(
       run.batchEvents
-        .filter((event) => event.id === id)
+        .filter(
+          (event) =>
+            event.id === id &&
+            !(
+              event.status === "included" &&
+              replaced.has(event.mutations[0]!.blockHash!.toLowerCase())
+            ),
+        )
         .map((event) => event.status),
       ["accepted", "included", "finalized"],
       `batch ${id} event statuses`,
@@ -614,12 +640,21 @@ function checkBlockEvents(check: Check, run: Run, onchain: Onchain) {
       );
     }
   }
-  for (const [hash, [event]] of byHash) {
-    if (!settledBlocks.has(hash)) {
+  // A block a reorg replaced is included, then removed.
+  const replaced = replacedHashes(run);
+  for (const [hash, seen] of byHash) {
+    if (settledBlocks.has(hash)) continue;
+    if (!replaced.has(hash)) {
       check.fail(
-        `block ${event!.number} ${hash}: block events, but it settled nothing`,
+        `block ${seen[0]!.number} ${hash}: block events, but it settled nothing`,
       );
+      continue;
     }
+    check.equal(
+      seen.map((event) => event.status),
+      ["included", "removed"],
+      `replaced block ${seen[0]!.number} event statuses`,
+    );
   }
 }
 
@@ -880,6 +915,7 @@ function eventsByKey(
 function executionIndexesOf(
   event: BlockEvent<"fifo" | "batch", AssessmentMutations>,
 ) {
+  if (event.status === "removed") return [];
   const mutations =
     "mutations" in event
       ? event.mutations

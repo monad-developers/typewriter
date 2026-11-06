@@ -98,8 +98,7 @@ export function makePlan(seed: string): Plan {
   // Each field draws from its own generator, so a new draw shifts no other field.
   const at = (path: string) => new Rng(seed, `plan:${path}`);
 
-  // TODO(kyle) restore [0, 0.01, 0.05, 0.2] with reorg handling.
-  const reorgRate = at("chain.reorgRate").pick([0]);
+  const reorgRate = at("chain.reorgRate").pick([0, 0.01, 0.05, 0.2]);
   const chain: Plan["chain"] = {
     blockTimeMs: at("chain.blockTimeMs").pick([100, 300, 400, 1_000]),
     genesisTimestamp: 1_700_000_000,

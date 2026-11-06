@@ -445,6 +445,11 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
         // poll reads both again.
         while (true) {
           yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
+          // Read before the receipt, so a reorg between them cannot make an orphaned receipt look final.
+          const latest = (yield* simChain.request({
+            method: "eth_getBlockByNumber",
+            params: ["latest", false],
+          }))!;
           const receipt = yield* simChain.request({
             method: "eth_getTransactionReceipt",
             params: [submission.transactionHash!],
@@ -464,10 +469,6 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
               `${label}: enqueue ${receipt.transactionHash} reverted`,
             );
           }
-          const latest = (yield* simChain.request({
-            method: "eth_getBlockByNumber",
-            params: ["latest", false],
-          }))!;
           const head = BigInt(latest.number!);
           // No reorg replaces a block `finalizedBlockDepth` deep, so an
           // enqueue there is never dropped.

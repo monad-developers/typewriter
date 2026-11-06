@@ -54,6 +54,10 @@ app.on("batch", (batch) => {
 });
 
 app.on("block", (block) => {
+  if (block.status === "removed") {
+    includedBlocks = includedBlocks.filter(({ hash }) => hash !== block.hash);
+    return;
+  }
   if (block.status === "finalized") {
     if (block.number > finalizedBlockNumber) {
       finalizedBlockNumber = block.number;
