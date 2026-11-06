@@ -159,16 +159,20 @@ function makeRpc(
   };
 
   const requestEach = (request: RpcRequest) =>
-    Effect.forEach(transports, (transport) => {
-      let attempt = 0;
-      return retry(
-        request.method,
-        Effect.suspend(() => {
-          attempt += 1;
-          return send(transport, request, attempt);
-        }),
-      ).pipe(Effect.map((result) => ({ origin: transport.origin, result })));
-    });
+    Effect.forEach(
+      transports,
+      (transport) => {
+        let attempt = 0;
+        return retry(
+          request.method,
+          Effect.suspend(() => {
+            attempt += 1;
+            return send(transport, request, attempt);
+          }),
+        ).pipe(Effect.map((result) => ({ origin: transport.origin, result })));
+      },
+      { concurrency: "unbounded" },
+    );
 
   const requestAll = (request: RpcRequest) =>
     Effect.forEach(
