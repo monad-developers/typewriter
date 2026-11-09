@@ -123,7 +123,12 @@ import type {
   TypewriterMutationInput,
   TypewriterMutationResult,
 } from "./typewriter-types";
-import { type LocalBlock, type LocalLog, watchChain } from "./watch";
+import {
+  type FetchedBlock,
+  type LocalBlock,
+  type LocalLog,
+  watchChain,
+} from "./watch";
 
 export type StorageRootProperty<
   storageConfig extends StorageConfig,
@@ -432,7 +437,16 @@ export function createTypewriterEffect<
     const rpc = yield* Rpc;
     const scope = yield* Scope.Scope;
 
-    const chainIds = yield* rpc.requestEach({ method: "eth_chainId" });
+    const [chainIds] = yield* Effect.all(
+      [
+        rpc.requestEach({ method: "eth_chainId" }),
+        rpc.requestEach({
+          method: "eth_getBlockByNumber",
+          params: ["finalized", false],
+        }),
+      ],
+      { concurrency: "unbounded" },
+    );
     for (const { origin, result } of chainIds) {
       const actual = Hex.toNumber(result);
       if (actual !== app.chainId) {
@@ -443,11 +457,6 @@ export function createTypewriterEffect<
         });
       }
     }
-
-    yield* rpc.requestEach({
-      method: "eth_getBlockByNumber",
-      params: ["finalized", false],
-    });
 
     const lockLost = yield* db.lock(
       deploymentLockKey(app.schemaName),
@@ -468,14 +477,22 @@ export function createTypewriterEffect<
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.
     const startBlock = yield* requestBlock("latest");
-    const code = yield* rpc.request({
-      method: "eth_getCode",
-      params: [app.address, { blockHash: startBlock.hash }],
-    });
-    const startExecutionIndex = yield* requestExecutionIndex(
-      app.address,
-      startBlock.hash,
-    );
+    const requestPriorityFee = rpc
+      .request({ method: "eth_maxPriorityFeePerGas" })
+      .pipe(Effect.map(Hex.toBigInt));
+    const [code, startExecutionIndex, startNonce, startPriorityFee] =
+      yield* Effect.all(
+        [
+          rpc.request({
+            method: "eth_getCode",
+            params: [app.address, { blockHash: startBlock.hash }],
+          }),
+          requestExecutionIndex(app.address, startBlock.hash),
+          requestNonce(app.account.address),
+          requestPriorityFee,
+        ],
+        { concurrency: "unbounded" },
+      );
     yield* migrate(
       db,
       app.schemaName,
@@ -491,9 +508,6 @@ export function createTypewriterEffect<
 
     const { evm, accounts, state, preimages, invalidateStorageCache } =
       yield* createRuntimeState(app, db, code);
-    const startNonce = yield* requestNonce(app.account.address).pipe(
-      Effect.provideService(Rpc, rpc),
-    );
 
     // -------------------------------------------------------------------------
     // State
@@ -508,10 +522,7 @@ export function createTypewriterEffect<
     let watched = startBlock.number;
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
-    const requestPriorityFee = rpc
-      .request({ method: "eth_maxPriorityFeePerGas" })
-      .pipe(Effect.map(Hex.toBigInt));
-    let maxPriorityFeePerGas = yield* requestPriorityFee;
+    let maxPriorityFeePerGas = startPriorityFee;
     let refreshingPriorityFee = false;
     let nextBatchId = 0;
     /** Every settlement not yet final, in execution order, which is nonce order. */
@@ -1024,7 +1035,7 @@ export function createTypewriterEffect<
         Effect.orDie,
       );
 
-    const requestReceipt = (hash: Hex.Hex, block: LocalBlock) =>
+    const requestReceipt = (hash: Hex.Hex, block: FetchedBlock) =>
       Effect.gen(function* () {
         for (let attempt = 1; ; attempt++) {
           const receipt = yield* untilSuccess(
@@ -1089,7 +1100,10 @@ export function createTypewriterEffect<
     // Once every settlement sent before the first revert is final, the
     // chain is where that settlement started, and it and every later one
     // execute again. A reorg can't undo a final revert.
-    const resync = (block: { number: bigint; hash: Hex.Hex }) =>
+    const resync = (
+      block: { number: bigint; hash: Hex.Hex },
+      onchain: Hex.Hex | undefined,
+    ) =>
       Effect.gen(function* () {
         if (
           !resyncing ||
@@ -1117,16 +1131,11 @@ export function createTypewriterEffect<
             transactionHash: first.hash,
           });
         }
-        const onchain = yield* untilSuccess(
-          requestExecutionHash(app.address, block.hash).pipe(
-            Effect.provideService(Rpc, rpc),
-          ),
-        );
         if (onchain !== first.fromExecutionHash) {
           return yield* new ResyncMismatchError({
             blockNumber: block.number,
             expected: first.fromExecutionHash,
-            actual: onchain,
+            actual: onchain!,
           });
         }
 
@@ -1172,7 +1181,7 @@ export function createTypewriterEffect<
       });
 
     // Ahead of `land`, which takes blocks one at a time.
-    const sentIn = (block: LocalBlock) => {
+    const sentIn = (block: FetchedBlock) => {
       const sentByHash = new Map(
         settlements
           .filter(
@@ -1184,7 +1193,7 @@ export function createTypewriterEffect<
       return block.transactions.flatMap((hash) => sentByHash.get(hash) ?? []);
     };
 
-    const requestLanded = (block: LocalBlock) =>
+    const requestLanded = (block: FetchedBlock) =>
       Effect.gen(function* () {
         const landed = sentIn(block);
         const receipts = yield* Effect.forEach(
@@ -1195,15 +1204,25 @@ export function createTypewriterEffect<
         return { landed, receipts };
       });
 
+    type LandedRequest = Effect.Success<ReturnType<typeof requestLanded>>;
+    /** Each block's landed settlements, requested once the watch has its transactions. */
+    const landedRequests = new Map<
+      Hex.Hex,
+      { number: bigint; landed: Deferred.Deferred<LandedRequest> }
+    >();
+
     // Records where our transactions in `block` landed, in order.
-    const land = (
-      block: LocalBlock,
-      requested: Effect.Success<ReturnType<typeof requestLanded>>,
-    ) =>
+    const land = (block: LocalBlock) =>
       Effect.gen(function* () {
+        const prefetched = landedRequests.get(block.hash);
+        landedRequests.delete(block.hash);
+        const requested =
+          prefetched === undefined
+            ? undefined
+            : yield* Deferred.await(prefetched.landed);
         // A removed block's settlements are sent again after `requested`.
         const { landed, receipts } =
-          sentIn(block).length === requested.landed.length
+          sentIn(block).length === requested?.landed.length
             ? requested
             : yield* requestLanded(block);
         // The watch removes the block.
@@ -1347,7 +1366,10 @@ export function createTypewriterEffect<
         if (due.length > 0) yield* broadcast(due);
       });
 
-    const finalize = (finalized: { number: bigint; hash: Hex.Hex }) =>
+    const finalize = (
+      finalized: { number: bigint; hash: Hex.Hex },
+      onchain: Hex.Hex | undefined,
+    ) =>
       withStateLock(
         Effect.gen(function* () {
           const final = settlements.filter(
@@ -1375,7 +1397,7 @@ export function createTypewriterEffect<
             }
             yield* emitBlock(block);
           }
-          yield* resync(finalized);
+          yield* resync(finalized, onchain);
         }),
       );
 
@@ -1435,28 +1457,41 @@ export function createTypewriterEffect<
           getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
         ),
       },
-      onLatest: ({ number, timestamp, baseFeePerGas }) => {
-        if (number > latest.number) {
-          latest = { number, timestamp, baseFeePerGas: baseFeePerGas ?? 0n };
-        }
-      },
     }).pipe(
-      Stream.mapEffect(
-        (message) =>
-          Effect.gen(function* () {
-            const landed =
-              message._tag === "Added"
-                ? yield* requestLanded(message.block)
-                : undefined;
-            return { message, landed };
-          }),
-        { concurrency: WATCH_BUFFER_SIZE },
-      ),
-      Stream.runForEach(({ message, landed }) =>
+      Stream.runForEach((message) =>
         Effect.gen(function* () {
+          if (message._tag === "Fetched") {
+            const { number, hash, timestamp, baseFeePerGas } = message.block;
+            if (number > latest.number) {
+              latest = { number, timestamp, baseFeePerGas };
+            }
+            if (
+              landedRequests.has(hash) ||
+              sentIn(message.block).length === 0
+            ) {
+              return;
+            }
+            const landed = yield* Deferred.make<LandedRequest>();
+            landedRequests.set(hash, { number, landed });
+            yield* Deferred.into(requestLanded(message.block), landed).pipe(
+              Effect.forkIn(scope),
+            );
+            return;
+          }
           if (message._tag === "Finalized") {
+            for (const [hash, { number }] of landedRequests) {
+              if (number <= message.block.number) landedRequests.delete(hash);
+            }
+            // Requested outside the state lock, which `accept` waits on.
+            const onchain = resyncing
+              ? yield* untilSuccess(
+                  requestExecutionHash(app.address, message.block.hash).pipe(
+                    Effect.provideService(Rpc, rpc),
+                  ),
+                )
+              : undefined;
             yield* replayEnqueues(message.block.number);
-            return yield* finalize(message.block);
+            return yield* finalize(message.block, onchain);
           }
           if (message._tag === "Removed") {
             const { hash } = message.block;
@@ -1493,7 +1528,7 @@ export function createTypewriterEffect<
           if (message.block.logs.length > 0) {
             unfinalizedEnqueues.push(message.block);
           }
-          yield* land(message.block, landed!);
+          yield* land(message.block);
           yield* rebroadcast(message.block);
         }),
       ),

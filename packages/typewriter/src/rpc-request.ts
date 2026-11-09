@@ -119,8 +119,10 @@ export function requestNonce(
       rpc
         .request({ method: "eth_getTransactionCount", params: [address, tag] })
         .pipe(Effect.map(Hex.toNumber));
-    const latest = yield* count("latest");
-    const pending = yield* count("pending");
+    const [latest, pending] = yield* Effect.all(
+      [count("latest"), count("pending")],
+      { concurrency: "unbounded" },
+    );
     if (pending > latest) {
       return yield* new PendingTransactionsError({ address, latest, pending });
     }
