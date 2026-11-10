@@ -174,10 +174,31 @@ function makeRpc(
       { concurrency: "unbounded" },
     );
 
-  const requestAll = (request: RpcRequest) =>
-    Effect.forEach(
+  // Each provider retries on its own, without interrupting the others, until
+  // one of them succeeds.
+  const requestAll = (request: RpcRequest) => {
+    let succeeded = false;
+    return Effect.forEach(
       transports,
-      (transport) => Effect.result(send(transport, request, 1)),
+      (transport) => {
+        let attempt = 0;
+        return Effect.suspend(() => {
+          attempt += 1;
+          return send(transport, request, attempt);
+        }).pipe(
+          Effect.retry({
+            schedule: RETRY_SCHEDULE,
+            times: RETRY_TIMES,
+            while: (error) => !succeeded && shouldRetry(request.method, error),
+          }),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              succeeded = true;
+            }),
+          ),
+          Effect.result,
+        );
+      },
       { concurrency: "unbounded" },
     ).pipe(
       Effect.flatMap((results) => {
@@ -189,6 +210,7 @@ function makeRpc(
         return Effect.fail(failures[0]!);
       }),
     );
+  };
 
   return Rpc.of({
     request: request as Rpc["Service"]["request"],
