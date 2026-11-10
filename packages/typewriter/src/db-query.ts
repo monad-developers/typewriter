@@ -1,5 +1,5 @@
 import { abiParametersToValues } from "abipg";
-import { desc, getTableColumns, gte, inArray, sql } from "drizzle-orm";
+import { desc, getTableColumns, gte, type SQL, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { Hex } from "ox";
 import type { AccountStorage } from "storage-layout";
@@ -8,20 +8,28 @@ import type { createTypewriterSchema } from "./db-schema";
 import { builder } from "./db-transport";
 import type { AcceptedMutation, Inclusion } from "./typewriter-types";
 
-/** Postgres protocol limit: 65535 bind parameters per query. */
-const MAX_PG_PARAMS = 65_535;
-
-/** Split insert rows into batches that stay under `MAX_PG_PARAMS`. */
-function chunkRows<T extends Record<string, unknown>>(
-  rows: readonly T[],
-): T[][] {
+/**
+ * Inserts `rows` from one JSON parameter, so no parameter is built per row.
+ * The JSON is sent as `text`, since Bun encodes a `json` parameter again.
+ */
+function insertRows(
+  table: PgTable,
+  rows: readonly Record<string, unknown>[],
+  onConflict: SQL = sql``,
+) {
   if (rows.length === 0) return [];
-  const size = Math.floor(MAX_PG_PARAMS / Object.keys(rows[0]!).length);
-  const chunks: T[][] = [];
-  for (let i = 0; i < rows.length; i += size) {
-    chunks.push(rows.slice(i, i + size));
-  }
-  return chunks;
+  const columns = sql.join(
+    Object.keys(rows[0]!).map((column) => sql.identifier(column)),
+    sql`, `,
+  );
+  const json = JSON.stringify(rows, (_, value) =>
+    typeof value === "bigint" ? value.toString() : value,
+  );
+  return [
+    builder.execute(
+      sql`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM json_populate_recordset(NULL::${table}, ${json}::text::json)${onConflict}`,
+    ),
+  ];
 }
 
 export function insertMutations(
@@ -43,7 +51,7 @@ export function insertMutations(
   }
 
   return [...rowsByTable.values()].flatMap(({ table, rows }) =>
-    chunkRows(rows).map((batch) => builder.insert(table).values(batch)),
+    insertRows(table, rows),
   );
 }
 
@@ -91,22 +99,14 @@ export function updateMutationInclusion(
     transaction_hash: inclusion?.transactionHash ?? null,
     transaction_index: inclusion?.transactionIndex ?? null,
   };
-  // The `SET` values take bind parameters too.
-  const size = MAX_PG_PARAMS - Object.keys(values).length;
-
-  return [...indexesByTable].flatMap(([table, indexes]) => {
+  return [...indexesByTable].map(([table, indexes]) => {
     const { execution_index } = getTableColumns(table);
-    const statements = [];
-    for (let i = 0; i < indexes.length; i += size) {
-      const batch = indexes.slice(i, i + size);
-      statements.push(
-        builder
-          .update(table)
-          .set(values)
-          .where(inArray(execution_index!, batch)),
+    return builder
+      .update(table)
+      .set(values)
+      .where(
+        sql`${execution_index} = ANY(${`{${indexes.join(",")}}`}::bigint[])`,
       );
-    }
-    return statements;
   });
 }
 
@@ -158,18 +158,17 @@ export function insertStorageSlots(
       value: write.value,
     })),
   );
-  return chunkRows(rows).map((batch) =>
-    builder.insert(storageSlots).values(batch),
-  );
+  return insertRows(storageSlots, rows);
 }
 
 export function insertKeccakPreimages(
   { keccakPreimages }: ReturnType<typeof createTypewriterSchema>,
   preimages: readonly Hex.Hex[],
 ) {
-  const rows = preimages.map((preimage) => ({ preimage }));
-  return chunkRows(rows).map((batch) =>
-    builder.insert(keccakPreimages).values(batch).onConflictDoNothing(),
+  return insertRows(
+    keccakPreimages,
+    preimages.map((preimage) => ({ preimage })),
+    sql` ON CONFLICT DO NOTHING`,
   );
 }
 
