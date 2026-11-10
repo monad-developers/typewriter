@@ -179,9 +179,6 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
       check.fail(`${label}: has mutation events, want none`);
     }
     const [first, resubmission] = submission.results;
-    const firstAccepted = (events.get(key) ?? []).find(
-      (event) => event.status === "accepted",
-    );
     if (
       onChain === undefined &&
       expected.executes &&
@@ -189,18 +186,12 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
       // An enqueue has no events, so no one sees a rejection it allows.
       // `checkQueue` checks that no one can force-execute it either.
       !(via === "enqueue" && expected.errors.length > 0) &&
-      (first === undefined || "executionIndex" in first)
+      (first === undefined || first.error === undefined)
     ) {
       check.fail(`${label}: never executed`);
     }
     if (first !== undefined) {
-      checkResult(
-        check,
-        `${label} execute`,
-        first,
-        expected.errors,
-        firstAccepted?.executionIndex,
-      );
+      checkResult(check, `${label} execute`, first, expected.errors);
     }
     if (resubmission !== undefined) {
       checkResult(
@@ -208,7 +199,6 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
         `${label} resubmission`,
         resubmission,
         expected.resubmissionErrors,
-        undefined,
       );
     }
   }
@@ -258,27 +248,18 @@ function checkOutcomes(check: Check, run: Run, onchain: Onchain) {
   }
 }
 
-/**
- * `execute` returned the execution index the mutation was first accepted at,
- * or an allowed error. When its settlement reverts in revm, the mutation
- * executes again, maybe at another index, or is dropped.
- */
+/** `execute` succeeded, or failed with an allowed error. */
 function checkResult(
   check: Check,
   what: string,
   result: Result,
   allowed: string[],
-  acceptedAt: bigint | undefined,
 ) {
-  if ("error" in result) {
-    if (!allowed.includes(result.error)) {
-      check.fail(
-        `${what}: got ${result.error}, want ${allowed.join(" or ") || "success"}`,
-      );
-    }
-    return;
+  if (result.error !== undefined && !allowed.includes(result.error)) {
+    check.fail(
+      `${what}: got ${result.error}, want ${allowed.join(" or ") || "success"}`,
+    );
   }
-  check.equal(result.executionIndex, acceptedAt, `${what} result`);
 }
 
 /**

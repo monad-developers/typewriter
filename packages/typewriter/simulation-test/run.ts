@@ -35,11 +35,8 @@ export type Expected = {
   resubmissionErrors: string[];
 };
 
-/**
- * What `execute` returned: an execution index, or an error's name. A revert
- * is named by its error, such as `InvalidNonce`.
- */
-export type Result = { executionIndex: bigint } | { error: string };
+/** What `execute` returned: nothing, or the name of its error, such as `InvalidNonce`. */
+export type Result = { error?: string };
 
 /** One mutation the client submitted. */
 export type Submission = {
