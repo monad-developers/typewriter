@@ -953,7 +953,7 @@ export function createTypewriterEffect<
       });
 
     // Sends to every provider, and is sent again until it lands, so a
-    // provider that fails or answers wrongly costs nothing.
+    // provider that fails or answers wrongly only delays it.
     const broadcast = (sent: SentSettlement[]) =>
       Effect.gen(function* () {
         for (const settlement of sent) {
