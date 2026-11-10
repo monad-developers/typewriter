@@ -531,7 +531,7 @@ export function createTypewriterEffect<
     let resyncing = false;
     /** Blocks with enqueues, which revm replays once they are final. */
     let unfinalizedEnqueues: LocalBlock[] = [];
-    /** Enqueues replayed in revm, to force-execute in the next batch. */
+    /** Enqueues replayed in revm, to force-execute once the finalization ends. */
     let pendingQueueIndexes: bigint[] = [];
     /** Enqueues that failed in revm, to try again after a resync frees what they need. */
     let discardedQueueIndexes: bigint[] = [];
@@ -545,12 +545,9 @@ export function createTypewriterEffect<
       committed: Deferred.Deferred<void>;
       events: Effect.Effect<void>[];
     }>();
-    /** Wakes `accept` in fifo order when a mutation or an enqueue is waiting. */
-    const acceptSignal = yield* Queue.sliding<void>(1);
     /** Wakes `send` when a settlement is waiting. */
     const sendSignal = yield* Queue.sliding<void>(1);
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
-    yield* Scope.addFinalizer(scope, Queue.shutdown(acceptSignal));
     yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(sendSignal));
     const stopped = yield* Deferred.make<never, TypewriterStoppedError>();
@@ -939,17 +936,13 @@ export function createTypewriterEffect<
     ) =>
       withStateLock(
         Effect.gen(function* () {
-          if (received.length === 0 && pendingQueueIndexes.length === 0) {
-            return;
-          }
+          if (received.length === 0) return;
           received.sort(
             (a, b) =>
               (batchOrderByName.get(a.mutation.name) ?? batchOrderByName.size) -
               (batchOrderByName.get(b.mutation.name) ?? batchOrderByName.size),
           );
-          const queueIndexes = pendingQueueIndexes;
-          pendingQueueIndexes = [];
-          yield* settle(received, queueIndexes);
+          yield* settle(received, []);
           yield* Queue.offer(sendSignal, undefined);
         }),
       );
@@ -1183,9 +1176,6 @@ export function createTypewriterEffect<
           }));
           yield* settle(received, queueIndexes, batch);
         }
-        if (pendingQueueIndexes.length > 0) {
-          yield* Queue.offer(acceptSignal, undefined);
-        }
         yield* Effect.logWarning("Executed settlements again").pipe(
           Effect.annotateLogs({
             from_execution_index: first.fromExecutionIndex,
@@ -1415,8 +1405,8 @@ export function createTypewriterEffect<
       });
 
     // Every enqueue takes a queue index onchain, so revm replays each one
-    // with its bytes, once its block is final, so no reorg undoes it. The
-    // next batch force-executes it.
+    // with its bytes, once its block is final, so no reorg undoes it, then
+    // force-executes it.
     const replayEnqueues = (finalized: bigint) =>
       Effect.gen(function* () {
         const final = unfinalizedEnqueues.filter(
@@ -1453,7 +1443,6 @@ export function createTypewriterEffect<
               executeResult.slot_writes.map((write) => write.slot),
             );
             pendingQueueIndexes.push(queued.index);
-            yield* Queue.offer(acceptSignal, undefined);
           }
         }
       });
@@ -1505,6 +1494,10 @@ export function createTypewriterEffect<
               Effect.gen(function* () {
                 yield* replayEnqueues(message.block.number);
                 yield* finalize(message.block, onchain);
+                if (pendingQueueIndexes.length === 0) return;
+                yield* settle([], pendingQueueIndexes);
+                pendingQueueIndexes = [];
+                yield* Queue.offer(sendSignal, undefined);
               }),
             );
           }
@@ -1564,10 +1557,7 @@ export function createTypewriterEffect<
             ),
           )
         : Effect.forever(
-            Queue.take(acceptSignal).pipe(
-              Effect.andThen(Queue.clear(receivedMutationQueue)),
-              Effect.flatMap(accept),
-            ),
+            Queue.takeAll(receivedMutationQueue).pipe(Effect.flatMap(accept)),
           );
 
     const sendProgram = Effect.forever(
@@ -1650,7 +1640,6 @@ export function createTypewriterEffect<
           mutation: runtimeMutation,
           deferred,
         });
-        yield* Queue.offer(acceptSignal, undefined);
 
         const acceptedMutation = yield* Effect.gen(function* () {
           const { mutation, committed } = yield* Deferred.await(deferred).pipe(
