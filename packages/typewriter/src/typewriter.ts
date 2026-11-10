@@ -764,7 +764,6 @@ export function createTypewriterEffect<
           mutation,
           nextExecutionIndex++,
         );
-        yield* emitMutation(accepted);
         return { mutation: accepted, fromExecutionHash, executeResult };
       }).pipe(
         Effect.tapError((error) =>
@@ -868,7 +867,7 @@ export function createTypewriterEffect<
             executeResult,
           });
         }
-        if (accepted.length === 0 && forced.length === 0) return [];
+        if (accepted.length === 0 && forced.length === 0) return Effect.void;
 
         const rows = yield* persist(
           insertMutations(
@@ -877,7 +876,8 @@ export function createTypewriterEffect<
           ),
         );
         const committed = yield* persistExecutions([...accepted, ...forced]);
-        const settled: ExecutedSettlement[] = [];
+        // Built now, so a later status doesn't leak into the event.
+        const events = accepted.map(({ mutation }) => emitMutation(mutation));
         for (const group of groupByGas<
           (typeof accepted)[number] | (typeof forced)[number]
         >([...accepted, ...forced], ({ executeResult }) => executeResult)) {
@@ -890,9 +890,9 @@ export function createTypewriterEffect<
             batch = undefined;
           } else if (mutations.length > 0) {
             groupBatch = { status: "accepted", id: nextBatchId++, mutations };
-            yield* emitBatch(groupBatch);
+            events.push(emitBatch(groupBatch));
           }
-          settled.push(
+          settlements.push(
             toSettlement(group, timestamp, committed, {
               batch: groupBatch,
               queueIndexes: group.flatMap((execution) =>
@@ -906,7 +906,9 @@ export function createTypewriterEffect<
             yield* Deferred.succeed(deferred, { mutation, committed: rows });
           }
         }
-        return settled;
+        return Deferred.await(committed).pipe(
+          Effect.andThen(Effect.all(events, { discard: true })),
+        );
       });
 
     const accept = (
@@ -915,7 +917,7 @@ export function createTypewriterEffect<
       withStateLock(
         Effect.gen(function* () {
           if (received.length === 0 && pendingQueueIndexes.length === 0) {
-            return;
+            return Effect.void;
           }
           received.sort(
             (a, b) =>
@@ -924,10 +926,11 @@ export function createTypewriterEffect<
           );
           const queueIndexes = pendingQueueIndexes;
           pendingQueueIndexes = [];
-          settlements.push(...(yield* settle(received, queueIndexes)));
+          const accepted = yield* settle(received, queueIndexes);
           yield* Queue.offer(sendSignal, undefined);
+          return accepted;
         }),
-      );
+      ).pipe(Effect.flatten);
 
     // -------------------------------------------------------------------------
     // Submission
@@ -1113,7 +1116,7 @@ export function createTypewriterEffect<
                 settlement.block.number <= block.number),
           )
         ) {
-          return;
+          return Effect.void;
         }
         const first = settlements.find(
           (settlement): settlement is LandedSettlement =>
@@ -1158,11 +1161,12 @@ export function createTypewriterEffect<
           ...pendingQueueIndexes,
         ];
         discardedQueueIndexes = [];
+        const accepted: Effect.Effect<void>[] = [];
         for (const { batch, queueIndexes } of rewound) {
           const received = (batch?.mutations ?? []).map((mutation) => ({
             mutation: toUnexecuted(mutation as AcceptedMutation),
           }));
-          settlements.push(...(yield* settle(received, queueIndexes, batch)));
+          accepted.push(yield* settle(received, queueIndexes, batch));
         }
         if (pendingQueueIndexes.length > 0) {
           yield* Queue.offer(acceptSignal, undefined);
@@ -1176,6 +1180,7 @@ export function createTypewriterEffect<
         );
         resyncing = false;
         yield* Queue.offer(sendSignal, undefined);
+        return Effect.all(accepted, { discard: true });
       });
 
     // Ahead of `land`, which takes blocks one at a time.
@@ -1395,9 +1400,9 @@ export function createTypewriterEffect<
             }
             yield* emitBlock(block);
           }
-          yield* resync(finalized, onchain);
+          return yield* resync(finalized, onchain);
         }),
-      );
+      ).pipe(Effect.flatten);
 
     // Every enqueue takes a queue index onchain, so revm replays each one
     // with its bytes, once its block is final, so no reorg undoes it. The
