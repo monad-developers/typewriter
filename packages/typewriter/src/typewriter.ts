@@ -1285,7 +1285,7 @@ export function createTypewriterEffect<
     // land with the same result, since each pins its timestamp.
     const unland = (block: LocalBlock) =>
       Effect.gen(function* () {
-        const unlanded = yield* withStateLock(
+        const { count, committed } = yield* withStateLock(
           Effect.gen(function* () {
             const removed = settlements.filter(
               (settlement): settlement is LandedSettlement =>
@@ -1319,7 +1319,6 @@ export function createTypewriterEffect<
             });
             return {
               count: removed.length,
-              runtimeBlock,
               committed: yield* persist(
                 updateMutationInclusion(
                   app.mutationSchema,
@@ -1330,17 +1329,16 @@ export function createTypewriterEffect<
             };
           }),
         );
-        if (unlanded.committed !== undefined) {
-          yield* Deferred.await(unlanded.committed);
-          const { number, hash, timestamp } = unlanded.runtimeBlock;
-          yield* emit("block", blockListeners, {
-            status: "removed",
-            number,
-            hash,
-            timestamp,
-          } as BlockEvent<"fifo" | "batch">);
-        }
-        return unlanded.count;
+        if (committed === undefined) return count;
+        yield* Deferred.await(committed);
+        const { number, hash, timestamp } = block;
+        yield* emit("block", blockListeners, {
+          status: "removed",
+          number,
+          hash,
+          timestamp,
+        } as BlockEvent<"fifo" | "batch">);
+        return count;
       });
 
     const rebroadcast = (block: LocalBlock) =>
