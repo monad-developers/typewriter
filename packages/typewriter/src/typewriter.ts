@@ -1001,20 +1001,18 @@ export function createTypewriterEffect<
     // One nonce at a time, so a resync stops it before the next.
     const send = Effect.gen(function* () {
       while (true) {
-        const settlement = yield* withStateLock(
-          Effect.sync(() => {
-            if (resyncing) return undefined;
-            const next = settlements.find(
-              (settlement): settlement is ExecutedSettlement =>
-                settlement.status === "executed",
-            );
-            if (next === undefined) return undefined;
-            return updateStatus<ExecutedSettlement, SigningSettlement>(next, {
-              status: "signing",
-              nonce: nextNonce++,
-            });
-          }),
-        );
+        const settlement = yield* Effect.sync(() => {
+          if (resyncing) return undefined;
+          const next = settlements.find(
+            (settlement): settlement is ExecutedSettlement =>
+              settlement.status === "executed",
+          );
+          if (next === undefined) return undefined;
+          return updateStatus<ExecutedSettlement, SigningSettlement>(next, {
+            status: "signing",
+            nonce: nextNonce++,
+          });
+        });
         if (settlement === undefined) return;
 
         yield* Deferred.await(settlement.committed);
@@ -1254,103 +1252,99 @@ export function createTypewriterEffect<
           timestamp: block.timestamp,
           batches: [],
         };
-        yield* withStateLock(
-          Effect.gen(function* () {
-            const statements: DbStatement<unknown>[] = [];
-            for (const [i, settlement] of landed.entries()) {
-              const receipt = receipts[i]!;
-              yield* Effect.logDebug("Landed settlement transaction").pipe(
-                Effect.annotateLogs({
-                  transaction_hash: receipt.transactionHash,
-                  status: receipt.status,
-                  gas_limit: settlement.gasLimit,
-                  gas_used: receipt.gasUsed,
-                }),
-              );
-              if (receipt.status === "reverted") {
-                if (!resyncing) {
-                  yield* Effect.logWarning(
-                    "Settlement transaction reverted onchain",
-                  ).pipe(
-                    Effect.annotateLogs({
-                      transaction_hash: receipt.transactionHash,
-                    }),
-                  );
-                }
-                updateStatus<SentSettlement, LandedSettlement>(settlement, {
-                  status: "reverted",
-                  block: runtimeBlock,
-                });
-                resyncing = true;
-                continue;
-              }
-              if (resyncing) {
-                return yield* new SettlementAfterRevertError({
-                  transactionHash: receipt.transactionHash,
-                });
-              }
-              statements.push(
-                ...include(settlement, receipt.transactionIndex, runtimeBlock),
-              );
-            }
-            yield* persistAndEmit(
-              statements,
-              receipts.some((receipt) => receipt!.status === "success")
-                ? emitBlock(runtimeBlock)
-                : [],
+        yield* Effect.gen(function* () {
+          const statements: DbStatement<unknown>[] = [];
+          for (const [i, settlement] of landed.entries()) {
+            const receipt = receipts[i]!;
+            yield* Effect.logDebug("Landed settlement transaction").pipe(
+              Effect.annotateLogs({
+                transaction_hash: receipt.transactionHash,
+                status: receipt.status,
+                gas_limit: settlement.gasLimit,
+                gas_used: receipt.gasUsed,
+              }),
             );
-          }),
-        );
+            if (receipt.status === "reverted") {
+              if (!resyncing) {
+                yield* Effect.logWarning(
+                  "Settlement transaction reverted onchain",
+                ).pipe(
+                  Effect.annotateLogs({
+                    transaction_hash: receipt.transactionHash,
+                  }),
+                );
+              }
+              updateStatus<SentSettlement, LandedSettlement>(settlement, {
+                status: "reverted",
+                block: runtimeBlock,
+              });
+              resyncing = true;
+              continue;
+            }
+            if (resyncing) {
+              return yield* new SettlementAfterRevertError({
+                transactionHash: receipt.transactionHash,
+              });
+            }
+            statements.push(
+              ...include(settlement, receipt.transactionIndex, runtimeBlock),
+            );
+          }
+          yield* persistAndEmit(
+            statements,
+            receipts.some((receipt) => receipt!.status === "success")
+              ? emitBlock(runtimeBlock)
+              : [],
+          );
+        });
       });
 
     // A reorg replaced `block`. Its settlements are sent again as signed, and
     // land with the same result, since each pins its timestamp.
     const unland = (block: LocalBlock) =>
-      withStateLock(
-        Effect.gen(function* () {
-          const removed = settlements.filter(
-            (settlement): settlement is LandedSettlement =>
-              (settlement.status === "included" ||
-                settlement.status === "reverted") &&
-              settlement.block.hash === block.hash,
+      Effect.gen(function* () {
+        const removed = settlements.filter(
+          (settlement): settlement is LandedSettlement =>
+            (settlement.status === "included" ||
+              settlement.status === "reverted") &&
+            settlement.block.hash === block.hash,
+        );
+        if (removed.length === 0) return 0;
+        const runtimeBlock = removed[0]!.block;
+        const included = removed.some(({ status }) => status === "included");
+        for (const settlement of removed) {
+          delete (settlement as Partial<LandedSettlement>).block;
+          const sent = updateStatus<LandedSettlement, SentSettlement>(
+            settlement,
+            { status: "sent" },
           );
-          if (removed.length === 0) return 0;
-          const runtimeBlock = removed[0]!.block;
-          const included = removed.some(({ status }) => status === "included");
-          for (const settlement of removed) {
-            delete (settlement as Partial<LandedSettlement>).block;
-            const sent = updateStatus<LandedSettlement, SentSettlement>(
-              settlement,
-              { status: "sent" },
-            );
-            sent.sentAt = 0n;
-            sent.firstSentAt = watched;
-          }
-          resyncing = settlements.some(({ status }) => status === "reverted");
-          yield* Queue.offer(sendSignal, undefined);
-          if (!included) return removed.length;
+          sent.sentAt = 0n;
+          sent.firstSentAt = watched;
+        }
+        resyncing = settlements.some(({ status }) => status === "reverted");
+        yield* Queue.offer(sendSignal, undefined);
+        if (!included) return removed.length;
 
-          const mutations = runtimeBlock.batches.flatMap((batch) => {
-            batch.status = "accepted";
-            return batch.mutations.map((mutation) =>
-              updateMutationToUnincluded(mutation as IncludedMutation),
-            );
-          });
-          const { number, hash, timestamp } = runtimeBlock;
-          yield* persistAndEmit(
-            updateMutationInclusion(app.mutationSchema, mutations, undefined),
-            [
-              emit("block", blockListeners, {
-                status: "removed",
-                number,
-                hash,
-                timestamp,
-              } as BlockEvent<"fifo" | "batch">),
-            ],
+        const mutations = runtimeBlock.batches.flatMap((batch) => {
+          batch.status = "accepted";
+          return batch.mutations.map((mutation) =>
+            updateMutationToUnincluded(mutation as IncludedMutation),
           );
-          return removed.length;
-        }),
-      );
+        });
+        const { number, hash, timestamp } = runtimeBlock;
+        yield* persistAndEmit(
+          updateMutationInclusion(app.mutationSchema, mutations, undefined),
+          [
+            emit("block", blockListeners, {
+              status: "removed",
+              number,
+              hash,
+              timestamp,
+            } as BlockEvent<"fifo" | "batch">),
+          ],
+        );
+        return removed.length;
+      });
 
     const rebroadcast = (block: LocalBlock) =>
       Effect.gen(function* () {
@@ -1391,82 +1385,78 @@ export function createTypewriterEffect<
       finalized: { number: bigint; hash: Hex.Hex },
       onchain: Hex.Hex | undefined,
     ) =>
-      withStateLock(
-        Effect.gen(function* () {
-          const final = settlements.filter(
-            (settlement): settlement is LandedSettlement =>
-              settlement.status === "included" &&
-              settlement.block.number <= finalized.number,
-          );
-          if (final.length > 0) {
-            yield* evm.pruneJournals({
-              journal_ids: final.flatMap(({ journalIds }) => journalIds),
-            });
-          }
-          const isFinal = new Set<RuntimeSettlement>(final);
-          settlements = settlements.filter(
-            (settlement) => !isFinal.has(settlement),
-          );
+      Effect.gen(function* () {
+        const final = settlements.filter(
+          (settlement): settlement is LandedSettlement =>
+            settlement.status === "included" &&
+            settlement.block.number <= finalized.number,
+        );
+        if (final.length > 0) {
+          yield* evm.pruneJournals({
+            journal_ids: final.flatMap(({ journalIds }) => journalIds),
+          });
+        }
+        const isFinal = new Set<RuntimeSettlement>(final);
+        settlements = settlements.filter(
+          (settlement) => !isFinal.has(settlement),
+        );
 
-          for (const block of new Set(final.map(({ block }) => block))) {
-            block.status = "finalized";
-            for (const batch of block.batches) {
-              batch.status = "finalized";
-              for (const mutation of batch.mutations) {
-                (mutation as IncludedMutation).status = "finalized";
-              }
+        for (const block of new Set(final.map(({ block }) => block))) {
+          block.status = "finalized";
+          for (const batch of block.batches) {
+            batch.status = "finalized";
+            for (const mutation of batch.mutations) {
+              (mutation as IncludedMutation).status = "finalized";
             }
-            yield* persistAndEmit([], emitBlock(block));
           }
-          yield* resync(finalized, onchain);
-        }),
-      );
+          yield* persistAndEmit([], emitBlock(block));
+        }
+        yield* resync(finalized, onchain);
+      });
 
     // Every enqueue takes a queue index onchain, so revm replays each one
     // with its bytes, once its block is final, so no reorg undoes it. The
     // next batch force-executes it.
     const replayEnqueues = (finalized: bigint) =>
-      withStateLock(
-        Effect.gen(function* () {
-          const final = unfinalizedEnqueues.filter(
-            ({ number }) => number <= finalized,
-          );
-          unfinalizedEnqueues = unfinalizedEnqueues.filter(
-            ({ number }) => number > finalized,
-          );
-          for (const block of final) {
-            for (const log of block.logs) {
-              const queued = decodeForceInclusionQueued(log);
-              const executeResult = yield* evm.execute({
-                from: "0x0000000000000000000000000000000000000000",
-                to: app.address,
-                data: encodeEnqueueCalldata(queued),
-                // An enqueue records its block's timestamp.
-                block: toBlockParams(block),
-              });
-              if (executeResult.status === "revert") {
-                return yield* new EnqueueRevertedError(
-                  decodeRevert(app.abi, executeResult.data),
-                );
-              }
-              if (executeResult.status === "halt") {
-                return yield* new EnqueueHaltedError({
-                  reason: executeResult.reason,
-                });
-              }
-              // The enqueue is already onchain, so nothing rewinds it.
-              yield* evm.pruneJournals({
-                journal_ids: [executeResult.journal_id],
-              });
-              invalidateStorageCache(
-                executeResult.slot_writes.map((write) => write.slot),
+      Effect.gen(function* () {
+        const final = unfinalizedEnqueues.filter(
+          ({ number }) => number <= finalized,
+        );
+        unfinalizedEnqueues = unfinalizedEnqueues.filter(
+          ({ number }) => number > finalized,
+        );
+        for (const block of final) {
+          for (const log of block.logs) {
+            const queued = decodeForceInclusionQueued(log);
+            const executeResult = yield* evm.execute({
+              from: "0x0000000000000000000000000000000000000000",
+              to: app.address,
+              data: encodeEnqueueCalldata(queued),
+              // An enqueue records its block's timestamp.
+              block: toBlockParams(block),
+            });
+            if (executeResult.status === "revert") {
+              return yield* new EnqueueRevertedError(
+                decodeRevert(app.abi, executeResult.data),
               );
-              pendingQueueIndexes.push(queued.index);
-              yield* Queue.offer(acceptSignal, undefined);
             }
+            if (executeResult.status === "halt") {
+              return yield* new EnqueueHaltedError({
+                reason: executeResult.reason,
+              });
+            }
+            // The enqueue is already onchain, so nothing rewinds it.
+            yield* evm.pruneJournals({
+              journal_ids: [executeResult.journal_id],
+            });
+            invalidateStorageCache(
+              executeResult.slot_writes.map((write) => write.slot),
+            );
+            pendingQueueIndexes.push(queued.index);
+            yield* Queue.offer(acceptSignal, undefined);
           }
-        }),
-      );
+        }
+      });
 
     const watchProgram = watchChain({
       fromBlock: startBlock,
@@ -1511,8 +1501,12 @@ export function createTypewriterEffect<
                   ),
                 )
               : undefined;
-            yield* replayEnqueues(message.block.number);
-            return yield* finalize(message.block, onchain);
+            return yield* withStateLock(
+              Effect.gen(function* () {
+                yield* replayEnqueues(message.block.number);
+                yield* finalize(message.block, onchain);
+              }),
+            );
           }
           if (message._tag === "Removed") {
             const { hash } = message.block;
