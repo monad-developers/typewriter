@@ -694,11 +694,8 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
 });
 
 /** What `execute` returned, as the run records it. */
-function resultOf(
-  exit: Exit.Exit<{ executionIndex: bigint }, ExecuteError>,
-): Result {
-  if (Exit.isSuccess(exit))
-    return { executionIndex: exit.value.executionIndex };
+function resultOf(exit: Exit.Exit<void, ExecuteError>): Result {
+  if (Exit.isSuccess(exit)) return {};
   const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
   return {
     error: error === undefined ? Cause.pretty(exit.cause) : errorName(error),

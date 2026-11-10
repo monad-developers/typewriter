@@ -578,27 +578,25 @@ const submitted = authorizeMutation(mutation, signature);
 #### `typewriter.execute()`
 
 ```ts
-typewriter.execute(input: { name, params, authorization }): Promise<{ executionIndex }>;
+typewriter.execute(input: { name, params, authorization }): Promise<void>;
 ```
 
 Submits an authorized mutation. `name` is the exact Solidity `Mutation` enum
 member (or built-in mutation name), `params` matches its struct, and
 `authorization` has the fixed native shape. It resolves once the mutation is
-accepted and persisted. `executionIndex` (`bigint`) is the mutation's position
-in the onchain execution order and the primary key of its row in the mutation
-tables; it's not fixed until the mutation is finalized.
+accepted and persisted. Its position in the onchain execution order, the
+`executionIndex` of its mutation events, can change until it is finalized.
 
 The server also rejects an authorization or credential that expires less than
 `MAX_SETTLEMENT_DELAY` seconds after the current block (see
 **Expirations** under [Authorization](#authorization)).
 
 ```ts
-const accepted = await typewriter.execute({
+await typewriter.execute({
   name: "Transfer",
   params,
   authorization,
 });
-// accepted.executionIndex
 ```
 
 #### `typewriter.state`
@@ -642,7 +640,7 @@ Every mutation table starts with the same **lifecycle columns**:
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `execution_index` | `bigint`, primary key | the mutation's position in the onchain execution order; matches the `typewriter.execute()` result and event `executionIndex` |
+| `execution_index` | `bigint`, primary key | the mutation's position in the onchain execution order; matches the event `executionIndex` |
 | `accepted_at` | `timestamp with time zone`, defaults to now | |
 | `block_number` | `bigint` | inclusion block; null until included |
 | `block_hash` | `char(66)` (hex) | null until included |

@@ -121,7 +121,6 @@ import type {
   SentSettlement,
   SigningSettlement,
   TypewriterMutationInput,
-  TypewriterMutationResult,
 } from "./typewriter-types";
 import {
   type FetchedBlock,
@@ -151,7 +150,7 @@ export type TypewriterEffect<
   manifest: TypewriterManifest<mutationsConfig>;
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: TypewriterMutationInput<mutationsConfig, name>,
-  ) => Effect.Effect<TypewriterMutationResult, ExecuteError>;
+  ) => Effect.Effect<void, ExecuteError>;
   on: On<sequencingConfig, mutationsConfig, Effect.Effect<() => void>>;
   /**
    * Accepts, submits and watches for blocks. It fails when the typewriter
@@ -1145,7 +1144,6 @@ export function createTypewriterEffect<
           journal_ids: rewound.flatMap(({ journalIds }) => journalIds),
         });
         invalidateStorageCache();
-        // TODO(kyle) `execute` already returned the old execution index.
         nextExecutionIndex = first.fromExecutionIndex;
         yield* persist(
           deleteExecutionsFrom(
@@ -1590,7 +1588,7 @@ export function createTypewriterEffect<
 
     function execute(
       input: RuntimeExecuteInput,
-    ): Effect.Effect<TypewriterMutationResult, ExecuteError> {
+    ): Effect.Effect<void, ExecuteError> {
       return Effect.gen(function* () {
         const mutation = structuredClone(input);
         if (!isMutationName(mutation.name)) {
@@ -1659,8 +1657,6 @@ export function createTypewriterEffect<
             duration: yield* durationMs(acceptStartedAt),
           }),
         );
-
-        return { executionIndex: acceptedMutation.executionIndex };
       });
     }
 

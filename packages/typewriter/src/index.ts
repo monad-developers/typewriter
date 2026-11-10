@@ -25,7 +25,6 @@ import type {
   MutationListener,
   On,
   TypewriterMutationInput,
-  TypewriterMutationResult,
 } from "./typewriter-types";
 
 /** A `TypewriterEffect` with Promise and callback APIs, already running. */
@@ -39,7 +38,7 @@ export type Typewriter<
 > & {
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: TypewriterMutationInput<mutationsConfig, name>,
-  ) => Promise<TypewriterMutationResult>;
+  ) => Promise<void>;
   on: On<sequencingConfig, mutationsConfig, () => void>;
 };
 
@@ -100,7 +99,6 @@ export type {
   RemoveCredentialParams,
   TypewriterMutation,
   TypewriterMutationInput,
-  TypewriterMutationResult,
 } from "./typewriter-types";
 export {
   UnrecoverableReorgError,

@@ -93,8 +93,6 @@ export type TypewriterMutationInput<
   };
 }[name];
 
-export type TypewriterMutationResult = { executionIndex: bigint };
-
 export type MutationStatus =
   | "received"
   | "accepted"
