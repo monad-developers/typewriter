@@ -1066,36 +1066,31 @@ export function createTypewriterEffect<
       settlement: SentSettlement,
       transactionIndex: number,
       block: RuntimeBlock,
-    ) =>
-      Effect.gen(function* () {
-        updateStatus<SentSettlement, LandedSettlement>(settlement, {
-          status: "included",
-          block,
-        });
-        const { batch } = settlement;
-        if (batch === undefined) return;
-        const inclusion: Inclusion = {
-          blockNumber: block.number,
-          blockHash: block.hash,
-          blockTimestamp: block.timestamp,
-          transactionHash: settlement.hash,
-          transactionIndex,
-        };
-        batch.status = "included";
-        for (const mutation of batch.mutations) {
-          updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
-        }
-        block.batches.push(batch);
-        yield* Deferred.await(
-          yield* persist(
-            updateMutationInclusion(
-              app.mutationSchema,
-              batch.mutations,
-              inclusion,
-            ),
-          ),
-        );
+    ) => {
+      updateStatus<SentSettlement, LandedSettlement>(settlement, {
+        status: "included",
+        block,
       });
+      const { batch } = settlement;
+      if (batch === undefined) return [];
+      const inclusion: Inclusion = {
+        blockNumber: block.number,
+        blockHash: block.hash,
+        blockTimestamp: block.timestamp,
+        transactionHash: settlement.hash,
+        transactionIndex,
+      };
+      batch.status = "included";
+      for (const mutation of batch.mutations) {
+        updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
+      }
+      block.batches.push(batch);
+      return updateMutationInclusion(
+        app.mutationSchema,
+        batch.mutations,
+        inclusion,
+      );
+    };
 
     // Once every settlement sent before the first revert is final, the
     // chain is where that settlement started, and it and every later one
@@ -1228,15 +1223,17 @@ export function createTypewriterEffect<
         // The watch removes the block.
         if (receipts.includes(undefined)) return;
 
-        yield* withStateLock(
+        const runtimeBlock: RuntimeBlock = {
+          status: "included",
+          number: block.number,
+          hash: block.hash,
+          timestamp: block.timestamp,
+          batches: [],
+        };
+        // The commit is awaited outside the lock, so `accept` doesn't wait on the database.
+        const committed = yield* withStateLock(
           Effect.gen(function* () {
-            const runtimeBlock: RuntimeBlock = {
-              status: "included",
-              number: block.number,
-              hash: block.hash,
-              timestamp: block.timestamp,
-              batches: [],
-            };
+            const statements: DbStatement<unknown>[] = [];
             for (const [i, settlement] of landed.entries()) {
               const receipt = receipts[i]!;
               yield* Effect.logDebug("Landed settlement transaction").pipe(
@@ -1269,67 +1266,82 @@ export function createTypewriterEffect<
                   transactionHash: receipt.transactionHash,
                 });
               }
-              yield* include(
-                settlement,
-                receipt.transactionIndex,
-                runtimeBlock,
+              statements.push(
+                ...include(settlement, receipt.transactionIndex, runtimeBlock),
               );
             }
-            if (receipts.some((receipt) => receipt!.status === "success")) {
-              yield* emitBlock(runtimeBlock);
-            }
+            return statements.length === 0
+              ? undefined
+              : yield* persist(statements);
           }),
         );
+        if (committed !== undefined) yield* Deferred.await(committed);
+        if (receipts.some((receipt) => receipt!.status === "success")) {
+          yield* emitBlock(runtimeBlock);
+        }
       });
 
     // A reorg replaced `block`. Its settlements are sent again as signed, and
     // land with the same result, since each pins its timestamp.
     const unland = (block: LocalBlock) =>
-      withStateLock(
-        Effect.gen(function* () {
-          const removed = settlements.filter(
-            (settlement): settlement is LandedSettlement =>
-              (settlement.status === "included" ||
-                settlement.status === "reverted") &&
-              settlement.block.hash === block.hash,
-          );
-          if (removed.length === 0) return 0;
-          const runtimeBlock = removed[0]!.block;
-          const included = removed.some(({ status }) => status === "included");
-          for (const settlement of removed) {
-            delete (settlement as Partial<LandedSettlement>).block;
-            const sent = updateStatus<LandedSettlement, SentSettlement>(
-              settlement,
-              { status: "sent" },
+      Effect.gen(function* () {
+        const unlanded = yield* withStateLock(
+          Effect.gen(function* () {
+            const removed = settlements.filter(
+              (settlement): settlement is LandedSettlement =>
+                (settlement.status === "included" ||
+                  settlement.status === "reverted") &&
+                settlement.block.hash === block.hash,
             );
-            sent.sentAt = 0n;
-            sent.firstSentAt = watched;
-          }
-          resyncing = settlements.some(({ status }) => status === "reverted");
-          yield* Queue.offer(sendSignal, undefined);
-          if (!included) return removed.length;
+            if (removed.length === 0) return { count: 0 };
+            const runtimeBlock = removed[0]!.block;
+            const included = removed.some(
+              ({ status }) => status === "included",
+            );
+            for (const settlement of removed) {
+              delete (settlement as Partial<LandedSettlement>).block;
+              const sent = updateStatus<LandedSettlement, SentSettlement>(
+                settlement,
+                { status: "sent" },
+              );
+              sent.sentAt = 0n;
+              sent.firstSentAt = watched;
+            }
+            resyncing = settlements.some(({ status }) => status === "reverted");
+            yield* Queue.offer(sendSignal, undefined);
+            if (!included) return { count: removed.length };
 
-          const mutations = runtimeBlock.batches.flatMap((batch) => {
-            batch.status = "accepted";
-            return batch.mutations.map((mutation) =>
-              updateMutationToUnincluded(mutation as IncludedMutation),
-            );
-          });
-          yield* Deferred.await(
-            yield* persist(
-              updateMutationInclusion(app.mutationSchema, mutations, undefined),
-            ),
-          );
-          const { number, hash, timestamp } = runtimeBlock;
+            const mutations = runtimeBlock.batches.flatMap((batch) => {
+              batch.status = "accepted";
+              return batch.mutations.map((mutation) =>
+                updateMutationToUnincluded(mutation as IncludedMutation),
+              );
+            });
+            return {
+              count: removed.length,
+              runtimeBlock,
+              committed: yield* persist(
+                updateMutationInclusion(
+                  app.mutationSchema,
+                  mutations,
+                  undefined,
+                ),
+              ),
+            };
+          }),
+        );
+        if (unlanded.committed !== undefined) {
+          yield* Deferred.await(unlanded.committed);
+          const { number, hash, timestamp } = unlanded.runtimeBlock;
           yield* emit("block", blockListeners, {
             status: "removed",
             number,
             hash,
             timestamp,
           } as BlockEvent<"fifo" | "batch">);
-          return removed.length;
-        }),
-      );
+        }
+        return unlanded.count;
+      });
 
     const rebroadcast = (block: LocalBlock) =>
       Effect.gen(function* () {
