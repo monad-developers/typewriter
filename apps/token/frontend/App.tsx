@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { TypewriterManifest, TypewriterMutationResult } from "typewriter";
+import type { TypewriterManifest } from "typewriter";
 import {
   authorizeMutation,
   BUILTIN_MUTATIONS,
@@ -27,7 +27,7 @@ import { type RequestParams, request } from "./lib/api";
 type AccountInfo = { balance: bigint };
 type TxStatus = "accepted" | "included" | "finalized";
 type Tx = {
-  executionIndex: bigint;
+  key: string;
   status: TxStatus;
   amount: bigint;
   to: Hex;
@@ -158,17 +158,17 @@ export function App() {
 
   // One request polls every pending tx, so status checks don't hold the
   // browser's six connections per host.
-  const pendingIndexes = txs
+  const pendingKeys = txs
     .filter((tx) => tx.status !== "finalized")
-    .map((tx) => tx.executionIndex)
+    .map((tx) => tx.key)
     .join(",");
   const statusesQuery = useQuery({
-    queryKey: ["statuses", pendingIndexes],
+    queryKey: ["statuses", pendingKeys],
     queryFn: () =>
       request<Record<string, TxStatus>>(
-        `/api/mutations/status?executionIndexes=${pendingIndexes}`,
+        `/api/mutations/status?keys=${pendingKeys}`,
       ),
-    enabled: pendingIndexes !== "",
+    enabled: pendingKeys !== "",
     refetchInterval: 100,
   });
   useEffect(() => {
@@ -176,7 +176,7 @@ export function App() {
     if (statuses === undefined) return;
     setTxs((previous) =>
       previous.map((tx) => {
-        const status = statuses[tx.executionIndex.toString()];
+        const status = statuses[tx.key];
         return status === undefined ? tx : { ...tx, status };
       }),
     );
@@ -210,7 +210,7 @@ export function App() {
         getAuthorizationPayload(manifest, createMutation),
       );
       const create = authorizeMutation(createMutation, createSignature);
-      await request<TypewriterMutationResult>("/api", {
+      await request("/api", {
         method: "POST",
         body: create,
       });
@@ -231,13 +231,13 @@ export function App() {
       );
       const mint = authorizeMutation(mintMutation, mintSignature);
       const startedAt = performance.now();
-      const result = await loggedRequest<TypewriterMutationResult>("/api", {
+      await loggedRequest("/api", {
         method: "POST",
         body: mint,
       });
       return {
         account: toAccount(stored),
-        executionIndex: result.executionIndex,
+        key: `${accountId}:${mintMutation.nonce}`,
         submissionLatency: performance.now() - startedAt,
       };
     },
@@ -250,7 +250,7 @@ export function App() {
       });
       setTxs((previous) => [
         {
-          executionIndex: result.executionIndex,
+          key: result.key,
           status: "accepted",
           amount: 1_000n,
           to: result.account.accountId,
@@ -284,12 +284,12 @@ export function App() {
       );
       const transfer = authorizeMutation(transferMutation, transferSignature);
       const startedAt = performance.now();
-      const result = await loggedRequest<TypewriterMutationResult>("/api", {
+      await loggedRequest("/api", {
         method: "POST",
         body: transfer,
       });
       return {
-        executionIndex: result.executionIndex,
+        key: `${account.accountId}:${account.nonce}`,
         amount: amountUnits,
         to,
         account: { ...account, nonce: incrementNonce(account.nonce) },
@@ -302,7 +302,7 @@ export function App() {
       queryClient.setQueryData(["storedAccount", storageKey], result.account);
       setTxs((previous) => [
         {
-          executionIndex: result.executionIndex,
+          key: result.key,
           status: "accepted",
           amount: result.amount,
           to: result.to,
@@ -456,10 +456,7 @@ export function App() {
               </thead>
               <tbody>
                 {txs.map((tx) => (
-                  <tr
-                    key={tx.executionIndex.toString()}
-                    className="border-b last:border-0"
-                  >
+                  <tr key={tx.key} className="border-b last:border-0">
                     <td className="py-2 pr-6">
                       <code>{tx.status}</code>
                     </td>

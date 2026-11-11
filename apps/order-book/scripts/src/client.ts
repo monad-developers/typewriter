@@ -112,7 +112,7 @@ async function submit<const name extends OrderBookMutationName>(
     expiration: 0,
   });
   try {
-    return await post<{ executionIndex: bigint }>("/api", mutation);
+    await post("/api", mutation);
   } catch (err) {
     if (!opts?.concurrent) account.nonce = nonce;
     throw err;

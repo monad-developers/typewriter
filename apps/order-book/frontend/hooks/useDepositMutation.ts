@@ -26,13 +26,9 @@ export function useDepositMutation() {
         asset,
         amount,
       });
-      const result = await request<{ executionIndex: bigint }>("/api", {
-        method: "POST",
-        body: signed,
-      });
+      await request("/api", { method: "POST", body: signed });
 
       return {
-        executionIndex: result.executionIndex,
         account: { ...account, nonce: incrementNonce(account.nonce) },
       };
     },

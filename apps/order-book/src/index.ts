@@ -130,13 +130,8 @@ const server = serve({
           return badRequest("Bad Request");
         }
 
-        const result = await app.execute(
-          body as Parameters<typeof app.execute>[0],
-        );
-        return json({
-          executionIndex: result.executionIndex,
-          status: "accepted",
-        });
+        await app.execute(body as Parameters<typeof app.execute>[0]);
+        return json({ status: "accepted" });
       },
     },
     "/api/tps": {
