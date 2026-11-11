@@ -24,17 +24,19 @@ const typewriter = await createTypewriter(Token, {
   sequencing: { order: "fifo" },
 });
 
-// Accepted mutations that are not finalized yet. Clients only ask about
-// mutations they posted, which are accepted before `execute` resolves, so a
-// missing execution index is finalized.
-const statuses = new Map<bigint, MutationStatus>();
+// Accepted mutations that are not finalized yet, keyed by `accountID:nonce`.
+// Clients only ask about mutations they posted, which are accepted before
+// `execute` resolves, so a missing key is finalized.
+const statuses = new Map<string, MutationStatus>();
 
 typewriter.on("mutation", (mutation) => {
   if (!("executionIndex" in mutation)) return;
+  const { accountID, nonce } = mutation.authorization;
+  const key = `${accountID}:${nonce}`;
   if (mutation.status === "finalized") {
-    statuses.delete(mutation.executionIndex);
+    statuses.delete(key);
   } else {
-    statuses.set(mutation.executionIndex, mutation.status);
+    statuses.set(key, mutation.status);
   }
 });
 
@@ -45,10 +47,10 @@ const server = Bun.serve({
     "/api": {
       POST: async (req) => {
         const body = await req.json();
-        const mutation = await typewriter.execute(
+        await typewriter.execute(
           body as Parameters<typeof typewriter.execute>[0],
         );
-        return jsonResponse(mutation);
+        return jsonResponse({ status: "accepted" });
       },
     },
     "/api/accountIds": () =>
@@ -60,17 +62,10 @@ const server = Bun.serve({
       });
     },
     "/api/mutations/status": (req) => {
-      const executionIndexes =
-        new URL(req.url).searchParams.get("executionIndexes")?.split(",") ?? [];
-      if (!executionIndexes.every((index) => /^\d+$/.test(index))) {
-        return new Response("Bad Request", { status: 400 });
-      }
+      const keys = new URL(req.url).searchParams.get("keys")?.split(",") ?? [];
       return jsonResponse(
         Object.fromEntries(
-          executionIndexes.map((index) => [
-            index,
-            statuses.get(BigInt(index)) ?? "finalized",
-          ]),
+          keys.map((key) => [key, statuses.get(key) ?? "finalized"]),
         ),
       );
     },
