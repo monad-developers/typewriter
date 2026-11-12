@@ -24,6 +24,7 @@ import { Database, makeDbClient } from "../src/db";
 import { makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
+import type { RpcRequest } from "../src/rpc-transport";
 import { loadSolidityApp } from "../src/sol-build";
 import { createTypewriterEffect } from "../src/typewriter";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
@@ -253,6 +254,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       scheduler.io(chain.reorg(depth, added, atMs)),
   };
   const chainRandom = new Rng(plan.seed, "chain");
+  const feeRandom = new Rng(plan.seed, "fees");
   const transports = plan.transports.map((_, index) =>
     makeSimTransport({ plan, chain: simChain, index }),
   ) as [
@@ -368,6 +370,21 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
         const atMs = yield* Clock.currentTimeMillis;
         const timestamp = Math.floor(atMs / 1000);
         if (!chainRandom.bool(plan.chain.reorgRate)) {
+          if (feeRandom.bool(plan.chain.feeSpikeRate)) {
+            const latest = yield* simChain.request({
+              method: "eth_getBlockByNumber",
+              params: ["latest", false],
+            });
+            yield* simChain.request({
+              method: "anvil_setNextBlockBaseFeePerGas",
+              params: [
+                Hex.fromNumber(
+                  BigInt(latest!.baseFeePerGas!) *
+                    BigInt(feeRandom.weighted(plan.chain.feeSpikes)),
+                ),
+              ],
+            } as unknown as RpcRequest);
+          }
           yield* simChain.mine(atMs);
           return;
         }

@@ -38,6 +38,9 @@ export type Plan = {
     sendDropRate: number;
     /** How far below the highest head the chain finalizes. */
     finalizedBlockDepth: number;
+    /** How often a mined block's base fee jumps, by a multiple drawn from `feeSpikes`. */
+    feeSpikeRate: number;
+    feeSpikes: Weighted<number>;
   };
   generator: {
     /** The key type of each account. */
@@ -106,6 +109,12 @@ export function makePlan(seed: string): Plan {
     dropRate: reorgRate === 0 ? 0 : at("chain.dropRate").pick([0, 0.05, 0.25]),
     sendDropRate: at("chain.sendDropRate").pick([0, 0.05, 0.2]),
     finalizedBlockDepth: at("chain.finalizedBlockDepth").int(1, 5),
+    feeSpikeRate: at("chain.feeSpikeRate").pick([0, 0, 0.01, 0.05]),
+    feeSpikes: [
+      [3, 3],
+      [10, 2],
+      [50, 1],
+    ],
   };
 
   const accounts = at("generator.accounts");
