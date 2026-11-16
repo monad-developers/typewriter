@@ -1,3 +1,4 @@
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { SQL } from "bun";
 import { eq } from "drizzle-orm";
@@ -91,6 +92,36 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
     "usage: DATABASE_URL=<postgres url> bun simulation-test/index.ts",
   );
   process.exit(1);
+}
+
+/**
+ * The bytes allocated with glibc's `malloc` and not yet freed, on Linux.
+ * Elsewhere the run doesn't measure the native heap.
+ */
+const nativeInUse = (() => {
+  if (process.platform !== "linux") return undefined;
+  const { symbols } = dlopen("libc.so.6", {
+    mallinfo2: { args: [FFIType.ptr], returns: FFIType.void },
+  });
+  return () => {
+    const info = new BigUint64Array(10);
+    symbols.mallinfo2(ptr(info));
+    // `hblkhd` and `uordblks`: mmapped and allocated chunks.
+    return Number(info[4]! + info[7]!);
+  };
+})();
+
+/**
+ * The bytes in use after a full GC: on the JS heap, and on the native heap,
+ * where revm keeps its state and journals (0 off Linux). Nothing else in the
+ * process allocates on the native heap.
+ */
+function memoryInUse() {
+  Bun.gc(true);
+  return {
+    heap: process.memoryUsage().heapUsed,
+    native: nativeInUse?.() ?? 0,
+  };
 }
 
 /** The first Anvil account. */
@@ -253,11 +284,13 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     mine: (atMs) => scheduler.io(chain.mine(atMs)),
     reorg: (depth, added, atMs) =>
       scheduler.io(chain.reorg(depth, added, atMs)),
+    forget: chain.forget,
   };
   const chainRandom = new Rng(plan.seed, "chain");
   const feeRandom = new Rng(plan.seed, "fees");
   /** Blocks left in the current base fee surge. */
   let surgeBlocks = 0;
+  const simDb = makeSimDbTransport({ plan, transport, io: scheduler.io });
   const transports = plan.transports.map((_, index) =>
     makeSimTransport({ plan, chain: simChain, index }),
   ) as [
@@ -281,6 +314,9 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
   const pendingEnqueues = new Set<string>();
   // The virtual time of the last mutation event, or force-executed enqueue.
   let progressedAt = startMs;
+  // Memory in use before the runtime is created, and right after.
+  let beforeRuntime = { heap: 0, native: 0 };
+  let startedRuntime = beforeRuntime;
 
   // The world's scope outlives its fiber, so `validate` can read the runtime's
   // views after the run. The runtime's fibers run on the simulated scheduler,
@@ -299,11 +335,13 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     const runListenerCheck = yield* FiberSet.runtime(listenerChecks)<never>();
     yield* FiberSet.run(fibers, FiberSet.join(listenerChecks));
 
+    beforeRuntime = memoryInUse();
     const typewriter = yield* createTypewriterEffect<
       AssessmentStorage,
       AssessmentMutations,
       "fifo" | "batch"
     >(app);
+    startedRuntime = memoryInUse();
 
     /**
      * Records the chain's latest block right after the runtime rejected a
@@ -643,10 +681,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     );
   }).pipe(
     Scope.provide(scope),
-    Effect.provideService(
-      Database,
-      makeDbClient(makeSimDbTransport({ plan, transport, io: scheduler.io })),
-    ),
+    Effect.provideService(Database, makeDbClient(simDb)),
     Effect.provide(layerRpc(transports)),
     Effect.provideService(Clock.Clock, clock),
     Effect.provide(
@@ -726,16 +761,56 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     }
   }
 
+  const summary = {
+    submissions: run.submissions.length,
+    finalized: run.mutationEvents.filter(({ status }) => status === "finalized")
+      .length,
+    dropped,
+    blocks: run.blockEvents.length,
+    batches: run.batchEvents.length,
+    reorgs: run.reorgs.length,
+    gas_used: gas.gasUsed,
+    gas_limit: gas.gasLimit,
+    duration: Math.round(performance.now() - validateStart),
+  };
+
+  // The harness's records grow with the run. Once it drops them, what is in
+  // use past `beforeRuntime` is the runtime's. Measured from a fresh stack,
+  // where the GC finds no stale references to what the run dropped.
+  const measure = Effect.promise(
+    () =>
+      new Promise<ReturnType<typeof memoryInUse>>((resolve) =>
+        setTimeout(() => resolve(memoryInUse())),
+      ),
+  );
+  const recorded = yield* measure;
+  for (const records of Object.values(run)) records.length = 0;
+  chain.forget();
+  simDb.forget();
+  for (const transport of transports) transport.forget();
+  const ended = yield* measure;
+  const kb = (bytes: number) => Math.round(bytes / 1024);
+  const heap = [startedRuntime.heap, ended.heap].map((bytes) =>
+    kb(bytes - beforeRuntime.heap),
+  );
+  const native =
+    nativeInUse === undefined
+      ? {}
+      : {
+          runtime_native_kb: [startedRuntime.native, ended.native]
+            .map((bytes) => kb(bytes - beforeRuntime.native))
+            .join("->"),
+          runtime_native_per_finalized_b: Math.round(
+            (ended.native - startedRuntime.native) /
+              Math.max(summary.finalized, 1),
+          ),
+        };
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
-      submissions: run.submissions.length,
-      dropped,
-      blocks: run.blockEvents.length,
-      batches: run.batchEvents.length,
-      reorgs: run.reorgs.length,
-      gas_used: gas.gasUsed,
-      gas_limit: gas.gasLimit,
-      duration: Math.round(performance.now() - validateStart),
+      ...summary,
+      runtime_heap_kb: heap.join("->"),
+      ...native,
+      harness_heap_kb: kb(recorded.heap - ended.heap),
     }),
   );
 });

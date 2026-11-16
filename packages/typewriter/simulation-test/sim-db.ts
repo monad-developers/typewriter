@@ -45,7 +45,7 @@ export function makeSimDbTransport({
   plan: Plan;
   transport: DbTransport;
   io: SimScheduler["io"];
-}): DbTransport {
+}): DbTransport & { forget: () => void } {
   const {
     latencyMs: [latencyMin, latencyMax],
     errorRate,
@@ -114,5 +114,12 @@ export function makeSimDbTransport({
   // One runtime runs per simulation, so the lock is never contended.
   const lock: DbTransport["lock"] = () => Effect.succeed(Effect.never);
 
-  return { run, lock };
+  return {
+    run,
+    lock,
+    forget: () => {
+      occurrences.clear();
+      attempts.clear();
+    },
+  };
 }

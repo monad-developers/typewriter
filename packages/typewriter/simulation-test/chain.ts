@@ -56,6 +56,8 @@ export type Chain = {
     added: number,
     atMs: number,
   ) => Effect.Effect<{ replaced: Hex.Hex[]; dropped: Hex.Hex[] }>;
+  /** Drops every block and answer it keeps, once the run no longer reads the chain. */
+  forget: () => void;
 };
 
 type Block = {
@@ -516,7 +518,29 @@ export function makeChain(
         }),
       );
 
-    return { request, read, stateDiff, clearedAt, mine, reorg };
+    return {
+      request,
+      read,
+      stateDiff,
+      clearedAt,
+      mine,
+      reorg,
+      forget: () => {
+        for (const records of [
+          pinned,
+          atTip,
+          blocks,
+          orphans,
+          orphanedIn,
+          stateDiffs,
+          clears,
+        ]) {
+          records.clear();
+        }
+        canonical.length = 0;
+        heads.length = 0;
+      },
+    };
   });
 }
 

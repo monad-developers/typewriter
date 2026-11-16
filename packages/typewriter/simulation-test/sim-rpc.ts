@@ -27,7 +27,7 @@ export function makeSimTransport({
   plan: Plan;
   chain: Chain;
   index: number;
-}): RpcTransport {
+}): RpcTransport & { forget: () => void } {
   const origin = `sim-${index}`;
   const {
     latencyMs: [latencyMin, latencyMax],
@@ -118,5 +118,9 @@ export function makeSimTransport({
       return result;
     });
 
-  return { origin, request: request as RpcTransport["request"] };
+  return {
+    origin,
+    request: request as RpcTransport["request"],
+    forget: () => occurrences.clear(),
+  };
 }
