@@ -8,12 +8,17 @@
  *   where a zero byte is 1 token and any other byte 4.
  * - Monad MIP-8: storage is priced per page of 128 slots. A page is cold once
  *   and first written once per transaction, however many executions touch it.
+ *   An access-list key warms its whole page.
+ * - EIP-2930: an access list costs 2,400 per address and 1,900 per key, and
+ *   what it lists is warm from the start.
+ * - EIP-7981 (MonadNext): an access list also costs 10 per token of its bytes,
+ *   at 4 tokens a byte, and those tokens count toward the EIP-7623 floor.
  * - EIP-150: a call passes on at most 63/64 of the gas left.
  * - EIP-2200: an SSTORE needs more than 2,300 gas left.
  * - Monad caps a transaction's gas limit at 30M in every hardfork.
  */
 import { Hex } from "ox";
-import type { ExecuteResult, Spec } from "typewriter-evm";
+import type { AccessList, ExecuteResult, Spec } from "typewriter-evm";
 
 /** One execution's run alone, and the calldata it ran with. */
 type Execution = {
@@ -34,6 +39,12 @@ const PAGE_PRICED_SPECS: ReadonlySet<Spec> = new Set(["MonadTen", "MonadNext"]);
 const PAGE_SHIFT = 7n;
 const COLD_READ_SAVING = 8_000;
 const PAGE_WRITE_SAVING = 2_800;
+
+const ACCESS_LIST_ADDRESS_GAS = 2_400;
+const ACCESS_LIST_KEY_GAS = 1_900;
+const ADDRESS_BYTES = 20;
+const KEY_BYTES = 32;
+const ACCESS_LIST_TOKENS_PER_BYTE = 4;
 
 /** The most gas a settlement can use, so its gas limit fits under the cap. */
 export const SETTLEMENT_GAS = Math.floor(
@@ -75,15 +86,60 @@ function repeats(sets: readonly (readonly string[])[]): number {
   return n;
 }
 
+const isPagePriced = (executions: readonly Execution[]) =>
+  executions.every(({ executeResult }) =>
+    PAGE_PRICED_SPECS.has(executeResult.spec),
+  );
+
 /**
- * The gas limit of `executions` as one transaction: their gas alone, less
- * the base gas and the MIP-8 page costs they share, but at least their
- * EIP-7623 floor together. A floor-bound execution's `gas_used` hides the
- * pages it shares, so the savings alone can come in under that floor. On
- * top, the 1/64 each call keeps back (EIP-150) and the SSTORE sentry
- * (EIP-2200).
+ * The access list of `executions` as one transaction: each storage page they
+ * touch, as the lowest slot they touch in it, so that no page is ever cold.
+ * Without MIP-8 a key warms only its slot, so the list is empty.
+ *
+ * @dev An account without storage keys is left out and stays cold.
  */
-export function gasLimit(executions: readonly Execution[]): number {
+export function accessList(executions: readonly Execution[]): AccessList {
+  if (!isPagePriced(executions)) return [];
+  const pages = new Map<
+    string,
+    { address: AccessList[number]["address"]; slots: Map<bigint, bigint> }
+  >();
+  for (const { executeResult } of executions) {
+    for (const { address, storageKeys } of executeResult.access_list) {
+      const id = address.toLowerCase();
+      if (!pages.has(id)) pages.set(id, { address, slots: new Map() });
+      const { slots } = pages.get(id)!;
+      for (const key of storageKeys) {
+        const slot = BigInt(key);
+        const lowest = slots.get(slot >> PAGE_SHIFT);
+        if (lowest === undefined || slot < lowest) {
+          slots.set(slot >> PAGE_SHIFT, slot);
+        }
+      }
+    }
+  }
+  return [...pages.values()]
+    .filter(({ slots }) => slots.size > 0)
+    .map(({ address, slots }) => ({
+      address,
+      storageKeys: [...slots.values()]
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+        .map((slot) => Hex.fromNumber(slot, { size: 32 })),
+    }));
+}
+
+/**
+ * The gas limit of `executions` as one transaction with `accessList`: their
+ * gas alone, less the base gas and the MIP-8 page costs they share or the
+ * list warms, plus the list's own cost, but at least their EIP-7623 floor
+ * together. A floor-bound execution's `gas_used` hides the pages it shares,
+ * so the savings alone can come in under that floor. On top, the 1/64 each
+ * call keeps back (EIP-150) and the SSTORE sentry (EIP-2200).
+ */
+export function gasLimit(
+  executions: readonly Execution[],
+  accessList: AccessList,
+): number {
   let gas = TRANSACTION_BASE_GAS;
   let tokens = 0;
   for (const { executeResult, calldata } of executions) {
@@ -91,8 +147,24 @@ export function gasLimit(executions: readonly Execution[]): number {
     for (const byte of Hex.toBytes(calldata)) tokens += byte === 0 ? 1 : 4;
   }
 
+  const addresses = accessList.length;
+  const keys = accessList.reduce(
+    (n, { storageKeys }) => n + storageKeys.length,
+    0,
+  );
+  gas += addresses * ACCESS_LIST_ADDRESS_GAS + keys * ACCESS_LIST_KEY_GAS;
+  if (
+    executions.some(({ executeResult }) => executeResult.spec === "MonadNext")
+  ) {
+    const listTokens =
+      (addresses * ADDRESS_BYTES + keys * KEY_BYTES) *
+      ACCESS_LIST_TOKENS_PER_BYTE;
+    gas += FLOOR_GAS_PER_TOKEN * listTokens;
+    tokens += listTokens;
+  }
+
   const results = executions.map(({ executeResult }) => executeResult);
-  if (results.every(({ spec }) => PAGE_PRICED_SPECS.has(spec))) {
+  if (isPagePriced(executions)) {
     const page = (slot: Hex.Hex) => BigInt(slot) >> PAGE_SHIFT;
     const reads = results.map(({ access_list }) =>
       access_list.flatMap(({ address, storageKeys }) =>
@@ -102,8 +174,16 @@ export function gasLimit(executions: readonly Execution[]): number {
     const writes = results.map(({ slot_writes }) =>
       slot_writes.map(({ slot }) => `${page(slot)}`),
     );
+    // A listed page is warm even on its first touch.
+    const listed = new Set(
+      accessList.flatMap(({ address, storageKeys }) =>
+        storageKeys.map((key) => `${address.toLowerCase()}:${page(key)}`),
+      ),
+    );
+    const warmed = new Set(reads.flat().filter((key) => listed.has(key))).size;
     gas -=
-      repeats(reads) * COLD_READ_SAVING + repeats(writes) * PAGE_WRITE_SAVING;
+      (repeats(reads) + warmed) * COLD_READ_SAVING +
+      repeats(writes) * PAGE_WRITE_SAVING;
   }
 
   gas = Math.max(gas, TRANSACTION_BASE_GAS + FLOOR_GAS_PER_TOKEN * tokens);

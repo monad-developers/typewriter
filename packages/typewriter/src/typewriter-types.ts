@@ -1,6 +1,7 @@
 import type { AbiParameter } from "abitype";
 import type { Deferred } from "effect";
 import type { Hex } from "ox";
+import type { AccessList } from "typewriter-evm";
 import type {
   AbiParametersToValue,
   MutationConfig,
@@ -171,6 +172,8 @@ type SettlementBase = {
   /** The revm journals of its executions. */
   journalIds: number[];
   gasLimit: number;
+  /** Warms the storage pages its executions touch. */
+  accessList: AccessList;
   /** Resolves once its executions' rows commit. */
   committed: Deferred.Deferred<void>;
 };

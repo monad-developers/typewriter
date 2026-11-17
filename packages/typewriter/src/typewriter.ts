@@ -61,7 +61,7 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
 } from "./encoding";
-import { gasLimit, groupByGas, SETTLEMENT_GAS } from "./gas";
+import { accessList, gasLimit, groupByGas, SETTLEMENT_GAS } from "./gas";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 import { Rpc } from "./rpc";
@@ -797,16 +797,20 @@ export function createTypewriterEffect<
       timestamp: bigint,
       committed: Deferred.Deferred<void>,
       contents: Pick<ExecutedSettlement, "batch" | "queueIndexes">,
-    ): ExecutedSettlement => ({
-      ...contents,
-      status: "executed",
-      timestamp,
-      fromExecutionHash: group[0]!.fromExecutionHash,
-      fromExecutionIndex: group[0]!.mutation.executionIndex,
-      journalIds: group.map(({ executeResult }) => executeResult.journal_id),
-      gasLimit: gasLimit(group),
-      committed,
-    });
+    ): ExecutedSettlement => {
+      const list = accessList(group);
+      return {
+        ...contents,
+        status: "executed",
+        timestamp,
+        fromExecutionHash: group[0]!.fromExecutionHash,
+        fromExecutionIndex: group[0]!.mutation.executionIndex,
+        journalIds: group.map(({ executeResult }) => executeResult.journal_id),
+        gasLimit: gasLimit(group, list),
+        accessList: list,
+        committed,
+      };
+    };
 
     // Mutations then enqueues, the order `execute` runs them in.
     const settle = (
@@ -950,6 +954,7 @@ export function createTypewriterEffect<
               to: app.address,
               data: settlementCalldata(settlement),
               gas: BigInt(settlement.gasLimit),
+              accessList: settlement.accessList,
               // Room for the base fee to double before it lands.
               maxFeePerGas: 2n * latest.baseFeePerGas + maxPriorityFeePerGas,
               maxPriorityFeePerGas,
