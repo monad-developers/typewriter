@@ -657,7 +657,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
   );
   const validateStart = performance.now();
 
-  yield* validate({
+  const gas = yield* validate({
     app,
     chain,
     db,
@@ -688,6 +688,8 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
       reorgs: run.reorgs.length,
+      gas_used: gas.gasUsed,
+      gas_limit: gas.gasLimit,
       duration: Math.round(performance.now() - validateStart),
     }),
   );

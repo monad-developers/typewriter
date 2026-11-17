@@ -30,6 +30,8 @@ export type Settlement = Inclusion & {
   executionIndexes: bigint[];
   /** It landed before the timestamp it pinned, or more than `EXPIRATION_MARGIN` seconds after it. */
   late: boolean;
+  gasLimit: bigint;
+  gasUsed: bigint;
 };
 
 /** What happened onchain, read from the canonical chain after the run. */
@@ -74,6 +76,7 @@ type Transaction = {
   from: Hex.Hex;
   to: Hex.Hex | null;
   input: Hex.Hex;
+  gas: Hex.Hex;
   transactionIndex: Hex.Hex;
 };
 
@@ -167,6 +170,8 @@ export function readOnchain({
             BigInt(pinnedTimestamp) > inclusion.blockTimestamp ||
             inclusion.blockTimestamp - BigInt(pinnedTimestamp) >
               BigInt(EXPIRATION_MARGIN),
+          gasLimit: BigInt(transaction.gas),
+          gasUsed: BigInt(receipt.gasUsed),
         };
         onchain.settlements.push(settlement);
         if (settlement.reverted) {
