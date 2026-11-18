@@ -12,24 +12,24 @@ All three throw `unsupported ABI type` or `invalid ABI integer type` for a type 
 
 ## Type Mapping
 
-| ABI type | Postgres type | TypeScript insert type | Notes |
-| --- | --- | --- | --- |
-| `bool` | `boolean` | `boolean` | ABI boolean value. |
-| `address` | `char(42)` | `` `0x${string}` `` | Lowercase hex. |
-| `uint8` | `smallint` | `number` | Full unsigned range fits in signed `smallint`. |
-| `uint16`, `uint24` | `integer` | `number` | Full unsigned range fits in signed `integer`. |
-| `uint32`, `uint40`, `uint48`, `uint56` | `bigint` | `bigint` | Full unsigned range fits in signed `bigint`. |
-| `uint64` through `uint256`, `uint` | `numeric(78,0)` | `bigint` | Full unsigned range does not fit in signed `bigint`. |
-| `int8`, `int16` | `smallint` | `number` | Full signed range fits in signed `smallint`. |
-| `int24`, `int32` | `integer` | `number` | Full signed range fits in signed `integer`. |
-| `int40`, `int48`, `int56`, `int64` | `bigint` | `bigint` | Full signed range fits in signed `bigint`. |
-| `int72` through `int256`, `int` | `numeric(78,0)` | `bigint` | Full signed range does not fit in signed `bigint`. |
-| `bytes1` through `bytes32` | `char(2 + 2N)` | `` `0x${string}` `` | Fixed-size bytes as lowercase hex. |
-| `bytes` | `text` | `` `0x${string}` `` | Dynamic bytes as lowercase hex. |
-| `string` | `text` | `string` | See [Strings](#strings). |
-| `function` | `char(50)` | `` `0x${string}` `` | 24-byte function pointer as lowercase hex. |
-| `tuple` | `jsonb` | ABI-shaped JSON | See [JSON values](#json-values). |
-| `T[]`, `T[N]` | `jsonb` | ABI-shaped JSON | See [JSON values](#json-values). |
+| ABI type                               | Postgres type   | TypeScript insert type | Notes                                                |
+| -------------------------------------- | --------------- | ---------------------- | ---------------------------------------------------- |
+| `bool`                                 | `boolean`       | `boolean`              | ABI boolean value.                                   |
+| `address`                              | `char(42)`      | `` `0x${string}` ``    | Lowercase hex.                                       |
+| `uint8`                                | `smallint`      | `number`               | Full unsigned range fits in signed `smallint`.       |
+| `uint16`, `uint24`                     | `integer`       | `number`               | Full unsigned range fits in signed `integer`.        |
+| `uint32`, `uint40`, `uint48`, `uint56` | `bigint`        | `bigint`               | Full unsigned range fits in signed `bigint`.         |
+| `uint64` through `uint256`, `uint`     | `numeric(78,0)` | `bigint`               | Full unsigned range does not fit in signed `bigint`. |
+| `int8`, `int16`                        | `smallint`      | `number`               | Full signed range fits in signed `smallint`.         |
+| `int24`, `int32`                       | `integer`       | `number`               | Full signed range fits in signed `integer`.          |
+| `int40`, `int48`, `int56`, `int64`     | `bigint`        | `bigint`               | Full signed range fits in signed `bigint`.           |
+| `int72` through `int256`, `int`        | `numeric(78,0)` | `bigint`               | Full signed range does not fit in signed `bigint`.   |
+| `bytes1` through `bytes32`             | `char(2 + 2N)`  | `` `0x${string}` ``    | Fixed-size bytes as lowercase hex.                   |
+| `bytes`                                | `text`          | `` `0x${string}` ``    | Dynamic bytes as lowercase hex.                      |
+| `string`                               | `text`          | `string`               | See [Strings](#strings).                             |
+| `function`                             | `char(50)`      | `` `0x${string}` ``    | 24-byte function pointer as lowercase hex.           |
+| `tuple`                                | `jsonb`         | ABI-shaped JSON        | See [JSON values](#json-values).                     |
+| `T[]`, `T[N]`                          | `jsonb`         | ABI-shaped JSON        | See [JSON values](#json-values).                     |
 
 `fixed<M>x<N>` and `ufixed<M>x<N>` are not supported. Solidity does not allow them in function signatures.
 

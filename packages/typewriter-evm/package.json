@@ -19,7 +19,7 @@
     "ox": "catalog:"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.10.8",
+    "@napi-rs/cli": "3.10.12",
     "prool": "catalog:",
     "solmate": "github:transmissions11/solmate",
     "storage-layout": "workspace:*",

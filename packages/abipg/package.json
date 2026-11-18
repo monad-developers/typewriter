@@ -14,7 +14,7 @@
     "drizzle-orm": "catalog:"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite": "0.5.16",
     "drizzle-kit": "catalog:",
     "ox": "catalog:"
   },

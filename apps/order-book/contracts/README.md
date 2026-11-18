@@ -10,10 +10,10 @@ Within each batch, mutations are sequenced cancel → limit → market and marke
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
+| Variable      | Required         | Description                                                              |
+| ------------- | ---------------- | ------------------------------------------------------------------------ |
 | `PRIVATE_KEY` | Yes (for deploy) | Private key used to deploy the contract and derive the scheduler address |
-| `RPC_URL` | Yes (for deploy) | JSON-RPC endpoint to deploy to |
+| `RPC_URL`     | Yes (for deploy) | JSON-RPC endpoint to deploy to                                           |
 
 Order-book uses one root `.env` file. To deploy to Monad testnet, copy `.env.example.testnet` to `.env` in `apps/order-book`, set `PRIVATE_KEY`, then run `bun run deploy`.
 
