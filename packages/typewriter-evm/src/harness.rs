@@ -77,6 +77,9 @@ struct ExecuteParams {
     value: U256,
     /// Applied before the tx, and kept for later ones.
     block: Option<BlockParams>,
+    /// Warms its accounts and slots, as an EIP-2930 list would onchain.
+    #[serde(default)]
+    access_list: AccessList,
 }
 
 impl ExecuteParams {
@@ -359,7 +362,7 @@ impl EvmHarness {
         if let Some(block) = &tx.block {
             self.set_block_context(block)?;
         }
-        let (result, state) = self.run_tx(tx, AccessList::default())?;
+        let (result, state) = self.run_tx(tx, tx.access_list.clone())?;
         let access_list = self.discovered_access_list(tx, &state);
         let outcome = tx_outcome(&result, access_list, self.evm.0.ctx.cfg.0.spec);
         let keccak_preimages = std::mem::take(&mut self.evm.0.inspector.keccak_preimages);
@@ -612,6 +615,7 @@ mod tests {
             data: Bytes::new(),
             value: U256::ZERO,
             block: None,
+            access_list: AccessList::default(),
         }
     }
 

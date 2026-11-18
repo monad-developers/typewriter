@@ -41,11 +41,17 @@ export type ExecuteParams = {
   value?: Hex.Hex;
   /** Applied before the call, and kept for later ones. */
   block?: BlockParams;
+  access_list?: AccessList;
 };
+
+export type AccessList = {
+  address: Address.Address;
+  storageKeys: Hex.Hex[];
+}[];
 
 type TxResult = {
   gas_used: number;
-  access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
+  access_list: AccessList;
   /** The hardfork it executed under. */
   spec: Spec;
 };

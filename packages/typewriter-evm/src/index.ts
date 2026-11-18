@@ -11,6 +11,7 @@ import type {
 } from "./types";
 
 export type {
+  AccessList,
   AccountParams,
   BlockParams,
   ExecuteParams,
