@@ -8,8 +8,7 @@
     "test": "bun run contracts:build && bun test",
     "lint": "biome check . && forge fmt --check --root test/contracts",
     "benchmark": "bun run contracts:build && bun scripts/benchmark.ts",
-    "typecheck": "bun run contracts:build && tsc --noEmit",
-    "build": "bun run contracts:build && tsc --noEmit"
+    "typecheck": "bun run contracts:build && bun check"
   },
   "dependencies": {
     "abitype": "catalog:",

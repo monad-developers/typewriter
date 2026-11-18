@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun --hot src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit",
+    "typecheck": "bun check",
     "contracts:build": "forge build --root contracts --force",
     "contracts:lint": "forge fmt --check contracts && forge lint --root contracts"
   },

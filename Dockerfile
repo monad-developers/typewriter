@@ -5,13 +5,14 @@
 # Railpack/Nixpacks. Each Railway service sets its own Custom Start
 # Command (overrides CMD), so CMD here is only a harmless default.
 
-ARG BUN_VERSION=1.3.13
-ARG FOUNDRY_VERSION=v1.8.1
-ARG RUST_VERSION=1.98.0
+# Keep these in step with .github/workflows/ci.yml.
+ARG BUN_VERSION=1.4.4
+ARG FOUNDRY_VERSION=v1.9.0
+ARG RUST_VERSION=1.100.0
 
 # ---------------------------------------------------------------------------
 # Stage 1: foundry - download and extract the pinned official Foundry toolchain.
-# Kept isolated so the final image only copies the four binaries it needs.
+# Kept isolated so the runtime image only copies the four binaries it needs.
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS foundry
 ARG FOUNDRY_VERSION
@@ -25,8 +26,8 @@ ENV FOUNDRY_DIR=/root/.foundry
 ENV PATH=${FOUNDRY_DIR}/bin:${PATH}
 
 RUN case "${TARGETARCH}" in \
-        amd64) foundry_sha256=37b45855232e57624d90113b049ca54f0c92055bb5c1997fcbdc3076c7b89c10 ;; \
-        arm64) foundry_sha256=27a32bd282d73018ab4d043de15ab0320b561c71b4bf3a549b130a0806e79f5c ;; \
+        amd64) foundry_sha256=8d17599b42e3139f1a9c171be3798c4ed8e743ae17b84cc3435e57bf2a51ae99 ;; \
+        arm64) foundry_sha256=22d3060fa83515fb901690a2c59a5f552bd41c241886195b2159562fc4947abc ;; \
         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
     && mkdir -p "${FOUNDRY_DIR}/bin" \
@@ -39,14 +40,14 @@ RUN case "${TARGETARCH}" in \
     && cast --version
 
 # ---------------------------------------------------------------------------
-# Stage 2: build - install workspace deps, build contracts, build frontend.
+# Stage 2: build - install workspace deps, build the Rust native addon.
 # ---------------------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-debian AS build
 ARG RUST_VERSION
 
-# System deps required by forge build (git for github: deps, libssl/ca-certs
-# for TLS), the Rust native addon build, and Next.js builds. Rust stays in this
-# build stage; the runtime image receives only the built workspace output.
+# System deps required by the install (git for github: deps, libssl/ca-certs
+# for TLS) and the Rust native addon build. Rust stays in this build stage;
+# the runtime image receives only the built workspace output.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -66,12 +67,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && rustc --version \
     && cargo --version
 
-# Bring in the Foundry binaries from stage 1.
-COPY --from=foundry /root/.foundry/bin/forge /usr/local/bin/forge
-COPY --from=foundry /root/.foundry/bin/cast  /usr/local/bin/cast
-COPY --from=foundry /root/.foundry/bin/anvil /usr/local/bin/anvil
-COPY --from=foundry /root/.foundry/bin/chisel /usr/local/bin/chisel
-
 WORKDIR /app
 
 # Copy the whole workspace. Workspace installs in Bun resolve against the
@@ -83,18 +78,19 @@ COPY . .
 RUN bun install --frozen-lockfile
 
 # Workspace build. Fans out to per-package `build` scripts via the root's
-# `bun run --filter '*' build` (e.g. `forge build` for contract packages).
+# `bun run --filter '*' build`: today only the typewriter-evm Rust addon.
+# TypeScript is not built; Bun runs it from source.
 RUN bun run build
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime - final image Railway ships for every service.
 # Contains Bun + Foundry binaries + full workspace (source, node_modules,
-# forge out/, .next/). Each Railway service selects its entry point via
+# the native addon). Each Railway service selects its entry point via
 # its own Custom Start Command.
 # ---------------------------------------------------------------------------
 FROM oven/bun:${BUN_VERSION}-debian AS runtime
 
-# Runtime system deps: TLS roots, git (forge script sometimes shells out),
+# Runtime system deps: TLS roots, git (forge sometimes shells out),
 # tini as a small init for clean signal handling in containers.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -104,7 +100,8 @@ RUN apt-get update \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
-# Foundry binaries on PATH.
+# Foundry binaries on PATH: the runtime compiles app contracts with forge at
+# startup.
 COPY --from=foundry /root/.foundry/bin/forge /usr/local/bin/forge
 COPY --from=foundry /root/.foundry/bin/cast  /usr/local/bin/cast
 COPY --from=foundry /root/.foundry/bin/anvil /usr/local/bin/anvil

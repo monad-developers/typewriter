@@ -366,7 +366,7 @@ Use `BENCH_ACCOUNTS=4000` for the larger set. Measure changes with `bun run benc
 
 ```bash
 bun run test        # forge build + generate artifacts, then bun test
-bun run typecheck   # forge build + generate artifacts, then tsc --noEmit
+bun run typecheck   # forge build + generate artifacts, then bun check
 bun run lint        # biome + forge fmt --check
 bun run benchmark   # order-book read patterns: time, getter calls, slots read
 ```

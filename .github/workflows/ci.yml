@@ -7,6 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Keep these in step with the ARGs at the top of the Dockerfile, and the Rust
+# version with the `dtolnay/rust-toolchain@` refs below.
+env:
+  BUN_VERSION: 1.4.4
+  FOUNDRY_VERSION: v1.9.0
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -16,40 +22,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt, clippy
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          version: ${{ env.FOUNDRY_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run lint
 
+  # The release build of the typewriter-evm Rust addon, as the Dockerfile runs it.
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: oven-sh/setup-bun@v2
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run build
 
+  # `bun check` in every package. Foundry generates storage-layout's fixtures.
   typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          version: ${{ env.FOUNDRY_VERSION }}
       - run: bun install --frozen-lockfile
-      - run: bun run build
       - run: bun run typecheck
 
   test:
@@ -70,11 +80,13 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          version: ${{ env.FOUNDRY_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run test
