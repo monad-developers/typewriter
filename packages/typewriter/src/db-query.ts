@@ -88,6 +88,7 @@ export function includeBlockMutations(
     getMutationTable(schema, name),
   );
   return [...tables].map(([table, rows]) => {
+    // Send each receipt hash once. Postgres expands its indexes for the primary-key join.
     const transactions = Map.groupBy(
       rows,
       (mutation) => mutation.transactionIndex,

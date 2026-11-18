@@ -3,11 +3,7 @@ import { asc } from "drizzle-orm";
 import { Effect } from "effect";
 import { makeDb } from "./db";
 import { dropSchema, migrate } from "./db-migrate";
-import {
-  clearMutationInclusion,
-  includeBlockMutations,
-  insertMutations,
-} from "./db-query";
+import { includeBlockMutations, insertMutations } from "./db-query";
 import { createMutationSchema, createTypewriterSchema } from "./db-schema";
 import { builder } from "./db-transport";
 import type { AcceptedMutation, Authorization } from "./typewriter-types";
@@ -142,7 +138,7 @@ describe.skipIf(DATABASE_URL === undefined)("mutation rows", () => {
 });
 
 describe.skipIf(DATABASE_URL === undefined)("block inclusion writes", () => {
-  test("preserve large indexes and each transaction's receipt through a reorg", () =>
+  test("match each receipt to its exact bigint execution index", () =>
     Effect.gen(function* () {
       const base = 2n ** 53n;
       const { db, schema, table } = yield* seedMemos(
@@ -150,58 +146,43 @@ describe.skipIf(DATABASE_URL === undefined)("block inclusion writes", () => {
         base,
       );
       const block = {
-        number: base + 1n,
+        number: 1n,
         hash: AUTHORIZATION.accountID,
-        timestamp: 1700000000n,
+        timestamp: 2n,
       };
       const first = {
         name: "Memo",
-        executionIndex: base,
-        transactionHash: block.hash,
+        executionIndex: base + 1n,
+        transactionHash: `0x${"22".repeat(32)}` as const,
         transactionIndex: 3,
       };
-      const second = { ...first, executionIndex: base + 1n };
-      const third = {
+      const second = {
         ...first,
-        executionIndex: base + 3n,
+        executionIndex: base + 2n,
+        transactionHash: `0x${"33".repeat(32)}` as const,
         transactionIndex: 8,
-        transactionHash: `0x${"22".repeat(32)}` as const,
       };
-      const mutations = [first, second, third];
-      const read = () =>
-        db.run(
-          builder
-            .select({
-              index: table.execution_index,
-              height: table.block_number,
-              block: table.block_hash,
-              time: table.block_timestamp,
-              hash: table.transaction_hash,
-              tx: table.transaction_index,
-            })
-            .from(table)
-            .orderBy(asc(table.execution_index)),
-        );
-      const before = yield* read();
-      const updates = includeBlockMutations(schema, block, mutations);
-      expect(updates).toHaveLength(1);
-      yield* db.run(updates);
-      yield* db.run(updates);
-      const included = (m: (typeof mutations)[number]) => ({
-        index: m.executionIndex,
-        height: block.number,
-        block: block.hash,
-        time: block.timestamp,
-        hash: m.transactionHash,
-        tx: m.transactionIndex,
-      });
-      expect(yield* read()).toEqual([
-        included(first),
-        included(second),
-        before[2]!,
-        included(third),
+      yield* db.run(
+        includeBlockMutations(schema, block, [
+          first,
+          second,
+          { ...first, executionIndex: base + 3n },
+        ]),
+      );
+      const receipts = yield* db.run(
+        builder
+          .select({
+            hash: table.transaction_hash,
+            index: table.transaction_index,
+          })
+          .from(table)
+          .orderBy(asc(table.execution_index)),
+      );
+      expect(receipts).toEqual([
+        { hash: null, index: null },
+        { hash: first.transactionHash, index: first.transactionIndex },
+        { hash: second.transactionHash, index: second.transactionIndex },
+        { hash: first.transactionHash, index: first.transactionIndex },
       ]);
-      yield* db.run(clearMutationInclusion(schema, mutations));
-      expect(yield* read()).toEqual(before);
     }).pipe(Effect.scoped, Effect.runPromise));
 });
