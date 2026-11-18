@@ -1,52 +1,57 @@
+/**
+ * A settlement's gas, priced from each of its executions run alone in revm.
+ * The rules behind it:
+ *
+ * - Intrinsic gas: every transaction pays 21,000, which a settlement pays once
+ *   but each execution alone paid too.
+ * - EIP-7623: a transaction pays at least 21,000 plus 10 per calldata token,
+ *   where a zero byte is 1 token and any other byte 4.
+ * - Monad MIP-8: storage is priced per page of 128 slots. A page is cold once
+ *   and first written once per transaction, however many executions touch it.
+ * - EIP-150: a call passes on at most 63/64 of the gas left.
+ * - EIP-2200: an SSTORE needs more than 2,300 gas left.
+ * - Monad caps a transaction's gas limit at 30M in every hardfork.
+ */
+import { Hex } from "ox";
 import type { ExecuteResult, Spec } from "typewriter-evm";
-import { TX_GAS_LIMIT_CAP } from "./typewriter-constants";
 
-/** What a settlement's gas is priced from: one execution's run alone in revm. */
-type Execution = Pick<
-  Extract<ExecuteResult, { status: "success" }>,
-  "gas_used" | "access_list" | "slot_writes" | "spec"
->;
+/** One execution's run alone, and the calldata it ran with. */
+type Execution = {
+  executeResult: Pick<
+    Extract<ExecuteResult, { status: "success" }>,
+    "gas_used" | "access_list" | "slot_writes" | "spec"
+  >;
+  calldata: Hex.Hex;
+};
 
-/** The intrinsic gas of a transaction, which a settlement pays once. */
+const TX_GAS_LIMIT_CAP = 30_000_000;
 const TRANSACTION_BASE_GAS = 21_000;
-
-/** The hardforks that price storage per page (MIP-8). */
-const PAGE_PRICED_SPECS: ReadonlySet<Spec> = new Set(["MonadTen", "MonadNext"]);
-
-/** Monad's storage pages hold `2 ** PAGE_SHIFT` slots. */
-const PAGE_SHIFT = 7n;
-/** What Monad saves on a page already read in the transaction. */
-const COLD_READ_SAVING = 8_000;
-/** What Monad saves on a page the transaction already wrote. */
-const PAGE_WRITE_SAVING = 2_800;
-
-/** The gas an SSTORE requires left, which a gas limit must leave. */
+const FLOOR_GAS_PER_TOKEN = 10;
 const SSTORE_SENTRY_GAS = 2_300;
 
-/** The gas limit for `gas`: the 1/64 each call keeps back, and the SSTORE sentry. */
-function gasLimitFor(gas: number): number {
-  return gas + Math.ceil(gas / 64) + SSTORE_SENTRY_GAS;
-}
+/** The hardforks with MIP-8, and what it saves on a page already touched. */
+const PAGE_PRICED_SPECS: ReadonlySet<Spec> = new Set(["MonadTen", "MonadNext"]);
+const PAGE_SHIFT = 7n;
+const COLD_READ_SAVING = 8_000;
+const PAGE_WRITE_SAVING = 2_800;
 
-/** The most gas a settlement can take, so its gas limit fits a transaction. */
+/** The most gas a settlement can use, so its gas limit fits under the cap. */
 export const SETTLEMENT_GAS = Math.floor(
   ((TX_GAS_LIMIT_CAP - SSTORE_SENTRY_GAS) * 64) / 65,
 );
 
 /**
- * Groups `items` in order so each group settles in one transaction. Alone,
- * each paid the base gas a settlement pays once.
+ * Groups `items` in order so each group settles in one transaction.
  *
  * @dev Settlements are not capped in bytes.
  */
-export function groupByGas<item>(
+export function groupByGas<item extends Execution>(
   items: readonly item[],
-  executionOf: (item: item) => Execution,
 ): item[][] {
   const groups: item[][] = [];
   let gas = 0;
   for (const item of items) {
-    const itemGas = executionOf(item).gas_used - TRANSACTION_BASE_GAS;
+    const itemGas = item.executeResult.gas_used - TRANSACTION_BASE_GAS;
     gas += itemGas;
     if (groups.length === 0 || gas > SETTLEMENT_GAS - TRANSACTION_BASE_GAS) {
       groups.push([]);
@@ -57,49 +62,50 @@ export function groupByGas<item>(
   return groups;
 }
 
-/**
- * The gas of `executions` as one transaction: their gas alone, less what they
- * share. The base gas is paid once, and each storage page is cold once and
- * first written once. It never comes in under the chain's.
- */
-function estimateGas(executions: readonly Execution[]): number {
-  let gas = TRANSACTION_BASE_GAS;
-  for (const execution of executions) {
-    gas += execution.gas_used - TRANSACTION_BASE_GAS;
+/** How many times the keys come up again after their first set. */
+function repeats(sets: readonly (readonly string[])[]): number {
+  const seen = new Set<string>();
+  let n = 0;
+  for (const keys of sets) {
+    for (const key of new Set(keys)) {
+      if (seen.has(key)) n++;
+      else seen.add(key);
+    }
   }
-  if (executions.some(({ spec }) => !PAGE_PRICED_SPECS.has(spec))) return gas;
-
-  const reads = new Map<string, number>();
-  const writes = new Map<string, number>();
-  const count = (counts: Map<string, number>, keys: Set<string>) => {
-    for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
-  };
-  for (const execution of executions) {
-    count(
-      reads,
-      new Set(
-        execution.access_list.flatMap(({ address, storageKeys }) =>
-          storageKeys.map(
-            (key) => `${address.toLowerCase()}:${BigInt(key) >> PAGE_SHIFT}`,
-          ),
-        ),
-      ),
-    );
-    count(
-      writes,
-      new Set(
-        execution.slot_writes.map(
-          ({ slot }) => `${BigInt(slot) >> PAGE_SHIFT}`,
-        ),
-      ),
-    );
-  }
-  for (const n of reads.values()) gas -= (n - 1) * COLD_READ_SAVING;
-  for (const n of writes.values()) gas -= (n - 1) * PAGE_WRITE_SAVING;
-  return gas;
+  return n;
 }
 
-/** The gas limit of a settlement of `executions`. */
-export function settlementGasLimit(executions: readonly Execution[]): number {
-  return gasLimitFor(estimateGas(executions));
+/**
+ * The gas limit of `executions` as one transaction: their gas alone, less
+ * the base gas and the MIP-8 page costs they share, but at least their
+ * EIP-7623 floor together. A floor-bound execution's `gas_used` hides the
+ * pages it shares, so the savings alone can come in under that floor. On
+ * top, the 1/64 each call keeps back (EIP-150) and the SSTORE sentry
+ * (EIP-2200).
+ */
+export function gasLimit(executions: readonly Execution[]): number {
+  let gas = TRANSACTION_BASE_GAS;
+  let tokens = 0;
+  for (const { executeResult, calldata } of executions) {
+    gas += executeResult.gas_used - TRANSACTION_BASE_GAS;
+    for (const byte of Hex.toBytes(calldata)) tokens += byte === 0 ? 1 : 4;
+  }
+
+  const results = executions.map(({ executeResult }) => executeResult);
+  if (results.every(({ spec }) => PAGE_PRICED_SPECS.has(spec))) {
+    const page = (slot: Hex.Hex) => BigInt(slot) >> PAGE_SHIFT;
+    const reads = results.map(({ access_list }) =>
+      access_list.flatMap(({ address, storageKeys }) =>
+        storageKeys.map((key) => `${address.toLowerCase()}:${page(key)}`),
+      ),
+    );
+    const writes = results.map(({ slot_writes }) =>
+      slot_writes.map(({ slot }) => `${page(slot)}`),
+    );
+    gas -=
+      repeats(reads) * COLD_READ_SAVING + repeats(writes) * PAGE_WRITE_SAVING;
+  }
+
+  gas = Math.max(gas, TRANSACTION_BASE_GAS + FLOOR_GAS_PER_TOKEN * tokens);
+  return gas + Math.ceil(gas / 64) + SSTORE_SENTRY_GAS;
 }

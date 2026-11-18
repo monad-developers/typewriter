@@ -61,7 +61,7 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
 } from "./encoding";
-import { groupByGas, SETTLEMENT_GAS, settlementGasLimit } from "./gas";
+import { gasLimit, groupByGas, SETTLEMENT_GAS } from "./gas";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 import { Rpc } from "./rpc";
@@ -192,6 +192,8 @@ type Execution = {
   /** The `executionHash` it executed from. */
   fromExecutionHash: Hex.Hex;
   executeResult: Extract<ExecuteResult, { status: "success" }>;
+  /** The calldata it executed with, alone. */
+  calldata: Hex.Hex;
 };
 
 /**
@@ -765,7 +767,12 @@ export function createTypewriterEffect<
           nextExecutionIndex++,
         );
         yield* emitMutation(accepted);
-        return { mutation: accepted, fromExecutionHash, executeResult };
+        return {
+          mutation: accepted,
+          fromExecutionHash,
+          executeResult,
+          calldata,
+        };
       }).pipe(
         Effect.tapError((error) =>
           Effect.suspend(() =>
@@ -797,9 +804,7 @@ export function createTypewriterEffect<
       fromExecutionHash: group[0]!.fromExecutionHash,
       fromExecutionIndex: group[0]!.mutation.executionIndex,
       journalIds: group.map(({ executeResult }) => executeResult.journal_id),
-      gasLimit: settlementGasLimit(
-        group.map(({ executeResult }) => executeResult),
-      ),
+      gasLimit: gasLimit(group),
       committed,
     });
 
@@ -828,15 +833,16 @@ export function createTypewriterEffect<
         const forced: (Execution & { queueIndex: bigint })[] = [];
         for (const queueIndex of queueIndexes) {
           const fromExecutionHash = yield* readExecutionHash;
+          const calldata = encodeExecuteCalldata(
+            fromExecutionHash,
+            timestamp,
+            EMPTY_BATCH,
+            [queueIndex],
+          );
           const executeResult = yield* evm.execute({
             from: app.account.address,
             to: app.address,
-            data: encodeExecuteCalldata(
-              fromExecutionHash,
-              timestamp,
-              EMPTY_BATCH,
-              [queueIndex],
-            ),
+            data: calldata,
             block: toBlockParams(block),
           });
           if (
@@ -866,6 +872,7 @@ export function createTypewriterEffect<
             mutation: { executionIndex: nextExecutionIndex++ },
             fromExecutionHash,
             executeResult,
+            calldata,
           });
         }
         if (accepted.length === 0 && forced.length === 0) return [];
@@ -880,7 +887,7 @@ export function createTypewriterEffect<
         const settled: ExecutedSettlement[] = [];
         for (const group of groupByGas<
           (typeof accepted)[number] | (typeof forced)[number]
-        >([...accepted, ...forced], ({ executeResult }) => executeResult)) {
+        >([...accepted, ...forced])) {
           const mutations = group.flatMap((execution) =>
             "queueIndex" in execution ? [] : [execution.mutation],
           );
