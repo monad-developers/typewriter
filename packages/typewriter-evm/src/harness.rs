@@ -42,7 +42,7 @@ enum Request {
 
 #[derive(Deserialize)]
 struct InitParams {
-    spec: Option<MonadHardfork>,
+    spec: MonadHardfork,
     chain_id: Option<u64>,
     block: Option<BlockParams>,
     #[serde(default)]
@@ -117,8 +117,6 @@ struct TxOutcome {
     gas_used: u64,
     /// Sorted by address, then storage key.
     access_list: AccessList,
-    /// The hardfork it executed under.
-    spec: MonadHardfork,
 }
 
 impl TxOutcome {
@@ -246,9 +244,6 @@ impl Journal {
 
 pub struct EvmHarness {
     evm: Evm,
-    /// The caller's hardfork. Without one, the hardfork follows the chain's
-    /// schedule at the block timestamp.
-    pinned_spec: Option<MonadHardfork>,
     journals: HashMap<u64, Journal>,
     next_journal_id: u64,
 }
@@ -256,29 +251,31 @@ pub struct EvmHarness {
 impl EvmHarness {
     pub fn from_json(params_json: &str) -> Result<Self, String> {
         let params = serde_json::from_str(params_json).map_err(|e| format!("parse error: {e}"))?;
-        Self::new(&params)
+        Ok(Self::new(&params))
     }
 
-    fn new(params: &InitParams) -> Result<Self, String> {
+    /// Runs every tx under `params.spec`. MonadEvm reads the hardfork from
+    /// the cfg on every frame, so it sets the instructions and precompiles.
+    fn new(params: &InitParams) -> Self {
         let mut ctx = monad_context_with_db(InMemoryDB::default());
+        ctx.cfg = MonadCfgEnv::new_with_spec(params.spec).with_chain_id(ctx.cfg.0.chain_id);
         relax_cfg(&mut ctx.cfg);
+        ctx.journaled_state.set_spec_id(params.spec.into());
         let mut harness = Self {
             evm: ctx.build_monad_with_inspector(HarnessInspector::default()),
-            pinned_spec: params.spec,
             journals: HashMap::new(),
             next_journal_id: 1,
         };
-        harness.init(params)?;
-        Ok(harness)
+        harness.init(params);
+        harness
     }
 
-    fn init(&mut self, params: &InitParams) -> Result<(), String> {
+    fn init(&mut self, params: &InitParams) {
         if let Some(chain_id) = params.chain_id {
             self.evm.0.ctx.cfg.0.chain_id = chain_id;
         }
-        match &params.block {
-            Some(block) => self.set_block_context(block)?,
-            None => self.update_spec()?,
+        if let Some(block) = &params.block {
+            self.set_block_context(block);
         }
         let db = self.evm.0.ctx.journaled_state.db_mut();
         for (&address, account) in &params.accounts {
@@ -295,10 +292,9 @@ impl EvmHarness {
                 let Ok(()) = db.insert_account_storage(address, slot, value);
             }
         }
-        Ok(())
     }
 
-    fn set_block_context(&mut self, params: &BlockParams) -> Result<(), String> {
+    fn set_block_context(&mut self, params: &BlockParams) {
         let block = &mut self.evm.0.ctx.block;
         if let Some(number) = params.number {
             block.number = number;
@@ -312,33 +308,6 @@ impl EvmHarness {
         if let Some(coinbase) = params.coinbase {
             block.beneficiary = coinbase;
         }
-        self.update_spec()
-    }
-
-    /// Switches to the pinned hardfork, or else to the chain's hardfork at the
-    /// block timestamp. Fails on a chain without a known schedule, so a
-    /// non-Monad chain never runs with Monad's gas and precompiles.
-    fn update_spec(&mut self) -> Result<(), String> {
-        let chain_id = self.evm.0.ctx.cfg.0.chain_id;
-        let spec = match self.pinned_spec {
-            Some(spec) => spec,
-            None => {
-                let timestamp = self.evm.0.ctx.block.timestamp.saturating_to();
-                MonadHardfork::from_chain_and_timestamp(chain_id, timestamp).ok_or_else(|| {
-                    format!("chain {chain_id} has no known Monad hardfork schedule; pass a spec")
-                })?
-            }
-        };
-        if spec == self.evm.0.ctx.cfg.0.spec {
-            return Ok(());
-        }
-        // MonadEvm reads the spec from the cfg on every frame, so replacing the
-        // cfg also switches its instructions and precompiles.
-        let mut cfg = MonadCfgEnv::new_with_spec(spec).with_chain_id(chain_id);
-        relax_cfg(&mut cfg);
-        self.evm.0.ctx.cfg = cfg;
-        self.evm.0.ctx.journaled_state.set_spec_id(spec.into());
-        Ok(())
     }
 
     fn revert_journals(&mut self, params: &JournalIdsParams) -> Result<(), String> {
@@ -360,11 +329,11 @@ impl EvmHarness {
 
     fn execute(&mut self, tx: &ExecuteParams) -> Result<ExecuteOk, String> {
         if let Some(block) = &tx.block {
-            self.set_block_context(block)?;
+            self.set_block_context(block);
         }
         let (result, state) = self.run_tx(tx, tx.access_list.clone())?;
         let access_list = self.discovered_access_list(tx, &state);
-        let outcome = tx_outcome(&result, access_list, self.evm.0.ctx.cfg.0.spec);
+        let outcome = tx_outcome(&result, access_list);
         let keccak_preimages = std::mem::take(&mut self.evm.0.inspector.keccak_preimages);
         if !outcome.success() {
             return Ok(ExecuteOk {
@@ -465,7 +434,7 @@ impl EvmHarness {
 // -----------------------------------------------------------------------------
 // Conversion helpers
 
-fn tx_outcome(result: &TxResult, access_list: AccessList, spec: MonadHardfork) -> TxOutcome {
+fn tx_outcome(result: &TxResult, access_list: AccessList) -> TxOutcome {
     let status = match result {
         ExecutionResult::Success { .. } => TxStatus::Success,
         ExecutionResult::Revert { output, .. } => TxStatus::Revert {
@@ -479,7 +448,6 @@ fn tx_outcome(result: &TxResult, access_list: AccessList, spec: MonadHardfork) -
         status,
         gas_used: result.tx_gas_used(),
         access_list,
-        spec,
     }
 }
 
@@ -600,12 +568,11 @@ mod tests {
             })
             .collect();
         EvmHarness::new(&InitParams {
-            spec: Some(MonadHardfork::MonadTen),
+            spec: MonadHardfork::MonadTen,
             chain_id: None,
             block: None,
             accounts,
         })
-        .unwrap()
     }
 
     fn tx() -> ExecuteParams {
