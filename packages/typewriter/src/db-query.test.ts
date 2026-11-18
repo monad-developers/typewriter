@@ -3,7 +3,11 @@ import { asc } from "drizzle-orm";
 import { Effect } from "effect";
 import { makeDb } from "./db";
 import { dropSchema, migrate } from "./db-migrate";
-import { insertMutations } from "./db-query";
+import {
+  clearMutationInclusion,
+  includeBlockMutations,
+  insertMutations,
+} from "./db-query";
 import { createMutationSchema, createTypewriterSchema } from "./db-schema";
 import { builder } from "./db-transport";
 import type { AcceptedMutation, Authorization } from "./typewriter-types";
@@ -30,11 +34,7 @@ const AUTHORIZATION = {
 
 let schemas = 0;
 
-/**
- * Inserts a mutation row for each string, in a `text` column and in a `jsonb`
- * array, as the runtime does, and reads the rows back.
- */
-function roundTrip(strings: readonly string[]) {
+function seedMemos(strings: readonly string[], firstIndex = 0n) {
   return Effect.gen(function* () {
     const db = yield* makeDb({ url: DATABASE_URL!, maxConnections: 1 });
     const schemaName = `typewriter_test_${process.pid}_${schemas++}`;
@@ -65,13 +65,19 @@ function roundTrip(strings: readonly string[]) {
             name: "Memo",
             params: { memo, memos: [memo] },
             authorization: AUTHORIZATION,
-            executionIndex: BigInt(index),
+            executionIndex: firstIndex + BigInt(index),
             config: MEMO,
           }),
         ),
       ),
     );
-    const table = mutationSchema.memo_mutations;
+    return { db, schema: mutationSchema, table: mutationSchema.memo_mutations };
+  });
+}
+
+function roundTrip(strings: readonly string[]) {
+  return Effect.gen(function* () {
+    const { db, table } = yield* seedMemos(strings);
     const rows = yield* db.run(
       builder.select().from(table).orderBy(asc(table.execution_index)),
     );
@@ -133,4 +139,69 @@ describe.skipIf(DATABASE_URL === undefined)("mutation rows", () => {
     const strings = ["\u0000", "a\u0000b"];
     expect(await roundTrip(strings)).toStrictEqual(rowsOf(strings));
   });
+});
+
+describe.skipIf(DATABASE_URL === undefined)("block inclusion writes", () => {
+  test("preserve large indexes and each transaction's receipt through a reorg", () =>
+    Effect.gen(function* () {
+      const base = 2n ** 53n;
+      const { db, schema, table } = yield* seedMemos(
+        ["a", "b", "c", "d"],
+        base,
+      );
+      const block = {
+        number: base + 1n,
+        hash: AUTHORIZATION.accountID,
+        timestamp: 1700000000n,
+      };
+      const first = {
+        name: "Memo",
+        executionIndex: base,
+        transactionHash: block.hash,
+        transactionIndex: 3,
+      };
+      const second = { ...first, executionIndex: base + 1n };
+      const third = {
+        ...first,
+        executionIndex: base + 3n,
+        transactionIndex: 8,
+        transactionHash: `0x${"22".repeat(32)}` as const,
+      };
+      const mutations = [first, second, third];
+      const read = () =>
+        db.run(
+          builder
+            .select({
+              index: table.execution_index,
+              height: table.block_number,
+              block: table.block_hash,
+              time: table.block_timestamp,
+              hash: table.transaction_hash,
+              tx: table.transaction_index,
+            })
+            .from(table)
+            .orderBy(asc(table.execution_index)),
+        );
+      const before = yield* read();
+      const updates = includeBlockMutations(schema, block, mutations);
+      expect(updates).toHaveLength(1);
+      yield* db.run(updates);
+      yield* db.run(updates);
+      const included = (m: (typeof mutations)[number]) => ({
+        index: m.executionIndex,
+        height: block.number,
+        block: block.hash,
+        time: block.timestamp,
+        hash: m.transactionHash,
+        tx: m.transactionIndex,
+      });
+      expect(yield* read()).toEqual([
+        included(first),
+        included(second),
+        before[2]!,
+        included(third),
+      ]);
+      yield* db.run(clearMutationInclusion(schema, mutations));
+      expect(yield* read()).toEqual(before);
+    }).pipe(Effect.scoped, Effect.runPromise));
 });
