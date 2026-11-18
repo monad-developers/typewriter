@@ -4,13 +4,16 @@
  *
  * - Intrinsic gas: every transaction pays 21,000, which a settlement pays once
  *   but each execution alone paid too.
+ * - Monad: a cold storage access costs 8,100, and a warm one 100. There are
+ *   no refunds.
  * - EIP-7623: a transaction pays at least 21,000 plus 10 per calldata token,
  *   where a zero byte is 1 token and any other byte 4.
  * - Monad MIP-8: storage is priced per page of 128 slots. A page is cold once
  *   and first written once per transaction, however many executions touch it.
  *   An access-list key warms its whole page.
  * - EIP-2930: an access list costs 2,400 per address and 1,900 per key, and
- *   what it lists is warm from the start.
+ *   what it lists is warm from the start. Without MIP-8 a key warms only its
+ *   slot.
  * - EIP-7981 (MonadNext): an access list also costs 10 per token of its bytes,
  *   at 4 tokens a byte, and those tokens count toward the EIP-7623 floor.
  * - EIP-150: a call passes on at most 63/64 of the gas left.
@@ -34,9 +37,10 @@ const TRANSACTION_BASE_GAS = 21_000;
 const FLOOR_GAS_PER_TOKEN = 10;
 const SSTORE_SENTRY_GAS = 2_300;
 
-/** The hardforks with MIP-8, and what it saves on a page already touched. */
+/** The hardforks with MIP-8. */
 const PAGE_PRICED_SPECS: ReadonlySet<Spec> = new Set(["MonadTen", "MonadNext"]);
 const PAGE_SHIFT = 7n;
+/** What a warm storage access saves over a cold one. */
 const COLD_READ_SAVING = 8_000;
 const PAGE_WRITE_SAVING = 2_800;
 
@@ -92,33 +96,39 @@ const isPagePriced = (executions: readonly Execution[]) =>
   );
 
 /**
- * The access list of `executions` as one transaction: each storage page they
- * touch, as the lowest slot they touch in it, so that no page is ever cold.
- * Without MIP-8 a key warms only its slot, so the list is empty.
+ * What one access-list key warms of `address`'s storage at `slot`: its page
+ * under MIP-8, else the slot alone.
+ */
+const warmUnit = (pagePriced: boolean, address: string, slot: Hex.Hex) =>
+  `${address.toLowerCase()}:${pagePriced ? BigInt(slot) >> PAGE_SHIFT : BigInt(slot)}`;
+
+/**
+ * The access list of `executions` as one transaction, so that no storage they
+ * touch is ever cold: under MIP-8 each page they touch, as the lowest slot
+ * they touch in it, and before it each slot they touch.
  *
  * @dev An account without storage keys is left out and stays cold.
  */
 export function accessList(executions: readonly Execution[]): AccessList {
-  if (!isPagePriced(executions)) return [];
-  const pages = new Map<
+  const pagePriced = isPagePriced(executions);
+  const units = new Map<
     string,
     { address: AccessList[number]["address"]; slots: Map<bigint, bigint> }
   >();
   for (const { executeResult } of executions) {
     for (const { address, storageKeys } of executeResult.access_list) {
       const id = address.toLowerCase();
-      if (!pages.has(id)) pages.set(id, { address, slots: new Map() });
-      const { slots } = pages.get(id)!;
+      if (!units.has(id)) units.set(id, { address, slots: new Map() });
+      const { slots } = units.get(id)!;
       for (const key of storageKeys) {
         const slot = BigInt(key);
-        const lowest = slots.get(slot >> PAGE_SHIFT);
-        if (lowest === undefined || slot < lowest) {
-          slots.set(slot >> PAGE_SHIFT, slot);
-        }
+        const unit = pagePriced ? slot >> PAGE_SHIFT : slot;
+        const lowest = slots.get(unit);
+        if (lowest === undefined || slot < lowest) slots.set(unit, slot);
       }
     }
   }
-  return [...pages.values()]
+  return [...units.values()]
     .filter(({ slots }) => slots.size > 0)
     .map(({ address, slots }) => ({
       address,
@@ -130,11 +140,12 @@ export function accessList(executions: readonly Execution[]): AccessList {
 
 /**
  * The gas limit of `executions` as one transaction with `accessList`: their
- * gas alone, less the base gas and the MIP-8 page costs they share or the
- * list warms, plus the list's own cost, but at least their EIP-7623 floor
- * together. A floor-bound execution's `gas_used` hides the pages it shares,
- * so the savings alone can come in under that floor. On top, the 1/64 each
- * call keeps back (EIP-150) and the SSTORE sentry (EIP-2200).
+ * gas alone, less the base gas, the cold accesses the list warms and the
+ * MIP-8 page costs they share, plus the list's own cost, but at least their
+ * EIP-7623 floor together. A floor-bound execution's `gas_used` hides the
+ * pages it shares, so the savings alone can come in under that floor. On
+ * top, the 1/64 each call keeps back (EIP-150) and the SSTORE sentry
+ * (EIP-2200).
  */
 export function gasLimit(
   executions: readonly Execution[],
@@ -163,26 +174,34 @@ export function gasLimit(
     tokens += listTokens;
   }
 
-  const results = executions.map(({ executeResult }) => executeResult);
-  if (isPagePriced(executions)) {
-    const page = (slot: Hex.Hex) => BigInt(slot) >> PAGE_SHIFT;
-    const reads = results.map(({ access_list }) =>
-      access_list.flatMap(({ address, storageKeys }) =>
-        storageKeys.map((key) => `${address.toLowerCase()}:${page(key)}`),
+  // A listed key is warm in every execution that touches it. Under MIP-8,
+  // an unlisted page is warm after the first execution that touches it.
+  const pagePriced = isPagePriced(executions);
+  const listed = new Set(
+    accessList.flatMap(({ address, storageKeys }) =>
+      storageKeys.map((key) => warmUnit(pagePriced, address, key)),
+    ),
+  );
+  const touched = executions.map(({ executeResult }) => [
+    ...new Set(
+      executeResult.access_list.flatMap(({ address, storageKeys }) =>
+        storageKeys.map((key) => warmUnit(pagePriced, address, key)),
+      ),
+    ),
+  ]);
+  const warmed = touched.flat().filter((unit) => listed.has(unit)).length;
+  gas -= warmed * COLD_READ_SAVING;
+  if (pagePriced) {
+    const unlisted = touched.map((units) =>
+      units.filter((unit) => !listed.has(unit)),
+    );
+    const writes = executions.map(({ executeResult }) =>
+      executeResult.slot_writes.map(
+        ({ slot }) => `${BigInt(slot) >> PAGE_SHIFT}`,
       ),
     );
-    const writes = results.map(({ slot_writes }) =>
-      slot_writes.map(({ slot }) => `${page(slot)}`),
-    );
-    // A listed page is warm even on its first touch.
-    const listed = new Set(
-      accessList.flatMap(({ address, storageKeys }) =>
-        storageKeys.map((key) => `${address.toLowerCase()}:${page(key)}`),
-      ),
-    );
-    const warmed = new Set(reads.flat().filter((key) => listed.has(key))).size;
     gas -=
-      (repeats(reads) + warmed) * COLD_READ_SAVING +
+      repeats(unlisted) * COLD_READ_SAVING +
       repeats(writes) * PAGE_WRITE_SAVING;
   }
 

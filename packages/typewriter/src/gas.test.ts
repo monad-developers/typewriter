@@ -71,7 +71,7 @@ const slots = [
 ];
 const writes = slots.map((slot) => `0x${word(slot)}` as const);
 
-for (const spec of ["MonadNine", "MonadTen"] as const) {
+for (const spec of ["MonadEight", "MonadNine", "MonadTen"] as const) {
   test(`a settlement's gas limit covers writes to several pages under ${spec}`, async () => {
     const { alone, list, gasUsed } = await settle(spec, WRITER_CODE, writes);
 
@@ -96,11 +96,30 @@ test("a settlement lists one key per page it touches under MonadTen", async () =
   );
 });
 
-test("a settlement lists nothing under MonadNine", async () => {
-  const alone = await run("MonadNine", WRITER_CODE, writes);
+for (const spec of ["MonadEight", "MonadNine"] as const) {
+  test(`a settlement lists each slot it touches under ${spec}`, async () => {
+    const { list, gasUsed } = await settle(spec, WRITER_CODE, writes);
+    const joined = `0x${slots.map(word).join("")}` as const;
+    const [unlisted] = await run(spec, WRITER_CODE, [joined]);
 
-  expect(accessList(alone)).toEqual([]);
-});
+    expect(list).toEqual([{ address: WRITER, storageKeys: writes }]);
+    // Each cold SSTORE (8,100) is warm for a key, and the address costs once.
+    expect(unlisted!.executeResult.gas_used - gasUsed).toBe(
+      slots.length * (8_100 - 1_900) - 2_400,
+    );
+  });
+}
+
+for (const spec of ["MonadNine", "MonadTen"] as const) {
+  test(`a settlement's gas limit covers executions that touch the same slot under ${spec}`, async () => {
+    const { alone, list, gasUsed } = await settle(spec, WRITER_CODE, [
+      `0x${word(0)}`,
+      `0x${word(0)}`,
+    ]);
+
+    expect(gasLimit(alone, list)).toBeGreaterThanOrEqual(gasUsed);
+  });
+}
 
 // Writes slot 0, whatever its calldata.
 const FIXED_WRITER_CODE = "0x600160005500";
