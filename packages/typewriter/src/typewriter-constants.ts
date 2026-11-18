@@ -1,6 +1,13 @@
 import type { AbiParameters } from "ox";
+import type { Spec } from "typewriter-evm";
 import type { Abi } from "viem";
 import type { ResolvedTypewriterMutationConfig } from "./config";
+
+/**
+ * The hardfork mutations execute under and settlements are priced for, unless
+ * the config pins another. It stays the same for the runtime's life.
+ */
+export const DEFAULT_HARDFORK: Spec = "MonadTen";
 
 /** `enum KeyType`. */
 export const KeyType = {

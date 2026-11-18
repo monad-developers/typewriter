@@ -798,7 +798,7 @@ export function createTypewriterEffect<
       committed: Deferred.Deferred<void>,
       contents: Pick<ExecutedSettlement, "batch" | "queueIndexes">,
     ): ExecutedSettlement => {
-      const list = accessList(group);
+      const list = accessList(app.hardfork, group);
       return {
         ...contents,
         status: "executed",
@@ -806,7 +806,7 @@ export function createTypewriterEffect<
         fromExecutionHash: group[0]!.fromExecutionHash,
         fromExecutionIndex: group[0]!.mutation.executionIndex,
         journalIds: group.map(({ executeResult }) => executeResult.journal_id),
-        gasLimit: gasLimit(group, list),
+        gasLimit: gasLimit(app.hardfork, group, list),
         accessList: list,
         committed,
       };

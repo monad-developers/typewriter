@@ -513,7 +513,7 @@ Starts the runtime and resolves to the `Typewriter` handle once it is ready to a
 Optional fields:
 
 - `dev` — starts Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the scheduler, and fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork`. Setting any of the first four with `dev` is an error. The deployment lives in the database schema `typewriter_dev_<random>`, which is dropped with Anvil when the process stops. Anvil keeps only recent history, so reads of old blocks fail.
-- `hardfork` — the EVM hardfork mutations execute under. It defaults to the Monad mainnet or testnet schedule for `chainId`, so any other chain, such as a separately started Anvil, needs it (for example `"MonadTen"`).
+- `hardfork` — the EVM hardfork mutations execute under and settlements are priced for, for the runtime's life. Defaults to `"MonadTen"`.
 - `blockPollingIntervalMs` — default `200`.
 - `sequencing` — `{ order: "fifo" }` (the default) or `{ order: "batch", batchIntervalMs?, batchOrder }`; see [Sequencing](#sequencing). `batchIntervalMs` defaults to `50`. `batchOrder` lists `Mutation` names; built-in account mutations always come first, and mutations not listed come last, in the order they were received.
 

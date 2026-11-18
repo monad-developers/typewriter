@@ -27,7 +27,7 @@ import type { AccessList, ExecuteResult, Spec } from "typewriter-evm";
 type Execution = {
   executeResult: Pick<
     Extract<ExecuteResult, { status: "success" }>,
-    "gas_used" | "access_list" | "slot_writes" | "spec"
+    "gas_used" | "access_list" | "slot_writes"
   >;
   calldata: Hex.Hex;
 };
@@ -90,27 +90,25 @@ function repeats(sets: readonly (readonly string[])[]): number {
   return n;
 }
 
-const isPagePriced = (executions: readonly Execution[]) =>
-  executions.every(({ executeResult }) =>
-    PAGE_PRICED_SPECS.has(executeResult.spec),
-  );
-
 /**
- * What one access-list key warms of `address`'s storage at `slot`: its page
- * under MIP-8, else the slot alone.
+ * What one access-list key warms of `address`'s storage at `slot` under
+ * `spec`: its page with MIP-8, else the slot alone.
  */
-const warmUnit = (pagePriced: boolean, address: string, slot: Hex.Hex) =>
-  `${address.toLowerCase()}:${pagePriced ? BigInt(slot) >> PAGE_SHIFT : BigInt(slot)}`;
+const warmUnit = (spec: Spec, address: string, slot: Hex.Hex) =>
+  `${address.toLowerCase()}:${PAGE_PRICED_SPECS.has(spec) ? BigInt(slot) >> PAGE_SHIFT : BigInt(slot)}`;
 
 /**
- * The access list of `executions` as one transaction, so that no storage they
- * touch is ever cold: under MIP-8 each page they touch, as the lowest slot
+ * The access list of `executions` as one transaction under `spec`, so that no
+ * storage they touch is ever cold: under MIP-8 each page they touch, as the lowest slot
  * they touch in it, and before it each slot they touch.
  *
  * @dev An account without storage keys is left out and stays cold.
  */
-export function accessList(executions: readonly Execution[]): AccessList {
-  const pagePriced = isPagePriced(executions);
+export function accessList(
+  spec: Spec,
+  executions: readonly Execution[],
+): AccessList {
+  const pagePriced = PAGE_PRICED_SPECS.has(spec);
   const units = new Map<
     string,
     { address: AccessList[number]["address"]; slots: Map<bigint, bigint> }
@@ -139,7 +137,8 @@ export function accessList(executions: readonly Execution[]): AccessList {
 }
 
 /**
- * The gas limit of `executions` as one transaction with `accessList`: their
+ * The gas limit of `executions` as one transaction under `spec` with
+ * `accessList`: their
  * gas alone, less the base gas, the cold accesses the list warms and the
  * MIP-8 page costs they share, plus the list's own cost, but at least their
  * EIP-7623 floor together. A floor-bound execution's `gas_used` hides the
@@ -148,6 +147,7 @@ export function accessList(executions: readonly Execution[]): AccessList {
  * (EIP-2200).
  */
 export function gasLimit(
+  spec: Spec,
   executions: readonly Execution[],
   accessList: AccessList,
 ): number {
@@ -164,9 +164,7 @@ export function gasLimit(
     0,
   );
   gas += addresses * ACCESS_LIST_ADDRESS_GAS + keys * ACCESS_LIST_KEY_GAS;
-  if (
-    executions.some(({ executeResult }) => executeResult.spec === "MonadNext")
-  ) {
+  if (spec === "MonadNext") {
     const listTokens =
       (addresses * ADDRESS_BYTES + keys * KEY_BYTES) *
       ACCESS_LIST_TOKENS_PER_BYTE;
@@ -176,22 +174,21 @@ export function gasLimit(
 
   // A listed key is warm in every execution that touches it. Under MIP-8,
   // an unlisted page is warm after the first execution that touches it.
-  const pagePriced = isPagePriced(executions);
   const listed = new Set(
     accessList.flatMap(({ address, storageKeys }) =>
-      storageKeys.map((key) => warmUnit(pagePriced, address, key)),
+      storageKeys.map((key) => warmUnit(spec, address, key)),
     ),
   );
   const touched = executions.map(({ executeResult }) => [
     ...new Set(
       executeResult.access_list.flatMap(({ address, storageKeys }) =>
-        storageKeys.map((key) => warmUnit(pagePriced, address, key)),
+        storageKeys.map((key) => warmUnit(spec, address, key)),
       ),
     ),
   ]);
   const warmed = touched.flat().filter((unit) => listed.has(unit)).length;
   gas -= warmed * COLD_READ_SAVING;
-  if (pagePriced) {
+  if (PAGE_PRICED_SPECS.has(spec)) {
     const unlisted = touched.map((units) =>
       units.filter((unit) => !listed.has(unit)),
     );

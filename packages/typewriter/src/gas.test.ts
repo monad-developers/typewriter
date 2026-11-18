@@ -56,7 +56,7 @@ const run = (
  */
 const settle = async (spec: Spec, code: Hex.Hex, calldatas: Hex.Hex[]) => {
   const alone = await run(spec, code, calldatas);
-  const list = accessList(alone);
+  const list = accessList(spec, alone);
   const joined =
     `0x${calldatas.map((data) => data.slice(2)).join("")}` as const;
   const [together] = await run(spec, code, [joined], list);
@@ -75,7 +75,7 @@ for (const spec of ["MonadEight", "MonadNine", "MonadTen"] as const) {
   test(`a settlement's gas limit covers writes to several pages under ${spec}`, async () => {
     const { alone, list, gasUsed } = await settle(spec, WRITER_CODE, writes);
 
-    expect(gasLimit(alone, list)).toBeGreaterThanOrEqual(gasUsed);
+    expect(gasLimit(spec, alone, list)).toBeGreaterThanOrEqual(gasUsed);
   });
 }
 
@@ -117,7 +117,7 @@ for (const spec of ["MonadNine", "MonadTen"] as const) {
       `0x${word(0)}`,
     ]);
 
-    expect(gasLimit(alone, list)).toBeGreaterThanOrEqual(gasUsed);
+    expect(gasLimit(spec, alone, list)).toBeGreaterThanOrEqual(gasUsed);
   });
 }
 
@@ -131,7 +131,7 @@ test("a settlement's gas limit covers the calldata floor of executions that shar
     data,
   ]);
 
-  expect(gasLimit(alone, list)).toBeGreaterThanOrEqual(gasUsed);
+  expect(gasLimit("MonadTen", alone, list)).toBeGreaterThanOrEqual(gasUsed);
 });
 
 // Reads slots 0 and 128, whatever its calldata.
@@ -146,5 +146,5 @@ test("a settlement's gas limit covers the calldata floor of an execution whose p
   // Floor-bound alone and with the list.
   expect(alone[0]!.executeResult.gas_used).toBe(21_000 + 40 * 2_048);
   expect(gasUsed).toBe(21_000 + 40 * 2_048);
-  expect(gasLimit(alone, list)).toBeGreaterThanOrEqual(gasUsed);
+  expect(gasLimit("MonadTen", alone, list)).toBeGreaterThanOrEqual(gasUsed);
 });
