@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "test": "bun test --timeout 30000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun check"
   },
   "dependencies": {
     "@effect/platform-bun": "4.1.3",
