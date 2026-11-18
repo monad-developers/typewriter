@@ -27,6 +27,6 @@
     "typescript": "catalog:"
   },
   "devDependencies": {
-    "solc": "0.8.37"
+    "solc": "0.8.38"
   }
 }
