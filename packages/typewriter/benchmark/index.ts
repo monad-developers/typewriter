@@ -216,6 +216,8 @@ const benchmark = Effect.gen(function* () {
     },
   );
   const samples: { ms: number; error?: string }[] = [];
+  const dispatchLags: number[] = [];
+  const arrivalToResponses: number[] = [];
   let sent = signers.length;
   let latest = yield* Effect.orDie(included);
   yield* Effect.gen(function* () {
@@ -259,7 +261,15 @@ const benchmark = Effect.gen(function* () {
       yield* Semaphore.take(inFlight, 1);
       yield* FiberSet.run(
         executes,
-        execute(mutation).pipe(
+        Effect.sync(() =>
+          dispatchLags.push(performance.now() - start - dueMs),
+        ).pipe(
+          Effect.andThen(execute(mutation)),
+          Effect.tap(() =>
+            Effect.sync(() =>
+              arrivalToResponses.push(performance.now() - start - dueMs),
+            ),
+          ),
           Effect.map((sample) => samples.push(sample)),
           Effect.ensuring(Semaphore.release(inFlight, 1)),
         ),
@@ -308,6 +318,10 @@ const benchmark = Effect.gen(function* () {
       execute_p90_ms: at(0.9),
       execute_p99_ms: at(0.99),
       execute_max_ms: at(1),
+      // From when each execute was due, by the driver's clock, so queueing
+      // in the driver shows.
+      dispatch_lag_p99_ms: percentile(dispatchLags)(0.99),
+      arrival_to_response_p99_ms: percentile(arrivalToResponses)(0.99),
       inclusion_p50_ms: inclusionAt(0.5),
       inclusion_p90_ms: inclusionAt(0.9),
       inclusion_p99_ms: inclusionAt(0.99),
