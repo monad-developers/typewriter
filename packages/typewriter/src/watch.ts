@@ -166,11 +166,12 @@ export function watchChain(
           });
 
         const poll = Effect.gen(function* () {
-          // A finalized block past `latest` is one a later poll finalizes.
-          const [finalized, latest] = yield* Effect.all(
+          const [finalized, served] = yield* Effect.all(
             [requestBlock("finalized"), requestBlock("latest")],
             { concurrency: "unbounded" },
           );
+          // Providers lag each other, so `latest` can be behind `finalized`.
+          const latest = finalized.number > served.number ? finalized : served;
           // A stale view can serve an orphaned block, so only a longer chain reorgs.
           if (latest.number <= tip().number) {
             yield* finalize(finalized);
