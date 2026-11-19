@@ -20,13 +20,13 @@
  * - EIP-2200: an SSTORE needs more than 2,300 gas left.
  * - Monad caps a transaction's gas limit at 30M in every hardfork.
  */
-import { Hex } from "ox";
+import { type Address, Hex } from "ox";
 import type { AccessList, ExecuteResult, Spec } from "typewriter-evm";
 
 /** One execution's run alone, and the calldata it ran with. */
 type Execution = {
   executeResult: Pick<
-    Extract<ExecuteResult, { status: "success" }>,
+    ExecuteResult,
     "gas_used" | "access_list" | "slot_writes"
   >;
   calldata: Hex.Hex;
@@ -76,7 +76,7 @@ export function accessList(
   const pagePriced = PAGE_PRICED_SPECS.has(spec);
   const units = new Map<
     string,
-    { address: AccessList[number]["address"]; slots: Map<bigint, bigint> }
+    { address: Address.Address; slots: Map<bigint, bigint> }
   >();
   for (const { executeResult } of executions) {
     for (const { address, storageKeys } of executeResult.access_list) {
