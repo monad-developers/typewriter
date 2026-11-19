@@ -545,8 +545,8 @@ export function createTypewriterEffect<
     const persistQueue = yield* Queue.unbounded<{
       statements: CompiledStatement[];
       committed: Deferred.Deferred<void>;
+      events: Effect.Effect<void>[];
     }>();
-    const eventQueue = yield* Queue.unbounded<Effect.Effect<void>>();
     /** Wakes `accept` in fifo order when a mutation or an enqueue is waiting. */
     const acceptSignal = yield* Queue.sliding<void>(1);
     /** Wakes `send` when a settlement is waiting. */
@@ -554,7 +554,6 @@ export function createTypewriterEffect<
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptSignal));
     yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
-    yield* Scope.addFinalizer(scope, Queue.shutdown(eventQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(sendSignal));
     const stopped = yield* Deferred.make<never, TypewriterStoppedError>();
 
@@ -591,12 +590,7 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // Events and persistence
 
-    // Each notification captures the latest write at the time of its transition.
-    // One consumer waits for those commits and delivers notifications in order.
-    let latestCommit: Effect.Effect<void> = Effect.void;
-    const queueEvent = (notify: Effect.Effect<void>) =>
-      Queue.offer(eventQueue, Effect.andThen(latestCommit, notify));
-
+    /** Calls `listeners` with `event`, which is built now and delivered later. */
     const emit = <event>(
       name: "mutation" | "batch" | "block",
       listeners: ReadonlySet<(event: event) => void>,
@@ -625,7 +619,7 @@ export function createTypewriterEffect<
             }).pipe(Effect.catch(warn)),
           { discard: true },
         );
-      }).pipe(queueEvent);
+      });
 
     const emitMutation = (mutation: RuntimeMutation) =>
       emit(
@@ -644,10 +638,10 @@ export function createTypewriterEffect<
         ? emit("batch", batchListeners, batchToEvent(batch))
         : Effect.void;
 
-    const emitBlock = (block: RuntimeBlock) =>
-      Effect.gen(function* () {
-        const { batches, ...rest } = block;
-        yield* emit(
+    const emitBlock = (block: RuntimeBlock) => {
+      const { batches, ...rest } = block;
+      return [
+        emit(
           "block",
           blockListeners,
           (app.sequencing.order === "fifo"
@@ -660,19 +654,30 @@ export function createTypewriterEffect<
             : { ...rest, batches: batches.map(batchToEvent) }) as BlockEvent<
             "fifo" | "batch"
           >,
-        );
-        for (const batch of batches) {
-          yield* emitBatch(batch);
-          for (const mutation of batch.mutations) yield* emitMutation(mutation);
-        }
-      });
+        ),
+        ...batches.flatMap((batch) => [
+          emitBatch(batch),
+          ...batch.mutations.map(emitMutation),
+        ]),
+      ];
+    };
 
-    const persist = (statements: DbStatement<unknown>[]) => {
+    /**
+     * Queues `statements` to commit in order with every earlier job. Once they
+     * commit, `persistProgram` resolves `committed` and then emits `events`.
+     */
+    const persist = (
+      statements: DbStatement<unknown>[],
+      events: Effect.Effect<void>[] = [],
+    ) => {
       const compiled = statements.map(compile);
       return Effect.gen(function* () {
         const committed = yield* Deferred.make<void>();
-        latestCommit = Deferred.await(committed);
-        yield* Queue.offer(persistQueue, { statements: compiled, committed });
+        yield* Queue.offer(persistQueue, {
+          statements: compiled,
+          committed,
+          events,
+        });
         return committed;
       });
     };
@@ -881,28 +886,9 @@ export function createTypewriterEffect<
             calldata,
           });
         }
-        const emitOutcomes = Effect.forEach(outcomes, emitMutation, {
-          discard: true,
-        });
-        if (accepted.length === 0 && forced.length === 0) {
-          yield* emitOutcomes;
-          return [];
-        }
-
-        const rows = yield* persist(
-          insertMutations(
-            app.mutationSchema,
-            accepted.map(({ mutation }) => mutation),
-          ),
-        );
+        const events = outcomes.map(emitMutation);
         const executions = [...accepted, ...forced];
-        const committed = yield* persist([
-          ...insertStorageSlots(app.typewriterSchema, executions),
-          ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
-        ]);
-        yield* emitOutcomes;
-        const settled: ExecutedSettlement[] = [];
-        for (const group of groupByGas(executions)) {
+        const groups = groupByGas(executions).map((group) => {
           const mutations = group.flatMap((execution) =>
             "queueIndex" in execution ? [] : [execution.mutation],
           );
@@ -912,23 +898,35 @@ export function createTypewriterEffect<
             batch = undefined;
           } else if (mutations.length > 0) {
             groupBatch = { status: "accepted", id: nextBatchId++, mutations };
-            yield* emitBatch(groupBatch);
+            events.push(emitBatch(groupBatch));
           }
-          settled.push(
-            toSettlement(group, timestamp, committed, {
-              batch: groupBatch,
-              queueIndexes: group.flatMap((execution) =>
-                "queueIndex" in execution ? [execution.queueIndex] : [],
-              ),
-            }),
-          );
-        }
+          return { group, batch: groupBatch };
+        });
+
+        const committed = yield* persist(
+          [
+            ...insertMutations(
+              app.mutationSchema,
+              accepted.map(({ mutation }) => mutation),
+            ),
+            ...insertStorageSlots(app.typewriterSchema, executions),
+            ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
+          ],
+          events,
+        );
         for (const { mutation, deferred } of accepted) {
           if (deferred !== undefined) {
-            yield* Deferred.succeed(deferred, { mutation, committed: rows });
+            yield* Deferred.succeed(deferred, { mutation, committed });
           }
         }
-        return settled;
+        return groups.map(({ group, batch }) =>
+          toSettlement(group, timestamp, committed, {
+            batch,
+            queueIndexes: group.flatMap((execution) =>
+              "queueIndex" in execution ? [execution.queueIndex] : [],
+            ),
+          }),
+        );
       });
 
     const accept = (
@@ -1291,18 +1289,12 @@ export function createTypewriterEffect<
                 included,
               );
             }
-            if (included.length > 0) {
-              yield* persist(
-                includeBlockMutations(
-                  app.mutationSchema,
-                  runtimeBlock,
-                  included,
-                ),
-              );
-            }
-            if (receipts.some((receipt) => receipt!.status === "success")) {
-              yield* emitBlock(runtimeBlock);
-            }
+            yield* persist(
+              includeBlockMutations(app.mutationSchema, runtimeBlock, included),
+              receipts.some((receipt) => receipt!.status === "success")
+                ? emitBlock(runtimeBlock)
+                : [],
+            );
           }),
         );
       });
@@ -1340,14 +1332,18 @@ export function createTypewriterEffect<
               updateMutationToUnincluded(mutation as IncludedMutation),
             );
           });
-          yield* persist(clearMutationInclusion(app.mutationSchema, mutations));
           const { number, hash, timestamp } = runtimeBlock;
-          yield* emit("block", blockListeners, {
-            status: "removed",
-            number,
-            hash,
-            timestamp,
-          } as BlockEvent<"fifo" | "batch">);
+          yield* persist(
+            clearMutationInclusion(app.mutationSchema, mutations),
+            [
+              emit("block", blockListeners, {
+                status: "removed",
+                number,
+                hash,
+                timestamp,
+              } as BlockEvent<"fifo" | "batch">),
+            ],
+          );
           return removed.length;
         }),
       );
@@ -1408,6 +1404,7 @@ export function createTypewriterEffect<
             (settlement) => !isFinal.has(settlement),
           );
 
+          const events: Effect.Effect<void>[] = [];
           for (const block of new Set(final.map(({ block }) => block))) {
             block.status = "finalized";
             for (const batch of block.batches) {
@@ -1416,8 +1413,9 @@ export function createTypewriterEffect<
                 (mutation as IncludedMutation).status = "finalized";
               }
             }
-            yield* emitBlock(block);
+            events.push(...emitBlock(block));
           }
+          yield* persist([], events);
           yield* resync(finalized, onchain);
         }),
       );
@@ -1583,25 +1581,28 @@ export function createTypewriterEffect<
     const persistProgram = Effect.forever(
       Effect.gen(function* () {
         const jobs = yield* Queue.takeAll(persistQueue);
-        const persistStartedAt = yield* startTimer;
-        yield* db.run(jobs.flatMap(({ statements }) => statements));
+        const statements = jobs.flatMap(({ statements }) => statements);
+        if (statements.length > 0) {
+          const persistStartedAt = yield* startTimer;
+          yield* db.run(statements);
+          yield* Effect.logDebug("Persisted runtime writes").pipe(
+            Effect.annotateLogs({
+              job_count: jobs.length,
+              duration: yield* durationMs(persistStartedAt),
+            }),
+          );
+        }
         for (const { committed } of jobs) {
           yield* Deferred.succeed(committed, undefined);
         }
-        yield* Effect.logDebug("Persisted runtime writes").pipe(
-          Effect.annotateLogs({
-            job_count: jobs.length,
-            duration: yield* durationMs(persistStartedAt),
-          }),
-        );
+        for (const { events } of jobs) {
+          for (const event of events) yield* event;
+        }
       }),
     );
 
-    const eventProgram = Effect.forever(
-      Queue.take(eventQueue).pipe(Effect.flatten),
-    );
     const program = Effect.all(
-      [acceptProgram, sendProgram, persistProgram, eventProgram, watchProgram],
+      [acceptProgram, sendProgram, persistProgram, watchProgram],
       { concurrency: "unbounded" },
     ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
@@ -1645,7 +1646,7 @@ export function createTypewriterEffect<
           }),
         );
 
-        yield* emitMutation(runtimeMutation);
+        yield* persist([], [emitMutation(runtimeMutation)]);
 
         const deferred = yield* Deferred.make<
           { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },
