@@ -12,19 +12,7 @@ export const sidebar = {
       text: "Concepts",
       items: [
         { text: "State", link: "/docs/concepts/state" },
-        {
-          text: "Mutations",
-          items: [
-            {
-              text: "Define mutations",
-              link: "/docs/concepts/mutations/define",
-            },
-            {
-              text: "Determinism",
-              link: "/docs/concepts/mutations/determinism",
-            },
-          ],
-        },
+        { text: "Mutations", link: "/docs/concepts/mutations" },
         {
           text: "Accounts",
           items: [
