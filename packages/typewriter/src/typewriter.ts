@@ -805,7 +805,7 @@ export function createTypewriterEffect<
         fromExecutionHash: group[0]!.fromExecutionHash,
         fromExecutionIndex: group[0]!.mutation.executionIndex,
         journalIds: group.map(({ executeResult }) => executeResult.journal_id),
-        gasLimit: gasLimit(app.hardfork, group, list),
+        gasLimit: gasLimit(app.hardfork, group),
         accessList: list,
         committed,
       };
@@ -888,7 +888,7 @@ export function createTypewriterEffect<
         }
         const events = outcomes.map(emitMutation);
         const executions = [...accepted, ...forced];
-        const groups = groupByGas(executions).map((group) => {
+        const groups = groupByGas(app.hardfork, executions).map((group) => {
           const mutations = group.flatMap((execution) =>
             "queueIndex" in execution ? [] : [execution.mutation],
           );
