@@ -187,13 +187,6 @@ const MAX_FEE_PER_GAS = 10_000_000_000_000n;
 /** Every settlement's tip, what `eth_maxPriorityFeePerGas` returns on Monad. */
 const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
 
-/**
- * Monad's reserve balance. The gas fees of an account's transactions in the
- * last three blocks can't exceed it, or the account's balance if that is
- * lower, so a smaller balance caps how much the runtime can settle at once.
- */
-const RESERVE_BALANCE = 10_000_000_000_000_000_000n;
-
 type RuntimeExecuteInput = {
   name: string;
   params: unknown;
@@ -498,7 +491,7 @@ export function createTypewriterEffect<
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.
     const startBlock = yield* requestBlock("latest");
-    const [code, startExecutionIndex, startNonce, balance] = yield* Effect.all(
+    const [code, startExecutionIndex, startNonce] = yield* Effect.all(
       [
         rpc.request({
           method: "eth_getCode",
@@ -506,20 +499,9 @@ export function createTypewriterEffect<
         }),
         requestExecutionIndex(app.address, startBlock.hash),
         requestNonce(app.account.address),
-        rpc
-          .request({
-            method: "eth_getBalance",
-            params: [app.account.address, { blockHash: startBlock.hash }],
-          })
-          .pipe(Effect.map(Hex.toBigInt)),
       ],
       { concurrency: "unbounded" },
     );
-    if (balance < RESERVE_BALANCE) {
-      yield* Effect.logWarning(
-        "Detected a scheduler balance below Monad's 10 MON reserve balance; settlements will land more slowly",
-      ).pipe(Effect.annotateLogs({ address: app.account.address, balance }));
-    }
     yield* migrate(
       db,
       app.schemaName,
