@@ -56,41 +56,6 @@ export const SETTLEMENT_GAS = Math.floor(
 );
 
 /**
- * Groups `items` in order so each group settles in one transaction.
- *
- * @dev Settlements are not capped in bytes.
- */
-export function groupByGas<item extends Execution>(
-  items: readonly item[],
-): item[][] {
-  const groups: item[][] = [];
-  let gas = 0;
-  for (const item of items) {
-    const itemGas = item.executeResult.gas_used - TRANSACTION_BASE_GAS;
-    gas += itemGas;
-    if (groups.length === 0 || gas > SETTLEMENT_GAS - TRANSACTION_BASE_GAS) {
-      groups.push([]);
-      gas = itemGas;
-    }
-    groups.at(-1)!.push(item);
-  }
-  return groups;
-}
-
-/** How many times the keys come up again after their first set. */
-function repeats(sets: readonly (readonly string[])[]): number {
-  const seen = new Set<string>();
-  let n = 0;
-  for (const keys of sets) {
-    for (const key of new Set(keys)) {
-      if (seen.has(key)) n++;
-      else seen.add(key);
-    }
-  }
-  return n;
-}
-
-/**
  * What one access-list key warms of `address`'s storage at `slot` under
  * `spec`: its page with MIP-8, else the slot alone.
  */
@@ -137,71 +102,122 @@ export function accessList(
 }
 
 /**
- * The gas limit of `executions` as one transaction under `spec` with
- * `accessList`: their
- * gas alone, less the base gas, the cold accesses the list warms and the
- * MIP-8 page costs they share, plus the list's own cost, but at least their
- * EIP-7623 floor together. A floor-bound execution's `gas_used` hides the
- * pages it shares, so the savings alone can come in under that floor. On
- * top, the 1/64 each call keeps back (EIP-150) and the SSTORE sentry
- * (EIP-2200).
+ * A settlement's gas as executions join it, with the access list of them all
+ * (see `accessList`): their gas alone, less the base gas and the cold
+ * accesses the list warms, plus the list's own cost. Under MIP-8 a page is
+ * also first written once.
  */
-export function gasLimit(
+type Estimate = {
+  gas: number;
+  /** The EIP-7623 tokens of the calldata and the list. */
+  tokens: number;
+  addresses: Set<string>;
+  /** The listed keys, as what each warms. */
+  keys: Set<string>;
+  /** The pages of the called contract written so far. */
+  writes: Set<string>;
+};
+
+const emptyEstimate = (): Estimate => ({
+  gas: TRANSACTION_BASE_GAS,
+  tokens: 0,
+  addresses: new Set(),
+  keys: new Set(),
+  writes: new Set(),
+});
+
+function addExecution(
   spec: Spec,
-  executions: readonly Execution[],
-  accessList: AccessList,
-): number {
-  let gas = TRANSACTION_BASE_GAS;
-  let tokens = 0;
-  for (const { executeResult, calldata } of executions) {
-    gas += executeResult.gas_used - TRANSACTION_BASE_GAS;
-    for (const byte of Hex.toBytes(calldata)) tokens += byte === 0 ? 1 : 4;
+  estimate: Estimate,
+  { executeResult, calldata }: Execution,
+) {
+  estimate.gas += executeResult.gas_used - TRANSACTION_BASE_GAS;
+  for (const byte of Hex.toBytes(calldata)) {
+    estimate.tokens += byte === 0 ? 1 : 4;
   }
 
-  const addresses = accessList.length;
-  const keys = accessList.reduce(
-    (n, { storageKeys }) => n + storageKeys.length,
-    0,
+  // An address or key costs once, when it joins the list.
+  const list = (gas: number, bytes: number) => {
+    estimate.gas += gas;
+    if (spec === "MonadNext") {
+      const tokens = bytes * ACCESS_LIST_TOKENS_PER_BYTE;
+      estimate.gas += FLOOR_GAS_PER_TOKEN * tokens;
+      estimate.tokens += tokens;
+    }
+  };
+  const warmed = new Set<string>();
+  for (const { address, storageKeys } of executeResult.access_list) {
+    if (storageKeys.length === 0) continue;
+    const id = address.toLowerCase();
+    if (!estimate.addresses.has(id)) {
+      estimate.addresses.add(id);
+      list(ACCESS_LIST_ADDRESS_GAS, ADDRESS_BYTES);
+    }
+    for (const key of storageKeys) warmed.add(warmUnit(spec, address, key));
+  }
+  // A listed key is warm in every execution that touches it.
+  for (const unit of warmed) {
+    if (!estimate.keys.has(unit)) {
+      estimate.keys.add(unit);
+      list(ACCESS_LIST_KEY_GAS, KEY_BYTES);
+    }
+    estimate.gas -= COLD_READ_SAVING;
+  }
+
+  if (!PAGE_PRICED_SPECS.has(spec)) return;
+  const pages = executeResult.slot_writes.map(
+    ({ slot }) => `${BigInt(slot) >> PAGE_SHIFT}`,
   );
-  gas += addresses * ACCESS_LIST_ADDRESS_GAS + keys * ACCESS_LIST_KEY_GAS;
-  if (spec === "MonadNext") {
-    const listTokens =
-      (addresses * ADDRESS_BYTES + keys * KEY_BYTES) *
-      ACCESS_LIST_TOKENS_PER_BYTE;
-    gas += FLOOR_GAS_PER_TOKEN * listTokens;
-    tokens += listTokens;
+  for (const page of new Set(pages)) {
+    if (estimate.writes.has(page)) estimate.gas -= PAGE_WRITE_SAVING;
+    else estimate.writes.add(page);
   }
+}
 
-  // A listed key is warm in every execution that touches it. Under MIP-8,
-  // an unlisted page is warm after the first execution that touches it.
-  const listed = new Set(
-    accessList.flatMap(({ address, storageKeys }) =>
-      storageKeys.map((key) => warmUnit(spec, address, key)),
-    ),
+/**
+ * The gas limit of `estimate`: its gas, but at least its EIP-7623 floor. A
+ * floor-bound execution's `gas_used` hides the pages it shares, so the
+ * savings alone can come in under that floor. On top, the 1/64 each call
+ * keeps back (EIP-150) and the SSTORE sentry (EIP-2200).
+ */
+function limitOf({ gas, tokens }: Estimate): number {
+  const charged = Math.max(
+    gas,
+    TRANSACTION_BASE_GAS + FLOOR_GAS_PER_TOKEN * tokens,
   );
-  const touched = executions.map(({ executeResult }) => [
-    ...new Set(
-      executeResult.access_list.flatMap(({ address, storageKeys }) =>
-        storageKeys.map((key) => warmUnit(spec, address, key)),
-      ),
-    ),
-  ]);
-  const warmed = touched.flat().filter((unit) => listed.has(unit)).length;
-  gas -= warmed * COLD_READ_SAVING;
-  if (PAGE_PRICED_SPECS.has(spec)) {
-    const unlisted = touched.map((units) =>
-      units.filter((unit) => !listed.has(unit)),
-    );
-    const writes = executions.map(({ executeResult }) =>
-      executeResult.slot_writes.map(
-        ({ slot }) => `${BigInt(slot) >> PAGE_SHIFT}`,
-      ),
-    );
-    gas -=
-      repeats(unlisted) * COLD_READ_SAVING +
-      repeats(writes) * PAGE_WRITE_SAVING;
-  }
+  return charged + Math.ceil(charged / 64) + SSTORE_SENTRY_GAS;
+}
 
-  gas = Math.max(gas, TRANSACTION_BASE_GAS + FLOOR_GAS_PER_TOKEN * tokens);
-  return gas + Math.ceil(gas / 64) + SSTORE_SENTRY_GAS;
+/**
+ * Groups `items` in order so each group's gas limit under `spec` fits under
+ * the cap.
+ *
+ * @dev Settlements are not capped in bytes.
+ */
+export function groupByGas<item extends Execution>(
+  spec: Spec,
+  items: readonly item[],
+): item[][] {
+  const groups: item[][] = [];
+  let estimate = emptyEstimate();
+  for (const item of items) {
+    addExecution(spec, estimate, item);
+    if (groups.length === 0 || limitOf(estimate) > TX_GAS_LIMIT_CAP) {
+      groups.push([]);
+      estimate = emptyEstimate();
+      addExecution(spec, estimate, item);
+    }
+    groups.at(-1)!.push(item);
+  }
+  return groups;
+}
+
+/**
+ * The gas limit of `executions` as one transaction under `spec`, signed with
+ * their `accessList`.
+ */
+export function gasLimit(spec: Spec, executions: readonly Execution[]): number {
+  const estimate = emptyEstimate();
+  for (const execution of executions) addExecution(spec, estimate, execution);
+  return limitOf(estimate);
 }
