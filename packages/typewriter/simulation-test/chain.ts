@@ -144,15 +144,13 @@ export function makeChain(
     const transport = makeHttpTransport(`http://127.0.0.1:${port}`);
     const lock = makeFifoLock();
 
+    const retry = Effect.retry({
+      schedule: Schedule.exponential("10 millis"),
+      times: 5,
+      while: (error: unknown) => !(error instanceof RpcResponseError),
+    });
     const send = (request: RpcRequest) =>
-      transport.request(request).pipe(
-        Effect.retry({
-          schedule: Schedule.exponential("10 millis"),
-          times: 5,
-          while: (error) => !(error instanceof RpcResponseError),
-        }),
-        Effect.orDie,
-      );
+      transport.request(request).pipe(retry, Effect.orDie);
 
     /** Answers of requests pinned to a block hash, which never change. */
     const pinned = new Map<string, unknown>();
@@ -482,7 +480,19 @@ export function makeChain(
             Effect.forEach(
               random.shuffle(raws),
               (raw) =>
-                send({ method: "eth_sendRawTransaction", params: [raw] }),
+                transport
+                  .request({ method: "eth_sendRawTransaction", params: [raw] })
+                  .pipe(
+                    retry,
+                    // A node drops a transaction once the base fee rises past its fee cap.
+                    Effect.catchIf(
+                      (error) =>
+                        error instanceof RpcResponseError &&
+                        String(error.error.message).includes("base fee"),
+                      () => Effect.void,
+                    ),
+                    Effect.orDie,
+                  ),
               { discard: true },
             );
           yield* send({

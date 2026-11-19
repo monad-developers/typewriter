@@ -25,6 +25,7 @@ import { Database, makeDbClient } from "../src/db";
 import { builder, makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
+import type { RpcRequest } from "../src/rpc-transport";
 import { loadSolidityApp } from "../src/sol-build";
 import { createTypewriterEffect } from "../src/typewriter";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
@@ -254,6 +255,9 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       scheduler.io(chain.reorg(depth, added, atMs)),
   };
   const chainRandom = new Rng(plan.seed, "chain");
+  const feeRandom = new Rng(plan.seed, "fees");
+  /** Blocks left in the current base fee surge. */
+  let surgeBlocks = 0;
   const transports = plan.transports.map((_, index) =>
     makeSimTransport({ plan, chain: simChain, index }),
   ) as [
@@ -393,6 +397,22 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
         const atMs = yield* Clock.currentTimeMillis;
         const timestamp = Math.floor(atMs / 1000);
         if (!chainRandom.bool(plan.chain.reorgRate)) {
+          if (surgeBlocks === 0 && feeRandom.bool(plan.chain.feeSurgeRate)) {
+            surgeBlocks = feeRandom.weighted(plan.chain.feeSurges);
+          }
+          if (surgeBlocks > 0) {
+            surgeBlocks--;
+            const latest = yield* simChain.request({
+              method: "eth_getBlockByNumber",
+              params: ["latest", false],
+            });
+            // EIP-1559's largest rise in one block, as if each block were full.
+            const baseFee = BigInt(latest!.baseFeePerGas!);
+            yield* simChain.request({
+              method: "anvil_setNextBlockBaseFeePerGas",
+              params: [Hex.fromNumber(baseFee + baseFee / 8n + 1n)],
+            } as unknown as RpcRequest);
+          }
           yield* simChain.mine(atMs);
           return;
         }
