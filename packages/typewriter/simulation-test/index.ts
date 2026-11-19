@@ -284,13 +284,11 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     mine: (atMs) => scheduler.io(chain.mine(atMs)),
     reorg: (depth, added, atMs) =>
       scheduler.io(chain.reorg(depth, added, atMs)),
-    forget: chain.forget,
   };
   const chainRandom = new Rng(plan.seed, "chain");
   const feeRandom = new Rng(plan.seed, "fees");
   /** Blocks left in the current base fee surge. */
   let surgeBlocks = 0;
-  const simDb = makeSimDbTransport({ plan, transport, io: scheduler.io });
   const transports = plan.transports.map((_, index) =>
     makeSimTransport({ plan, chain: simChain, index }),
   ) as [
@@ -681,7 +679,10 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     );
   }).pipe(
     Scope.provide(scope),
-    Effect.provideService(Database, makeDbClient(simDb)),
+    Effect.provideService(
+      Database,
+      makeDbClient(makeSimDbTransport({ plan, transport, io: scheduler.io })),
+    ),
     Effect.provide(layerRpc(transports)),
     Effect.provideService(Clock.Clock, clock),
     Effect.provide(
@@ -761,56 +762,35 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     }
   }
 
-  const summary = {
-    submissions: run.submissions.length,
-    finalized: run.mutationEvents.filter(({ status }) => status === "finalized")
-      .length,
-    dropped,
-    blocks: run.blockEvents.length,
-    batches: run.batchEvents.length,
-    reorgs: run.reorgs.length,
-    gas_used: gas.gasUsed,
-    gas_limit: gas.gasLimit,
-    duration: Math.round(performance.now() - validateStart),
-  };
-
-  // The harness's records grow with the run. Once it drops them, what is in
-  // use past `beforeRuntime` is the runtime's. Measured from a fresh stack,
-  // where the GC finds no stale references to what the run dropped.
-  const measure = Effect.promise(
-    () =>
-      new Promise<ReturnType<typeof memoryInUse>>((resolve) =>
-        setTimeout(() => resolve(memoryInUse())),
-      ),
-  );
-  const recorded = yield* measure;
-  for (const records of Object.values(run)) records.length = 0;
-  chain.forget();
-  simDb.forget();
-  for (const transport of transports) transport.forget();
-  const ended = yield* measure;
+  const finalized = run.mutationEvents.filter(
+    ({ status }) => status === "finalized",
+  ).length;
+  // Measured past `beforeRuntime`. The JS heap includes the harness's records,
+  // which grow with the run; the native heap is revm's alone.
+  const ended = memoryInUse();
   const kb = (bytes: number) => Math.round(bytes / 1024);
-  const heap = [startedRuntime.heap, ended.heap].map((bytes) =>
-    kb(bytes - beforeRuntime.heap),
-  );
-  const native =
-    nativeInUse === undefined
-      ? {}
-      : {
-          runtime_native_kb: [startedRuntime.native, ended.native]
-            .map((bytes) => kb(bytes - beforeRuntime.native))
-            .join("->"),
-          runtime_native_per_finalized_b: Math.round(
-            (ended.native - startedRuntime.native) /
-              Math.max(summary.finalized, 1),
-          ),
-        };
+  const since = (key: "heap" | "native") =>
+    [startedRuntime[key], ended[key]]
+      .map((bytes) => kb(bytes - beforeRuntime[key]))
+      .join("->");
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
-      ...summary,
-      runtime_heap_kb: heap.join("->"),
-      ...native,
-      harness_heap_kb: kb(recorded.heap - ended.heap),
+      submissions: run.submissions.length,
+      finalized,
+      dropped,
+      blocks: run.blockEvents.length,
+      batches: run.batchEvents.length,
+      reorgs: run.reorgs.length,
+      gas_used: gas.gasUsed,
+      gas_limit: gas.gasLimit,
+      duration: Math.round(performance.now() - validateStart),
+      heap_kb: since("heap"),
+      ...(nativeInUse && {
+        runtime_native_kb: since("native"),
+        runtime_native_per_finalized_b: Math.round(
+          (ended.native - startedRuntime.native) / Math.max(finalized, 1),
+        ),
+      }),
     }),
   );
 });
