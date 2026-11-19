@@ -16,7 +16,6 @@ export type LocalBlock = {
   hash: Hex.Hex;
   parentHash: Hex.Hex;
   timestamp: bigint;
-  baseFeePerGas: bigint;
   logs: LocalLog[];
   /** The hashes of its transactions, in order. */
   transactions: Hex.Hex[];
@@ -88,7 +87,6 @@ export function watchChain(
               hash: block.hash,
               parentHash: block.parentHash,
               timestamp: block.timestamp,
-              baseFeePerGas: block.baseFeePerGas ?? 0n,
               transactions: block.transactions,
             };
             yield* Queue.offer(queue, { _tag: "Fetched", block: fetchedBlock });
