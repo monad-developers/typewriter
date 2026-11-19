@@ -1,0 +1,34 @@
+# Why Typewriter [Custom sequencing, fast confirmations, gas sponsorship]
+
+## Features
+
+- **Custom sequencing**. Applications define their transaction ordering ([FIFO or batch](/docs/concepts/execution/ordering)).
+- **Fast confirmations**. Applications can accept mutations within milliseconds, before transactions finalize onchain.
+- **Gas sponsorship**. Users sign application mutations while the server pays for settlement transactions.
+- **Native accounts**. Credential management, parallel nonces, expirations, permissions, and EIP-712 authorization with P-256, WebAuthn-P256, or secp256k1.
+- **Direct control**. No external relayers, sequencers, or builder auctions between users and the application. The application has end-to-end control over what users experience.
+- **Local first**. Build rapidly with a powerful local development loop.
+
+## Mutations, not transactions
+
+A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution.
+
+Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. The server executes each mutation against its own copy of the contract's state, and once it knows the mutation will succeed onchain it responds `accepted`, before a transaction is created, signed, or submitted.
+
+## Trust model
+
+The server is trusted for day-to-day ordering and availability, but it does not control user funds.
+
+| The server can | The server can't |
+| --- | --- |
+| Choose the order of mutations | Create or change a mutation; every one carries the user's signature |
+| Delay a mutation, or stop serving entirely | Run a mutation differently from the contract; the chain executes the same Solidity |
+| Decline to accept a mutation | Censor a mutation indefinitely; users can [force include](/docs/production/force-inclusion) it |
+
+`accepted` is a promise from the server, not from the chain. A mutation is final once the block that contains it is finalized; see the [mutation lifecycle](/docs/concepts/execution/lifecycle).
+
+## Tradeoffs
+
+- **No external calls.** Mutations must execute the same on the server and onchain, so app code can't call other contracts. See [determinism](/docs/concepts/mutations/determinism).
+- **Monad only.** The server currently executes mutations under a Monad hardfork, and P-256 credentials rely on the chain's P-256 precompile. See [chain integration](/docs/production/chain-requirements).
+- **Not audited.** Do not use Typewriter with real funds without an independent audit.

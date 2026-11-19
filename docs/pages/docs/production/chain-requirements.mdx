@@ -1,0 +1,5 @@
+# Chain requirements [Chains Typewriter can run on]
+
+Typewriter executes mutations under a Monad hardfork (`MonadEight`, `MonadNine`, `MonadTen`, or `MonadNext`). The `hardfork` config option defaults to the Monad mainnet or testnet schedule for `chainId`, so any other chain, such as a separately started Anvil, needs it set (for example `"MonadTen"`).
+
+Accounts with P-256 and WebAuthn-P256 credentials need the chain's P-256 precompile at `0x100`.

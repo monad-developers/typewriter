@@ -1,0 +1,35 @@
+# Requirements [What Typewriter needs to run]
+
+## System requirements
+
+- [Bun](https://bun.sh)
+- [Foundry](https://getfoundry.sh)
+- [PostgreSQL](https://www.postgresql.org/download/)
+- [Rust](https://rustup.rs), use to build Typewriter from source
+
+## TypeScript
+
+Typewriter bridges the gap between onchain and offchain code with complex type inference. State reads, account reads, mutation names, and mutation params on the server are all typed from your Solidity, with no manual type definitions. We **strongly** recommend taking the time to set up a working TypeScript environment.
+
+### Requirements
+
+- TypeScript 5.9
+- A `src/typewriter.d.ts` file in the package that imports your contract
+- The generated `<Contract>.sol.d.ts` file next to your contract, present and up to date
+
+### `typewriter.d.ts`
+
+This file lets TypeScript import `.sol` files. Add it to the `src` directory of the package that calls `createTypewriter`.
+
+```ts [src/typewriter.d.ts]
+declare module "*.sol" {
+  const entrypoint: import("typewriter").TypewriterSolidityEntrypoint;
+  export default entrypoint;
+}
+```
+
+### `<Contract>.sol.d.ts`
+
+When `typewriter.d.ts` is present, Typewriter writes a declaration file next to your contract at startup, such as `Token.sol.d.ts` for `Token.sol`. It carries the types for that contract's state and mutations.
+
+The file changes whenever the contract does. Commit it, and accept the changes after editing your contract.
