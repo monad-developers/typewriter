@@ -546,6 +546,7 @@ export function createTypewriterEffect<
       statements: CompiledStatement[];
       committed: Deferred.Deferred<void>;
     }>();
+    const eventQueue = yield* Queue.unbounded<Effect.Effect<void>>();
     /** Wakes `accept` in fifo order when a mutation or an enqueue is waiting. */
     const acceptSignal = yield* Queue.sliding<void>(1);
     /** Wakes `send` when a settlement is waiting. */
@@ -553,6 +554,7 @@ export function createTypewriterEffect<
     yield* Scope.addFinalizer(scope, Queue.shutdown(receivedMutationQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(acceptSignal));
     yield* Scope.addFinalizer(scope, Queue.shutdown(persistQueue));
+    yield* Scope.addFinalizer(scope, Queue.shutdown(eventQueue));
     yield* Scope.addFinalizer(scope, Queue.shutdown(sendSignal));
     const stopped = yield* Deferred.make<never, TypewriterStoppedError>();
 
@@ -589,6 +591,12 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // Events and persistence
 
+    // Each notification captures the latest write at the time of its transition.
+    // One consumer waits for those commits and delivers notifications in order.
+    let latestCommit: Effect.Effect<void> = Effect.void;
+    const queueEvent = (notify: Effect.Effect<void>) =>
+      Queue.offer(eventQueue, Effect.andThen(latestCommit, notify));
+
     const emit = <event>(
       name: "mutation" | "batch" | "block",
       listeners: ReadonlySet<(event: event) => void>,
@@ -617,7 +625,7 @@ export function createTypewriterEffect<
             }).pipe(Effect.catch(warn)),
           { discard: true },
         );
-      });
+      }).pipe(queueEvent);
 
     const emitMutation = (mutation: RuntimeMutation) =>
       emit(
@@ -663,6 +671,7 @@ export function createTypewriterEffect<
       const compiled = statements.map(compile);
       return Effect.gen(function* () {
         const committed = yield* Deferred.make<void>();
+        latestCommit = Deferred.await(committed);
         yield* Queue.offer(persistQueue, { statements: compiled, committed });
         return committed;
       });
@@ -769,24 +778,13 @@ export function createTypewriterEffect<
           });
         }
         recordExecution(executeResult, newPreimages);
-        const accepted = updateMutationToAccepted(
-          mutation,
-          nextExecutionIndex++,
-        );
-        yield* emitMutation(accepted);
         return {
-          mutation: accepted,
+          mutation: updateMutationToAccepted(mutation, nextExecutionIndex++),
           fromExecutionHash,
           executeResult,
           calldata,
         };
-      }).pipe(
-        Effect.tapError((error) =>
-          Effect.suspend(() =>
-            emitMutation(updateMutationToRejected(mutation, error)),
-          ),
-        ),
-      );
+      });
 
     const toSettlement = (
       group: Execution[],
@@ -824,14 +822,17 @@ export function createTypewriterEffect<
           mutation: AcceptedMutation;
           deferred?: AcceptDeferred;
         })[] = [];
+        const outcomes: (AcceptedMutation | RejectedMutation)[] = [];
         for (const { mutation, deferred } of received) {
           const result = yield* Effect.result(
             executeMutation(mutation, newPreimages, block),
           );
           if (Result.isSuccess(result)) {
             accepted.push({ ...result.success, deferred });
-          } else if (deferred !== undefined) {
-            yield* Deferred.fail(deferred, result.failure);
+            outcomes.push(result.success.mutation);
+          } else {
+            outcomes.push(updateMutationToRejected(mutation, result.failure));
+            if (deferred) yield* Deferred.fail(deferred, result.failure);
           }
         }
 
@@ -880,7 +881,13 @@ export function createTypewriterEffect<
             calldata,
           });
         }
-        if (accepted.length === 0 && forced.length === 0) return [];
+        const emitOutcomes = Effect.forEach(outcomes, emitMutation, {
+          discard: true,
+        });
+        if (accepted.length === 0 && forced.length === 0) {
+          yield* emitOutcomes;
+          return [];
+        }
 
         const rows = yield* persist(
           insertMutations(
@@ -893,6 +900,7 @@ export function createTypewriterEffect<
           ...insertStorageSlots(app.typewriterSchema, executions),
           ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
         ]);
+        yield* emitOutcomes;
         const settled: ExecutedSettlement[] = [];
         for (const group of groupByGas(executions)) {
           const mutations = group.flatMap((execution) =>
@@ -1284,13 +1292,11 @@ export function createTypewriterEffect<
               );
             }
             if (included.length > 0) {
-              yield* Deferred.await(
-                yield* persist(
-                  includeBlockMutations(
-                    app.mutationSchema,
-                    runtimeBlock,
-                    included,
-                  ),
+              yield* persist(
+                includeBlockMutations(
+                  app.mutationSchema,
+                  runtimeBlock,
+                  included,
                 ),
               );
             }
@@ -1334,11 +1340,7 @@ export function createTypewriterEffect<
               updateMutationToUnincluded(mutation as IncludedMutation),
             );
           });
-          yield* Deferred.await(
-            yield* persist(
-              clearMutationInclusion(app.mutationSchema, mutations),
-            ),
-          );
+          yield* persist(clearMutationInclusion(app.mutationSchema, mutations));
           const { number, hash, timestamp } = runtimeBlock;
           yield* emit("block", blockListeners, {
             status: "removed",
@@ -1595,8 +1597,11 @@ export function createTypewriterEffect<
       }),
     );
 
+    const eventProgram = Effect.forever(
+      Queue.take(eventQueue).pipe(Effect.flatten),
+    );
     const program = Effect.all(
-      [acceptProgram, sendProgram, persistProgram, watchProgram],
+      [acceptProgram, sendProgram, persistProgram, eventProgram, watchProgram],
       { concurrency: "unbounded" },
     ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
