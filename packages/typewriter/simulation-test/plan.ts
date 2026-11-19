@@ -38,9 +38,13 @@ export type Plan = {
     sendDropRate: number;
     /** How far below the highest head the chain finalizes. */
     finalizedBlockDepth: number;
-    /** How often a mined block's base fee jumps, by a multiple drawn from `feeSpikes`. */
-    feeSpikeRate: number;
-    feeSpikes: Weighted<number>;
+    /**
+     * How often a base fee surge starts. For a number of blocks drawn from
+     * `feeSurges`, each block's base fee is 12.5% above the last, after which
+     * it decays.
+     */
+    feeSurgeRate: number;
+    feeSurges: Weighted<number>;
   };
   generator: {
     /** The key type of each account. */
@@ -109,11 +113,12 @@ export function makePlan(seed: string): Plan {
     dropRate: reorgRate === 0 ? 0 : at("chain.dropRate").pick([0, 0.05, 0.25]),
     sendDropRate: at("chain.sendDropRate").pick([0, 0.05, 0.2]),
     finalizedBlockDepth: at("chain.finalizedBlockDepth").int(1, 5),
-    feeSpikeRate: at("chain.feeSpikeRate").pick([0, 0, 0.01, 0.05]),
-    feeSpikes: [
-      [3, 3],
-      [10, 2],
-      [50, 1],
+    feeSurgeRate: at("chain.feeSurgeRate").pick([0, 0, 0.01, 0.05]),
+    // About 2x, 6x and 60x the base fee where the surge started.
+    feeSurges: [
+      [6, 3],
+      [15, 2],
+      [35, 1],
     ],
   };
 

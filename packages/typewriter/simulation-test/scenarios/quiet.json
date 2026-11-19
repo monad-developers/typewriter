@@ -13,8 +13,8 @@
     "dropRate": 0,
     "sendDropRate": 0,
     "finalizedBlockDepth": 3,
-    "feeSpikeRate": 0,
-    "feeSpikes": [[3, 1]]
+    "feeSurgeRate": 0,
+    "feeSurges": [[6, 1]]
   },
   "generator": {
     "accounts": ["Secp256k1", "P256", "WebAuthnP256"],
