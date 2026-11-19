@@ -26,6 +26,7 @@ export function makeSimScheduler(
   jumpRate: number,
   jump: () => void,
   ioRate: number,
+  maxOpsBeforeYield: number | undefined,
 ): SimScheduler {
   const tasks: Task[] = [];
   const inFlight: Io[] = [];
@@ -99,7 +100,8 @@ export function makeSimScheduler(
   return {
     executionMode: "async",
     shouldYield: (fiber) =>
-      fiber.currentOpCount >= fiber.getRef(Scheduler.MaxOpsBeforeYield),
+      fiber.currentOpCount >=
+      (maxOpsBeforeYield ?? fiber.getRef(Scheduler.MaxOpsBeforeYield)),
     makeDispatcher: () => ({
       scheduleTask: (run, priority) => {
         tasks.push({ run, priority });

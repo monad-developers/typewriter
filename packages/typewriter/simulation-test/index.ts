@@ -243,6 +243,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       clock.advanceTo(at);
     },
     plan.scheduler.ioRate,
+    plan.scheduler.maxOpsBeforeYield,
   );
   const clock = makeSimClock(startMs, scheduler.schedule);
   const simChain: Chain = {
