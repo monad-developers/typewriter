@@ -175,6 +175,18 @@ const REBROADCAST_BLOCKS = 3n;
 /** How many blocks a settlement can go without landing after it is first sent. */
 const STUCK_BLOCKS = 300n;
 
+/**
+ * Every settlement's fee cap: 100 times Monad's minimum base fee of 100 gwei.
+ * A settlement is signed once and sent again unchanged, so it can land only
+ * while the base fee is under this. It pays only the base fee plus the tip,
+ * and Monad checks balances against that, not the cap, so a high cap costs
+ * nothing.
+ */
+const MAX_FEE_PER_GAS = 10_000_000_000_000n;
+
+/** Every settlement's tip, what `eth_maxPriorityFeePerGas` returns on Monad. */
+const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
+
 type RuntimeExecuteInput = {
   name: string;
   params: unknown;
@@ -479,22 +491,17 @@ export function createTypewriterEffect<
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.
     const startBlock = yield* requestBlock("latest");
-    const requestPriorityFee = rpc
-      .request({ method: "eth_maxPriorityFeePerGas" })
-      .pipe(Effect.map(Hex.toBigInt));
-    const [code, startExecutionIndex, startNonce, startPriorityFee] =
-      yield* Effect.all(
-        [
-          rpc.request({
-            method: "eth_getCode",
-            params: [app.address, { blockHash: startBlock.hash }],
-          }),
-          requestExecutionIndex(app.address, startBlock.hash),
-          requestNonce(app.account.address),
-          requestPriorityFee,
-        ],
-        { concurrency: "unbounded" },
-      );
+    const [code, startExecutionIndex, startNonce] = yield* Effect.all(
+      [
+        rpc.request({
+          method: "eth_getCode",
+          params: [app.address, { blockHash: startBlock.hash }],
+        }),
+        requestExecutionIndex(app.address, startBlock.hash),
+        requestNonce(app.account.address),
+      ],
+      { concurrency: "unbounded" },
+    );
     yield* migrate(
       db,
       app.schemaName,
@@ -518,14 +525,11 @@ export function createTypewriterEffect<
     let latest = {
       number: startBlock.number,
       timestamp: startBlock.timestamp,
-      baseFeePerGas: startBlock.baseFeePerGas ?? 0n,
     };
     /** The newest block the watch has processed, which rebroadcasts count from. */
     let watched = startBlock.number;
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
-    let maxPriorityFeePerGas = startPriorityFee;
-    let refreshingPriorityFee = false;
     let nextBatchId = 0;
     /** Every settlement not yet final, in execution order, which is nonce order. */
     let settlements: RuntimeSettlement[] = [];
@@ -964,9 +968,8 @@ export function createTypewriterEffect<
               data: settlementCalldata(settlement),
               gas: BigInt(settlement.gasLimit),
               accessList: settlement.accessList,
-              // Room for the base fee to double before it lands.
-              maxFeePerGas: 2n * latest.baseFeePerGas + maxPriorityFeePerGas,
-              maxPriorityFeePerGas,
+              maxFeePerGas: MAX_FEE_PER_GAS,
+              maxPriorityFeePerGas: MAX_PRIORITY_FEE_PER_GAS,
             }),
           catch: (cause) => new SignTransactionError({ cause }),
         });
@@ -1480,9 +1483,9 @@ export function createTypewriterEffect<
       Stream.runForEach((message) =>
         Effect.gen(function* () {
           if (message._tag === "Fetched") {
-            const { number, hash, timestamp, baseFeePerGas } = message.block;
+            const { number, hash, timestamp } = message.block;
             if (number > latest.number) {
-              latest = { number, timestamp, baseFeePerGas };
+              latest = { number, timestamp };
             }
             if (
               landedRequests.has(hash) ||
@@ -1527,22 +1530,6 @@ export function createTypewriterEffect<
             return;
           }
 
-          if (!refreshingPriorityFee) {
-            refreshingPriorityFee = true;
-            yield* Effect.gen(function* () {
-              maxPriorityFeePerGas = yield* requestPriorityFee;
-            }).pipe(
-              Effect.catch((error) =>
-                Effect.logDebug("Failed to refresh the priority fee", error),
-              ),
-              Effect.ensuring(
-                Effect.sync(() => {
-                  refreshingPriorityFee = false;
-                }),
-              ),
-              Effect.forkIn(scope),
-            );
-          }
           watched = message.block.number;
           if (message.block.logs.length > 0) {
             unfinalizedEnqueues.push(message.block);
