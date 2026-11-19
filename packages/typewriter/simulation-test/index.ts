@@ -1,5 +1,6 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { SQL } from "bun";
+import { eq } from "drizzle-orm";
 import {
   Cause,
   Clock,
@@ -21,7 +22,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
 import { createTypewriterApp, type TypewriterManifest } from "../src/config";
 import { Database, makeDbClient } from "../src/db";
-import { makePostgresTransport } from "../src/db-transport";
+import { builder, makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
 import { layerRpc } from "../src/rpc";
 import type { RpcRequest } from "../src/rpc-transport";
@@ -293,9 +294,10 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
   const world = Effect.gen(function* () {
     // A failure of any fiber in the set fails the run.
     const fibers = yield* FiberSet.make<void, ProgramError>();
-    // Reads of the chain after an expiry, which the drain waits for.
-    const expiryChecks = yield* FiberSet.make<void>();
-    const runExpiryCheck = yield* FiberSet.runtime(expiryChecks)<never>();
+    // Reads started by event listeners, which the drain waits for.
+    const listenerChecks = yield* FiberSet.make<void, never>();
+    const runListenerCheck = yield* FiberSet.runtime(listenerChecks)<never>();
+    yield* FiberSet.run(fibers, FiberSet.join(listenerChecks));
 
     const typewriter = yield* createTypewriterEffect<
       AssessmentStorage,
@@ -324,6 +326,29 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
 
     const drained = yield* Deferred.make<void>();
     yield* typewriter.on("mutation", (event) => {
+      // A listener can look up the signup as soon as it sees acceptance.
+      if (event.status === "accepted" && event.name === "CreateAccount") {
+        runListenerCheck(
+          Effect.gen(function* () {
+            const table = typewriter.schema.createaccount_mutations;
+            const [row] = yield* scheduler
+              .io(
+                db.run(
+                  builder
+                    .select({ account: table.authorization_account_id })
+                    .from(table)
+                    .where(eq(table.execution_index, event.executionIndex)),
+                ),
+              )
+              .pipe(Effect.orDie);
+            if (row?.account !== event.authorization.accountID) {
+              return yield* Effect.die(
+                `CreateAccount ${event.executionIndex} emitted before its row was visible`,
+              );
+            }
+          }),
+        );
+      }
       run.mutationEvents.push(event);
       progressedAt = clock.currentTimeMillisUnsafe();
       const margin =
@@ -335,7 +360,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
               ? EXPIRATION_MARGIN
               : undefined;
       if (margin !== undefined) {
-        runExpiryCheck(
+        runListenerCheck(
           checkExpiry(
             mutationKey(event.authorization),
             // The authorization's, or the credential's.
@@ -604,11 +629,11 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       }
 
       yield* Deferred.await(drained);
-      // A rejection's event comes before `execute` returns, and every `execute` must return.
+      // Every submitted execute must also return.
       while (unreturned(run).length > 0 || pendingEnqueues.size > 0) {
         yield* Effect.sleep(Duration.millis(plan.chain.blockTimeMs));
       }
-      yield* FiberSet.awaitEmpty(expiryChecks);
+      yield* FiberSet.awaitEmpty(listenerChecks);
       return typewriter;
     });
 
