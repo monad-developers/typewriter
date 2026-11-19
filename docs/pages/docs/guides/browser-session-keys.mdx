@@ -1,0 +1,185 @@
+# Browser session keys [Sign mutations without a prompt for each one]
+
+A browser session key is a P-256 key pair that the browser creates with the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) and keeps with the [IndexedDB API](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API). It's added to an existing account as an extra credential, with limited permissions and an expiration. The app signs mutations with it, so users never see a wallet popup or a signing prompt, and the account survives if the browser's data is cleared.
+
+This guide builds on [accounts and credentials](/docs/concepts/accounts/overview), [sign mutations](/docs/concepts/accounts/signing), and [nonces](/docs/concepts/accounts/nonces). It starts from an account that already has a credential, of any key type.
+
+## 1. Generate the key
+
+[`SubtleCrypto.generateKey()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/generateKey) creates an ECDSA key pair on the P-256 curve. With `extractable` set to `false`, the private key can sign but can never be read, even by your own code.
+
+```ts
+const keyPair = await crypto.subtle.generateKey(
+  { name: "ECDSA", namedCurve: "P-256" },
+  false, // extractable
+  ["sign", "verify"],
+);
+```
+
+The account needs the public key as hex. [`SubtleCrypto.exportKey()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/exportKey) in `raw` format returns the 65-byte uncompressed key that Typewriter expects:
+
+```ts
+const publicKey = bytesToHex(
+  new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
+);
+```
+
+## 2. Add the key to the account
+
+Add the key with `AddCredential`, choosing which mutations it may sign and when it expires. A credential the account already has signs this mutation, however that credential signs.
+
+```ts
+import { KeyType } from "typewriter/client";
+
+const expiration = Math.floor(Date.now() / 1000) + 24 * 60 * 60; // one day
+
+const addCredential = {
+  name: "AddCredential",
+  params: {
+    expiration,
+    keyType: KeyType.P256,
+    permissions: 1n << BigInt(manifest.mutations.Transfer.id), // Transfer only
+    publicKey,
+  },
+  accountID,
+  credentialID: existingCredentialID,
+  nonce,
+  expiration: Math.floor(Date.now() / 1000) + 120,
+} as const;
+```
+
+The new credential's ID is its position in the account's [credentials](/docs/concepts/accounts/overview#credentials): the number of credentials the account had before, counting removed ones.
+
+Don't give the session key permission for `AddCredential` or `RemoveCredential`. A credential that can sign `AddCredential` can add new credentials with any permissions, and one that can sign `RemoveCredential` can remove any of the account's credentials.
+
+## 3. Store the key
+
+IndexedDB stores a `CryptoKeyPair` with the [structured clone algorithm](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm), so a non-extractable key stays non-extractable and usable after a reload. Store it under `manifest.deploymentKey`, so a key made for one deployment is never used with another.
+
+```ts [lib/session-store.ts]
+type Session = {
+  accountID: Hex;
+  credentialID: bigint;
+  expiration: number;
+  keyPair: CryptoKeyPair;
+};
+
+function openDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("typewriter");
+    request.onupgradeneeded = () => request.result.createObjectStore("session");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function saveSession(key: string, session: Session) {
+  const database = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction("session", "readwrite");
+    transaction.objectStore("session").put(session, key);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  database.close();
+}
+
+export async function loadSession(key: string): Promise<Session | null> {
+  const database = await openDatabase();
+  const session = await new Promise<Session | undefined>((resolve, reject) => {
+    const request = database.transaction("session").objectStore("session").get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  database.close();
+  return session ?? null;
+}
+```
+
+Save the session once `addCredential` is accepted:
+
+```ts
+await saveSession(manifest.deploymentKey, {
+  accountID,
+  credentialID: sessionCredentialID,
+  expiration,
+  keyPair,
+});
+```
+
+## 4. Load the key and pick a nonce lane
+
+When the user comes back, load the session. If there isn't one, or it has expired, start again from step 1.
+
+Then pick a random 192-bit nonce lane with [`Crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues). A new lane starts at sequence `0`, so the app never has to look up where the last session left off.
+
+```ts
+import { packNonce } from "typewriter/client";
+
+const session = await loadSession(manifest.deploymentKey);
+if (session === null || session.expiration <= Date.now() / 1000) {
+  // start again from step 1
+}
+
+const lane = BigInt(bytesToHex(crypto.getRandomValues(new Uint8Array(24))));
+let nonce = packNonce(lane, 0n);
+```
+
+## 5. Sign mutations
+
+One helper signs any mutation with the session key. It gets the payload from `getAuthorizationPayload`, signs it with [`SubtleCrypto.sign()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign), which returns the 64-byte signature that `packP256Signature` expects, and attaches it with `authorizeMutation`.
+
+```ts
+import {
+  authorizeMutation,
+  getAuthorizationPayload,
+  packP256Signature,
+  type TypedMutation,
+} from "typewriter/client";
+
+async function signMutation(
+  keyPair: CryptoKeyPair,
+  mutation: TypedMutation<typeof manifest>,
+) {
+  const signature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    keyPair.privateKey,
+    Uint8Array.from(hexToBytes(getAuthorizationPayload(manifest, mutation))),
+  );
+  return authorizeMutation(
+    mutation,
+    packP256Signature(bytesToHex(new Uint8Array(signature))),
+  );
+}
+```
+
+Every mutation the key may sign is now signed with no prompt, using the session's `credentialID`. Each signed mutation is [submitted](/docs/concepts/submitting) like any other. Increment the nonce after each one is accepted.
+
+```ts
+import { incrementNonce } from "typewriter/client";
+
+const transfer = await signMutation(session.keyPair, {
+  name: "Transfer",
+  params: { to, amount },
+  accountID: session.accountID,
+  credentialID: session.credentialID,
+  nonce,
+  expiration: Math.floor(Date.now() / 1000) + 120,
+});
+nonce = incrementNonce(nonce);
+```
+
+## 6. Sign out
+
+On sign-out, delete the session from IndexedDB. The key stops working when it expires. To revoke it sooner, have a credential that may sign `RemoveCredential` sign this mutation:
+
+```ts
+const removeCredential = {
+  name: "RemoveCredential",
+  params: { credentialID: session.credentialID },
+  accountID: session.accountID,
+  credentialID: existingCredentialID,
+  nonce,
+  expiration: Math.floor(Date.now() / 1000) + 120,
+} as const;
+```

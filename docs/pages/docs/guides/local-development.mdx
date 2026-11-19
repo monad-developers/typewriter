@@ -1,0 +1,68 @@
+# Local development [Run your app against a local chain]
+
+Dev mode runs your app with nothing but a Postgres database. Typewriter starts a local chain, deploys your contract to it, and sets up the scheduler.
+
+```ts [src/index.ts]
+const typewriter = await createTypewriter(Token, {
+  dev: true,
+  database: { url: process.env.DATABASE_URL! },
+});
+```
+
+Dev mode needs `anvil` from [Foundry](https://getfoundry.sh) v1.8.0 or later on the `PATH`.
+
+## Anvil
+
+Each dev process starts its own Anvil chain and stops it when the process stops, with nothing saved between runs. The chain is set up to behave like Monad:
+
+- Monad's EVM rules, with `--network monad`, and the `MonadTen` hardfork.
+- A block every 250 milliseconds.
+- Blocks finalize about two blocks behind the latest, so mutations reach `finalized` within a second.
+
+Anvil listens on a random port, so several dev processes can run at once. Typewriter logs the RPC URL at startup:
+
+```text
+INFO  Started Anvil and deployed the app rpc_url=http://127.0.0.1:35585 chain_id=31337 address=0x5fbdb2315678afecb367f032d93f642f64180aa3 scheduler=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+```
+
+## Automatic deployment
+
+At startup, Typewriter builds your contract and deploys it to the new chain. There's no deploy script to run, and changes to your Solidity take effect on the next start.
+
+Dev mode fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork` for you. Setting `address`, `account`, `chainId`, or `rpcUrl` along with `dev` is an error.
+
+## Database
+
+Each dev process gets its own Postgres schema, `typewriter_dev_<random>`, and drops it when the process stops.
+
+## Pruning
+
+Anvil keeps only recent history in memory, so a dev chain that runs for hours doesn't keep growing:
+
+- State for the last 64 blocks, about 16 seconds.
+- Transactions and receipts for the last 1024 blocks, about 4 minutes.
+
+Reads of older blocks fail. Typewriter doesn't need them, but tools that query old blocks, such as `cast` with an old `--block`, won't find them.
+
+## Switching to production
+
+Read `dev` from the environment so the same code runs locally and in production:
+
+```ts [src/index.ts]
+const dev = process.env.NODE_ENV !== "production";
+
+const typewriter = await createTypewriter(Token, {
+  dev,
+  ...(dev
+    ? {}
+    : {
+        address: process.env.TOKEN_ADDRESS,
+        account: privateKeyToAccount(process.env.PRIVATE_KEY),
+        chainId: Number(process.env.CHAIN_ID),
+        rpcUrl: process.env.RPC_URL,
+      }),
+  database: { url: process.env.DATABASE_URL },
+});
+```
+
+See [deployment](/docs/production/deployment) for the production config.
