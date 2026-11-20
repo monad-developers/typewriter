@@ -11,9 +11,10 @@ export const sidebar = {
     {
       text: "Concepts",
       items: [
+        { text: "Architecture", link: "/docs/concepts/architecture" },
         { text: "State", link: "/docs/concepts/state" },
         { text: "Mutations", link: "/docs/concepts/mutations" },
-        { text: "Submitting", link: "/docs/concepts/submitting" },
+        { text: "Executing mutations", link: "/docs/concepts/executing" },
         {
           text: "Querying",
           items: [

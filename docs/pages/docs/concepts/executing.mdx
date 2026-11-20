@@ -1,10 +1,10 @@
-# Submitting [Run mutations and follow them to the chain]
+# Executing mutations [Run mutations on your server and follow them to the chain]
 
-Signed mutations are submitted with `typewriter.execute()`. The call resolves as soon as Typewriter accepts the mutation, within milliseconds, and throws if the mutation is rejected.
+On your server, pass each signed mutation your clients send to `typewriter.execute()`. The call resolves once Typewriter accepts the mutation, usually within milliseconds, and throws if Typewriter rejects it.
 
 ## Start Typewriter
 
-`createTypewriter` starts Typewriter from your contract and returns the `typewriter` object.
+When your server starts, call `createTypewriter` with your contract and config. It returns `typewriter`, the object you call `execute()` on.
 
 ```ts [src/index.ts]
 import { createTypewriter } from "typewriter";
@@ -18,15 +18,15 @@ const typewriter = await createTypewriter(Token, {
 
 `dev: true` runs against a fresh local chain; see [local development](/docs/guides/local-development). See [deployment](/docs/production/deployment) for running against a real chain.
 
-## Submit a mutation
+## Execute a mutation
 
-Pass `execute()` a signed mutation: its `name`, `params`, and `authorization`, as clients produce them with `typewriter/client` (see [authorization](/docs/concepts/accounts/authorization)).
+A signed mutation is the object a client builds with `authorizeMutation` from `typewriter/client`: the mutation's `name` and `params`, plus its `authorization`; see [authorization](/docs/concepts/accounts/authorization). How it gets from the client to your server, such as an HTTP endpoint, is up to you; see [architecture](/docs/concepts/architecture#the-server).
 
 ```ts [src/index.ts]
 await typewriter.execute(mutation);
 ```
 
-When `execute()` resolves, the mutation is accepted: its effects are already visible in [`typewriter.state`](/docs/concepts/querying/current-state), and it will settle onchain without the client doing anything else.
+When `execute()` resolves, the mutation is accepted: its effects are already visible in [`typewriter.state`](/docs/concepts/querying/current-state), and Typewriter settles it onchain without anything more from your code or the client.
 
 ## Rejections
 
@@ -51,20 +51,18 @@ try {
 }
 ```
 
-A rejected mutation never goes onchain. It changes nothing, and its [nonce](/docs/concepts/accounts/authorization#nonces) can be reused.  
+A rejected mutation never goes onchain. It changes nothing, and its [nonce](/docs/concepts/accounts/authorization#nonces) can be reused.
 
 ## Lifecycle
 
-After it's submitted, a mutation moves through these statuses:
+After it's passed to `execute()`, a mutation moves through these statuses:
 
 - **received**. Typewriter has received the mutation.
-- **accepted**. Typewriterr has ordered and executed the mutation. `execute()` resolves here.
+- **accepted**. Typewriter has ordered and executed the mutation. `execute()` resolves here.
 - **included**. The mutation is in a block onchain.
 - **finalized**. The block that contains the mutation is finalized.
 
 A mutation Typewriter can't accept is **rejected** instead, and never goes onchain.
-
-`accepted` is Typewriter's promise that the mutation will land onchain with the same result. `finalized` is the chain's. Most apps show users a mutation as done when it's accepted, and wait for finalized only before acting outside the app on its result.
 
 A mutation that is included but not yet finalized can move back to accepted if the chain reorganizes, and then lands again. See [reorgs](/docs/production/chain-integration#reorgs).
 

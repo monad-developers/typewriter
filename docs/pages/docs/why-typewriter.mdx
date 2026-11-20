@@ -2,7 +2,7 @@
 
 ## Features
 
-- **Custom sequencing**. Applications define their transaction ordering ([FIFO or batch](/docs/concepts/submitting#ordering)).
+- **Custom sequencing**. Applications define their transaction ordering ([FIFO or batch](/docs/concepts/executing#ordering)).
 - **Fast confirmations**. Transactions accepted within milliseconds, before transactions finalize onchain.
 - **Built-in, modern account system**. Credential management, parallel nonces, expirations, permissions, and EIP-712 authorization with P-256, WebAuthn-P256, or secp256k1.
 - **Gas sponsorship**. Users sign application mutations while the server pays for settlement transactions.
@@ -25,7 +25,7 @@ The server is trusted for day-to-day ordering and availability, but it does not 
 | Delay a mutation, or stop serving entirely | Run a mutation differently from the contract; the chain executes the same Solidity |
 | Decline to accept a mutation | Censor a mutation indefinitely; users can [force include](/docs/production/force-inclusion) it |
 
-`accepted` is a promise from the server, not from the chain. A mutation is final once the block that contains it is finalized; see the [mutation lifecycle](/docs/concepts/submitting#lifecycle).
+`accepted` is a promise from the server, not from the chain. A mutation is final once the block that contains it is finalized; see the [mutation lifecycle](/docs/concepts/executing#lifecycle).
 
 ## Tradeoffs
 

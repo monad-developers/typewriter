@@ -9,7 +9,13 @@ export default defineConfig({
   rootDir: ".",
   srcDir: ".",
   twoslash: false,
-  redirects: [{ source: "/", destination: "/docs/get-started" }],
+  redirects: [
+    { source: "/", destination: "/docs/get-started" },
+    {
+      source: "/docs/concepts/submitting",
+      destination: "/docs/concepts/executing",
+    },
+  ],
   sidebar,
   topNav: [
     { text: "Docs", link: "/docs/get-started", match: "/docs" },

@@ -153,7 +153,7 @@ async function signMutation(
 }
 ```
 
-Every mutation the key may sign is now signed with no prompt, using the session's `credentialID`. Each signed mutation is [submitted](/docs/concepts/submitting) like any other. Increment the nonce after each one is accepted.
+Every mutation the key may sign is now signed with no prompt, using the session's `credentialID`. Each signed mutation is [submitted](/docs/concepts/executing) like any other. Increment the nonce after each one is accepted.
 
 ```ts
 import { incrementNonce } from "typewriter/client";

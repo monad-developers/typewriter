@@ -1,6 +1,6 @@
 # Live updates [Know when something changes]
 
-`typewriter.on()` calls your function whenever a mutation, batch, or block changes status. Use it to follow mutations through their [lifecycle](/docs/concepts/submitting#lifecycle), for example to tell a user when their transfer is finalized.
+`typewriter.on()` calls your function whenever a mutation, batch, or block changes status. Use it to follow mutations through their [lifecycle](/docs/concepts/executing#lifecycle), for example to tell a user when their transfer is finalized.
 
 ```ts
 const unsubscribe = typewriter.on("mutation", (mutation) => {
@@ -51,7 +51,7 @@ typewriter.on("mutation", (mutation) => {
 
 ## Batch events
 
-With [batch ordering](/docs/concepts/submitting#batch), `"batch"` fires when a batch is accepted, included, or finalized. Each event has the batch's `id`, its `status`, and its `mutations`, all with the batch's status. With FIFO ordering, subscribing to `"batch"` is a type error.
+With [batch ordering](/docs/concepts/executing#batch), `"batch"` fires when a batch is accepted, included, or finalized. Each event has the batch's `id`, its `status`, and its `mutations`, all with the batch's status. With FIFO ordering, subscribing to `"batch"` is a type error.
 
 ## Block events
 
