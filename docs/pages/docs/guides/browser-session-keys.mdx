@@ -2,7 +2,7 @@
 
 A browser session key is a P-256 key pair that the browser creates with the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) and keeps with the [IndexedDB API](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API). It's added to an existing account as an extra credential, with limited permissions and an expiration. The app signs mutations with it, so users never see a wallet popup or a signing prompt, and the account survives if the browser's data is cleared.
 
-This guide builds on [accounts and credentials](/docs/concepts/accounts/overview), [sign mutations](/docs/concepts/accounts/signing), and [nonces](/docs/concepts/accounts/nonces). It starts from an account that already has a credential, of any key type.
+This guide builds on [accounts and credentials](/docs/concepts/accounts/overview), [authorization](/docs/concepts/accounts/authorization), and [managing accounts](/docs/concepts/accounts/managing). It starts from an account that already has a credential, of any key type.
 
 ## 1. Generate the key
 
