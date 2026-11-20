@@ -1,6 +1,13 @@
 import type { AbiParameters } from "ox";
+import type { Spec } from "typewriter-evm";
 import type { Abi } from "viem";
 import type { ResolvedTypewriterMutationConfig } from "./config";
+
+/**
+ * The hardfork mutations execute under and settlements are priced for, unless
+ * the config pins another. It stays the same for the runtime's life.
+ */
+export const DEFAULT_HARDFORK: Spec = "MonadTen";
 
 /** `enum KeyType`. */
 export const KeyType = {
@@ -82,9 +89,6 @@ export const FIRST_BUILTIN_MUTATION_ID = 253;
  * timestamp a settlement can land. An authorization must outlast it, so none
  * executes after it expires.
  */
-/** Monad's per-transaction gas cap, the same in every Monad hardfork. */
-export const TX_GAS_LIMIT_CAP = 30_000_000;
-
 export const EXPIRATION_MARGIN = 60;
 
 /** `struct Authorization`. */

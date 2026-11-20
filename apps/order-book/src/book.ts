@@ -102,6 +102,7 @@ export function estimateMarketOrder(
   const fills: { quantity: bigint; price: bigint }[] = [];
   for (const level of levels(instrumentId, side === "buy" ? "sell" : "buy")) {
     if (remaining === 0n) break;
+    // biome-ignore lint/complexity/useMathMinMax: the operands are bigints, which Math.min rejects
     const fill = remaining < level.quantity ? remaining : level.quantity;
     quoteQuantity += (fill * level.price) >> 32n;
     remaining -= fill;

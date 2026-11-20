@@ -16,7 +16,6 @@ export type LocalBlock = {
   hash: Hex.Hex;
   parentHash: Hex.Hex;
   timestamp: bigint;
-  baseFeePerGas: bigint;
   logs: LocalLog[];
   /** The hashes of its transactions, in order. */
   transactions: Hex.Hex[];
@@ -88,7 +87,6 @@ export function watchChain(
               hash: block.hash,
               parentHash: block.parentHash,
               timestamp: block.timestamp,
-              baseFeePerGas: block.baseFeePerGas ?? 0n,
               transactions: block.transactions,
             };
             yield* Queue.offer(queue, { _tag: "Fetched", block: fetchedBlock });
@@ -166,11 +164,12 @@ export function watchChain(
           });
 
         const poll = Effect.gen(function* () {
-          // A finalized block past `latest` is one a later poll finalizes.
-          const [finalized, latest] = yield* Effect.all(
+          const [finalized, served] = yield* Effect.all(
             [requestBlock("finalized"), requestBlock("latest")],
             { concurrency: "unbounded" },
           );
+          // Providers lag each other, so `latest` can be behind `finalized`.
+          const latest = finalized.number > served.number ? finalized : served;
           // A stale view can serve an orphaned block, so only a longer chain reorgs.
           if (latest.number <= tip().number) {
             yield* finalize(finalized);

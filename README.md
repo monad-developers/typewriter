@@ -82,6 +82,7 @@ Users sign each mutation with a credential. The contract checks the signature, p
 A mutation is the framework equivalent of a transaction, but unlike a transaction it is not submitted directly onchain. Instead mutations are submitted to an application server where they can be reordered and accepted quickly, then eventually made durable with onchain execution. Users sign mutations, not transactions; in normal operation the server is the party that submits transactions to the chain. The server executes each mutation against its own copy of the contract's state, and once it knows the mutation will succeed onchain it responds `accepted`, before a transaction is created or signed.
 
 The lifecycle of a mutation is as follows:
+
 - **received**. The server has received the mutation.
 - **accepted**. The server has ordered and executed the mutation locally.
 - **included**. The server submitted the mutation onchain and it has been included in a block.
@@ -224,6 +225,7 @@ struct State {
 
 Each `Mutation` member `X` needs exactly one library named `XMutation`, in the
 entrypoint file or a file it imports, with:
+
 - **`struct X`**, the mutation's params. Field names and order define the
   params in the manifest. Fields can be any ABI type: value types, `bytes`,
   `string`, arrays, and nested structs. Enums become `uint8`, user-defined
@@ -289,12 +291,11 @@ the final remaining credential.
 
 Account creation and credential management are built-in mutations:
 
-| Mutation | ID | Parameters |
-| --- | --- | --- |
-| `CreateAccount` | `253` | `KeyType keyType`, `bytes publicKey` |
-| `AddCredential` | `254` | `uint40 expiration`, `KeyType keyType`, `uint256 permissions`, `bytes publicKey` |
-| `RemoveCredential` | `255` | `uint64 credentialID` |
-
+| Mutation           | ID    | Parameters                                                                       |
+| ------------------ | ----- | -------------------------------------------------------------------------------- |
+| `CreateAccount`    | `253` | `KeyType keyType`, `bytes publicKey`                                             |
+| `AddCredential`    | `254` | `uint40 expiration`, `KeyType keyType`, `uint256 permissions`, `bytes publicKey` |
+| `RemoveCredential` | `255` | `uint64 credentialID`                                                            |
 
 `CreateAccount` derives the account ID as
 `keccak256(abi.encode(keyType, publicKey))` and creates credential `0` with all
@@ -332,11 +333,11 @@ to that deployment.
 **Signature encoding.** The selected credential's `keyType` determines the
 expected key and signature bytes:
 
-| `keyType` | Stored `publicKey` | Encoded `signature` |
-| --- | --- | --- |
-| `P256` (`0`) | 65-byte uncompressed key (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)` |
-| `WebAuthnP256` (`1`) | Same as `P256` | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)` |
-| `Secp256k1` (`2`) | `abi.encode(address)` | `abi.encode(uint8 v, bytes32 r, bytes32 s)` with `v` equal to `27` or `28` |
+| `keyType`            | Stored `publicKey`                                                                    | Encoded `signature`                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `P256` (`0`)         | 65-byte uncompressed key (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)`                                                                |
+| `WebAuthnP256` (`1`) | Same as `P256`                                                                        | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)` |
+| `Secp256k1` (`2`)    | `abi.encode(address)`                                                                 | `abi.encode(uint8 v, bytes32 r, bytes32 s)` with `v` equal to `27` or `28`                        |
 
 For `Secp256k1`, Typewriter calls `ecrecover` on `digest` and requires a nonzero
 address matching the stored address. For `P256`, it verifies `(r, s)` over
@@ -513,7 +514,7 @@ Starts the runtime and resolves to the `Typewriter` handle once it is ready to a
 Optional fields:
 
 - `dev` — starts Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the scheduler, and fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork`. Setting any of the first four with `dev` is an error. The deployment lives in the database schema `typewriter_dev_<random>`, which is dropped with Anvil when the process stops. Anvil keeps only recent history, so reads of old blocks fail.
-- `hardfork` — the EVM hardfork mutations execute under. It defaults to the Monad mainnet or testnet schedule for `chainId`, so any other chain, such as a separately started Anvil, needs it (for example `"MonadTen"`).
+- `hardfork` — the EVM hardfork mutations execute under and settlements are priced for, for the runtime's life. Defaults to `"MonadTen"`.
 - `blockPollingIntervalMs` — default `200`.
 - `sequencing` — `{ order: "fifo" }` (the default) or `{ order: "batch", batchIntervalMs?, batchOrder }`; see [Sequencing](#sequencing). `batchIntervalMs` defaults to `50`. `batchOrder` lists `Mutation` names; built-in account mutations always come first, and mutations not listed come last, in the order they were received.
 
@@ -547,10 +548,7 @@ signature packing. The app still owns keys, persistence, signing, HTTP, and
 status handling.
 
 ```ts
-import {
-  authorizeMutation,
-  getAuthorizationPayload,
-} from "typewriter/client";
+import { authorizeMutation, getAuthorizationPayload } from "typewriter/client";
 
 const mutation = {
   name: "Transfer",
@@ -628,15 +626,15 @@ One table per Solidity `Mutation` enum member, named `<name>_mutations` with the
 
 Every mutation table starts with the same **lifecycle columns**:
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `execution_index` | `bigint`, primary key | the mutation's position in the onchain execution order; matches the event `executionIndex` |
-| `accepted_at` | `timestamp with time zone`, defaults to now | |
-| `block_number` | `bigint` | inclusion block; null until included |
-| `block_hash` | `char(66)` (hex) | null until included |
-| `block_timestamp` | `bigint` | null until included |
-| `transaction_index` | `integer` | null until included |
-| `transaction_hash` | `char(66)` (hex) | the settlement transaction; null until included |
+| Column              | Type                                        | Notes                                                                                      |
+| ------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `execution_index`   | `bigint`, primary key                       | the mutation's position in the onchain execution order; matches the event `executionIndex` |
+| `accepted_at`       | `timestamp with time zone`, defaults to now |                                                                                            |
+| `block_number`      | `bigint`                                    | inclusion block; null until included                                                       |
+| `block_hash`        | `char(66)` (hex)                            | null until included                                                                        |
+| `block_timestamp`   | `bigint`                                    | null until included                                                                        |
+| `transaction_index` | `integer`                                   | null until included                                                                        |
+| `transaction_hash`  | `char(66)` (hex)                            | the settlement transaction; null until included                                            |
 
 Then two groups of payload columns:
 
@@ -647,21 +645,21 @@ Then two groups of payload columns:
 
 Payload columns are typed from their ABI type:
 
-| ABI type | Postgres column |
-| --- | --- |
-| `bool` | `boolean` |
-| `address` | `char(42)` (hex) |
+| ABI type           | Postgres column                                      |
+| ------------------ | ---------------------------------------------------- |
+| `bool`             | `boolean`                                            |
+| `address`          | `char(42)` (hex)                                     |
 | `bytes1`–`bytes32` | `char(2 + 2·N)` (hex) — e.g. `bytes32` is `char(66)` |
-| `bytes`, `string` | `text` |
-| arrays and tuples | `jsonb` |
+| `bytes`, `string`  | `text`                                               |
+| arrays and tuples  | `jsonb`                                              |
 
 Integer types map by bit width:
 
-| Postgres column | Unsigned (`uintN`) | Signed (`intN`) |
-| --- | --- | --- |
-| `smallint` | `uint8` | `int8`, `int16` |
-| `integer` | `uint16`, `uint24` | `int24`, `int32` |
-| `bigint` | `uint32`–`uint56` | `int40`–`int64` |
+| Postgres column        | Unsigned (`uintN`) | Signed (`intN`)  |
+| ---------------------- | ------------------ | ---------------- |
+| `smallint`             | `uint8`            | `int8`, `int16`  |
+| `integer`              | `uint16`, `uint24` | `int24`, `int32` |
+| `bigint`               | `uint32`–`uint56`  | `int40`–`int64`  |
 | `numeric(78,0)` bigint | `uint64`–`uint256` | `int72`–`int256` |
 
 Pass a mutation table to a Drizzle client to query:
@@ -686,12 +684,12 @@ Subscribes to runtime events; returns an unsubscribe function. There are three e
 
 **`"mutation"` → `MutationEvent`** — fires every time a mutation changes lifecycle status. It is a discriminated union on `status`. Every variant carries `name` (the mutation name), `params`, and `authorization` (including `authorization.signature`); the rest depends on `status`:
 
-| `status` | Additional fields |
-| --- | --- |
-| `"received"` | — |
-| `"accepted"` | `executionIndex` |
+| `status`                     | Additional fields                                                                                     |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `"received"`                 | —                                                                                                     |
+| `"accepted"`                 | `executionIndex`                                                                                      |
 | `"included"` / `"finalized"` | `executionIndex`, `blockNumber`, `blockHash`, `blockTimestamp`, `transactionHash`, `transactionIndex` |
-| `"rejected"` | `error` |
+| `"rejected"`                 | `error`                                                                                               |
 
 > [Force-included](#force-inclusion) mutations don't emit events.
 

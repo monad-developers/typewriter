@@ -51,9 +51,13 @@ type Params = {
  * Checks the run against the chain. First the harness's own rules: what
  * executed, and in what order. Then the chain is the source of truth for the
  * runtime's events, its database, and its state. Dies with one line per
- * mismatch.
+ * mismatch. Returns the gas used and the gas limits of the settlements that
+ * succeeded.
  */
-export function validate(params: Params): Effect.Effect<void> {
+export function validate(params: Params): Effect.Effect<{
+  gasUsed: bigint;
+  gasLimit: bigint;
+}> {
   return Effect.gen(function* () {
     const { app, chain, run } = params;
     const onchain = yield* readOnchain({
@@ -78,6 +82,12 @@ export function validate(params: Params): Effect.Effect<void> {
     if (check.errors.length > 0) {
       return yield* Effect.die(check.errors.join("\n"));
     }
+
+    const succeeded = onchain.settlements.filter(({ reverted }) => !reverted);
+    return {
+      gasUsed: succeeded.reduce((sum, { gasUsed }) => sum + gasUsed, 0n),
+      gasLimit: succeeded.reduce((sum, { gasLimit }) => sum + gasLimit, 0n),
+    };
   });
 }
 

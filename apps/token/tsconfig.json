@@ -16,7 +16,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noPropertyAccessFromIndexSignature": false,
-    "baseUrl": ".",
     "paths": {
       "abipg": ["../../packages/abipg/src/index.ts"],
       "typewriter": ["../../packages/typewriter/src/index.ts"],

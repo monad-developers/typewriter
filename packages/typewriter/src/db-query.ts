@@ -6,7 +6,11 @@ import type { AccountStorage } from "storage-layout";
 import type { ExecuteResult } from "typewriter-evm";
 import type { createTypewriterSchema } from "./db-schema";
 import { builder } from "./db-transport";
-import type { AcceptedMutation, Inclusion } from "./typewriter-types";
+import type {
+  AcceptedMutation,
+  IncludedMutation,
+  RuntimeBlock,
+} from "./typewriter-types";
 
 /**
  * Inserts `rows` from one JSON parameter, so no parameter is built per row.
@@ -71,39 +75,62 @@ function mutationRow(mutation: AcceptedMutation): Record<string, unknown> {
   };
 }
 
-/**
- * Set the `block_*` and `transaction_*` columns of mutations that one
- * settlement transaction included. Running it again writes the same values.
- */
-export function updateMutationInclusion(
+/** Update all the receipts for a block in one statement per mutation table. */
+export function includeBlockMutations(
+  schema: Record<string, PgTable>,
+  block: Pick<RuntimeBlock, "number" | "hash" | "timestamp">,
+  mutations: readonly Pick<
+    IncludedMutation,
+    "name" | "executionIndex" | "transactionHash" | "transactionIndex"
+  >[],
+) {
+  const tables = Map.groupBy(mutations, ({ name }) =>
+    getMutationTable(schema, name),
+  );
+  return [...tables].map(([table, rows]) => {
+    // Send each receipt hash once. Postgres expands its indexes for the primary-key join.
+    const transactions = Map.groupBy(
+      rows,
+      (mutation) => mutation.transactionIndex,
+    );
+    const receipts = [...transactions].map(([index, group]) => ({
+      transaction_hash: group[0]!.transactionHash,
+      transaction_index: index,
+      indexes: group.map(({ executionIndex }) => String(executionIndex)),
+    }));
+    return builder.execute(sql`
+    UPDATE ${table} AS mutation
+    SET block_number = ${String(block.number)}::bigint, block_hash = ${block.hash},
+        block_timestamp = ${String(block.timestamp)}::bigint,
+        transaction_hash = receipt.transaction_hash, transaction_index = receipt.transaction_index
+    FROM json_to_recordset(${JSON.stringify(receipts)}::text::json)
+      AS receipt(transaction_hash text, transaction_index integer, indexes bigint[]),
+      LATERAL unnest(receipt.indexes) AS item(execution_index)
+    WHERE mutation.execution_index = item.execution_index
+  `);
+  });
+}
+
+/** Clear the inclusion columns for mutations whose block was removed. */
+export function clearMutationInclusion(
   schema: Record<string, PgTable>,
   mutations: readonly Pick<AcceptedMutation, "name" | "executionIndex">[],
-  /** `undefined` clears it, for mutations whose block a reorg replaced. */
-  inclusion: Inclusion | undefined,
 ) {
-  const indexesByTable = new Map<PgTable, bigint[]>();
-  for (const mutation of mutations) {
-    const table = getMutationTable(schema, mutation.name);
-    let indexes = indexesByTable.get(table);
-    if (indexes === undefined) {
-      indexes = [];
-      indexesByTable.set(table, indexes);
-    }
-    indexes.push(mutation.executionIndex);
-  }
-
-  const values = {
-    block_number: inclusion?.blockNumber ?? null,
-    block_hash: inclusion?.blockHash ?? null,
-    block_timestamp: inclusion?.blockTimestamp ?? null,
-    transaction_hash: inclusion?.transactionHash ?? null,
-    transaction_index: inclusion?.transactionIndex ?? null,
-  };
-  return [...indexesByTable].map(([table, indexes]) => {
+  const tables = Map.groupBy(mutations, ({ name }) =>
+    getMutationTable(schema, name),
+  );
+  return [...tables].map(([table, rows]) => {
+    const indexes = rows.map(({ executionIndex }) => executionIndex);
     const { execution_index } = getTableColumns(table);
     return builder
       .update(table)
-      .set(values)
+      .set({
+        block_number: null,
+        block_hash: null,
+        block_timestamp: null,
+        transaction_hash: null,
+        transaction_index: null,
+      })
       .where(
         sql`${execution_index} = ANY(${`{${indexes.join(",")}}`}::bigint[])`,
       );

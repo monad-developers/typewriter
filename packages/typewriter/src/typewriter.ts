@@ -40,13 +40,14 @@ import { Database, type Db } from "./db";
 import { deploymentLockKey, dropSchema, migrate } from "./db-migrate";
 import {
   accountStorage,
+  clearMutationInclusion,
   deleteExecutionsFrom,
+  includeBlockMutations,
   insertKeccakPreimages,
   insertMutations,
   insertStorageSlots,
   selectKeccakPreimages,
   selectStorageSlots,
-  updateMutationInclusion,
 } from "./db-query";
 import type { TypewriterMutationSchema } from "./db-schema";
 import {
@@ -61,7 +62,7 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
 } from "./encoding";
-import { groupByGas, SETTLEMENT_GAS, settlementGasLimit } from "./gas";
+import { accessList, gasLimit, groupByGas, SETTLEMENT_GAS } from "./gas";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
 import { Rpc } from "./rpc";
@@ -174,6 +175,18 @@ const REBROADCAST_BLOCKS = 3n;
 /** How many blocks a settlement can go without landing after it is first sent. */
 const STUCK_BLOCKS = 300n;
 
+/**
+ * Every settlement's fee cap: 100 times Monad's minimum base fee of 100 gwei.
+ * A settlement is signed once and sent again unchanged, so it can land only
+ * while the base fee is under this. It pays only the base fee plus the tip,
+ * and Monad checks balances against that, not the cap, so a high cap costs
+ * nothing.
+ */
+const MAX_FEE_PER_GAS = 10_000_000_000_000n;
+
+/** Every settlement's tip, what `eth_maxPriorityFeePerGas` returns on Monad. */
+const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
+
 type RuntimeExecuteInput = {
   name: string;
   params: unknown;
@@ -192,6 +205,8 @@ type Execution = {
   /** The `executionHash` it executed from. */
   fromExecutionHash: Hex.Hex;
   executeResult: Extract<ExecuteResult, { status: "success" }>;
+  /** The calldata it executed with, alone. */
+  calldata: Hex.Hex;
 };
 
 /**
@@ -476,22 +491,17 @@ export function createTypewriterEffect<
     // The runtime starts from this block, and watches the blocks after it.
     // Read it by hash, so each read sees the same block on any provider.
     const startBlock = yield* requestBlock("latest");
-    const requestPriorityFee = rpc
-      .request({ method: "eth_maxPriorityFeePerGas" })
-      .pipe(Effect.map(Hex.toBigInt));
-    const [code, startExecutionIndex, startNonce, startPriorityFee] =
-      yield* Effect.all(
-        [
-          rpc.request({
-            method: "eth_getCode",
-            params: [app.address, { blockHash: startBlock.hash }],
-          }),
-          requestExecutionIndex(app.address, startBlock.hash),
-          requestNonce(app.account.address),
-          requestPriorityFee,
-        ],
-        { concurrency: "unbounded" },
-      );
+    const [code, startExecutionIndex, startNonce] = yield* Effect.all(
+      [
+        rpc.request({
+          method: "eth_getCode",
+          params: [app.address, { blockHash: startBlock.hash }],
+        }),
+        requestExecutionIndex(app.address, startBlock.hash),
+        requestNonce(app.account.address),
+      ],
+      { concurrency: "unbounded" },
+    );
     yield* migrate(
       db,
       app.schemaName,
@@ -515,14 +525,11 @@ export function createTypewriterEffect<
     let latest = {
       number: startBlock.number,
       timestamp: startBlock.timestamp,
-      baseFeePerGas: startBlock.baseFeePerGas ?? 0n,
     };
     /** The newest block the watch has processed, which rebroadcasts count from. */
     let watched = startBlock.number;
     let nextExecutionIndex = startExecutionIndex;
     let nextNonce = startNonce;
-    let maxPriorityFeePerGas = startPriorityFee;
-    let refreshingPriorityFee = false;
     let nextBatchId = 0;
     /** Every settlement not yet final, in execution order, which is nonce order. */
     let settlements: RuntimeSettlement[] = [];
@@ -542,6 +549,7 @@ export function createTypewriterEffect<
     const persistQueue = yield* Queue.unbounded<{
       statements: CompiledStatement[];
       committed: Deferred.Deferred<void>;
+      events: Effect.Effect<void>[];
     }>();
     /** Wakes `accept` in fifo order when a mutation or an enqueue is waiting. */
     const acceptSignal = yield* Queue.sliding<void>(1);
@@ -586,6 +594,7 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // Events and persistence
 
+    /** Calls `listeners` with `event`, which is built now and delivered later. */
     const emit = <event>(
       name: "mutation" | "batch" | "block",
       listeners: ReadonlySet<(event: event) => void>,
@@ -633,10 +642,10 @@ export function createTypewriterEffect<
         ? emit("batch", batchListeners, batchToEvent(batch))
         : Effect.void;
 
-    const emitBlock = (block: RuntimeBlock) =>
-      Effect.gen(function* () {
-        const { batches, ...rest } = block;
-        yield* emit(
+    const emitBlock = (block: RuntimeBlock) => {
+      const { batches, ...rest } = block;
+      return [
+        emit(
           "block",
           blockListeners,
           (app.sequencing.order === "fifo"
@@ -649,18 +658,30 @@ export function createTypewriterEffect<
             : { ...rest, batches: batches.map(batchToEvent) }) as BlockEvent<
             "fifo" | "batch"
           >,
-        );
-        for (const batch of batches) {
-          yield* emitBatch(batch);
-          for (const mutation of batch.mutations) yield* emitMutation(mutation);
-        }
-      });
+        ),
+        ...batches.flatMap((batch) => [
+          emitBatch(batch),
+          ...batch.mutations.map(emitMutation),
+        ]),
+      ];
+    };
 
-    const persist = (statements: DbStatement<unknown>[]) => {
+    /**
+     * Queues `statements` to commit in order with every earlier job. Once they
+     * commit, `persistProgram` resolves `committed` and then emits `events`.
+     */
+    const persist = (
+      statements: DbStatement<unknown>[],
+      events: Effect.Effect<void>[] = [],
+    ) => {
       const compiled = statements.map(compile);
       return Effect.gen(function* () {
         const committed = yield* Deferred.make<void>();
-        yield* Queue.offer(persistQueue, { statements: compiled, committed });
+        yield* Queue.offer(persistQueue, {
+          statements: compiled,
+          committed,
+          events,
+        });
         return committed;
       });
     };
@@ -673,12 +694,17 @@ export function createTypewriterEffect<
       .pipe(Effect.map((values) => Hex.padLeft(Object.values(values)[0]!, 32)));
 
     /** Updates the storage view for an execution. */
-    const recordExecution = (executeResult: ExecuteResult) => {
+    const recordExecution = (
+      executeResult: ExecuteResult,
+      newPreimages: Hex.Hex[],
+    ) => {
       invalidateStorageCache(
         executeResult.slot_writes.map((write) => write.slot),
       );
       for (const preimage of executeResult.keccak_preimages) {
+        if (preimages.has(preimage)) continue;
         preimages.add(preimage);
+        newPreimages.push(preimage);
       }
     };
 
@@ -723,6 +749,7 @@ export function createTypewriterEffect<
 
     const executeMutation = (
       mutation: ReceivedMutation,
+      newPreimages: Hex.Hex[],
       block: { number: bigint; timestamp: bigint },
     ) =>
       Effect.gen(function* () {
@@ -759,49 +786,34 @@ export function createTypewriterEffect<
             gas: executeResult.gas_used,
           });
         }
-        recordExecution(executeResult);
-        const accepted = updateMutationToAccepted(
-          mutation,
-          nextExecutionIndex++,
-        );
-        yield* emitMutation(accepted);
-        return { mutation: accepted, fromExecutionHash, executeResult };
-      }).pipe(
-        Effect.tapError((error) =>
-          Effect.suspend(() =>
-            emitMutation(updateMutationToRejected(mutation, error)),
-          ),
-        ),
-      );
-
-    const persistExecutions = (executions: Execution[]) =>
-      persist([
-        ...insertStorageSlots(app.typewriterSchema, executions),
-        ...insertKeccakPreimages(
-          app.typewriterSchema,
-          executions.flatMap(
-            ({ executeResult }) => executeResult.keccak_preimages,
-          ),
-        ),
-      ]);
+        recordExecution(executeResult, newPreimages);
+        return {
+          mutation: updateMutationToAccepted(mutation, nextExecutionIndex++),
+          fromExecutionHash,
+          executeResult,
+          calldata,
+        };
+      });
 
     const toSettlement = (
       group: Execution[],
       timestamp: bigint,
       committed: Deferred.Deferred<void>,
       contents: Pick<ExecutedSettlement, "batch" | "queueIndexes">,
-    ): ExecutedSettlement => ({
-      ...contents,
-      status: "executed",
-      timestamp,
-      fromExecutionHash: group[0]!.fromExecutionHash,
-      fromExecutionIndex: group[0]!.mutation.executionIndex,
-      journalIds: group.map(({ executeResult }) => executeResult.journal_id),
-      gasLimit: settlementGasLimit(
-        group.map(({ executeResult }) => executeResult),
-      ),
-      committed,
-    });
+    ): ExecutedSettlement => {
+      const list = accessList(app.hardfork, group);
+      return {
+        ...contents,
+        status: "executed",
+        timestamp,
+        fromExecutionHash: group[0]!.fromExecutionHash,
+        fromExecutionIndex: group[0]!.mutation.executionIndex,
+        journalIds: group.map(({ executeResult }) => executeResult.journal_id),
+        gasLimit: gasLimit(app.hardfork, group),
+        accessList: list,
+        committed,
+      };
+    };
 
     // Mutations then enqueues, the order `execute` runs them in.
     const settle = (
@@ -812,31 +824,40 @@ export function createTypewriterEffect<
       Effect.gen(function* () {
         const block = latest;
         const { timestamp } = block;
+        // Preimages are loaded from Postgres at startup and survive rewinds.
+        // Each settle queues the first discoveries under the state lock.
+        const newPreimages: Hex.Hex[] = [];
         const accepted: (Execution & {
           mutation: AcceptedMutation;
           deferred?: AcceptDeferred;
         })[] = [];
+        const outcomes: (AcceptedMutation | RejectedMutation)[] = [];
         for (const { mutation, deferred } of received) {
-          const result = yield* Effect.result(executeMutation(mutation, block));
+          const result = yield* Effect.result(
+            executeMutation(mutation, newPreimages, block),
+          );
           if (Result.isSuccess(result)) {
             accepted.push({ ...result.success, deferred });
-          } else if (deferred !== undefined) {
-            yield* Deferred.fail(deferred, result.failure);
+            outcomes.push(result.success.mutation);
+          } else {
+            outcomes.push(updateMutationToRejected(mutation, result.failure));
+            if (deferred) yield* Deferred.fail(deferred, result.failure);
           }
         }
 
         const forced: (Execution & { queueIndex: bigint })[] = [];
         for (const queueIndex of queueIndexes) {
           const fromExecutionHash = yield* readExecutionHash;
+          const calldata = encodeExecuteCalldata(
+            fromExecutionHash,
+            timestamp,
+            EMPTY_BATCH,
+            [queueIndex],
+          );
           const executeResult = yield* evm.execute({
             from: app.account.address,
             to: app.address,
-            data: encodeExecuteCalldata(
-              fromExecutionHash,
-              timestamp,
-              EMPTY_BATCH,
-              [queueIndex],
-            ),
+            data: calldata,
             block: toBlockParams(block),
           });
           if (
@@ -860,27 +881,18 @@ export function createTypewriterEffect<
             discardedQueueIndexes.push(queueIndex);
             continue;
           }
-          recordExecution(executeResult);
+          recordExecution(executeResult, newPreimages);
           forced.push({
             queueIndex,
             mutation: { executionIndex: nextExecutionIndex++ },
             fromExecutionHash,
             executeResult,
+            calldata,
           });
         }
-        if (accepted.length === 0 && forced.length === 0) return [];
-
-        const rows = yield* persist(
-          insertMutations(
-            app.mutationSchema,
-            accepted.map(({ mutation }) => mutation),
-          ),
-        );
-        const committed = yield* persistExecutions([...accepted, ...forced]);
-        const settled: ExecutedSettlement[] = [];
-        for (const group of groupByGas<
-          (typeof accepted)[number] | (typeof forced)[number]
-        >([...accepted, ...forced], ({ executeResult }) => executeResult)) {
+        const events = outcomes.map(emitMutation);
+        const executions = [...accepted, ...forced];
+        const groups = groupByGas(app.hardfork, executions).map((group) => {
           const mutations = group.flatMap((execution) =>
             "queueIndex" in execution ? [] : [execution.mutation],
           );
@@ -890,23 +902,35 @@ export function createTypewriterEffect<
             batch = undefined;
           } else if (mutations.length > 0) {
             groupBatch = { status: "accepted", id: nextBatchId++, mutations };
-            yield* emitBatch(groupBatch);
+            events.push(emitBatch(groupBatch));
           }
-          settled.push(
-            toSettlement(group, timestamp, committed, {
-              batch: groupBatch,
-              queueIndexes: group.flatMap((execution) =>
-                "queueIndex" in execution ? [execution.queueIndex] : [],
-              ),
-            }),
-          );
-        }
+          return { group, batch: groupBatch };
+        });
+
+        const committed = yield* persist(
+          [
+            ...insertMutations(
+              app.mutationSchema,
+              accepted.map(({ mutation }) => mutation),
+            ),
+            ...insertStorageSlots(app.typewriterSchema, executions),
+            ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
+          ],
+          events,
+        );
         for (const { mutation, deferred } of accepted) {
           if (deferred !== undefined) {
-            yield* Deferred.succeed(deferred, { mutation, committed: rows });
+            yield* Deferred.succeed(deferred, { mutation, committed });
           }
         }
-        return settled;
+        return groups.map(({ group, batch }) =>
+          toSettlement(group, timestamp, committed, {
+            batch,
+            queueIndexes: group.flatMap((execution) =>
+              "queueIndex" in execution ? [execution.queueIndex] : [],
+            ),
+          }),
+        );
       });
 
     const accept = (
@@ -943,9 +967,9 @@ export function createTypewriterEffect<
               to: app.address,
               data: settlementCalldata(settlement),
               gas: BigInt(settlement.gasLimit),
-              // Room for the base fee to double before it lands.
-              maxFeePerGas: 2n * latest.baseFeePerGas + maxPriorityFeePerGas,
-              maxPriorityFeePerGas,
+              accessList: settlement.accessList,
+              maxFeePerGas: MAX_FEE_PER_GAS,
+              maxPriorityFeePerGas: MAX_PRIORITY_FEE_PER_GAS,
             }),
           catch: (cause) => new SignTransactionError({ cause }),
         });
@@ -1065,36 +1089,29 @@ export function createTypewriterEffect<
       settlement: SentSettlement,
       transactionIndex: number,
       block: RuntimeBlock,
-    ) =>
-      Effect.gen(function* () {
-        updateStatus<SentSettlement, LandedSettlement>(settlement, {
-          status: "included",
-          block,
-        });
-        const { batch } = settlement;
-        if (batch === undefined) return;
-        const inclusion: Inclusion = {
-          blockNumber: block.number,
-          blockHash: block.hash,
-          blockTimestamp: block.timestamp,
-          transactionHash: settlement.hash,
-          transactionIndex,
-        };
-        batch.status = "included";
-        for (const mutation of batch.mutations) {
-          updateMutationToIncluded(mutation as AcceptedMutation, inclusion);
-        }
-        block.batches.push(batch);
-        yield* Deferred.await(
-          yield* persist(
-            updateMutationInclusion(
-              app.mutationSchema,
-              batch.mutations,
-              inclusion,
-            ),
-          ),
-        );
+      included: IncludedMutation[],
+    ) => {
+      updateStatus<SentSettlement, LandedSettlement>(settlement, {
+        status: "included",
+        block,
       });
+      const { batch } = settlement;
+      if (batch === undefined) return;
+      const inclusion: Inclusion = {
+        blockNumber: block.number,
+        blockHash: block.hash,
+        blockTimestamp: block.timestamp,
+        transactionHash: settlement.hash,
+        transactionIndex,
+      };
+      batch.status = "included";
+      for (const mutation of batch.mutations) {
+        included.push(
+          updateMutationToIncluded(mutation as AcceptedMutation, inclusion),
+        );
+      }
+      block.batches.push(batch);
+    };
 
     // Once every settlement sent before the first revert is final, the
     // chain is where that settlement started, and it and every later one
@@ -1235,6 +1252,7 @@ export function createTypewriterEffect<
               timestamp: block.timestamp,
               batches: [],
             };
+            const included: IncludedMutation[] = [];
             for (const [i, settlement] of landed.entries()) {
               const receipt = receipts[i]!;
               yield* Effect.logDebug("Landed settlement transaction").pipe(
@@ -1267,15 +1285,19 @@ export function createTypewriterEffect<
                   transactionHash: receipt.transactionHash,
                 });
               }
-              yield* include(
+              include(
                 settlement,
                 receipt.transactionIndex,
                 runtimeBlock,
+                included,
               );
             }
-            if (receipts.some((receipt) => receipt!.status === "success")) {
-              yield* emitBlock(runtimeBlock);
-            }
+            yield* persist(
+              includeBlockMutations(app.mutationSchema, runtimeBlock, included),
+              receipts.some((receipt) => receipt!.status === "success")
+                ? emitBlock(runtimeBlock)
+                : [],
+            );
           }),
         );
       });
@@ -1313,18 +1335,18 @@ export function createTypewriterEffect<
               updateMutationToUnincluded(mutation as IncludedMutation),
             );
           });
-          yield* Deferred.await(
-            yield* persist(
-              updateMutationInclusion(app.mutationSchema, mutations, undefined),
-            ),
-          );
           const { number, hash, timestamp } = runtimeBlock;
-          yield* emit("block", blockListeners, {
-            status: "removed",
-            number,
-            hash,
-            timestamp,
-          } as BlockEvent<"fifo" | "batch">);
+          yield* persist(
+            clearMutationInclusion(app.mutationSchema, mutations),
+            [
+              emit("block", blockListeners, {
+                status: "removed",
+                number,
+                hash,
+                timestamp,
+              } as BlockEvent<"fifo" | "batch">),
+            ],
+          );
           return removed.length;
         }),
       );
@@ -1385,6 +1407,7 @@ export function createTypewriterEffect<
             (settlement) => !isFinal.has(settlement),
           );
 
+          const events: Effect.Effect<void>[] = [];
           for (const block of new Set(final.map(({ block }) => block))) {
             block.status = "finalized";
             for (const batch of block.batches) {
@@ -1393,8 +1416,9 @@ export function createTypewriterEffect<
                 (mutation as IncludedMutation).status = "finalized";
               }
             }
-            yield* emitBlock(block);
+            events.push(...emitBlock(block));
           }
+          yield* persist([], events);
           yield* resync(finalized, onchain);
         }),
       );
@@ -1459,9 +1483,9 @@ export function createTypewriterEffect<
       Stream.runForEach((message) =>
         Effect.gen(function* () {
           if (message._tag === "Fetched") {
-            const { number, hash, timestamp, baseFeePerGas } = message.block;
+            const { number, hash, timestamp } = message.block;
             if (number > latest.number) {
-              latest = { number, timestamp, baseFeePerGas };
+              latest = { number, timestamp };
             }
             if (
               landedRequests.has(hash) ||
@@ -1506,22 +1530,6 @@ export function createTypewriterEffect<
             return;
           }
 
-          if (!refreshingPriorityFee) {
-            refreshingPriorityFee = true;
-            yield* Effect.gen(function* () {
-              maxPriorityFeePerGas = yield* requestPriorityFee;
-            }).pipe(
-              Effect.catch((error) =>
-                Effect.logDebug("Failed to refresh the priority fee", error),
-              ),
-              Effect.ensuring(
-                Effect.sync(() => {
-                  refreshingPriorityFee = false;
-                }),
-              ),
-              Effect.forkIn(scope),
-            );
-          }
           watched = message.block.number;
           if (message.block.logs.length > 0) {
             unfinalizedEnqueues.push(message.block);
@@ -1560,17 +1568,23 @@ export function createTypewriterEffect<
     const persistProgram = Effect.forever(
       Effect.gen(function* () {
         const jobs = yield* Queue.takeAll(persistQueue);
-        const persistStartedAt = yield* startTimer;
-        yield* db.run(jobs.flatMap(({ statements }) => statements));
+        const statements = jobs.flatMap(({ statements }) => statements);
+        if (statements.length > 0) {
+          const persistStartedAt = yield* startTimer;
+          yield* db.run(statements);
+          yield* Effect.logDebug("Persisted runtime writes").pipe(
+            Effect.annotateLogs({
+              job_count: jobs.length,
+              duration: yield* durationMs(persistStartedAt),
+            }),
+          );
+        }
         for (const { committed } of jobs) {
           yield* Deferred.succeed(committed, undefined);
         }
-        yield* Effect.logDebug("Persisted runtime writes").pipe(
-          Effect.annotateLogs({
-            job_count: jobs.length,
-            duration: yield* durationMs(persistStartedAt),
-          }),
-        );
+        for (const { events } of jobs) {
+          for (const event of events) yield* event;
+        }
       }),
     );
 
@@ -1619,7 +1633,7 @@ export function createTypewriterEffect<
           }),
         );
 
-        yield* emitMutation(runtimeMutation);
+        yield* persist([], [emitMutation(runtimeMutation)]);
 
         const deferred = yield* Deferred.make<
           { mutation: AcceptedMutation; committed: Deferred.Deferred<void> },

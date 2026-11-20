@@ -14,6 +14,7 @@ import {
 } from "./db-schema";
 import {
   BUILTIN_MUTATIONS,
+  DEFAULT_HARDFORK,
   FIRST_BUILTIN_MUTATION_ID,
 } from "./typewriter-constants";
 
@@ -112,9 +113,8 @@ export type TypewriterConfig<
    */
   dev?: dev;
   /**
-   * Pins the EVM hardfork that mutations execute under. By default it follows
-   * the Monad mainnet or testnet schedule for `chainId`, so it is required on
-   * any other chain, such as a local Anvil started with `--network monad`.
+   * The EVM hardfork that mutations execute under and settlements are priced
+   * for, for the runtime's life. Defaults to `DEFAULT_HARDFORK` (MonadTen).
    */
   hardfork?: Spec;
   database: DatabaseOptions;
@@ -143,7 +143,7 @@ export type TypewriterApp = {
   storageLayout: StorageLayout;
   account: PrivateKeyAccount;
   chainId: number;
-  hardfork: Spec | undefined;
+  hardfork: Spec;
   rpcUrls: [string, ...string[]];
   database: DatabaseOptions;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
@@ -361,7 +361,7 @@ export function createTypewriterApp(params: {
     storageLayout,
     account: chain.account,
     chainId: chain.chainId,
-    hardfork: chain.hardfork,
+    hardfork: chain.hardfork ?? DEFAULT_HARDFORK,
     rpcUrls,
     database: config.database,
     mutations,

@@ -31,6 +31,6 @@ The app runs Typewriter in dev mode: it starts a local Anvil, deploys the token 
 
 ### Runtime
 
-| Variable | Used by | Description |
-|---|---|---|
+| Variable       | Used by     | Description                                   |
+| -------------- | ----------- | --------------------------------------------- |
 | `DATABASE_URL` | App runtime | Postgres connection string used by Typewriter |

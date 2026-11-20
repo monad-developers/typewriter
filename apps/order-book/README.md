@@ -34,16 +34,16 @@ bun scripts/seed.ts # with the backend running
 
 ### Required Variables
 
-| Variable | Used by | Description |
-|---|---|---|
-| `DATABASE_URL` | `bun dev`, `bun start` | Postgres connection string |
-| `PRIVATE_KEY` | `bun start`, `bun run deploy` | Funded deployer/backend wallet private key |
-| `ORDER_BOOK_ADDRESS` | `bun start` | Deployed `OrderBook` contract address |
-| `RPC_URL` | `bun start`, `bun run deploy` | RPC endpoint. The backend accepts comma-separated failover URLs |
-| `CHAIN_ID` | `bun start` | Chain ID, for example `10143` for Monad testnet |
-| `BUN_PUBLIC_RP_ID` | Frontend | WebAuthn relying party ID, usually the hostname |
-| `BUN_PUBLIC_ORIGIN` | Frontend | Expected WebAuthn origin |
-| `API_URL` | Scripts | Running order-book backend URL |
+| Variable             | Used by                       | Description                                                     |
+| -------------------- | ----------------------------- | --------------------------------------------------------------- |
+| `DATABASE_URL`       | `bun dev`, `bun start`        | Postgres connection string                                      |
+| `PRIVATE_KEY`        | `bun start`, `bun run deploy` | Funded deployer/backend wallet private key                      |
+| `ORDER_BOOK_ADDRESS` | `bun start`                   | Deployed `OrderBook` contract address                           |
+| `RPC_URL`            | `bun start`, `bun run deploy` | RPC endpoint. The backend accepts comma-separated failover URLs |
+| `CHAIN_ID`           | `bun start`                   | Chain ID, for example `10143` for Monad testnet                 |
+| `BUN_PUBLIC_RP_ID`   | Frontend                      | WebAuthn relying party ID, usually the hostname                 |
+| `BUN_PUBLIC_ORIGIN`  | Frontend                      | Expected WebAuthn origin                                        |
+| `API_URL`            | Scripts                       | Running order-book backend URL                                  |
 
 `BUN_PUBLIC_*` variables are only used for browser-facing WebAuthn settings. `bunfig.toml` exposes them to browser code.
 

@@ -6,15 +6,14 @@
   "scripts": {
     "test": "bun test",
     "lint": "biome check .",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc --noEmit"
+    "typecheck": "bun check"
   },
   "dependencies": {
     "abitype": "catalog:",
     "drizzle-orm": "catalog:"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite": "0.5.16",
     "drizzle-kit": "catalog:",
     "ox": "catalog:"
   },

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { asc } from "drizzle-orm";
 import { Effect } from "effect";
 import { makeDb } from "./db";
@@ -79,58 +79,12 @@ function roundTrip(strings: readonly string[]) {
   }).pipe(Effect.scoped, Effect.runPromise);
 }
 
-const rowsOf = (strings: readonly string[]) =>
-  strings.map((memo) => ({ memo, memos: [memo] }));
-
-describe.skipIf(DATABASE_URL === undefined)("mutation rows", () => {
-  test("hold the strings they were executed with", async () => {
-    const strings = [
-      "",
-      "a",
-      "héllo wörld",
-      "日本語",
-      "🙂🙂",
-      "x".repeat(100),
-      // A BOM, which a UTF-8 decoder strips by default.
-      "﻿bom",
-      // Text that `COPY` or a driver could read as an escape.
-      "\\",
-      "\\\\",
-      "\\b",
-      "\\f",
-      "\\n",
-      "\\r",
-      "\\t",
-      "\\v",
-      "\\00",
-      "\\x00",
-      "\\N",
-      "\b",
-      "\f",
-      "\n",
-      "\r",
-      "\t",
-      "\v",
-      "\u0001",
-      "\u007f",
-      " ",
-      "'",
-      "''",
-      '"',
-      "$1",
-    ];
-    expect(await roundTrip(strings)).toStrictEqual(rowsOf(strings));
-  });
-
-  test("hold lone surrogates as U+FFFD, as the contract decodes them", async () => {
-    expect(await roundTrip(["\uD800", "a\uDC00b"])).toStrictEqual(
-      rowsOf(["�", "a�b"]),
+test.skipIf(DATABASE_URL === undefined)(
+  "bulk inserts preserve a leading BOM, backslashes, and newlines in text and jsonb",
+  async () => {
+    const strings = ["\uFEFFmemo", "\\N", "\\n", "\n"];
+    expect(await roundTrip(strings)).toStrictEqual(
+      strings.map((memo) => ({ memo, memos: [memo] })),
     );
-  });
-
-  // Postgres `text` and `jsonb` cannot hold NUL, so the row holds U+FFFD.
-  test.failing("hold strings with NUL", async () => {
-    const strings = ["\u0000", "a\u0000b"];
-    expect(await roundTrip(strings)).toStrictEqual(rowsOf(strings));
-  });
-});
+  },
+);

@@ -23,12 +23,8 @@ export type AccountParams = {
 };
 
 export type InitParams = {
-  /**
-   * Pins the hardfork. Without it, the hardfork follows the schedule of
-   * `chain_id` (Monad mainnet or testnet) at the block timestamp, and init
-   * fails on any other chain.
-   */
-  spec?: Spec;
+  /** The hardfork every execution runs under. */
+  spec: Spec;
   chain_id?: number;
   block?: BlockParams;
   accounts?: { [address: Address.Address]: AccountParams };
@@ -41,13 +37,17 @@ export type ExecuteParams = {
   value?: Hex.Hex;
   /** Applied before the call, and kept for later ones. */
   block?: BlockParams;
+  access_list?: AccessList;
 };
+
+export type AccessList = {
+  address: Address.Address;
+  storageKeys: Hex.Hex[];
+}[];
 
 type TxResult = {
   gas_used: number;
-  access_list: { address: Address.Address; storageKeys: Hex.Hex[] }[];
-  /** The hardfork it executed under. */
-  spec: Spec;
+  access_list: AccessList;
 };
 
 type Revert = { status: "revert"; data: Hex.Hex };

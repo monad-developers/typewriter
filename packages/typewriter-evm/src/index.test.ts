@@ -44,11 +44,9 @@ import {
   USER_ADDR,
 } from "../test/utils";
 import {
-  type BlockParams,
   createEVM,
   EvmCallError,
   type ExecuteResult,
-  type InitParams,
   type Spec,
 } from "./index";
 
@@ -66,111 +64,32 @@ const initWithCounter = {
   },
 } as const;
 
-const MONAD_MAINNET_CHAIN_ID = 143;
-const MONAD_TEN_MAINNET_TIMESTAMP = 1_788_359_400;
-
-const runSamePageWrites = (
-  init: Pick<InitParams, "spec" | "chain_id" | "block">,
-  block?: BlockParams,
-) =>
-  Effect.gen(function* () {
-    const evm = yield* createEVM({
-      ...init,
-      accounts: {
-        [PAGE_WRITES_ADDR]: { code: SAME_PAGE_WRITES_CODE },
-      },
-    });
-    return yield* evm.execute({
-      from: CALLER,
-      to: PAGE_WRITES_ADDR,
-      data: "0x",
-      block,
-    });
-  });
-
-const samePageWritesGas = (
-  init: Pick<InitParams, "spec" | "chain_id" | "block">,
-  block?: BlockParams,
-) =>
-  Effect.runPromise(Effect.scoped(runSamePageWrites(init, block))).then(
-    (result) => result.gas_used,
-  );
-
-const beforeMonadTen = {
-  timestamp: Hex.fromNumber(MONAD_TEN_MAINNET_TIMESTAMP - 1),
-};
-const atMonadTen = { timestamp: Hex.fromNumber(MONAD_TEN_MAINNET_TIMESTAMP) };
+const samePageWritesGas = (spec: Spec) =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const evm = yield* createEVM({
+          spec,
+          accounts: {
+            [PAGE_WRITES_ADDR]: { code: SAME_PAGE_WRITES_CODE },
+          },
+        });
+        return yield* evm.execute({
+          from: CALLER,
+          to: PAGE_WRITES_ADDR,
+          data: "0x",
+        });
+      }),
+    ),
+  ).then((result) => result.gas_used);
 
 test("MonadTen enables MIP-8 page storage gas", async () => {
   const [monadNine, monadTen] = await Promise.all([
-    samePageWritesGas({ spec: "MonadNine" }),
-    samePageWritesGas({ spec: "MonadTen" }),
+    samePageWritesGas("MonadNine"),
+    samePageWritesGas("MonadTen"),
   ]);
 
   expect(monadTen).toBeLessThan(monadNine);
-});
-
-test("the hardfork follows the chain's schedule at the block timestamp", async () => {
-  const [monadNine, monadTen, before, at] = await Promise.all([
-    samePageWritesGas({ spec: "MonadNine" }),
-    samePageWritesGas({ spec: "MonadTen" }),
-    samePageWritesGas({
-      chain_id: MONAD_MAINNET_CHAIN_ID,
-      block: beforeMonadTen,
-    }),
-    samePageWritesGas({ chain_id: MONAD_MAINNET_CHAIN_ID, block: atMonadTen }),
-  ]);
-
-  expect(before).toBe(monadNine);
-  expect(at).toBe(monadTen);
-});
-
-test("execute switches the hardfork across an activation", async () => {
-  const [monadNine, monadTen, forward, backward] = await Promise.all([
-    samePageWritesGas({ spec: "MonadNine" }),
-    samePageWritesGas({ spec: "MonadTen" }),
-    samePageWritesGas(
-      { chain_id: MONAD_MAINNET_CHAIN_ID, block: beforeMonadTen },
-      atMonadTen,
-    ),
-    // A reorg can move the block timestamp back across an activation.
-    samePageWritesGas(
-      { chain_id: MONAD_MAINNET_CHAIN_ID, block: atMonadTen },
-      beforeMonadTen,
-    ),
-  ]);
-
-  expect(forward).toBe(monadTen);
-  expect(backward).toBe(monadNine);
-});
-
-test("a pinned spec ignores the chain's schedule", async () => {
-  const [monadNine, pinned] = await Promise.all([
-    samePageWritesGas({ spec: "MonadNine" }),
-    samePageWritesGas({
-      spec: "MonadNine",
-      chain_id: MONAD_MAINNET_CHAIN_ID,
-      block: atMonadTen,
-    }),
-  ]);
-
-  expect(pinned).toBe(monadNine);
-});
-
-test("createEVM fails on a chain without a Monad hardfork schedule", async () => {
-  const program = createEVM({ chain_id: 1 });
-
-  const exit = await Effect.runPromiseExit(Effect.scoped(program));
-  expect(exit).toEqual(
-    Exit.fail(
-      new EvmCallError({
-        method: "init",
-        message:
-          "init failed: chain 1 has no known Monad hardfork schedule; pass a spec",
-        cause: "chain 1 has no known Monad hardfork schedule; pass a spec",
-      }),
-    ),
-  );
 });
 
 test("execute against counter succeeds and returns a journal id", async () => {
