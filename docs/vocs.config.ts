@@ -9,6 +9,7 @@ export default defineConfig({
   rootDir: ".",
   srcDir: ".",
   twoslash: false,
+  redirects: [{ source: "/", destination: "/docs/get-started" }],
   sidebar,
   topNav: [
     { text: "Docs", link: "/docs/get-started", match: "/docs" },
