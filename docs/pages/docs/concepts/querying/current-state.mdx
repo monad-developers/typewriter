@@ -1,6 +1,50 @@
 # Current state [What the value is right now]
 
-{/*
-Scope: typewriter.state and typewriter.accounts: synchronous typed reads reflecting accepted mutations. Token example: read a balance. Open with: this is accepted state, which can be ahead of what is onchain. Also covers typewriter.accounts (credentials and nonces per account), moved here from the accounts pages.
-README source: typewriter.state; typewriter.accounts
-*/}
+`typewriter.state` is a live, typed copy of the [`State` struct](/docs/concepts/state) with every accepted mutation applied. A mutation's effects appear the moment it's [accepted](/docs/concepts/submitting#lifecycle), and rejected mutations never appear.
+
+## Read state
+
+Reads are synchronous and typed from your `State` struct. For a contract with this state:
+
+```solidity
+struct State {
+    uint256 totalSupply;
+    mapping(bytes32 => uint256) balances;
+}
+```
+
+Its fields read as:
+
+```ts
+typewriter.state.totalSupply;
+//               ^? bigint
+typewriter.state.balances[accountID];
+//                       ^? bigint
+```
+
+Each field has the TypeScript type that matches its Solidity type. Like Solidity storage, a mapping key that was never written reads as zero.
+
+## List mapping keys
+
+`Object.keys` on a mapping lists the keys that accepted mutations have read or written, such as the account IDs in `balances`:
+
+```ts
+const accountIDs = Object.keys(typewriter.state.balances);
+```
+
+## Read accounts
+
+`typewriter.accounts` reads the [accounts](/docs/concepts/accounts/overview) Typewriter manages, by account ID, the same way as state. Each account has:
+
+| Field | Contents |
+| --- | --- |
+| `credentials` | The account's [credentials](/docs/concepts/accounts/overview#credentials), indexed by credential ID. A removed credential keeps its index, with its fields cleared. |
+| `nonces` | For each [nonce lane](/docs/concepts/accounts/authorization#nonces) the account has used, the sequence its next mutation on that lane must use |
+| `activeCredentials` | How many of its credentials haven't been removed |
+
+The `Account` and `Credential` types are exported from `typewriter`.
+
+```ts
+const account = typewriter.accounts[accountID];
+const credential = account.credentials[0];
+```
