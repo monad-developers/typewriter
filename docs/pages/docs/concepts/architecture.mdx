@@ -1,0 +1,42 @@
+import { ArchitectureDiagram } from "../../../components/ArchitectureDiagram";
+
+# Architecture [Where your code runs: the client, the server, and the chain]
+
+A Typewriter app runs code in three places:
+
+- **The client**, your frontend. It holds users' keys and signs mutations with `typewriter/client`.
+- **The server**, your backend. Typewriter runs inside it as a library: `createTypewriter` starts it, and your code passes the mutations clients send to `typewriter.execute()`.
+- **The chain**, where your contract is deployed. The contract defines your [state](/docs/concepts/state) and [mutations](/docs/concepts/mutations), and every accepted mutation is settled there.
+
+<ArchitectureDiagram />
+
+## The client
+
+The client signs mutations for its user; see [authorization](/docs/concepts/accounts/authorization). It never talks to the chain, it only writes to and reads from the server.
+
+## The server
+
+Typewriter doesn't come with an API. How signed mutations get from the client to `typewriter.execute()`, and how clients read data back, is up to your server: an HTTP endpoint, a WebSocket, or anything else.
+
+A minimal HTTP endpoint, with Bun:
+
+```ts [src/index.ts]
+Bun.serve({
+  routes: {
+    "/mutations": {
+      POST: async (req) => {
+        await typewriter.execute(await req.json()); // [!code focus]
+        return new Response(null, { status: 204 });
+      },
+    },
+  },
+});
+```
+
+From there, Typewriter [executes](/docs/concepts/executing) the mutation, keeps your [current state](/docs/concepts/querying/current-state) and [mutation history](/docs/concepts/querying/mutation-history), and settles the mutation onchain. Your server reads that data to answer clients.
+
+## The chain
+
+Your contract is the code that runs onchain: the [state](/docs/concepts/state) and [mutations](/docs/concepts/mutations) you write in Solidity, deployed once. Monad's validators run it each time mutations are settled.
+
+You don't write code that sends transactions or watches blocks. Typewriter does both from your server; see [chain integration](/docs/production/chain-integration).

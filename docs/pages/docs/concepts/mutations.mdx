@@ -1,0 +1,109 @@
+# Define mutations [The state transitions users can request]
+
+Mutations are app-defined state transitions, written in your contract in Solidity, requested by a user and executed onchain. Updates to [application state](/docs/concepts/state) are done with mutations.
+
+Each mutation has a name, a set of params, and a Solidity function that applies it to state. Users sign a mutation and its params, and Typewriter runs your function on their behalf.
+
+## Write a mutation
+
+A mutation is a Solidity library named after the mutation, with `Mutation` appended. 
+
+```solidity [contracts/src/Transfer.sol]
+import {State} from "./Token.sol";
+
+library TransferMutation {
+    struct Transfer {
+        bytes32 to;
+        uint256 amount;
+    }
+
+    function execute(State storage state, Transfer memory transfer, bytes32 accountID) internal {
+        state.balances[accountID] -= transfer.amount;
+        unchecked {
+            state.balances[transfer.to] += transfer.amount;
+        }
+    }
+}
+```
+
+The library has two parts:
+
+- **`struct Transfer`**, the mutation's params. The struct has the same name as the mutation.
+- **`execute`**, which applies the mutation to state. It takes the state, the params, and the `accountID` of the account that signed the mutation, and returns nothing.
+
+## Register it
+
+Add the mutation's name to the contract's `Mutation` enum.
+
+```solidity [contracts/src/Token.sol]
+enum Mutation {
+    Transfer,
+    Mint
+}
+```
+
+Then add a branch for it to `dispatch`. `dispatch` is boilerplate with no logic of its own: each branch decodes one mutation's params and passes them to its library's `execute`.
+
+```solidity [contracts/src/Token.sol]
+function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
+    if (mutation == uint8(Mutation.Transfer)) { // [!code focus]
+        TransferMutation.Transfer memory transfer = abi.decode(mutationData, (TransferMutation.Transfer)); // [!code focus]
+        TransferMutation.execute(state, transfer, accountID); // [!code focus]
+    } else if (mutation == uint8(Mutation.Mint)) {
+        // ...
+    } else {
+        revert UnknownMutation(mutation);
+    }
+}
+```
+
+If a mutation is missing its library, struct, or `execute`, Typewriter names it at startup.
+
+## Params
+
+The fields of the params struct, in order, are the mutation's params.
+
+A field can be any type an external Solidity function can take as an argument: value types, `bytes`, `string`, arrays, and nested structs. Mappings can't be params.
+
+## The signing account
+
+`accountID` identifies the [account](/docs/concepts/accounts/overview) that signed the mutation. Before `execute` runs, Typewriter has already checked the signature, the credential's permissions and expiration, and the nonce, so `execute` can trust `accountID` without checking it again.
+
+Use `accountID` wherever a contract would normally use `msg.sender`. `Transfer` spends from `state.balances[accountID]`, so a user can only move their own tokens.
+
+## Rejecting a mutation
+
+To reject a mutation, revert. `Transfer` reverts when the signer's balance is too low, because the subtraction underflows. Custom errors make the reason clearer:
+
+```solidity
+error InsufficientBalance();
+
+function execute(State storage state, Transfer memory transfer, bytes32 accountID) internal {
+    if (state.balances[accountID] < transfer.amount) revert InsufficientBalance(); // [!code focus]
+    state.balances[accountID] -= transfer.amount;
+    // ...
+}
+```
+
+## Rules for mutation code
+
+Typewriter checks your contract at startup and refuses to start if mutation code uses any of these:
+
+- **Block and transaction values**: `msg.*`, `tx.*`, `gasleft()`, `blockhash`, `blobhash`, and every `block.*` value except `block.chainid`.
+- **Other contracts and accounts**: external calls, `.call`, `.staticcall`, `.delegatecall`, `.send`, `.transfer`, `.balance`, `.code`, `.codehash`, `selfdestruct`, and creating contracts with `new`. Creating memory arrays and `bytes` with `new` is fine.
+- **Inline assembly**, which Typewriter can't check.
+- **Typewriter's internal state and functions**, such as `accounts` or `executionIndex`.
+
+The error names the function and what it used:
+
+```text
+TransferMutation.execute uses `block.timestamp`, which can differ between offchain and onchain execution
+```
+
+Most contracts can work within these rules:
+
+| Instead of | Use |
+| --- | --- |
+| `msg.sender` or `tx.origin` | `accountID`, the account that signed the mutation |
+| Token contracts and their balances | Balances kept in `state` |
+| Prices, times, or other outside data | Params of a mutation that only a trusted account may submit |

@@ -1,0 +1,33 @@
+# Accounts and credentials [Who can run a mutation]
+
+Typewriter has a built-in account system, stored in your contract alongside your state. Every mutation is signed by an account, and your mutation's `execute` receives that account's ID. Typewriter creates accounts, stores their keys, and checks signatures.
+
+## Accounts
+
+An account is identified by a stable `bytes32` ID and holds one or more credentials. Credentials can be added and removed without changing the account's ID, so an account outlives any one key.
+
+## Credentials
+
+A credential is a public key that can sign mutations for its account. Each credential has:
+
+- **A key type.** `P256` for keys made with the Web Crypto API, `WebAuthnP256` for passkeys, or `Secp256k1` for Ethereum keys.
+- **Permissions**, the mutations it may sign.
+- **An expiration**, a Unix timestamp in seconds after which it can't sign. `0` means it never expires.
+
+A credential's ID is its position in the account, starting at `0`.
+
+## What Typewriter checks
+
+Before a mutation's `execute` runs, Typewriter checks its [authorization](/docs/concepts/accounts/authorization):
+
+1. The account exists, and the credential that signed has not been removed.
+2. Neither the signature nor the credential has expired.
+3. The credential has permission to sign this mutation.
+4. The nonce is the next one expected.
+5. The signature is valid for the credential's key.
+
+If any check fails, the mutation is rejected. Your mutation code never sees an unauthorized mutation.
+
+## Changing an account
+
+Accounts are created, and credentials added and removed, with three built-in mutations: `CreateAccount`, `AddCredential`, and `RemoveCredential`. They're signed like any other mutation. See [managing accounts](/docs/concepts/accounts/managing).

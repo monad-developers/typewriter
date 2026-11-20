@@ -1,0 +1,99 @@
+# Executing mutations [Run mutations on your server and follow them to the chain]
+
+On your server, pass each signed mutation your clients send to `typewriter.execute()`. The call resolves once Typewriter accepts the mutation, usually within milliseconds, and throws if Typewriter rejects it.
+
+## Start Typewriter
+
+When your server starts, call `createTypewriter` with your contract and config. It returns `typewriter`, the object you call `execute()` on.
+
+```ts [src/index.ts]
+import { createTypewriter } from "typewriter";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  dev: true,
+  database: { url: process.env.DATABASE_URL! },
+});
+```
+
+`dev: true` runs against a fresh local chain; see [local development](/docs/guides/local-development). See [deployment](/docs/production/deployment) for running against a real chain.
+
+## Execute a mutation
+
+A signed mutation is the object a client builds with `authorizeMutation` from `typewriter/client`: the mutation's `name` and `params`, plus its `authorization`; see [authorization](/docs/concepts/accounts/authorization). How it gets from the client to your server, such as an HTTP endpoint, is up to you; see [architecture](/docs/concepts/architecture#the-server).
+
+```ts [src/index.ts]
+await typewriter.execute(mutation);
+```
+
+When `execute()` resolves, the mutation is accepted: its effects are already visible in [`typewriter.state`](/docs/concepts/querying/current-state), and Typewriter settles it onchain without anything more from your code or the client.
+
+## Rejections
+
+`execute()` throws when Typewriter can't accept a mutation. The error's `_tag` says why:
+
+| `_tag` | Cause |
+| --- | --- |
+| `MutationRevertedError` | The mutation reverted. Its `errorName` and `args` hold the Solidity error, such as `InsufficientBalance` from your code, or `InvalidSignature`, `PermissionDenied`, or `InvalidNonce` from the [account checks](/docs/concepts/accounts/overview#what-typewriter-checks). |
+| `InvalidMutationError` | The params or authorization don't match the mutation's shape. |
+| `UnknownMutationError` | No mutation has that name. |
+| `MutationExpiresTooSoonError` | The signature or credential expires less than a minute after the chain's latest block. |
+
+```ts
+import { MutationRevertedError } from "typewriter";
+
+try {
+  await typewriter.execute(mutation);
+} catch (error) {
+  if (error instanceof MutationRevertedError && error.errorName === "InsufficientBalance") {
+    // tell the user their balance is too low
+  }
+}
+```
+
+A rejected mutation never goes onchain. It changes nothing, and its [nonce](/docs/concepts/accounts/authorization#nonces) can be reused.
+
+## Lifecycle
+
+After it's passed to `execute()`, a mutation moves through these statuses:
+
+- **received**. Typewriter has received the mutation.
+- **accepted**. Typewriter has ordered and executed the mutation. `execute()` resolves here.
+- **included**. The mutation is in a block onchain.
+- **finalized**. The block that contains the mutation is finalized.
+
+A mutation Typewriter can't accept is **rejected** instead, and never goes onchain.
+
+A mutation that is included but not yet finalized can move back to accepted if the chain reorganizes, and then lands again. See [reorgs](/docs/production/chain-integration#reorgs).
+
+To follow a mutation through its statuses, use [live updates](/docs/concepts/querying/live-updates) or the [mutation history](/docs/concepts/querying/mutation-history).
+
+## Ordering
+
+The order Typewriter accepts mutations in is the order they execute onchain. Typewriter has two ordering modes, set with `sequencing`.
+
+### FIFO
+
+The default. Each mutation is executed and accepted as soon as it arrives, so mutations land in the order they were received.
+
+```ts
+const typewriter = await createTypewriter(Token, {
+  // ...
+  sequencing: { order: "fifo" },
+});
+```
+
+### Batch
+
+Mutations wait for the next batch. Every `batchIntervalMs` (default `50`), Typewriter gathers the mutations that arrived, orders them by name with `batchOrder`, and accepts or rejects each one. `execute()` resolves when its batch is processed.
+
+```ts
+const typewriter = await createTypewriter(OrderBook, {
+  // ...
+  sequencing: {
+    order: "batch",
+    batchIntervalMs: 50,
+    batchOrder: ["CloseOrder", "LimitOrder", "MarketOrder"],
+  },
+});
+```

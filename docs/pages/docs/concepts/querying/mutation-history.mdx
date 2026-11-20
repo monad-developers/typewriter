@@ -1,0 +1,63 @@
+# Mutation history [What happened, and when]
+
+Typewriter writes every accepted mutation to a Postgres database, in one table per mutation. A row appears when the mutation is [accepted](/docs/concepts/executing#lifecycle), and its block columns are filled in when it's included onchain. Received and rejected mutations aren't stored.
+
+## Tables
+
+`typewriter.schema` has a [Drizzle](https://orm.drizzle.team) table for each mutation, named after the mutation in lowercase with `_mutations` appended: `Transfer` is `typewriter.schema.transfer_mutations`.
+
+Every table has the same lifecycle and authorization columns:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `execution_index` | `bigint`, primary key | The mutation's position in the execution order |
+| `accepted_at` | `timestamp with time zone` | When the mutation was accepted |
+| `block_number` | `bigint` | Null until included |
+| `block_hash` | `char(66)` | Null until included |
+| `block_timestamp` | `bigint` | Null until included |
+| `transaction_index` | `integer` | Null until included |
+| `transaction_hash` | `char(66)` | The settlement transaction; null until included |
+| `authorization_account_id` | `char(66)` | The account that signed the mutation |
+| `authorization_credential_id` | `bigint` | The credential that signed it |
+| `authorization_nonce` | `numeric(78,0)` | The packed [nonce](/docs/concepts/accounts/authorization#nonces) |
+| `authorization_expiration` | `bigint` | Unix timestamp in seconds, or `0` for never |
+| `authorization_signature` | `text` | The packed signature, as hex |
+
+Then a column for each of the mutation's [params](/docs/concepts/mutations#params), named after the field.
+
+## Query
+
+Query the tables with your own Drizzle client on the same database. The token app's recent transfers from one account:
+
+```ts
+import { desc, eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sql";
+
+const db = drizzle({ client: new Bun.SQL({ url: process.env.DATABASE_URL }) });
+const transfers = typewriter.schema.transfer_mutations;
+
+const recent = await db
+  .select()
+  .from(transfers)
+  .where(eq(transfers.authorization_account_id, accountID))
+  .orderBy(desc(transfers.execution_index))
+  .limit(20);
+```
+
+Typewriter owns these tables. Read from them, and keep your app's own data in tables of your own.
+
+## Column types
+
+Param columns are typed from their Solidity type:
+
+| Solidity | Postgres |
+| --- | --- |
+| `bool` | `boolean` |
+| `uint8`, `int8`, `int16` | `smallint` |
+| `uint16`, `uint24`, `int24`, `int32` | `integer` |
+| `uint32` to `uint56`, `int40` to `int64` | `bigint` |
+| `uint64` to `uint256`, `int72` to `int256` | `numeric(78,0)` |
+| `address` | `char(42)` |
+| `bytes1` to `bytes32` | `char(2 + 2N)`, such as `char(66)` for `bytes32` |
+| `bytes`, `string` | `text` |
+| Arrays and structs | `jsonb` |

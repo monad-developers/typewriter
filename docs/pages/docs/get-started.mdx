@@ -1,0 +1,65 @@
+# Get started [An introduction to Typewriter]
+
+## What is Typewriter?
+
+Typewriter is a framework for crypto apps that need custom transaction sequencing, fast confirmations, and built-in gas sponsorship.
+
+Developers write business logic for their app with Solidity. Then, Typewriter runs a server that orders user-signed mutations, executes them locally for acceptance within milliseconds, and submits them onchain.
+
+The server is trusted for day-to-day ordering and availability, but it does not control user funds. Users can bypass the server and submit valid mutations directly onchain through [force inclusion](/docs/production/force-inclusion).
+
+:::warning
+**This project is under active development. Not ready for production use.** It is provided for educational purposes and has not been audited. Do not use it in connection with real funds on mainnet without an independent audit.
+:::
+
+## Quickstart
+
+Typewriter isn't published to a package registry yet, so the quickest way to try it is to run the [`token`](https://github.com/monad-developers/typewriter/tree/main/apps/token) example from the repository. Check the [requirements](/docs/requirements) first.
+
+::::steps
+
+### Clone the repository
+
+```bash
+git clone https://github.com/monad-developers/typewriter.git
+cd typewriter
+```
+
+### Install and build
+
+```bash
+bun install
+bun run build
+```
+
+### Configure the database
+
+Copy the example env file and point `DATABASE_URL` at a Postgres database.
+
+```bash
+cd apps/token
+cp .env.example .env
+```
+
+### Start the app
+
+```bash
+bun run dev
+```
+
+The app runs Typewriter in dev mode: it starts a local Anvil, deploys the token with Anvil's first account as the scheduler, and starts from an empty database schema. Every start is a fresh chain.
+
+### Send a mutation
+
+Open `http://localhost:3000`. The page creates an account with a key stored in your browser, mints tokens to it, and transfers them. Each transfer shows as accepted within milliseconds, then included and finalized as the chain catches up.
+
+::::
+
+## Next steps
+
+This quickstart only scratches the surface of what Typewriter can do. Take a look at the [examples directory](https://github.com/monad-developers/typewriter/tree/main/apps) for more complex projects.
+
+Or, continue reading the guides and API reference here on the documentation site.
+
+- [Why Typewriter](/docs/why-typewriter)
+- [Sysytem Requirements](/docs/requirements)

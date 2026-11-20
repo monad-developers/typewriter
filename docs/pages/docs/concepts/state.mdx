@@ -1,0 +1,76 @@
+# State [Define application state]
+
+You define application state in your contract, in Solidity. It lives onchain, where that definition serves as the ground truth, and Typewriter keeps a copy on your server.
+
+## Define state
+
+All application state is contained in one struct, stored in a top-level variable named `state`. The token app tracks a total supply and a balance per account.
+
+```solidity [contracts/src/Token.sol]
+import {Typewriter} from "typewriter/Typewriter.sol";
+
+struct State { // [!code focus]
+    uint256 totalSupply; // [!code focus]
+    mapping(bytes32 => uint256) balances; // [!code focus]
+} // [!code focus]
+
+contract Token is Typewriter {
+    State internal state; // [!code focus]
+
+    // ...
+}
+```
+
+Define the struct outside the contract so that [mutations](/docs/concepts/mutations), which live in their own libraries, can import it.
+
+`state` must hold every variable the contract stores. Other storage variables are rejected at startup, except `constant`s.
+
+```solidity
+contract Token is Typewriter {
+    State internal state;
+    uint256 internal constant MAX_SUPPLY = 1e27; // ok
+    uint256 internal fees; // rejected: not in `state`
+}
+```
+
+## Supported types
+
+Fields can use most Solidity types, nested in any combination. Each one has a matching TypeScript type when you read the state on the server.
+
+| Solidity | TypeScript |
+| --- | --- |
+| `uint8` to `uint48`, `int8` to `int48` | `number` |
+| `uint56` to `uint256`, `int56` to `int256` | `bigint` |
+| `bool` | `boolean` |
+| `address`, `bytes1` to `bytes32`, `bytes` | `` `0x${string}` `` |
+| `string` | `string` |
+| `enum` | `number` |
+| `struct` | object with a property per field |
+| `T[]` | `readonly T[]` |
+| `T[N]` | tuple of length `N` |
+| `mapping(K => V)` | `Record<K, V>` |
+
+These are not supported, and Typewriter reports an error rather than guess:
+
+- Fixed-point numbers
+- Function types
+- Contract and interface types
+- User-defined value types
+- Mappings with `bytes`, `string`, or `enum` keys
+
+## Accounts are separate
+
+Typewriter keeps its account registry outside your struct, in an `accounts` mapping inherited from the `Typewriter` base contract, keyed by `bytes32`. See [accounts](/docs/concepts/accounts/overview).
+
+## Read state
+
+The server's copy of `state` is available as `typewriter.state`, typed from the struct above.
+
+```ts
+typewriter.state.totalSupply;
+//               ^? bigint
+typewriter.state.balances[accountID];
+//                       ^? bigint
+```
+
+See [current state](/docs/concepts/querying/current-state) for when it updates and how it relates to what's onchain.
