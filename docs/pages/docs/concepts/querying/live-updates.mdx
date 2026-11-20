@@ -1,6 +1,64 @@
 # Live updates [Know when something changes]
 
-{/*
-Scope: on() and what each event is for, such as pushing status updates to clients.
-README source: typewriter.on()
-*/}
+`typewriter.on()` calls your function whenever a mutation, batch, or block changes status. Use it to follow mutations through their [lifecycle](/docs/concepts/submitting#lifecycle), for example to tell a user when their transfer is finalized.
+
+```ts
+const unsubscribe = typewriter.on("mutation", (mutation) => {
+  console.log(mutation.name, mutation.status);
+});
+
+unsubscribe();
+```
+
+`on()` returns a function that stops the subscription.
+
+## Mutation events
+
+`"mutation"` fires every time a mutation changes status. Every event has the mutation's `name`, `params`, and `authorization`, and the rest depends on `status`:
+
+| `status` | Also has |
+| --- | --- |
+| `"received"` | — |
+| `"accepted"` | `executionIndex` |
+| `"included"`, `"finalized"` | `executionIndex`, `blockNumber`, `blockHash`, `blockTimestamp`, `transactionHash`, `transactionIndex` |
+| `"rejected"` | `error` |
+
+For example, to keep the status of each unfinalized mutation, keyed by account and nonce, so clients can ask how their mutation is doing:
+
+```ts
+import type { MutationStatus } from "typewriter";
+
+const statuses = new Map<string, MutationStatus>();
+
+typewriter.on("mutation", (mutation) => {
+  const { accountID, nonce } = mutation.authorization;
+  const key = `${accountID}:${nonce}`;
+
+  switch (mutation.status) {
+    case "received":
+      break;
+    case "accepted":
+    case "included":
+      statuses.set(key, mutation.status);
+      break;
+    case "finalized":
+    case "rejected":
+      statuses.delete(key);
+      break;
+  }
+});
+```
+
+## Batch events
+
+With [batch ordering](/docs/concepts/submitting#batch), `"batch"` fires when a batch is accepted, included, or finalized. Each event has the batch's `id`, its `status`, and its `mutations`, all with the batch's status. With FIFO ordering, subscribing to `"batch"` is a type error.
+
+## Block events
+
+`"block"` fires when a block that contains the app's settlements is included or finalized, once each. Each event has the block's `number`, `hash`, and `timestamp`, and its mutations: `mutations` with FIFO ordering, or `batches` with batch ordering.
+
+If a [reorg](/docs/production/chain-integration#reorgs) replaces an included block, `"block"` fires again with status `"removed"`, and the block's mutations go back to `"accepted"`.
+
+## What doesn't emit events
+
+[Force-included](/docs/production/force-inclusion) mutations don't emit events.
