@@ -13,6 +13,24 @@ export const sidebar = {
       items: [
         { text: "State", link: "/docs/concepts/state" },
         { text: "Mutations", link: "/docs/concepts/mutations" },
+        { text: "Submitting", link: "/docs/concepts/submitting" },
+        {
+          text: "Querying",
+          items: [
+            {
+              text: "Current state",
+              link: "/docs/concepts/querying/current-state",
+            },
+            {
+              text: "Mutation history",
+              link: "/docs/concepts/querying/mutation-history",
+            },
+            {
+              text: "Live updates",
+              link: "/docs/concepts/querying/live-updates",
+            },
+          ],
+        },
         {
           text: "Accounts",
           items: [
@@ -20,27 +38,14 @@ export const sidebar = {
               text: "Accounts and credentials",
               link: "/docs/concepts/accounts/overview",
             },
-            { text: "Sign mutations", link: "/docs/concepts/accounts/signing" },
-            { text: "Nonces", link: "/docs/concepts/accounts/nonces" },
-          ],
-        },
-        {
-          text: "Execution",
-          items: [
             {
-              text: "Execute mutations",
-              link: "/docs/concepts/execution/execute",
+              text: "Authorization",
+              link: "/docs/concepts/accounts/authorization",
             },
-            { text: "Lifecycle", link: "/docs/concepts/execution/lifecycle" },
-            { text: "Ordering", link: "/docs/concepts/execution/ordering" },
-          ],
-        },
-        {
-          text: "Querying",
-          items: [
-            { text: "Read state", link: "/docs/concepts/querying/state" },
-            { text: "Mutation tables", link: "/docs/concepts/querying/tables" },
-            { text: "Events", link: "/docs/concepts/querying/events" },
+            {
+              text: "Managing accounts",
+              link: "/docs/concepts/accounts/managing",
+            },
           ],
         },
       ],
@@ -48,90 +53,27 @@ export const sidebar = {
     {
       text: "Production",
       items: [
-        {
-          text: "Deploy the contract",
-          link: "/docs/production/deploy-contract",
-        },
-        { text: "Self-hosting", link: "/docs/production/self-hosting" },
+        { text: "Deployment", link: "/docs/production/deployment" },
         {
           text: "Chain integration",
-          items: [
-            {
-              text: "Chain requirements",
-              link: "/docs/production/chain-requirements",
-            },
-            {
-              text: "Transaction submission",
-              link: "/docs/production/transaction-submission",
-            },
-            { text: "Reorgs", link: "/docs/production/reorgs" },
-            {
-              text: "Force inclusion",
-              link: "/docs/production/force-inclusion",
-            },
-          ],
+          link: "/docs/production/chain-integration",
         },
-        { text: "Restarts", link: "/docs/production/restarts" },
+        { text: "Force inclusion", link: "/docs/production/force-inclusion" },
       ],
     },
     {
       text: "Guides",
       items: [
-        { text: "Passkeys", link: "/docs/guides/passkeys" },
-        { text: "Session keys", link: "/docs/guides/session-keys" },
-        { text: "HTTP server", link: "/docs/guides/http-server" },
-        { text: "Read models", link: "/docs/guides/read-models" },
+        { text: "Local development", link: "/docs/guides/local-development" },
+        {
+          text: "Browser session keys",
+          link: "/docs/guides/browser-session-keys",
+        },
       ],
     },
     {
       text: "API reference",
-      items: [
-        {
-          text: "typewriter",
-          items: [
-            {
-              text: "createTypewriter",
-              link: "/docs/api-reference/typewriter/create-typewriter",
-            },
-            {
-              text: "Typewriter instance",
-              link: "/docs/api-reference/typewriter/instance",
-            },
-            { text: "Events", link: "/docs/api-reference/typewriter/events" },
-            {
-              text: "Database reference",
-              link: "/docs/api-reference/typewriter/database",
-            },
-            { text: "Errors", link: "/docs/api-reference/typewriter/errors" },
-          ],
-        },
-        { text: "typewriter/client", link: "/docs/api-reference/client" },
-        {
-          text: "Typewriter.sol",
-          items: [
-            {
-              text: "Contract requirements",
-              link: "/docs/api-reference/contract/requirements",
-            },
-            {
-              text: "Authorization",
-              link: "/docs/api-reference/contract/authorization",
-            },
-            {
-              text: "Built-in mutations",
-              link: "/docs/api-reference/contract/built-in-mutations",
-            },
-            {
-              text: "Force inclusion",
-              link: "/docs/api-reference/contract/force-inclusion",
-            },
-            {
-              text: "Determinism rules",
-              link: "/docs/api-reference/contract/determinism",
-            },
-          ],
-        },
-      ],
+      items: [],
     },
   ],
 };
