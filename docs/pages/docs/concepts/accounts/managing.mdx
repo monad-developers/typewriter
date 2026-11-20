@@ -1,1 +1,80 @@
 # Managing accounts [Create accounts and change their credentials]
+
+Clients create accounts and change their credentials by signing three built-in mutations. Every app has them, alongside its own mutations, and they're [authorized](/docs/concepts/accounts/authorization) like any other mutation.
+
+| Mutation | Params |
+| --- | --- |
+| `CreateAccount` | `keyType`, `publicKey` |
+| `AddCredential` | `expiration`, `keyType`, `permissions`, `publicKey` |
+| `RemoveCredential` | `credentialID` |
+
+## Create an account
+
+`CreateAccount` creates an account with one credential. The account's ID is derived from that credential's key with `deriveAccountID`, and the key signs its own `CreateAccount`.
+
+```ts
+import { deriveAccountID, KeyType } from "typewriter/client";
+
+const params = { keyType: KeyType.P256, publicKey } as const;
+const accountID = deriveAccountID(params);
+
+const createAccount = {
+  name: "CreateAccount",
+  params,
+  accountID,
+  credentialID: 0n,
+  nonce: 0n,
+  expiration: 0,
+} as const;
+```
+
+`credentialID`, `nonce`, and `expiration` are always `0` for `CreateAccount`, and it doesn't use up a nonce: the account's first mutation after it uses sequence `0`.
+
+The first credential, `0`, can sign every mutation and never expires.
+
+## Add a credential
+
+`AddCredential` adds a credential with its own key, permissions, and expiration. It's signed by a credential the account already has.
+
+`permissions` is a bitmask with one bit per mutation, taken from the mutation's ID in the manifest. A credential that may only sign `Transfer`, for a day:
+
+```ts
+const addCredential = {
+  name: "AddCredential",
+  params: {
+    expiration: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
+    keyType: KeyType.P256,
+    permissions: 1n << BigInt(manifest.mutations.Transfer.id),
+    publicKey,
+  },
+  accountID,
+  credentialID,
+  nonce,
+  expiration: Math.floor(Date.now() / 1000) + 120,
+} as const;
+```
+
+The new credential's ID is the number of credentials the account had before, including removed ones.
+
+:::note
+For a "sign in / sign out" experience, use a session key: a credential with limited permissions and an expiration stored in browser storage. See [browser session keys](/docs/guides/browser-session-keys).
+:::
+
+## Remove a credential
+
+`RemoveCredential` removes a credential by its ID. A removed credential's ID is never reused, and an account's last credential can't be removed.
+
+```ts
+const removeCredential = {
+  name: "RemoveCredential",
+  params: { credentialID: removedCredentialID },
+  accountID,
+  credentialID,
+  nonce,
+  expiration: Math.floor(Date.now() / 1000) + 120,
+} as const;
+```
+
+## Permissions for these mutations
+
+`AddCredential` and `RemoveCredential` need permission like any other mutation, and they're powerful. A credential that can sign `AddCredential` can add new credentials with any permissions, and one that can sign `RemoveCredential` can remove any of the account's credentials. Grant them only to credentials that should control the account.
