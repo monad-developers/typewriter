@@ -1,6 +1,27 @@
-# Force inclusion [Users bypassing the server]
+# Force inclusion [Users bypassing Typewriter]
 
-{/*
-Scope: enqueue then forceExecute, FORCE_INCLUSION_DELAY, what the server does with enqueued mutations.
-README source: Failure modes > Force inclusion
-*/}
+Users can bypass Typewriter and submit their mutations directly to the chain with _force inclusion_. It isn't meant for normal operation. It exists so that Typewriter can't censor a valid mutation indefinitely.
+
+Force inclusion has two steps:
+
+1. **Enqueue.** The user calls the contract's `enqueue` with a signed mutation, paying gas themselves. Once the enqueue's block is finalized, Typewriter executes the mutation and settles it with its next transaction. If the mutation would be rejected, for example because its signature is invalid, Typewriter discards it.
+2. **Force execute.** If Typewriter hasn't settled it after `FORCE_INCLUSION_DELAY` (5 minutes by default), anyone can call `forceExecute` to run it directly onchain.
+
+```solidity
+function enqueue(uint8 mutation, bytes calldata mutationData, bytes calldata authorizationData) external returns (uint256);
+function forceExecute(uint256 index) external;
+```
+
+:::note
+Enqueued mutations don't emit events or get rows in the [mutation history](/docs/concepts/querying/mutation-history).
+:::
+
+## Configuring `FORCE_INCLUSION_DELAY`
+
+An app can change the delay by assigning `FORCE_INCLUSION_DELAY` in its constructor:
+
+```solidity
+constructor(address scheduler) Typewriter(scheduler) {
+    FORCE_INCLUSION_DELAY = 10 minutes;
+}
+```

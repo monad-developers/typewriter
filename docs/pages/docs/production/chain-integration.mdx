@@ -1,1 +1,29 @@
 # Chain integration [How accepted mutations reach the chain]
+
+## Supported chains
+
+Typewriter executes mutations under a Monad hardfork (`MonadEight`, `MonadNine`, `MonadTen`, or `MonadNext`).
+
+:::note
+The P-256 precompile (`address: 0x100`) is used for verifying P-256 and WebAuthn-P256 credentials
+:::
+
+## Submitted transactions
+
+Typewriter settles accepted mutations onchain in transactions sent from the scheduler account. It sends each one as soon as its mutations are accepted, without waiting for earlier ones to land, so a single block can contain several.
+
+Each settlement is a standard [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction with:
+
+- **A gas limit** from Typewriter's own run of the mutations.
+- **An [EIP-2930](https://eips.ethereum.org/EIPS/eip-2930) access list** of the storage the mutations touch.
+- **Fixed fees**: a fee cap of 10,000 gwei and a priority fee of 2 gwei.
+
+:::note
+A transaction on Monad can use at most 30 million gas, so Typewriter splits large settlements across several transactions. A single mutation that needs more gas than one transaction allows is rejected with a `MutationTooLargeError`.
+:::
+
+## Reorgs
+
+A mutation can be included in a block that a [chain reorganization](https://www.alchemy.com/overviews/what-is-a-reorg) later removes. Only mutations that haven't reached `finalized` can be affected.
+
+When Typewriter detects a reorg, it sends the affected settlements again unchanged, and their mutations land with the same results.
