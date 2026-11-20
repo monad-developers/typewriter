@@ -5,7 +5,7 @@
 - [Bun](https://bun.sh)
 - [Foundry](https://getfoundry.sh)
 - [PostgreSQL](https://www.postgresql.org/download/)
-- [Rust](https://rustup.rs), use to build Typewriter from source
+- [Rust](https://rustup.rs), to build Typewriter from source
 
 ## TypeScript
 
@@ -30,6 +30,6 @@ declare module "*.sol" {
 
 ### `<Contract>.sol.d.ts`
 
-When `typewriter.d.ts` is present, Typewriter writes a declaration file next to your contract at startup, such as `Token.sol.d.ts` for `Token.sol`. It carries the types for that contract's state and mutations.
+When `typewriter.d.ts` is present, Typewriter writes a declaration file next to your contract at startup, such as `Token.sol.d.ts` for `Token.sol`. It carries type information for that contract.
 
 The file changes whenever the contract does. Commit it, and accept the changes after editing your contract.

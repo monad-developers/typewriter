@@ -1,6 +1,6 @@
 # Live updates [Know when something changes]
 
-`typewriter.on()` calls your function whenever a mutation, batch, or block changes status. Use it to follow mutations through their [lifecycle](/docs/concepts/executing#lifecycle), for example to tell a user when their transfer is finalized.
+On your server, `typewriter.on()` calls your function whenever a mutation, batch, or block changes status. Use it to follow mutations through their [lifecycle](/docs/concepts/executing#lifecycle), for example to tell a user when their transfer is finalized.
 
 ```ts
 const unsubscribe = typewriter.on("mutation", (mutation) => {
