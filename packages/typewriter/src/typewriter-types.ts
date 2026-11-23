@@ -1,5 +1,4 @@
 import type { AbiParameter } from "abitype";
-import type { Deferred } from "effect";
 import type { Hex } from "ox";
 import type { AccessList } from "typewriter-evm";
 import type {
@@ -161,7 +160,8 @@ export type RuntimeBlock = {
   batches: RuntimeBatch[];
 };
 
-type SettlementBase = {
+/** One settlement transaction: a batch, then the enqueues it force-executes. */
+export type SettlementBase = {
   /** The timestamp it executes at, onchain as in revm. */
   timestamp: bigint;
   /** The `executionHash` and `executionIndex` it starts from. */
@@ -174,12 +174,10 @@ type SettlementBase = {
   gasLimit: number;
   /** Warms the storage pages its executions touch. */
   accessList: AccessList;
-  /** Resolves once its executions' rows commit. */
-  committed: Deferred.Deferred<void>;
+  nonce: number;
 };
 
 type Transmission = {
-  nonce: number;
   raw: Hex.Hex;
   hash: Hex.Hex;
   /** The block numbers when it was last and first broadcast. */
@@ -187,21 +185,11 @@ type Transmission = {
   firstSentAt: bigint;
 };
 
-/** One settlement transaction: a batch, then the enqueues it force-executes. */
-export type ExecutedSettlement = SettlementBase & { status: "executed" };
-export type SigningSettlement = SettlementBase & {
-  status: "signing";
-  nonce: number;
-};
 export type SentSettlement = SettlementBase & Transmission & { status: "sent" };
 export type LandedSettlement = SettlementBase &
   Transmission & { status: "included" | "reverted"; block: RuntimeBlock };
 
-export type RuntimeSettlement =
-  | ExecutedSettlement
-  | SigningSettlement
-  | SentSettlement
-  | LandedSettlement;
+export type RuntimeSettlement = SentSettlement | LandedSettlement;
 
 /** Fields of a runtime mutation that listeners never see. */
 type RuntimeOnlyField = "config";
