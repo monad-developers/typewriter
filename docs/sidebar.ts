@@ -73,6 +73,15 @@ export const sidebar = {
       ],
     },
     {
+      text: "Advanced",
+      items: [
+        {
+          text: "Simulated execution",
+          link: "/docs/advanced/simulated-execution",
+        },
+      ],
+    },
+    {
       text: "API reference",
       items: [],
     },

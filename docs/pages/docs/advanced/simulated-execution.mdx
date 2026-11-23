@@ -1,0 +1,47 @@
+# Simulated execution [Knowing a mutation's result before the chain runs it]
+
+Typewriter executes mutations in milliseconds, long before the [underlying blockchain](/docs/concepts/architecture) executes them. To make sure both executions match, Typewriter must run the same code, on the same state, under the same rules as the chain, and give the code nothing to observe that could differ between the two.
+
+## A single implementation
+
+An app that confirms actions before they land onchain usually ends up with two copies of its logic: the contract, and a backend that predicts what the contract will do. Every change has to be made twice, and any difference between them is a bug that shows up as a confirmation the chain later contradicts.
+
+Typewriter has one copy. Your [mutations](/docs/concepts/mutations) are Solidity, compiled into your contract, and that compiled contract is what runs in both places. On your server, Typewriter runs it in [revm](https://github.com/bluealloy/revm), an EVM implementation.
+
+Simulating a mutation runs everything that will run onchain: the [account checks](/docs/concepts/accounts/overview#what-typewriter-checks) and then your mutation's `execute`. If it reverts, the mutation is rejected with the Solidity error it reverted with. If it succeeds, it's accepted, and its effects are immediately visible through [`typewriter.state`](/docs/concepts/querying/current-state).
+
+## Determinism
+
+Simulation is only useful if the chain gets the same result. A mutation's result depends on three things: the state it runs on, the environment it can observe, and the rules of the EVM. Typewriter makes each one the same in both places.
+
+### Same state
+
+Every [settlement](/docs/production/chain-integration#submitted-transactions) names the state it expects to run on. The contract keeps an `executionHash`, a running hash of every mutation it has executed, and each settlement carries the hash its first mutation was simulated after. If the chain's hash is different, the contract reverts the settlement instead of running it.
+
+So a settlement only ever runs on the exact history of mutations Typewriter executed it after. It can't run out of order, run twice, or run after a mutation Typewriter didn't know about.
+
+Only the [scheduler account](/docs/production/chain-integration#submitted-transactions) can call the contract's `execute`, so no one else can change your app's state and make Typewriter's settlements revert. The one exception is [force inclusion](/docs/production/force-inclusion): anyone can call `forceExecute` on a mutation that has waited in the queue for `FORCE_INCLUSION_DELAY`. With the default delay, Typewriter settles enqueued mutations itself well before that, so in normal operation only the scheduler's settlements change state.
+
+### Same environment
+
+A mutation can't observe anything that differs between your server and the chain. Typewriter checks your mutation code at startup, and refuses to start if it reads block or transaction values (`block.timestamp`, `msg.sender`, `gasleft()`, ...), calls or reads other contracts, or uses inline assembly. See [rules for mutation code](/docs/concepts/mutations#rules-for-mutation-code).
+
+With those ruled out, a mutation's result depends only on the contract's storage and its own inputs.
+
+The one value from the environment that Typewriter needs is the time, to check that signatures and credentials haven't expired. Rather than letting each execution read its own clock, a settlement carries the timestamp its mutations were simulated with, and the contract checks expirations against that. The chain only accepts a settlement that lands within a minute of its timestamp, and Typewriter only accepts mutations that stay valid for that long.
+
+### Same rules
+
+Running the same bytecode isn't enough on its own. Every EVM chain has slightly different rules: which opcodes and precompiles exist, what each one costs, and how storage and calldata are priced. A chain's rules also change over time, as hardforks add opcodes and reprice operations. Typewriter has to execute under exactly the rules of the chain it settles on, as they are now, or the same bytecode could produce a different result or use a different amount of gas.
+
+Typewriter executes under one hardfork for the life of the process, set with `hardfork`, which must be the chain's current hardfork; see [supported chains](/docs/production/chain-integration#supported-chains). With the rules matched, every opcode and precompile behaves the same and costs the same gas in both places.
+
+## What simulation provides
+
+Simulating a mutation gives Typewriter more than its result. It also learns everything the mutation does, which it uses to settle it without asking the chain.
+
+- **Gas limits.** Typewriter knows exactly how much gas each mutation uses, so it prices settlements itself instead of estimating them with the chain. A settlement's gas limit is its mutations' gas together, accounting for what they share, such as the transaction's base cost and storage that several of them touch.
+- **Access lists.** Typewriter knows every storage slot each mutation reads or writes, so each settlement carries an [EIP-2930](https://eips.ethereum.org/EIPS/eip-2930) access list of that storage, which makes it cheaper to access.
+- **Settlement size.** Knowing each mutation's gas lets Typewriter fill settlements up to the chain's per-transaction gas cap, and reject a mutation too large to ever fit with `MutationTooLargeError`, before accepting it.
+- **State changes.** Typewriter knows every storage slot each mutation writes, which it uses to keep [current state](/docs/concepts/querying/current-state) up to date without reading it back from the chain.
+- **Mapping keys.** Typewriter sees every key a mutation uses in a mapping, which is what lets you [list a mapping's keys](/docs/concepts/querying/current-state#list-mapping-keys), something Solidity itself can't do.
