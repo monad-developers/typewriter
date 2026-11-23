@@ -684,11 +684,34 @@ export function createTypewriterEffect<
     };
 
     /**
-     * Resolves once the latest group's replies and events are out. Each group
-     * waits for the one before it, and the watch for the groups queued before
-     * its writes, so events go out in the order their writes were queued.
+     * Replies and events, run one at a time in the order they are queued, each
+     * once its write commits. Each is queued right after its write, so
+     * listeners see events in the order their writes were queued.
      */
-    let emitted: Effect.Effect<void> = Effect.void;
+    const emits = yield* Queue.unbounded<{
+      committed?: Deferred.Deferred<void>;
+      effect: Effect.Effect<void>;
+    }>();
+    yield* Scope.addFinalizer(scope, Queue.shutdown(emits));
+
+    /** Runs `effects` once `committed` resolves and everything queued before them has run. */
+    const emitAfter = (
+      committed: Deferred.Deferred<void> | undefined,
+      effects: Effect.Effect<void>[],
+    ) => {
+      Queue.offerUnsafe(emits, {
+        committed,
+        effect: Effect.forEach(effects, (effect) => effect, { discard: true }),
+      });
+    };
+
+    const emitterProgram = Effect.forever(
+      Effect.gen(function* () {
+        const { committed, effect } = yield* Queue.take(emits);
+        if (committed) yield* Deferred.await(committed);
+        yield* effect;
+      }),
+    );
 
     const writerProgram = Effect.forever(
       Effect.gen(function* () {
@@ -995,22 +1018,13 @@ export function createTypewriterEffect<
           ...insertStorageSlots(app.typewriterSchema, executions),
           ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
         ]);
-        const previous = emitted;
-        const done = Deferred.makeUnsafe<void>();
-        emitted = Deferred.await(done);
-        // Reply and emit once the rows commit and the previous group's events
-        // are out, without holding up the next group.
-        yield* Effect.gen(function* () {
-          yield* Deferred.await(committed);
-          yield* previous;
-          for (const { reply, mutation } of replies) {
-            yield* Deferred.succeed(reply, mutation);
-          }
-          for (const event of events) yield* event;
-        }).pipe(
-          Effect.ensuring(Deferred.succeed(done, undefined)),
-          Effect.forkIn(scope),
-        );
+        // Reply and emit once the rows commit, without holding up the next group.
+        emitAfter(committed, [
+          ...replies.map(({ reply, mutation }) =>
+            Deferred.succeed(reply, mutation).pipe(Effect.asVoid),
+          ),
+          ...events,
+        ]);
 
         // Signed under the evm lock, so in nonce order.
         for (const group of groups) {
@@ -1246,20 +1260,15 @@ export function createTypewriterEffect<
                   }
                   runtimeBlock.batches.push(batch);
                 }
-                // Its mutations' `accepted` events go out first.
-                const earlier = emitted;
-                yield* Deferred.await(
-                  write(
-                    includeBlockMutations(
-                      app.mutationSchema,
-                      runtimeBlock,
-                      included,
-                    ),
+                const committed = write(
+                  includeBlockMutations(
+                    app.mutationSchema,
+                    runtimeBlock,
+                    included,
                   ),
                 );
-                yield* earlier;
                 if (receipts.some((receipt) => receipt!.status === "success")) {
-                  for (const event of emitBlock(runtimeBlock)) yield* event;
+                  emitAfter(committed, emitBlock(runtimeBlock));
                 }
               }
 
@@ -1338,15 +1347,17 @@ export function createTypewriterEffect<
                 );
               });
               const { number, hash, timestamp } = runtimeBlock;
-              yield* Deferred.await(
+              emitAfter(
                 write(clearMutationInclusion(app.mutationSchema, mutations)),
+                [
+                  emit("block", blockListeners, {
+                    status: "removed",
+                    number,
+                    hash,
+                    timestamp,
+                  } as BlockEvent<"fifo" | "batch">),
+                ],
               );
-              yield* emit("block", blockListeners, {
-                status: "removed",
-                number,
-                hash,
-                timestamp,
-              } as BlockEvent<"fifo" | "batch">);
               return;
             }
 
@@ -1426,7 +1437,7 @@ export function createTypewriterEffect<
                         (mutation as IncludedMutation).status = "finalized";
                       }
                     }
-                    for (const event of emitBlock(block)) yield* event;
+                    emitAfter(undefined, emitBlock(block));
                   }
 
                   // Once every settlement from the first revert on is final,
@@ -1508,9 +1519,12 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // Programs
 
-    const program = Effect.all([acceptProgram, writerProgram, watchProgram], {
-      concurrency: "unbounded",
-    }).pipe(
+    const program = Effect.all(
+      [acceptProgram, writerProgram, emitterProgram, watchProgram],
+      {
+        concurrency: "unbounded",
+      },
+    ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
       Effect.raceFirst(lockLost),
       // Mutations waiting for the program would otherwise wait forever.
