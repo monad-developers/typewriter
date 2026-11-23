@@ -664,19 +664,29 @@ export function createTypewriterEffect<
 
     /**
      * The database writer. Every write goes through its queue, so writes
-     * commit in the order they are queued, many in one transaction.
+     * commit in the order they are queued, many in one transaction, and what
+     * runs after each commit runs in that order too.
      */
     const writes = yield* Queue.unbounded<{
       statements: CompiledStatement[];
+      after: Effect.Effect<void>[];
       committed: Deferred.Deferred<void>;
     }>();
     yield* Scope.addFinalizer(scope, Queue.shutdown(writes));
 
-    /** Queues `statements` now, and returns what resolves once they commit. */
-    const write = (statements: DbStatement<unknown>[]) => {
+    /**
+     * Queues `statements` now, and returns what resolves once they commit.
+     * `after` runs once they commit, after what earlier writes queued to run,
+     * so events reach listeners in the order their writes were queued.
+     */
+    const write = (
+      statements: DbStatement<unknown>[],
+      after: Effect.Effect<void>[] = [],
+    ) => {
       const committed = Deferred.makeUnsafe<void>();
       Queue.offerUnsafe(writes, {
         statements: statements.map(compile),
+        after,
         committed,
       });
       return committed;
@@ -696,7 +706,8 @@ export function createTypewriterEffect<
             }),
           );
         }
-        for (const { committed } of jobs) {
+        for (const { after, committed } of jobs) {
+          for (const effect of after) yield* effect;
           yield* Deferred.succeed(committed, undefined);
         }
       }),
@@ -979,22 +990,23 @@ export function createTypewriterEffect<
             };
           },
         );
-        const committed = write([
-          ...insertMutations(
-            app.mutationSchema,
-            accepted.map(({ mutation }) => mutation),
-          ),
-          ...insertStorageSlots(app.typewriterSchema, executions),
-          ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
-        ]);
         // Reply and emit once the rows commit, without holding up the next group.
-        yield* Effect.gen(function* () {
-          yield* Deferred.await(committed);
-          for (const { reply, mutation } of replies) {
-            yield* Deferred.succeed(reply, mutation);
-          }
-          for (const event of events) yield* event;
-        }).pipe(Effect.forkIn(scope));
+        write(
+          [
+            ...insertMutations(
+              app.mutationSchema,
+              accepted.map(({ mutation }) => mutation),
+            ),
+            ...insertStorageSlots(app.typewriterSchema, executions),
+            ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
+          ],
+          [
+            ...replies.map(({ reply, mutation }) =>
+              Deferred.succeed(reply, mutation).pipe(Effect.asVoid),
+            ),
+            ...events,
+          ],
+        );
 
         // Signed under the evm lock, so in nonce order.
         for (const group of groups) {
@@ -1237,11 +1249,11 @@ export function createTypewriterEffect<
                       runtimeBlock,
                       included,
                     ),
+                    receipts.some((receipt) => receipt!.status === "success")
+                      ? emitBlock(runtimeBlock)
+                      : [],
                   ),
                 );
-                if (receipts.some((receipt) => receipt!.status === "success")) {
-                  for (const event of emitBlock(runtimeBlock)) yield* event;
-                }
               }
 
               // Send again what has waited a few blocks to land.
@@ -1320,14 +1332,15 @@ export function createTypewriterEffect<
               });
               const { number, hash, timestamp } = runtimeBlock;
               yield* Deferred.await(
-                write(clearMutationInclusion(app.mutationSchema, mutations)),
+                write(clearMutationInclusion(app.mutationSchema, mutations), [
+                  emit("block", blockListeners, {
+                    status: "removed",
+                    number,
+                    hash,
+                    timestamp,
+                  } as BlockEvent<"fifo" | "batch">),
+                ]),
               );
-              yield* emit("block", blockListeners, {
-                status: "removed",
-                number,
-                hash,
-                timestamp,
-              } as BlockEvent<"fifo" | "batch">);
               return;
             }
 
@@ -1407,7 +1420,7 @@ export function createTypewriterEffect<
                         (mutation as IncludedMutation).status = "finalized";
                       }
                     }
-                    for (const event of emitBlock(block)) yield* event;
+                    write([], emitBlock(block));
                   }
 
                   // Once every settlement from the first revert on is final,
