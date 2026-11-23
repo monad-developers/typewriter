@@ -683,6 +683,20 @@ export function createTypewriterEffect<
       return committed;
     };
 
+    /**
+     * Replies and events. Each is queued once its write commits, and the
+     * writer resolves writes in order, so they run in the order the writes
+     * were queued.
+     */
+    const emits = yield* Queue.unbounded<Effect.Effect<void>[]>();
+    yield* Scope.addFinalizer(scope, Queue.shutdown(emits));
+
+    const emitterProgram = Effect.forever(
+      Effect.gen(function* () {
+        for (const event of yield* Queue.take(emits)) yield* event;
+      }),
+    );
+
     const writerProgram = Effect.forever(
       Effect.gen(function* () {
         const jobs = yield* Queue.takeAll(writes);
@@ -989,13 +1003,20 @@ export function createTypewriterEffect<
           ...insertKeccakPreimages(app.typewriterSchema, newPreimages),
         ]);
         // Reply and emit once the rows commit, without holding up the next group.
-        yield* Effect.gen(function* () {
-          yield* Deferred.await(committed);
-          for (const { reply, mutation } of replies) {
-            yield* Deferred.succeed(reply, mutation);
-          }
-          for (const event of events) yield* event;
-        }).pipe(Effect.forkIn(scope));
+        // Completing a Deferred resumes its waiters synchronously, so this
+        // queues before the writer resolves the next write. The replies are
+        // queued too, so nothing here can run past the op budget and yield.
+        yield* Deferred.await(committed).pipe(
+          Effect.andThen(
+            Queue.offer(emits, [
+              ...replies.map(({ reply, mutation }) =>
+                Deferred.succeed(reply, mutation).pipe(Effect.asVoid),
+              ),
+              ...events,
+            ]),
+          ),
+          Effect.forkIn(scope),
+        );
 
         // Signed under the evm lock, so in nonce order.
         for (const group of groups) {
@@ -1241,7 +1262,7 @@ export function createTypewriterEffect<
                   ),
                 );
                 if (receipts.some((receipt) => receipt!.status === "success")) {
-                  for (const event of emitBlock(runtimeBlock)) yield* event;
+                  yield* Queue.offer(emits, emitBlock(runtimeBlock));
                 }
               }
 
@@ -1323,12 +1344,14 @@ export function createTypewriterEffect<
               yield* Deferred.await(
                 write(clearMutationInclusion(app.mutationSchema, mutations)),
               );
-              yield* emit("block", blockListeners, {
-                status: "removed",
-                number,
-                hash,
-                timestamp,
-              } as BlockEvent<"fifo" | "batch">);
+              yield* Queue.offer(emits, [
+                emit("block", blockListeners, {
+                  status: "removed",
+                  number,
+                  hash,
+                  timestamp,
+                } as BlockEvent<"fifo" | "batch">),
+              ]);
               return;
             }
 
@@ -1408,7 +1431,7 @@ export function createTypewriterEffect<
                         (mutation as IncludedMutation).status = "finalized";
                       }
                     }
-                    for (const event of emitBlock(block)) yield* event;
+                    yield* Queue.offer(emits, emitBlock(block));
                   }
 
                   // Once every settlement from the first revert on is final,
@@ -1490,9 +1513,12 @@ export function createTypewriterEffect<
     // -------------------------------------------------------------------------
     // Programs
 
-    const program = Effect.all([acceptProgram, writerProgram, watchProgram], {
-      concurrency: "unbounded",
-    }).pipe(
+    const program = Effect.all(
+      [acceptProgram, writerProgram, emitterProgram, watchProgram],
+      {
+        concurrency: "unbounded",
+      },
+    ).pipe(
       Effect.andThen(Effect.fail(new ProgramStoppedError())),
       Effect.raceFirst(lockLost),
       // Mutations waiting for the program would otherwise wait forever.
