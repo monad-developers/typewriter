@@ -7,6 +7,7 @@ import {
   Queue,
   Result,
   Schedule,
+  Scheduler,
   Schema,
   Scope,
   Semaphore,
@@ -1521,7 +1522,7 @@ export function createTypewriterEffect<
     function execute(
       input: RuntimeExecuteInput,
     ): Effect.Effect<void, ExecuteError> {
-      return Effect.gen(function* () {
+      const receive = Effect.gen(function* () {
         const mutation = structuredClone(input);
         if (!isMutationName(mutation.name)) {
           return yield* new UnknownMutationError({ mutation: mutation.name });
@@ -1558,6 +1559,16 @@ export function createTypewriterEffect<
         >();
         const acceptStartedAt = yield* startTimer;
         Queue.offerUnsafe(inbox, { mutation: runtimeMutation, reply });
+        return { runtimeMutation, reply, acceptStartedAt };
+      }).pipe(
+        // Mutations queue in the order `execute` is called. Otherwise the
+        // fiber could yield to another `execute` call once it runs past its op
+        // budget, for example while decoding a large mutation.
+        Effect.provideService(Scheduler.PreventSchedulerYield, true),
+      );
+
+      return Effect.gen(function* () {
+        const { runtimeMutation, reply, acceptStartedAt } = yield* receive;
 
         const acceptedMutation = yield* Deferred.await(reply).pipe(
           // The caller gets the error, and a failure that stops the runtime is
