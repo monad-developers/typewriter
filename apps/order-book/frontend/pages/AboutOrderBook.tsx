@@ -135,14 +135,14 @@ export function AboutOrderBook() {
             </li>
           </ul>
           <CodeBlock
-            title="Account.sol"
+            title="Typewriter.sol"
             lang="solidity"
             code={`enum KeyType { P256, WebAuthnP256, Secp256k1 }
 
-struct Key {
-    uint40 expiry;
+struct Credential {
+    uint40 expiration;
     KeyType keyType;
-    uint8 permissions;
+    uint256 permissions; // one bit per mutation; clients grant them by name
     bytes publicKey;
 }`}
           />

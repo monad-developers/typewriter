@@ -65,9 +65,15 @@ Users sign mutations and send them to the server, which submits them with `typew
 
 ```ts
 await typewriter.execute({
-  name: "Transfer",
-  params: { to, amount: 10n * 10n ** 18n },
-  authorization, // the user's signature, see below
+  mutation: {
+    name: "Transfer",
+    params: { to, amount: 10n * 10n ** 18n },
+    accountID,
+    credentialID,
+    nonce,
+    expiration,
+  },
+  signature, // the user's signature over `mutation`, see below
 });
 ```
 
@@ -281,7 +287,9 @@ enum KeyType {
 Each credential belongs to an account and grants permission to sign mutations
 on its behalf. `keyType` selects `P256`, `WebAuthnP256`, or `Secp256k1`.
 `permissions` is a bitset: bit `mutationID` grants permission to authorize that
-mutation. `expiration` is a Unix timestamp in seconds; `0` means no expiration.
+mutation. Clients grant it by mutation name, and a signer encodes the names
+(see [`typewriter.manifest`](#typewritermanifest)). `expiration` is a Unix
+timestamp in seconds; `0` means no expiration.
 
 A credential's ID is its array index. Adding a credential appends a new entry;
 removing one clears its slot without changing other IDs or the account ID.
@@ -542,49 +550,68 @@ typewriter.manifest: {
 
 The serializable manifest contains the deployment and all app/native mutation
 metadata needed to authorize mutations. The browser-safe `typewriter/client`
-subpath consumes this object. It owns ABI encoding, generic EIP-712 payload
-construction, account derivation, nonce arithmetic, and P-256 and secp256k1
-signature packing. The app still owns keys, persistence, signing, HTTP, and
+subpath consumes this object. It owns ABI encoding, EIP-712 payload
+construction, signature encoding, account derivation, nonce arithmetic, and
+permission encoding. The app still owns keys, persistence, signing, HTTP, and
 status handling.
 
-```ts
-import { authorizeMutation, getAuthorizationPayload } from "typewriter/client";
+`createSigner` takes the manifest, a key's type and public key (an `address`
+for secp256k1), and a `sign(payload, typedData)` callback for any signing
+algorithm. The callback signs the 32-byte EIP-712 `payload` (or, for a wallet,
+the equivalent `typedData`) and returns the signature's parts as ox and viem
+return them: `{ r, s }` for P-256, `{ r, s, yParity }` for secp256k1, and
+`{ r, s, authenticatorData, clientDataJSON }` for a WebAuthn assertion. The
+signer encodes them the way the contract verifies them.
 
-const mutation = {
+```ts
+import { createSigner, KeyType } from "typewriter/client";
+
+const signer = createSigner(manifest, {
+  keyType: KeyType.Secp256k1,
+  address: account.address,
+  sign: async (payload) =>
+    parseSignature(await account.sign({ hash: payload })),
+});
+
+const signed = await signer.signMutation({
   name: "Transfer",
   params,
   accountID,
   credentialID: 0n,
   nonce,
   expiration,
-};
-const payload = getAuthorizationPayload(manifest, mutation);
-const signature = await sign(payload);
-const submitted = authorizeMutation(mutation, signature);
+});
+// signed: { mutation, signature }, the input of typewriter.execute()
 ```
+
+`createAccountMutation(signer)` builds the `CreateAccount` mutation for a
+signer's key, with the derived `accountID`. `signMutation` takes
+`AddCredential`'s `permissions` as a list of mutation names, such as
+`["Transfer"]`, and signs the bitset they encode to; the returned mutation
+holds the bitset. `encodePermissions(manifest, names)` does that encoding on
+its own, and `decodePermissions(manifest, permissions)` lists a bitset's
+mutations by name.
 
 #### `typewriter.execute()`
 
 ```ts
-typewriter.execute(input: { name, params, authorization }): Promise<void>;
+typewriter.execute(input: { mutation, signature }): Promise<void>;
 ```
 
-Submits an authorized mutation. `name` is the exact Solidity `Mutation` enum
-member (or built-in mutation name), `params` matches its struct, and
-`authorization` has the fixed native shape. It resolves once the mutation is
-accepted and persisted. Its position in the onchain execution order, the
-`executionIndex` of its mutation events, can change until it is finalized.
+Submits a signed mutation. `mutation` is the mutation as it was signed:
+`name` is the exact Solidity `Mutation` enum member (or built-in mutation
+name), `params` matches its struct, and `accountID`, `credentialID`, `nonce`,
+and `expiration` authorize it. `signature` is the signature over it, encoded
+for the credential's key type. It resolves once the mutation is accepted and
+persisted. Its position in the onchain execution order, the `executionIndex`
+of its mutation events, can change until it is finalized.
 
 The server also rejects an authorization or credential that expires less than
 `MAX_SETTLEMENT_DELAY` seconds after the current block (see
 **Expirations** under [Authorization](#authorization)).
 
 ```ts
-await typewriter.execute({
-  name: "Transfer",
-  params,
-  authorization,
-});
+await typewriter.execute(signed);
 ```
 
 #### `typewriter.state`

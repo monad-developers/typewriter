@@ -120,6 +120,6 @@ const order = await signer.signMutation({
 ### Other exports
 
 - `ASSETS` — `[USD, GOLD, WTIOIL, EUR, SPX, BTC]`
-- `DEFAULT_NON_ROOT_PERMISSIONS` — the mutations a session key may sign (all but `Withdrawal`), for `encodePermissions` from `typewriter/client`
+- `DEFAULT_NON_ROOT_PERMISSIONS` — the mutations a session key may sign (all but `Withdrawal`), passed as `AddCredential`'s `permissions` when signing
 - `InstrumentConfig` — TypeScript type for instrument configuration
 - `OrderBookMutation`, `OrderBookMutationName` — signed mutation input and mutation names

@@ -20,10 +20,10 @@ const typewriter = await createTypewriter(Token, {
 
 ## Execute a mutation
 
-A signed mutation is the object a client builds with `authorizeMutation` from `typewriter/client`: the mutation's `name` and `params`, plus its `authorization`; see [authorization](/docs/concepts/accounts/authorization). How it gets from the client to your server, such as an HTTP endpoint, is up to you; see [architecture](/docs/concepts/architecture#the-server).
+A signed mutation is the `{ mutation, signature }` object a client gets from a signer's `signMutation()`: the mutation as it was signed, and the signature over it; see [authorization](/docs/concepts/accounts/authorization). How it gets from the client to your server, such as an HTTP endpoint, is up to you; see [architecture](/docs/concepts/architecture#the-server).
 
 ```ts [src/index.ts]
-await typewriter.execute(mutation);
+await typewriter.execute(signed);
 ```
 
 When `execute()` resolves, the mutation is accepted: its effects are already visible in [`typewriter.state`](/docs/concepts/querying/current-state), and Typewriter settles it onchain without anything more from your code or the client.
@@ -35,7 +35,7 @@ When `execute()` resolves, the mutation is accepted: its effects are already vis
 | `_tag` | Cause |
 | --- | --- |
 | `MutationRevertedError` | The mutation reverted. Its `errorName` and `args` hold the Solidity error, such as `InsufficientBalance` from your code, or `InvalidSignature`, `PermissionDenied`, or `InvalidNonce` from the [account checks](/docs/concepts/accounts/overview#what-typewriter-checks). |
-| `InvalidMutationError` | The params or authorization don't match the mutation's shape. |
+| `InvalidMutationError` | The mutation's fields or the signature don't match the mutation's shape. |
 | `UnknownMutationError` | No mutation has that name. |
 | `MutationExpiresTooSoonError` | The signature or credential expires less than a minute after the chain's latest block. |
 
@@ -43,7 +43,7 @@ When `execute()` resolves, the mutation is accepted: its effects are already vis
 import { MutationRevertedError } from "typewriter";
 
 try {
-  await typewriter.execute(mutation);
+  await typewriter.execute(signed);
 } catch (error) {
   if (error instanceof MutationRevertedError && error.errorName === "InsufficientBalance") {
     // tell the user their balance is too low
