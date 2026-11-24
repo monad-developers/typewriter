@@ -26,6 +26,12 @@ export type Plan = {
     jumpsMs: Weighted<number>;
     /** How often the scheduler releases an in-flight I/O result before a pick, while tasks are ready. */
     ioRate: number;
+    /**
+     * How many ops a fiber runs before the scheduler makes it yield. Without
+     * it, Effect's default, 2048. A small budget switches fibers in the middle
+     * of work that a large one runs whole.
+     */
+    maxOpsBeforeYield?: number;
   };
   chain: {
     blockTimeMs: number;
@@ -243,6 +249,7 @@ export function makePlan(seed: string): Plan {
         [(EXPIRATION_MARGIN + 3) * 1_000, 1],
       ],
       ioRate: at("scheduler.ioRate").pick([0, 0.01, 0.1]),
+      maxOpsBeforeYield: at("scheduler.maxOpsBeforeYield").pick([8, 64, 2048]),
     },
     chain,
     generator,
