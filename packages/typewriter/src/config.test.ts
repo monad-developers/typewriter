@@ -213,7 +213,7 @@ test("Typewriter exposes each storage root at one property layer", () => {
   expectTypeOf<Root["accounts"][Hex.Hex]>().toEqualTypeOf<bigint>();
 });
 
-test("Typewriter mutation input uses concrete authorization", () => {
+test("Typewriter mutation input is the signed mutation and its signature", () => {
   const app = createTypewriterTest<typeof STORAGE_LAYOUT, typeof MUTATIONS>();
   type Input = Parameters<typeof app.execute>[0];
 
@@ -221,28 +221,36 @@ test("Typewriter mutation input uses concrete authorization", () => {
     TypewriterMutationInput<typeof MUTATIONS>
   >();
 
+  const { signature, ...fields } = AUTHORIZATION;
   const ping = {
-    name: "Ping",
-    params: { amount: 1n },
-    authorization: AUTHORIZATION,
+    mutation: { name: "Ping", params: { amount: 1n }, ...fields },
+    signature,
   } satisfies Input;
   const createAccount = {
-    name: "CreateAccount",
-    params: { keyType: 2, publicKey: "0x03" },
-    authorization: AUTHORIZATION,
+    mutation: {
+      name: "CreateAccount",
+      params: { keyType: 2, publicKey: "0x03" },
+      ...fields,
+    },
+    signature,
   } satisfies Input;
 
-  expectTypeOf(ping).toMatchTypeOf<Extract<Input, { name: "Ping" }>>();
+  expectTypeOf(ping).toMatchTypeOf<
+    Extract<Input, { mutation: { name: "Ping" } }>
+  >();
   expectTypeOf(createAccount).toMatchTypeOf<
-    Extract<Input, { name: "CreateAccount" }>
+    Extract<Input, { mutation: { name: "CreateAccount" } }>
   >();
 
   const acceptInput = (_input: Input) => {};
   acceptInput({
-    name: "CreateAccount",
-    // @ts-expect-error Native key types are limited to the protocol's three algorithms.
-    params: { keyType: 3, publicKey: "0x03" },
-    authorization: AUTHORIZATION,
+    mutation: {
+      name: "CreateAccount",
+      // @ts-expect-error Native key types are limited to the protocol's three algorithms.
+      params: { keyType: 3, publicKey: "0x03" },
+      ...fields,
+    },
+    signature,
   });
 });
 

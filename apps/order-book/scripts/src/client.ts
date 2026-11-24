@@ -1,7 +1,5 @@
 import {
-  authorizeWithSecp256k1,
   bidOrAsk,
-  createSecp256k1Account,
   type InstrumentConfig,
   limitOrderParams,
   lotAligned,
@@ -10,11 +8,17 @@ import {
   priceToQ32,
   randomNonce,
   type Side,
+  secp256k1Signer,
   type TokenAmount,
 } from "order-book-sdk";
 import { type Hex, Secp256k1 } from "ox";
 import superjson from "superjson";
-import { incrementNonce, type TypedMutation } from "typewriter/client";
+import {
+  createAccountMutation,
+  incrementNonce,
+  type Signer,
+  type TypedMutation,
+} from "typewriter/client";
 import { requiredEnv } from "./env";
 
 const API_URL = requiredEnv("API_URL", "http://localhost:3000");
@@ -56,7 +60,7 @@ console.log(
 );
 
 export type Account = {
-  privateKey: Hex.Hex;
+  signer: Signer<OrderBookManifest>;
   accountID: Hex.Hex;
   nonce: bigint;
 };
@@ -64,13 +68,16 @@ export type Account = {
 type MutationOpts = { concurrent?: boolean };
 
 export async function createAccount(privateKey?: Hex.Hex): Promise<Account> {
-  const key = privateKey ?? Secp256k1.randomPrivateKey();
-  const { accountID, mutation } = createSecp256k1Account(manifest, key);
-  const { exists } = await get<{ exists: boolean }>(
-    `/api/account/${accountID}/exists`,
+  const signer = secp256k1Signer(
+    manifest,
+    privateKey ?? Secp256k1.randomPrivateKey(),
   );
-  if (!exists) await post("/api", mutation);
-  return { privateKey: key, accountID, nonce: randomNonce() };
+  const create = createAccountMutation(signer);
+  const { exists } = await get<{ exists: boolean }>(
+    `/api/account/${create.accountID}/exists`,
+  );
+  if (!exists) await post("/api", await signer.signMutation(create));
+  return { signer, accountID: create.accountID, nonce: randomNonce() };
 }
 
 /** Retries `createAccount` until the backend accepts it. */
@@ -103,7 +110,7 @@ async function submit<const name extends OrderBookMutationName>(
 ) {
   const nonce = opts?.concurrent ? randomNonce() : account.nonce;
   if (!opts?.concurrent) account.nonce = incrementNonce(nonce);
-  const mutation = authorizeWithSecp256k1(manifest, account.privateKey, {
+  const mutation = await account.signer.signMutation({
     name,
     params,
     accountID: account.accountID,

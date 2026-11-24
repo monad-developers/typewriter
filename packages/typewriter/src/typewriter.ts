@@ -190,9 +190,10 @@ const MAX_FEE_PER_GAS = 10_000_000_000_000n;
 const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
 
 type RuntimeExecuteInput = {
-  name: string;
-  params: unknown;
-  authorization: ExecuteInput<Authorization>;
+  mutation: { name: string; params: unknown } & ExecuteInput<
+    Omit<Authorization, "signature">
+  >;
+  signature: Hex.Hex;
 };
 
 /** A mutation from `execute`, or the queue index of an enqueue to force-execute. */
@@ -1531,26 +1532,32 @@ export function createTypewriterEffect<
       input: RuntimeExecuteInput,
     ): Effect.Effect<void, ExecuteError> {
       const receive = Effect.gen(function* () {
-        const mutation = structuredClone(input);
-        if (!isMutationName(mutation.name)) {
-          return yield* new UnknownMutationError({ mutation: mutation.name });
+        const submitted = structuredClone(input);
+        const name: unknown = submitted?.mutation?.name;
+        if (!isMutationName(name)) {
+          return yield* new UnknownMutationError({ mutation: name as string });
         }
 
-        const { params, authorization } = yield* Schema.decodeUnknownEffect(
-          executeInputSchemas.get(mutation.name)!,
-        )(mutation).pipe(
+        const { mutation, signature } = yield* Schema.decodeUnknownEffect(
+          executeInputSchemas.get(name)!,
+        )(submitted).pipe(
           Effect.mapError(
-            (cause) =>
-              new InvalidMutationError({ mutation: mutation.name, cause }),
+            (cause) => new InvalidMutationError({ mutation: name, cause }),
           ),
         );
 
         const runtimeMutation = {
-          name: mutation.name,
-          params,
-          authorization,
+          name,
+          params: mutation.params,
+          authorization: {
+            accountID: mutation.accountID,
+            credentialID: mutation.credentialID,
+            nonce: mutation.nonce,
+            expiration: mutation.expiration,
+            signature,
+          },
           status: "received",
-          config: app.mutations[mutation.name]!,
+          config: app.mutations[name]!,
         } as const satisfies ReceivedMutation;
 
         yield* Effect.logDebug("Received mutation").pipe(

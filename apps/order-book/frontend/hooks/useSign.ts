@@ -1,21 +1,7 @@
 import type { OrderBookManifest, OrderBookMutationName } from "order-book-sdk";
-import {
-  authorizeMutation,
-  getAuthorizationPayload,
-  packP256Signature,
-  type TypedMutation,
-} from "typewriter/client";
-import { bytesToHex, type Hex, hexToBytes } from "viem";
+import type { TypedMutation } from "typewriter/client";
+import { webCryptoSigner } from "../lib/signer";
 import type { Account } from "./useStoredAccount";
-
-async function signP256(keyPair: CryptoKeyPair, payload: Hex): Promise<Hex> {
-  const signature = await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" },
-    keyPair.privateKey,
-    hexToBytes(payload).buffer as ArrayBuffer,
-  );
-  return packP256Signature(bytesToHex(new Uint8Array(signature)));
-}
 
 export async function signMutation<const name extends OrderBookMutationName>(
   account: Account,
@@ -23,7 +9,8 @@ export async function signMutation<const name extends OrderBookMutationName>(
   name: name,
   params: TypedMutation<OrderBookManifest, name>["params"],
 ) {
-  const mutation = {
+  const signer = await webCryptoSigner(manifest, account.keyPair);
+  return signer.signMutation({
     name,
     params,
     accountID: account.accountId,
@@ -31,10 +18,5 @@ export async function signMutation<const name extends OrderBookMutationName>(
     credentialID: 1n,
     nonce: account.nonce,
     expiration: 0,
-  };
-  const signature = await signP256(
-    account.keyPair,
-    getAuthorizationPayload(manifest, mutation),
-  );
-  return authorizeMutation(mutation, signature);
+  });
 }

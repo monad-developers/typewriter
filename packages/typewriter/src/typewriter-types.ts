@@ -87,9 +87,13 @@ export type TypewriterMutationInput<
   name extends keyof mutationsConfig & string = keyof mutationsConfig & string,
 > = {
   [name in keyof mutationsConfig & string]: {
-    name: name;
-    params: ExecuteInput<MutationParamsForName<name, mutationsConfig[name]>>;
-    authorization: ExecuteInput<Authorization>;
+    /** The mutation as it was signed. */
+    mutation: {
+      name: name;
+      params: ExecuteInput<MutationParamsForName<name, mutationsConfig[name]>>;
+    } & ExecuteInput<Omit<Authorization, "signature">>;
+    /** The signature over `mutation`, encoded for the credential's key type. */
+    signature: Hex.Hex;
   };
 }[name];
 

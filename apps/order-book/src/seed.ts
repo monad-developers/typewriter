@@ -1,7 +1,5 @@
 import {
-  authorizeWithSecp256k1,
   baseToQuote,
-  createSecp256k1Account,
   INSTRUMENTS,
   limitOrderParams,
   type OrderBookManifest,
@@ -9,11 +7,12 @@ import {
   type OrderBookMutationName,
   priceToQ32,
   randomNonce,
+  secp256k1Signer,
   TokenAmount,
 } from "order-book-sdk";
 import { Secp256k1 } from "ox";
 import type { Address } from "ox/Address";
-import type { TypedMutation } from "typewriter/client";
+import { createAccountMutation, type TypedMutation } from "typewriter/client";
 
 const PRICES: Record<keyof typeof INSTRUMENTS, number> = {
   "GOLD/USD": 4740,
@@ -33,16 +32,16 @@ export async function seed(
   manifest: OrderBookManifest,
   execute: (mutation: OrderBookMutation) => Promise<unknown>,
 ) {
-  const privateKey = Secp256k1.randomPrivateKey();
-  const account = createSecp256k1Account(manifest, privateKey);
+  const signer = secp256k1Signer(manifest, Secp256k1.randomPrivateKey());
+  const create = createAccountMutation(signer);
   const sign = <const name extends OrderBookMutationName>(
     name: name,
     params: TypedMutation<OrderBookManifest, name>["params"],
   ) =>
-    authorizeWithSecp256k1(manifest, privateKey, {
+    signer.signMutation({
       name,
       params,
-      accountID: account.accountID,
+      accountID: create.accountID,
       credentialID: 0n,
       nonce: randomNonce(),
       expiration: 0,
@@ -68,27 +67,27 @@ export async function seed(
     deposits.set(amount.asset, (deposits.get(amount.asset) ?? 0n) + amount.raw);
   }
 
-  await execute(account.mutation);
+  await execute(await signer.signMutation(create));
   // A batch runs limit orders before instruments and deposits.
   await Promise.all([
     ...Object.values(INSTRUMENTS).map((instrument) =>
-      execute(
-        sign("AddInstrument", {
-          instrumentId: BigInt(instrument.id),
-          base: instrument.base,
-          quote: instrument.quote,
-          baseLotExp: instrument.baseLotExp,
-          quoteLotExp: instrument.quoteLotExp,
-        }),
-      ),
+      sign("AddInstrument", {
+        instrumentId: BigInt(instrument.id),
+        base: instrument.base,
+        quote: instrument.quote,
+        baseLotExp: instrument.baseLotExp,
+        quoteLotExp: instrument.quoteLotExp,
+      }).then(execute),
     ),
     ...[...deposits].map(([asset, amount]) =>
-      execute(sign("Deposit", { asset, amount })),
+      sign("Deposit", { asset, amount }).then(execute),
     ),
   ]);
   await Promise.all(
     orders.map((order) =>
-      execute(sign("LimitOrder", limitOrderParams(order.instrument, order))),
+      sign("LimitOrder", limitOrderParams(order.instrument, order)).then(
+        execute,
+      ),
     ),
   );
 }

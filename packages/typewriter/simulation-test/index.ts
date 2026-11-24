@@ -34,6 +34,7 @@ import {
   createAccount,
   deploy,
   enqueueCalldata,
+  executeInput,
   expect,
   type Mutation,
   makeSigner,
@@ -441,7 +442,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     const startExecute = (mutation: Mutation) =>
       Effect.gen(function* () {
         // The client may reuse what it sent, so the runtime must copy it.
-        const input = structuredClone(mutation);
+        const input = executeInput(structuredClone(mutation));
         const fiber = yield* Effect.forkChild(
           Effect.exit(typewriter.execute(input as never)),
           { startImmediately: true },

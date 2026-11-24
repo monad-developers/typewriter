@@ -31,10 +31,16 @@ export function executeInputSchema<
 > {
   // An app's `params` are only known at runtime, so their types are too.
   return Schema.Struct({
-    params: Object.hasOwn(BUILTIN_PARAMS_SCHEMAS, name)
-      ? BUILTIN_PARAMS_SCHEMAS[name as keyof typeof BUILTIN_PARAMS_SCHEMAS]
-      : tupleSchema(params),
-    authorization: AUTHORIZATION_SCHEMA,
+    mutation: Schema.Struct({
+      params: Object.hasOwn(BUILTIN_PARAMS_SCHEMAS, name)
+        ? BUILTIN_PARAMS_SCHEMAS[name as keyof typeof BUILTIN_PARAMS_SCHEMAS]
+        : tupleSchema(params),
+      accountID: bytesNSchema(32),
+      credentialID: bigIntegerSchema(false, 64),
+      nonce: bigIntegerSchema(false, 256),
+      expiration: smallIntegerSchema(false, 40),
+    }),
+    signature: BYTES_SCHEMA,
   }) as never;
 }
 
@@ -42,8 +48,10 @@ type TypewriterMutationFields<
   name extends string,
   params extends readonly AbiParameter[],
 > = {
-  params: MutationParamsForName<name, { params: params }>;
-  authorization: Authorization;
+  mutation: {
+    params: MutationParamsForName<name, { params: params }>;
+  } & Omit<Authorization, "signature">;
+  signature: Hex.Hex;
 };
 
 /**
@@ -184,14 +192,6 @@ const KEY_TYPE_SCHEMA = Schema.Literals([
   KeyType.WebAuthnP256,
   KeyType.Secp256k1,
 ]);
-
-const AUTHORIZATION_SCHEMA = Schema.Struct({
-  accountID: bytesNSchema(32),
-  credentialID: bigIntegerSchema(false, 64),
-  nonce: bigIntegerSchema(false, 256),
-  expiration: smallIntegerSchema(false, 40),
-  signature: BYTES_SCHEMA,
-});
 
 const BUILTIN_PARAMS_SCHEMAS = {
   CreateAccount: Schema.Struct({

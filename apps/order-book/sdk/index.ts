@@ -1,19 +1,11 @@
-import { AbiParameters, Hex, Secp256k1, Signature } from "ox";
+import { Hex, Secp256k1 } from "ox";
 import { type Address, fromPublicKey } from "ox/Address";
 import type {
   TypewriterManifest,
   TypewriterMutationInput,
   TypewriterSolidityEntrypoint,
 } from "typewriter";
-import {
-  authorizeMutation,
-  deriveAccountID,
-  getAuthorizationPayload,
-  KeyType,
-  packNonce,
-  packSecp256k1Signature,
-  type TypedMutation,
-} from "typewriter/client";
+import { createSigner, KeyType, packNonce } from "typewriter/client";
 import type OrderBook from "../contracts/src/OrderBook.sol";
 
 type OrderBookMetadata =
@@ -44,7 +36,7 @@ export const ASSETS = [USD, GOLD, WTIOIL, EUR, SPX, BTC] as const;
 
 /**
  * The mutations a session key may sign: every app mutation except
- * `Withdrawal`. Pass it to `encodePermissions` for `AddCredential`.
+ * `Withdrawal`. Pass it as `AddCredential`'s `permissions` when signing.
  */
 export const DEFAULT_NON_ROOT_PERMISSIONS = [
   "CloseOrder",
@@ -195,43 +187,16 @@ export function randomNonce(): bigint {
   return packNonce(BigInt(Hex.random(24)), 0n);
 }
 
-export function authorizeWithSecp256k1<
-  const name extends OrderBookMutationName,
->(
-  manifest: OrderBookManifest,
-  privateKey: Hex.Hex,
-  mutation: TypedMutation<OrderBookManifest, name>,
-) {
-  const signature = Secp256k1.sign({
-    payload: getAuthorizationPayload(manifest, mutation),
-    privateKey,
-  });
-  return authorizeMutation(
-    mutation,
-    packSecp256k1Signature(Signature.toHex(signature)),
-  );
-}
-
-/** The account a secp256k1 root key creates, and its `CreateAccount`. */
-export function createSecp256k1Account(
+/** Signs order book mutations with a raw secp256k1 private key. */
+export function secp256k1Signer(
   manifest: OrderBookManifest,
   privateKey: Hex.Hex,
 ) {
-  const params = {
+  return createSigner(manifest, {
     keyType: KeyType.Secp256k1,
-    publicKey: AbiParameters.encode(
-      [{ type: "address" }],
-      [fromPublicKey(Secp256k1.getPublicKey({ privateKey }))],
-    ),
-  };
-  const accountID = deriveAccountID(params);
-  const mutation = authorizeWithSecp256k1(manifest, privateKey, {
-    name: "CreateAccount",
-    params,
-    accountID,
-    credentialID: 0n,
-    nonce: 0n,
-    expiration: 0,
+    address: fromPublicKey(Secp256k1.getPublicKey({ privateKey })),
+    async sign(payload) {
+      return Secp256k1.sign({ payload, privateKey });
+    },
   });
-  return { accountID, mutation };
 }

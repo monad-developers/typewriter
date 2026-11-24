@@ -43,15 +43,29 @@ const TYPED_PARAMS = {
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 
+/**
+ * The `execute` input of `params` with `authorization`'s fields: the signature
+ * beside the mutation, and the rest in it. A field `authorization` lacks is
+ * missing from the input too.
+ */
+function input(params: unknown, authorization: unknown = AUTHORIZATION) {
+  const { signature, ...fields } = authorization as Record<string, unknown>;
+  return {
+    mutation: { params, ...fields },
+    ...(Object.hasOwn(authorization as object, "signature")
+      ? { signature }
+      : {}),
+  };
+}
+
 function validate(
   params: unknown,
   authorization: unknown = AUTHORIZATION,
   abi: readonly AbiParameters.Parameter[] = TYPED,
 ) {
-  return Schema.decodeUnknownSync(executeInputSchema("App", abi))({
-    params,
-    authorization,
-  });
+  return Schema.decodeUnknownSync(executeInputSchema("App", abi))(
+    input(params, authorization),
+  );
 }
 
 test("accepts only the names of the mutations", () => {
@@ -87,8 +101,11 @@ test("decodes decimal strings to bigints", () => {
     { ...TYPED_PARAMS, amount: "1000000" },
     { ...AUTHORIZATION, credentialID: "7", nonce: "11" },
   );
-  expect(decoded.params).toMatchObject({ small: 7, amount: 1_000_000n });
-  expect(decoded.authorization).toMatchObject({
+  expect(decoded.mutation.params).toMatchObject({
+    small: 7,
+    amount: 1_000_000n,
+  });
+  expect(decoded.mutation).toMatchObject({
     credentialID: 7n,
     nonce: 11n,
     expiration: 1_900_000_000,
@@ -249,7 +266,7 @@ test("rejects an authorization missing a field, or not an object", () => {
       AUTHORIZATION;
     expect(() => validate(TYPED_PARAMS, authorization)).toThrow("Missing key");
   }
-  // The encoder spreads the authorization, so it must be an object.
+  // The mutation's fields must be an object's, not an array's.
   expect(() => validate(TYPED_PARAMS, Object.values(AUTHORIZATION))).toThrow();
 });
 
@@ -294,7 +311,7 @@ test("decodes built-in params, with only the protocol's key types", () => {
   const decode = (name: keyof typeof BUILTIN_MUTATIONS, params: unknown) =>
     Schema.decodeUnknownSync(
       executeInputSchema(name, BUILTIN_MUTATIONS[name].params),
-    )({ params, authorization: AUTHORIZATION }).params;
+    )(input(params)).mutation.params;
 
   expect(
     decode("AddCredential", {
@@ -335,23 +352,41 @@ test("takes what `execute` takes, and decodes to what the runtime uses", () => {
       typeof executeInputSchema<name, (typeof MUTATIONS)[name]["params"]>
     >;
   };
+  type Input<name extends keyof typeof MUTATIONS> = TypewriterMutationInput<
+    typeof MUTATIONS,
+    name
+  >;
+  type Mutation<name extends keyof typeof MUTATIONS> = TypewriterMutation<
+    name,
+    (typeof MUTATIONS)[name]
+  >;
+  // The runtime moves the signature into its mutation's `authorization`.
   type Check<name extends keyof typeof MUTATIONS> = {
-    encoded: Omit<TypewriterMutationInput<typeof MUTATIONS, name>, "name">;
-    type: Omit<TypewriterMutation<name, (typeof MUTATIONS)[name]>, "name">;
+    encoded: {
+      mutation: Omit<Input<name>["mutation"], "name">;
+      signature: Input<name>["signature"];
+    };
+    type: {
+      mutation: { params: Mutation<name>["params"] } & Omit<
+        Mutation<name>["authorization"],
+        "signature"
+      >;
+      signature: Mutation<name>["authorization"]["signature"];
+    };
   };
 
   expectTypeOf<Codecs["App"]["Encoded"]>().toEqualTypeOf<
     Check<"App">["encoded"]
   >();
   expectTypeOf<Codecs["App"]["Type"]>().toEqualTypeOf<Check<"App">["type"]>();
-  type Params = Codecs["App"]["Type"]["params"];
+  type Params = Codecs["App"]["Type"]["mutation"]["params"];
   expectTypeOf<{ [key in keyof Params]: Params[key] }>().toEqualTypeOf<{
     small: number;
     amount: bigint;
     to: `0x${string}`;
     legs: readonly { price: bigint }[];
   }>();
-  type ParamsInput = Codecs["App"]["Encoded"]["params"];
+  type ParamsInput = Codecs["App"]["Encoded"]["mutation"]["params"];
   expectTypeOf<{
     [key in keyof ParamsInput]: ParamsInput[key];
   }>().toEqualTypeOf<{

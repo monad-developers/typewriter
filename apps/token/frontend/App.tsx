@@ -2,27 +2,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { TypewriterManifest } from "typewriter";
 import {
-  authorizeMutation,
   BUILTIN_MUTATIONS,
-  deriveAccountID,
-  getAuthorizationPayload,
+  createAccountMutation,
   incrementNonce,
-  KeyType,
-  packP256Signature,
   type TypedMutation,
 } from "typewriter/client";
-import {
-  bytesToHex,
-  formatUnits,
-  type Hex,
-  hexToBytes,
-  parseUnits,
-  zeroHash,
-} from "viem";
+import { formatUnits, type Hex, parseUnits, zeroHash } from "viem";
 import { useManifest } from "./hooks/useManifest";
 import { toAccount, useStoredAccount } from "./hooks/useStoredAccount";
 import { saveStoredAccount } from "./lib/account-store";
 import { type RequestParams, request } from "./lib/api";
+import { webCryptoSigner } from "./lib/signer";
 
 type AccountInfo = { balance: bigint };
 type TxStatus = "accepted" | "included" | "finalized";
@@ -70,15 +60,6 @@ function relativeTime(timestamp: number) {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   return `${Math.floor(seconds / 3600)}h ago`;
-}
-
-async function signPayload(keyPair: CryptoKeyPair, payload: Hex): Promise<Hex> {
-  const signature = await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" },
-    keyPair.privateKey,
-    Uint8Array.from(hexToBytes(payload)),
-  );
-  return packP256Signature(bytesToHex(new Uint8Array(signature)));
 }
 
 export function App() {
@@ -192,24 +173,10 @@ export function App() {
         false,
         ["sign", "verify"],
       );
-      const publicKey = bytesToHex(
-        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
-      );
-      const createParams = { keyType: KeyType.P256, publicKey } as const;
-      const accountId = deriveAccountID(createParams);
-      const createMutation = {
-        name: "CreateAccount",
-        params: createParams,
-        accountID: accountId,
-        credentialID: 0n,
-        nonce: 0n,
-        expiration: 0,
-      } as const satisfies TypedMutation<typeof manifest, "CreateAccount">;
-      const createSignature = await signPayload(
-        keyPair,
-        getAuthorizationPayload(manifest, createMutation),
-      );
-      const create = authorizeMutation(createMutation, createSignature);
+      const signer = await webCryptoSigner(manifest, keyPair);
+      const createMutation = createAccountMutation(signer);
+      const accountId = createMutation.accountID;
+      const create = await signer.signMutation(createMutation);
       await request("/api", {
         method: "POST",
         body: create,
@@ -225,11 +192,7 @@ export function App() {
         nonce: 0n,
         expiration: Math.floor(Date.now() / 1000) + 60,
       } as const satisfies TypedMutation<typeof manifest, "Mint">;
-      const mintSignature = await signPayload(
-        keyPair,
-        getAuthorizationPayload(manifest, mintMutation),
-      );
-      const mint = authorizeMutation(mintMutation, mintSignature);
+      const mint = await signer.signMutation(mintMutation);
       const startedAt = performance.now();
       await loggedRequest("/api", {
         method: "POST",
@@ -278,11 +241,8 @@ export function App() {
         nonce: account.nonce,
         expiration: Math.floor(Date.now() / 1000) + 60,
       } as const satisfies TypedMutation<typeof manifest, "Transfer">;
-      const transferSignature = await signPayload(
-        account.keyPair,
-        getAuthorizationPayload(manifest, transferMutation),
-      );
-      const transfer = authorizeMutation(transferMutation, transferSignature);
+      const signer = await webCryptoSigner(manifest, account.keyPair);
+      const transfer = await signer.signMutation(transferMutation);
       const startedAt = performance.now();
       await loggedRequest("/api", {
         method: "POST",
