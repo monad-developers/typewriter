@@ -151,10 +151,9 @@ export function watchChain(
           Effect.gen(function* () {
             // A provider ahead of the one that served `latest`, or a chain
             // that a reorg has yet to replace, is one a later poll reaches.
-            const index = chain.findIndex(
-              (block) => block.hash === finalized.hash,
-            );
-            if (index === -1) return;
+            // `chain` holds every block from `root` up, so it's found by height.
+            const index = Number(finalized.number - root.number) - 1;
+            if (chain[index]?.hash !== finalized.hash) return;
             root = chain[index]!;
             chain = chain.slice(index + 1);
             yield* Queue.offer(queue, {
@@ -185,18 +184,23 @@ export function watchChain(
 
           // A window of requests in flight, in order, so a slow request holds
           // up only the blocks after it, not a whole round.
-          const start = tip().number + 1n;
-          yield* Stream.fromIterable(
-            Array.from(
-              { length: Number(latest.number - start) + 1 },
-              (_, i) => start + BigInt(i),
-            ),
-          ).pipe(
+          const catchUp = Stream.iterate(tip().number + 1n, (n) => n + 1n).pipe(
+            Stream.takeWhile((n) => n <= latest.number),
             Stream.mapEffect(getBlock, { concurrency: CATCH_UP_CONCURRENCY }),
             Stream.runForEach((block) =>
               reconcile(block).pipe(Effect.andThen(finalize(finalized))),
             ),
           );
+          // Meanwhile the head keeps coming, since the runtime signs
+          // settlements with its timestamp.
+          const refreshHead = Effect.sleep(
+            Duration.millis(config.pollIntervalMs),
+          ).pipe(
+            Effect.andThen(requestBlock("latest")),
+            Effect.flatMap(fetched),
+            Effect.forever,
+          );
+          yield* catchUp.pipe(Effect.raceFirst(refreshHead));
         });
 
         yield* poll.pipe(
