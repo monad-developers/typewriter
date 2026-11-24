@@ -183,23 +183,20 @@ export function watchChain(
             return;
           }
 
-          while (tip().number < latest.number) {
-            const start = tip().number + 1n;
-            const count = Math.min(
-              Number(latest.number - start) + 1,
-              CATCH_UP_CONCURRENCY,
-            );
-            const blocks = yield* Effect.forEach(
-              Array.from({ length: count }, (_, i) => start + BigInt(i)),
-              getBlock,
-              { concurrency: "unbounded" },
-            );
-            for (const block of blocks) yield* reconcile(block);
-            yield* finalize(finalized);
-            if (tip().number < latest.number) {
-              yield* fetched(yield* requestBlock("latest"));
-            }
-          }
+          // A window of requests in flight, in order, so a slow request holds
+          // up only the blocks after it, not a whole round.
+          const start = tip().number + 1n;
+          yield* Stream.fromIterable(
+            Array.from(
+              { length: Number(latest.number - start) + 1 },
+              (_, i) => start + BigInt(i),
+            ),
+          ).pipe(
+            Stream.mapEffect(getBlock, { concurrency: CATCH_UP_CONCURRENCY }),
+            Stream.runForEach((block) =>
+              reconcile(block).pipe(Effect.andThen(finalize(finalized))),
+            ),
+          );
         });
 
         yield* poll.pipe(
