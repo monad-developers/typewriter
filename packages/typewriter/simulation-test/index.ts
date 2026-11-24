@@ -1,3 +1,4 @@
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { SQL } from "bun";
 import { eq } from "drizzle-orm";
@@ -92,6 +93,36 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
     "usage: DATABASE_URL=<postgres url> bun simulation-test/index.ts",
   );
   process.exit(1);
+}
+
+/**
+ * The bytes allocated with glibc's `malloc` and not yet freed, on Linux.
+ * Elsewhere the run doesn't measure the native heap.
+ */
+const nativeInUse = (() => {
+  if (process.platform !== "linux") return undefined;
+  const { symbols } = dlopen("libc.so.6", {
+    mallinfo2: { args: [FFIType.ptr], returns: FFIType.void },
+  });
+  return () => {
+    const info = new BigUint64Array(10);
+    symbols.mallinfo2(ptr(info));
+    // `hblkhd` and `uordblks`: mmapped and allocated chunks.
+    return Number(info[4]! + info[7]!);
+  };
+})();
+
+/**
+ * The bytes in use after a full GC: on the JS heap, and on the native heap,
+ * where revm keeps its state and journals (0 off Linux). Nothing else in the
+ * process allocates on the native heap.
+ */
+function memoryInUse() {
+  Bun.gc(true);
+  return {
+    heap: process.memoryUsage().heapUsed,
+    native: nativeInUse?.() ?? 0,
+  };
 }
 
 /** The first Anvil account. */
@@ -283,6 +314,9 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
   const pendingEnqueues = new Set<string>();
   // The virtual time of the last mutation event, or force-executed enqueue.
   let progressedAt = startMs;
+  // Memory in use before the runtime is created, and right after.
+  let beforeRuntime = { heap: 0, native: 0 };
+  let startedRuntime = beforeRuntime;
 
   // The world's scope outlives its fiber, so `validate` can read the runtime's
   // views after the run. The runtime's fibers run on the simulated scheduler,
@@ -301,11 +335,13 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     const runListenerCheck = yield* FiberSet.runtime(listenerChecks)<never>();
     yield* FiberSet.run(fibers, FiberSet.join(listenerChecks));
 
+    beforeRuntime = memoryInUse();
     const typewriter = yield* createTypewriterEffect<
       AssessmentStorage,
       AssessmentMutations,
       "fifo" | "batch"
     >(app);
+    startedRuntime = memoryInUse();
 
     /**
      * Records the chain's latest block right after the runtime rejected a
@@ -728,9 +764,21 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
     }
   }
 
+  const finalized = run.mutationEvents.filter(
+    ({ status }) => status === "finalized",
+  ).length;
+  // Measured past `beforeRuntime`. The JS heap includes the harness's records,
+  // which grow with the run; the native heap is revm's alone.
+  const ended = memoryInUse();
+  const kb = (bytes: number) => Math.round(bytes / 1024);
+  const since = (key: "heap" | "native") =>
+    [startedRuntime[key], ended[key]]
+      .map((bytes) => kb(bytes - beforeRuntime[key]))
+      .join("->");
   yield* Effect.logInfo("Validated simulation run").pipe(
     Effect.annotateLogs({
       submissions: run.submissions.length,
+      finalized,
       dropped,
       blocks: run.blockEvents.length,
       batches: run.batchEvents.length,
@@ -738,6 +786,13 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       gas_used: gas.gasUsed,
       gas_limit: gas.gasLimit,
       duration: Math.round(performance.now() - validateStart),
+      heap_kb: since("heap"),
+      ...(nativeInUse && {
+        runtime_native_kb: since("native"),
+        runtime_native_per_finalized_b: Math.round(
+          (ended.native - startedRuntime.native) / Math.max(finalized, 1),
+        ),
+      }),
     }),
   );
 });
