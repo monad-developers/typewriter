@@ -127,22 +127,22 @@ export function AboutOrderBook() {
               date.
             </li>
             <li>
-              <strong>Permissions.</strong> An 8-bit mask gating every action. A
-              key without <InlineCode>PERM_WITHDRAW</InlineCode> cannot sign a
-              withdrawal, a key without{" "}
-              <InlineCode>PERM_LIMIT_ORDER</InlineCode> cannot post liquidity,
-              and so on.
+              <strong>Permissions.</strong> The mutations the key may sign,
+              granted by name. A key without <InlineCode>Withdrawal</InlineCode>{" "}
+              cannot sign a withdrawal, a key without{" "}
+              <InlineCode>LimitOrder</InlineCode> cannot post liquidity, and so
+              on.
             </li>
           </ul>
           <CodeBlock
-            title="Account.sol"
+            title="Typewriter.sol"
             lang="solidity"
             code={`enum KeyType { P256, WebAuthnP256, Secp256k1 }
 
-struct Key {
-    uint40 expiry;
+struct Credential {
+    uint40 expiration;
     KeyType keyType;
-    uint8 permissions;
+    uint256 permissions; // one bit per mutation; clients grant them by name
     bytes publicKey;
 }`}
           />

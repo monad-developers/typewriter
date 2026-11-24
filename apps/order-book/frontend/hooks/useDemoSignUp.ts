@@ -1,15 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  authorizeWithSecp256k1,
-  createSecp256k1Account,
   DEFAULT_NON_ROOT_PERMISSIONS,
   randomNonce,
+  secp256k1Signer,
 } from "order-book-sdk";
 import { Secp256k1 } from "ox";
-import { KeyType } from "typewriter/client";
-import { bytesToHex } from "viem";
+import { createAccountMutation } from "typewriter/client";
 import { saveStoredAccount } from "../lib/account-store";
 import { request } from "../lib/api";
+import { webCryptoSigner } from "../lib/signer";
 import { useManifest } from "./useManifest";
 import { toAccount } from "./useStoredAccount";
 
@@ -23,28 +22,27 @@ export function useDemoSignUp() {
       if (manifest === undefined || storageKey === undefined) {
         throw new Error("Missing manifest");
       }
-      const rootPrivateKey = Secp256k1.randomPrivateKey();
-      const { accountID, mutation } = createSecp256k1Account(
-        manifest,
-        rootPrivateKey,
-      );
-      await request("/api", { method: "POST", body: mutation });
+      const root = secp256k1Signer(manifest, Secp256k1.randomPrivateKey());
+      const create = createAccountMutation(root);
+      const { accountID } = create;
+      await request("/api", {
+        method: "POST",
+        body: await root.signMutation(create),
+      });
 
       const keyPair = await crypto.subtle.generateKey(
         { name: "ECDSA", namedCurve: "P-256" },
         false,
         ["sign", "verify"],
       );
-      const sessionPublicKey = bytesToHex(
-        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
-      );
-      const add = authorizeWithSecp256k1(manifest, rootPrivateKey, {
+      const session = await webCryptoSigner(manifest, keyPair);
+      const add = await root.signMutation({
         name: "AddCredential",
         params: {
           expiration: 0,
-          keyType: KeyType.P256,
-          permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
-          publicKey: sessionPublicKey,
+          keyType: session.keyType,
+          permissions: DEFAULT_NON_ROOT_PERMISSIONS,
+          publicKey: session.publicKey,
         },
         accountID,
         credentialID: 0n,

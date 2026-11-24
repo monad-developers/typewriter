@@ -1,6 +1,205 @@
-# Sign mutations [How an account approves a mutation]
+# Authorization [How an account approves a mutation]
 
-{/*
-Scope: typewriter/client: the manifest, getAuthorizationPayload, signing, authorizeMutation. Token example: sign a Transfer. Ends with the signed mutation ready to send.
-README source: typewriter.manifest (client part); Authorization (overview only)
-*/}
+Users approve a mutation by signing it with one of their account's [credentials](/docs/concepts/accounts/overview#credentials). The mutation and its signature together are what your server passes to `typewriter.execute()`.
+
+## Get the manifest
+
+The manifest describes what a signature covers: the chain and contract address of your deployment, and each mutation's ID and params. Every signature is bound to it, so a signature for one mutation can't be used for a   different mutation, or replayed against another deployment.
+
+Typewriter builds the manifest from your contract as `typewriter.manifest`. It's plain JSON, so serve it from your server and fetch it in the client:
+
+<div className="code-columns">
+
+```ts [src/index.ts]
+Bun.serve({
+  routes: {
+    "/manifest": () => Response.json(typewriter.manifest),
+  },
+});
+
+export type Manifest = typeof typewriter.manifest;
+```
+
+```ts [frontend/manifest.ts]
+import type { Manifest } from "../src/index";
+
+const response = await fetch("/manifest");
+export const manifest: Manifest = await response.json();
+```
+
+</div>
+
+Importing the `Manifest` type keeps the client's mutation names and params typed from your contract.
+
+## Create a signer
+
+A signer signs mutations with one credential's key. Create one with `createSigner` from `typewriter/client`, passing the manifest, the key's type and public key, and a `sign` callback that signs with the key.
+
+`sign` gets two arguments: `payload`, the 32-byte hash to sign, and `typedData`, the same data as EIP-712 typed data for signers that need it, such as wallets. It returns the signature's parts, and the signer encodes them the way the contract verifies them.
+
+A signer for a secp256k1 private key, using [ox](https://oxlib.sh):
+
+```ts [frontend/signer.ts]
+import { Address, Secp256k1 } from "ox";
+import { createSigner, KeyType } from "typewriter/client";
+
+const privateKey = Secp256k1.randomPrivateKey();
+
+export const signer = createSigner(manifest, {
+  keyType: KeyType.Secp256k1,
+  address: Address.fromPublicKey(Secp256k1.getPublicKey({ privateKey })),
+  async sign(payload) {
+    return Secp256k1.sign({ payload, privateKey });
+  },
+});
+```
+
+Other key types, such as passkeys, use the same `createSigner` with their own `sign`; see [signing by key type](#signing-by-key-type).
+
+## Sign a mutation
+
+A mutation to sign has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `params` | The mutation and its params, typed from the manifest |
+| `accountID` | The account signing |
+| `credentialID` | Which of the account's credentials signs |
+| `nonce` | Prevents the signature from being reused; see [nonces](#nonces) |
+| `expiration` | Unix timestamp in seconds after which the signature is invalid, or `0` for never |
+
+:::note
+An expiration must be at least a minute after the chain's latest block, or Typewriter rejects the mutation.
+:::
+
+`signer.signMutation()` signs it and returns `{ mutation, signature }`, which your server passes to [`typewriter.execute()`](/docs/concepts/executing) as is:
+
+```ts [frontend/App.tsx]
+import { signer } from "./signer";
+
+const transfer = await signer.signMutation({ // [!code focus]
+  name: "Transfer", // [!code focus]
+  params: { to, amount: 10n }, // [!code focus]
+  accountID, // [!code focus]
+  credentialID: 0n, // [!code focus]
+  nonce, // [!code focus]
+  expiration: Math.floor(Date.now() / 1000) + 120, // [!code focus]
+}); // [!code focus]
+
+// ... send `transfer` to the server, which executes it with `typewriter.execute()`
+```
+
+## Signing by key type
+
+Each key type takes its key in a different form, and its `sign` returns different parts of the signature. Return `r` and `s` as hex or bigints, as [ox](https://oxlib.sh) and [viem](https://viem.sh) return them.
+
+### P-256
+
+A P-256 key, such as a key pair from the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API), whose private key can stay non-extractable.
+
+- `publicKey`: the 65-byte uncompressed key, as `exportKey("raw")` returns it, or the 64-byte `x ‖ y`.
+- `sign`: signs `payload` with ECDSA over SHA-256, and returns `{ r, s }`.
+
+```ts
+import { Bytes, Hex, Signature } from "ox";
+
+const signer = createSigner(manifest, {
+  keyType: KeyType.P256,
+  publicKey: Hex.fromBytes(
+    new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
+  ),
+  async sign(payload) {
+    const signature = await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      keyPair.privateKey,
+      Uint8Array.from(Bytes.fromHex(payload)),
+    );
+    // Web Crypto returns r and s together, as 64 bytes
+    return Signature.fromHex(Hex.fromBytes(new Uint8Array(signature)));
+  },
+});
+```
+
+### Passkeys
+
+A passkey, signed with [WebAuthn](https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API).
+
+- `publicKey`: the passkey's public key, saved when the passkey was created, in either P-256 form.
+- `sign`: asks the authenticator for an assertion whose challenge is `payload`, and returns its `r`, `s`, `authenticatorData`, and `clientDataJSON`.
+
+ox's `WebAuthnP256.sign` returns them as `signature` and `metadata`:
+
+```ts
+import { WebAuthnP256 } from "ox";
+
+const signer = createSigner(manifest, {
+  keyType: KeyType.WebAuthnP256,
+  publicKey: passkeyPublicKey,
+  async sign(payload) {
+    const { signature, metadata } = await WebAuthnP256.sign({
+      challenge: payload,
+      rpId: window.location.hostname,
+    });
+    return { ...signature, ...metadata };
+  },
+});
+```
+
+### secp256k1
+
+An Ethereum key.
+
+- `address`: the key's address, in place of `publicKey`.
+- `sign`: signs `payload` itself, with no message prefix, and returns `{ r, s, yParity }`.
+
+With the private key in hand, sign `payload` directly, as in [create a signer](#create-a-signer). A browser wallet won't sign a raw hash, so sign `typedData` instead. It's the same authorization as EIP-712 typed data, and its hash is `payload`, so the signature is the same. With a viem wallet client:
+
+```ts
+import { parseSignature } from "viem";
+
+const signer = createSigner(manifest, {
+  keyType: KeyType.Secp256k1,
+  address: account.address,
+  async sign(_payload, typedData) {
+    return parseSignature(
+      await walletClient.signTypedData({ account, ...typedData }),
+    );
+  },
+});
+```
+
+## Nonces
+
+Every authorization carries a nonce, so its signature can be used only once. A nonce has two parts:
+
+- **A lane**, any number up to 192 bits.
+- **A sequence** within that lane, starting at `0`.
+
+Each mutation on a lane must use the lane's next sequence. Lanes are independent of each other, and shared by all of an account's credentials.
+
+```ts
+import { incrementNonce, packNonce } from "typewriter/client";
+
+let nonce = packNonce(lane, 0n); // the lane's first mutation
+nonce = incrementNonce(nonce); // the lane's next mutation
+```
+
+### Choosing lanes
+
+Lanes let separate clients sign for the same account without coordinating. Two tabs, or a phone and a laptop, each use their own lane, and neither needs to know the other's sequence.
+
+A simple approach is to pick a random lane each time the app loads, so it never has to look up where a lane left off. A random 192-bit lane won't collide with another client's.
+
+```ts
+const lane = BigInt(Hex.random(24));
+let nonce = packNonce(lane, 0n);
+```
+
+To resume a lane instead, read its next sequence from `typewriter.accounts[accountID].nonces[lane]`; see [current state](/docs/concepts/querying/current-state).
+
+### Ordering within a lane
+
+Mutations on one lane must arrive in sequence. A mutation whose sequence isn't the lane's next one is rejected, so:
+
+- Send mutations on a lane one at a time, waiting for each to be accepted before sending the next. To send several at once, give each its own lane.
+- A rejected mutation doesn't use up its sequence. Sign the next mutation with the same nonce.

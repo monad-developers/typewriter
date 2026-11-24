@@ -76,21 +76,19 @@ usd.human; // ~2400
 `OrderBookManifest` types the backend's `/api/manifest` from the generated `OrderBook.sol.d.ts`, so signing checks each mutation's params.
 
 ```ts
-import {
-  authorizeWithSecp256k1,
-  createSecp256k1Account,
-  limitOrderParams,
-  randomNonce,
-} from "order-book-sdk";
+import { limitOrderParams, randomNonce, secp256k1Signer } from "order-book-sdk";
+import { createAccountMutation } from "typewriter/client";
 
-const { accountID, mutation } = createSecp256k1Account(manifest, privateKey);
-const order = authorizeWithSecp256k1(manifest, privateKey, {
+const signer = secp256k1Signer(manifest, privateKey);
+const create = createAccountMutation(signer);
+const account = await signer.signMutation(create);
+const order = await signer.signMutation({
   name: "LimitOrder",
   params: limitOrderParams(inst, { price: 2400, side: "buy", quantity }),
-  accountID,
+  accountID: create.accountID,
   credentialID: 0n,
   nonce: randomNonce(),
-  expiration: 0n,
+  expiration: 0,
 });
 ```
 
@@ -122,6 +120,6 @@ const order = authorizeWithSecp256k1(manifest, privateKey, {
 ### Other exports
 
 - `ASSETS` — `[USD, GOLD, WTIOIL, EUR, SPX, BTC]`
-- `PERM_*`, `ALL_PERMISSIONS`, `DEFAULT_NON_ROOT_PERMISSIONS` — credential permission bits
+- `DEFAULT_NON_ROOT_PERMISSIONS` — the mutations a session key may sign (all but `Withdrawal`), passed as `AddCredential`'s `permissions` when signing
 - `InstrumentConfig` — TypeScript type for instrument configuration
 - `OrderBookMutation`, `OrderBookMutationName` — signed mutation input and mutation names

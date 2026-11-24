@@ -1,25 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  DEFAULT_NON_ROOT_PERMISSIONS,
-  type OrderBookManifest,
-  randomNonce,
-} from "order-book-sdk";
-import {
-  authorizeMutation,
-  deriveAccountID,
-  getAuthorizationPayload,
-  KeyType,
-  type TypedMutation,
-} from "typewriter/client";
-import { bytesToHex } from "viem";
-import {
-  Authentication as ClientAuthentication,
-  Registration as ClientRegistration,
-} from "webauthx/client";
+import { DEFAULT_NON_ROOT_PERMISSIONS, randomNonce } from "order-book-sdk";
+import { createAccountMutation } from "typewriter/client";
+import { Registration as ClientRegistration } from "webauthx/client";
 import { Registration as ServerRegistration } from "webauthx/server";
 import { saveStoredAccount } from "../lib/account-store";
 import { request } from "../lib/api";
-import { encodeWebAuthnSignature, RP_ID, RP_NAME } from "../lib/webauthn";
+import { passkeySigner, webCryptoSigner } from "../lib/signer";
+import { RP_ID, RP_NAME } from "../lib/webauthn";
 import { useManifest } from "./useManifest";
 import { toAccount } from "./useStoredAccount";
 
@@ -35,12 +22,10 @@ export function useSignUp() {
         false,
         ["sign", "verify"],
       );
-      const sessionPublicKey = bytesToHex(
-        new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
-      );
       if (manifest === undefined || storageKey === undefined) {
         throw new Error("Missing manifest");
       }
+      const session = await webCryptoSigner(manifest, keyPair);
 
       const placeholderUserId = crypto.getRandomValues(new Uint8Array(32));
       const { options: createOptions } = ServerRegistration.getOptions({
@@ -57,55 +42,29 @@ export function useSignUp() {
         options: createOptions,
       });
 
-      const createParams = {
-        keyType: KeyType.WebAuthnP256,
-        publicKey: credential.publicKey,
-      } as const;
-      const accountId = deriveAccountID(createParams);
-      const createMutation = {
-        name: "CreateAccount",
-        params: createParams,
-        accountID: accountId,
-        credentialID: 0n,
-        nonce: 0n,
-        expiration: 0,
-      } satisfies TypedMutation<OrderBookManifest, "CreateAccount">;
-      const createAssertion = await ClientAuthentication.sign({
-        rpId: RP_ID,
-        challenge: getAuthorizationPayload(manifest, createMutation),
+      const passkey = passkeySigner(manifest, credential.publicKey, RP_ID);
+      const createMutation = createAccountMutation(passkey);
+      const accountId = createMutation.accountID;
+      await request("/api", {
+        method: "POST",
+        body: await passkey.signMutation(createMutation),
       });
 
       await request("/api", {
         method: "POST",
-        body: authorizeMutation(
-          createMutation,
-          encodeWebAuthnSignature(createAssertion),
-        ),
-      });
-
-      const addMutation = {
-        name: "AddCredential",
-        params: {
+        body: await passkey.signMutation({
+          name: "AddCredential",
+          params: {
+            expiration: 0,
+            keyType: session.keyType,
+            permissions: DEFAULT_NON_ROOT_PERMISSIONS,
+            publicKey: session.publicKey,
+          },
+          accountID: accountId,
+          credentialID: 0n,
+          nonce: randomNonce(),
           expiration: 0,
-          keyType: KeyType.P256,
-          permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
-          publicKey: sessionPublicKey,
-        },
-        accountID: accountId,
-        credentialID: 0n,
-        nonce: randomNonce(),
-        expiration: 0,
-      } satisfies TypedMutation<OrderBookManifest, "AddCredential">;
-      const addAssertion = await ClientAuthentication.sign({
-        rpId: RP_ID,
-        challenge: getAuthorizationPayload(manifest, addMutation),
-      });
-      await request("/api", {
-        method: "POST",
-        body: authorizeMutation(
-          addMutation,
-          encodeWebAuthnSignature(addAssertion),
-        ),
+        }),
       });
 
       const stored = { accountId, keyPair };

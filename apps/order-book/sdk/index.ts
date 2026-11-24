@@ -1,19 +1,11 @@
-import { AbiParameters, Hex, Secp256k1, Signature } from "ox";
+import { Hex, Secp256k1 } from "ox";
 import { type Address, fromPublicKey } from "ox/Address";
 import type {
   TypewriterManifest,
   TypewriterMutationInput,
   TypewriterSolidityEntrypoint,
 } from "typewriter";
-import {
-  authorizeMutation,
-  deriveAccountID,
-  getAuthorizationPayload,
-  KeyType,
-  packNonce,
-  packSecp256k1Signature,
-  type TypedMutation,
-} from "typewriter/client";
+import { createSigner, KeyType, packNonce } from "typewriter/client";
 import type OrderBook from "../contracts/src/OrderBook.sol";
 
 type OrderBookMetadata =
@@ -42,24 +34,18 @@ export const BTC: Address = "0x6666666666666666666666666666666666666666";
 
 export const ASSETS = [USD, GOLD, WTIOIL, EUR, SPX, BTC] as const;
 
-export const PERM_CLOSE_ORDER = 1 << 0;
-export const PERM_CHANGE_ORDER = 1 << 1;
-export const PERM_LIMIT_ORDER = 1 << 2;
-export const PERM_MARKET_ORDER = 1 << 3;
-export const PERM_ADD_INSTRUMENT = 1 << 4;
-export const PERM_DEPOSIT = 1 << 5;
-export const PERM_WITHDRAW = 1 << 6;
-
-export const ALL_PERMISSIONS =
-  PERM_CLOSE_ORDER |
-  PERM_CHANGE_ORDER |
-  PERM_LIMIT_ORDER |
-  PERM_MARKET_ORDER |
-  PERM_ADD_INSTRUMENT |
-  PERM_DEPOSIT |
-  PERM_WITHDRAW;
-
-export const DEFAULT_NON_ROOT_PERMISSIONS = ALL_PERMISSIONS & ~PERM_WITHDRAW;
+/**
+ * The mutations a session key may sign: every app mutation except
+ * `Withdrawal`. Pass it as `AddCredential`'s `permissions` when signing.
+ */
+export const DEFAULT_NON_ROOT_PERMISSIONS = [
+  "CloseOrder",
+  "ChangeOrder",
+  "LimitOrder",
+  "MarketOrder",
+  "AddInstrument",
+  "Deposit",
+] as const satisfies readonly OrderBookMutationName[];
 
 export const INSTRUMENTS = {
   "GOLD/USD": {
@@ -201,43 +187,16 @@ export function randomNonce(): bigint {
   return packNonce(BigInt(Hex.random(24)), 0n);
 }
 
-export function authorizeWithSecp256k1<
-  const name extends OrderBookMutationName,
->(
-  manifest: OrderBookManifest,
-  privateKey: Hex.Hex,
-  mutation: TypedMutation<OrderBookManifest, name>,
-) {
-  const signature = Secp256k1.sign({
-    payload: getAuthorizationPayload(manifest, mutation),
-    privateKey,
-  });
-  return authorizeMutation(
-    mutation,
-    packSecp256k1Signature(Signature.toHex(signature)),
-  );
-}
-
-/** The account a secp256k1 root key creates, and its `CreateAccount`. */
-export function createSecp256k1Account(
+/** Signs order book mutations with a raw secp256k1 private key. */
+export function secp256k1Signer(
   manifest: OrderBookManifest,
   privateKey: Hex.Hex,
 ) {
-  const params = {
+  return createSigner(manifest, {
     keyType: KeyType.Secp256k1,
-    publicKey: AbiParameters.encode(
-      [{ type: "address" }],
-      [fromPublicKey(Secp256k1.getPublicKey({ privateKey }))],
-    ),
-  };
-  const accountID = deriveAccountID(params);
-  const mutation = authorizeWithSecp256k1(manifest, privateKey, {
-    name: "CreateAccount",
-    params,
-    accountID,
-    credentialID: 0n,
-    nonce: 0n,
-    expiration: 0,
+    address: fromPublicKey(Secp256k1.getPublicKey({ privateKey })),
+    async sign(payload) {
+      return Secp256k1.sign({ payload, privateKey });
+    },
   });
-  return { accountID, mutation };
 }

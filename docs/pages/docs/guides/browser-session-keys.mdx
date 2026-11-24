@@ -16,36 +16,55 @@ const keyPair = await crypto.subtle.generateKey(
 );
 ```
 
-The account needs the public key as hex. [`SubtleCrypto.exportKey()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/exportKey) in `raw` format returns the 65-byte uncompressed key that Typewriter expects:
+Then make a [signer](/docs/concepts/accounts/authorization#create-a-signer) for the key. [`SubtleCrypto.exportKey()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/exportKey) in `raw` format returns the 65-byte uncompressed public key that Typewriter expects, and [`SubtleCrypto.sign()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign) returns the signature's `r` and `s` as 64 bytes:
+
+```ts [lib/session-signer.ts]
+import { Bytes, Hex, Signature } from "ox";
+import { createSigner, KeyType } from "typewriter/client";
+
+export async function sessionSigner(keyPair: CryptoKeyPair) {
+  const publicKey = Hex.fromBytes(
+    new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
+  );
+  return createSigner(manifest, {
+    keyType: KeyType.P256,
+    publicKey,
+    async sign(payload) {
+      const signature = await crypto.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        keyPair.privateKey,
+        Uint8Array.from(Bytes.fromHex(payload)),
+      );
+      return Signature.fromHex(Hex.fromBytes(new Uint8Array(signature)));
+    },
+  });
+}
+```
 
 ```ts
-const publicKey = bytesToHex(
-  new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)),
-);
+const sessionKey = await sessionSigner(keyPair);
 ```
 
 ## 2. Add the key to the account
 
-Add the key with `AddCredential`, choosing which mutations it may sign and when it expires. A credential the account already has signs this mutation, however that credential signs.
+Add the key with `AddCredential`, choosing which mutations it may sign and when it expires. A credential the account already has signs this mutation with its own signer, `existingSigner`, whatever its key type.
 
 ```ts
-import { KeyType } from "typewriter/client";
-
 const expiration = Math.floor(Date.now() / 1000) + 24 * 60 * 60; // one day
 
-const addCredential = {
+const addCredential = await existingSigner.signMutation({
   name: "AddCredential",
   params: {
     expiration,
-    keyType: KeyType.P256,
-    permissions: 1n << BigInt(manifest.mutations.Transfer.id), // Transfer only
-    publicKey,
+    keyType: sessionKey.keyType,
+    permissions: ["Transfer"], // Transfer only
+    publicKey: sessionKey.publicKey,
   },
   accountID,
   credentialID: existingCredentialID,
   nonce,
   expiration: Math.floor(Date.now() / 1000) + 120,
-} as const;
+});
 ```
 
 The new credential's ID is its position in the account's [credentials](/docs/concepts/accounts/overview#credentials): the number of credentials the account had before, counting removed ones.
@@ -127,38 +146,14 @@ let nonce = packNonce(lane, 0n);
 
 ## 5. Sign mutations
 
-One helper signs any mutation with the session key. It gets the payload from `getAuthorizationPayload`, signs it with [`SubtleCrypto.sign()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/sign), which returns the 64-byte signature that `packP256Signature` expects, and attaches it with `authorizeMutation`.
-
-```ts
-import {
-  authorizeMutation,
-  getAuthorizationPayload,
-  packP256Signature,
-  type TypedMutation,
-} from "typewriter/client";
-
-async function signMutation(
-  keyPair: CryptoKeyPair,
-  mutation: TypedMutation<typeof manifest>,
-) {
-  const signature = await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" },
-    keyPair.privateKey,
-    Uint8Array.from(hexToBytes(getAuthorizationPayload(manifest, mutation))),
-  );
-  return authorizeMutation(
-    mutation,
-    packP256Signature(bytesToHex(new Uint8Array(signature))),
-  );
-}
-```
-
-Every mutation the key may sign is now signed with no prompt, using the session's `credentialID`. Each signed mutation is sent to your server and [executed](/docs/concepts/executing) like any other. Increment the nonce after each one is accepted.
+Make the session key's signer from the stored key pair, with `sessionSigner` from step 1. Every mutation the key may sign is now signed with no prompt, using the session's `credentialID`. Each signed mutation is sent to your server and [executed](/docs/concepts/executing) like any other. Increment the nonce after each one is accepted.
 
 ```ts
 import { incrementNonce } from "typewriter/client";
 
-const transfer = await signMutation(session.keyPair, {
+const signer = await sessionSigner(session.keyPair);
+
+const transfer = await signer.signMutation({
   name: "Transfer",
   params: { to, amount },
   accountID: session.accountID,
@@ -174,12 +169,12 @@ nonce = incrementNonce(nonce);
 On sign-out, delete the session from IndexedDB. The key stops working when it expires. To revoke it sooner, have a credential that may sign `RemoveCredential` sign this mutation:
 
 ```ts
-const removeCredential = {
+const removeCredential = await existingSigner.signMutation({
   name: "RemoveCredential",
   params: { credentialID: session.credentialID },
   accountID: session.accountID,
   credentialID: existingCredentialID,
   nonce,
   expiration: Math.floor(Date.now() / 1000) + 120,
-} as const;
+});
 ```

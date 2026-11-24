@@ -1,0 +1,21 @@
+/* CODE COLUMNS */
+/* Code blocks side by side, stacked on narrow screens. */
+.code-columns {
+  display: flex;
+  flex-direction: row;
+  gap: 0rem 1.5rem;
+}
+.code-columns > div {
+  width: calc(50% - 0.75rem);
+  /* Let a long line scroll inside its column instead of widening it. */
+  min-width: 0;
+}
+@media (max-width: 768px) {
+  .code-columns {
+    flex-direction: column;
+    gap: 1.5rem 0rem;
+  }
+  .code-columns > div {
+    width: unset;
+  }
+}

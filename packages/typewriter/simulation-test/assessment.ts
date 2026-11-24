@@ -14,12 +14,12 @@ import {
   Secp256k1,
 } from "ox";
 import {
-  type AuthorizedMutation,
-  authorizeMutation,
+  type Authorization,
   deriveAccountID,
   getAuthorizationPayload,
   KeyType,
   packNonce,
+  type TypedMutation,
 } from "../src/client";
 import type { TypewriterManifest } from "../src/config";
 import {
@@ -56,10 +56,33 @@ const MALFORMATIONS: Malformation[] = ["authorizationData", "mutationData"];
 
 export type Manifest = TypewriterManifest<AssessmentMutations>;
 
+/** A signed mutation, shaped as the runtime reports it in its events. */
 export type Mutation<
   name extends keyof AssessmentMutations & string = keyof AssessmentMutations &
     string,
-> = AuthorizedMutation<Manifest, name>;
+> = {
+  name: name;
+  params: TypedMutation<Manifest, name>["params"];
+  authorization: Authorization;
+};
+
+/** `mutation` signed with `signature`. */
+function withSignature<const name extends keyof AssessmentMutations & string>(
+  mutation: TypedMutation<Manifest, name>,
+  signature: Hex.Hex,
+): Mutation<name> {
+  const { name, params, ...fields } = mutation;
+  return { name, params, authorization: { ...fields, signature } };
+}
+
+/** `mutation` as `typewriter.execute()` takes it. */
+export function executeInput(mutation: Mutation) {
+  const { signature, ...fields } = mutation.authorization;
+  return {
+    mutation: { name: mutation.name, params: mutation.params, ...fields },
+    signature,
+  };
+}
 
 /** One entry of the plan. */
 export type Step = {
@@ -262,7 +285,7 @@ function unsigned<const name extends keyof AssessmentMutations & string>(
   signer: Signer,
   mutation: Pick<Mutation<name>, "name" | "params"> & { nonce: bigint },
 ): Mutation<name> {
-  return authorizeMutation(
+  return withSignature(
     {
       ...mutation,
       accountID: signer.accountID,
@@ -279,8 +302,9 @@ export function sign<const name extends keyof AssessmentMutations & string>(
   signer: Signer,
   mutation: Mutation<name>,
 ): Mutation<name> {
-  const typed = { ...mutation, ...mutation.authorization };
-  return authorizeMutation(
+  const { signature: _, ...fields } = mutation.authorization;
+  const typed = { name: mutation.name, params: mutation.params, ...fields };
+  return withSignature(
     typed,
     signer.sign(getAuthorizationPayload(manifest, typed)),
   );

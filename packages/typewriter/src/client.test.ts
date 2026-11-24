@@ -1,14 +1,13 @@
 import { expect, test } from "bun:test";
-import { AbiParameters, Hex } from "ox";
 import {
-  authorizeMutation,
+  decodePermissions,
   deploymentKey,
   deriveAccountID,
+  encodePermissions,
   getAuthorizationPayload,
   incrementNonce,
   KeyType,
   packNonce,
-  packP256Signature,
 } from "./client";
 import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 
@@ -42,26 +41,10 @@ test("signs a generic authorization over the exact mutation calldata encoding", 
     expiration: 1_900_000_000,
   } as const;
   const payload = getAuthorizationPayload(manifest, mutation);
-  const prepared = authorizeMutation(mutation, "0x1234");
 
   expect(payload).toBe(
     "0xe8f5c72c30afd05fc50d2abd8a2ea99004bddc737a74e5d3c98f3d19cb9155a9",
   );
-  expect(prepared).toEqual({
-    name: "Transfer",
-    params: {
-      recipient: "0x2222222222222222222222222222222222222222",
-      amount: 50n,
-    },
-    authorization: {
-      accountID:
-        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      credentialID: 3n,
-      nonce: (9n << 64n) | 4n,
-      expiration: 1_900_000_000,
-      signature: "0x1234",
-    },
-  });
 });
 
 test("signs CreateAccount calldata with the derived accountID", async () => {
@@ -76,7 +59,6 @@ test("signs CreateAccount calldata with the derived accountID", async () => {
     expiration: 0,
   } as const;
   const payload = getAuthorizationPayload(manifest, mutation);
-  const prepared = authorizeMutation(mutation, "0xabcd");
 
   expect(deriveAccountID(params)).toBe(
     "0xd690045981ca381a50cc9ecab2e603d4ee6a72cd6f39a8c6525464851ddfaafe",
@@ -84,14 +66,6 @@ test("signs CreateAccount calldata with the derived accountID", async () => {
   expect(payload).toBe(
     "0x35bfe6638271883c23fe96c9209a967a351c2ab942f0b5c725cdc37ca978960c",
   );
-  expect(prepared.authorization).toEqual({
-    accountID:
-      "0xd690045981ca381a50cc9ecab2e603d4ee6a72cd6f39a8c6525464851ddfaafe",
-    credentialID: 0n,
-    nonce: 0n,
-    expiration: 0,
-    signature: "0xabcd",
-  });
 });
 
 test("increments nonces with uint bounds", () => {
@@ -119,38 +93,8 @@ test("packs bounded parallel nonce lanes", () => {
   expect(() => packNonce(0n, 1n << 64n)).toThrow(/sequence must fit uint64/);
 });
 
-test("exposes protocol key types and packs raw signatures", () => {
+test("exposes protocol key types", () => {
   expect(KeyType).toEqual({ P256: 0, WebAuthnP256: 1, Secp256k1: 2 });
-
-  const p256Raw = `0x${"11".repeat(32)}${"22".repeat(32)}` as const;
-  expect(
-    AbiParameters.decode(
-      [
-        { name: "r", type: "uint256" },
-        { name: "s", type: "uint256" },
-      ],
-      packP256Signature(p256Raw),
-    ),
-  ).toEqual([BigInt(`0x${"11".repeat(32)}`), BigInt(`0x${"22".repeat(32)}`)]);
-
-  expect(() => packP256Signature(Hex.fromNumber(1))).toThrow(/64 bytes/);
-});
-
-test("normalizes high-s P256 signatures when packing", () => {
-  const p256N =
-    0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
-  const highS = Hex.fromNumber(p256N / 2n + 1n, { size: 32 });
-  const raw = Hex.concat(`0x${"11".repeat(32)}`, highS);
-
-  expect(
-    AbiParameters.decode(
-      [
-        { name: "r", type: "uint256" },
-        { name: "s", type: "uint256" },
-      ],
-      packP256Signature(raw),
-    ),
-  ).toEqual([BigInt(`0x${"11".repeat(32)}`), p256N - (p256N / 2n + 1n)]);
 });
 
 test("derives a deployment key from the chain id and lowercase address", () => {
@@ -160,4 +104,37 @@ test("derives a deployment key from the chain id and lowercase address", () => {
   expect(() => deploymentKey(-1, manifest.address)).toThrow();
   expect(() => deploymentKey(1.5, manifest.address)).toThrow();
   expect(() => deploymentKey(1, "0x1234" as never)).toThrow();
+});
+
+test("encodes permissions from mutation names by their manifest IDs", () => {
+  expect(encodePermissions(manifest, [])).toBe(0n);
+  expect(encodePermissions(manifest, ["Transfer"])).toBe(1n << 7n);
+  expect(encodePermissions(manifest, ["Transfer", "RemoveCredential"])).toBe(
+    (1n << 7n) | (1n << 255n),
+  );
+  expect(encodePermissions(manifest, ["Transfer", "Transfer"])).toBe(1n << 7n);
+  expect(() => encodePermissions(manifest, ["Mint" as "Transfer"])).toThrow(
+    "unknown mutation: Mint",
+  );
+  expect(() => encodePermissions(manifest, ["toString" as "Transfer"])).toThrow(
+    "unknown mutation: toString",
+  );
+});
+
+test("decodes permissions to mutation names ordered by ID", () => {
+  expect(decodePermissions(manifest, 0n)).toEqual([]);
+  expect(decodePermissions(manifest, (1n << 255n) | (1n << 7n))).toEqual([
+    "Transfer",
+    "RemoveCredential",
+  ]);
+  expect(decodePermissions(manifest, (1n << 256n) - 1n)).toEqual([
+    "Transfer",
+    "CreateAccount",
+    "AddCredential",
+    "RemoveCredential",
+  ]);
+  // Bit 0 matches no mutation in the manifest.
+  expect(decodePermissions(manifest, 1n)).toEqual([]);
+  expect(() => decodePermissions(manifest, -1n)).toThrow(RangeError);
+  expect(() => decodePermissions(manifest, 1n << 256n)).toThrow(RangeError);
 });

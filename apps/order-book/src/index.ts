@@ -123,9 +123,9 @@ const server = serve({
             ? (parsedBody as Record<string, unknown>)
             : {};
         if (
-          typeof body.name !== "string" ||
-          body.params === undefined ||
-          body.authorization === undefined
+          body.mutation === null ||
+          typeof body.mutation !== "object" ||
+          typeof body.signature !== "string"
         ) {
           return badRequest("Bad Request");
         }
