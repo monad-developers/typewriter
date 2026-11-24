@@ -42,24 +42,18 @@ export const BTC: Address = "0x6666666666666666666666666666666666666666";
 
 export const ASSETS = [USD, GOLD, WTIOIL, EUR, SPX, BTC] as const;
 
-export const PERM_CLOSE_ORDER = 1 << 0;
-export const PERM_CHANGE_ORDER = 1 << 1;
-export const PERM_LIMIT_ORDER = 1 << 2;
-export const PERM_MARKET_ORDER = 1 << 3;
-export const PERM_ADD_INSTRUMENT = 1 << 4;
-export const PERM_DEPOSIT = 1 << 5;
-export const PERM_WITHDRAW = 1 << 6;
-
-export const ALL_PERMISSIONS =
-  PERM_CLOSE_ORDER |
-  PERM_CHANGE_ORDER |
-  PERM_LIMIT_ORDER |
-  PERM_MARKET_ORDER |
-  PERM_ADD_INSTRUMENT |
-  PERM_DEPOSIT |
-  PERM_WITHDRAW;
-
-export const DEFAULT_NON_ROOT_PERMISSIONS = ALL_PERMISSIONS & ~PERM_WITHDRAW;
+/**
+ * The mutations a session key may sign: every app mutation except
+ * `Withdrawal`. Pass it to `encodePermissions` for `AddCredential`.
+ */
+export const DEFAULT_NON_ROOT_PERMISSIONS = [
+  "CloseOrder",
+  "ChangeOrder",
+  "LimitOrder",
+  "MarketOrder",
+  "AddInstrument",
+  "Deposit",
+] as const satisfies readonly OrderBookMutationName[];
 
 export const INSTRUMENTS = {
   "GOLD/USD": {

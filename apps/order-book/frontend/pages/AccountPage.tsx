@@ -2,21 +2,17 @@ import {
   BTC,
   EUR,
   GOLD,
-  PERM_ADD_INSTRUMENT,
-  PERM_CHANGE_ORDER,
-  PERM_CLOSE_ORDER,
-  PERM_DEPOSIT,
-  PERM_LIMIT_ORDER,
-  PERM_MARKET_ORDER,
-  PERM_WITHDRAW,
+  type OrderBookManifest,
   SPX,
   TokenAmount,
   USD,
   WTIOIL,
 } from "order-book-sdk";
+import { decodePermissions } from "typewriter/client";
 import type { Address } from "viem";
 import { MutationDescription } from "../components/MutationDescription";
 import { useAccount } from "../hooks/useAccount";
+import { useManifest } from "../hooks/useManifest";
 import { Link, useMatch } from "../lib/router";
 
 const ASSET_SYMBOLS: Record<Address, string> = {
@@ -30,15 +26,7 @@ const ASSET_SYMBOLS: Record<Address, string> = {
 
 const KEY_TYPE_LABELS = ["P256", "WebAuthnP256", "Secp256k1"] as const;
 
-const PERMISSIONS = [
-  { bit: PERM_CLOSE_ORDER, name: "closeOrder" },
-  { bit: PERM_CHANGE_ORDER, name: "changeOrder" },
-  { bit: PERM_LIMIT_ORDER, name: "limitOrder" },
-  { bit: PERM_MARKET_ORDER, name: "marketOrder" },
-  { bit: PERM_ADD_INSTRUMENT, name: "addInstrument" },
-  { bit: PERM_DEPOSIT, name: "deposit" },
-  { bit: PERM_WITHDRAW, name: "withdrawal" },
-];
+const ALL_PERMISSIONS = (1n << 256n) - 1n;
 
 const KEY_COLUMNS = ["type", "permissions", "expiry", "publicKey"];
 const BALANCE_COLUMNS = ["asset", "amount"];
@@ -66,11 +54,14 @@ function formatExpiry(expiry: number) {
   return new Date(expiry * 1000).toISOString();
 }
 
-function formatPermissions(permissions: bigint) {
+function formatPermissions(
+  manifest: OrderBookManifest | undefined,
+  permissions: bigint,
+) {
   if (permissions === 0n) return "none";
-  const names = PERMISSIONS.filter((p) => permissions & BigInt(p.bit)).map(
-    (p) => p.name,
-  );
+  if (permissions === ALL_PERMISSIONS) return "all";
+  if (manifest === undefined) return "...";
+  const names = decodePermissions(manifest, permissions);
   return names.join(", ") || `0x${permissions.toString(16)}`;
 }
 
@@ -83,6 +74,7 @@ export function AccountPage() {
   const idOrAddress = match?.params.id;
   const query = useAccount(idOrAddress);
   const account = query.data;
+  const { data: manifest } = useManifest();
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -161,7 +153,7 @@ export function AccountPage() {
                     <code>{KEY_TYPE_LABELS[k.keyType]}</code>
                   </td>
                   <td className="py-2 pr-6">
-                    <code>{formatPermissions(k.permissions)}</code>
+                    <code>{formatPermissions(manifest, k.permissions)}</code>
                   </td>
                   <td className="py-2 pr-6">
                     <code>{formatExpiry(k.expiration)}</code>

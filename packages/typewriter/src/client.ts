@@ -125,6 +125,49 @@ export function packNonce(lane: bigint, sequence: bigint): bigint {
   return (lane << 64n) | sequence;
 }
 
+/**
+ * Returns the `permissions` for `AddCredential` that allow exactly the named
+ * mutations. Each mutation's bit comes from its ID in the manifest, so a
+ * credential granted this way doesn't gain mutations added to the app later.
+ */
+export function encodePermissions<const manifest extends TypewriterManifest>(
+  manifest: manifest,
+  names: readonly MutationName<manifest>[],
+): bigint {
+  let permissions = 0n;
+  for (const name of names) {
+    const config = Object.hasOwn(manifest.mutations, name)
+      ? manifest.mutations[name]
+      : undefined;
+    if (config === undefined) throw new Error(`unknown mutation: ${name}`);
+    permissions |= 1n << BigInt(config.id);
+  }
+  return permissions;
+}
+
+/**
+ * Returns the names of the manifest's mutations that `permissions` allows,
+ * ordered by mutation ID. Bits that match no mutation in the manifest are
+ * left out.
+ */
+export function decodePermissions<const manifest extends TypewriterManifest>(
+  manifest: manifest,
+  permissions: bigint,
+): MutationName<manifest>[] {
+  if (permissions < 0n || permissions > MAX_UINT256) {
+    throw new RangeError("permissions must fit uint256");
+  }
+  return (
+    Object.entries(manifest.mutations) as [
+      MutationName<manifest>,
+      { id: number },
+    ][]
+  )
+    .filter(([, { id }]) => (permissions >> BigInt(id)) & 1n)
+    .sort(([, a], [, b]) => a.id - b.id)
+    .map(([name]) => name);
+}
+
 function encodeMutationData(
   params: readonly AbiParameter[],
   value: unknown,

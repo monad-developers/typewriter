@@ -122,6 +122,6 @@ const order = authorizeWithSecp256k1(manifest, privateKey, {
 ### Other exports
 
 - `ASSETS` — `[USD, GOLD, WTIOIL, EUR, SPX, BTC]`
-- `PERM_*`, `ALL_PERMISSIONS`, `DEFAULT_NON_ROOT_PERMISSIONS` — credential permission bits
+- `DEFAULT_NON_ROOT_PERMISSIONS` — the mutations a session key may sign (all but `Withdrawal`), for `encodePermissions` from `typewriter/client`
 - `InstrumentConfig` — TypeScript type for instrument configuration
 - `OrderBookMutation`, `OrderBookMutationName` — signed mutation input and mutation names

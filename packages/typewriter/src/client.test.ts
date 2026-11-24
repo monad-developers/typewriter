@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { AbiParameters, Hex } from "ox";
 import {
   authorizeMutation,
+  decodePermissions,
   deploymentKey,
   deriveAccountID,
+  encodePermissions,
   getAuthorizationPayload,
   incrementNonce,
   KeyType,
@@ -160,4 +162,37 @@ test("derives a deployment key from the chain id and lowercase address", () => {
   expect(() => deploymentKey(-1, manifest.address)).toThrow();
   expect(() => deploymentKey(1.5, manifest.address)).toThrow();
   expect(() => deploymentKey(1, "0x1234" as never)).toThrow();
+});
+
+test("encodes permissions from mutation names by their manifest IDs", () => {
+  expect(encodePermissions(manifest, [])).toBe(0n);
+  expect(encodePermissions(manifest, ["Transfer"])).toBe(1n << 7n);
+  expect(encodePermissions(manifest, ["Transfer", "RemoveCredential"])).toBe(
+    (1n << 7n) | (1n << 255n),
+  );
+  expect(encodePermissions(manifest, ["Transfer", "Transfer"])).toBe(1n << 7n);
+  expect(() => encodePermissions(manifest, ["Mint" as "Transfer"])).toThrow(
+    "unknown mutation: Mint",
+  );
+  expect(() => encodePermissions(manifest, ["toString" as "Transfer"])).toThrow(
+    "unknown mutation: toString",
+  );
+});
+
+test("decodes permissions to mutation names ordered by ID", () => {
+  expect(decodePermissions(manifest, 0n)).toEqual([]);
+  expect(decodePermissions(manifest, (1n << 255n) | (1n << 7n))).toEqual([
+    "Transfer",
+    "RemoveCredential",
+  ]);
+  expect(decodePermissions(manifest, (1n << 256n) - 1n)).toEqual([
+    "Transfer",
+    "CreateAccount",
+    "AddCredential",
+    "RemoveCredential",
+  ]);
+  // Bit 0 matches no mutation in the manifest.
+  expect(decodePermissions(manifest, 1n)).toEqual([]);
+  expect(() => decodePermissions(manifest, -1n)).toThrow(RangeError);
+  expect(() => decodePermissions(manifest, 1n << 256n)).toThrow(RangeError);
 });

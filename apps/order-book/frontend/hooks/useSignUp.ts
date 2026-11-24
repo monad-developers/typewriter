@@ -7,6 +7,7 @@ import {
 import {
   authorizeMutation,
   deriveAccountID,
+  encodePermissions,
   getAuthorizationPayload,
   KeyType,
   type TypedMutation,
@@ -88,7 +89,10 @@ export function useSignUp() {
         params: {
           expiration: 0,
           keyType: KeyType.P256,
-          permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
+          permissions: encodePermissions(
+            manifest,
+            DEFAULT_NON_ROOT_PERMISSIONS,
+          ),
           publicKey: sessionPublicKey,
         },
         accountID: accountId,

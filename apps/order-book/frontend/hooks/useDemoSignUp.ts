@@ -6,7 +6,7 @@ import {
   randomNonce,
 } from "order-book-sdk";
 import { Secp256k1 } from "ox";
-import { KeyType } from "typewriter/client";
+import { encodePermissions, KeyType } from "typewriter/client";
 import { bytesToHex } from "viem";
 import { saveStoredAccount } from "../lib/account-store";
 import { request } from "../lib/api";
@@ -43,7 +43,10 @@ export function useDemoSignUp() {
         params: {
           expiration: 0,
           keyType: KeyType.P256,
-          permissions: BigInt(DEFAULT_NON_ROOT_PERMISSIONS),
+          permissions: encodePermissions(
+            manifest,
+            DEFAULT_NON_ROOT_PERMISSIONS,
+          ),
           publicKey: sessionPublicKey,
         },
         accountID,
