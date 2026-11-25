@@ -18,6 +18,7 @@ import {
   createAccount,
   deploy,
   enqueueCalldata,
+  executeInput,
   type Manifest,
   type Mutation,
   makeSigner,
@@ -167,7 +168,7 @@ const benchmark = Effect.gen(function* () {
     Effect.promise(() =>
       fetch(`${typewriterUrl}/execute`, {
         method: "POST",
-        body: JSON.stringify(mutation, (_, value) =>
+        body: JSON.stringify(executeInput(mutation), (_, value) =>
           typeof value === "bigint" ? value.toString() : value,
         ),
       }).then(
