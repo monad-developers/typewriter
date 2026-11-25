@@ -85,7 +85,8 @@ type ChainConfig = {
   /**
    * The deployment's name. One name is one contract, at the CREATE2 address
    * that the name salts, and one database schema of the same name: the first
-   * start deploys the contract, and later starts resume it. A new name
+   * start deploys the contract, and later starts resume it. A start with an
+   * empty schema fails if the contract is already deployed. A new name
    * deploys a new contract, which changed contract code needs. Lowercase
    * letters, digits, and underscores.
    */

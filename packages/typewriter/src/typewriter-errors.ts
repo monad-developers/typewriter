@@ -183,19 +183,6 @@ export class ChainIdMismatchError extends Data.TaggedError(
   }
 }
 
-/** The relayer has transactions after the start block or still pending at startup, e.g. from a previous process. */
-export class PendingTransactionsError extends Data.TaggedError(
-  "PendingTransactionsError",
-)<{
-  address: Hex.Hex;
-  latest: number;
-  pending: number;
-}> {
-  override get message() {
-    return `Account ${this.address} has ${this.pending - this.latest} pending transactions`;
-  }
-}
-
 /** A settlement transaction was mined but reverted onchain. */
 export class SettlementRevertedError extends Data.TaggedError(
   "SettlementRevertedError",
@@ -326,7 +313,6 @@ export type CreateTypewriterError =
   | NoDataReturnedError
   | MigrationError
   | ChainIdMismatchError
-  | PendingTransactionsError
   | RelayerBalanceError
   | SchedulerCredentialError
   | EvmError;

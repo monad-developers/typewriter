@@ -79,7 +79,6 @@ export {
   MutationHaltedError,
   MutationRevertedError,
   MutationTooLargeError,
-  PendingTransactionsError,
   type ProgramError,
   ProgramStoppedError,
   RelayerBalanceError,

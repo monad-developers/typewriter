@@ -10,7 +10,7 @@ import {
 } from "./encoding";
 import { TX_GAS_LIMIT_CAP } from "./gas";
 import { Rpc, type RpcError } from "./rpc";
-import { requestBlock, requestNonce } from "./rpc-request";
+import { requestNonce } from "./rpc-request";
 import {
   MAX_FEE_PER_GAS,
   MAX_PRIORITY_FEE_PER_GAS,
@@ -116,8 +116,8 @@ export type ResolvedDeployment = {
   address: Address.Address;
   migration: Migration;
   /**
-   * A block that has the deployment's code, when this start sent it or found
-   * it at the CREATE2 address, so the runtime starts no earlier.
+   * The block that the deployment landed in, when this start sent it, so the
+   * runtime starts no earlier.
    */
   deployedIn: bigint | undefined;
 };
@@ -186,27 +186,18 @@ export function resolveDeployment(
     const salt = deploymentSalt(name);
     const address = deploymentAddress(salt, initcode);
 
-    const latest = yield* requestBlock("latest");
     const [codeThere, deployerCode] = yield* Effect.all(
       [address, CREATE2_DEPLOYER].map((at) =>
-        rpc.request({
-          method: "eth_getCode",
-          params: [at, { blockHash: latest.hash }],
-        }),
+        rpc.request({ method: "eth_getCode", params: [at, "latest"] }),
       ),
       { concurrency: "unbounded" },
     );
+    // The schema has no deployment, but the chain does: the database was
+    // wiped or is another one, or an earlier start crashed after deploying.
     if (codeThere !== "0x") {
-      yield* logDeployment(
-        "Adopted the deployment an earlier start sent",
-        app,
-        address,
-      );
-      return {
-        address,
-        migration: "created" as const,
-        deployedIn: latest.number,
-      };
+      return yield* new DeploymentError({
+        message: `${app.contractName} is already deployed at ${address} for deployment ${name}, but schema ${name} doesn't record it; restore the database, or use a new config.deployment`,
+      });
     }
     if (deployerCode === "0x") {
       return yield* new DeploymentError({
@@ -224,7 +215,7 @@ export function resolveDeployment(
         Effect.mapError(
           (cause) =>
             new DeploymentError({
-              message: `Failed to estimate the gas to deploy ${app.contractName}; its constructor must take the scheduler's credentials, \`constructor(SchedulerCredential[] memory schedulerCredentials)\`, and succeed with a root credential for ${app.root}. Or ${address} already has code, which a provider did not show at startup, so the CREATE2 deployer reverts; restart to adopt it`,
+              message: `Failed to estimate the gas to deploy ${app.contractName}; its constructor must take the scheduler's credentials, \`constructor(SchedulerCredential[] memory schedulerCredentials)\`, and succeed with a root credential for ${app.root}. Or ${address} already has code that a provider did not show at startup, so the CREATE2 deployer reverts`,
               cause,
             }),
         ),

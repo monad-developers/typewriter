@@ -28,7 +28,8 @@ const typewriter = await createTypewriter(Token, {
 | `relayer` | Optional. A `LocalAccount` that sends the deployment and the settlements: it signs them, pays their gas, and owns their nonces. Defaults to `scheduler`. When it's a different account, the scheduler signs each settlement for it. |
 | `chainId` | The chain's ID. Startup fails if an RPC serves another chain. |
 | `rpcUrl` | An RPC URL, or a list of them. Typewriter sends each transaction to every URL in the list. |
-| `database` | The Postgres connection, `{ url }`. |
+| `database` | `{ url, maxConnections?, statementTimeoutMs?, idleInTransactionTimeoutMs? }`. Both timeouts default to 30 seconds. |
+| `hardfork` | Optional. The EVM hardfork that mutations execute under. Defaults to Monad's current one; see [supported chains](/docs/production/chain-integration#supported-chains). |
 
 ## First start
 
@@ -62,7 +63,7 @@ Later starts read the contract's address from the schema, and don't read `root`.
 - **The contract changed.** Typewriter compares the compiled creation code, ignoring Solidity's metadata trailer, with the code it deployed. To deploy changed code, use a new `deployment`. The new deployment starts with empty state.
 - **`chainId` changed.** Use another `deployment` for another chain.
 
-If a start deploys the contract but stops before recording it, the next start finds the code at the CREATE2 address and adopts it, as `"created"`. This only works if `root`, `scheduler`, and the contract are unchanged, since they're all part of the address. Changing one deploys a second contract. If the deployment's transaction hasn't landed yet, startup fails; restart once it lands.
+A start whose schema has no deployment fails if the contract is already at its CREATE2 address, which happens when the database was wiped or replaced, or when a start crashed after deploying but before recording it. Restore the database, or use a new `deployment`. The address depends on `root`, `scheduler`, and the contract, so changing any of them deploys a new contract instead.
 
 ## Running the server
 
@@ -71,8 +72,6 @@ Run one instance per deployment. Each instance holds a Postgres advisory lock on
 - **Deploy with a recreate strategy, not a rolling one.** Stop the old instance before starting the new one. A rolling deploy starts the new instance while the old one holds the lock.
 - **Stop with `SIGINT` or `SIGTERM`.** Typewriter releases the lock and its connections before the process exits.
 - **Expect the process to exit when Typewriter stops.** If startup fails or the runtime stops, Typewriter logs the error and exits, rather than serve stale state. Restart it with your process manager, and alert on exits.
-
-If the relayer still has pending transactions from the previous process, startup fails with a `PendingTransactionsError`. Restart once they land.
 
 ## Relayer balance
 
@@ -95,6 +94,13 @@ Use the relayer key for Typewriter only, and alert on:
 
 With `TYPEWRITER_LOG_FORMAT=json`, the default when `NODE_ENV=production`, the message is the `msg` field and the annotations are top-level fields.
 
+## Logging
+
+| Variable | Values | Default |
+| --- | --- | --- |
+| `TYPEWRITER_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error` | `info` |
+| `TYPEWRITER_LOG_FORMAT` | `pretty`, `json` | `json` when `NODE_ENV` is `production`, otherwise `pretty` |
+
 ## Scheduler credentials
 
 The contract only accepts settlements authorized by one of its scheduler credentials. Each has a role:
@@ -105,7 +111,7 @@ The contract only accepts settlements authorized by one of its scheduler credent
 
 The scheduler signs every settlement, so it's a hot key. Keep `root` cold, such as a KMS key in a separate cloud account or a hardware wallet, and don't set `scheduler` to `root` in production: a leaked scheduler key could then add credentials of its own.
 
-At startup, Typewriter uses the newest secp256k1 credential for the `scheduler` address. If that credential expires or is removed while Typewriter runs, it stops: with a `SchedulerCredentialError` when it notices before sending, or a `SettlementRevertedError` once a settlement has reverted onchain.
+At startup, Typewriter uses the secp256k1 credential for the `scheduler` address that lives longest: one that never expires, else the latest expiration. If that credential expires or is removed while Typewriter runs, it stops: with a `SchedulerCredentialError` when it notices before sending, or a `SettlementRevertedError` once a settlement has reverted onchain.
 
 ### Rotating the scheduler
 
@@ -180,4 +186,4 @@ If `relayer` is unset, it's the scheduler, so rotating the scheduler rotates the
 
 ## Backups
 
-The deployment's schema is the only record of the mutations Typewriter has accepted. Typewriter can't reattach to a contract from an empty schema: once the contract has executed anything, startup fails because the schema is behind the chain. Back up Postgres, and restore it to resume a deployment.
+The deployment's schema is the only record of the mutations Typewriter has accepted. Typewriter can't reattach to a contract from an empty schema: startup fails because the contract is already deployed. Back up Postgres, and restore it to resume a deployment.

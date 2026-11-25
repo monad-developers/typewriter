@@ -231,7 +231,7 @@ Typewriter rules out its causes: the contract runs each settlement at the timest
 
 Accepted mutations are persisted to Postgres before `execute()` resolves, and the server restores its state from them on startup.
 
-What a restart does with mutations that were accepted but not yet finalized is not decided yet. Startup fails if the relayer account has pending transactions, or if the chain has executed mutations the database doesn't have, for example after a user calls `forceExecute()` while the server is down.
+What a restart does with mutations that were accepted but not yet finalized is not decided yet. Startup fails if the chain has executed mutations the database doesn't have, for example after a user calls `forceExecute()` while the server is down.
 
 ## API reference
 
@@ -617,7 +617,7 @@ Starts the runtime and resolves to the `Typewriter` handle once it is ready to a
 
 **`TypewriterConfig`.** Required fields, except in [dev mode](#local-development) (`dev: true`), where typewriter fills in all but `database`:
 
-- `deployment` — the deployment's name: lowercase letters, digits, and underscores, at most 63 characters, not starting with `pg_`. One name is one contract, at the CREATE2 address that the name salts, and one Postgres schema of the same name. The first start deploys the contract from the relayer through the standard CREATE2 deployer (`0x4e59b44847b379578588920cA78FbF26c0B4956C`), and later starts resume it. Startup fails if the contract's code changed since the deployment, or if `chainId` differs; deploy changed code under a new name.
+- `deployment` — the deployment's name: lowercase letters, digits, and underscores, at most 63 characters, not starting with `pg_`. One name is one contract, at the CREATE2 address that the name salts, and one Postgres schema of the same name. The first start deploys the contract from the relayer through the standard CREATE2 deployer (`0x4e59b44847b379578588920cA78FbF26c0B4956C`), and later starts resume it. Startup fails if the contract's code changed since the deployment, or if `chainId` differs; deploy changed code under a new name. A start with an empty schema fails if the contract is already deployed at its address, e.g. after the database was wiped.
 - `root` — the address of the root [scheduler](#scheduler) credential, which adds and removes the scheduler's credentials. Only the start that deploys the contract reads it.
 - `scheduler` — a viem `LocalAccount` whose secp256k1 scheduler credential, of any role, authorizes each `execute`. Startup fails unless that credential is live. A deployment that typewriter creates gives it an executor credential, unless it is `root`.
 - `chainId` — number.
