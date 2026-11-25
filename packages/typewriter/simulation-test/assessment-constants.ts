@@ -3,7 +3,7 @@ import type { TypewriterSolidityEntrypoint } from "../src";
 export const STORAGE_LAYOUT = {
   storage: [
     {
-      astId: 750,
+      astId: 844,
       contract: "src/Assessment.sol:Assessment",
       label: "accounts",
       offset: 0,
@@ -11,15 +11,15 @@ export const STORAGE_LAYOUT = {
       type: "t_mapping(t_bytes32,t_struct(Account)26_storage)",
     },
     {
-      astId: 754,
+      astId: 848,
       contract: "src/Assessment.sol:Assessment",
       label: "queue",
       offset: 0,
       slot: "1",
-      type: "t_array(t_struct(QueuedMutation)700_storage)dyn_storage",
+      type: "t_array(t_struct(QueuedMutation)791_storage)dyn_storage",
     },
     {
-      astId: 756,
+      astId: 850,
       contract: "src/Assessment.sol:Assessment",
       label: "executionIndex",
       offset: 0,
@@ -27,7 +27,7 @@ export const STORAGE_LAYOUT = {
       type: "t_uint256",
     },
     {
-      astId: 759,
+      astId: 852,
       contract: "src/Assessment.sol:Assessment",
       label: "executionHash",
       offset: 0,
@@ -35,12 +35,20 @@ export const STORAGE_LAYOUT = {
       type: "t_bytes32",
     },
     {
-      astId: 1889,
+      astId: 855,
+      contract: "src/Assessment.sol:Assessment",
+      label: "scheduler",
+      offset: 0,
+      slot: "4",
+      type: "t_struct(Scheduler)159_storage",
+    },
+    {
+      astId: 2533,
       contract: "src/Assessment.sol:Assessment",
       label: "state",
       offset: 0,
-      slot: "4",
-      type: "t_struct(State)1755_storage",
+      slot: "7",
+      type: "t_struct(State)2401_storage",
     },
   ],
   types: {
@@ -50,11 +58,17 @@ export const STORAGE_LAYOUT = {
       numberOfBytes: "32",
       base: "t_struct(Credential)15_storage",
     },
-    "t_array(t_struct(QueuedMutation)700_storage)dyn_storage": {
+    "t_array(t_struct(QueuedMutation)791_storage)dyn_storage": {
       encoding: "dynamic_array",
       label: "struct Typewriter.QueuedMutation[]",
       numberOfBytes: "32",
-      base: "t_struct(QueuedMutation)700_storage",
+      base: "t_struct(QueuedMutation)791_storage",
+    },
+    "t_array(t_struct(SchedulerCredential)150_storage)dyn_storage": {
+      encoding: "dynamic_array",
+      label: "struct SchedulerCredential[]",
+      numberOfBytes: "32",
+      base: "t_struct(SchedulerCredential)150_storage",
     },
     t_bytes32: {
       encoding: "inplace",
@@ -69,6 +83,11 @@ export const STORAGE_LAYOUT = {
     "t_enum(KeyType)5": {
       encoding: "inplace",
       label: "enum KeyType",
+      numberOfBytes: "1",
+    },
+    "t_enum(SchedulerRole)139": {
+      encoding: "inplace",
+      label: "enum SchedulerRole",
       numberOfBytes: "1",
     },
     "t_mapping(t_bytes32,t_struct(Account)26_storage)": {
@@ -116,10 +135,10 @@ export const STORAGE_LAYOUT = {
         {
           astId: 25,
           contract: "src/Assessment.sol:Assessment",
-          label: "activeCredentials",
+          label: "rootCredentials",
           offset: 0,
           slot: "2",
-          type: "t_uint64",
+          type: "t_uint256",
         },
       ],
     },
@@ -162,13 +181,13 @@ export const STORAGE_LAYOUT = {
         },
       ],
     },
-    "t_struct(QueuedMutation)700_storage": {
+    "t_struct(QueuedMutation)791_storage": {
       encoding: "inplace",
       label: "struct Typewriter.QueuedMutation",
       numberOfBytes: "96",
       members: [
         {
-          astId: 693,
+          astId: 784,
           contract: "src/Assessment.sol:Assessment",
           label: "mutation",
           offset: 0,
@@ -176,7 +195,7 @@ export const STORAGE_LAYOUT = {
           type: "t_uint8",
         },
         {
-          astId: 695,
+          astId: 786,
           contract: "src/Assessment.sol:Assessment",
           label: "enqueuedTimestamp",
           offset: 1,
@@ -184,7 +203,7 @@ export const STORAGE_LAYOUT = {
           type: "t_uint40",
         },
         {
-          astId: 697,
+          astId: 788,
           contract: "src/Assessment.sol:Assessment",
           label: "mutationData",
           offset: 0,
@@ -192,7 +211,7 @@ export const STORAGE_LAYOUT = {
           type: "t_bytes_storage",
         },
         {
-          astId: 699,
+          astId: 790,
           contract: "src/Assessment.sol:Assessment",
           label: "authorizationData",
           offset: 0,
@@ -201,13 +220,83 @@ export const STORAGE_LAYOUT = {
         },
       ],
     },
-    "t_struct(State)1755_storage": {
+    "t_struct(Scheduler)159_storage": {
+      encoding: "inplace",
+      label: "struct Scheduler",
+      numberOfBytes: "96",
+      members: [
+        {
+          astId: 154,
+          contract: "src/Assessment.sol:Assessment",
+          label: "credentials",
+          offset: 0,
+          slot: "0",
+          type: "t_array(t_struct(SchedulerCredential)150_storage)dyn_storage",
+        },
+        {
+          astId: 156,
+          contract: "src/Assessment.sol:Assessment",
+          label: "rootCredentials",
+          offset: 0,
+          slot: "1",
+          type: "t_uint256",
+        },
+        {
+          astId: 158,
+          contract: "src/Assessment.sol:Assessment",
+          label: "nonce",
+          offset: 0,
+          slot: "2",
+          type: "t_uint256",
+        },
+      ],
+    },
+    "t_struct(SchedulerCredential)150_storage": {
+      encoding: "inplace",
+      label: "struct SchedulerCredential",
+      numberOfBytes: "64",
+      members: [
+        {
+          astId: 141,
+          contract: "src/Assessment.sol:Assessment",
+          label: "expiration",
+          offset: 0,
+          slot: "0",
+          type: "t_uint40",
+        },
+        {
+          astId: 144,
+          contract: "src/Assessment.sol:Assessment",
+          label: "keyType",
+          offset: 5,
+          slot: "0",
+          type: "t_enum(KeyType)5",
+        },
+        {
+          astId: 147,
+          contract: "src/Assessment.sol:Assessment",
+          label: "role",
+          offset: 6,
+          slot: "0",
+          type: "t_enum(SchedulerRole)139",
+        },
+        {
+          astId: 149,
+          contract: "src/Assessment.sol:Assessment",
+          label: "publicKey",
+          offset: 0,
+          slot: "1",
+          type: "t_bytes_storage",
+        },
+      ],
+    },
+    "t_struct(State)2401_storage": {
       encoding: "inplace",
       label: "struct State",
       numberOfBytes: "64",
       members: [
         {
-          astId: 1750,
+          astId: 2396,
           contract: "src/Assessment.sol:Assessment",
           label: "accumulator",
           offset: 0,
@@ -215,7 +304,7 @@ export const STORAGE_LAYOUT = {
           type: "t_bytes32",
         },
         {
-          astId: 1754,
+          astId: 2400,
           contract: "src/Assessment.sol:Assessment",
           label: "slots",
           offset: 0,

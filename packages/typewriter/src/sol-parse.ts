@@ -78,9 +78,13 @@ export function parseSolidity(output: SolcOutput, path: string): SolidityApp {
 
   const constructorInputs =
     abi.find((item) => item.type === "constructor")?.inputs ?? [];
-  if (constructorInputs.map((input) => input.type).join() !== "address") {
+  if (
+    constructorInputs.length !== 1 ||
+    constructorInputs[0]!.type !== "tuple[]" ||
+    constructorInputs[0]!.internalType !== "struct SchedulerCredential[]"
+  ) {
     throw new ConfigError({
-      message: `${contract.name} must declare \`constructor(address scheduler)\` and pass it to \`Typewriter(scheduler)\`, but its constructor takes (${constructorInputs.map((input) => input.type).join(", ")})`,
+      message: `${contract.name} must declare \`constructor(SchedulerCredential[] memory schedulerCredentials)\` and pass it to \`Typewriter(schedulerCredentials)\`, but its constructor takes (${constructorInputs.map((input) => input.internalType ?? input.type).join(", ")})`,
     });
   }
 

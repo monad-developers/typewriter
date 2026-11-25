@@ -5,14 +5,16 @@ import { Effect, Exit } from "effect";
 import { Hash, Hex } from "ox";
 import { createStorageView, type StorageView } from "storage-layout";
 import { encodeFunctionData } from "viem";
-import type { TypewriterApp } from "../src/config";
+import type { DeployedTypewriterApp } from "../src/config";
 import type { Db } from "../src/db";
 import {
   accountStorage,
   selectKeccakPreimages,
   selectStorageSlots,
 } from "../src/db-query";
+import { TYPEWRITER_SCHEMA_VERSION } from "../src/db-schema";
 import { builder } from "../src/db-transport";
+import { creationCodeHash } from "../src/deploy";
 import { EMPTY_BATCH, encodeExecuteCalldata } from "../src/encoding";
 import type { RpcRequest } from "../src/rpc-transport";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
@@ -38,7 +40,7 @@ import {
 } from "./run";
 
 type Params = {
-  app: TypewriterApp;
+  app: DeployedTypewriterApp;
   chain: Chain;
   db: Db;
   run: Run;
@@ -415,13 +417,16 @@ function checkQueue(
           method: "eth_call",
           params: [
             {
-              from: app.account.address,
+              // From the scheduler, whose scheduler credential, the deployer's
+              // first, authorizes it unsigned, so only the enqueue can revert.
+              from: app.scheduler.address,
               to: app.address,
               data: encodeExecuteCalldata(
                 onchain.executionHash,
                 BigInt(latest!.timestamp),
                 EMPTY_BATCH,
                 [queueIndex],
+                { credentialID: 0n, signature: "0x" },
               ),
             },
             "latest",
@@ -762,10 +767,11 @@ function checkDatabase(
       metadata,
       [
         {
-          schema_version: 1,
+          schema_version: TYPEWRITER_SCHEMA_VERSION,
           address: app.address,
           chain_id: app.chainId,
           code_hash: Hash.keccak256(code),
+          creation_code_hash: creationCodeHash(app.bytecode),
         },
       ],
       "typewriter_metadata",
@@ -779,7 +785,7 @@ const STORAGE_VALUES_LIMIT = 1024;
 /** The values of `slots` of the app on Anvil, in as few requests as Anvil allows. */
 function storageValues(
   chain: Chain,
-  app: TypewriterApp,
+  app: DeployedTypewriterApp,
   slots: readonly Hex.Hex[],
 ) {
   return Effect.gen(function* () {
@@ -806,7 +812,7 @@ function storageValues(
 }
 
 /** The slots of the app that a transaction with `diff` changed. */
-function slotsWritten(diff: StateDiff, app: TypewriterApp) {
+function slotsWritten(diff: StateDiff, app: DeployedTypewriterApp) {
   const address = app.address.toLowerCase();
   return [
     ...new Set(
@@ -931,7 +937,7 @@ type Views = {
         permissions: bigint;
         publicKey: Hex.Hex;
       }[];
-      activeCredentials: bigint;
+      rootCredentials: bigint;
     }
   >;
 };
@@ -969,7 +975,7 @@ async function snapshot<isAsync extends boolean>(
     result[accountID] = {
       nonces,
       credentials,
-      activeCredentials: await account.activeCredentials,
+      rootCredentials: await account.rootCredentials,
     };
   }
 

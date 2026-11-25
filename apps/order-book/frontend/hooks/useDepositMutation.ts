@@ -13,7 +13,7 @@ type DepositParams = {
 
 export function useDepositMutation() {
   const { data: manifest } = useManifest();
-  const storageKey = manifest?.deploymentKey;
+  const storageKey = manifest?.deployment;
   const { data: account } = useStoredAccount();
   const queryClient = useQueryClient();
 

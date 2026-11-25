@@ -21,7 +21,11 @@ import { Hash, Hex } from "ox";
 import { decodeEventLog } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { KeyType } from "../src/client";
-import { createTypewriterApp, type TypewriterManifest } from "../src/config";
+import {
+  createTypewriterApp,
+  deployedApp,
+  type TypewriterManifest,
+} from "../src/config";
 import { Database, makeDbClient } from "../src/db";
 import { builder, makePostgresTransport } from "../src/db-transport";
 import { logger, loggerLayer } from "../src/logger";
@@ -219,23 +223,30 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
   const solidityApp = yield* Effect.promise(() =>
     loadSolidityApp(ASSESSMENT_ENTRYPOINT),
   );
-  const app = createTypewriterApp({
-    ...solidityApp,
-    config: {
-      address,
-      account: SCHEDULER,
-      chainId,
-      // Anvil's chain has no Monad hardfork schedule.
-      hardfork: "MonadTen",
-      rpcUrl: plan.transports.map((_, index) => `sim-${index}`) as [
-        string,
-        ...string[],
-      ],
-      database: { url: database.url },
-      blockPollingIntervalMs: plan.typewriter.blockPollingIntervalMs,
-      sequencing: plan.typewriter.ordering,
-    },
-  });
+  // The simulation deploys to its own chain, which mines only once the world
+  // runs, so `createTypewriterEffect` resumes that deployment through its
+  // internal parameter rather than deploying on the run's empty database.
+  const app = deployedApp(
+    createTypewriterApp({
+      ...solidityApp,
+      config: {
+        root: SCHEDULER.address,
+        scheduler: SCHEDULER,
+        chainId,
+        // Anvil's chain has no Monad hardfork schedule.
+        hardfork: "MonadTen",
+        rpcUrl: plan.transports.map((_, index) => `sim-${index}`) as [
+          string,
+          ...string[],
+        ],
+        deployment: "typewriter_simulation",
+        database: { url: database.url },
+        blockPollingIntervalMs: plan.typewriter.blockPollingIntervalMs,
+        sequencing: plan.typewriter.ordering,
+      },
+    }),
+    address,
+  );
   const manifest = app.manifest as TypewriterManifest<AssessmentMutations>;
   // One connection runs the statements in the order `io` starts them, so
   // Postgres sees no race that depends on wall-clock time.
@@ -340,7 +351,7 @@ const simulate = Effect.fnUntraced(function* (plan: Plan) {
       AssessmentStorage,
       AssessmentMutations,
       "fifo" | "batch"
-    >(app);
+    >(app, app.address);
     startedRuntime = memoryInUse();
 
     /**
@@ -824,7 +835,7 @@ function scribble(value: unknown): void {
 function queueEntrySlot(index: bigint): Hex.Hex {
   const queue = STORAGE_LAYOUT.storage.find(({ label }) => label === "queue")!;
   const entry =
-    STORAGE_LAYOUT.types["t_struct(QueuedMutation)700_storage"].numberOfBytes;
+    STORAGE_LAYOUT.types["t_struct(QueuedMutation)791_storage"].numberOfBytes;
   // A dynamic array's entries start at the keccak256 of its slot.
   const start = BigInt(
     Hash.keccak256(Hex.fromNumber(BigInt(queue.slot), { size: 32 })),

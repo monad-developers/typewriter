@@ -23,13 +23,6 @@ export const SECP256K1_PUBLIC_KEY_PARAMS = [
   { name: "address", type: "address" },
 ] as const satisfies readonly AbiParameters.Parameter[];
 
-/** A `KeyType.Secp256k1` signature, in `verifySecp256k1`. */
-export const SECP256K1_SIGNATURE_PARAMS = [
-  { name: "v", type: "uint8" },
-  { name: "r", type: "bytes32" },
-  { name: "s", type: "bytes32" },
-] as const satisfies readonly AbiParameters.Parameter[];
-
 /**
  * The ABI-encoded `publicKey` of a P-256 credential, in `decodeP256PublicKey`.
  * The contract also accepts a 65-byte uncompressed key.
@@ -91,6 +84,54 @@ export const FIRST_BUILTIN_MUTATION_ID = 253;
  */
 export const EXPIRATION_MARGIN = 60;
 
+/**
+ * The fee cap of every transaction the runtime sends: 100 times Monad's
+ * minimum base fee of 100 gwei. A settlement is signed once and sent again
+ * unchanged, so it can land only while the base fee is under this. It pays
+ * only the base fee plus the tip, and Monad checks balances against that, not
+ * the cap, so a high cap costs nothing.
+ */
+export const MAX_FEE_PER_GAS = 10_000_000_000_000n;
+
+/** The tip of every transaction the runtime sends, what `eth_maxPriorityFeePerGas` returns on Monad. */
+export const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
+
+/**
+ * `ROOT_PERMISSIONS`: an account credential with both adds and removes any
+ * credential of its account. An account's last one that never expires can't
+ * be removed.
+ */
+export const ROOT_PERMISSIONS =
+  (1n << BigInt(BUILTIN_MUTATIONS.AddCredential.id)) |
+  (1n << BigInt(BUILTIN_MUTATIONS.RemoveCredential.id));
+
+/**
+ * `enum SchedulerRole`. Every role can authorize `execute`. From `Issuer` up,
+ * a scheduler credential adds and removes those of lower roles, and a `Root`
+ * any of them.
+ */
+export const SchedulerRole = {
+  Executor: 0,
+  Issuer: 1,
+  Root: 2,
+} as const;
+
+export type SchedulerRole = (typeof SchedulerRole)[keyof typeof SchedulerRole];
+
+/** `struct SchedulerCredential`. */
+export const SCHEDULER_CREDENTIAL_ABI_PARAMS = [
+  { name: "expiration", type: "uint40" },
+  { name: "keyType", type: "uint8" },
+  { name: "role", type: "uint8" },
+  { name: "publicKey", type: "bytes" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
+/** `struct SchedulerAuthorization`. */
+export const SCHEDULER_AUTHORIZATION_ABI_PARAMS = [
+  { name: "credentialID", type: "uint64" },
+  { name: "signature", type: "bytes" },
+] as const satisfies readonly AbiParameters.Parameter[];
+
 /** `struct Authorization`. */
 export const AUTHORIZATION_ABI_PARAMS = [
   { name: "accountID", type: "bytes32" },
@@ -117,6 +158,11 @@ export const TYPEWRITER_ABI = [
         ],
       },
       { name: "forceExecuteIndexes", type: "uint256[]" },
+      {
+        name: "authorization",
+        type: "tuple",
+        components: SCHEDULER_AUTHORIZATION_ABI_PARAMS,
+      },
     ],
     outputs: [],
     stateMutability: "nonpayable",
@@ -154,6 +200,69 @@ export const TYPEWRITER_ABI = [
     stateMutability: "view",
   },
   {
+    type: "function",
+    name: "schedulerNonce",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "schedulerAddCredential",
+    inputs: [
+      {
+        name: "credential",
+        type: "tuple",
+        components: SCHEDULER_CREDENTIAL_ABI_PARAMS,
+      },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint40" },
+      {
+        name: "authorization",
+        type: "tuple",
+        components: SCHEDULER_AUTHORIZATION_ABI_PARAMS,
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "schedulerRemoveCredential",
+    inputs: [
+      { name: "credentialID", type: "uint64" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint40" },
+      {
+        name: "authorization",
+        type: "tuple",
+        components: SCHEDULER_AUTHORIZATION_ABI_PARAMS,
+      },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "event",
+    name: "SchedulerCredentialAdded",
+    inputs: [
+      { name: "credentialID", type: "uint64", indexed: false },
+      {
+        name: "credential",
+        type: "tuple",
+        indexed: false,
+        components: SCHEDULER_CREDENTIAL_ABI_PARAMS,
+      },
+    ],
+    anonymous: false,
+  },
+  {
+    type: "event",
+    name: "SchedulerCredentialRemoved",
+    inputs: [{ name: "credentialID", type: "uint64", indexed: false }],
+    anonymous: false,
+  },
+  {
     type: "event",
     name: "ForceInclusionQueued",
     inputs: [
@@ -185,5 +294,40 @@ export const AUTHORIZATION_EIP712_TYPES = {
     { name: "expiration", type: "uint40" },
     { name: "mutation", type: "uint8" },
     { name: "mutationData", type: "bytes" },
+  ],
+} as const;
+
+/**
+ * `EXECUTE_TYPEHASH`: what a scheduler credential signs to authorize an
+ * `execute` call from one `executionHash` to the next, pinned at `timestamp`,
+ * for `relayer` to send.
+ */
+export const EXECUTE_EIP712_TYPES = {
+  Execute: [
+    { name: "fromExecutionHash", type: "bytes32" },
+    { name: "toExecutionHash", type: "bytes32" },
+    { name: "timestamp", type: "uint40" },
+    { name: "relayer", type: "address" },
+  ],
+} as const;
+
+/** `SCHEDULER_ADD_CREDENTIAL_TYPEHASH`. */
+export const SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES = {
+  SchedulerAddCredential: [
+    { name: "expiration", type: "uint40" },
+    { name: "keyType", type: "uint8" },
+    { name: "role", type: "uint8" },
+    { name: "publicKey", type: "bytes" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint40" },
+  ],
+} as const;
+
+/** `SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH`. */
+export const SCHEDULER_REMOVE_CREDENTIAL_EIP712_TYPES = {
+  SchedulerRemoveCredential: [
+    { name: "credentialID", type: "uint64" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint40" },
   ],
 } as const;

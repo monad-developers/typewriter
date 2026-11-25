@@ -4,7 +4,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
   readonly storageLayout: {
     readonly storage: readonly [
       {
-        readonly astId: 708;
+        readonly astId: 844;
         readonly contract: "src/Token.sol:Token";
         readonly label: "accounts";
         readonly offset: 0;
@@ -12,15 +12,15 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_mapping(t_bytes32,t_struct(Account)26_storage)";
       },
       {
-        readonly astId: 712;
+        readonly astId: 848;
         readonly contract: "src/Token.sol:Token";
         readonly label: "queue";
         readonly offset: 0;
         readonly slot: "1";
-        readonly type: "t_array(t_struct(QueuedMutation)660_storage)dyn_storage";
+        readonly type: "t_array(t_struct(QueuedMutation)791_storage)dyn_storage";
       },
       {
-        readonly astId: 714;
+        readonly astId: 850;
         readonly contract: "src/Token.sol:Token";
         readonly label: "executionIndex";
         readonly offset: 0;
@@ -28,7 +28,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_uint256";
       },
       {
-        readonly astId: 716;
+        readonly astId: 852;
         readonly contract: "src/Token.sol:Token";
         readonly label: "executionHash";
         readonly offset: 0;
@@ -36,12 +36,20 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly type: "t_bytes32";
       },
       {
-        readonly astId: 42194;
+        readonly astId: 855;
+        readonly contract: "src/Token.sol:Token";
+        readonly label: "scheduler";
+        readonly offset: 0;
+        readonly slot: "4";
+        readonly type: "t_struct(Scheduler)159_storage";
+      },
+      {
+        readonly astId: 42935;
         readonly contract: "src/Token.sol:Token";
         readonly label: "state";
         readonly offset: 0;
-        readonly slot: "4";
-        readonly type: "t_struct(State)42183_storage";
+        readonly slot: "7";
+        readonly type: "t_struct(State)42926_storage";
       },
     ];
     readonly types: {
@@ -51,11 +59,17 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
         readonly numberOfBytes: "32";
         readonly base: "t_struct(Credential)15_storage";
       };
-      readonly "t_array(t_struct(QueuedMutation)660_storage)dyn_storage": {
+      readonly "t_array(t_struct(QueuedMutation)791_storage)dyn_storage": {
         readonly encoding: "dynamic_array";
         readonly label: "struct Typewriter.QueuedMutation[]";
         readonly numberOfBytes: "32";
-        readonly base: "t_struct(QueuedMutation)660_storage";
+        readonly base: "t_struct(QueuedMutation)791_storage";
+      };
+      readonly "t_array(t_struct(SchedulerCredential)150_storage)dyn_storage": {
+        readonly encoding: "dynamic_array";
+        readonly label: "struct SchedulerCredential[]";
+        readonly numberOfBytes: "32";
+        readonly base: "t_struct(SchedulerCredential)150_storage";
       };
       readonly t_bytes32: {
         readonly encoding: "inplace";
@@ -70,6 +84,11 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
       readonly "t_enum(KeyType)5": {
         readonly encoding: "inplace";
         readonly label: "enum KeyType";
+        readonly numberOfBytes: "1";
+      };
+      readonly "t_enum(SchedulerRole)139": {
+        readonly encoding: "inplace";
+        readonly label: "enum SchedulerRole";
         readonly numberOfBytes: "1";
       };
       readonly "t_mapping(t_bytes32,t_struct(Account)26_storage)": {
@@ -117,10 +136,10 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           {
             readonly astId: 25;
             readonly contract: "src/Token.sol:Token";
-            readonly label: "activeCredentials";
+            readonly label: "rootCredentials";
             readonly offset: 0;
             readonly slot: "2";
-            readonly type: "t_uint64";
+            readonly type: "t_uint256";
           },
         ];
       };
@@ -163,13 +182,13 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(QueuedMutation)660_storage": {
+      readonly "t_struct(QueuedMutation)791_storage": {
         readonly encoding: "inplace";
         readonly label: "struct Typewriter.QueuedMutation";
         readonly numberOfBytes: "96";
         readonly members: readonly [
           {
-            readonly astId: 653;
+            readonly astId: 784;
             readonly contract: "src/Token.sol:Token";
             readonly label: "mutation";
             readonly offset: 0;
@@ -177,7 +196,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint8";
           },
           {
-            readonly astId: 655;
+            readonly astId: 786;
             readonly contract: "src/Token.sol:Token";
             readonly label: "enqueuedTimestamp";
             readonly offset: 1;
@@ -185,7 +204,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint40";
           },
           {
-            readonly astId: 657;
+            readonly astId: 788;
             readonly contract: "src/Token.sol:Token";
             readonly label: "mutationData";
             readonly offset: 0;
@@ -193,7 +212,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_bytes_storage";
           },
           {
-            readonly astId: 659;
+            readonly astId: 790;
             readonly contract: "src/Token.sol:Token";
             readonly label: "authorizationData";
             readonly offset: 0;
@@ -202,13 +221,83 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
           },
         ];
       };
-      readonly "t_struct(State)42183_storage": {
+      readonly "t_struct(Scheduler)159_storage": {
+        readonly encoding: "inplace";
+        readonly label: "struct Scheduler";
+        readonly numberOfBytes: "96";
+        readonly members: readonly [
+          {
+            readonly astId: 154;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "credentials";
+            readonly offset: 0;
+            readonly slot: "0";
+            readonly type: "t_array(t_struct(SchedulerCredential)150_storage)dyn_storage";
+          },
+          {
+            readonly astId: 156;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "rootCredentials";
+            readonly offset: 0;
+            readonly slot: "1";
+            readonly type: "t_uint256";
+          },
+          {
+            readonly astId: 158;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "nonce";
+            readonly offset: 0;
+            readonly slot: "2";
+            readonly type: "t_uint256";
+          },
+        ];
+      };
+      readonly "t_struct(SchedulerCredential)150_storage": {
+        readonly encoding: "inplace";
+        readonly label: "struct SchedulerCredential";
+        readonly numberOfBytes: "64";
+        readonly members: readonly [
+          {
+            readonly astId: 141;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "expiration";
+            readonly offset: 0;
+            readonly slot: "0";
+            readonly type: "t_uint40";
+          },
+          {
+            readonly astId: 144;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "keyType";
+            readonly offset: 5;
+            readonly slot: "0";
+            readonly type: "t_enum(KeyType)5";
+          },
+          {
+            readonly astId: 147;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "role";
+            readonly offset: 6;
+            readonly slot: "0";
+            readonly type: "t_enum(SchedulerRole)139";
+          },
+          {
+            readonly astId: 149;
+            readonly contract: "src/Token.sol:Token";
+            readonly label: "publicKey";
+            readonly offset: 0;
+            readonly slot: "1";
+            readonly type: "t_bytes_storage";
+          },
+        ];
+      };
+      readonly "t_struct(State)42926_storage": {
         readonly encoding: "inplace";
         readonly label: "struct State";
         readonly numberOfBytes: "64";
         readonly members: readonly [
           {
-            readonly astId: 42178;
+            readonly astId: 42921;
             readonly contract: "src/Token.sol:Token";
             readonly label: "totalSupply";
             readonly offset: 0;
@@ -216,7 +305,7 @@ declare const entrypoint: import("typewriter").TypewriterSolidityEntrypoint<{
             readonly type: "t_uint256";
           },
           {
-            readonly astId: 42182;
+            readonly astId: 42925;
             readonly contract: "src/Token.sol:Token";
             readonly label: "balances";
             readonly offset: 0;

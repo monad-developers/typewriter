@@ -39,7 +39,7 @@ const authorizationColumns = () => ({
   authorization_signature: text().$type<Hex.Hex>().notNull(),
 });
 
-export const TYPEWRITER_SCHEMA_VERSION = 1;
+export const TYPEWRITER_SCHEMA_VERSION = 2;
 
 export function createMutationSchema<
   const mutationsConfig extends MutationsConfig,
@@ -92,7 +92,13 @@ export function createTypewriterSchema(schemaName: string) {
         .$defaultFn(() => TYPEWRITER_SCHEMA_VERSION),
       address: char({ length: 42 }).$type<Hex.Hex>().notNull(),
       chain_id: bigint({ mode: "number" }).notNull(),
+      /** keccak256 of the runtime bytecode at `address`. */
       code_hash: bytes32().notNull(),
+      /**
+       * keccak256 of the compiled creation bytecode, without its trailing
+       * solc metadata, which a later start must match.
+       */
+      creation_code_hash: bytes32().notNull(),
     }),
   };
 }

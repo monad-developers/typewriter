@@ -96,7 +96,7 @@ export function App() {
     }
   }
   const { data: manifest } = useManifest();
-  const storageKey = manifest?.deploymentKey;
+  const storageKey = manifest?.deployment;
   const storedAccountQuery = useStoredAccount();
   const account = storedAccountQuery.data ?? null;
   const accountQuery = useQuery({

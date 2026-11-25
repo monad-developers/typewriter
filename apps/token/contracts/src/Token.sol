@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
+import {SchedulerCredential, Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
 struct State {
     uint256 totalSupply;
     mapping(bytes32 => uint256) balances;
 }
-
-error InvalidScheduler();
 
 import {MintMutation} from "./Mint.sol";
 import {TransferMutation} from "./Transfer.sol";
@@ -21,9 +19,7 @@ contract Token is Typewriter {
         Mint
     }
 
-    constructor(address _scheduler) Typewriter(_scheduler) {
-        if (_scheduler == address(0)) revert InvalidScheduler();
-    }
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.Transfer)) {

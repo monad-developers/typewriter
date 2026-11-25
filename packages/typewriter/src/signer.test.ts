@@ -27,16 +27,23 @@ import {
   BUILTIN_MUTATIONS,
   P256_SIGNATURE_PARAMS,
   SECP256K1_PUBLIC_KEY_PARAMS,
-  SECP256K1_SIGNATURE_PARAMS,
   WEBAUTHN_P256_SIGNATURE_PARAMS,
 } from "./typewriter-constants";
+
+/** `[v, r, s]` of a 65-byte `r ‖ s ‖ v` secp256k1 signature. */
+const decodeSecp256k1Signature = (signature: Hex.Hex) =>
+  [
+    Hex.toNumber(Hex.slice(signature, 64, 65)),
+    Hex.slice(signature, 0, 32),
+    Hex.slice(signature, 32, 64),
+  ] as const;
 
 // These checks mirror `verifySignature` in Typewriter.sol.
 
 const manifest = {
   chainId: 10,
   address: "0x1111111111111111111111111111111111111111",
-  deploymentKey: "10_0x1111111111111111111111111111111111111111",
+  deployment: "app_1",
   mutations: {
     Transfer: {
       id: 7,
@@ -191,10 +198,7 @@ test("a secp256k1 signer signs the payload as ecrecover checks it", async () => 
 
   const mutation = transfer(`0x${"bb".repeat(32)}`);
   const signed = await signer.signMutation(mutation);
-  const [v, r, s] = AbiParameters.decode(
-    SECP256K1_SIGNATURE_PARAMS,
-    signed.signature,
-  );
+  const [v, r, s] = decodeSecp256k1Signature(signed.signature);
   expect([27, 28]).toContain(v);
   expect(
     Secp256k1.recoverAddress({
@@ -214,7 +218,7 @@ test("createSigner takes a secp256k1 yParity or v", async () => {
     return (await signer.signMutation(transfer(ACCOUNT))).signature;
   };
   const v = async (yParity: number) =>
-    AbiParameters.decode(SECP256K1_SIGNATURE_PARAMS, await sign(yParity))[0];
+    decodeSecp256k1Signature(await sign(yParity))[0];
 
   expect(await v(0)).toBe(27);
   expect(await v(1)).toBe(28);
@@ -357,10 +361,7 @@ test("signMutation encodes AddCredential permissions given as mutation names", a
   expect(signed.mutation.params.permissions).toBe(permissions);
 
   // The signature covers the encoded value, so it verifies as signed.
-  const [v, r, s] = AbiParameters.decode(
-    SECP256K1_SIGNATURE_PARAMS,
-    signed.signature,
-  );
+  const [v, r, s] = decodeSecp256k1Signature(signed.signature);
   const [address] = AbiParameters.decode(
     SECP256K1_PUBLIC_KEY_PARAMS,
     signer.publicKey,

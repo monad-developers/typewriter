@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
+import {SchedulerCredential, Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
 struct State {
     /// A hash over every executed mutation, in execution order.
@@ -9,7 +9,6 @@ struct State {
     mapping(uint256 => bytes32) slots;
 }
 
-error InvalidScheduler();
 error AError();
 error BError();
 
@@ -50,8 +49,7 @@ contract Assessment is Typewriter {
         B
     }
 
-    constructor(address _scheduler) Typewriter(_scheduler) {
-        if (_scheduler == address(0)) revert InvalidScheduler();
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {
         FORCE_INCLUSION_DELAY = 365 days;
     }
 

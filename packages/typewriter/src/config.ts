@@ -1,11 +1,10 @@
 import type { AbiParameterToPrimitiveType } from "abitype";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { Data } from "effect";
-import { type Address, Hex } from "ox";
+import { Address, Hex } from "ox";
 import type { StorageLayout } from "storage-layout";
 import type { Spec } from "typewriter-evm";
-import type { Abi, AbiParameter, PrivateKeyAccount } from "viem";
-import { deploymentKey } from "./client";
+import type { Abi, AbiParameter, LocalAccount } from "viem";
 import type { DatabaseOptions } from "./db";
 import {
   createMutationSchema,
@@ -52,11 +51,11 @@ export type TypewriterManifest<
   chainId: number;
   address: Address.Address;
   /**
-   * Identifies this deployment, for clients to scope browser storage by. It
-   * is `deploymentKey(chainId, address)`, except in `dev` mode, where every
-   * chain deploys to the same address and each process gets a random key.
+   * The deployment's name, `config.deployment`, for clients to scope browser
+   * storage by. In `dev` mode, where each process's chain is new, it is a
+   * random `typewriter_dev_<random>`.
    */
-  deploymentKey: string;
+  deployment: string;
   mutations: {
     [name in keyof mutationsConfig]: {
       id: mutationsConfig[name] extends {
@@ -83,10 +82,32 @@ export type TypewriterSequencingConfig<
 
 /** The fields that point typewriter at a deployment, which `dev` fills in. */
 type ChainConfig = {
-  /** The deployed Typewriter contract. */
-  address: Address.Address;
-  /** The scheduler, which signs and submits settlements. */
-  account: PrivateKeyAccount;
+  /**
+   * The deployment's name. One name is one contract, at the CREATE2 address
+   * that the name salts, and one database schema of the same name: the first
+   * start deploys the contract, and later starts resume it. A new name
+   * deploys a new contract, which changed contract code needs. Lowercase
+   * letters, digits, and underscores.
+   */
+  deployment: string;
+  /**
+   * The address of the deployment's root scheduler credential, which adds
+   * and removes the scheduler's credentials. It is read only by the start
+   * that deploys the contract.
+   */
+  root: Address.Address;
+  /**
+   * Authorizes each `execute`: the scheduler must have a live secp256k1
+   * credential for its address, of any role. It signs each settlement for
+   * `relayer` unless it is `relayer`. A deployment that typewriter creates
+   * gives it an executor credential, unless it is `root`.
+   */
+  scheduler: LocalAccount;
+  /**
+   * Sends the deployment and the `execute` transactions: signs them, pays
+   * their gas, and owns their nonces. Defaults to `scheduler`.
+   */
+  relayer?: LocalAccount;
   chainId: number;
   rpcUrl: string | string[];
 };
@@ -108,8 +129,9 @@ export type TypewriterConfig<
 > = DevChainConfig<dev> & {
   /**
    * Starts a local Anvil and deploys the app to it with Anvil's first
-   * account as the scheduler. The chain and the deployment's database schema
-   * last only as long as the process, so the chain fields stay unset.
+   * account as the root, the scheduler, and the relayer. The chain and the
+   * deployment's schema last only as long as the process, so the chain
+   * fields, `deployment` included, stay unset.
    */
   dev?: dev;
   /**
@@ -122,36 +144,65 @@ export type TypewriterConfig<
   sequencing?: TypewriterSequencingConfig<sequencingConfig>;
 };
 
-/** The chain fields of a `TypewriterConfig`, filled in by `dev` mode. */
+/** The Anvil that `dev` mode started, which fills in the chain fields. */
 export type DevChain = {
-  address: Address.Address;
-  account: PrivateKeyAccount;
+  /** Anvil's first account: the deployment's root, scheduler, and relayer. */
+  account: LocalAccount;
   chainId: number;
   hardfork: Spec;
   rpcUrl: string;
 };
 
-const CHAIN_FIELDS = ["address", "account", "chainId", "rpcUrl"] as const;
+const REQUIRED_CHAIN_FIELDS = [
+  "deployment",
+  "root",
+  "scheduler",
+  "chainId",
+  "rpcUrl",
+] as const;
+const CHAIN_FIELDS = [...REQUIRED_CHAIN_FIELDS, "relayer"] as const;
 
-/** A resolved `TypewriterConfig`, merged with the app's Solidity metadata. */
+/**
+ * A resolved `TypewriterConfig`, merged with the app's Solidity metadata.
+ * Startup resolves the deployment's address, under the deployment lock.
+ */
 export type TypewriterApp = {
   /** Set in `dev` mode, where the deployment's schema starts empty. */
   dev: boolean;
-  address: Address.Address;
+  contractName: string;
   abi: Abi;
-  manifest: TypewriterManifest;
+  /** Creation bytecode, without constructor arguments. */
+  bytecode: Hex.Hex;
   storageLayout: StorageLayout;
-  account: PrivateKeyAccount;
+  /** The root credential's address, for a deployment that startup creates. */
+  root: Address.Address;
+  /** Authorizes each `execute` with its scheduler credential. */
+  scheduler: LocalAccount;
+  /**
+   * Sends the deployment and the `execute` transactions: `config.relayer`,
+   * or else `scheduler`.
+   */
+  relayer: LocalAccount;
   chainId: number;
   hardfork: Spec;
   rpcUrls: [string, ...string[]];
   database: DatabaseOptions;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
+  /**
+   * `config.deployment`, or in `dev` mode a random `typewriter_dev_<random>`:
+   * the CREATE2 salt's preimage and `manifest.deployment`.
+   */
+  deployment: string;
   /** The Postgres schema that holds the deployment's tables. */
   schemaName: string;
   typewriterSchema: TypewriterSchema;
   mutationSchema: Record<string, PgTable>;
   blockPollingIntervalMs: number;
+  /**
+   * How often the runtime reads the relayer's balance at a final block, to
+   * check it against its settlements' fees. Not configurable; tests shorten it.
+   */
+  balanceCheckIntervalMs: number;
   sequencing:
     | {
         order: "fifo";
@@ -163,11 +214,41 @@ export type TypewriterApp = {
       };
 };
 
+/** A `TypewriterApp` with its deployment's address resolved. */
+export type DeployedTypewriterApp = TypewriterApp & {
+  address: Address.Address;
+  manifest: TypewriterManifest;
+};
+
+/** `app` with its deployment at `address`. */
+export function deployedApp(
+  app: TypewriterApp,
+  address: Address.Address,
+): DeployedTypewriterApp {
+  return {
+    ...app,
+    address,
+    manifest: {
+      chainId: app.chainId,
+      address,
+      deployment: app.deployment,
+      mutations: Object.fromEntries(
+        Object.entries(app.mutations).map(([name, mutation]) => [
+          name,
+          { id: mutation.id, params: mutation.params },
+        ]),
+      ),
+    },
+  };
+}
+
 /** Postgres truncates longer identifiers. */
 const MAX_IDENTIFIER_LENGTH = 63;
 
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
+/** How often the runtime checks the relayer's balance, at a final block. */
+const BALANCE_CHECK_INTERVAL_MS = 60_000;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,
@@ -181,21 +262,51 @@ function assertSafeNonNegativeInteger(
   }
 }
 
+/**
+ * A deployment name that is also a schema name that needs no quoting, so it
+ * reads the same in `psql`. Postgres reserves `pg_` names for its own
+ * schemas.
+ */
+function validateDeploymentName(deployment: string): void {
+  if (!/^[a-z_][a-z0-9_]*$/.test(deployment) || deployment.startsWith("pg_")) {
+    throw new ConfigError({
+      message: `config.deployment must be lowercase letters, digits, and underscores, start with a letter or underscore, and not start with pg_, but is ${JSON.stringify(deployment)}`,
+    });
+  }
+  if (deployment.length > MAX_IDENTIFIER_LENGTH) {
+    throw new ConfigError({
+      message: `config.deployment must be at most ${MAX_IDENTIFIER_LENGTH} characters, but ${deployment} has ${deployment.length}`,
+    });
+  }
+}
+
 export function validateConfig(config: TypewriterConfig): void {
   if (config.dev === true) {
     const set = CHAIN_FIELDS.filter((field) => config[field] !== undefined);
     if (set.length > 0) {
       throw new ConfigError({
-        message: `config.dev starts its own Anvil, so leave ${set.map((field) => `config.${field}`).join(", ")} unset`,
+        message: `config.dev starts its own Anvil and deployment, so leave ${set.map((field) => `config.${field}`).join(", ")} unset`,
       });
     }
   } else {
-    const missing = CHAIN_FIELDS.filter((field) => config[field] === undefined);
+    const missing = REQUIRED_CHAIN_FIELDS.filter(
+      (field) => config[field] === undefined,
+    );
     if (missing.length > 0) {
       throw new ConfigError({
         message: `${missing.map((field) => `config.${field}`).join(", ")} ${missing.length === 1 ? "is" : "are"} required unless config.dev is set`,
       });
     }
+    validateDeploymentName(config.deployment!);
+  }
+
+  if (
+    config.root !== undefined &&
+    !Address.validate(config.root, { strict: false })
+  ) {
+    throw new ConfigError({
+      message: `config.root must be an address, but is ${JSON.stringify(config.root)}`,
+    });
   }
 
   if (Array.isArray(config.rpcUrl) && config.rpcUrl.length === 0) {
@@ -284,13 +395,16 @@ function resolveBatchOrder(
 
 export function createTypewriterApp(params: {
   config: TypewriterConfig;
+  contractName: string;
   abi: Abi;
+  /** Creation bytecode, without constructor arguments. */
+  bytecode: Hex.Hex;
   storageLayout: StorageConfig;
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
   /** The started Anvil, required in `dev` mode. */
   devChain?: DevChain;
 }): TypewriterApp {
-  const { abi, config, devChain, mutations, storageLayout } = params;
+  const { abi, bytecode, config, contractName, devChain, mutations } = params;
   validateConfig(config);
   validateMutationDefinitions(mutations);
 
@@ -302,10 +416,18 @@ export function createTypewriterApp(params: {
   }
   // `validateConfig` checked that the chain fields are set outside `dev`.
   const chain = dev
-    ? devChain!
+    ? {
+        root: devChain!.account.address,
+        scheduler: devChain!.account,
+        relayer: devChain!.account,
+        chainId: devChain!.chainId,
+        hardfork: devChain!.hardfork,
+        rpcUrl: devChain!.rpcUrl,
+      }
     : {
-        address: config.address!,
-        account: config.account!,
+        root: config.root!,
+        scheduler: config.scheduler!,
+        relayer: config.relayer,
         chainId: config.chainId!,
         hardfork: config.hardfork,
         rpcUrl: config.rpcUrl!,
@@ -316,19 +438,14 @@ export function createTypewriterApp(params: {
     Array.isArray(chain.rpcUrl) ? chain.rpcUrl : [chain.rpcUrl]
   ) as [string, ...string[]];
 
-  // Every `dev` chain deploys to the same address, so each process gets its
-  // own key: its own schema, so dev processes can share a database, and its
-  // own browser storage, so a client does not reuse an account from a chain
-  // that is gone.
-  const key = dev
-    ? `dev_${Hex.random(6).slice(2)}`
-    : deploymentKey(chain.chainId, chain.address);
-  const schemaName = `typewriter_${key}`;
-  if (schemaName.length > MAX_IDENTIFIER_LENGTH) {
-    throw new ConfigError({
-      message: `config.chainId is too long for the Postgres schema name: ${schemaName}`,
-    });
-  }
+  // Each `dev` process gets its own deployment: its own schema, so dev
+  // processes can share a database, and its own browser storage, so a client
+  // does not reuse an account from a chain that is gone.
+  const deployment = dev
+    ? `typewriter_dev_${Hex.random(6).slice(2)}`
+    : config.deployment!;
+  // The deployment's schema has its name, which `validateConfig` checked.
+  const schemaName = deployment;
 
   const sequencing =
     config.sequencing?.order === "batch"
@@ -345,31 +462,25 @@ export function createTypewriterApp(params: {
 
   return {
     dev,
-    address: chain.address,
+    contractName,
     abi,
-    manifest: {
-      chainId: chain.chainId,
-      address: chain.address,
-      deploymentKey: key,
-      mutations: Object.fromEntries(
-        Object.entries(mutations).map(([name, mutation]) => [
-          name,
-          { id: mutation.id, params: mutation.params },
-        ]),
-      ),
-    },
-    storageLayout,
-    account: chain.account,
+    bytecode,
+    storageLayout: params.storageLayout,
+    root: chain.root,
+    scheduler: chain.scheduler,
+    relayer: chain.relayer ?? chain.scheduler,
     chainId: chain.chainId,
     hardfork: chain.hardfork ?? DEFAULT_HARDFORK,
     rpcUrls,
     database: config.database,
     mutations,
+    deployment,
     schemaName,
     typewriterSchema: createTypewriterSchema(schemaName),
     mutationSchema: createMutationSchema(schemaName, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
+    balanceCheckIntervalMs: BALANCE_CHECK_INTERVAL_MS,
     sequencing,
   };
 }

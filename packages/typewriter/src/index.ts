@@ -52,6 +52,16 @@ export type {
 export { MigrationError } from "./db-migrate";
 export type { TypewriterMutationSchema } from "./db-schema";
 export { DbError } from "./db-transport";
+export {
+  CREATE2_DEPLOYER,
+  DeploymentError,
+  genesisCredentials,
+  type Migration,
+} from "./deploy";
+export {
+  encodeSchedulerCredentials,
+  secp256k1SchedulerCredential,
+} from "./encoding";
 export { BlockNotFoundError, type RpcError, RpcTimeoutError } from "./rpc";
 export { NoDataReturnedError } from "./rpc-request";
 export {
@@ -61,6 +71,14 @@ export {
   type RpcTransportError,
 } from "./rpc-transport";
 export type { TypewriterSolidityEntrypoint } from "./sol-build";
+export {
+  EXECUTE_EIP712_TYPES,
+  ROOT_PERMISSIONS,
+  SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES,
+  SCHEDULER_REMOVE_CREDENTIAL_EIP712_TYPES,
+  SchedulerRole,
+  TYPEWRITER_EIP712_DOMAIN,
+} from "./typewriter-constants";
 export {
   ChainIdMismatchError,
   type CreateTypewriterError,
@@ -74,7 +92,10 @@ export {
   PendingTransactionsError,
   type ProgramError,
   ProgramStoppedError,
+  RelayerBalanceError,
   ResyncMismatchError,
+  SchedulerCredentialNotFoundError,
+  SchedulerCredentialRemovedError,
   SettlementAfterRevertError,
   SettlementRevertedError,
   SettlementStuckError,
@@ -97,6 +118,7 @@ export type {
   MutationEvent,
   MutationStatus,
   RemoveCredentialParams,
+  SchedulerCredential,
   TypewriterMutation,
   TypewriterMutationInput,
 } from "./typewriter-types";
@@ -163,10 +185,7 @@ export function createTypewriter<
         try: () => loadSolidityApp(entrypoint),
         catch: (error) => error,
       });
-      const devChain =
-        config.dev === true
-          ? yield* startDevChain(solidityApp.bytecode)
-          : undefined;
+      const devChain = config.dev === true ? yield* startDevChain() : undefined;
       const app = yield* Effect.try({
         try: () => createTypewriterApp({ config, ...solidityApp, devChain }),
         catch: (error) => error,
@@ -217,6 +236,8 @@ export function createTypewriter<
         accounts: typewriter.accounts,
         schema: typewriter.schema,
         manifest: typewriter.manifest,
+        address: typewriter.address,
+        migration: typewriter.migration,
         execute,
         on,
       } as Result);

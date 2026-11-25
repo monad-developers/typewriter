@@ -19,6 +19,10 @@
  * - EIP-150: a call passes on at most 63/64 of the gas left.
  * - EIP-2200: an SSTORE needs more than 2,300 gas left.
  * - Monad caps a transaction's gas limit at 30M in every hardfork.
+ * - Typewriter.sol: `execute` checks its scheduler credential once, after its
+ *   executions. revm runs each execution alone from the scheduler, so each
+ *   of their runs checks it without a signature. A settlement checks it once,
+ *   with the scheduler's signature unless the relayer is the scheduler.
  */
 import { type Address, Hex } from "ox";
 import type { AccessList, ExecuteResult, Spec } from "typewriter-evm";
@@ -50,10 +54,98 @@ const ADDRESS_BYTES = 20;
 const KEY_BYTES = 32;
 const ACCESS_LIST_TOKENS_PER_BYTE = 4;
 
-/** The most gas a settlement can use, so its gas limit fits under the cap. */
-export const SETTLEMENT_GAS = Math.floor(
-  ((TX_GAS_LIMIT_CAP - SSTORE_SENTRY_GAS) * 64) / 65,
-);
+/** Every hardfork typewriter runs under. */
+export const HARDFORKS = [
+  "MonadEight",
+  "MonadNine",
+  "MonadTen",
+  "MonadNext",
+] as const satisfies readonly Spec[];
+
+/** What one run of `execute`'s scheduler check costs. */
+export type SchedulerCheckGas = {
+  /**
+   * With every storage slot it reads cold, as in revm's run of one
+   * execution alone: `warm` plus a cold read per slot, or per page under
+   * MIP-8, that it touches.
+   */
+  cold: number;
+  /**
+   * With its storage warm, as in a settlement, whose access list lists every
+   * slot its executions touched, the check's among them.
+   */
+  warm: number;
+};
+
+/**
+ * What `execute`'s scheduler credential check costs, its digest included,
+ * under each hardfork: on the fast path, where the credential's address sends
+ * the call without a signature, and on the secp256k1 path, where the relayer
+ * sends it with the scheduler's 65-byte signature, which adds `ecrecover` and
+ * copying the signature. The larger of the root's credential (0) and an
+ * executor's after it (1). Measured in revm by `scheduler-gas.test.ts`, which
+ * fails when these drift.
+ *
+ * Each execution's own run takes the fast path with its storage cold. The
+ * access list's savings take back the cold reads of every slot it touched,
+ * the check's included, so an execution's own check costs `sender.warm` on
+ * top. A settlement runs the check once, warm, on the path its relayer takes.
+ */
+export const SCHEDULER_AUTHORIZATION_GAS: Record<
+  Spec,
+  { sender: SchedulerCheckGas; signature: SchedulerCheckGas }
+> = {
+  MonadEight: {
+    sender: { cold: 35_940, warm: 3_940 },
+    signature: { cold: 43_730, warm: 11_730 },
+  },
+  MonadNine: {
+    sender: { cold: 35_908, warm: 3_908 },
+    signature: { cold: 43_674, warm: 11_674 },
+  },
+  MonadTen: {
+    sender: { cold: 27_908, warm: 3_908 },
+    signature: { cold: 35_674, warm: 11_674 },
+  },
+  MonadNext: {
+    sender: { cold: 27_908, warm: 3_908 },
+    signature: { cold: 35_674, warm: 11_674 },
+  },
+};
+
+/**
+ * The EIP-7623 tokens that a 65-byte signature, every byte nonzero, adds to
+ * `execute`'s calldata over an empty one: its length word's nonzero byte,
+ * 65 bytes, and the 31 zero bytes that pad it to a word.
+ */
+export const SIGNATURE_CALLDATA_TOKENS = 3 + 65 * 4 + 31;
+
+/** Calldata costs this much per token below the EIP-7623 floor. */
+const STANDARD_GAS_PER_TOKEN = 4;
+
+/**
+ * What a settlement's scheduler check costs under `spec`, its signature's
+ * calldata included.
+ */
+const checkGas = (spec: Spec, signed: boolean) =>
+  signed
+    ? SCHEDULER_AUTHORIZATION_GAS[spec].signature.warm +
+      STANDARD_GAS_PER_TOKEN * SIGNATURE_CALLDATA_TOKENS
+    : SCHEDULER_AUTHORIZATION_GAS[spec].sender.warm;
+
+/**
+ * The most gas an execution can use under `spec`, so that a settlement of it
+ * alone, with its scheduler signature, has a gas limit under the cap: a lone
+ * execution's settlement charges at most its gas plus the signed check over
+ * its own, and its limit adds 1/64, rounded up, and the SSTORE sentry. The
+ * signed check also covers the floor's 10 gas per signature token.
+ */
+export function settlementGas(spec: Spec): number {
+  return (
+    Math.floor(((TX_GAS_LIMIT_CAP - SSTORE_SENTRY_GAS - 1) * 64) / 65) -
+    (checkGas(spec, true) - SCHEDULER_AUTHORIZATION_GAS[spec].sender.warm)
+  );
+}
 
 /**
  * What one access-list key warms of `address`'s storage at `slot` under
@@ -118,9 +210,10 @@ type Estimate = {
   writes: Set<string>;
 };
 
-const emptyEstimate = (): Estimate => ({
-  gas: TRANSACTION_BASE_GAS,
-  tokens: 0,
+/** A settlement under `spec` with no executions yet, with a signature if `signed`. */
+const emptyEstimate = (spec: Spec, signed: boolean): Estimate => ({
+  gas: TRANSACTION_BASE_GAS + checkGas(spec, signed),
+  tokens: signed ? SIGNATURE_CALLDATA_TOKENS : 0,
   addresses: new Set(),
   keys: new Set(),
   writes: new Set(),
@@ -131,7 +224,12 @@ function addExecution(
   estimate: Estimate,
   { executeResult, calldata }: Execution,
 ) {
-  estimate.gas += executeResult.gas_used - TRANSACTION_BASE_GAS;
+  // Its own run checked the scheduler credential, warm once the access list
+  // takes back its cold reads, which the settlement checks once.
+  estimate.gas +=
+    executeResult.gas_used -
+    TRANSACTION_BASE_GAS -
+    SCHEDULER_AUTHORIZATION_GAS[spec].sender.warm;
   for (const byte of Hex.toBytes(calldata)) {
     estimate.tokens += byte === 0 ? 1 : 4;
   }
@@ -190,21 +288,23 @@ function limitOf({ gas, tokens }: Estimate): number {
 
 /**
  * Groups `items` in order so each group's gas limit under `spec` fits under
- * the cap.
+ * the cap. `signed` is whether each settlement carries the scheduler's
+ * signature, because the relayer isn't the scheduler.
  *
  * @dev Settlements are not capped in bytes.
  */
 export function groupByGas<item extends Execution>(
   spec: Spec,
   items: readonly item[],
+  signed: boolean,
 ): item[][] {
   const groups: item[][] = [];
-  let estimate = emptyEstimate();
+  let estimate = emptyEstimate(spec, signed);
   for (const item of items) {
     addExecution(spec, estimate, item);
     if (groups.length === 0 || limitOf(estimate) > TX_GAS_LIMIT_CAP) {
       groups.push([]);
-      estimate = emptyEstimate();
+      estimate = emptyEstimate(spec, signed);
       addExecution(spec, estimate, item);
     }
     groups.at(-1)!.push(item);
@@ -214,10 +314,14 @@ export function groupByGas<item extends Execution>(
 
 /**
  * The gas limit of `executions` as one transaction under `spec`, signed with
- * their `accessList`.
+ * their `accessList`, and with the scheduler's signature if `signed`.
  */
-export function gasLimit(spec: Spec, executions: readonly Execution[]): number {
-  const estimate = emptyEstimate();
+export function gasLimit(
+  spec: Spec,
+  executions: readonly Execution[],
+  signed: boolean,
+): number {
+  const estimate = emptyEstimate(spec, signed);
   for (const execution of executions) addExecution(spec, estimate, execution);
   return limitOf(estimate);
 }
