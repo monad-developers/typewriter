@@ -23,7 +23,7 @@ bun run dev
 
 5. Open the app at `http://localhost:3000`.
 
-The app runs Typewriter in dev mode: it starts a local Anvil, deploys the token with Anvil's first account as the scheduler, and starts from an empty database schema. Every start is a fresh chain.
+The app runs Typewriter in dev mode: it starts a local Anvil, deploys the token with Anvil's first account as the root, scheduler, and relayer, and starts from an empty database schema. Every start is a fresh chain.
 
 ## .env
 

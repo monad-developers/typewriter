@@ -9,8 +9,8 @@ import {
 } from "./scheduler";
 import { SchedulerRole } from "./typewriter-constants";
 
-const SCHEDULER = privateKeyToAccount(`0x${"51".repeat(32)}`);
-const OTHER = privateKeyToAccount(`0x${"07".repeat(32)}`);
+const SCHEDULER = privateKeyToAccount(`0x${"51".repeat(32)}`).address;
+const OTHER = privateKeyToAccount(`0x${"07".repeat(32)}`).address;
 
 const credential = (
   address: Hex.Hex,
@@ -30,45 +30,62 @@ const REMOVED: StoredSchedulerCredential = {
   publicKey: "0x",
 };
 
-test("findSchedulerCredential finds the newest credential of the scheduler, of any role or expiration", () => {
+test("findSchedulerCredential prefers the scheduler's credential that lives longest, of any role", () => {
   const credentials = [
-    credential(SCHEDULER.address, SchedulerRole.Root),
-    credential(OTHER.address, SchedulerRole.Executor),
-    credential(SCHEDULER.address, SchedulerRole.Issuer, 100),
-    REMOVED,
+    credential(SCHEDULER, SchedulerRole.Executor, 200),
+    credential(OTHER, SchedulerRole.Executor),
+    credential(SCHEDULER, SchedulerRole.Issuer, 300),
+    credential(SCHEDULER, SchedulerRole.Executor, 250),
   ];
+  expect(findSchedulerCredential(credentials, SCHEDULER, 100n)).toBe(2n);
+  expect(findSchedulerCredential(credentials, OTHER, 100n)).toBe(1n);
 
-  // `execute` checks the expiration, so an expired credential still matches.
-  expect(findSchedulerCredential(credentials, SCHEDULER.address)).toBe(2n);
-  expect(findSchedulerCredential(credentials, OTHER.address)).toBe(1n);
+  // One that never expires outlives every other, even an older one.
+  credentials.unshift(credential(SCHEDULER, SchedulerRole.Root));
+  expect(findSchedulerCredential(credentials, SCHEDULER, 100n)).toBe(0n);
+
+  // Of two that never expire, the newest.
+  credentials.push(credential(SCHEDULER, SchedulerRole.Executor));
+  expect(findSchedulerCredential(credentials, SCHEDULER, 100n)).toBe(5n);
+});
+
+test("findSchedulerCredential skips one expired at the timestamp, as `execute` does", () => {
+  const credentials = [
+    credential(SCHEDULER, SchedulerRole.Executor, 100),
+    credential(SCHEDULER, SchedulerRole.Executor, 50),
+  ];
+  // `execute` rejects an expiration before the timestamp, not at it.
+  expect(findSchedulerCredential(credentials, SCHEDULER, 100n)).toBe(0n);
+  expect(findSchedulerCredential(credentials, SCHEDULER, 101n)).toBeUndefined();
 });
 
 test("findSchedulerCredential skips a removed credential", () => {
   const credentials = [
-    credential(SCHEDULER.address, SchedulerRole.Root),
-    credential(SCHEDULER.address, SchedulerRole.Executor),
+    credential(SCHEDULER, SchedulerRole.Root, 500),
+    credential(SCHEDULER, SchedulerRole.Executor),
   ];
-  expect(findSchedulerCredential(credentials, SCHEDULER.address)).toBe(1n);
+  expect(findSchedulerCredential(credentials, SCHEDULER, 0n)).toBe(1n);
   // `schedulerRemoveCredential` deletes it, which zeroes every field.
   credentials[1] = REMOVED;
-  expect(findSchedulerCredential(credentials, SCHEDULER.address)).toBe(0n);
+  expect(findSchedulerCredential(credentials, SCHEDULER, 0n)).toBe(0n);
 });
 
 test("findSchedulerCredential finds nothing without a credential of the scheduler", () => {
-  const scheduler = SCHEDULER.address;
-  expect(findSchedulerCredential([], scheduler)).toBeUndefined();
-  expect(findSchedulerCredential([REMOVED], scheduler)).toBeUndefined();
+  expect(findSchedulerCredential([], SCHEDULER, 0n)).toBeUndefined();
+  expect(findSchedulerCredential([REMOVED], SCHEDULER, 0n)).toBeUndefined();
   expect(
     findSchedulerCredential(
-      [credential(OTHER.address, SchedulerRole.Root)],
-      scheduler,
+      [credential(OTHER, SchedulerRole.Root)],
+      SCHEDULER,
+      0n,
     ),
   ).toBeUndefined();
   // A P-256 credential, even with the same bytes, is another key.
   expect(
     findSchedulerCredential(
-      [{ ...credential(scheduler, SchedulerRole.Root), keyType: KeyType.P256 }],
-      scheduler,
+      [{ ...credential(SCHEDULER, SchedulerRole.Root), keyType: KeyType.P256 }],
+      SCHEDULER,
+      0n,
     ),
   ).toBeUndefined();
 });

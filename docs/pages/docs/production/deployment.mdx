@@ -1,1 +1,183 @@
 # Deployment [Deploy the contract and run the server]
+
+In production, Typewriter deploys your contract on its first start and resumes it on every start after. There's no separate deploy step.
+
+```ts [src/index.ts]
+import { createTypewriter } from "typewriter";
+import { privateKeyToAccount } from "viem/accounts";
+import Token from "../contracts/src/Token.sol";
+
+const typewriter = await createTypewriter(Token, {
+  deployment: "token_mainnet_1",
+  root: "0x...",
+  scheduler: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY),
+  relayer: privateKeyToAccount(process.env.RELAYER_PRIVATE_KEY),
+  chainId: Number(process.env.CHAIN_ID),
+  rpcUrl: ["https://rpc-1.example", "https://rpc-2.example"],
+  database: { url: process.env.DATABASE_URL },
+});
+```
+
+## Config
+
+| Field | Description |
+| --- | --- |
+| `deployment` | The deployment's name. It names both the contract and the Postgres schema that holds its tables. Lowercase letters, digits, and underscores, starting with a letter or underscore, at most 63 characters, and not starting with `pg_`. |
+| `root` | The address of the root scheduler credential, which adds and removes the scheduler's credentials. Only the start that deploys the contract reads it. |
+| `scheduler` | A viem `LocalAccount` whose credential authorizes each settlement, such as `privateKeyToAccount(...)` or a KMS-backed account. It must be a secp256k1 key. |
+| `relayer` | Optional. A `LocalAccount` that sends the deployment and the settlements: it signs them, pays their gas, and owns their nonces. Defaults to `scheduler`. When it's a different account, the scheduler signs each settlement for it. |
+| `chainId` | The chain's ID. Startup fails if an RPC serves another chain. |
+| `rpcUrl` | An RPC URL, or a list of them. Typewriter sends each transaction to every URL in the list. |
+| `database` | The Postgres connection, `{ url }`. |
+
+## First start
+
+On a start whose schema has no deployment recorded, Typewriter:
+
+1. Deploys the contract through the standard CREATE2 deployer, `0x4e59b44847b379578588920cA78FbF26c0B4956C`, with `keccak256(deployment)` as the salt. Startup fails on a chain without the deployer.
+2. Passes the constructor two scheduler credentials, neither of which expires: a `Root` credential for `root`, and an `Executor` credential for `scheduler`. If `scheduler` is `root`, only the root credential.
+3. Records the contract's address in the schema.
+
+`typewriter.migration` is `"created"` on this start and `"resumed"` on every later one, and `typewriter.address` is the contract. Use `migration` to seed a new deployment:
+
+```ts [src/index.ts]
+console.log(
+  `${typewriter.migration === "created" ? "Deployed" : "Resumed"} ${typewriter.address}`,
+);
+
+// A new deployment starts empty.
+if (typewriter.migration === "created") await seed(typewriter.manifest, typewriter.execute);
+```
+
+:::note
+If the process stops after `created` but before seeding finishes, the next start is `resumed` and doesn't seed. Make seeding something you can rerun by hand.
+:::
+
+The relayer pays for the deployment, so fund it before the first start.
+
+## Later starts
+
+Later starts read the contract's address from the schema, and don't read `root`. Startup fails if:
+
+- **The contract changed.** Typewriter compares the compiled creation code, ignoring Solidity's metadata trailer, with the code it deployed. To deploy changed code, use a new `deployment`. The new deployment starts with empty state.
+- **`chainId` changed.** Use another `deployment` for another chain.
+
+If a start deploys the contract but stops before recording it, the next start finds the code at the CREATE2 address and adopts it, as `"created"`. This only works if `root`, `scheduler`, and the contract are unchanged, since they're all part of the address. Changing one deploys a second contract. If the deployment's transaction hasn't landed yet, startup fails; restart once it lands.
+
+## Running the server
+
+Run one instance per deployment. Each instance holds a Postgres advisory lock on its deployment. A second instance waits up to 10 seconds for the lock and then fails to start, and an instance that loses the lock stops.
+
+- **Deploy with a recreate strategy, not a rolling one.** Stop the old instance before starting the new one. A rolling deploy starts the new instance while the old one holds the lock.
+- **Stop with `SIGINT` or `SIGTERM`.** Typewriter releases the lock and its connections before the process exits.
+- **Expect the process to exit when Typewriter stops.** If startup fails or the runtime stops, Typewriter logs the error and exits, rather than serve stale state. Restart it with your process manager, and alert on exits.
+
+If the relayer still has pending transactions from the previous process, startup fails with a `PendingTransactionsError`. Restart once they land.
+
+## Relayer balance
+
+The relayer pays for every settlement, so it needs a balance at all times. Typewriter logs it at startup, and about once a minute at a final block:
+
+```text
+INFO  Relayer balance relayer=0x... balance_mon=12.5 balance_wei=12500000000000000000 block_number=... spent_mon=0.03 runway_settlements=4166
+```
+
+`runway_settlements` is how many more settlements the balance pays for at the recent average fee. Typewriter stops with a `RelayerBalanceError` when:
+
+- **The balance can't pay for one settlement of the most gas.** That's 30 million gas at the block's base fee plus Typewriter's 2 gwei priority fee. Startup fails the same way.
+- **Something else spends from the relayer.** Typewriter counts the relayer's nonces itself, so it checks the balance against its own settlements' fees, and stops if it's lower. A higher balance is logged as `Relayer was topped up`.
+
+Use the relayer key for Typewriter only, and alert on:
+
+- `runway_settlements` or `balance_mon` below a threshold, so you top up before it runs out.
+- `Failed settlement broadcast` warnings, which include sends rejected for too little balance.
+- `Failed to start typewriter` and `Stopped typewriter` errors, and the exits that follow.
+
+With `TYPEWRITER_LOG_FORMAT=json`, the default when `NODE_ENV=production`, the message is the `msg` field and the annotations are top-level fields.
+
+## Scheduler credentials
+
+The contract only accepts settlements authorized by one of its scheduler credentials. Each has a role:
+
+- **`Executor`** authorizes settlements.
+- **`Issuer`** also adds and removes `Executor` credentials.
+- **`Root`** also adds and removes credentials of any role. The contract keeps at least one `Root` credential that doesn't expire.
+
+The scheduler signs every settlement, so it's a hot key. Keep `root` cold, such as a KMS key in a separate cloud account or a hardware wallet, and don't set `scheduler` to `root` in production: a leaked scheduler key could then add credentials of its own.
+
+At startup, Typewriter uses the newest secp256k1 credential for the `scheduler` address. If that credential expires or is removed while Typewriter runs, it stops: with a `SchedulerCredentialError` when it notices before sending, or a `SettlementRevertedError` once a settlement has reverted onchain.
+
+### Rotating the scheduler
+
+Add the new credential before removing the old one:
+
+1. **Add a credential for the new scheduler.** The root signs a `SchedulerAddCredential` for it, and any funded account sends it. Use an account other than the relayer, since Typewriter stops when something else spends from it.
+2. **Restart Typewriter with the new `scheduler`.** Wait for the add to land first.
+3. **Remove the old credential.** The root signs a `SchedulerRemoveCredential` with the old credential's ID. IDs come from the contract's `SchedulerCredentialAdded(uint64 credentialID, SchedulerCredential credential)` events; the genesis root is `0` and the genesis executor `1`.
+
+Each signature uses the contract's scheduler nonce, read with `schedulerNonce()`, and a `deadline` in seconds, or `0` for none.
+
+```ts [scripts/add-scheduler.ts]
+import {
+  SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES,
+  SchedulerRole,
+  TYPEWRITER_EIP712_DOMAIN,
+  secp256k1SchedulerCredential,
+} from "typewriter";
+import { type Address, createPublicClient, createWalletClient, http, parseAbi } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+
+const abi = parseAbi([
+  "function schedulerNonce() view returns (uint256)",
+  "function schedulerAddCredential((uint40 expiration, uint8 keyType, uint8 role, bytes publicKey) credential, uint256 nonce, uint40 deadline, (uint64 credentialID, bytes signature) authorization)",
+]);
+
+const address = process.env.TYPEWRITER_ADDRESS as Address;
+const chainId = Number(process.env.CHAIN_ID);
+const transport = http(process.env.RPC_URL);
+const root = rootAccount(); // your KMS or hardware account
+const sender = privateKeyToAccount(process.env.SENDER_PRIVATE_KEY as `0x${string}`);
+
+const credential = secp256k1SchedulerCredential(
+  process.env.NEW_SCHEDULER_ADDRESS as Address,
+  SchedulerRole.Executor,
+);
+const nonce = await createPublicClient({ transport }).readContract({
+  address,
+  abi,
+  functionName: "schedulerNonce",
+});
+const deadline = Math.floor(Date.now() / 1000) + 60 * 60;
+
+const signature = await root.signTypedData({
+  domain: { ...TYPEWRITER_EIP712_DOMAIN, chainId, verifyingContract: address },
+  types: SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES,
+  primaryType: "SchedulerAddCredential",
+  message: { ...credential, nonce, deadline },
+});
+
+await createWalletClient({ account: sender, transport }).writeContract({
+  chain: null,
+  address,
+  abi,
+  functionName: "schedulerAddCredential",
+  // The genesis root credential has ID 0.
+  args: [credential, nonce, deadline, { credentialID: 0n, signature }],
+});
+```
+
+The remove is the same with `SCHEDULER_REMOVE_CREDENTIAL_EIP712_TYPES`, primary type `SchedulerRemoveCredential`, the message `{ credentialID, nonce, deadline }`, and `schedulerRemoveCredential(uint64 credentialID, uint256 nonce, uint40 deadline, (uint64 credentialID, bytes signature) authorization)`.
+
+### Rotating the relayer
+
+The relayer has no credential, so rotating it needs nothing onchain:
+
+1. Fund the new relayer.
+2. Stop Typewriter, and wait until the old relayer has no pending transactions.
+3. Start it with the new `relayer`.
+
+If `relayer` is unset, it's the scheduler, so rotating the scheduler rotates the relayer too, and step 2 applies.
+
+## Backups
+
+The deployment's schema is the only record of the mutations Typewriter has accepted. Typewriter can't reattach to a contract from an empty schema: once the contract has executed anything, startup fails because the schema is behind the chain. Back up Postgres, and restore it to resume a deployment.

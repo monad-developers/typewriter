@@ -615,7 +615,9 @@ export function createTypewriterEffect<
             params: [app.address, { blockHash: startBlock.hash }],
           }),
           requestExecutionIndex(app.address, startBlock.hash),
-          requestNonce(app.relayer.address),
+          // At the start block, as the balance is, so the ledger sees the
+          // fees of every transaction the relayer sends after it.
+          requestNonce(app.relayer.address, startBlock.hash),
           rpc
             .request({
               method: "eth_getBalance",
@@ -674,13 +676,14 @@ export function createTypewriterEffect<
     const schedulerCredentialID = findSchedulerCredential(
       readSchedulerCredentials(scheduler),
       app.scheduler.address,
+      startBlock.timestamp,
     );
     if (schedulerCredentialID === undefined) {
       return yield* new SchedulerCredentialError({
         scheduler: app.scheduler.address,
         address: app.address,
         credentialID: undefined,
-        reason: "it has no scheduler credential",
+        reason: "it has no live scheduler credential",
       });
     }
     /**

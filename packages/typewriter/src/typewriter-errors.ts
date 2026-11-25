@@ -183,7 +183,7 @@ export class ChainIdMismatchError extends Data.TaggedError(
   }
 }
 
-/** The scheduler has pending transactions at startup, e.g. from a previous process. */
+/** The relayer has transactions after the start block or still pending at startup, e.g. from a previous process. */
 export class PendingTransactionsError extends Data.TaggedError(
   "PendingTransactionsError",
 )<{

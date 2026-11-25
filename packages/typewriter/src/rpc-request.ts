@@ -109,18 +109,29 @@ export function requestExecutionHash(
   return requestTypewriterView(address, blockHash, "executionHash");
 }
 
-/** The scheduler's next nonce. Fails if it has pending transactions, e.g. from a previous process. */
+/**
+ * The relayer's next nonce as of `blockHash`, or the latest block. Fails if it
+ * has sent anything after that block or still pending, e.g. from a previous
+ * process, so every later transaction of the relayer is the runtime's own.
+ */
 export function requestNonce(
   address: Address.Address,
+  blockHash?: Hash,
 ): Effect.Effect<number, RpcError | PendingTransactionsError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
-    const count = (tag: "latest" | "pending") =>
+    const count = (block: "pending" | "latest" | { blockHash: Hash }) =>
       rpc
-        .request({ method: "eth_getTransactionCount", params: [address, tag] })
+        .request({
+          method: "eth_getTransactionCount",
+          params: [address, block],
+        })
         .pipe(Effect.map(Hex.toNumber));
     const [latest, pending] = yield* Effect.all(
-      [count("latest"), count("pending")],
+      [
+        count(blockHash === undefined ? "latest" : { blockHash }),
+        count("pending"),
+      ],
       { concurrency: "unbounded" },
     );
     if (pending > latest) {

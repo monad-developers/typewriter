@@ -90,24 +90,34 @@ export function seedScheduler(
 }
 
 /**
- * The ID of the newest of `credentials` that lets `scheduler` authorize
- * `execute` without a signature when it sends the call: its secp256k1 key, of
- * any role. A removed credential has no public key, so it never matches.
- * `undefined` if none does. Whether it has expired is left to `execute`.
+ * The ID of the credential of `credentials` that lets `scheduler` authorize
+ * `execute` without a signature when it sends the call, for the longest after
+ * `timestamp`: its secp256k1 key, of any role, live at `timestamp`, preferring
+ * one that never expires, then the latest expiration, then the newest. A
+ * removed credential has no public key, so it never matches. `undefined` if
+ * none does. `execute` checks the expiration again at each settlement.
  */
 export function findSchedulerCredential(
   credentials: readonly StoredSchedulerCredential[],
   scheduler: Address.Address,
+  timestamp: bigint,
 ): bigint | undefined {
   const publicKey = encodeSecp256k1PublicKey(scheduler).toLowerCase();
-  for (let id = credentials.length - 1; id >= 0; id--) {
-    const credential = credentials[id]!;
+  // An expiration of 0 never expires, so it sorts after every other.
+  const lifetime = (expiration: number) =>
+    expiration === 0 ? Number.POSITIVE_INFINITY : expiration;
+  let found: { id: number; expiration: number } | undefined;
+  for (const [id, credential] of credentials.entries()) {
+    const expiration = Number(credential.expiration);
     if (
       Number(credential.keyType) === KeyType.Secp256k1 &&
-      credential.publicKey.toLowerCase() === publicKey
+      credential.publicKey.toLowerCase() === publicKey &&
+      lifetime(expiration) >= Number(timestamp) &&
+      (found === undefined ||
+        lifetime(expiration) >= lifetime(found.expiration))
     ) {
-      return BigInt(id);
+      found = { id, expiration };
     }
   }
-  return undefined;
+  return found === undefined ? undefined : BigInt(found.id);
 }

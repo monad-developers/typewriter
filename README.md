@@ -104,8 +104,9 @@ import { privateKeyToAccount } from "viem/accounts";
 import Token from "../contracts/src/Token.sol";
 
 const typewriter = await createTypewriter(Token, {
-  address, // the deployed contract
-  account: privateKeyToAccount(privateKey), // the scheduler, which submits transactions
+  deployment: "token_testnet_1", // the contract and its database schema; the first start deploys it
+  root: rootAddress, // the root scheduler credential, which manages the scheduler's credentials
+  scheduler: privateKeyToAccount(schedulerKey), // authorizes each onchain settlement
   chainId,
   rpcUrl,
   database: { url: databaseUrl },
@@ -118,7 +119,9 @@ typewriter.on("mutation", (mutation) => {
 });
 ```
 
-> Onchain submission is gated to a single scheduler address that the server controls (see [Contract structure](#contract-structure)). Because no one else can submit transactions, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
+The first start with a new `deployment` deploys the contract and `typewriter.migration` is `"created"`; later starts resume it and it is `"resumed"`. See [Deployment](https://github.com/monad-developers/typewriter/blob/main/docs/pages/docs/production/deployment.mdx) for running a deployment in production.
+
+> The contract only executes settlements that one of its scheduler credentials authorizes (see [Scheduler](#scheduler)), and the server holds the scheduler's key. Because no one else can settle mutations, the server can simulate a mutation locally and trust the result will hold onchain — which is what lets it respond `accepted` before a block is produced.
 
 #### Local development
 
@@ -165,9 +168,11 @@ Mutations wait for the next batch. Every `batchIntervalMs`, the server gathers t
 
 #### Submitting transactions
 
-The server submits accepted mutations onchain itself, in transactions signed and paid for by the scheduler account, so users never need gas. It sends a transaction as soon as mutations are accepted, without waiting for earlier ones to be included, so several land in each block.
+The server submits accepted mutations onchain itself, in transactions that the scheduler authorizes and the relayer account (the scheduler, unless `relayer` is set) signs and pays for, so users never need gas. It sends a transaction as soon as mutations are accepted, without waiting for earlier ones to be included, so several land in each block.
 
-Typewriter manages the scheduler's nonces, estimates gas and fees, splits batches too big for one transaction, rebroadcasts transactions until they land, and follows them through reorgs to finality. If a transaction lands too late to execute, Typewriter executes its mutations again.
+Typewriter manages the relayer's nonces, estimates gas and fees, splits batches too big for one transaction, rebroadcasts transactions until they land, and follows them through reorgs to finality. If a transaction lands too late to execute, Typewriter executes its mutations again.
+
+The relayer must send only Typewriter's transactions. Startup fails, and the runtime stops, when the relayer's balance can't pay for one settlement, or when it drops by more than Typewriter's own transactions spent.
 
 ## Examples
 
@@ -204,7 +209,7 @@ Typewriter rules out its causes: the contract runs each settlement at the timest
 
 Accepted mutations are persisted to Postgres before `execute()` resolves, and the server restores its state from them on startup.
 
-What a restart does with mutations that were accepted but not yet finalized is not decided yet. Startup fails if the scheduler account has pending transactions, or if the chain has executed mutations the database doesn't have, for example after a user calls `forceExecute()` while the server is down.
+What a restart does with mutations that were accepted but not yet finalized is not decided yet. Startup fails if the relayer account has pending transactions, or if the chain has executed mutations the database doesn't have, for example after a user calls `forceExecute()` while the server is down.
 
 ## API reference
 
@@ -265,9 +270,9 @@ application's `State`:
 mapping (bytes32 => Account) accounts;
 
 struct Account {
-    mapping(uint192 => uint64) nonces;
     Credential[] credentials;
-    uint64 activeCredentials;
+    uint256 rootCredentials;
+    mapping(uint192 => uint64) nonces;
 }
 
 struct Credential {
@@ -293,9 +298,11 @@ timestamp in seconds; `0` means no expiration.
 
 A credential's ID is its array index. Adding a credential appends a new entry;
 removing one clears its slot without changing other IDs or the account ID.
-`activeCredentials` counts credentials that have not been removed, including
-expired credentials. Typewriter prevents removal of a missing credential or
-the final remaining credential.
+A root credential never expires and has both the `AddCredential` and
+`RemoveCredential` permissions; `rootCredentials` counts them. Typewriter
+prevents removal of a missing credential or of the account's last root
+credential (`LastRootCredential`), so an account can always manage its
+credentials.
 
 Account creation and credential management are built-in mutations:
 
@@ -345,7 +352,7 @@ expected key and signature bytes:
 | -------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `P256` (`0`)         | 65-byte uncompressed key (`0x04 \|\| X \|\| Y`) or `abi.encode(uint256 x, uint256 y)` | `abi.encode(uint256 r, uint256 s)`                                                                |
 | `WebAuthnP256` (`1`) | Same as `P256`                                                                        | `abi.encode(bytes authData, bytes clientDataJSON, uint256 challengeOffset, uint256 r, uint256 s)` |
-| `Secp256k1` (`2`)    | `abi.encode(address)`                                                                 | `abi.encode(uint8 v, bytes32 r, bytes32 s)` with `v` equal to `27` or `28`                        |
+| `Secp256k1` (`2`)    | `abi.encode(address)`                                                                 | 65 bytes `r \|\| s \|\| v`, with `v` equal to `27` or `28` (`0` or `1` also work)                 |
 
 For `Secp256k1`, Typewriter calls `ecrecover` on `digest` and requires a nonzero
 address matching the stored address. For `P256`, it verifies `(r, s)` over
@@ -396,12 +403,12 @@ signature must be nonempty, and `accountID` must equal
 #### Contract structure
 
 The contract inherits from `typewriter/Typewriter.sol`, which supplies accounts
-and authorization, the scheduler, and force inclusion. The app owns only its
+and authorization, the [scheduler](#scheduler), and force inclusion. The app owns only its
 `state`, its `Mutation` enum, its mutation libraries, and the `dispatch`
 callback.
 
 ```solidity
-import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
+import {SchedulerCredential, Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
 contract Token is Typewriter {
     State internal state;
@@ -410,7 +417,7 @@ contract Token is Typewriter {
         Add
     }
 
-    constructor(address _scheduler) Typewriter(_scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID)
         internal override
@@ -428,7 +435,7 @@ contract Token is Typewriter {
 **`FORCE_INCLUSION_DELAY`.** The number of seconds that must elapse after a mutation is enqueued before any caller may `forceExecute` it. It defaults to `5 minutes`; an app that needs a different delay reassigns it in its constructor:
 
 ```solidity
-constructor(address scheduler) Typewriter(scheduler) {
+constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {
     FORCE_INCLUSION_DELAY = 10 minutes;
 }
 ```
@@ -451,6 +458,81 @@ event ForceInclusionQueued(
 );
 ```
 
+#### Scheduler
+
+`execute`, which settles the server's batches, runs only with a
+`SchedulerAuthorization` from one of the contract's scheduler credentials:
+
+```solidity
+enum SchedulerRole {
+    Executor,
+    Issuer,
+    Root
+}
+
+struct SchedulerCredential {
+    uint40 expiration;
+    KeyType keyType;
+    SchedulerRole role;
+    bytes publicKey;
+}
+
+struct SchedulerAuthorization {
+    uint64 credentialID;
+    bytes signature;
+}
+
+function execute(
+    bytes32 fromExecutionHash,
+    uint40 timestamp,
+    Batch calldata batch,
+    uint256[] calldata forceExecuteIndexes,
+    SchedulerAuthorization calldata authorization
+) external;
+
+function schedulerAddCredential(
+    SchedulerCredential calldata credential,
+    uint256 nonce,
+    uint40 deadline,
+    SchedulerAuthorization calldata authorization
+) external;
+
+function schedulerRemoveCredential(
+    uint64 credentialID,
+    uint256 nonce,
+    uint40 deadline,
+    SchedulerAuthorization calldata authorization
+) external;
+
+function schedulerNonce() external view returns (uint256);
+```
+
+A credential of any role authorizes `execute` if it has not been removed or
+expired at the settlement's timestamp (`expiration` `0` never expires). When
+the caller is the credential's own secp256k1 address, `signature` is empty.
+Otherwise it is the credential's signature, encoded as in
+[Signature encoding](#authorization), over the EIP-712 type below, which binds
+the settlement to the `relayer` that sends it (`msg.sender`):
+
+```text
+Execute(bytes32 fromExecutionHash,bytes32 toExecutionHash,uint40 timestamp,address relayer)
+```
+
+`schedulerAddCredential` and `schedulerRemoveCredential` are authorized the
+same way, over `SchedulerAddCredential(uint40 expiration,uint8 keyType,uint8 role,bytes publicKey,uint256 nonce,uint40 deadline)`
+and `SchedulerRemoveCredential(uint64 credentialID,uint256 nonce,uint40 deadline)`,
+with expirations checked at the block's timestamp. Each takes the next
+`schedulerNonce()` and a `deadline` (`0` for none). The signer must be an
+`Issuer` or a `Root` with a higher role than the credential it adds or
+removes: an issuer manages executors, and a root manages any role. As with
+accounts, a credential's ID is its array index.
+
+The constructor takes the starting credentials and requires a `Root` that
+never expires, and the last such root can't be removed
+(`LastRootSchedulerCredential`). A deployment that Typewriter creates starts
+with a root credential for `config.root` and, unless the scheduler is the root,
+an executor credential for `config.scheduler`; neither expires.
+
 #### `dispatch`
 
 ```solidity
@@ -468,7 +550,7 @@ The entrypoint file must define exactly one contract that inherits
 `Typewriter`. That contract must:
 
 - inherit only `Typewriter`, and not be abstract;
-- declare exactly `constructor(address scheduler)` and pass `scheduler` to `Typewriter(scheduler)`; the body may do more, but it takes no other arguments;
+- declare exactly `constructor(SchedulerCredential[] memory schedulerCredentials)` and pass `schedulerCredentials` to `Typewriter(schedulerCredentials)`; the body may do more, but it takes no other arguments;
 - declare `enum Mutation` inside itself, with at most 253 members and none named like a built-in mutation;
 - keep all its storage in `state` (`constant`s are allowed), with no function-typed fields;
 - add no `public` or `external` functions or variables;
@@ -487,16 +569,16 @@ modifier, and operator they reach; it trusts Typewriter.sol. That code must not
 use:
 
 - `block.*` other than `block.chainid`, or `blockhash` or `blobhash`: the block a mutation settles in isn't the one the server executed it in;
-- `msg.*` or `tx.*`: the server calls as the scheduler, but anyone can call `forceExecute`, and settlement batches the calldata;
+- `msg.*` or `tx.*`: the server's relayer sends settlements, but anyone can call `forceExecute`, and settlement batches the calldata;
 - `gasleft()`;
 - another contract or account: external calls, `.call`/`.staticcall`/`.delegatecall`, `.send`/`.transfer`, `.balance`, `.code`/`.codehash`, `new`, or `selfdestruct`;
 - inline assembly, which the check can't read;
-- Typewriter's own state and functions (`accounts`, `queue`, `executionIndex`, `executionHash`, `_execute`, …).
+- Typewriter's own state and functions (`accounts`, `scheduler`, `queue`, `executionIndex`, `executionHash`, `_execute`, …).
 
 ### Server runtime
 
 The server entry point exports `createTypewriter`. Its handle contains `state`,
-`accounts`, `schema`, `manifest`, `execute`, and `on`. The runtime stops when
+`accounts`, `schema`, `manifest`, `address`, `migration`, `execute`, and `on`. The runtime stops when
 the process receives `SIGINT` or `SIGTERM`, and the process exits if the
 runtime fails.
 
@@ -513,15 +595,17 @@ Starts the runtime and resolves to the `Typewriter` handle once it is ready to a
 
 **`TypewriterConfig`.** Required fields, except in [dev mode](#local-development) (`dev: true`), where typewriter fills in all but `database`:
 
-- `address` — the deployed Typewriter contract.
-- `account` — the scheduler `PrivateKeyAccount`; signs and submits the onchain `execute` transactions.
+- `deployment` — the deployment's name: lowercase letters, digits, and underscores, at most 63 characters, not starting with `pg_`. One name is one contract, at the CREATE2 address that the name salts, and one Postgres schema of the same name. The first start deploys the contract from the relayer through the standard CREATE2 deployer (`0x4e59b44847b379578588920cA78FbF26c0B4956C`), and later starts resume it. Startup fails if the contract's code changed since the deployment, or if `chainId` differs; deploy changed code under a new name.
+- `root` — the address of the root [scheduler](#scheduler) credential, which adds and removes the scheduler's credentials. Only the start that deploys the contract reads it.
+- `scheduler` — a viem `LocalAccount` whose secp256k1 scheduler credential, of any role, authorizes each `execute`. Startup fails unless that credential is live. A deployment that typewriter creates gives it an executor credential, unless it is `root`.
 - `chainId` — number.
 - `rpcUrl` — `string | string[]`.
 - `database` — `{ url, maxConnections?, statementTimeoutMs?, idleInTransactionTimeoutMs? }` (Postgres; both timeouts default to `30000`).
 
 Optional fields:
 
-- `dev` — starts Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the scheduler, and fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork`. Setting any of the first four with `dev` is an error. The deployment lives in the database schema `typewriter_dev_<random>`, which is dropped with Anvil when the process stops. Anvil keeps only recent history, so reads of old blocks fail.
+- `relayer` — a viem `LocalAccount` that sends the deployment and the `execute` transactions: it signs them, pays their gas, and owns their nonces. Defaults to `scheduler`. When it is another account, the scheduler signs each settlement for it.
+- `dev` — starts Anvil (`anvil --network monad`), deploys the app with Anvil's first account as the root, scheduler, and relayer, and fills in `deployment`, `root`, `scheduler`, `chainId`, `rpcUrl`, and `hardfork`. Setting `deployment`, `root`, `scheduler`, `relayer`, `chainId`, or `rpcUrl` with `dev` is an error. The deployment is named `typewriter_dev_<random>`, and its database schema is dropped with Anvil when the process stops. Anvil keeps only recent history, so reads of old blocks fail.
 - `hardfork` — the EVM hardfork mutations execute under and settlements are priced for, for the runtime's life. Defaults to `"MonadTen"`.
 - `blockPollingIntervalMs` — default `200`.
 - `sequencing` — `{ order: "fifo" }` (the default) or `{ order: "batch", batchIntervalMs?, batchOrder }`; see [Sequencing](#sequencing). `batchIntervalMs` defaults to `50`. `batchOrder` lists `Mutation` names; built-in account mutations always come first, and mutations not listed come last, in the order they were received.
@@ -535,18 +619,27 @@ The Solidity entrypoint must be importable by Bun and belong to a Foundry projec
 
 An invalid value throws when the server module loads.
 
+#### `typewriter.address` and `typewriter.migration`
+
+```ts
+typewriter.address: Address;
+typewriter.migration: "created" | "resumed";
+```
+
+`address` is the deployment's contract. `migration` is `"created"` on a deployment's first start, which deploys the contract, and `"resumed"` on later starts, so an app can seed a new deployment once.
+
 #### `typewriter.manifest`
 
 ```ts
 typewriter.manifest: {
   chainId: number;
   address: Address;
-  deploymentKey: string;
+  deployment: string;
   mutations: Record<string, { id: number; params: AbiParameter[] }>;
 };
 ```
 
-`deploymentKey` identifies the deployment; scope browser storage, such as stored account keys, by it. It is `<chainId>_<address>`, except in [dev mode](#local-development), where every chain deploys to the same address and each process gets a random `dev_<random>` key. A browser therefore never reuses an account from a dev chain that is gone.
+`deployment` is the deployment's name, `config.deployment`; scope browser storage, such as stored account keys, by it. In [dev mode](#local-development) each process gets a random `typewriter_dev_<random>` name, so a browser never reuses an account from a dev chain that is gone.
 
 The serializable manifest contains the deployment and all app/native mutation
 metadata needed to authorize mutations. The browser-safe `typewriter/client`
@@ -649,7 +742,7 @@ typewriter.schema: TypewriterMutationSchema;
 
 The [Drizzle](https://orm.drizzle.team) tables the runtime generates and migrates for this deployment. typewriter owns these tables; apps read from them to build read models (decoded mutation history, per-account views, and so on).
 
-One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted`, and its block columns are set when it is `included`; `received` and `rejected` mutations are not persisted here. A mutation is finalized once the chain's `"finalized"` block reaches its `block_number`. The tables live in the Postgres schema `typewriter_<chainId>_<address>`.
+One table per Solidity `Mutation` enum member, named `<name>_mutations` with the runtime mutation name lowercased — `Mutation.Transfer` becomes `typewriter.schema.transfer_mutations`, `Mutation.MarketOrder` becomes `marketorder_mutations`. A row is written when a mutation is `accepted`, and its block columns are set when it is `included`; `received` and `rejected` mutations are not persisted here. A mutation is finalized once the chain's `"finalized"` block reaches its `block_number`. The tables live in the Postgres schema named after the deployment, `config.deployment`.
 
 Every mutation table starts with the same **lifecycle columns**:
 

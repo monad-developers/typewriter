@@ -22,28 +22,31 @@ Start local development with:
 cp .env.example.local .env
 ```
 
-`bun dev` runs Typewriter in dev mode: it starts a local Anvil, deploys `OrderBook` with Anvil account #0 as the scheduler, starts from an empty database schema, and seeds the book (every instrument, with limit orders at 1, 5, 10, and 25bp around a fixed price). Every start is a new chain.
+`bun dev` runs Typewriter in dev mode: it starts a local Anvil, deploys `OrderBook` with Anvil account #0 as the root, scheduler, and relayer, starts from an empty database schema, and seeds the book (every instrument, with limit orders at 1, 5, 10, and 25bp around a fixed price). Every start is a new chain.
 
-`bun start` runs against a deployed `OrderBook`. For Monad testnet or a hosted deployment, start with:
+`bun start` runs against Monad testnet or a hosted deployment. Start with:
 
 ```bash
 cp .env.example.testnet .env
-bun run deploy
-bun scripts/seed.ts # with the backend running
+bun start
 ```
+
+The first start with a new `DEPLOYMENT` deploys `OrderBook` and seeds the book; later starts resume that deployment. Changing the contract needs a new `DEPLOYMENT`. See [Deployment](https://github.com/monad-developers/typewriter/blob/main/docs/pages/docs/production/deployment.mdx) for the scheduler keys and running in production.
 
 ### Required Variables
 
-| Variable             | Used by                       | Description                                                     |
-| -------------------- | ----------------------------- | --------------------------------------------------------------- |
-| `DATABASE_URL`       | `bun dev`, `bun start`        | Postgres connection string                                      |
-| `PRIVATE_KEY`        | `bun start`, `bun run deploy` | Funded deployer/backend wallet private key                      |
-| `ORDER_BOOK_ADDRESS` | `bun start`                   | Deployed `OrderBook` contract address                           |
-| `RPC_URL`            | `bun start`, `bun run deploy` | RPC endpoint. The backend accepts comma-separated failover URLs |
-| `CHAIN_ID`           | `bun start`                   | Chain ID, for example `10143` for Monad testnet                 |
-| `BUN_PUBLIC_RP_ID`   | Frontend                      | WebAuthn relying party ID, usually the hostname                 |
-| `BUN_PUBLIC_ORIGIN`  | Frontend                      | Expected WebAuthn origin                                        |
-| `API_URL`            | Scripts                       | Running order-book backend URL                                  |
+| Variable                | Used by                | Description                                                                                   |
+| ----------------------- | ---------------------- | --------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`          | `bun dev`, `bun start` | Postgres connection string                                                                    |
+| `DEPLOYMENT`            | `bun start`            | The deployment's name: one `OrderBook` contract and one database schema                       |
+| `ROOT_ADDRESS`          | `bun start`            | Address of the root scheduler credential, a cold key that manages the scheduler's credentials |
+| `SCHEDULER_PRIVATE_KEY` | `bun start`            | Backend key that authorizes each settlement. Without a relayer it also sends them, so fund it |
+| `RELAYER_PRIVATE_KEY`   | `bun start`            | Optional. A separate funded key that sends the deployment and settlements and pays their gas  |
+| `RPC_URL`               | `bun start`            | RPC endpoint. The backend accepts comma-separated failover URLs                               |
+| `CHAIN_ID`              | `bun start`            | Chain ID, for example `10143` for Monad testnet                                               |
+| `BUN_PUBLIC_RP_ID`      | Frontend               | WebAuthn relying party ID, usually the hostname                                               |
+| `BUN_PUBLIC_ORIGIN`     | Frontend               | Expected WebAuthn origin                                                                      |
+| `API_URL`               | Scripts                | Running order-book backend URL                                                                |
 
 `BUN_PUBLIC_*` variables are only used for browser-facing WebAuthn settings. `bunfig.toml` exposes them to browser code.
 
