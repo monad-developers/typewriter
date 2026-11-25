@@ -167,14 +167,9 @@ CREATE TABLE IF NOT EXISTS ${sql.identifier(schemaName)}.typewriter_metadata (
     ]);
     const version = row?.schema_version;
 
-    if (version !== undefined && version > TYPEWRITER_SCHEMA_VERSION) {
-      return yield* new MigrationError({
-        message: `Schema ${schemaName} has schema_version=${version}, which is newer than this Typewriter (${TYPEWRITER_SCHEMA_VERSION})`,
-      });
-    }
     // `resolveDeployment` read the recorded deployment under the same lock,
-    // checked it against the config and the compiled contract, and resolved
-    // `deployment` from it.
+    // which fails for another schema version, checked it against the config
+    // and the compiled contract, and resolved `deployment` from it.
 
     // TODO(kyle) check that execution indexes start at 0 and have no gaps.
     // A new schema has no mutation tables yet, so nothing has executed.

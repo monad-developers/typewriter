@@ -1,6 +1,6 @@
 # Local development [Run your app against a local chain]
 
-Dev mode runs your app with nothing but a Postgres database. Typewriter starts a local chain, deploys your contract to it, and sets up the scheduler.
+Dev mode runs your app with nothing but a Postgres database. Typewriter starts a local chain, deploys your contract to it, and makes Anvil's first account the root, scheduler, and relayer.
 
 ```ts [src/index.ts]
 const typewriter = await createTypewriter(Token, {
@@ -19,21 +19,22 @@ Each dev process starts its own Anvil chain and stops it when the process stops,
 - A block every 250 milliseconds.
 - Blocks finalize about two blocks behind the latest, so mutations reach `finalized` within a second.
 
-Anvil listens on a random port, so several dev processes can run at once. Typewriter logs the RPC URL at startup:
+Anvil listens on a random port, so several dev processes can run at once. Typewriter logs the RPC URL and the deployment at startup:
 
 ```text
-INFO  Started Anvil and deployed the app rpc_url=http://127.0.0.1:35585 chain_id=31337 address=0x5fbdb2315678afecb367f032d93f642f64180aa3 scheduler=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+INFO  Started Anvil rpc_url=http://127.0.0.1:35585 chain_id=31337 account=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+INFO  Created deployment deployment=typewriter_dev_<random> chain_id=31337 address=0x... transaction_hash=0x...
 ```
 
 ## Automatic deployment
 
 At startup, Typewriter builds your contract and deploys it to the new chain. There's no deploy script to run, and changes to your Solidity take effect on the next start.
 
-Dev mode fills in `address`, `account`, `chainId`, `rpcUrl`, and `hardfork` for you. Setting `address`, `account`, `chainId`, or `rpcUrl` along with `dev` is an error.
+Dev mode fills in `deployment`, `root`, `scheduler`, `relayer`, `chainId`, `rpcUrl`, and `hardfork` for you. Setting `deployment`, `root`, `scheduler`, `relayer`, `chainId`, or `rpcUrl` along with `dev` is an error.
 
 ## Database
 
-Each dev process gets its own Postgres schema, `typewriter_dev_<random>`, and drops it when the process stops.
+Each dev process gets its own deployment, `typewriter_dev_<random>`, and with it its own Postgres schema of the same name, which it drops when the process stops.
 
 ## Pruning
 
@@ -56,8 +57,13 @@ const typewriter = await createTypewriter(Token, {
   ...(dev
     ? {}
     : {
-        address: process.env.TOKEN_ADDRESS,
-        account: privateKeyToAccount(process.env.PRIVATE_KEY),
+        deployment: process.env.DEPLOYMENT,
+        root: process.env.ROOT_ADDRESS,
+        scheduler: privateKeyToAccount(process.env.SCHEDULER_PRIVATE_KEY),
+        // Optional: sends the settlements and pays their gas. Defaults to `scheduler`.
+        relayer: process.env.RELAYER_PRIVATE_KEY
+          ? privateKeyToAccount(process.env.RELAYER_PRIVATE_KEY)
+          : undefined,
         chainId: Number(process.env.CHAIN_ID),
         rpcUrl: process.env.RPC_URL,
       }),

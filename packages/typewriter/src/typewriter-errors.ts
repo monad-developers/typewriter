@@ -5,6 +5,7 @@ import { type Abi, decodeErrorResult, formatEther } from "viem";
 import type { MigrationError } from "./db-migrate";
 import type { DbError } from "./db-transport";
 import type { DeploymentError } from "./deploy";
+import { TX_GAS_LIMIT_CAP } from "./gas";
 import type { RpcError } from "./rpc";
 import type { NoDataReturnedError } from "./rpc-request";
 import type { ReceivedMutation } from "./typewriter-types";
@@ -125,35 +126,20 @@ export class SignTransactionError extends Data.TaggedError(
 }
 
 /**
- * `address` has no scheduler credential that lets `scheduler` authorize a
- * settlement at `timestamp`: none for its secp256k1 key that is unexpired.
+ * `scheduler` can't authorize settlements of `address`: at startup it has no
+ * secp256k1 scheduler credential, or later `execute` rejects credential
+ * `credentialID` in revm, since it expired or was removed.
  */
-export class SchedulerCredentialNotFoundError extends Data.TaggedError(
-  "SchedulerCredentialNotFoundError",
+export class SchedulerCredentialError extends Data.TaggedError(
+  "SchedulerCredentialError",
 )<{
   scheduler: Hex.Hex;
   address: Hex.Hex;
-  timestamp: bigint;
+  credentialID: bigint | undefined;
+  reason: string;
 }> {
   override get message() {
-    return `${this.address} has no scheduler credential for scheduler ${this.scheduler} that is live at timestamp ${this.timestamp}; add a secp256k1 scheduler credential for it with schedulerAddCredential, and restart`;
-  }
-}
-
-/**
- * A `SchedulerCredentialRemoved` log in block `blockNumber` removed scheduler
- * credential `credentialID`, which the runtime authorizes settlements with.
- */
-export class SchedulerCredentialRemovedError extends Data.TaggedError(
-  "SchedulerCredentialRemovedError",
-)<{
-  scheduler: Hex.Hex;
-  address: Hex.Hex;
-  credentialID: bigint;
-  blockNumber: bigint;
-}> {
-  override get message() {
-    return `Scheduler credential ${this.credentialID} of ${this.address}, for scheduler ${this.scheduler}, was removed in block ${this.blockNumber}; restart with a scheduler that has a live scheduler credential`;
+    return `Scheduler ${this.scheduler} can't authorize settlements of ${this.address}: ${this.reason}; add a secp256k1 scheduler credential for it with schedulerAddCredential, and restart`;
   }
 }
 
@@ -285,7 +271,7 @@ export class RelayerBalanceError extends Data.TaggedError(
     const mon = (wei: bigint) => `${formatEther(wei)} MON`;
     return this.reason === "spentElsewhere"
       ? `Relayer ${this.relayer} has ${mon(this.balance)} at block ${this.blockNumber}, ${mon(this.required - this.balance)} less than the runtime's settlements left it; something else sends from its key, so the runtime can no longer count its nonce. Give typewriter a relayer key that nothing else uses.`
-      : `Relayer ${this.relayer} has ${mon(this.balance)} at block ${this.blockNumber}, less than the ${mon(this.required)} that one settlement of 30,000,000 gas costs at the block's base fee and the runtime's tip, so no settlement can land. Fund the relayer.`;
+      : `Relayer ${this.relayer} has ${mon(this.balance)} at block ${this.blockNumber}, less than the ${mon(this.required)} that one settlement of ${TX_GAS_LIMIT_CAP.toLocaleString("en-US")} gas costs at the block's base fee and the runtime's tip, so no settlement can land. Fund the relayer.`;
   }
 }
 
@@ -330,8 +316,7 @@ export type ProgramError =
   | EnqueueRevertedError
   | EnqueueHaltedError
   | SignTransactionError
-  | SchedulerCredentialNotFoundError
-  | SchedulerCredentialRemovedError
+  | SchedulerCredentialError
   | ProgramStoppedError;
 
 export type CreateTypewriterError =
@@ -343,5 +328,5 @@ export type CreateTypewriterError =
   | ChainIdMismatchError
   | PendingTransactionsError
   | RelayerBalanceError
-  | SchedulerCredentialNotFoundError
+  | SchedulerCredentialError
   | EvmError;

@@ -190,19 +190,13 @@ export type TypewriterApp = {
   mutations: { [name: string]: ResolvedTypewriterMutationConfig };
   /**
    * `config.deployment`, or in `dev` mode a random `typewriter_dev_<random>`:
-   * the CREATE2 salt's preimage and `manifest.deployment`.
+   * the CREATE2 salt's preimage, `manifest.deployment`, and the Postgres
+   * schema that holds the deployment's tables.
    */
   deployment: string;
-  /** The Postgres schema that holds the deployment's tables. */
-  schemaName: string;
   typewriterSchema: TypewriterSchema;
   mutationSchema: Record<string, PgTable>;
   blockPollingIntervalMs: number;
-  /**
-   * How often the runtime reads the relayer's balance at a final block, to
-   * check it against its settlements' fees. Not configurable; tests shorten it.
-   */
-  balanceCheckIntervalMs: number;
   sequencing:
     | {
         order: "fifo";
@@ -247,8 +241,6 @@ const MAX_IDENTIFIER_LENGTH = 63;
 
 const DEFAULT_BLOCK_POLLING_INTERVAL_MS = 200;
 const DEFAULT_BATCH_INTERVAL_MS = 50;
-/** How often the runtime checks the relayer's balance, at a final block. */
-const BALANCE_CHECK_INTERVAL_MS = 60_000;
 
 function assertSafeNonNegativeInteger(
   value: number | undefined,
@@ -444,9 +436,6 @@ export function createTypewriterApp(params: {
   const deployment = dev
     ? `typewriter_dev_${Hex.random(6).slice(2)}`
     : config.deployment!;
-  // The deployment's schema has its name, which `validateConfig` checked.
-  const schemaName = deployment;
-
   const sequencing =
     config.sequencing?.order === "batch"
       ? {
@@ -475,12 +464,11 @@ export function createTypewriterApp(params: {
     database: config.database,
     mutations,
     deployment,
-    schemaName,
-    typewriterSchema: createTypewriterSchema(schemaName),
-    mutationSchema: createMutationSchema(schemaName, { mutations }),
+    // The deployment's schema has its name, which `validateConfig` checked.
+    typewriterSchema: createTypewriterSchema(deployment),
+    mutationSchema: createMutationSchema(deployment, { mutations }),
     blockPollingIntervalMs:
       config.blockPollingIntervalMs ?? DEFAULT_BLOCK_POLLING_INTERVAL_MS,
-    balanceCheckIntervalMs: BALANCE_CHECK_INTERVAL_MS,
     sequencing,
   };
 }

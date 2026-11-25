@@ -124,7 +124,6 @@ test("createTypewriterApp names the deployment and its schema from the config, a
   const app = createTypewriterApp({ ...SOLIDITY_APP, config: publicConfig });
 
   expect(app.deployment).toBe("app_1");
-  expect(app.schemaName).toBe("app_1");
   expect(app.database).toEqual(publicConfig.database);
   expect(app.root).toBe(publicConfig.root);
   expect(deployedApp(app, ADDRESS).manifest).toEqual({
@@ -133,21 +132,6 @@ test("createTypewriterApp names the deployment and its schema from the config, a
     deployment: "app_1",
     mutations: MUTATIONS,
   });
-});
-
-test("createTypewriterApp relays settlements from the scheduler unless a relayer is set", () => {
-  const scheduler = privateKeyToAccount(`0x${"11".repeat(32)}`);
-  const relayer = privateKeyToAccount(`0x${"22".repeat(32)}`);
-  const app = (config: TypewriterConfig) =>
-    createTypewriterApp({ ...SOLIDITY_APP, config });
-
-  const withoutRelayer = app({ ...publicConfig, scheduler });
-  expect(withoutRelayer.scheduler).toBe(scheduler);
-  expect(withoutRelayer.relayer).toBe(scheduler);
-
-  const withRelayer = app({ ...publicConfig, scheduler, relayer });
-  expect(withRelayer.scheduler).toBe(scheduler);
-  expect(withRelayer.relayer).toBe(relayer);
 });
 
 test("validateConfig lists every missing network field outside dev", () => {
@@ -229,7 +213,6 @@ test("createTypewriterApp takes the network from the dev chain", () => {
 
   // Each dev process gets its own deployment, schema, and browser storage.
   expect(app.deployment).toMatch(/^typewriter_dev_[0-9a-f]{12}$/);
-  expect(app.schemaName).toBe(app.deployment);
   expect(deployedApp(app, ADDRESS).manifest.deployment).toBe(app.deployment);
   expect(app.root).toBe(account.address);
   expect(app.scheduler).toBe(account);

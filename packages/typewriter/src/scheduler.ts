@@ -17,11 +17,9 @@ export type StoredSchedulerCredential = {
   publicKey: Hex.Hex;
 };
 
-/** `struct Scheduler`, as the storage view reads it. */
+/** The credentials of `struct Scheduler`, as the storage view reads them. */
 type StoredScheduler = {
   credentials: { length: number; [index: number]: StoredSchedulerCredential };
-  rootCredentials: bigint;
-  nonce: bigint;
 };
 
 /** The scheduler's storage variable of a storage view. */
@@ -44,11 +42,12 @@ const normalizeSlot = (slot: string) =>
   Hex.padLeft(slot.toLowerCase() as Hex.Hex, 32);
 
 /**
- * Adds to `storage` the slots of the scheduler it lacks, read from the chain
- * with `readSlots`. The constructor and the scheduler's own functions write
- * them, never an execution, so revm has them only from here. Each round
- * reads what the slots known so far point to: the credentials' count, then
- * each credential, then each long public key.
+ * Adds to `storage` the slots of the scheduler's credentials it lacks, read
+ * from the chain with `readSlots`: the only scheduler state `execute` reads.
+ * The constructor and the scheduler's own functions write them, never an
+ * execution, so revm has them only from here. Each round reads what the
+ * slots known so far point to: the credentials' count, then each credential,
+ * then each long public key.
  */
 export function seedScheduler(
   layout: StorageLayout,
@@ -79,8 +78,6 @@ export function seedScheduler(
         ),
       );
       readSchedulerCredentials(scheduler);
-      scheduler.rootCredentials;
-      scheduler.nonce;
       if (missing.size === 0) return;
       const slots = [...missing];
       const values = yield* readSlots(slots);
@@ -92,37 +89,24 @@ export function seedScheduler(
   });
 }
 
-/** A scheduler credential that the runtime authorizes settlements with. */
-export type RuntimeSchedulerCredential = {
-  id: bigint;
-  /** When it expires, or 0 if never. */
-  expiration: number;
-};
-
-/** Whether a credential expiring at `expiration` is live at `timestamp`, as `execute` checks it. */
-export const isLiveAt = (expiration: number, timestamp: bigint) =>
-  expiration === 0 || BigInt(expiration) >= timestamp;
-
 /**
- * The newest of `credentials` that lets `scheduler` authorize `execute`
- * without a signature when it sends the call: its secp256k1 key, of any role,
- * live at `timestamp`. `undefined` if none does.
+ * The ID of the newest of `credentials` that lets `scheduler` authorize
+ * `execute` without a signature when it sends the call: its secp256k1 key, of
+ * any role. A removed credential has no public key, so it never matches.
+ * `undefined` if none does. Whether it has expired is left to `execute`.
  */
 export function findSchedulerCredential(
   credentials: readonly StoredSchedulerCredential[],
   scheduler: Address.Address,
-  timestamp: bigint,
-): RuntimeSchedulerCredential | undefined {
+): bigint | undefined {
   const publicKey = encodeSecp256k1PublicKey(scheduler).toLowerCase();
   for (let id = credentials.length - 1; id >= 0; id--) {
     const credential = credentials[id]!;
-    const expiration = Number(credential.expiration);
     if (
       Number(credential.keyType) === KeyType.Secp256k1 &&
-      credential.publicKey.toLowerCase() === publicKey &&
-      isLiveAt(expiration, timestamp)
+      credential.publicKey.toLowerCase() === publicKey
     ) {
-      return { id: BigInt(id), expiration };
+      return BigInt(id);
     }
   }
   return undefined;

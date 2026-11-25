@@ -97,9 +97,9 @@ export const MAX_FEE_PER_GAS = 10_000_000_000_000n;
 export const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
 
 /**
- * `ROOT_PERMISSIONS`: an account credential with both adds and removes any
- * credential of its account. An account's last one that never expires can't
- * be removed.
+ * `ROOT_PERMISSIONS`. An account credential with both permissions can add and
+ * remove any credential of its account. An account's last such credential
+ * that never expires can't be removed.
  */
 export const ROOT_PERMISSIONS =
   (1n << BigInt(BUILTIN_MUTATIONS.AddCredential.id)) |

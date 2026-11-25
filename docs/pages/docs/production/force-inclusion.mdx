@@ -21,7 +21,9 @@ Enqueued mutations don't emit events or get rows in the [mutation history](/docs
 An app can change the delay by assigning `FORCE_INCLUSION_DELAY` in its constructor:
 
 ```solidity
-constructor(address scheduler) Typewriter(scheduler) {
+import {SchedulerCredential, Typewriter} from "typewriter/Typewriter.sol";
+
+constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {
     FORCE_INCLUSION_DELAY = 10 minutes;
 }
 ```

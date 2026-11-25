@@ -20,12 +20,8 @@ export class AnvilError extends Data.TaggedError("AnvilError")<{
 /**
  * Starts Anvil, which stops when the scope closes. The runtime deploys the
  * app to it like to any chain, from Anvil's first account.
- *
- * @param extraArgs - More Anvil flags, for tests.
  */
-export function startDevChain(
-  extraArgs: readonly string[] = [],
-): Effect.Effect<
+export function startDevChain(): Effect.Effect<
   DevChain,
   AnvilError,
   Scope.Scope | ChildProcessSpawner.ChildProcessSpawner
@@ -49,7 +45,6 @@ export function startDevChain(
         "64",
         "--transaction-block-keeper",
         "1024",
-        ...extraArgs,
       ],
       // Anvil reports bad flags, such as `--network` on an old Anvil, on stderr.
       { stderr: "inherit" },

@@ -84,7 +84,6 @@ import {
 } from "./rpc-request";
 import {
   findSchedulerCredential,
-  isLiveAt,
   readSchedulerCredentials,
   schedulerOf,
   seedScheduler,
@@ -115,9 +114,9 @@ import {
   ProgramStoppedError,
   RelayerBalanceError,
   ResyncMismatchError,
+  type Revert,
   revertMessage,
-  SchedulerCredentialNotFoundError,
-  SchedulerCredentialRemovedError,
+  SchedulerCredentialError,
   SettlementAfterRevertError,
   SettlementRevertedError,
   SettlementStuckError,
@@ -202,8 +201,14 @@ const SLOT_CACHE_MAX_ENTRIES = 200_000;
 /** How many blocks a sent settlement waits before it is sent again. */
 const REBROADCAST_BLOCKS = 3n;
 
-/** How often a settlement's broadcast fails at warning for the same reason. */
+/** How often a broadcast fails at warning for the same reason. */
 const BROADCAST_WARNING_INTERVAL_MS = 60_000;
+
+/**
+ * How often the runtime reads the relayer's balance at a final block, to
+ * check it against its settlements' fees.
+ */
+const BALANCE_CHECK_INTERVAL_MS = 60_000;
 
 /** The broadcast errors of a transaction that a provider already has, or has landed. */
 const ALREADY_SENT =
@@ -376,24 +381,6 @@ function decodeForceInclusionQueued(log: LocalLog): ForceInclusionQueued {
     data: log.data,
     strict: true,
   }).args;
-}
-
-const FORCE_INCLUSION_QUEUED = toEventSelector(
-  getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
-);
-const SCHEDULER_CREDENTIAL_REMOVED = toEventSelector(
-  getAbiItem({ abi: TYPEWRITER_ABI, name: "SchedulerCredentialRemoved" }),
-);
-
-/** The credential ID of a `SchedulerCredentialRemoved` log. */
-function decodeSchedulerCredentialRemoved(log: LocalLog): bigint {
-  return decodeEventLog({
-    abi: TYPEWRITER_ABI,
-    eventName: "SchedulerCredentialRemoved",
-    topics: log.topics,
-    data: log.data,
-    strict: true,
-  }).args.credentialID;
 }
 
 /**
@@ -591,14 +578,14 @@ export function createTypewriterEffect<
     }
 
     const lockLost = yield* db.lock(
-      deploymentLockKey(config.schemaName),
+      deploymentLockKey(config.deployment),
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
     if (config.dev) {
       // The schema lasts as long as this process's chain. The finalizer runs
       // before the lock is released, since it is added after it.
       yield* Effect.addFinalizer(() =>
-        dropSchema(db, config.schemaName).pipe(
+        dropSchema(db, config.deployment).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("Failed to drop dev schema", cause),
           ),
@@ -647,7 +634,7 @@ export function createTypewriterEffect<
     );
     yield* migrate(
       db,
-      app.schemaName,
+      app.deployment,
       app.typewriterSchema,
       app.mutationSchema,
       {
@@ -678,24 +665,45 @@ export function createTypewriterEffect<
       ),
     );
 
-    // Every settlement is authorized by the scheduler account's credential.
-    // revm runs each execution from the scheduler without a signature, against
-    // the scheduler as of the start block, since only the scheduler's own
-    // functions change it and revm never runs them.
-    const schedulerCredential = findSchedulerCredential(
+    // Every settlement is authorized by the scheduler's credential. revm runs
+    // each execution from the scheduler without a signature, against the
+    // scheduler as of the start block, since only the scheduler's own
+    // functions change it and revm never runs them. So `execute` in revm
+    // checks the credential's expiration at each settlement's timestamp, but
+    // never sees it removed: a settlement after its removal reverts onchain.
+    const schedulerCredentialID = findSchedulerCredential(
       readSchedulerCredentials(scheduler),
       app.scheduler.address,
-      startBlock.timestamp,
     );
-    const schedulerCredentialNotFound = (timestamp: bigint) =>
-      new SchedulerCredentialNotFoundError({
+    if (schedulerCredentialID === undefined) {
+      return yield* new SchedulerCredentialError({
         scheduler: app.scheduler.address,
         address: app.address,
-        timestamp,
+        credentialID: undefined,
+        reason: "it has no scheduler credential",
       });
-    if (schedulerCredential === undefined) {
-      return yield* schedulerCredentialNotFound(startBlock.timestamp);
     }
+    /**
+     * Fails if `revert` is `execute` rejecting the scheduler's credential.
+     * revm calls it from the scheduler without a signature, so these errors
+     * mean only that the credential expired or is gone, never that the
+     * mutation is at fault.
+     */
+    const checkSchedulerCredential = (revert: Revert) =>
+      revert.errorName === "SchedulerCredentialExpired" ||
+      revert.errorName === "SchedulerCredentialNotFound"
+        ? Effect.fail(
+            new SchedulerCredentialError({
+              scheduler: app.scheduler.address,
+              address: app.address,
+              credentialID: schedulerCredentialID,
+              reason: revertMessage(
+                `credential ${schedulerCredentialID} fails \`execute\` in revm`,
+                revert,
+              ),
+            }),
+          )
+        : Effect.void;
     /** Whether the scheduler sends what it authorizes, so no signature is needed. */
     const schedulerRelays =
       app.scheduler.address.toLowerCase() === app.relayer.address.toLowerCase();
@@ -907,13 +915,10 @@ export function createTypewriterEffect<
     // provider that fails or answers wrongly only delays it.
     //
     // A failure that every provider gives is a warning, such as too little
-    // balance, once per settlement and reason a minute, since a settlement is
-    // sent again every few blocks. A provider that already has it, or a
-    // nonce it already took, is only a debug log.
-    const broadcastWarnings = new Map<
-      Hex.Hex,
-      { reason: string; at: number }
-    >();
+    // balance, once per reason a minute, since a settlement is sent again
+    // every few blocks. A provider that already has it, or a nonce it already
+    // took, is only a debug log.
+    let lastBroadcastWarning: { reason: string; at: number } | undefined;
     const broadcast = (settlement: SentSettlement) =>
       rpc
         .requestAll({
@@ -929,18 +934,17 @@ export function createTypewriterEffect<
                 nonce: settlement.nonce,
               });
               const now = yield* Clock.currentTimeMillis;
-              const last = broadcastWarnings.get(settlement.hash);
               if (
                 ALREADY_SENT.test(reason) ||
-                (last?.reason === reason &&
-                  now - last.at < BROADCAST_WARNING_INTERVAL_MS)
+                (lastBroadcastWarning?.reason === reason &&
+                  now - lastBroadcastWarning.at < BROADCAST_WARNING_INTERVAL_MS)
               ) {
                 return yield* Effect.logDebug(
                   "Failed settlement broadcast",
                   error,
                 ).pipe(annotate);
               }
-              broadcastWarnings.set(settlement.hash, { reason, at: now });
+              lastBroadcastWarning = { reason, at: now };
               yield* Effect.logWarning(
                 "Failed settlement broadcast",
                 error,
@@ -949,14 +953,6 @@ export function createTypewriterEffect<
           ),
           Effect.forkIn(scope),
         );
-    /** Forgets the warnings of settlements no longer sent. */
-    const pruneBroadcastWarnings = () =>
-      Effect.sync(() => {
-        const sent = new Set(settlements.map(({ hash }) => hash));
-        for (const hash of broadcastWarnings.keys()) {
-          if (!sent.has(hash)) broadcastWarnings.delete(hash);
-        }
-      });
 
     /**
      * Signs the transaction that sends `settlement` from the relayer. Unless
@@ -989,7 +985,7 @@ export function createTypewriterEffect<
             nonce: settlement.nonce,
             to: app.address,
             data: settlementCalldata(settlement, {
-              credentialID: schedulerCredential.id,
+              credentialID: schedulerCredentialID,
               signature,
             }),
             gas: BigInt(settlement.gasLimit),
@@ -1074,7 +1070,7 @@ export function createTypewriterEffect<
           mutation,
           fromExecutionHash,
           timestamp,
-          schedulerCredential.id,
+          schedulerCredentialID,
         );
         yield* checkExpiration(mutation, Number(timestamp) + EXPIRATION_MARGIN);
         const executeResult = yield* evm.execute({
@@ -1084,9 +1080,9 @@ export function createTypewriterEffect<
           block: toBlockParams(block),
         });
         if (executeResult.status === "revert") {
-          return yield* new MutationRevertedError(
-            decodeRevert(app.abi, executeResult.data),
-          );
+          const revert = decodeRevert(app.abi, executeResult.data);
+          yield* checkSchedulerCredential(revert);
+          return yield* new MutationRevertedError(revert);
         }
         if (executeResult.status === "halt") {
           return yield* new MutationHaltedError({
@@ -1111,7 +1107,10 @@ export function createTypewriterEffect<
         };
       });
 
-    /** Force-executes an enqueue, or returns `undefined` if it fails. */
+    /**
+     * Force-executes an enqueue, or returns `undefined` if it fails, unless
+     * it fails on the scheduler's credential, which stops the runtime.
+     */
     const executeEnqueue = (
       queueIndex: bigint,
       newPreimages: Hex.Hex[],
@@ -1124,7 +1123,7 @@ export function createTypewriterEffect<
           block.timestamp,
           EMPTY_BATCH,
           [queueIndex],
-          { credentialID: schedulerCredential.id, signature: "0x" },
+          { credentialID: schedulerCredentialID, signature: "0x" },
         );
         const executeResult = yield* evm.execute({
           from: app.scheduler.address,
@@ -1151,12 +1150,14 @@ export function createTypewriterEffect<
           });
           invalidateStorageCache();
         }
-        yield* Effect.logWarning(
+        const revert =
           executeResult.status === "revert"
-            ? revertMessage(
-                "Discarded enqueued mutation",
-                decodeRevert(app.abi, executeResult.data),
-              )
+            ? decodeRevert(app.abi, executeResult.data)
+            : undefined;
+        if (revert !== undefined) yield* checkSchedulerCredential(revert);
+        yield* Effect.logWarning(
+          revert !== undefined
+            ? revertMessage("Discarded enqueued mutation", revert)
             : "Discarded enqueued mutation",
         ).pipe(Effect.annotateLogs({ queue_index: queueIndex }));
         return undefined;
@@ -1179,11 +1180,6 @@ export function createTypewriterEffect<
     ) =>
       Effect.gen(function* () {
         const block = latest;
-        // Its settlements pin its timestamp, which `execute` checks the
-        // scheduler credential against.
-        if (!isLiveAt(schedulerCredential.expiration, block.timestamp)) {
-          return yield* schedulerCredentialNotFound(block.timestamp);
-        }
         // Preimages are loaded from Postgres at startup and survive rewinds.
         const newPreimages: Hex.Hex[] = [];
         const accepted: (Execution & { mutation: AcceptedMutation })[] = [];
@@ -1197,6 +1193,9 @@ export function createTypewriterEffect<
             executeMutation(mutation, newPreimages, block),
           );
           if (Result.isFailure(result)) {
+            if (result.failure._tag === "SchedulerCredentialError") {
+              return yield* result.failure;
+            }
             outcomes.push(updateMutationToRejected(mutation, result.failure));
             if (reply) yield* Deferred.fail(reply, result.failure);
             continue;
@@ -1462,7 +1461,9 @@ export function createTypewriterEffect<
       bufferSize: WATCH_BUFFER_SIZE,
       logFilter: {
         address: app.address,
-        selectors: [FORCE_INCLUSION_QUEUED, SCHEDULER_CREDENTIAL_REMOVED],
+        selector: toEventSelector(
+          getAbiItem({ abi: TYPEWRITER_ABI, name: "ForceInclusionQueued" }),
+        ),
       },
     }).pipe(
       Stream.runForEach((message) =>
@@ -1489,28 +1490,7 @@ export function createTypewriterEffect<
             case "Added": {
               const { block } = message;
               watched = block.number;
-              const enqueues = block.logs.filter(
-                ({ topics }) => topics[0] === FORCE_INCLUSION_QUEUED,
-              );
-              if (enqueues.length > 0) {
-                unfinalizedEnqueues.push({ ...block, logs: enqueues });
-              }
-              // revm can't see the removal, so its executions would still
-              // pass while every settlement reverts onchain.
-              for (const log of block.logs) {
-                if (
-                  log.topics[0] === SCHEDULER_CREDENTIAL_REMOVED &&
-                  decodeSchedulerCredentialRemoved(log) ===
-                    schedulerCredential.id
-                ) {
-                  return yield* new SchedulerCredentialRemovedError({
-                    scheduler: app.scheduler.address,
-                    address: app.address,
-                    credentialID: schedulerCredential.id,
-                    blockNumber: block.number,
-                  });
-                }
-              }
+              if (block.logs.length > 0) unfinalizedEnqueues.push(block);
 
               // Record where our settlements landed, in order.
               const landed = sentIn(block);
@@ -1701,9 +1681,8 @@ export function createTypewriterEffect<
               for (const [key, { number }] of prefetchedReceipts) {
                 if (number <= finalized.number) prefetchedReceipts.delete(key);
               }
-              yield* pruneBroadcastWarnings();
               const now = yield* Clock.currentTimeMillis;
-              if (now - relayerCheckedAt >= app.balanceCheckIntervalMs) {
+              if (now - relayerCheckedAt >= BALANCE_CHECK_INTERVAL_MS) {
                 relayerCheckedAt = now;
                 yield* checkRelayer(finalized);
               }

@@ -1,18 +1,16 @@
 import type { Hex } from "ox";
+import { TX_GAS_LIMIT_CAP } from "./gas";
 import { MAX_PRIORITY_FEE_PER_GAS } from "./typewriter-constants";
-
-/** Monad's gas limit per transaction, the most one settlement can use. */
-const MAX_SETTLEMENT_GAS = 30_000_000n;
 
 /** How many recent settlements the runway's average fee is over. */
 const RECENT_FEES = 100;
 
 /**
- * What a settlement of the most gas costs at `baseFee` and the runtime's tip,
- * which Monad checks the sender's balance against.
+ * What a settlement of the most gas a transaction can use costs at `baseFee`
+ * and the runtime's tip, which Monad checks the sender's balance against.
  */
 export function maxSettlementCost(baseFee: bigint): bigint {
-  return MAX_SETTLEMENT_GAS * (baseFee + MAX_PRIORITY_FEE_PER_GAS);
+  return BigInt(TX_GAS_LIMIT_CAP) * (baseFee + MAX_PRIORITY_FEE_PER_GAS);
 }
 
 export type Reconciliation = {
@@ -25,11 +23,11 @@ export type Reconciliation = {
 };
 
 /**
- * The relayer's balance as its own settlements change it. The runtime is the
- * key's only sender, so each settlement that lands, reverted or not, takes
- * its fee, `gasUsed * effectiveGasPrice`, and nothing else does. A balance
- * read at a final block checks it: higher is a top-up, lower is a spend by
- * something else.
+ * The relayer's balance as its own settlements change it. It assumes the
+ * runtime is the key's only sender, and checks it: each settlement that
+ * lands, reverted or not, takes its fee, `gasUsed * effectiveGasPrice`, and
+ * nothing else should. A balance read at a final block is higher after a
+ * top-up, and lower after a spend by something else.
  */
 export function makeRelayerLedger(start: { balance: bigint; number: bigint }) {
   let reconciled = start;

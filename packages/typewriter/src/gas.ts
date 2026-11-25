@@ -36,7 +36,8 @@ type Execution = {
   calldata: Hex.Hex;
 };
 
-const TX_GAS_LIMIT_CAP = 30_000_000;
+/** Monad's gas limit per transaction. */
+export const TX_GAS_LIMIT_CAP = 30_000_000;
 const TRANSACTION_BASE_GAS = 21_000;
 const FLOOR_GAS_PER_TOKEN = 10;
 const SSTORE_SENTRY_GAS = 2_300;

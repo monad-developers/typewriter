@@ -52,16 +52,8 @@ export type {
 export { MigrationError } from "./db-migrate";
 export type { TypewriterMutationSchema } from "./db-schema";
 export { DbError } from "./db-transport";
-export {
-  CREATE2_DEPLOYER,
-  DeploymentError,
-  genesisCredentials,
-  type Migration,
-} from "./deploy";
-export {
-  encodeSchedulerCredentials,
-  secp256k1SchedulerCredential,
-} from "./encoding";
+export { DeploymentError, type Migration } from "./deploy";
+export { secp256k1SchedulerCredential } from "./encoding";
 export { BlockNotFoundError, type RpcError, RpcTimeoutError } from "./rpc";
 export { NoDataReturnedError } from "./rpc-request";
 export {
@@ -72,8 +64,6 @@ export {
 } from "./rpc-transport";
 export type { TypewriterSolidityEntrypoint } from "./sol-build";
 export {
-  EXECUTE_EIP712_TYPES,
-  ROOT_PERMISSIONS,
   SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES,
   SCHEDULER_REMOVE_CREDENTIAL_EIP712_TYPES,
   SchedulerRole,
@@ -94,8 +84,7 @@ export {
   ProgramStoppedError,
   RelayerBalanceError,
   ResyncMismatchError,
-  SchedulerCredentialNotFoundError,
-  SchedulerCredentialRemovedError,
+  SchedulerCredentialError,
   SettlementAfterRevertError,
   SettlementRevertedError,
   SettlementStuckError,

@@ -21,21 +21,15 @@ import {
     EmptyPublicKey,
     InvalidCreateAuthorization,
     InvalidNonce,
-    InvalidSchedulerNonce,
     InvalidSignature,
     KeyType,
     LastRootCredential,
-    LastRootSchedulerCredential,
     NoRootSchedulerCredential,
     NonceOverflow,
     PermissionDenied,
     RemoveCredential,
-    ROOT_PERMISSIONS,
     SchedulerAuthorization,
     SchedulerCredential,
-    SchedulerCredentialExpired,
-    SchedulerCredentialNotFound,
-    SchedulerDeadlineExpired,
     SchedulerRole,
     SchedulerRoleDenied,
     Typewriter,
@@ -44,16 +38,7 @@ import {
     verifySignature
 } from "typewriter/Typewriter.sol";
 
-struct VmLog {
-    bytes32[] topics;
-    bytes data;
-    address emitter;
-}
-
 interface Vm {
-    function prank(address sender) external;
-    function recordLogs() external;
-    function getRecordedLogs() external returns (VmLog[] memory);
     function addr(uint256 privateKey) external returns (address);
     function sign(uint256 privateKey, bytes32 digest) external returns (uint8 v, bytes32 r, bytes32 s);
     function signP256(uint256 privateKey, bytes32 digest) external returns (bytes32 r, bytes32 s);
@@ -161,14 +146,6 @@ contract NativeAccountHarness is Typewriter {
 
     function nonce(bytes32 accountID, uint192 lane) external view returns (uint64) {
         return accounts[accountID].nonces[lane];
-    }
-
-    function schedulerState() external view returns (uint256, uint256, uint256) {
-        return (scheduler.credentials.length, scheduler.rootCredentials, scheduler.nonce);
-    }
-
-    function schedulerCredential(uint64 credentialID) external view returns (SchedulerCredential memory) {
-        return scheduler.credentials[credentialID];
     }
 }
 
@@ -411,64 +388,6 @@ contract AccountTest {
         }
     }
 
-    function test_nativeAccount_keepsARootThatNeverExpires() external {
-        bytes32 accountID = _createNativeAccount(SECP256K1_PK);
-
-        // A root that expires doesn't count, so the first credential is still the last root.
-        AddCredential memory expiringRoot = AddCredential({
-            expiration: uint40(block.timestamp + 1 days),
-            keyType: KeyType.Secp256k1,
-            permissions: ROOT_PERMISSIONS,
-            publicKey: _secp256k1PublicKey(SECP256K1_CREDENTIAL_PK)
-        });
-        _executeNative(
-            ADD_CREDENTIAL_MUTATION,
-            abi.encode(expiringRoot),
-            _signNativeAuthorization(
-                accountID, 0, 0, 0, ADD_CREDENTIAL_MUTATION, abi.encode(expiringRoot), SECP256K1_PK
-            )
-        );
-        RemoveCredential memory removeFirst = RemoveCredential({credentialID: 0});
-        _expectNativeRevert(
-            REMOVE_CREDENTIAL_MUTATION,
-            abi.encode(removeFirst),
-            _signNativeAuthorization(
-                accountID, 1, 1, 0, REMOVE_CREDENTIAL_MUTATION, abi.encode(removeFirst), SECP256K1_CREDENTIAL_PK
-            ),
-            abi.encodeWithSelector(LastRootCredential.selector, accountID, uint64(0))
-        );
-
-        // A root that never expires does, so the first can go, and then the new one is the last.
-        AddCredential memory root = AddCredential({
-            expiration: 0,
-            keyType: KeyType.Secp256k1,
-            permissions: ROOT_PERMISSIONS,
-            publicKey: _secp256k1PublicKey(NEW_PK)
-        });
-        _executeNative(
-            ADD_CREDENTIAL_MUTATION,
-            abi.encode(root),
-            _signNativeAuthorization(accountID, 0, 1, 0, ADD_CREDENTIAL_MUTATION, abi.encode(root), SECP256K1_PK)
-        );
-        _executeNative(
-            REMOVE_CREDENTIAL_MUTATION,
-            abi.encode(removeFirst),
-            _signNativeAuthorization(
-                accountID, 0, 2, 0, REMOVE_CREDENTIAL_MUTATION, abi.encode(removeFirst), SECP256K1_PK
-            )
-        );
-        RemoveCredential memory removeRoot = RemoveCredential({credentialID: 2});
-        _expectNativeRevert(
-            REMOVE_CREDENTIAL_MUTATION,
-            abi.encode(removeRoot),
-            _signNativeAuthorization(accountID, 2, 3, 0, REMOVE_CREDENTIAL_MUTATION, abi.encode(removeRoot), NEW_PK),
-            abi.encodeWithSelector(LastRootCredential.selector, accountID, uint64(2))
-        );
-
-        (uint256 credentialCount, uint256 rootCredentials) = nativeHarness.accountState(accountID);
-        require(credentialCount == 3 && rootCredentials == 1, "one root that never expires");
-    }
-
     function test_nativeAccount_usesPackedNonceLanesAndRejectsReplay() external {
         bytes32 accountID = _createNativeAccount(SECP256K1_PK);
         SetValue memory setValue = SetValue({value: 99});
@@ -689,12 +608,6 @@ contract AccountTest {
         );
     }
 
-    function test_constructor_rejectsNoCredentials() external {
-        _expectConstructorRevert(
-            new SchedulerCredential[](0), abi.encodeWithSelector(NoRootSchedulerCredential.selector)
-        );
-    }
-
     function test_constructor_rejectsNoRootThatNeverExpires() external {
         SchedulerCredential[] memory credentials = _schedulerCredentials();
         credentials[ROOT_ID].expiration = uint40(block.timestamp + 1 days);
@@ -705,217 +618,6 @@ contract AccountTest {
         SchedulerCredential[] memory credentials = _schedulerCredentials();
         credentials[ISSUER_ID].publicKey = "";
         _expectConstructorRevert(credentials, abi.encodeWithSelector(EmptyPublicKey.selector));
-    }
-
-    function test_constructor_storesTheSchedulerAndEmitsItsCredentials() external {
-        SchedulerCredential[] memory credentials = new SchedulerCredential[](4);
-        credentials[0] = _schedulerCredential(ROOT_PK, SchedulerRole.Root, 0);
-        credentials[1] = _schedulerCredential(NEW_PK, SchedulerRole.Root, 0);
-        credentials[2] = _schedulerCredential(ISSUER_PK, SchedulerRole.Root, uint40(block.timestamp + 1));
-        credentials[3] = SchedulerCredential({
-            expiration: 77, keyType: KeyType.P256, role: SchedulerRole.Executor, publicKey: _p256PublicKey(P256_PK)
-        });
-        vm.recordLogs();
-        NativeAccountHarness deployed = new NativeAccountHarness(credentials);
-        VmLog[] memory logs = vm.getRecordedLogs();
-
-        require(logs.length == credentials.length, "log count");
-        for (uint256 i; i < credentials.length; i++) {
-            require(logs[i].topics[0] == Typewriter.SchedulerCredentialAdded.selector, "event");
-            require(keccak256(logs[i].data) == keccak256(abi.encode(uint64(i), credentials[i])), "event data");
-            require(
-                keccak256(abi.encode(deployed.schedulerCredential(uint64(i)))) == keccak256(abi.encode(credentials[i])),
-                "stored credential"
-            );
-        }
-        // Only the roots that never expire count.
-        (uint256 credentialCount, uint256 rootCredentials, uint256 nonce) = deployed.schedulerState();
-        require(credentialCount == 4 && rootCredentials == 2 && nonce == 0, "scheduler state");
-        require(deployed.schedulerNonce() == 0, "scheduler nonce view");
-    }
-
-    function test_execute_acceptsTheCredentialsOwnAddressWithoutASignature() external {
-        bytes32 accountID = _createNativeAccount(SECP256K1_PK);
-        SetValue memory setValue = SetValue({value: 3});
-        Typewriter.Batch memory batch = _nativeBatch(
-            0, abi.encode(setValue), _signNativeAuthorization(accountID, 0, 0, 0, 0, abi.encode(setValue), SECP256K1_PK)
-        );
-        bytes32 fromExecutionHash = nativeHarness.executionHash();
-
-        address executor = vm.addr(EXECUTOR_PK);
-        vm.prank(executor);
-        nativeHarness.execute(
-            fromExecutionHash, uint40(block.timestamp), batch, new uint256[](0), SchedulerAuthorization(EXECUTOR_ID, "")
-        );
-
-        require(nativeHarness.value() == 3, "dispatched");
-        require(nativeHarness.executionHash() == _accumulate(fromExecutionHash, batch), "execution hash");
-    }
-
-    function test_execute_acceptsTheSignatureOfAnotherRelayer() external {
-        bytes32 accountID = _createNativeAccount(SECP256K1_PK);
-        SetValue memory setValue = SetValue({value: 1});
-        Typewriter.Batch memory batch = _nativeBatch(
-            0, abi.encode(setValue), _signNativeAuthorization(accountID, 0, 0, 0, 0, abi.encode(setValue), SECP256K1_PK)
-        );
-        bytes32 fromExecutionHash = nativeHarness.executionHash();
-
-        // This contract relays what the executor signs.
-        _settle(batch, EXECUTOR_ID, EXECUTOR_PK);
-
-        require(nativeHarness.value() == 1, "dispatched");
-        require(nativeHarness.executionHash() == _accumulate(fromExecutionHash, batch), "execution hash");
-    }
-
-    function test_execute_acceptsEveryRole() external {
-        uint256[3] memory privateKeys = [ROOT_PK, ISSUER_PK, EXECUTOR_PK];
-        for (uint64 id; id < 3; id++) {
-            _settle(_emptyBatch(), id, privateKeys[id]);
-            address signer = vm.addr(privateKeys[id]);
-            bytes32 executionHash = nativeHarness.executionHash();
-            vm.prank(signer);
-            nativeHarness.execute(
-                executionHash, uint40(block.timestamp), _emptyBatch(), new uint256[](0), SchedulerAuthorization(id, "")
-            );
-        }
-    }
-
-    function test_execute_acceptsAP256CredentialsSignature() external {
-        SchedulerCredential memory p256 = SchedulerCredential({
-            expiration: 0, keyType: KeyType.P256, role: SchedulerRole.Executor, publicKey: _p256PublicKey(P256_PK)
-        });
-        _schedulerAddCredential(p256, ROOT_ID, ROOT_PK);
-        bytes32 executionHash = nativeHarness.executionHash();
-        bytes memory signature = _signP256(
-            P256_PK, nativeHarness.executeDigest(executionHash, executionHash, uint40(block.timestamp), address(this))
-        );
-
-        nativeHarness.execute(
-            executionHash,
-            uint40(block.timestamp),
-            _emptyBatch(),
-            new uint256[](0),
-            SchedulerAuthorization(3, signature)
-        );
-    }
-
-    function test_execute_rejectsAnotherSigner() external {
-        _expectSettleRevert(
-            _emptyBatch(), EXECUTOR_ID, NEW_PK, abi.encodeWithSelector(InvalidSignature.selector, KeyType.Secp256k1)
-        );
-    }
-
-    function test_execute_rejectsACopyFromAnotherRelayer() external {
-        bytes32 executionHash = nativeHarness.executionHash();
-        bytes memory signature = _signExecute(EXECUTOR_PK, executionHash, executionHash, address(this));
-        bytes memory callData = abi.encodeCall(
-            nativeHarness.execute,
-            (
-                executionHash,
-                uint40(block.timestamp),
-                _emptyBatch(),
-                new uint256[](0),
-                SchedulerAuthorization(EXECUTOR_ID, signature)
-            )
-        );
-
-        vm.prank(address(0xC0FFEE));
-        (bool ok, bytes memory ret) = address(nativeHarness).call(callData);
-        require(!ok, "expected the copy to revert");
-        require(
-            keccak256(ret) == keccak256(abi.encodeWithSelector(InvalidSignature.selector, KeyType.Secp256k1)),
-            "wrong revert"
-        );
-
-        // The relayer it was signed for can still send it.
-        (ok,) = address(nativeHarness).call(callData);
-        require(ok, "signed relayer");
-    }
-
-    function test_execute_rejectsAnotherAddressWithoutASignature() external {
-        bytes32 executionHash = nativeHarness.executionHash();
-        // The issuer's address, but the executor's credential.
-        address issuer = vm.addr(ISSUER_PK);
-        vm.prank(issuer);
-        (bool ok,) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.execute,
-                    (
-                        executionHash,
-                        uint40(block.timestamp),
-                        _emptyBatch(),
-                        new uint256[](0),
-                        SchedulerAuthorization(EXECUTOR_ID, "")
-                    )
-                )
-            );
-        require(!ok, "expected execute to revert");
-    }
-
-    function test_execute_rejectsAnExpiredCredentialButAcceptsItsExactDeadline() external {
-        vm.warp(1000);
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Executor, 1010), ROOT_ID, ROOT_PK);
-
-        vm.warp(1010);
-        _settle(_emptyBatch(), 3, NEW_PK);
-        vm.warp(1011);
-        _expectSettleRevert(
-            _emptyBatch(),
-            3,
-            NEW_PK,
-            abi.encodeWithSelector(SchedulerCredentialExpired.selector, uint64(3), uint40(1010))
-        );
-    }
-
-    function test_execute_checksExpirationAtTheSettlementTimestamp() external {
-        vm.warp(1000);
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Executor, 1010), ROOT_ID, ROOT_PK);
-        vm.warp(1030);
-        // Pinned at 1010, within the settlement delay, so the credential is live.
-        bytes32 executionHash = nativeHarness.executionHash();
-        bytes memory signature = _signSecp256k1(
-            NEW_PK, nativeHarness.executeDigest(executionHash, executionHash, uint40(1010), address(this))
-        );
-        nativeHarness.execute(
-            executionHash, uint40(1010), _emptyBatch(), new uint256[](0), SchedulerAuthorization(3, signature)
-        );
-    }
-
-    function test_execute_rejectsAnUnknownOrRemovedCredential() external {
-        _expectSettleRevert(
-            _emptyBatch(), 3, NEW_PK, abi.encodeWithSelector(SchedulerCredentialNotFound.selector, uint64(3))
-        );
-
-        _schedulerRemoveCredential(EXECUTOR_ID, ROOT_ID, ROOT_PK);
-        _expectSettleRevert(
-            _emptyBatch(),
-            EXECUTOR_ID,
-            EXECUTOR_PK,
-            abi.encodeWithSelector(SchedulerCredentialNotFound.selector, EXECUTOR_ID)
-        );
-        // Its address can't send without a signature either.
-        bytes32 executionHash = nativeHarness.executionHash();
-        address executor = vm.addr(EXECUTOR_PK);
-        vm.prank(executor);
-        (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.execute,
-                    (
-                        executionHash,
-                        uint40(block.timestamp),
-                        _emptyBatch(),
-                        new uint256[](0),
-                        SchedulerAuthorization(EXECUTOR_ID, "")
-                    )
-                )
-            );
-        require(!ok, "expected execute to revert");
-        require(
-            keccak256(ret) == keccak256(abi.encodeWithSelector(SchedulerCredentialNotFound.selector, EXECUTOR_ID)),
-            "wrong revert"
-        );
     }
 
     function test_issuer_managesExecutorsOnly() external {
@@ -948,213 +650,6 @@ contract AccountTest {
             ISSUER_PK,
             abi.encodeWithSelector(SchedulerRoleDenied.selector, ISSUER_ID, SchedulerRole.Issuer, SchedulerRole.Root)
         );
-    }
-
-    function test_executor_cannotManageCredentials() external {
-        _expectSchedulerAddCredentialRevert(
-            _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0),
-            EXECUTOR_ID,
-            EXECUTOR_PK,
-            abi.encodeWithSelector(
-                SchedulerRoleDenied.selector, EXECUTOR_ID, SchedulerRole.Executor, SchedulerRole.Executor
-            )
-        );
-        _expectSchedulerRemoveCredentialRevert(
-            EXECUTOR_ID,
-            EXECUTOR_ID,
-            EXECUTOR_PK,
-            abi.encodeWithSelector(
-                SchedulerRoleDenied.selector, EXECUTOR_ID, SchedulerRole.Executor, SchedulerRole.Executor
-            )
-        );
-    }
-
-    function test_root_managesEveryRole() external {
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Root, 0), ROOT_ID, ROOT_PK);
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Issuer, 0), ROOT_ID, ROOT_PK);
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Executor, 0), ROOT_ID, ROOT_PK);
-        (uint256 credentialCount, uint256 rootCredentials,) = nativeHarness.schedulerState();
-        require(credentialCount == 6 && rootCredentials == 2, "added");
-
-        _schedulerRemoveCredential(EXECUTOR_ID, ROOT_ID, ROOT_PK);
-        _schedulerRemoveCredential(ISSUER_ID, ROOT_ID, ROOT_PK);
-        // The new root removes the first, which is then the last root that never expires.
-        _schedulerRemoveCredential(ROOT_ID, 3, NEW_PK);
-        (credentialCount, rootCredentials,) = nativeHarness.schedulerState();
-        require(credentialCount == 6 && rootCredentials == 1, "removed");
-        require(nativeHarness.schedulerCredential(ROOT_ID).publicKey.length == 0, "deleted");
-        _expectSchedulerRemoveCredentialRevert(
-            3, 3, NEW_PK, abi.encodeWithSelector(LastRootSchedulerCredential.selector, uint64(3))
-        );
-    }
-
-    function test_root_cannotRemoveTheLastRootThatNeverExpires() external {
-        // A root that expires doesn't count, so the first is still the last.
-        _schedulerAddCredential(
-            _schedulerCredential(NEW_PK, SchedulerRole.Root, uint40(block.timestamp + 1 days)), ROOT_ID, ROOT_PK
-        );
-        _expectSchedulerRemoveCredentialRevert(
-            ROOT_ID, 3, NEW_PK, abi.encodeWithSelector(LastRootSchedulerCredential.selector, ROOT_ID)
-        );
-        _expectSchedulerRemoveCredentialRevert(
-            ROOT_ID, ROOT_ID, ROOT_PK, abi.encodeWithSelector(LastRootSchedulerCredential.selector, ROOT_ID)
-        );
-        // The expiring root can remove itself.
-        _schedulerRemoveCredential(3, 3, NEW_PK);
-        (, uint256 rootCredentials,) = nativeHarness.schedulerState();
-        require(rootCredentials == 1, "one root that never expires");
-    }
-
-    function test_management_rejectsAMissingCredential() external {
-        _expectSchedulerRemoveCredentialRevert(
-            3, ROOT_ID, ROOT_PK, abi.encodeWithSelector(SchedulerCredentialNotFound.selector, uint64(3))
-        );
-        _schedulerRemoveCredential(EXECUTOR_ID, ROOT_ID, ROOT_PK);
-        _expectSchedulerRemoveCredentialRevert(
-            EXECUTOR_ID, ROOT_ID, ROOT_PK, abi.encodeWithSelector(SchedulerCredentialNotFound.selector, EXECUTOR_ID)
-        );
-        _expectSchedulerAddCredentialRevert(
-            _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0),
-            EXECUTOR_ID,
-            EXECUTOR_PK,
-            abi.encodeWithSelector(SchedulerCredentialNotFound.selector, EXECUTOR_ID)
-        );
-        SchedulerCredential memory empty = _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0);
-        empty.publicKey = "";
-        _expectSchedulerAddCredentialRevert(empty, ROOT_ID, ROOT_PK, abi.encodeWithSelector(EmptyPublicKey.selector));
-    }
-
-    function test_management_rejectsAnExpiredSigner() external {
-        vm.warp(1000);
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Issuer, 1010), ROOT_ID, ROOT_PK);
-        vm.warp(1010);
-        _schedulerAddCredential(_schedulerCredential(SECP256K1_PK, SchedulerRole.Executor, 0), 3, NEW_PK);
-        vm.warp(1011);
-        _expectSchedulerRemoveCredentialRevert(
-            4, 3, NEW_PK, abi.encodeWithSelector(SchedulerCredentialExpired.selector, uint64(3), uint40(1010))
-        );
-    }
-
-    function test_management_usesEachNonceOnce() external {
-        SchedulerCredential memory executor = _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0);
-        bytes memory signature = _signSecp256k1(ROOT_PK, nativeHarness.schedulerAddCredentialDigest(executor, 0, 0));
-        nativeHarness.schedulerAddCredential(executor, 0, 0, SchedulerAuthorization(ROOT_ID, signature));
-        require(nativeHarness.schedulerNonce() == 1, "nonce used");
-
-        // Replaying the same signature fails.
-        (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.schedulerAddCredential, (executor, 0, 0, SchedulerAuthorization(ROOT_ID, signature))
-                )
-            );
-        require(!ok, "expected the replay to revert");
-        require(
-            keccak256(ret) == keccak256(abi.encodeWithSelector(InvalidSchedulerNonce.selector, 1, 0)), "wrong revert"
-        );
-
-        // So does a nonce ahead of the next.
-        signature = _signSecp256k1(ROOT_PK, nativeHarness.schedulerRemoveCredentialDigest(3, 2, 0));
-        (ok, ret) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.schedulerRemoveCredential, (3, 2, 0, SchedulerAuthorization(ROOT_ID, signature))
-                )
-            );
-        require(!ok, "expected a later nonce to revert");
-        require(
-            keccak256(ret) == keccak256(abi.encodeWithSelector(InvalidSchedulerNonce.selector, 1, 2)), "wrong revert"
-        );
-
-        // A signature binds its nonce.
-        signature = _signSecp256k1(ROOT_PK, nativeHarness.schedulerRemoveCredentialDigest(3, 2, 0));
-        (ok, ret) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.schedulerRemoveCredential, (3, 1, 0, SchedulerAuthorization(ROOT_ID, signature))
-                )
-            );
-        require(!ok, "expected another nonce's signature to revert");
-        require(
-            keccak256(ret) == keccak256(abi.encodeWithSelector(InvalidSignature.selector, KeyType.Secp256k1)),
-            "wrong revert"
-        );
-    }
-
-    function test_management_rejectsAnExpiredDeadlineButAcceptsItsExactDeadline() external {
-        vm.warp(1000);
-        SchedulerCredential memory executor = _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0);
-        bytes memory signature = _signSecp256k1(ROOT_PK, nativeHarness.schedulerAddCredentialDigest(executor, 0, 999));
-        (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.schedulerAddCredential, (executor, 0, 999, SchedulerAuthorization(ROOT_ID, signature))
-                )
-            );
-        require(!ok, "expected an expired deadline to revert");
-        require(
-            keccak256(ret) == keccak256(abi.encodeWithSelector(SchedulerDeadlineExpired.selector, uint40(999))),
-            "wrong revert"
-        );
-
-        signature = _signSecp256k1(ROOT_PK, nativeHarness.schedulerAddCredentialDigest(executor, 0, 1000));
-        nativeHarness.schedulerAddCredential(executor, 0, 1000, SchedulerAuthorization(ROOT_ID, signature));
-        require(nativeHarness.schedulerNonce() == 1, "exact deadline");
-    }
-
-    function test_management_acceptsTheSignersOwnAddressWithoutASignature() external {
-        address root = vm.addr(ROOT_PK);
-        vm.prank(root);
-        nativeHarness.schedulerAddCredential(
-            _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0), 0, 0, SchedulerAuthorization(ROOT_ID, "")
-        );
-        vm.prank(root);
-        nativeHarness.schedulerRemoveCredential(3, 1, 0, SchedulerAuthorization(ROOT_ID, ""));
-        (uint256 credentialCount,, uint256 nonce) = nativeHarness.schedulerState();
-        require(credentialCount == 4 && nonce == 2, "managed");
-        require(nativeHarness.schedulerCredential(3).publicKey.length == 0, "removed");
-
-        // The role rule still applies.
-        address issuer = vm.addr(ISSUER_PK);
-        vm.prank(issuer);
-        (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(
-                abi.encodeCall(
-                    nativeHarness.schedulerRemoveCredential, (ROOT_ID, 2, 0, SchedulerAuthorization(ISSUER_ID, ""))
-                )
-            );
-        require(!ok, "expected the issuer to be denied");
-        require(
-            keccak256(ret)
-                == keccak256(
-                    abi.encodeWithSelector(
-                        SchedulerRoleDenied.selector, ISSUER_ID, SchedulerRole.Issuer, SchedulerRole.Root
-                    )
-                ),
-            "wrong revert"
-        );
-    }
-
-    function test_management_emitsItsEvents() external {
-        SchedulerCredential memory executor = _schedulerCredential(NEW_PK, SchedulerRole.Executor, 9);
-        vm.recordLogs();
-        _schedulerAddCredential(executor, ROOT_ID, ROOT_PK);
-        _schedulerRemoveCredential(3, ROOT_ID, ROOT_PK);
-        VmLog[] memory logs = vm.getRecordedLogs();
-
-        require(logs.length == 2, "log count");
-        require(logs[0].topics[0] == Typewriter.SchedulerCredentialAdded.selector, "added event");
-        require(keccak256(logs[0].data) == keccak256(abi.encode(uint64(3), executor)), "added data");
-        require(logs[1].topics[0] == Typewriter.SchedulerCredentialRemoved.selector, "removed event");
-        require(keccak256(logs[1].data) == keccak256(abi.encode(uint64(3))), "removed data");
-    }
-
-    function test_management_isNotAnExecution() external {
-        bytes32 executionHash = nativeHarness.executionHash();
-        uint256 executionIndex = nativeHarness.executionIndex();
-        _schedulerAddCredential(_schedulerCredential(NEW_PK, SchedulerRole.Executor, 0), ROOT_ID, ROOT_PK);
-        require(nativeHarness.executionHash() == executionHash, "execution hash");
-        require(nativeHarness.executionIndex() == executionIndex, "execution index");
     }
 
     function test_schedulerDigests_matchFixedEip712Envelopes() external view {

@@ -417,8 +417,8 @@ function checkQueue(
           method: "eth_call",
           params: [
             {
-              // From the scheduler, whose scheduler credential, the deployer's
-              // first, authorizes it unsigned, so only the enqueue can revert.
+              // Sent from the scheduler, whose credential 0 authorizes it
+              // without a signature, so only the enqueue can revert.
               from: app.scheduler.address,
               to: app.address,
               data: encodeExecuteCalldata(

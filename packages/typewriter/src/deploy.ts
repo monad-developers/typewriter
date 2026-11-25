@@ -8,8 +8,9 @@ import {
   encodeSchedulerCredentials,
   secp256k1SchedulerCredential,
 } from "./encoding";
+import { TX_GAS_LIMIT_CAP } from "./gas";
 import { Rpc, type RpcError } from "./rpc";
-import { requestNonce } from "./rpc-request";
+import { requestBlock, requestNonce } from "./rpc-request";
 import {
   MAX_FEE_PER_GAS,
   MAX_PRIORITY_FEE_PER_GAS,
@@ -20,27 +21,11 @@ import type { SchedulerCredential } from "./typewriter-types";
 /**
  * The standard CREATE2 deployer (Arachnid's deterministic deployment proxy).
  * Its calldata is a 32-byte salt and then the initcode, and it returns the
- * address it created. Monad and Anvil have it.
+ * address it created. Monad and Anvil have it; startup fails on a chain
+ * without it.
  */
 export const CREATE2_DEPLOYER: Address.Address =
   "0x4e59b44847b379578588920cA78FbF26c0B4956C";
-
-/** The one-time sender of `CREATE2_DEPLOYER_TRANSACTION`. */
-export const CREATE2_DEPLOYER_SENDER: Address.Address =
-  "0x3fab184622dc19b6109349b94811493bf2a45362";
-
-/**
- * The keyless, pre-EIP-155 transaction that deploys `CREATE2_DEPLOYER` on any
- * chain that accepts it, from `CREATE2_DEPLOYER_SENDER` at nonce 0.
- */
-const CREATE2_DEPLOYER_TRANSACTION: Hex.Hex =
-  "0xf8a58085174876e800830186a08080b853604580600e600039806000f350fe7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf31ba02222222222222222222222222222222222222222222222222222222222222222a02222222222222222222222222222222222222222222222222222222222222222";
-
-/** What `CREATE2_DEPLOYER_TRANSACTION` costs: 100,000 gas at 100 gwei. */
-const CREATE2_DEPLOYER_COST = 100_000n * 100_000_000_000n;
-
-/** Monad's gas limit per transaction. */
-const MAX_TRANSACTION_GAS = 30_000_000n;
 
 /** How long startup waits for each transaction it sends to land. */
 const RECEIPT_TIMEOUT = Duration.minutes(2);
@@ -130,7 +115,10 @@ export function creationCodeHash(bytecode: Hex.Hex): Hex.Hex {
 export type ResolvedDeployment = {
   address: Address.Address;
   migration: Migration;
-  /** The block that the deployment landed in, when this start sent it. */
+  /**
+   * A block that has the deployment's code, when this start sent it or found
+   * it at the CREATE2 address, so the runtime starts no earlier.
+   */
   deployedIn: bigint | undefined;
 };
 
@@ -140,7 +128,7 @@ export type ResolvedDeployment = {
  * That address is the same on every attempt, so a contract already there is
  * the one an earlier start sent before it could record it.
  *
- * @dev The caller must hold `db.lock(deploymentLockKey(app.schemaName))`.
+ * @dev The caller must hold `db.lock(deploymentLockKey(app.deployment))`.
  * @param existing - Internal, for the simulation only, whose chain mines only
  * once the runtime has started: a contract it deployed itself, which an empty
  * schema resumes instead of deploying.
@@ -159,7 +147,7 @@ export function resolveDeployment(
     const name = app.deployment;
     const recorded = yield* readMetadata(
       db,
-      app.schemaName,
+      app.deployment,
       app.typewriterSchema,
     );
 
@@ -198,20 +186,33 @@ export function resolveDeployment(
     const salt = deploymentSalt(name);
     const address = deploymentAddress(salt, initcode);
 
-    const codeThere = yield* rpc.request({
-      method: "eth_getCode",
-      params: [address, "latest"],
-    });
+    const latest = yield* requestBlock("latest");
+    const [codeThere, deployerCode] = yield* Effect.all(
+      [address, CREATE2_DEPLOYER].map((at) =>
+        rpc.request({
+          method: "eth_getCode",
+          params: [at, { blockHash: latest.hash }],
+        }),
+      ),
+      { concurrency: "unbounded" },
+    );
     if (codeThere !== "0x") {
       yield* logDeployment(
         "Adopted the deployment an earlier start sent",
         app,
         address,
       );
-      return { address, migration: "created" as const, deployedIn: undefined };
+      return {
+        address,
+        migration: "created" as const,
+        deployedIn: latest.number,
+      };
     }
-
-    yield* ensureCreate2Deployer(app);
+    if (deployerCode === "0x") {
+      return yield* new DeploymentError({
+        message: `Chain ${app.chainId} lacks the standard CREATE2 deployer at ${CREATE2_DEPLOYER}, which Typewriter deploys ${app.contractName} through`,
+      });
+    }
 
     const data = Hex.concat(salt, initcode);
     const estimate = yield* rpc
@@ -223,25 +224,27 @@ export function resolveDeployment(
         Effect.mapError(
           (cause) =>
             new DeploymentError({
-              message: `Failed to estimate the gas to deploy ${app.contractName}; its constructor must take the scheduler's credentials, \`constructor(SchedulerCredential[] memory schedulerCredentials)\`, and succeed with a root credential for ${app.root}`,
+              message: `Failed to estimate the gas to deploy ${app.contractName}; its constructor must take the scheduler's credentials, \`constructor(SchedulerCredential[] memory schedulerCredentials)\`, and succeed with a root credential for ${app.root}. Or ${address} already has code, which a provider did not show at startup, so the CREATE2 deployer reverts; restart to adopt it`,
               cause,
             }),
         ),
         Effect.map(Hex.toBigInt),
       );
-    if (estimate > MAX_TRANSACTION_GAS) {
+    if (estimate > BigInt(TX_GAS_LIMIT_CAP)) {
       return yield* new DeploymentError({
-        message: `Deploying ${app.contractName} takes ${estimate} gas, more than the ${MAX_TRANSACTION_GAS} a transaction can use on Monad`,
+        message: `Deploying ${app.contractName} takes ${estimate} gas, more than the ${TX_GAS_LIMIT_CAP} a transaction can use on Monad`,
       });
     }
     // A margin for state that changes between the estimate and the block.
-    const gas = min((estimate * 5n) / 4n, MAX_TRANSACTION_GAS);
-
-    const receipt = yield* sendFromRelayer(
-      app,
-      { to: CREATE2_DEPLOYER, data, gas, value: 0n },
-      `the deployment of ${app.contractName}`,
+    const gas = BigInt(
+      Math.min(Math.floor((Number(estimate) * 5) / 4), TX_GAS_LIMIT_CAP),
     );
+
+    const receipt = yield* sendFromRelayer(app, {
+      to: CREATE2_DEPLOYER,
+      data,
+      gas,
+    });
     if (receipt.status !== "0x1") {
       return yield* new DeploymentError({
         message: `Deployment ${receipt.transactionHash} of ${app.contractName} reverted`,
@@ -281,91 +284,17 @@ function logDeployment(
   );
 }
 
-function min(a: bigint, b: bigint): bigint {
-  return a < b ? a : b;
-}
-
 /**
- * Deploys `CREATE2_DEPLOYER` with its keyless transaction if the chain lacks
- * it, after the relayer funds the transaction's sender.
+ * Signs the deployment's transaction from the relayer, sends it to every
+ * provider, and polls for its receipt.
  */
-function ensureCreate2Deployer(
-  app: TypewriterApp,
-): Effect.Effect<void, DeploymentError | RpcError, Rpc> {
-  return Effect.gen(function* () {
-    const rpc = yield* Rpc;
-    const code = yield* rpc.request({
-      method: "eth_getCode",
-      params: [CREATE2_DEPLOYER, "latest"],
-    });
-    if (code !== "0x") return;
-
-    yield* Effect.logWarning(
-      "Deploying the CREATE2 deployer, which the chain lacks",
-    ).pipe(Effect.annotateLogs({ deployer: CREATE2_DEPLOYER }));
-    const deployed = Effect.gen(function* () {
-      const balance = Hex.toBigInt(
-        yield* rpc.request({
-          method: "eth_getBalance",
-          params: [CREATE2_DEPLOYER_SENDER, "latest"],
-        }),
-      );
-      if (balance < CREATE2_DEPLOYER_COST) {
-        const funded = yield* sendFromRelayer(
-          app,
-          {
-            to: CREATE2_DEPLOYER_SENDER,
-            data: "0x",
-            gas: 21_000n,
-            value: CREATE2_DEPLOYER_COST - balance,
-          },
-          "the CREATE2 deployer's funding",
-        );
-        if (funded.status !== "0x1") {
-          return yield* new DeploymentError({
-            message: `Funding ${funded.transactionHash} of the CREATE2 deployer's sender reverted`,
-          });
-        }
-      }
-      const receipt = yield* sendAndWait(
-        CREATE2_DEPLOYER_TRANSACTION,
-        "the CREATE2 deployer",
-        app.blockPollingIntervalMs,
-      );
-      const code = yield* rpc.request({
-        method: "eth_getCode",
-        params: [CREATE2_DEPLOYER, { blockHash: receipt.blockHash }],
-      });
-      if (receipt.status !== "0x1" || code === "0x") {
-        return yield* new DeploymentError({
-          message: `Transaction ${receipt.transactionHash} did not deploy the CREATE2 deployer`,
-        });
-      }
-    });
-    yield* deployed.pipe(
-      Effect.mapError(
-        (cause) =>
-          new DeploymentError({
-            message: `Chain ${app.chainId} has no CREATE2 deployer at ${CREATE2_DEPLOYER}, and deploying it failed; deploy it, then restart`,
-            cause,
-          }),
-      ),
-    );
-  });
-}
-
-/** Signs a transaction from the relayer, sends it, and waits for its receipt. */
 function sendFromRelayer(
   app: TypewriterApp,
-  transaction: {
-    to: Address.Address;
-    data: Hex.Hex;
-    gas: bigint;
-    value: bigint;
-  },
-  what: string,
+  transaction: { to: Address.Address; data: Hex.Hex; gas: bigint },
 ) {
   return Effect.gen(function* () {
+    const rpc = yield* Rpc;
+    const what = `the deployment of ${app.contractName}`;
     const nonce = yield* requestNonce(app.relayer.address).pipe(
       Effect.mapError(
         (cause) =>
@@ -382,6 +311,7 @@ function sendFromRelayer(
           chainId: app.chainId,
           nonce,
           ...transaction,
+          value: 0n,
           maxFeePerGas: MAX_FEE_PER_GAS,
           maxPriorityFeePerGas: MAX_PRIORITY_FEE_PER_GAS,
         }) as Promise<Hex.Hex>,
@@ -391,14 +321,6 @@ function sendFromRelayer(
           cause,
         }),
     });
-    return yield* sendAndWait(signed, what, app.blockPollingIntervalMs);
-  });
-}
-
-/** Sends `signed` to every provider, and polls for its receipt. */
-function sendAndWait(signed: Hex.Hex, what: string, pollingIntervalMs: number) {
-  return Effect.gen(function* () {
-    const rpc = yield* Rpc;
     const hash = Hash.keccak256(signed);
     yield* rpc
       .requestAll({ method: "eth_sendRawTransaction", params: [signed] })
@@ -418,7 +340,9 @@ function sendAndWait(signed: Hex.Hex, what: string, pollingIntervalMs: number) {
           params: [hash],
         });
         if (receipt !== null) return receipt;
-        yield* Effect.sleep(Duration.millis(Math.max(pollingIntervalMs, 100)));
+        yield* Effect.sleep(
+          Duration.millis(Math.max(app.blockPollingIntervalMs, 100)),
+        );
       }
     });
     return yield* poll.pipe(
@@ -427,14 +351,10 @@ function sendAndWait(signed: Hex.Hex, what: string, pollingIntervalMs: number) {
         orElse: () =>
           Effect.fail(
             new DeploymentError({
-              message: `${capitalize(what)} (${hash}) did not land in ${Duration.format(RECEIPT_TIMEOUT)}; restart once it lands`,
+              message: `The deployment of ${app.contractName} (${hash}) did not land in ${Duration.format(RECEIPT_TIMEOUT)}; restart once it lands`,
             }),
           ),
       }),
     );
   });
-}
-
-function capitalize(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }

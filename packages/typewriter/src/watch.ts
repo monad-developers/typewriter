@@ -41,8 +41,7 @@ export type WatchConfig = {
   fromBlock: { number: bigint; hash: Hex.Hex };
   pollIntervalMs: number;
   bufferSize: number;
-  /** The logs of `address` with any of `selectors` as their first topic. */
-  logFilter: { address: Hex.Hex; selectors: readonly Hex.Hex[] };
+  logFilter: { address: Hex.Hex; selector: Hex.Hex };
 };
 
 /** The chain reorged deeper than the blocks the watch keeps. */
@@ -76,7 +75,7 @@ export function watchChain(
     (queue) =>
       Effect.gen(function* () {
         const rpc = yield* Rpc;
-        const { address, selectors } = config.logFilter;
+        const { address, selector } = config.logFilter;
         const pollInterval = Schedule.spaced(
           Duration.millis(config.pollIntervalMs),
         );
@@ -98,9 +97,7 @@ export function watchChain(
           Effect.gen(function* () {
             const logs = yield* rpc.request({
               method: "eth_getLogs",
-              params: [
-                { blockHash: block.hash, address, topics: [[...selectors]] },
-              ],
+              params: [{ blockHash: block.hash, address, topics: [selector] }],
             });
             const localBlock: LocalBlock = {
               ...block,
