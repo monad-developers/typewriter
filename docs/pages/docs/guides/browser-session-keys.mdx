@@ -73,7 +73,7 @@ Don't give the session key permission for `AddCredential` or `RemoveCredential`.
 
 ## 3. Store the key
 
-IndexedDB stores a `CryptoKeyPair` with the [structured clone algorithm](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm), so a non-extractable key stays non-extractable and usable after a reload. Store it under `manifest.deploymentKey`, so a key made for one deployment is never used with another.
+IndexedDB stores a `CryptoKeyPair` with the [structured clone algorithm](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm), so a non-extractable key stays non-extractable and usable after a reload. Store it under `manifest.deployment`, so a key made for one deployment is never used with another.
 
 ```ts [lib/session-store.ts]
 type Session = {
@@ -118,7 +118,7 @@ export async function loadSession(key: string): Promise<Session | null> {
 Save the session once `addCredential` is accepted:
 
 ```ts
-await saveSession(manifest.deploymentKey, {
+await saveSession(manifest.deployment, {
   accountID,
   credentialID: sessionCredentialID,
   expiration,
@@ -135,7 +135,7 @@ Then pick a random 192-bit nonce lane with [`Crypto.getRandomValues()`](https://
 ```ts
 import { packNonce } from "typewriter/client";
 
-const session = await loadSession(manifest.deploymentKey);
+const session = await loadSession(manifest.deployment);
 if (session === null || session.expiration <= Date.now() / 1000) {
   // start again from step 1
 }

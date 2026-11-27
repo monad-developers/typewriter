@@ -9,7 +9,6 @@ import {
 } from "viem";
 import { Rpc, type RpcError } from "./rpc";
 import { TYPEWRITER_ABI } from "./typewriter-constants";
-import { PendingTransactionsError } from "./typewriter-errors";
 
 export type BlockIdentifier = number | bigint | Hash | "latest" | "finalized";
 export type RequestedBlock<includeTransactions extends boolean = false> = Block<
@@ -109,23 +108,18 @@ export function requestExecutionHash(
   return requestTypewriterView(address, blockHash, "executionHash");
 }
 
-/** The scheduler's next nonce. Fails if it has pending transactions, e.g. from a previous process. */
+/** The next nonce of `address` as of `blockHash`, or the latest block. */
 export function requestNonce(
   address: Address.Address,
-): Effect.Effect<number, RpcError | PendingTransactionsError, Rpc> {
+  blockHash?: Hash,
+): Effect.Effect<number, RpcError, Rpc> {
   return Effect.gen(function* () {
     const rpc = yield* Rpc;
-    const count = (tag: "latest" | "pending") =>
-      rpc
-        .request({ method: "eth_getTransactionCount", params: [address, tag] })
-        .pipe(Effect.map(Hex.toNumber));
-    const [latest, pending] = yield* Effect.all(
-      [count("latest"), count("pending")],
-      { concurrency: "unbounded" },
-    );
-    if (pending > latest) {
-      return yield* new PendingTransactionsError({ address, latest, pending });
-    }
-    return latest;
+    return yield* rpc
+      .request({
+        method: "eth_getTransactionCount",
+        params: [address, blockHash === undefined ? "latest" : { blockHash }],
+      })
+      .pipe(Effect.map(Hex.toNumber));
   });
 }

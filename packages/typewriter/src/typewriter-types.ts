@@ -8,15 +8,23 @@ import type {
   ResolvedTypewriterMutationConfig,
   SequencingConfig,
 } from "./config";
-import type { KeyType } from "./typewriter-constants";
+import type { KeyType, SchedulerRole } from "./typewriter-constants";
 import type { ExecuteMutationError } from "./typewriter-errors";
 
-export type { KeyType };
+export type { KeyType, SchedulerRole };
 
 export type Credential = {
   expiration: number;
   keyType: KeyType;
   permissions: bigint;
+  publicKey: Hex.Hex;
+};
+
+/** `struct SchedulerCredential`. */
+export type SchedulerCredential = {
+  expiration: number;
+  keyType: KeyType;
+  role: SchedulerRole;
   publicKey: Hex.Hex;
 };
 
@@ -31,7 +39,7 @@ export type Authorization = {
 export type Account = {
   nonces: Readonly<Record<`${bigint}`, bigint>>;
   credentials: Credential[];
-  activeCredentials: bigint;
+  rootCredentials: bigint;
 };
 
 export type CreateAccountParams = {
@@ -171,6 +179,8 @@ export type SettlementBase = {
   /** The `executionHash` and `executionIndex` it starts from. */
   fromExecutionHash: Hex.Hex;
   fromExecutionIndex: bigint;
+  /** The `executionHash` once it executes, which the scheduler signs. */
+  toExecutionHash: Hex.Hex;
   batch: RuntimeBatch | undefined;
   queueIndexes: bigint[];
   /** The revm journals of its executions. */

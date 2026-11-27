@@ -55,7 +55,7 @@ For a "sign in / sign out" experience, use a session key: a credential with limi
 
 ## Remove a credential
 
-`RemoveCredential` removes a credential by its ID. A removed credential's ID is never reused, and an account's last credential can't be removed.
+`RemoveCredential` removes a credential by its ID. A removed credential's ID is never reused. A credential that never expires and can sign both `AddCredential` and `RemoveCredential` is a _root credential_, and an account's last root credential can't be removed.
 
 ```ts
 const removeCredential = await signer.signMutation({
@@ -70,4 +70,4 @@ const removeCredential = await signer.signMutation({
 
 ## Permissions for these mutations
 
-`AddCredential` and `RemoveCredential` need permission like any other mutation, and they're powerful. A credential that can sign `AddCredential` can add new credentials with any permissions, and one that can sign `RemoveCredential` can remove any of the account's credentials. Grant them only to credentials that should control the account.
+`AddCredential` and `RemoveCredential` need permission like any other mutation, and they're powerful. A credential that can sign `AddCredential` can add new credentials with any permissions, and one that can sign `RemoveCredential` can remove any of the account's credentials. Grant them only to credentials that should control the account. An account always keeps at least one root credential.

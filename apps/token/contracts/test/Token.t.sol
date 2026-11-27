@@ -11,6 +11,9 @@ import {
     InvalidNonce,
     InvalidSignature,
     KeyType,
+    SchedulerAuthorization,
+    SchedulerCredential,
+    SchedulerRole,
     Typewriter
 } from "typewriter/Typewriter.sol";
 import {MintMutation} from "../src/Mint.sol";
@@ -18,10 +21,18 @@ import {Token} from "../src/Token.sol";
 import {TransferMutation} from "../src/Transfer.sol";
 
 contract TokenHarness is Token {
-    constructor() Token(address(this)) {}
+    constructor() Token(schedulerCredentials()) {}
+
+    /// The scheduler's one credential is this contract's address, so `settle` needs no signature.
+    function schedulerCredentials() internal view returns (SchedulerCredential[] memory credentials) {
+        credentials = new SchedulerCredential[](1);
+        credentials[0] = SchedulerCredential({
+            expiration: 0, keyType: KeyType.Secp256k1, role: SchedulerRole.Root, publicKey: abi.encode(address(this))
+        });
+    }
 
     function settle(Batch calldata batch) external {
-        this.execute(executionHash, uint40(block.timestamp), batch, new uint256[](0));
+        this.execute(executionHash, uint40(block.timestamp), batch, new uint256[](0), SchedulerAuthorization(0, ""));
     }
 
     function totalSupply() external view returns (uint256) {
@@ -141,7 +152,7 @@ contract TokenTest is Test {
         );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
-        return abi.encode(v, r, s);
+        return abi.encodePacked(r, s, v);
     }
 
     function execute(uint8 mutation, bytes memory mutationData, Authorization memory auth) internal {

@@ -3,12 +3,11 @@ import { ASSESSMENT_ENTRYPOINT } from "../simulation-test/assessment-constants";
 import type { Plan } from "../simulation-test/plan";
 import { createTypewriter } from "../src";
 
-const { port, plan, address, privateKey, chainId, rpcUrls, databaseUrl } =
+const { port, plan, privateKey, chainId, rpcUrls, databaseUrl } =
   // biome-ignore lint/complexity/useLiteralKeys: `process.env` has an index signature.
   JSON.parse(process.env["BENCHMARK_CONFIG"]!) as {
     port: number;
     plan: Plan;
-    address: `0x${string}`;
     privateKey: `0x${string}`;
     chainId: number;
     rpcUrls: [string, ...string[]];
@@ -16,11 +15,12 @@ const { port, plan, address, privateKey, chainId, rpcUrls, databaseUrl } =
   };
 
 const typewriter = await createTypewriter(ASSESSMENT_ENTRYPOINT, {
-  address,
-  account: privateKeyToAccount(privateKey),
+  root: privateKeyToAccount(privateKey).address,
+  scheduler: privateKeyToAccount(privateKey),
   chainId,
   hardfork: "MonadTen",
   rpcUrl: rpcUrls,
+  deployment: "typewriter_benchmark",
   database: { url: databaseUrl },
   blockPollingIntervalMs: plan.typewriter.blockPollingIntervalMs,
   sequencing: plan.typewriter.ordering,
@@ -41,6 +41,7 @@ typewriter.on("mutation", (event) => {
 Bun.serve({
   port,
   routes: {
+    "/manifest": () => Response.json(typewriter.manifest),
     "/included": () => Response.json(included),
     "/inclusion": () => Response.json(inclusionMs),
     "/execute": {

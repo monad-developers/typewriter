@@ -15,9 +15,9 @@ struct Credential {
 }
 
 struct Account {
-    mapping(uint192 => uint64) nonces;
     Credential[] credentials;
-    uint64 activeCredentials;
+    uint256 rootCredentials;
+    mapping(uint192 => uint64) nonces;
 }
 
 struct Authorization {
@@ -49,6 +49,13 @@ bytes32 constant EIP712_DOMAIN_TYPEHASH =
 bytes32 constant AUTHORIZATION_TYPEHASH = keccak256(
     "Authorization(bytes32 accountID,uint64 credentialID,uint256 nonce,uint40 expiration,uint8 mutation,bytes mutationData)"
 );
+bytes32 constant EXECUTE_TYPEHASH =
+    keccak256("Execute(bytes32 fromExecutionHash,bytes32 toExecutionHash,uint40 timestamp,address relayer)");
+bytes32 constant SCHEDULER_ADD_CREDENTIAL_TYPEHASH = keccak256(
+    "SchedulerAddCredential(uint40 expiration,uint8 keyType,uint8 role,bytes publicKey,uint256 nonce,uint40 deadline)"
+);
+bytes32 constant SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH =
+    keccak256("SchedulerRemoveCredential(uint64 credentialID,uint256 nonce,uint40 deadline)");
 string constant TYPEWRITER_DOMAIN_NAME = "Typewriter";
 string constant TYPEWRITER_DOMAIN_VERSION = "1";
 
@@ -57,6 +64,40 @@ address constant P256_VERIFIER = address(0x100);
 uint8 constant CREATE_ACCOUNT_MUTATION = 253;
 uint8 constant ADD_CREDENTIAL_MUTATION = 254;
 uint8 constant REMOVE_CREDENTIAL_MUTATION = 255;
+
+uint256 constant ROOT_PERMISSIONS = (1 << ADD_CREDENTIAL_MUTATION) | (1 << REMOVE_CREDENTIAL_MUTATION);
+
+function isRootCredential(uint40 expiration, uint256 permissions) pure returns (bool) {
+    return expiration == 0 && permissions & ROOT_PERMISSIONS == ROOT_PERMISSIONS;
+}
+
+enum SchedulerRole {
+    Executor,
+    Issuer,
+    Root
+}
+
+struct SchedulerCredential {
+    uint40 expiration;
+    KeyType keyType;
+    SchedulerRole role;
+    bytes publicKey;
+}
+
+struct Scheduler {
+    SchedulerCredential[] credentials;
+    uint256 rootCredentials;
+    uint256 nonce;
+}
+
+struct SchedulerAuthorization {
+    uint64 credentialID;
+    bytes signature;
+}
+
+function isRootSchedulerCredential(uint40 expiration, SchedulerRole role) pure returns (bool) {
+    return expiration == 0 && role == SchedulerRole.Root;
+}
 
 error UnknownMutation(uint8 mutation);
 error InvalidSignature(KeyType keyType);
@@ -70,7 +111,14 @@ error CredentialExpired(uint40 expiration);
 error PermissionDenied(bytes32 accountID, uint64 credentialID, uint8 mutation);
 error InvalidNonce(bytes32 accountID, uint192 lane, uint64 expected, uint64 received);
 error NonceOverflow(bytes32 accountID, uint192 lane);
-error LastCredential(bytes32 accountID);
+error LastRootCredential(bytes32 accountID, uint64 credentialID);
+error NoRootSchedulerCredential();
+error SchedulerCredentialNotFound(uint64 credentialID);
+error SchedulerCredentialExpired(uint64 credentialID, uint40 expiration);
+error SchedulerRoleDenied(uint64 signerID, SchedulerRole signerRole, SchedulerRole role);
+error LastRootSchedulerCredential(uint64 credentialID);
+error InvalidSchedulerNonce(uint256 expected, uint256 received);
+error SchedulerDeadlineExpired(uint40 deadline);
 
 uint256 constant MAX_SETTLEMENT_DELAY = 60;
 
@@ -86,7 +134,16 @@ function verifySignature(KeyType keyType, bytes32 digest, bytes memory publicKey
 
 function verifySecp256k1(bytes32 digest, bytes memory publicKey, bytes memory signature) pure {
     address expected = abi.decode(publicKey, (address));
-    (uint8 v, bytes32 r, bytes32 s) = abi.decode(signature, (uint8, bytes32, bytes32));
+    if (signature.length != 65) revert InvalidSignature(KeyType.Secp256k1);
+    bytes32 r;
+    bytes32 s;
+    uint8 v;
+    assembly ("memory-safe") {
+        r := mload(add(signature, 32))
+        s := mload(add(signature, 64))
+        v := byte(0, mload(add(signature, 96)))
+    }
+    if (v < 27) v += 27;
     address recovered = ecrecover(digest, v, r, s);
     if (recovered == address(0) || recovered != expected) revert InvalidSignature(KeyType.Secp256k1);
 }
@@ -157,14 +214,15 @@ abstract contract Typewriter {
         uint256 index, uint8 mutation, bytes mutationData, bytes authorizationData, uint40 enqueuedTimestamp
     );
 
-    error UnauthorizedExecute(address caller);
+    event SchedulerCredentialAdded(uint64 credentialID, SchedulerCredential credential);
+    event SchedulerCredentialRemoved(uint64 credentialID);
+
     error ForceInclusionTooEarly(uint256 remainingDelay);
     error ForceInclusionAlreadyExecuted(uint256 index);
     error LengthMismatch();
     error ExecutionHashMismatch(bytes32 expected, bytes32 received);
     error InvalidSettlementTimestamp(uint256 timestamp);
 
-    address internal immutable SCHEDULER;
     bytes32 internal immutable DOMAIN_SEPARATOR;
     uint256 internal immutable FORCE_INCLUSION_DELAY = 5 minutes;
 
@@ -172,9 +230,19 @@ abstract contract Typewriter {
     QueuedMutation[] internal queue;
     uint256 public executionIndex;
     bytes32 public executionHash;
+    Scheduler internal scheduler;
 
-    constructor(address scheduler) {
-        SCHEDULER = scheduler;
+    constructor(SchedulerCredential[] memory schedulerCredentials) {
+        uint256 rootCredentials;
+        for (uint256 i; i < schedulerCredentials.length; i++) {
+            SchedulerCredential memory credential = schedulerCredentials[i];
+            if (credential.publicKey.length == 0) revert EmptyPublicKey();
+            scheduler.credentials.push(credential);
+            if (isRootSchedulerCredential(credential.expiration, credential.role)) rootCredentials++;
+            emit SchedulerCredentialAdded(uint64(i), credential);
+        }
+        if (rootCredentials == 0) revert NoRootSchedulerCredential();
+        scheduler.rootCredentials = rootCredentials;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
@@ -192,9 +260,9 @@ abstract contract Typewriter {
         bytes32 fromExecutionHash,
         uint40 timestamp,
         Batch calldata batch,
-        uint256[] calldata forceExecuteIndexes
+        uint256[] calldata forceExecuteIndexes,
+        SchedulerAuthorization calldata authorization
     ) external {
-        if (msg.sender != SCHEDULER) revert UnauthorizedExecute(msg.sender);
         bytes32 _executionHash = executionHash;
         if (_executionHash != fromExecutionHash) revert ExecutionHashMismatch(_executionHash, fromExecutionHash);
         if (timestamp > block.timestamp || block.timestamp - timestamp > MAX_SETTLEMENT_DELAY) {
@@ -211,7 +279,8 @@ abstract contract Typewriter {
             uint256 freeMemoryPointer = _getFreeMemoryPointer();
             _execute(batch.mutations[i], batch.mutationData[i], batch.authorizationData[i], timestamp);
             _setFreeMemoryPointer(freeMemoryPointer);
-            _executionHash = _accumulate(_executionHash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
+            _executionHash =
+                _accumulate(_executionHash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
             executionIndex++;
         }
 
@@ -229,7 +298,13 @@ abstract contract Typewriter {
 
             delete queue[index];
         }
-        
+
+        bytes32 structHash =
+            keccak256(abi.encode(EXECUTE_TYPEHASH, fromExecutionHash, _executionHash, timestamp, msg.sender));
+        _authorizeScheduler(
+            authorization, timestamp, keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash))
+        );
+
         executionHash = _executionHash;
     }
 
@@ -318,17 +393,17 @@ abstract contract Typewriter {
                 revert CredentialNotFound(authorization.accountID, authorization.credentialID);
             }
 
-            Credential storage credential = account.credentials[authorization.credentialID];
-            if (credential.publicKey.length == 0) {
+            Credential storage signer = account.credentials[authorization.credentialID];
+            if (signer.publicKey.length == 0) {
                 revert CredentialNotFound(authorization.accountID, authorization.credentialID);
             }
             if (authorization.expiration != 0 && authorization.expiration < timestamp) {
                 revert AuthorizationExpired(authorization.expiration);
             }
-            if (credential.expiration != 0 && credential.expiration < timestamp) {
-                revert CredentialExpired(credential.expiration);
+            if (signer.expiration != 0 && signer.expiration < timestamp) {
+                revert CredentialExpired(signer.expiration);
             }
-            if (credential.permissions & (uint256(1) << mutation) == 0) {
+            if (signer.permissions & (uint256(1) << mutation) == 0) {
                 revert PermissionDenied(authorization.accountID, authorization.credentialID, mutation);
             }
 
@@ -341,7 +416,7 @@ abstract contract Typewriter {
             }
 
             bytes32 digest = _authorizationDigest(authorization, mutation, mutationData);
-            verifySignature(credential.keyType, digest, credential.publicKey, authorization.signature);
+            verifySignature(signer.keyType, digest, signer.publicKey, authorization.signature);
             account.nonces[nonceLane] = nonceSequence + 1;
         }
 
@@ -355,7 +430,7 @@ abstract contract Typewriter {
                         publicKey: createAccount.publicKey
                     })
                 );
-            account.activeCredentials = 1;
+            account.rootCredentials = 1;
         } else if (mutation == ADD_CREDENTIAL_MUTATION) {
             AddCredential memory addCredential = abi.decode(mutationData, (AddCredential));
             if (addCredential.publicKey.length == 0) revert EmptyPublicKey();
@@ -369,7 +444,9 @@ abstract contract Typewriter {
                         publicKey: addCredential.publicKey
                     })
                 );
-            account.activeCredentials++;
+            if (isRootCredential(addCredential.expiration, addCredential.permissions)) {
+                account.rootCredentials++;
+            }
         } else if (mutation == REMOVE_CREDENTIAL_MUTATION) {
             RemoveCredential memory removeCredential = abi.decode(mutationData, (RemoveCredential));
             if (
@@ -378,13 +455,119 @@ abstract contract Typewriter {
             ) {
                 revert CredentialNotFound(authorization.accountID, removeCredential.credentialID);
             }
-            if (account.activeCredentials == 1) revert LastCredential(authorization.accountID);
+            Credential storage removed = account.credentials[removeCredential.credentialID];
+            if (isRootCredential(removed.expiration, removed.permissions)) {
+                if (account.rootCredentials == 1) {
+                    revert LastRootCredential(authorization.accountID, removeCredential.credentialID);
+                }
+                account.rootCredentials--;
+            }
 
             delete account.credentials[removeCredential.credentialID];
-            account.activeCredentials--;
         } else {
             dispatch(mutation, mutationData, authorization.accountID);
         }
+    }
+
+    function schedulerAddCredential(
+        SchedulerCredential calldata credential,
+        uint256 nonce,
+        uint40 deadline,
+        SchedulerAuthorization calldata authorization
+    ) external {
+        _useSchedulerNonce(nonce, deadline);
+        if (credential.publicKey.length == 0) revert EmptyPublicKey();
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SCHEDULER_ADD_CREDENTIAL_TYPEHASH,
+                credential.expiration,
+                credential.keyType,
+                credential.role,
+                keccak256(credential.publicKey),
+                nonce,
+                deadline
+            )
+        );
+        SchedulerRole signerRole = _authorizeScheduler(
+            authorization, block.timestamp, keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash))
+        );
+        _checkSchedulerRole(authorization.credentialID, signerRole, credential.role);
+
+        uint64 credentialID = uint64(scheduler.credentials.length);
+        scheduler.credentials
+            .push(
+                SchedulerCredential({
+                    expiration: credential.expiration,
+                    keyType: credential.keyType,
+                    role: credential.role,
+                    publicKey: credential.publicKey
+                })
+            );
+        if (isRootSchedulerCredential(credential.expiration, credential.role)) scheduler.rootCredentials++;
+        emit SchedulerCredentialAdded(credentialID, credential);
+    }
+
+    function schedulerRemoveCredential(
+        uint64 credentialID,
+        uint256 nonce,
+        uint40 deadline,
+        SchedulerAuthorization calldata authorization
+    ) external {
+        _useSchedulerNonce(nonce, deadline);
+        SchedulerCredential[] storage credentials = scheduler.credentials;
+        if (credentialID >= credentials.length || credentials[credentialID].publicKey.length == 0) {
+            revert SchedulerCredentialNotFound(credentialID);
+        }
+        bytes32 structHash = keccak256(abi.encode(SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH, credentialID, nonce, deadline));
+        SchedulerRole signerRole = _authorizeScheduler(
+            authorization, block.timestamp, keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash))
+        );
+        SchedulerCredential storage removed = credentials[credentialID];
+        _checkSchedulerRole(authorization.credentialID, signerRole, removed.role);
+        if (isRootSchedulerCredential(removed.expiration, removed.role)) {
+            if (scheduler.rootCredentials == 1) revert LastRootSchedulerCredential(credentialID);
+            scheduler.rootCredentials--;
+        }
+
+        delete credentials[credentialID];
+        emit SchedulerCredentialRemoved(credentialID);
+    }
+
+    function schedulerNonce() external view returns (uint256) {
+        return scheduler.nonce;
+    }
+
+    function _useSchedulerNonce(uint256 nonce, uint40 deadline) private {
+        uint256 expected = scheduler.nonce;
+        if (nonce != expected) revert InvalidSchedulerNonce(expected, nonce);
+        if (deadline != 0 && block.timestamp > deadline) revert SchedulerDeadlineExpired(deadline);
+        scheduler.nonce = expected + 1;
+    }
+
+    function _checkSchedulerRole(uint64 signerID, SchedulerRole signerRole, SchedulerRole role) private pure {
+        if (signerRole < SchedulerRole.Issuer || (role >= signerRole && signerRole != SchedulerRole.Root)) {
+            revert SchedulerRoleDenied(signerID, signerRole, role);
+        }
+    }
+
+    function _authorizeScheduler(SchedulerAuthorization calldata authorization, uint256 timestamp, bytes32 digest)
+        internal
+        view
+        returns (SchedulerRole)
+    {
+        uint64 credentialID = authorization.credentialID;
+        SchedulerCredential[] storage credentials = scheduler.credentials;
+        if (credentialID >= credentials.length) revert SchedulerCredentialNotFound(credentialID);
+        SchedulerCredential storage credential = credentials[credentialID];
+        bytes memory publicKey = credential.publicKey;
+        if (publicKey.length == 0) revert SchedulerCredentialNotFound(credentialID);
+        uint40 expiration = credential.expiration;
+        if (expiration != 0 && expiration < timestamp) revert SchedulerCredentialExpired(credentialID, expiration);
+        KeyType keyType = credential.keyType;
+        if (keyType != KeyType.Secp256k1 || abi.decode(publicKey, (address)) != msg.sender) {
+            verifySignature(keyType, digest, publicKey, authorization.signature);
+        }
+        return credential.role;
     }
 
     function _authorizationDigest(Authorization memory authorization, uint8 mutation, bytes memory mutationData)

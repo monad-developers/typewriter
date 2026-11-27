@@ -7,7 +7,18 @@ import {
   type ExecuteResult,
   type Spec,
 } from "typewriter-evm";
-import { accessList, gasLimit, groupByGas } from "./gas";
+import {
+  accessList,
+  gasLimit,
+  groupByGas,
+  HARDFORKS,
+  SCHEDULER_AUTHORIZATION_GAS,
+  SIGNATURE_CALLDATA_TOKENS,
+  settlementGas,
+} from "./gas";
+
+/** What an execution's own run in revm spends on the scheduler check, warm. */
+const senderGas = (spec: Spec) => SCHEDULER_AUTHORIZATION_GAS[spec].sender.warm;
 
 const CALLER = "0x00000000000000000000000000000000000000ca";
 const WRITER = "0x00000000000000000000000000000000000000a1";
@@ -51,6 +62,23 @@ const run = (
   );
 
 /**
+ * `executions` as if each run alone had also checked the scheduler
+ * credential of its sender, as `execute` does in revm. These contracts don't,
+ * so a settlement of them checks it once on top of their joined gas.
+ */
+const checked = <execution extends { executeResult: { gas_used: number } }>(
+  spec: Spec,
+  executions: readonly execution[],
+) =>
+  executions.map((execution) => ({
+    ...execution,
+    executeResult: {
+      ...execution.executeResult,
+      gas_used: execution.executeResult.gas_used + senderGas(spec),
+    },
+  }));
+
+/**
  * Runs `calldatas` alone, then joined as one transaction with the access list
  * of the runs alone. Returns the runs alone and the joined run's gas.
  */
@@ -75,7 +103,9 @@ for (const spec of ["MonadEight", "MonadNine", "MonadTen"] as const) {
   test(`a settlement's gas limit covers writes to several pages under ${spec}`, async () => {
     const { alone, gasUsed } = await settle(spec, WRITER_CODE, writes);
 
-    expect(gasLimit(spec, alone)).toBeGreaterThanOrEqual(gasUsed);
+    expect(gasLimit(spec, checked(spec, alone), false)).toBeGreaterThanOrEqual(
+      gasUsed + senderGas(spec),
+    );
   });
 }
 
@@ -117,7 +147,9 @@ for (const spec of ["MonadNine", "MonadTen"] as const) {
       `0x${word(0)}`,
     ]);
 
-    expect(gasLimit(spec, alone)).toBeGreaterThanOrEqual(gasUsed);
+    expect(gasLimit(spec, checked(spec, alone), false)).toBeGreaterThanOrEqual(
+      gasUsed + senderGas(spec),
+    );
   });
 }
 
@@ -131,7 +163,9 @@ test("a settlement's gas limit covers the calldata floor of executions that shar
     data,
   ]);
 
-  expect(gasLimit("MonadTen", alone)).toBeGreaterThanOrEqual(gasUsed);
+  expect(
+    gasLimit("MonadTen", checked("MonadTen", alone), false),
+  ).toBeGreaterThanOrEqual(gasUsed + senderGas("MonadTen"));
 });
 
 // Reads slots 0 and 128, whatever its calldata.
@@ -144,7 +178,9 @@ test("a settlement's gas limit covers the calldata floor of an execution whose p
   // Floor-bound alone and with the list.
   expect(alone[0]!.executeResult.gas_used).toBe(21_000 + 40 * 2_048);
   expect(gasUsed).toBe(21_000 + 40 * 2_048);
-  expect(gasLimit("MonadTen", alone)).toBeGreaterThanOrEqual(gasUsed);
+  expect(
+    gasLimit("MonadTen", checked("MonadTen", alone), false),
+  ).toBeGreaterThanOrEqual(gasUsed + senderGas("MonadTen"));
 });
 
 test("groupByGas fills each group until its gas limit would pass the cap", () => {
@@ -164,17 +200,109 @@ test("groupByGas fills each group until its gas limit would pass the cap", () =>
   const groups = groupByGas(
     "MonadTen",
     Array.from({ length: 100 }, () => execution),
+    false,
   );
 
   expect(groups.flat()).toHaveLength(100);
   // The plain sum of their gas alone would close each group at 29.
   expect(groups[0]!.length).toBeGreaterThan(29);
   for (const [i, group] of groups.entries()) {
-    expect(gasLimit("MonadTen", group)).toBeLessThanOrEqual(30_000_000);
+    expect(gasLimit("MonadTen", group, false)).toBeLessThanOrEqual(30_000_000);
     if (i < groups.length - 1) {
-      expect(gasLimit("MonadTen", [...group, execution])).toBeGreaterThan(
-        30_000_000,
-      );
+      expect(
+        gasLimit("MonadTen", [...group, execution], false),
+      ).toBeGreaterThan(30_000_000);
     }
+  }
+});
+
+test("a settlement checks its scheduler credential once, with a signature if signed", () => {
+  const execution = {
+    executeResult: {
+      gas_used: 50_000 + senderGas("MonadTen"),
+      access_list: [],
+      slot_writes: [],
+    },
+    calldata: "0x" as const,
+  };
+  const unsigned = gasLimit("MonadTen", [execution, execution], false);
+  const signed = gasLimit("MonadTen", [execution, execution], true);
+
+  // Two executions' gas, less their base gas and check but one.
+  expect(unsigned).toBe(
+    21_000 +
+      2 * 29_000 +
+      senderGas("MonadTen") +
+      Math.ceil((21_000 + 2 * 29_000 + senderGas("MonadTen")) / 64) +
+      2_300,
+  );
+  const signedGas =
+    21_000 +
+    2 * 29_000 +
+    SCHEDULER_AUTHORIZATION_GAS.MonadTen.signature.warm +
+    4 * SIGNATURE_CALLDATA_TOKENS;
+  expect(signed).toBe(signedGas + Math.ceil(signedGas / 64) + 2_300);
+});
+
+test("a signed settlement's gas limit covers the calldata floor of its signature", () => {
+  // Floor-bound alone, and its listed pages save more than the signature
+  // costs, so the signature's tokens raise the floor that binds.
+  const data = `0x${"ff".repeat(2_048)}` as const;
+  const execution = {
+    executeResult: {
+      gas_used: 21_000 + 40 * 2_048,
+      access_list: [
+        {
+          address: WRITER as Hex.Hex,
+          storageKeys: [`0x${word(0)}`, `0x${word(128)}`] as Hex.Hex[],
+        },
+      ],
+      slot_writes: [],
+    },
+    calldata: data,
+  };
+  const unsignedFloor = 21_000 + 10 * 4 * 2_048;
+  expect(gasLimit("MonadTen", [execution], false)).toBe(
+    unsignedFloor + Math.ceil(unsignedFloor / 64) + 2_300,
+  );
+  const floor = unsignedFloor + 10 * SIGNATURE_CALLDATA_TOKENS;
+
+  expect(gasLimit("MonadTen", [execution], true)).toBe(
+    floor + Math.ceil(floor / 64) + 2_300,
+  );
+});
+
+for (const spec of HARDFORKS) {
+  test(`an execution of the most gas still settles alone under the cap under ${spec}`, () => {
+    const largest = {
+      executeResult: {
+        gas_used: settlementGas(spec),
+        access_list: [],
+        slot_writes: [],
+      },
+      calldata: "0x" as const,
+    };
+
+    for (const signed of [false, true]) {
+      expect(gasLimit(spec, [largest], signed)).toBeLessThanOrEqual(30_000_000);
+      expect(groupByGas(spec, [largest, largest], signed)).toHaveLength(2);
+    }
+    const larger = {
+      ...largest,
+      executeResult: {
+        ...largest.executeResult,
+        gas_used: settlementGas(spec) + 2,
+      },
+    };
+    expect(gasLimit(spec, [larger], true)).toBeGreaterThan(30_000_000);
+  });
+}
+
+test("the signed check covers its signature's calldata floor under every hardfork", () => {
+  for (const spec of HARDFORKS) {
+    const { sender, signature } = SCHEDULER_AUTHORIZATION_GAS[spec];
+    expect(
+      signature.warm - sender.warm + 4 * SIGNATURE_CALLDATA_TOKENS,
+    ).toBeGreaterThanOrEqual(10 * SIGNATURE_CALLDATA_TOKENS);
   }
 });

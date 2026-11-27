@@ -13,10 +13,8 @@ import {
 } from "effect";
 import { ChildProcess } from "effect/process";
 import { Hex } from "ox";
-import { privateKeyToAccount } from "viem/accounts";
 import {
   createAccount,
-  deploy,
   enqueueCalldata,
   executeInput,
   type Manifest,
@@ -26,15 +24,12 @@ import {
   sign,
   withExpiration,
 } from "../simulation-test/assessment";
-import { ASSESSMENT_ENTRYPOINT } from "../simulation-test/assessment-constants";
 import { makeChain } from "../simulation-test/chain";
 import type { Plan } from "../simulation-test/plan";
 import { Rng } from "../simulation-test/random";
 import { makeSimTransport } from "../simulation-test/sim-rpc";
 import { KeyType } from "../src/client";
-import { createTypewriterApp } from "../src/config";
 import { logger } from "../src/logger";
-import { loadSolidityApp } from "../src/sol-build";
 
 /**
  * Usage: `DATABASE_URL=<postgres url> bun benchmark/index.ts [--plan <file>]`
@@ -57,16 +52,14 @@ if (DATABASE_URL === undefined || DATABASE_URL === "") {
   process.exit(1);
 }
 
-/** The first Anvil account: the deployer and the scheduler. */
+/** The first Anvil account: the root, the scheduler, and the relayer. */
 const SCHEDULER_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 /** Sends `enqueue` transactions. The second Anvil account. */
 const CLIENT = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
 const benchmark = Effect.gen(function* () {
-  const scheduler = privateKeyToAccount(SCHEDULER_KEY);
   const chain = yield* makeChain(plan, new Rng(plan.seed, "reorgs"), false);
-  const address = yield* deploy({ plan, chain, deployer: scheduler.address });
   const chainId = Number(yield* chain.request({ method: "eth_chainId" }));
   yield* Effect.gen(function* () {
     yield* chain.mine(yield* Clock.currentTimeMillis);
@@ -140,7 +133,6 @@ const benchmark = Effect.gen(function* () {
       BENCHMARK_CONFIG: JSON.stringify({
         port,
         plan,
-        address,
         privateKey: SCHEDULER_KEY,
         chainId,
         rpcUrls: plan.transports.map(
@@ -177,17 +169,13 @@ const benchmark = Effect.gen(function* () {
       ),
     );
 
-  const manifest = createTypewriterApp({
-    ...(yield* Effect.promise(() => loadSolidityApp(ASSESSMENT_ENTRYPOINT))),
-    config: {
-      address,
-      account: scheduler,
-      chainId,
-      hardfork: "MonadTen",
-      rpcUrl: "",
-      database: { url: "" },
-    },
-  }).manifest as Manifest;
+  // The runtime deployed the contract on its first start.
+  const manifest = yield* Effect.promise(() =>
+    fetch(`${typewriterUrl}/manifest`).then(
+      (response) => response.json() as Promise<Manifest>,
+    ),
+  );
+
   const signers = plan.generator.accounts.map((keyType, i) =>
     makeSigner(plan, `account:${i}`, KeyType[keyType]),
   );
@@ -247,7 +235,7 @@ const benchmark = Effect.gen(function* () {
         params: [
           {
             from: CLIENT,
-            to: address,
+            to: manifest.address,
             data: enqueueCalldata(manifest, step, mutation),
             gas: Hex.fromNumber(1_000_000),
           },

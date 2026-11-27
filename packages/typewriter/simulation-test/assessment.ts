@@ -26,7 +26,11 @@ import {
   encodeAuthorizationCalldata,
   encodeEnqueueCalldata,
   encodeMutationCalldata,
+  encodeSchedulerCredentials,
+  encodeSecp256k1Signature,
+  secp256k1SchedulerCredential,
 } from "../src/encoding";
+import { SchedulerRole } from "../src/typewriter-constants";
 import {
   ASSESSMENT_PROJECT,
   type AssessmentMutations,
@@ -134,8 +138,9 @@ export function deploy({
     const artifact = yield* Effect.promise(() =>
       Bun.file(`${out}/out/Assessment.sol/Assessment.json`).json(),
     );
-    const args = AbiParameters.encode(AbiParameters.from(["address"]), [
-      deployer,
+    // The deployer is the scheduler's one credential, a root.
+    const args = encodeSchedulerCredentials([
+      secp256k1SchedulerCredential(deployer, SchedulerRole.Root),
     ]);
     const hash = yield* chain.request({
       method: "eth_sendTransaction",
@@ -164,7 +169,6 @@ export type Signer = {
   sign: (payload: Hex.Hex) => Hex.Hex;
 };
 
-const SECP256K1_SIGNATURE = AbiParameters.from(["uint8", "bytes32", "bytes32"]);
 const P256_PUBLIC_KEY = AbiParameters.from(["uint256", "uint256"]);
 const P256_SIGNATURE = AbiParameters.from(["uint256", "uint256"]);
 const WEBAUTHN_SIGNATURE = AbiParameters.from([
@@ -214,11 +218,7 @@ export function makeSigner(plan: Plan, name: string, keyType: KeyType): Signer {
         publicKey,
         sign: (payload) => {
           const { r, s, yParity } = Secp256k1.sign({ payload, privateKey });
-          return AbiParameters.encode(SECP256K1_SIGNATURE, [
-            27 + yParity,
-            Hex.padLeft(r, 32),
-            Hex.padLeft(s, 32),
-          ]);
+          return encodeSecp256k1Signature(BigInt(r), BigInt(s), yParity);
         },
       };
     }
@@ -502,7 +502,8 @@ export function makeSteps(
         malformation: undefined,
       } as const;
       if (own.length > 1 && credentialRandom.bool()) {
-        // Never the first, so `LastCredential` never reverts. The ID past the last was never added.
+        // Never the first, a root that never expires, so `LastRootCredential` never reverts. The
+        // ID past the last was never added.
         const credentialID = credentialRandom.int(1, own.length);
         const removed = own[credentialID];
         steps.push({

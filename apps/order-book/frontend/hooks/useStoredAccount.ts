@@ -17,7 +17,7 @@ async function loadAccount(storageKey: string): Promise<Account | null> {
 
 export function useStoredAccount() {
   const { data: manifest } = useManifest();
-  const storageKey = manifest?.deploymentKey;
+  const storageKey = manifest?.deployment;
   return useQuery({
     queryKey: ["storedAccount", storageKey],
     queryFn: () => loadAccount(storageKey!),

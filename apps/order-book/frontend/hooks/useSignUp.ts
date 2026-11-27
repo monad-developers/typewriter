@@ -12,7 +12,7 @@ import { toAccount } from "./useStoredAccount";
 
 export function useSignUp() {
   const { data: manifest } = useManifest();
-  const storageKey = manifest?.deploymentKey;
+  const storageKey = manifest?.deployment;
   const queryClient = useQueryClient();
 
   return useMutation({

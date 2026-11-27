@@ -4,7 +4,7 @@ import { useManifest } from "./useManifest";
 
 export function useSignOut() {
   const { data: manifest } = useManifest();
-  const storageKey = manifest?.deploymentKey;
+  const storageKey = manifest?.deployment;
   const queryClient = useQueryClient();
 
   return useMutation({

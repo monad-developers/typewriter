@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { AbiFunction, AbiParameters, Hash, Hex } from "ox";
 import { decodeEventLog } from "viem";
-import type { TypewriterApp } from "../src/config";
+import type { DeployedTypewriterApp } from "../src/config";
 import { decodeAuthorizationCalldata } from "../src/encoding";
 import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "../src/typewriter-constants";
 import type { Inclusion } from "../src/typewriter-types";
@@ -89,7 +89,7 @@ export function readOnchain({
   chain,
   submissions,
 }: {
-  app: TypewriterApp;
+  app: DeployedTypewriterApp;
   chain: Chain;
   submissions: readonly Submission[];
 }): Effect.Effect<Onchain> {
@@ -100,7 +100,7 @@ export function readOnchain({
         submission.key,
       ]),
     );
-    const scheduler = app.account.address.toLowerCase();
+    const relayer = app.relayer.address.toLowerCase();
     const address = app.address.toLowerCase();
 
     const onchain: Onchain = {
@@ -132,7 +132,7 @@ export function readOnchain({
           params: [transaction.hash],
         }))!;
 
-        if (transaction.from.toLowerCase() !== scheduler) {
+        if (transaction.from.toLowerCase() !== relayer) {
           for (const log of receipt.logs) {
             const { args } = decodeEventLog({
               abi: TYPEWRITER_ABI,

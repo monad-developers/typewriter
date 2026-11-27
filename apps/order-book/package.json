@@ -8,8 +8,7 @@
     "start": "NODE_ENV=production bun src/index.ts",
     "typecheck": "bun check",
     "contracts:build": "forge build --root contracts",
-    "contracts:lint": "forge fmt --check contracts && forge lint --root contracts",
-    "deploy": ". .env && forge build --root contracts && forge script --root contracts ./contracts/script/OrderBook.s.sol:OrderBookScript --broadcast --fork-url $RPC_URL --private-key $PRIVATE_KEY"
+    "contracts:lint": "forge fmt --check contracts && forge lint --root contracts"
   },
   "dependencies": {
     "@tanstack/react-query": "catalog:",

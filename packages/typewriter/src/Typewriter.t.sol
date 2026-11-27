@@ -3,10 +3,13 @@ pragma solidity ^0.8.21;
 
 import {
     ADD_CREDENTIAL_MUTATION,
+    SCHEDULER_ADD_CREDENTIAL_TYPEHASH,
     AUTHORIZATION_TYPEHASH,
     CREATE_ACCOUNT_MUTATION,
     EIP712_DOMAIN_TYPEHASH,
+    EXECUTE_TYPEHASH,
     REMOVE_CREDENTIAL_MUTATION,
+    SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH,
     Account,
     AddCredential,
     Authorization,
@@ -15,14 +18,20 @@ import {
     Credential,
     CredentialExpired,
     CredentialNotFound,
+    EmptyPublicKey,
     InvalidCreateAuthorization,
     InvalidNonce,
     InvalidSignature,
     KeyType,
-    LastCredential,
+    LastRootCredential,
+    NoRootSchedulerCredential,
     NonceOverflow,
     PermissionDenied,
     RemoveCredential,
+    SchedulerAuthorization,
+    SchedulerCredential,
+    SchedulerRole,
+    SchedulerRoleDenied,
     Typewriter,
     UnknownMutation,
     verifyChallenge,
@@ -60,7 +69,7 @@ contract NativeAccountHarness is Typewriter {
     uint256 public value;
     bytes32 public lastAccountID;
 
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation != SET_VALUE_MUTATION) revert UnknownMutation(mutation);
@@ -69,7 +78,11 @@ contract NativeAccountHarness is Typewriter {
         lastAccountID = accountID;
     }
 
-    function authorizationDigest(Authorization calldata authorization, uint8 mutation, bytes calldata mutationData)
+    function domainSeparator() external view returns (bytes32) {
+        return DOMAIN_SEPARATOR;
+    }
+
+    function authorizationDigest(Authorization memory authorization, uint8 mutation, bytes memory mutationData)
         external
         view
         returns (bytes32)
@@ -77,22 +90,58 @@ contract NativeAccountHarness is Typewriter {
         return _authorizationDigest(authorization, mutation, mutationData);
     }
 
-    function domainSeparator() external view returns (bytes32) {
-        return DOMAIN_SEPARATOR;
-    }
-
-    function accountState(bytes32 accountID) external view returns (uint256 credentialCount, uint64 activeCredentials) {
-        Account storage account = accounts[accountID];
-        return (account.credentials.length, account.activeCredentials);
-    }
-
-    function credential(bytes32 accountID, uint64 credentialID)
+    function executeDigest(bytes32 fromExecutionHash, bytes32 toExecutionHash, uint40 timestamp, address relayer)
         external
         view
-        returns (uint40 expiration, KeyType keyType, uint256 permissions, bytes memory publicKey)
+        returns (bytes32)
     {
-        Credential storage stored = accounts[accountID].credentials[credentialID];
-        return (stored.expiration, stored.keyType, stored.permissions, stored.publicKey);
+        return
+            _typedDataHash(
+                keccak256(abi.encode(EXECUTE_TYPEHASH, fromExecutionHash, toExecutionHash, timestamp, relayer))
+            );
+    }
+
+    function schedulerAddCredentialDigest(SchedulerCredential memory added, uint256 schedulerNonce_, uint40 deadline)
+        external
+        view
+        returns (bytes32)
+    {
+        return _typedDataHash(
+            keccak256(
+                abi.encode(
+                    SCHEDULER_ADD_CREDENTIAL_TYPEHASH,
+                    added.expiration,
+                    added.keyType,
+                    added.role,
+                    keccak256(added.publicKey),
+                    schedulerNonce_,
+                    deadline
+                )
+            )
+        );
+    }
+
+    function schedulerRemoveCredentialDigest(uint64 credentialID, uint256 schedulerNonce_, uint40 deadline)
+        external
+        view
+        returns (bytes32)
+    {
+        return _typedDataHash(
+            keccak256(abi.encode(SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH, credentialID, schedulerNonce_, deadline))
+        );
+    }
+
+    function _typedDataHash(bytes32 structHash) private view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+    }
+
+    function accountState(bytes32 accountID) external view returns (uint256 credentialCount, uint256 rootCredentials) {
+        Account storage account = accounts[accountID];
+        return (account.credentials.length, account.rootCredentials);
+    }
+
+    function credential(bytes32 accountID, uint64 credentialID) external view returns (Credential memory) {
+        return accounts[accountID].credentials[credentialID];
     }
 
     function nonce(bytes32 accountID, uint192 lane) external view returns (uint64) {
@@ -116,14 +165,49 @@ contract AccountTest {
         '{"type":"webauthn.get","challenge":"ERERERERERERERERERERERERERERERERERERERERERE","origin":"http://localhost:3000","crossOrigin":false}';
     uint256 constant CHALLENGE_OFFSET = 36;
 
+    // The scheduler: a root, an issuer and an executor.
+    uint256 constant ROOT_PK = 0x5007;
+    uint256 constant ISSUER_PK = 0x155E;
+    uint256 constant EXECUTOR_PK = 0x516E;
+    uint256 constant NEW_PK = 0x7E57;
+    uint64 constant ROOT_ID = 0;
+    uint64 constant ISSUER_ID = 1;
+    uint64 constant EXECUTOR_ID = 2;
+
     function setUp() public {
         harness = new AccountHarness();
-        nativeHarness = new NativeAccountHarness(address(this));
+        nativeHarness = new NativeAccountHarness(_schedulerCredentials());
+    }
+
+    function _schedulerCredentials() internal returns (SchedulerCredential[] memory credentials) {
+        credentials = new SchedulerCredential[](3);
+        credentials[ROOT_ID] = _schedulerCredential(ROOT_PK, SchedulerRole.Root, 0);
+        credentials[ISSUER_ID] = _schedulerCredential(ISSUER_PK, SchedulerRole.Issuer, 0);
+        credentials[EXECUTOR_ID] = _schedulerCredential(EXECUTOR_PK, SchedulerRole.Executor, 0);
     }
 
     function test_verifySignature_acceptsSecp256k1() external {
         harness.verifySignatureExternal(
             KeyType.Secp256k1, DIGEST, _secp256k1PublicKey(SECP256K1_PK), _signSecp256k1(SECP256K1_PK, DIGEST)
+        );
+    }
+
+    function test_verifySignature_acceptsSecp256k1WithYParity() external {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SECP256K1_PK, DIGEST);
+        harness.verifySignatureExternal(
+            KeyType.Secp256k1, DIGEST, _secp256k1PublicKey(SECP256K1_PK), abi.encodePacked(r, s, v - 27)
+        );
+    }
+
+    function test_verifySignature_rejectsSecp256k1OfTheWrongLength() external {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SECP256K1_PK, DIGEST);
+        bytes memory abiEncoded = abi.encode(v, r, s);
+        _expectInvalidSignature(
+            abi.encodeCall(
+                harness.verifySignatureExternal,
+                (KeyType.Secp256k1, DIGEST, _secp256k1PublicKey(SECP256K1_PK), abiEncoded)
+            ),
+            KeyType.Secp256k1
         );
     }
 
@@ -248,14 +332,13 @@ contract AccountTest {
         bytes32 accountID = _createNativeAccount(SECP256K1_PK);
 
         {
-            (uint256 credentialCount, uint64 activeCredentials) = nativeHarness.accountState(accountID);
-            require(credentialCount == 1 && activeCredentials == 1, "root account state");
-            (uint40 rootExpiration, KeyType rootKeyType, uint256 rootPermissions, bytes memory rootPublicKey) =
-                nativeHarness.credential(accountID, 0);
-            require(rootExpiration == 0, "root expiration");
-            require(rootKeyType == KeyType.Secp256k1, "root key type");
-            require(rootPermissions == type(uint256).max, "root permissions");
-            require(keccak256(rootPublicKey) == keccak256(_secp256k1PublicKey(SECP256K1_PK)), "root public key");
+            (uint256 credentialCount, uint256 rootCredentials) = nativeHarness.accountState(accountID);
+            require(credentialCount == 1 && rootCredentials == 1, "root account state");
+            Credential memory root = nativeHarness.credential(accountID, 0);
+            require(root.expiration == 0, "root expiration");
+            require(root.keyType == KeyType.Secp256k1, "root key type");
+            require(root.permissions == type(uint256).max, "root permissions");
+            require(keccak256(root.publicKey) == keccak256(_secp256k1PublicKey(SECP256K1_PK)), "root public key");
         }
 
         AddCredential memory addCredential = AddCredential({
@@ -272,8 +355,8 @@ contract AccountTest {
         }
 
         {
-            (uint256 credentialCount, uint64 activeCredentials) = nativeHarness.accountState(accountID);
-            require(credentialCount == 2 && activeCredentials == 2, "added credential");
+            (uint256 credentialCount, uint256 rootCredentials) = nativeHarness.accountState(accountID);
+            require(credentialCount == 2 && rootCredentials == 1, "added credential");
         }
         require(nativeHarness.nonce(accountID, 0) == 1, "add nonce");
 
@@ -286,10 +369,9 @@ contract AccountTest {
         }
 
         {
-            (uint256 credentialCount, uint64 activeCredentials) = nativeHarness.accountState(accountID);
-            require(credentialCount == 2 && activeCredentials == 1, "removed credential");
-            (,,, bytes memory removedPublicKey) = nativeHarness.credential(accountID, 1);
-            require(removedPublicKey.length == 0, "deleted credential");
+            (uint256 credentialCount, uint256 rootCredentials) = nativeHarness.accountState(accountID);
+            require(credentialCount == 2 && rootCredentials == 1, "removed credential");
+            require(nativeHarness.credential(accountID, 1).publicKey.length == 0, "deleted credential");
         }
 
         {
@@ -300,10 +382,9 @@ contract AccountTest {
         }
 
         {
-            (uint256 credentialCount, uint64 activeCredentials) = nativeHarness.accountState(accountID);
-            require(credentialCount == 3 && activeCredentials == 2, "stable credential ID");
-            (,,, bytes memory appendedPublicKey) = nativeHarness.credential(accountID, 2);
-            require(appendedPublicKey.length != 0, "appended credential");
+            (uint256 credentialCount, uint256 rootCredentials) = nativeHarness.accountState(accountID);
+            require(credentialCount == 3 && rootCredentials == 1, "stable credential ID");
+            require(nativeHarness.credential(accountID, 2).publicKey.length != 0, "appended credential");
         }
     }
 
@@ -393,7 +474,7 @@ contract AccountTest {
             REMOVE_CREDENTIAL_MUTATION,
             abi.encode(removeRoot),
             removeRootAuthorization,
-            abi.encodeWithSelector(LastCredential.selector, accountID)
+            abi.encodeWithSelector(LastRootCredential.selector, accountID, uint64(0))
         );
         require(nativeHarness.nonce(accountID, 0) == 0, "last removal nonce");
 
@@ -465,7 +546,17 @@ contract AccountTest {
         uint256[] memory forceExecuteIndexes = new uint256[](1);
         forceExecuteIndexes[0] = queuedIndex;
 
-        nativeHarness.execute(nativeHarness.executionHash(), uint40(block.timestamp), batch, forceExecuteIndexes);
+        bytes32 fromExecutionHash = nativeHarness.executionHash();
+        bytes32 toExecutionHash = _accumulate(fromExecutionHash, 0, abi.encode(setValue), abi.encode(authorization));
+        nativeHarness.execute(
+            fromExecutionHash,
+            uint40(block.timestamp),
+            batch,
+            forceExecuteIndexes,
+            SchedulerAuthorization(
+                EXECUTOR_ID, _signExecute(EXECUTOR_PK, fromExecutionHash, toExecutionHash, address(this))
+            )
+        );
 
         require(nativeHarness.value() == 55, "queued dispatch");
         require(nativeHarness.nonce(accountID, 0) == 1, "queued nonce");
@@ -476,7 +567,16 @@ contract AccountTest {
         bytes32 other = keccak256("other");
         (bool ok, bytes memory ret) = address(nativeHarness)
             .call(
-                abi.encodeCall(nativeHarness.execute, (other, uint40(block.timestamp), _emptyBatch(), new uint256[](0)))
+                abi.encodeCall(
+                    nativeHarness.execute,
+                    (
+                        other,
+                        uint40(block.timestamp),
+                        _emptyBatch(),
+                        new uint256[](0),
+                        SchedulerAuthorization(EXECUTOR_ID, "")
+                    )
+                )
             );
         require(!ok, "expected execute to revert");
         require(
@@ -508,6 +608,209 @@ contract AccountTest {
         );
     }
 
+    function test_constructor_rejectsNoRootThatNeverExpires() external {
+        SchedulerCredential[] memory credentials = _schedulerCredentials();
+        credentials[ROOT_ID].expiration = uint40(block.timestamp + 1 days);
+        _expectConstructorRevert(credentials, abi.encodeWithSelector(NoRootSchedulerCredential.selector));
+    }
+
+    function test_constructor_rejectsEmptyPublicKey() external {
+        SchedulerCredential[] memory credentials = _schedulerCredentials();
+        credentials[ISSUER_ID].publicKey = "";
+        _expectConstructorRevert(credentials, abi.encodeWithSelector(EmptyPublicKey.selector));
+    }
+
+    function test_issuer_managesExecutorsOnly() external {
+        SchedulerCredential memory executor = _schedulerCredential(NEW_PK, SchedulerRole.Executor, 0);
+        _schedulerAddCredential(executor, ISSUER_ID, ISSUER_PK);
+        _schedulerRemoveCredential(3, ISSUER_ID, ISSUER_PK);
+        _schedulerRemoveCredential(EXECUTOR_ID, ISSUER_ID, ISSUER_PK);
+
+        _expectSchedulerAddCredentialRevert(
+            _schedulerCredential(NEW_PK, SchedulerRole.Issuer, 0),
+            ISSUER_ID,
+            ISSUER_PK,
+            abi.encodeWithSelector(SchedulerRoleDenied.selector, ISSUER_ID, SchedulerRole.Issuer, SchedulerRole.Issuer)
+        );
+        _expectSchedulerAddCredentialRevert(
+            _schedulerCredential(NEW_PK, SchedulerRole.Root, 0),
+            ISSUER_ID,
+            ISSUER_PK,
+            abi.encodeWithSelector(SchedulerRoleDenied.selector, ISSUER_ID, SchedulerRole.Issuer, SchedulerRole.Root)
+        );
+        _expectSchedulerRemoveCredentialRevert(
+            ISSUER_ID,
+            ISSUER_ID,
+            ISSUER_PK,
+            abi.encodeWithSelector(SchedulerRoleDenied.selector, ISSUER_ID, SchedulerRole.Issuer, SchedulerRole.Issuer)
+        );
+        _expectSchedulerRemoveCredentialRevert(
+            ROOT_ID,
+            ISSUER_ID,
+            ISSUER_PK,
+            abi.encodeWithSelector(SchedulerRoleDenied.selector, ISSUER_ID, SchedulerRole.Issuer, SchedulerRole.Root)
+        );
+    }
+
+    function test_schedulerDigests_matchFixedEip712Envelopes() external view {
+        require(
+            EXECUTE_TYPEHASH
+                == keccak256(
+                    "Execute(bytes32 fromExecutionHash,bytes32 toExecutionHash,uint40 timestamp,address relayer)"
+                ),
+            "execute typehash"
+        );
+        require(
+            SCHEDULER_ADD_CREDENTIAL_TYPEHASH
+                == keccak256(
+                    "SchedulerAddCredential(uint40 expiration,uint8 keyType,uint8 role,bytes publicKey,uint256 nonce,uint40 deadline)"
+                ),
+            "add typehash"
+        );
+        require(
+            SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH
+                == keccak256("SchedulerRemoveCredential(uint64 credentialID,uint256 nonce,uint40 deadline)"),
+            "remove typehash"
+        );
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Typewriter")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(nativeHarness)
+            )
+        );
+
+        bytes32 from = keccak256("from");
+        bytes32 to = keccak256("to");
+        address relayer = address(0xBEEF);
+        bytes32 structHash = keccak256(abi.encode(EXECUTE_TYPEHASH, from, to, uint40(1234), relayer));
+        require(
+            nativeHarness.executeDigest(from, to, 1234, relayer)
+                == keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash)),
+            "execute digest"
+        );
+
+        SchedulerCredential memory credential = SchedulerCredential({
+            expiration: 99, keyType: KeyType.P256, role: SchedulerRole.Issuer, publicKey: hex"0102"
+        });
+        structHash = keccak256(
+            abi.encode(
+                SCHEDULER_ADD_CREDENTIAL_TYPEHASH,
+                uint40(99),
+                uint8(KeyType.P256),
+                uint8(SchedulerRole.Issuer),
+                keccak256(hex"0102"),
+                uint256(5),
+                uint40(77)
+            )
+        );
+        require(
+            nativeHarness.schedulerAddCredentialDigest(credential, 5, 77)
+                == keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash)),
+            "add digest"
+        );
+
+        structHash = keccak256(abi.encode(SCHEDULER_REMOVE_CREDENTIAL_TYPEHASH, uint64(4), uint256(5), uint40(77)));
+        require(
+            nativeHarness.schedulerRemoveCredentialDigest(4, 5, 77)
+                == keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash)),
+            "remove digest"
+        );
+    }
+
+    function _expectConstructorRevert(SchedulerCredential[] memory credentials, bytes memory expected) internal {
+        try new NativeAccountHarness(credentials) {
+            revert("expected the constructor to revert");
+        } catch (bytes memory reason) {
+            require(keccak256(reason) == keccak256(expected), "wrong revert");
+        }
+    }
+
+    function _schedulerCredential(uint256 privateKey, SchedulerRole role, uint40 expiration)
+        internal
+        returns (SchedulerCredential memory)
+    {
+        return SchedulerCredential({
+            expiration: expiration, keyType: KeyType.Secp256k1, role: role, publicKey: _secp256k1PublicKey(privateKey)
+        });
+    }
+
+    function _callSchedulerAddCredential(SchedulerCredential memory credential, uint64 signerID, uint256 privateKey)
+        internal
+        returns (bool, bytes memory)
+    {
+        uint256 nonce = nativeHarness.schedulerNonce();
+        bytes memory signature =
+            _signSecp256k1(privateKey, nativeHarness.schedulerAddCredentialDigest(credential, nonce, 0));
+        return address(nativeHarness)
+            .call(
+                abi.encodeCall(
+                    nativeHarness.schedulerAddCredential,
+                    (credential, nonce, 0, SchedulerAuthorization(signerID, signature))
+                )
+            );
+    }
+
+    function _callSchedulerRemoveCredential(uint64 credentialID, uint64 signerID, uint256 privateKey)
+        internal
+        returns (bool, bytes memory)
+    {
+        uint256 nonce = nativeHarness.schedulerNonce();
+        bytes memory signature =
+            _signSecp256k1(privateKey, nativeHarness.schedulerRemoveCredentialDigest(credentialID, nonce, 0));
+        return address(nativeHarness)
+            .call(
+                abi.encodeCall(
+                    nativeHarness.schedulerRemoveCredential,
+                    (credentialID, nonce, 0, SchedulerAuthorization(signerID, signature))
+                )
+            );
+    }
+
+    function _schedulerAddCredential(SchedulerCredential memory credential, uint64 signerID, uint256 privateKey)
+        internal
+    {
+        (bool ok, bytes memory ret) = _callSchedulerAddCredential(credential, signerID, privateKey);
+        _bubble(ok, ret);
+    }
+
+    function _expectSchedulerAddCredentialRevert(
+        SchedulerCredential memory credential,
+        uint64 signerID,
+        uint256 privateKey,
+        bytes memory expected
+    ) internal {
+        (bool ok, bytes memory ret) = _callSchedulerAddCredential(credential, signerID, privateKey);
+        require(!ok, "expected schedulerAddCredential to revert");
+        require(keccak256(ret) == keccak256(expected), "wrong schedulerAddCredential revert");
+    }
+
+    function _schedulerRemoveCredential(uint64 credentialID, uint64 signerID, uint256 privateKey) internal {
+        (bool ok, bytes memory ret) = _callSchedulerRemoveCredential(credentialID, signerID, privateKey);
+        _bubble(ok, ret);
+    }
+
+    function _expectSchedulerRemoveCredentialRevert(
+        uint64 credentialID,
+        uint64 signerID,
+        uint256 privateKey,
+        bytes memory expected
+    ) internal {
+        (bool ok, bytes memory ret) = _callSchedulerRemoveCredential(credentialID, signerID, privateKey);
+        require(!ok, "expected schedulerRemoveCredential to revert");
+        require(keccak256(ret) == keccak256(expected), "wrong schedulerRemoveCredential revert");
+    }
+
+    function _bubble(bool ok, bytes memory ret) internal pure {
+        if (!ok) {
+            assembly {
+                revert(add(ret, 32), mload(ret))
+            }
+        }
+    }
+
     function _expectForceExecuteRevert(uint256 index, bytes memory expected) internal {
         (bool ok, bytes memory ret) = address(nativeHarness).call(abi.encodeCall(nativeHarness.forceExecute, (index)));
         require(!ok, "expected forceExecute to revert");
@@ -526,7 +829,7 @@ contract AccountTest {
 
     function _signSecp256k1(uint256 privateKey, bytes32 digest) internal returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, digest);
-        return abi.encode(v, r, s);
+        return abi.encodePacked(r, s, v);
     }
 
     function _p256PublicKey(uint256 privateKey) internal returns (bytes memory) {
@@ -580,9 +883,7 @@ contract AccountTest {
     }
 
     function _executeNative(uint8 mutation, bytes memory mutationData, Authorization memory authorization) internal {
-        Typewriter.Batch memory batch = _nativeBatch(mutation, mutationData, authorization);
-        uint256[] memory forceExecuteIndexes = new uint256[](0);
-        nativeHarness.execute(nativeHarness.executionHash(), uint40(block.timestamp), batch, forceExecuteIndexes);
+        _settle(_nativeBatch(mutation, mutationData, authorization), EXECUTOR_ID, EXECUTOR_PK);
     }
 
     function _expectNativeRevert(
@@ -591,12 +892,74 @@ contract AccountTest {
         Authorization memory authorization,
         bytes memory expectedRevert
     ) internal {
-        Typewriter.Batch memory batch = _nativeBatch(mutation, mutationData, authorization);
-        uint256[] memory forceExecuteIndexes = new uint256[](0);
-        (bool ok, bytes memory ret) = address(nativeHarness)
-            .call(abi.encodeCall(nativeHarness.execute, (nativeHarness.executionHash(), uint40(block.timestamp), batch, forceExecuteIndexes)));
-        require(!ok, "expected native execution to revert");
-        require(keccak256(ret) == keccak256(expectedRevert), "wrong native revert");
+        _expectSettleRevert(
+            _nativeBatch(mutation, mutationData, authorization), EXECUTOR_ID, EXECUTOR_PK, expectedRevert
+        );
+    }
+
+    /// Settles `batch` from this contract, signed by `privateKey` as scheduler credential `credentialID`.
+    function _settle(Typewriter.Batch memory batch, uint64 credentialID, uint256 privateKey) internal {
+        (bool ok, bytes memory ret) = _callSettle(batch, credentialID, privateKey);
+        _bubble(ok, ret);
+    }
+
+    function _expectSettleRevert(
+        Typewriter.Batch memory batch,
+        uint64 credentialID,
+        uint256 privateKey,
+        bytes memory expectedRevert
+    ) internal {
+        (bool ok, bytes memory ret) = _callSettle(batch, credentialID, privateKey);
+        require(!ok, "expected settlement to revert");
+        require(keccak256(ret) == keccak256(expectedRevert), "wrong settlement revert");
+    }
+
+    function _callSettle(Typewriter.Batch memory batch, uint64 credentialID, uint256 privateKey)
+        internal
+        returns (bool, bytes memory)
+    {
+        bytes32 fromExecutionHash = nativeHarness.executionHash();
+        bytes memory signature =
+            _signExecute(privateKey, fromExecutionHash, _accumulate(fromExecutionHash, batch), address(this));
+        return address(nativeHarness)
+            .call(
+                abi.encodeCall(
+                    nativeHarness.execute,
+                    (
+                        fromExecutionHash,
+                        uint40(block.timestamp),
+                        batch,
+                        new uint256[](0),
+                        SchedulerAuthorization(credentialID, signature)
+                    )
+                )
+            );
+    }
+
+    function _signExecute(uint256 privateKey, bytes32 fromExecutionHash, bytes32 toExecutionHash, address relayer)
+        internal
+        returns (bytes memory)
+    {
+        return _signSecp256k1(
+            privateKey,
+            nativeHarness.executeDigest(fromExecutionHash, toExecutionHash, uint40(block.timestamp), relayer)
+        );
+    }
+
+    /// `executionHash` after `batch` executes from `hash`, as `Typewriter._accumulate` computes it.
+    function _accumulate(bytes32 hash, Typewriter.Batch memory batch) internal pure returns (bytes32) {
+        for (uint256 i; i < batch.mutations.length; i++) {
+            hash = _accumulate(hash, batch.mutations[i], batch.mutationData[i], batch.authorizationData[i]);
+        }
+        return hash;
+    }
+
+    function _accumulate(bytes32 hash, uint8 mutation, bytes memory mutationData, bytes memory authorizationData)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(hash, mutation, keccak256(mutationData), keccak256(authorizationData)));
     }
 
     function _nativeBatch(uint8 mutation, bytes memory mutationData, Authorization memory authorization)

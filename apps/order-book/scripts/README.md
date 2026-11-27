@@ -20,7 +20,7 @@ Scripts require `API_URL`, and read the chain and order book address from the ba
 
 ### seed
 
-Registers every instrument and places limit orders around its price. `bun dev` seeds its own chain, so run this only against a new deployment.
+Registers every instrument and places limit orders around its price. `bun dev` and a deployment's first `bun start` seed the book themselves, so run this only against a deployment that wasn't seeded.
 
 ```bash
 bun scripts/seed.ts

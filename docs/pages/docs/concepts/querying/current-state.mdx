@@ -40,7 +40,7 @@ const accountIDs = Object.keys(typewriter.state.balances);
 | --- | --- |
 | `credentials` | The account's [credentials](/docs/concepts/accounts/overview#credentials), indexed by credential ID. A removed credential keeps its index, with its fields cleared. |
 | `nonces` | For each [nonce lane](/docs/concepts/accounts/authorization#nonces) the account has used, the sequence its next mutation on that lane must use |
-| `activeCredentials` | How many of its credentials haven't been removed |
+| `rootCredentials` | How many of its credentials are [root credentials](/docs/concepts/accounts/managing#remove-a-credential): never expire and can sign both `AddCredential` and `RemoveCredential` |
 
 The `Account` and `Credential` types are exported from `typewriter`.
 

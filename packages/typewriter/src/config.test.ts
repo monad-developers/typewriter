@@ -1,10 +1,12 @@
 import { expect, expectTypeOf, test } from "bun:test";
 import type { Hex } from "ox";
 import type { StorageView } from "storage-layout";
-import type { PrivateKeyAccount } from "viem";
+import type { LocalAccount } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   createTypewriterApp,
   type DevChain,
+  deployedApp,
   type MutationsConfig,
   type SequencingConfig,
   type StorageConfig,
@@ -100,71 +102,123 @@ function createTypewriterTest<
 }
 
 const publicConfig = {
-  address: "0x0000000000000000000000000000000000000000",
-  account: {} as PrivateKeyAccount,
+  deployment: "app_1",
+  root: "0x00000000000000000000000000000000000000aa",
+  scheduler: {} as LocalAccount,
   chainId: 1,
   rpcUrl: "http://localhost:8545",
   database: { url: "postgres://postgres@localhost:5432/postgres" },
 } as const satisfies TypewriterConfig;
 
-test("createTypewriterApp constructs a serializable manifest", () => {
-  const app = createTypewriterApp({
-    config: publicConfig,
-    abi: [],
-    storageLayout: STORAGE_LAYOUT,
-    mutations: MUTATIONS,
-  });
+const ADDRESS = "0x0000000000000000000000000000000000000001";
 
-  expect(app.manifest).toEqual({
+const SOLIDITY_APP = {
+  contractName: "Test",
+  abi: [],
+  bytecode: "0x00",
+  storageLayout: STORAGE_LAYOUT,
+  mutations: MUTATIONS,
+} as const;
+
+test("createTypewriterApp names the deployment and its schema from the config, and deployedApp constructs a serializable manifest", () => {
+  const app = createTypewriterApp({ ...SOLIDITY_APP, config: publicConfig });
+
+  expect(app.deployment).toBe("app_1");
+  expect(app.database).toEqual(publicConfig.database);
+  expect(app.root).toBe(publicConfig.root);
+  expect(deployedApp(app, ADDRESS).manifest).toEqual({
     chainId: 1,
-    address: publicConfig.address,
-    deploymentKey: `1_${publicConfig.address}`,
+    address: ADDRESS,
+    deployment: "app_1",
     mutations: MUTATIONS,
   });
-  expect(app.schemaName).toBe(`typewriter_1_${publicConfig.address}`);
 });
 
 test("validateConfig lists every missing network field outside dev", () => {
   expect(() => validateConfig({ database: publicConfig.database })).toThrow(
-    "config.address, config.account, config.chainId, config.rpcUrl are required unless config.dev is set",
+    "config.deployment, config.root, config.scheduler, config.chainId, config.rpcUrl are required unless config.dev is set",
+  );
+  const { deployment: _, ...withoutDeployment } = publicConfig;
+  expect(() => validateConfig(withoutDeployment)).toThrow(
+    "config.deployment is required unless config.dev is set",
   );
 });
 
-test("validateConfig rejects network fields in dev", () => {
+test("validateConfig rejects network fields and a deployment in dev", () => {
   expect(() =>
     validateConfig({
       dev: true,
-      address: publicConfig.address,
+      deployment: publicConfig.deployment,
+      root: publicConfig.root,
       rpcUrl: publicConfig.rpcUrl,
       database: publicConfig.database,
     }),
   ).toThrow(
-    "config.dev starts its own Anvil, so leave config.address, config.rpcUrl unset",
+    "config.dev starts its own Anvil and deployment, so leave config.deployment, config.root, config.rpcUrl unset",
+  );
+  expect(() =>
+    validateConfig({
+      dev: true,
+      relayer: publicConfig.scheduler,
+      database: publicConfig.database,
+    }),
+  ).toThrow(
+    "config.dev starts its own Anvil and deployment, so leave config.relayer unset",
   );
 });
 
+test("validateConfig takes only plain lowercase deployment names that Postgres keeps whole", () => {
+  const withDeployment = (deployment: string) => () =>
+    validateConfig({ ...publicConfig, deployment });
+
+  expect(withDeployment("order_book_testnet_1")).not.toThrow();
+  expect(withDeployment("_x")).not.toThrow();
+  expect(withDeployment("a".repeat(63))).not.toThrow();
+  for (const deployment of [
+    "",
+    "Order_book",
+    "1_app",
+    "app-1",
+    "app 1",
+    "pg_app",
+  ]) {
+    expect(withDeployment(deployment)).toThrow(
+      `config.deployment must be lowercase letters, digits, and underscores, start with a letter or underscore, and not start with pg_, but is ${JSON.stringify(deployment)}`,
+    );
+  }
+  expect(withDeployment("a".repeat(64))).toThrow(
+    "config.deployment must be at most 63 characters",
+  );
+});
+
+test("validateConfig rejects a root that is not an address", () => {
+  expect(() =>
+    validateConfig({ ...publicConfig, root: "0x1234" as Hex.Hex }),
+  ).toThrow('config.root must be an address, but is "0x1234"');
+});
+
 test("createTypewriterApp takes the network from the dev chain", () => {
+  const account = privateKeyToAccount(`0x${"33".repeat(32)}`);
   const devChain: DevChain = {
-    address: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    account: {} as DevChain["account"],
+    account,
     chainId: 31337,
     hardfork: "MonadTen",
     rpcUrl: "http://127.0.0.1:8545",
   };
   const app = createTypewriterApp({
+    ...SOLIDITY_APP,
     config: { dev: true, database: publicConfig.database },
-    abi: [],
-    storageLayout: STORAGE_LAYOUT,
-    mutations: MUTATIONS,
     devChain,
   });
 
-  // Each dev process gets its own schema and browser storage.
-  expect(app.manifest.deploymentKey).toMatch(/^dev_[0-9a-f]{12}$/);
-  expect(app.schemaName).toBe(`typewriter_${app.manifest.deploymentKey}`);
+  // Each dev process gets its own deployment, schema, and browser storage.
+  expect(app.deployment).toMatch(/^typewriter_dev_[0-9a-f]{12}$/);
+  expect(deployedApp(app, ADDRESS).manifest.deployment).toBe(app.deployment);
+  expect(app.root).toBe(account.address);
+  expect(app.scheduler).toBe(account);
+  expect(app.relayer).toBe(account);
   expect(app).toMatchObject({
     dev: true,
-    address: devChain.address,
     chainId: 31337,
     hardfork: "MonadTen",
     rpcUrls: [devChain.rpcUrl],
@@ -178,27 +232,49 @@ test("createTypewriter types the network fields by dev", () => {
     entrypoint: TypewriterSolidityEntrypoint,
     envDev: boolean,
   ) => {
-    const { address, account, chainId, rpcUrl, database } = publicConfig;
+    const { deployment, root, scheduler, chainId, rpcUrl, database } =
+      publicConfig;
+    const chain = { deployment, root, scheduler, chainId, rpcUrl };
 
     create(entrypoint, { dev: true, database });
-    create(entrypoint, { address, account, chainId, rpcUrl, database });
+    create(entrypoint, { ...chain, database });
+    create(entrypoint, { dev: false, ...chain, database });
+    create(entrypoint, { ...chain, relayer: scheduler, database });
     create(entrypoint, {
-      dev: false,
-      address,
-      account,
+      ...chain,
+      // @ts-expect-error typewriter deploys the contract, and resumes it by its deployment
+      address: ADDRESS,
+      database,
+    });
+    // A `dev` typed as `boolean` leaves the check to `validateConfig`.
+    create(entrypoint, { dev: envDev, root: undefined, database });
+    create(entrypoint, { dev: envDev, database });
+
+    // @ts-expect-error dev mode starts its own chain
+    create(entrypoint, { dev: true, chainId, database });
+    // @ts-expect-error dev mode makes its own deployment
+    create(entrypoint, { dev: true, deployment, database });
+    // @ts-expect-error dev mode makes Anvil's account the root
+    create(entrypoint, { dev: true, root, database });
+    // @ts-expect-error dev mode schedules with Anvil's account
+    create(entrypoint, { dev: true, scheduler, database });
+    // @ts-expect-error dev mode relays with Anvil's account
+    create(entrypoint, { dev: true, relayer: scheduler, database });
+    // @ts-expect-error a deployment needs every network field
+    create(entrypoint, { database });
+    // @ts-expect-error a deployment needs a name
+    create(entrypoint, { root, scheduler, chainId, rpcUrl, database });
+    // @ts-expect-error a deployment needs a root
+    create(entrypoint, { deployment, scheduler, chainId, rpcUrl, database });
+    // @ts-expect-error a relayer doesn't stand in for the scheduler
+    create(entrypoint, {
+      deployment,
+      root,
+      relayer: scheduler,
       chainId,
       rpcUrl,
       database,
     });
-    // A `dev` typed as `boolean` leaves the check to `validateConfig`.
-    create(entrypoint, { dev: envDev, address: undefined, database });
-
-    // @ts-expect-error dev mode starts its own chain
-    create(entrypoint, { dev: true, address, database });
-    // @ts-expect-error a deployment needs every network field
-    create(entrypoint, { database });
-    // @ts-expect-error a deployment needs every network field
-    create(entrypoint, { dev: false, address, account, chainId, database });
   };
   expect(check).toBeFunction();
 });

@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import {
   decodePermissions,
-  deploymentKey,
   deriveAccountID,
   encodePermissions,
   getAuthorizationPayload,
@@ -14,7 +13,7 @@ import { BUILTIN_MUTATIONS } from "./typewriter-constants";
 const manifest = {
   chainId: 10,
   address: "0x1111111111111111111111111111111111111111",
-  deploymentKey: "10_0x1111111111111111111111111111111111111111",
+  deployment: "app_1",
   mutations: {
     Transfer: {
       id: 7,
@@ -95,15 +94,6 @@ test("packs bounded parallel nonce lanes", () => {
 
 test("exposes protocol key types", () => {
   expect(KeyType).toEqual({ P256: 0, WebAuthnP256: 1, Secp256k1: 2 });
-});
-
-test("derives a deployment key from the chain id and lowercase address", () => {
-  expect(
-    deploymentKey(10143, "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01"),
-  ).toBe("10143_0xabcdef0123456789abcdef0123456789abcdef01");
-  expect(() => deploymentKey(-1, manifest.address)).toThrow();
-  expect(() => deploymentKey(1.5, manifest.address)).toThrow();
-  expect(() => deploymentKey(1, "0x1234" as never)).toThrow();
 });
 
 test("encodes permissions from mutation names by their manifest IDs", () => {

@@ -1,16 +1,16 @@
-import { Data, Deferred, Duration, Effect, type Scope, Stream } from "effect";
+import { Data, Deferred, Effect, type Scope, Stream } from "effect";
 import { ChildProcess, type ChildProcessSpawner } from "effect/process";
-import { AbiParameters, type Address, Hex } from "ox";
-import { parseTransaction } from "viem";
+import { Hex } from "ox";
 import { privateKeyToAccount } from "viem/accounts";
 import type { DevChain } from "./config";
-import { makeHttpTransport, type RpcRequest } from "./rpc-transport";
+import { makeHttpTransport } from "./rpc-transport";
 
-/** Anvil's first default account: the deployer and scheduler in `dev` mode. */
+/**
+ * Anvil's first default account: in `dev` mode the deployment's root,
+ * scheduler, and relayer.
+ */
 const ANVIL_PRIVATE_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
-const DEPLOY_TIMEOUT = Duration.seconds(30);
 
 export class AnvilError extends Data.TaggedError("AnvilError")<{
   message: string;
@@ -18,12 +18,10 @@ export class AnvilError extends Data.TaggedError("AnvilError")<{
 }> {}
 
 /**
- * Starts Anvil and deploys the app to it, with Anvil's first account as the
- * scheduler. Anvil stops when the scope closes.
+ * Starts Anvil, which stops when the scope closes. The runtime deploys the
+ * app to it like to any chain, from Anvil's first account.
  */
-export function startDevChain(
-  bytecode: Hex.Hex,
-): Effect.Effect<
+export function startDevChain(): Effect.Effect<
   DevChain,
   AnvilError,
   Scope.Scope | ChildProcessSpawner.ChildProcessSpawner
@@ -83,80 +81,30 @@ export function startDevChain(
     );
     const rpcUrl = yield* Deferred.await(listening);
 
-    const transport = makeHttpTransport(rpcUrl);
-    const request = <request extends RpcRequest>(request: request) =>
-      transport.request(request).pipe(
-        Effect.mapError(
-          (cause) =>
-            new AnvilError({
-              message: `Failed '${request.method}' request to Anvil`,
-              cause,
-            }),
+    const chainId = Hex.toNumber(
+      yield* makeHttpTransport(rpcUrl)
+        .request({ method: "eth_chainId" })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new AnvilError({
+                message: "Failed 'eth_chainId' request to Anvil",
+                cause,
+              }),
+          ),
         ),
-      );
-
-    const account = privateKeyToAccount(ANVIL_PRIVATE_KEY);
-    const chainId = Hex.toNumber(yield* request({ method: "eth_chainId" }));
-
-    // Anvil fills the nonce, gas, and fees, and signs with its own copy of the
-    // key; the account signs again, so the deployment does not rely on Anvil
-    // unlocking it.
-    const filled = yield* request({
-      method: "eth_fillTransaction",
-      params: [
-        {
-          from: account.address,
-          data: Hex.concat(
-            bytecode,
-            AbiParameters.encode(AbiParameters.from(["address"]), [
-              account.address,
-            ]),
-          ),
-        },
-      ],
-    });
-    const transaction = parseTransaction(filled.raw);
-    delete transaction.r;
-    delete transaction.s;
-    delete transaction.v;
-    delete transaction.yParity;
-    const signed = yield* Effect.tryPromise({
-      try: () => account.signTransaction(transaction),
-      catch: (cause) =>
-        new AnvilError({ message: "Failed to sign the deployment", cause }),
-    });
-
-    const receipt = yield* request({
-      method: "eth_sendRawTransactionSync",
-      params: [signed],
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: DEPLOY_TIMEOUT,
-        orElse: () =>
-          Effect.fail(
-            new AnvilError({
-              message: `Deployment was not mined in ${Duration.format(DEPLOY_TIMEOUT)}`,
-            }),
-          ),
-      }),
     );
-    if (receipt.status !== "0x1" || receipt.contractAddress == null) {
-      return yield* new AnvilError({
-        message: `Deployment ${receipt.transactionHash} reverted; the constructor must accept the scheduler`,
-      });
-    }
-    const address: Address.Address = receipt.contractAddress;
+    const account = privateKeyToAccount(ANVIL_PRIVATE_KEY);
 
-    yield* Effect.logInfo("Started Anvil and deployed the app").pipe(
+    yield* Effect.logInfo("Started Anvil").pipe(
       Effect.annotateLogs({
         rpc_url: rpcUrl,
         chain_id: chainId,
-        address,
-        scheduler: account.address,
+        account: account.address,
       }),
     );
 
     // Anvil's chain has no Monad hardfork schedule.
-    return { address, account, chainId, hardfork: "MonadTen", rpcUrl };
+    return { account, chainId, hardfork: "MonadTen", rpcUrl };
   });
 }

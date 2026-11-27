@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
-import { AbiParameters } from "ox";
-import { encodeFunctionData } from "viem";
+import { AbiParameters, Hash, Hex, Signature } from "ox";
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  hashTypedData,
+  keccak256,
+  recoverTypedDataAddress,
+  toHex,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   decodeAuthorizationCalldata,
   decodeMutationCalldata,
@@ -9,10 +17,21 @@ import {
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
   encodeMutationCalldata,
+  encodeSchedulerCredentials,
+  encodeSecp256k1PublicKey,
+  encodeSecp256k1Signature,
+  secp256k1SchedulerCredential,
 } from "./encoding";
 import {
   AUTHORIZATION_ABI_PARAMS,
+  EXECUTE_EIP712_TYPES,
+  KeyType,
+  ROOT_PERMISSIONS,
+  SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES,
+  SCHEDULER_REMOVE_CREDENTIAL_EIP712_TYPES,
+  SchedulerRole,
   TYPEWRITER_ABI,
+  TYPEWRITER_EIP712_DOMAIN,
 } from "./typewriter-constants";
 import type { AcceptedMutation, Authorization } from "./typewriter-types";
 
@@ -132,10 +151,226 @@ test("encodeExecuteCalldata matches viem encodeFunctionData", () => {
   const expected = encodeFunctionData({
     abi: TYPEWRITER_ABI,
     functionName: "execute",
-    args: [FROM_EXECUTION_HASH, 9, batch, []],
+    args: [
+      FROM_EXECUTION_HASH,
+      9,
+      batch,
+      [4n],
+      { credentialID: 3n, signature: "0xabcd" },
+    ],
   });
-  const actual = encodeExecuteCalldata(FROM_EXECUTION_HASH, 9n, batch, []);
+  const actual = encodeExecuteCalldata(FROM_EXECUTION_HASH, 9n, batch, [4n], {
+    credentialID: 3n,
+    signature: "0xabcd",
+  });
   expect(actual).toBe(expected);
+  expect(
+    encodeExecuteCalldata(FROM_EXECUTION_HASH, 9n, batch, [], {
+      credentialID: 0n,
+      signature: "0x",
+    }),
+  ).toBe(
+    encodeFunctionData({
+      abi: TYPEWRITER_ABI,
+      functionName: "execute",
+      args: [
+        FROM_EXECUTION_HASH,
+        9,
+        batch,
+        [],
+        { credentialID: 0n, signature: "0x" },
+      ],
+    }),
+  );
+});
+
+test("ROOT_PERMISSIONS matches Typewriter.sol", () => {
+  expect(ROOT_PERMISSIONS).toBe((1n << 254n) | (1n << 255n));
+});
+
+const DOMAIN = {
+  ...TYPEWRITER_EIP712_DOMAIN,
+  chainId: 10,
+  verifyingContract: "0x1111111111111111111111111111111111111111",
+} as const;
+
+/** `DOMAIN_SEPARATOR` of `DOMAIN`, as Typewriter.sol's constructor computes it. */
+const DOMAIN_SEPARATOR = keccak256(
+  encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "uint256" },
+      { type: "address" },
+    ],
+    [
+      keccak256(
+        toHex(
+          "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        ),
+      ),
+      keccak256(toHex("Typewriter")),
+      keccak256(toHex("1")),
+      10n,
+      DOMAIN.verifyingContract,
+    ],
+  ),
+);
+
+/** `keccak256("\x19\x01" ‖ DOMAIN_SEPARATOR ‖ structHash)`, as `_hashTypedData` computes it. */
+const digestOf = (
+  typeString: string,
+  types: { type: string }[],
+  values: unknown[],
+) =>
+  keccak256(
+    Hex.concat(
+      "0x1901",
+      DOMAIN_SEPARATOR,
+      keccak256(
+        encodeAbiParameters(
+          [{ type: "bytes32" }, ...types],
+          [Hash.keccak256(Hex.fromString(typeString)), ...values],
+        ),
+      ),
+    ),
+  );
+
+// The type strings are the ones Typewriter.t.sol pins its typehashes to.
+test("an execute authorization hashes as the `Execute` type Typewriter.sol pins", () => {
+  const message = {
+    fromExecutionHash: keccak256(toHex("from")),
+    toExecutionHash: keccak256(toHex("to")),
+    timestamp: 123456,
+    relayer: "0x000000000000000000000000000000000000ABcD",
+  } as const;
+
+  expect(
+    hashTypedData({
+      domain: DOMAIN,
+      types: EXECUTE_EIP712_TYPES,
+      primaryType: "Execute",
+      message,
+    }),
+  ).toBe(
+    digestOf(
+      "Execute(bytes32 fromExecutionHash,bytes32 toExecutionHash,uint40 timestamp,address relayer)",
+      [
+        { type: "bytes32" },
+        { type: "bytes32" },
+        { type: "uint40" },
+        { type: "address" },
+      ],
+      [
+        message.fromExecutionHash,
+        message.toExecutionHash,
+        message.timestamp,
+        message.relayer,
+      ],
+    ),
+  );
+});
+
+test("scheduler credential changes hash as the types Typewriter.sol pins", () => {
+  const credential = {
+    expiration: 99,
+    keyType: KeyType.P256,
+    role: SchedulerRole.Issuer,
+    publicKey: "0x0102",
+  } as const;
+
+  expect(
+    hashTypedData({
+      domain: DOMAIN,
+      types: SCHEDULER_ADD_CREDENTIAL_EIP712_TYPES,
+      primaryType: "SchedulerAddCredential",
+      message: { ...credential, nonce: 5n, deadline: 77 },
+    }),
+  ).toBe(
+    digestOf(
+      "SchedulerAddCredential(uint40 expiration,uint8 keyType,uint8 role,bytes publicKey,uint256 nonce,uint40 deadline)",
+      [
+        { type: "uint40" },
+        { type: "uint8" },
+        { type: "uint8" },
+        { type: "bytes32" },
+        { type: "uint256" },
+        { type: "uint40" },
+      ],
+      [99, KeyType.P256, SchedulerRole.Issuer, keccak256("0x0102"), 5n, 77],
+    ),
+  );
+  expect(
+    hashTypedData({
+      domain: DOMAIN,
+      types: SCHEDULER_REMOVE_CREDENTIAL_EIP712_TYPES,
+      primaryType: "SchedulerRemoveCredential",
+      message: { credentialID: 4n, nonce: 5n, deadline: 77 },
+    }),
+  ).toBe(
+    digestOf(
+      "SchedulerRemoveCredential(uint64 credentialID,uint256 nonce,uint40 deadline)",
+      [{ type: "uint64" }, { type: "uint256" }, { type: "uint40" }],
+      [4n, 5n, 77],
+    ),
+  );
+});
+
+test("encodeSecp256k1Signature produces the 65-byte signature viem and cast return", async () => {
+  const account = privateKeyToAccount(`0x${"42".repeat(32)}`);
+  const typedData = {
+    domain: { ...TYPEWRITER_EIP712_DOMAIN, chainId: 1 },
+    types: EXECUTE_EIP712_TYPES,
+    primaryType: "Execute",
+    message: {
+      fromExecutionHash: `0x${"01".repeat(32)}`,
+      toExecutionHash: `0x${"02".repeat(32)}`,
+      timestamp: 1,
+      relayer: account.address,
+    },
+  } as const;
+  const signature = await account.signTypedData(typedData);
+
+  const { r, s, yParity } = Signature.fromHex(signature);
+  expect(encodeSecp256k1Signature(BigInt(r), BigInt(s), yParity)).toBe(
+    signature,
+  );
+  expect(await recoverTypedDataAddress({ ...typedData, signature })).toBe(
+    account.address,
+  );
+});
+
+test("encodeSchedulerCredentials encodes the app constructor's SchedulerCredential[]", () => {
+  const address = "0x2222222222222222222222222222222222222222";
+  const credential = secp256k1SchedulerCredential(
+    address,
+    SchedulerRole.Executor,
+    7,
+  );
+  expect(credential).toEqual({
+    expiration: 7,
+    keyType: KeyType.Secp256k1,
+    role: SchedulerRole.Executor,
+    publicKey: encodeAbiParameters([{ type: "address" }], [address]),
+  });
+  expect(encodeSecp256k1PublicKey(address)).toBe(credential.publicKey);
+  expect(encodeSchedulerCredentials([credential])).toBe(
+    encodeAbiParameters(
+      [
+        {
+          type: "tuple[]",
+          components: [
+            { name: "expiration", type: "uint40" },
+            { name: "keyType", type: "uint8" },
+            { name: "role", type: "uint8" },
+            { name: "publicKey", type: "bytes" },
+          ],
+        },
+      ],
+      [[credential]],
+    ),
+  );
 });
 
 test("encodeEnqueueCalldata matches viem encodeFunctionData", () => {

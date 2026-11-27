@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
+import {SchedulerCredential, Typewriter, UnknownMutation} from "typewriter/Typewriter.sol";
 
 struct State {
     mapping(bytes32 => Account) accounts;
@@ -157,7 +157,7 @@ contract OrderBook is Typewriter {
 
     State internal state;
 
-    constructor(address _scheduler) Typewriter(_scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.CloseOrder)) {

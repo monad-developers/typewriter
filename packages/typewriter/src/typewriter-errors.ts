@@ -1,9 +1,11 @@
 import { type Cause, Data } from "effect";
 import type { Hex } from "ox";
 import type { EvmError } from "typewriter-evm";
-import { type Abi, decodeErrorResult } from "viem";
+import { type Abi, decodeErrorResult, formatEther } from "viem";
 import type { MigrationError } from "./db-migrate";
 import type { DbError } from "./db-transport";
+import type { DeploymentError } from "./deploy";
+import { TX_GAS_LIMIT_CAP } from "./gas";
 import type { RpcError } from "./rpc";
 import type { NoDataReturnedError } from "./rpc-request";
 import type { ReceivedMutation } from "./typewriter-types";
@@ -123,6 +125,24 @@ export class SignTransactionError extends Data.TaggedError(
   }
 }
 
+/**
+ * `scheduler` can't authorize settlements of `address`: at startup it has no
+ * secp256k1 scheduler credential, or later `execute` rejects credential
+ * `credentialID` in revm, since it expired or was removed.
+ */
+export class SchedulerCredentialError extends Data.TaggedError(
+  "SchedulerCredentialError",
+)<{
+  scheduler: Hex.Hex;
+  address: Hex.Hex;
+  credentialID: bigint | undefined;
+  reason: string;
+}> {
+  override get message() {
+    return `Scheduler ${this.scheduler} can't authorize settlements of ${this.address}: ${this.reason}; add a secp256k1 scheduler credential for it with schedulerAddCredential, and restart`;
+  }
+}
+
 /** Each part of the program runs forever, so it stops only on a bug. */
 export class ProgramStoppedError extends Data.TaggedError(
   "ProgramStoppedError",
@@ -160,19 +180,6 @@ export class ChainIdMismatchError extends Data.TaggedError(
 }> {
   override get message() {
     return `RPC ${this.origin} serves chain ${this.actual}, but config.chainId is ${this.expected}`;
-  }
-}
-
-/** The scheduler has pending transactions at startup, e.g. from a previous process. */
-export class PendingTransactionsError extends Data.TaggedError(
-  "PendingTransactionsError",
-)<{
-  address: Hex.Hex;
-  latest: number;
-  pending: number;
-}> {
-  override get message() {
-    return `Account ${this.address} has ${this.pending - this.latest} pending transactions`;
   }
 }
 
@@ -231,6 +238,31 @@ export class SettlementStuckError extends Data.TaggedError(
 }
 
 /**
+ * The relayer's balance at a block rules out settling: something other than
+ * the runtime spent from its key (`spentElsewhere`), so its nonce is no longer
+ * the runtime's to count, or it can't pay for one settlement of the most gas
+ * at the block's base fee (`insufficient`).
+ */
+export class RelayerBalanceError extends Data.TaggedError(
+  "RelayerBalanceError",
+)<{
+  reason: "spentElsewhere" | "insufficient";
+  relayer: Hex.Hex;
+  blockNumber: bigint;
+  /** In wei. */
+  balance: bigint;
+  /** What the runtime's own settlements left, or what one settlement needs. */
+  required: bigint;
+}> {
+  override get message() {
+    const mon = (wei: bigint) => `${formatEther(wei)} MON`;
+    return this.reason === "spentElsewhere"
+      ? `Relayer ${this.relayer} has ${mon(this.balance)} at block ${this.blockNumber}, ${mon(this.required - this.balance)} less than the runtime's settlements left it; something else sends from its key, so the runtime can no longer count its nonce. Give typewriter a relayer key that nothing else uses.`
+      : `Relayer ${this.relayer} has ${mon(this.balance)} at block ${this.blockNumber}, less than the ${mon(this.required)} that one settlement of ${TX_GAS_LIMIT_CAP.toLocaleString("en-US")} gas costs at the block's base fee and the runtime's tip, so no settlement can land. Fund the relayer.`;
+  }
+}
+
+/**
  * `program` stopped, so a waiting `execute` will never get an answer. `cause`
  * is how the program exited: a {@link ProgramError}, or an interruption.
  */
@@ -267,16 +299,20 @@ export type ProgramError =
   | SettlementAfterRevertError
   | ResyncMismatchError
   | SettlementStuckError
+  | RelayerBalanceError
   | EnqueueRevertedError
   | EnqueueHaltedError
   | SignTransactionError
+  | SchedulerCredentialError
   | ProgramStoppedError;
 
 export type CreateTypewriterError =
   | DbError
+  | DeploymentError
   | RpcError
   | NoDataReturnedError
   | MigrationError
   | ChainIdMismatchError
-  | PendingTransactionsError
+  | RelayerBalanceError
+  | SchedulerCredentialError
   | EvmError;

@@ -1,9 +1,17 @@
-import { AbiFunction, AbiParameters, type Hex } from "ox";
+import { AbiFunction, AbiParameters, type Address, Hex } from "ox";
 import {
   AUTHORIZATION_ABI_PARAMS,
+  KeyType,
+  SCHEDULER_CREDENTIAL_ABI_PARAMS,
+  type SchedulerRole,
+  SECP256K1_PUBLIC_KEY_PARAMS,
   TYPEWRITER_ABI,
 } from "./typewriter-constants";
-import type { Authorization, RuntimeMutation } from "./typewriter-types";
+import type {
+  Authorization,
+  RuntimeMutation,
+  SchedulerCredential,
+} from "./typewriter-types";
 
 /** The parts of a mutation that its calldata encodes. */
 type EncodableMutation = Pick<
@@ -70,19 +78,79 @@ export const EMPTY_BATCH: BatchArg = {
   authorizationData: [],
 };
 
+/** `struct SchedulerAuthorization`. An empty signature works only when the credential's address sends the call. */
+export type SchedulerAuthorization = {
+  credentialID: bigint;
+  signature: Hex.Hex;
+};
+
 /** `timestamp` is the one the settlement executes at, which the contract checks against its block's. */
 export function encodeExecuteCalldata(
   fromExecutionHash: Hex.Hex,
   timestamp: bigint,
   batch: BatchArg,
   forceExecuteIndexes: readonly bigint[],
+  authorization: SchedulerAuthorization,
 ): Hex.Hex {
   return AbiFunction.encodeData(EXECUTE_FUNCTION, [
     fromExecutionHash,
     Number(timestamp),
     batch,
     forceExecuteIndexes,
+    authorization,
   ]);
+}
+
+/** The `publicKey` of a `KeyType.Secp256k1` credential for `address`. */
+export function encodeSecp256k1PublicKey(address: Address.Address): Hex.Hex {
+  return AbiParameters.encode(SECP256K1_PUBLIC_KEY_PARAMS, [address]);
+}
+
+/**
+ * A secp256k1 signature as `verifySecp256k1` takes it: the standard 65 bytes
+ * `r ‖ s ‖ v`, with `v` 27 or 28, as wallets, viem and `cast wallet sign` return it.
+ */
+export function encodeSecp256k1Signature(
+  r: bigint,
+  s: bigint,
+  yParity: number,
+): Hex.Hex {
+  return Hex.concat(
+    Hex.fromNumber(r, { size: 32 }),
+    Hex.fromNumber(s, { size: 32 }),
+    Hex.fromNumber(yParity + 27, { size: 1 }),
+  );
+}
+
+/**
+ * The app constructor's arguments: the scheduler's credentials, as
+ * `constructor(SchedulerCredential[] memory schedulerCredentials)` takes
+ * them. Append them to the app's bytecode to deploy it.
+ */
+export function encodeSchedulerCredentials(
+  credentials: readonly SchedulerCredential[],
+): Hex.Hex {
+  return AbiParameters.encode(
+    [{ type: "tuple[]", components: SCHEDULER_CREDENTIAL_ABI_PARAMS }],
+    [credentials],
+  );
+}
+
+/**
+ * A scheduler credential for the secp256k1 key of `address`, with `role` and
+ * no expiration unless `expiration` is set.
+ */
+export function secp256k1SchedulerCredential(
+  address: Address.Address,
+  role: SchedulerRole,
+  expiration = 0,
+): SchedulerCredential {
+  return {
+    expiration,
+    keyType: KeyType.Secp256k1,
+    role,
+    publicKey: encodeSecp256k1PublicKey(address),
+  };
 }
 
 export function encodeEnqueueCalldata(args: {

@@ -51,6 +51,7 @@ function roundTrip(strings: readonly string[]) {
           chainId: 1,
           address: "0x0000000000000000000000000000000000000001",
           codeHash: `0x${"00".repeat(32)}`,
+          creationCodeHash: `0x${"00".repeat(32)}`,
         },
         0n,
       ),

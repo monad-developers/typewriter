@@ -14,7 +14,7 @@ type MarketOrderParams = {
 
 export function useMarketOrderMutation() {
   const { data: manifest } = useManifest();
-  const storageKey = manifest?.deploymentKey;
+  const storageKey = manifest?.deployment;
   const { data: account } = useStoredAccount();
   const queryClient = useQueryClient();
 

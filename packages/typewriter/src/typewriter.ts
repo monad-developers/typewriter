@@ -1,4 +1,5 @@
 import {
+  Clock,
   Deferred,
   Duration,
   Effect,
@@ -13,7 +14,7 @@ import {
   Semaphore,
   Stream,
 } from "effect";
-import { Hash, Hex } from "ox";
+import { type Address, Hash, Hex } from "ox";
 import {
   createStorageView,
   type StorageLayout,
@@ -27,17 +28,20 @@ import {
 } from "typewriter-evm";
 import {
   decodeEventLog,
+  formatEther,
   formatTransactionReceipt,
   getAbiItem,
   type TransactionReceipt,
   toEventSelector,
 } from "viem";
-import type {
-  MutationsConfig,
-  SequencingConfig,
-  StorageConfig,
-  TypewriterApp,
-  TypewriterManifest,
+import {
+  type DeployedTypewriterApp,
+  deployedApp,
+  type MutationsConfig,
+  type SequencingConfig,
+  type StorageConfig,
+  type TypewriterApp,
+  type TypewriterManifest,
 } from "./config";
 import { Database, type Db } from "./db";
 import { deploymentLockKey, dropSchema, migrate } from "./db-migrate";
@@ -59,23 +63,39 @@ import {
   type DbError,
   type DbStatement,
 } from "./db-transport";
+import { creationCodeHash, type Migration, resolveDeployment } from "./deploy";
 import {
   EMPTY_BATCH,
   encodeBatchArg,
   encodeEnqueueCalldata,
   encodeExecuteCalldata,
+  type SchedulerAuthorization,
 } from "./encoding";
-import { accessList, gasLimit, groupByGas, SETTLEMENT_GAS } from "./gas";
+import { accessList, gasLimit, groupByGas, settlementGas } from "./gas";
 import { durationMs, startTimer } from "./logger";
 import { executeInputSchema, mutationNameGuard } from "./mutation-schema";
-import { Rpc } from "./rpc";
+import { makeRelayerLedger, maxSettlementCost } from "./relayer-balance";
+import { Rpc, type RpcError } from "./rpc";
 import {
   requestBlock,
   requestExecutionHash,
   requestExecutionIndex,
   requestNonce,
 } from "./rpc-request";
-import { EXPIRATION_MARGIN, TYPEWRITER_ABI } from "./typewriter-constants";
+import {
+  findSchedulerCredential,
+  readSchedulerCredentials,
+  schedulerOf,
+  seedScheduler,
+} from "./scheduler";
+import {
+  EXECUTE_EIP712_TYPES,
+  EXPIRATION_MARGIN,
+  MAX_FEE_PER_GAS,
+  MAX_PRIORITY_FEE_PER_GAS,
+  TYPEWRITER_ABI,
+  TYPEWRITER_EIP712_DOMAIN,
+} from "./typewriter-constants";
 import {
   ChainIdMismatchError,
   type CreateTypewriterError,
@@ -92,8 +112,11 @@ import {
   MutationTooLargeError,
   type ProgramError,
   ProgramStoppedError,
+  RelayerBalanceError,
   ResyncMismatchError,
+  type Revert,
   revertMessage,
+  SchedulerCredentialError,
   SettlementAfterRevertError,
   SettlementRevertedError,
   SettlementStuckError,
@@ -151,6 +174,10 @@ export type TypewriterEffect<
   accounts: StorageRootProperty<storageConfig, "accounts">;
   schema: TypewriterMutationSchema<mutationsConfig>;
   manifest: TypewriterManifest<mutationsConfig>;
+  /** The deployment's contract. */
+  address: Address.Address;
+  /** Whether this start deployed the contract, or resumed its deployment. */
+  migration: Migration;
   execute: <const name extends keyof mutationsConfig & string>(
     submitted: TypewriterMutationInput<mutationsConfig, name>,
   ) => Effect.Effect<void, ExecuteError>;
@@ -174,20 +201,21 @@ const SLOT_CACHE_MAX_ENTRIES = 200_000;
 /** How many blocks a sent settlement waits before it is sent again. */
 const REBROADCAST_BLOCKS = 3n;
 
-/** How many blocks a settlement can go without landing after it is first sent. */
-const STUCK_BLOCKS = 300n;
+/** How often a broadcast fails at warning for the same reason. */
+const BROADCAST_WARNING_INTERVAL_MS = 60_000;
 
 /**
- * Every settlement's fee cap: 100 times Monad's minimum base fee of 100 gwei.
- * A settlement is signed once and sent again unchanged, so it can land only
- * while the base fee is under this. It pays only the base fee plus the tip,
- * and Monad checks balances against that, not the cap, so a high cap costs
- * nothing.
+ * How often the runtime reads the relayer's balance at a final block, to
+ * check it against its settlements' fees.
  */
-const MAX_FEE_PER_GAS = 10_000_000_000_000n;
+const BALANCE_CHECK_INTERVAL_MS = 60_000;
 
-/** Every settlement's tip, what `eth_maxPriorityFeePerGas` returns on Monad. */
-const MAX_PRIORITY_FEE_PER_GAS = 2_000_000_000n;
+/** The broadcast errors of a transaction that a provider already has, or has landed. */
+const ALREADY_SENT =
+  /already known|known transaction|already imported|already exists|nonce too low/i;
+
+/** How many blocks a settlement can go without landing after it is first sent. */
+const STUCK_BLOCKS = 300n;
 
 type RuntimeExecuteInput = {
   mutation: { name: string; params: unknown } & ExecuteInput<
@@ -288,11 +316,16 @@ function batchToEvent(batch: RuntimeBatch): BatchEvent {
   } as BatchEvent;
 }
 
-/** The `execute` calldata of `mutation` alone. Fails if a field is malformed. */
+/**
+ * The `execute` calldata of `mutation` alone, authorized by scheduler
+ * credential `credentialID` without a signature, as revm runs it from the
+ * scheduler. Fails if a field is malformed.
+ */
 function encodeMutation(
   mutation: ReceivedMutation,
   fromExecutionHash: Hex.Hex,
   timestamp: bigint,
+  credentialID: bigint,
 ): Effect.Effect<Hex.Hex, EncodeMutationError> {
   return Effect.try({
     try: () =>
@@ -301,6 +334,7 @@ function encodeMutation(
         timestamp,
         encodeBatchArg([mutation]),
         [],
+        { credentialID, signature: "0x" },
       ),
     catch: (cause) => new EncodeMutationError({ mutation, cause }),
   });
@@ -318,6 +352,7 @@ function settlementCalldata(
     RuntimeSettlement,
     "fromExecutionHash" | "timestamp" | "batch" | "queueIndexes"
   >,
+  authorization: SchedulerAuthorization,
 ): Hex.Hex {
   return encodeExecuteCalldata(
     settlement.fromExecutionHash,
@@ -326,6 +361,7 @@ function settlementCalldata(
       ? EMPTY_BATCH
       : encodeBatchArg(settlement.batch.mutations),
     settlement.queueIndexes,
+    authorization,
   );
 }
 
@@ -347,20 +383,71 @@ function decodeForceInclusionQueued(log: LocalLog): ForceInclusionQueued {
   }).args;
 }
 
+/**
+ * Logs the relayer's balance at block `number`, with what its settlements
+ * spent since the last log, and how many settlements of the recent average
+ * fee it still pays for.
+ */
+function logRelayerBalance(
+  relayer: Address.Address,
+  balance: bigint,
+  block: { number: bigint },
+  since?: { spent: bigint; averageFee: bigint | undefined },
+) {
+  return Effect.logInfo("Relayer balance").pipe(
+    Effect.annotateLogs({
+      relayer,
+      balance_mon: formatEther(balance),
+      balance_wei: balance,
+      block_number: block.number,
+      ...(since !== undefined && { spent_mon: formatEther(since.spent) }),
+      ...(since?.averageFee !== undefined &&
+        since.averageFee > 0n && {
+          runway_settlements: balance / since.averageFee,
+        }),
+    }),
+  );
+}
+
+/** Fails when the relayer can't pay for one settlement of the most gas at `baseFee`. */
+function checkRelayerBalance(
+  relayer: Address.Address,
+  balance: bigint,
+  blockNumber: bigint,
+  baseFee: bigint,
+): Effect.Effect<void, RelayerBalanceError> {
+  const required = maxSettlementCost(baseFee);
+  if (balance < required) {
+    return Effect.fail(
+      new RelayerBalanceError({
+        reason: "insufficient",
+        relayer,
+        blockNumber,
+        balance,
+        required,
+      }),
+    );
+  }
+  return Effect.void;
+}
+
 function createRuntimeState(
-  app: TypewriterApp,
+  app: DeployedTypewriterApp,
   db: Db,
   code: Hex.Hex,
+  /** Reads slots of the app at the start block. */
+  readSlots: (slots: Hex.Hex[]) => Effect.Effect<Hex.Hex[], RpcError>,
 ): Effect.Effect<
   {
     evm: EVM;
     accounts: StorageView<StorageLayout, false>[string];
     state: StorageView<StorageLayout, false>[string];
+    scheduler: ReturnType<typeof schedulerOf>;
     /** The keccak256 preimages the storage view enumerates mapping keys from. */
     preimages: Set<Hex.Hex>;
     invalidateStorageCache: (slots?: readonly Hex.Hex[]) => void;
   },
-  DbError | EvmError
+  DbError | EvmError | RpcError
 > {
   return Effect.gen(function* () {
     const [preimageRows, storageRows] = yield* db.run([
@@ -369,6 +456,12 @@ function createRuntimeState(
     ]);
     const preimages = new Set(preimageRows.map((row) => row.preimage));
     const initialAccountStorage = accountStorage(storageRows);
+    yield* seedScheduler(
+      app.storageLayout,
+      initialAccountStorage,
+      preimages,
+      readSlots,
+    );
 
     if (code === "0x") {
       yield* Effect.logWarning(
@@ -430,6 +523,7 @@ function createRuntimeState(
       accounts: storageProxy["accounts"],
       // biome-ignore lint/complexity/useLiteralKeys: generic storage layouts expose root variables through an index signature.
       state: storageProxy["state"],
+      scheduler: schedulerOf(storageProxy),
       preimages,
       invalidateStorageCache,
     };
@@ -441,7 +535,12 @@ export function createTypewriterEffect<
   const mutationsConfig extends MutationsConfig,
   const sequencingConfig extends SequencingConfig,
 >(
-  app: TypewriterApp,
+  config: TypewriterApp,
+  /**
+   * Internal, for the simulation only: the contract it deployed itself, which
+   * an empty schema resumes. Not part of `createTypewriter`.
+   */
+  simulationAddress?: Address.Address,
 ): Effect.Effect<
   TypewriterEffect<storageConfig, mutationsConfig, sequencingConfig>,
   CreateTypewriterError,
@@ -469,24 +568,24 @@ export function createTypewriterEffect<
     );
     for (const { origin, result } of chainIds) {
       const actual = Hex.toNumber(result);
-      if (actual !== app.chainId) {
+      if (actual !== config.chainId) {
         return yield* new ChainIdMismatchError({
           origin,
-          expected: app.chainId,
+          expected: config.chainId,
           actual,
         });
       }
     }
 
     const lockLost = yield* db.lock(
-      deploymentLockKey(app.schemaName),
+      deploymentLockKey(config.deployment),
       DEPLOYMENT_LOCK_TIMEOUT_MS,
     );
-    if (app.dev) {
+    if (config.dev) {
       // The schema lasts as long as this process's chain. The finalizer runs
       // before the lock is released, since it is added after it.
       yield* Effect.addFinalizer(() =>
-        dropSchema(db, app.schemaName).pipe(
+        dropSchema(db, config.deployment).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("Failed to drop dev schema", cause),
           ),
@@ -494,35 +593,129 @@ export function createTypewriterEffect<
       );
     }
 
+    const deployment = yield* resolveDeployment(config, db, simulationAddress);
+    const app = deployedApp(config, deployment.address);
+
     // The runtime starts from this block, and watches the blocks after it.
-    // Read it by hash, so each read sees the same block on any provider.
-    const startBlock = yield* requestBlock("latest");
-    const [code, startExecutionIndex, startNonce] = yield* Effect.all(
-      [
-        rpc.request({
-          method: "eth_getCode",
-          params: [app.address, { blockHash: startBlock.hash }],
-        }),
-        requestExecutionIndex(app.address, startBlock.hash),
-        requestNonce(app.account.address),
-      ],
-      { concurrency: "unbounded" },
+    // Read it by hash, so each read sees the same block on any provider. It
+    // is at or after the deployment, even on a provider that lags.
+    const startBlock = yield* requestBlock("latest").pipe(
+      Effect.repeat({
+        until: (block) =>
+          deployment.deployedIn === undefined ||
+          block.number >= deployment.deployedIn,
+        schedule: Schedule.spaced(Duration.millis(app.blockPollingIntervalMs)),
+      }),
+    );
+    const [code, startExecutionIndex, startNonce, startBalance] =
+      yield* Effect.all(
+        [
+          rpc.request({
+            method: "eth_getCode",
+            params: [app.address, { blockHash: startBlock.hash }],
+          }),
+          requestExecutionIndex(app.address, startBlock.hash),
+          // At the start block, as the balance is, so the ledger sees the
+          // fees of every transaction the relayer sends after it.
+          requestNonce(app.relayer.address, startBlock.hash),
+          rpc
+            .request({
+              method: "eth_getBalance",
+              params: [app.relayer.address, { blockHash: startBlock.hash }],
+            })
+            .pipe(Effect.map(Hex.toBigInt)),
+        ],
+        { concurrency: "unbounded" },
+      );
+    yield* logRelayerBalance(app.relayer.address, startBalance, startBlock);
+    yield* checkRelayerBalance(
+      app.relayer.address,
+      startBalance,
+      startBlock.number,
+      startBlock.baseFeePerGas ?? 0n,
     );
     yield* migrate(
       db,
-      app.schemaName,
+      app.deployment,
       app.typewriterSchema,
       app.mutationSchema,
       {
         chainId: app.chainId,
         address: app.address,
         codeHash: Hash.keccak256(code),
+        creationCodeHash: creationCodeHash(app.bytecode),
       },
       startExecutionIndex,
     );
 
-    const { evm, accounts, state, preimages, invalidateStorageCache } =
-      yield* createRuntimeState(app, db, code);
+    const {
+      evm,
+      accounts,
+      state,
+      scheduler,
+      preimages,
+      invalidateStorageCache,
+    } = yield* createRuntimeState(app, db, code, (slots) =>
+      Effect.forEach(
+        slots,
+        (slot) =>
+          rpc.request({
+            method: "eth_getStorageAt",
+            params: [app.address, slot, { blockHash: startBlock.hash }],
+          }),
+        { concurrency: "unbounded" },
+      ),
+    );
+
+    // Every settlement is authorized by the scheduler's credential. revm runs
+    // each execution from the scheduler without a signature, against the
+    // scheduler as of the start block, since only the scheduler's own
+    // functions change it and revm never runs them. So `execute` in revm
+    // checks the credential's expiration at each settlement's timestamp, but
+    // never sees it removed: a settlement after its removal reverts onchain.
+    const schedulerCredentialID = findSchedulerCredential(
+      readSchedulerCredentials(scheduler),
+      app.scheduler.address,
+      startBlock.timestamp,
+    );
+    if (schedulerCredentialID === undefined) {
+      return yield* new SchedulerCredentialError({
+        scheduler: app.scheduler.address,
+        address: app.address,
+        credentialID: undefined,
+        reason: "it has no live scheduler credential",
+      });
+    }
+    /**
+     * Fails if `revert` is `execute` rejecting the scheduler's credential.
+     * revm calls it from the scheduler without a signature, so these errors
+     * mean only that the credential expired or is gone, never that the
+     * mutation is at fault.
+     */
+    const checkSchedulerCredential = (revert: Revert) =>
+      revert.errorName === "SchedulerCredentialExpired" ||
+      revert.errorName === "SchedulerCredentialNotFound"
+        ? Effect.fail(
+            new SchedulerCredentialError({
+              scheduler: app.scheduler.address,
+              address: app.address,
+              credentialID: schedulerCredentialID,
+              reason: revertMessage(
+                `credential ${schedulerCredentialID} fails \`execute\` in revm`,
+                revert,
+              ),
+            }),
+          )
+        : Effect.void;
+    /** Whether the scheduler sends what it authorizes, so no signature is needed. */
+    const schedulerRelays =
+      app.scheduler.address.toLowerCase() === app.relayer.address.toLowerCase();
+    /** The relayer's balance as the runtime's settlements change it. */
+    const relayerLedger = makeRelayerLedger({
+      balance: startBalance,
+      number: startBlock.number,
+    });
+    let relayerCheckedAt = yield* Clock.currentTimeMillis;
 
     // -------------------------------------------------------------------------
     // State
@@ -723,6 +916,12 @@ export function createTypewriterEffect<
 
     // Sends to every provider, and is sent again until it lands, so a
     // provider that fails or answers wrongly only delays it.
+    //
+    // A failure that every provider gives is a warning, such as too little
+    // balance, once per reason a minute, since a settlement is sent again
+    // every few blocks. A provider that already has it, or a nonce it already
+    // took, is only a debug log.
+    let lastBroadcastWarning: { reason: string; at: number } | undefined;
     const broadcast = (settlement: SentSettlement) =>
       rpc
         .requestAll({
@@ -731,27 +930,73 @@ export function createTypewriterEffect<
         })
         .pipe(
           Effect.catch((error) =>
-            Effect.logDebug("Failed settlement broadcast", error).pipe(
-              Effect.annotateLogs({ transaction_hash: settlement.hash }),
-            ),
+            Effect.gen(function* () {
+              const reason = error.message;
+              const annotate = Effect.annotateLogs({
+                transaction_hash: settlement.hash,
+                nonce: settlement.nonce,
+              });
+              const now = yield* Clock.currentTimeMillis;
+              if (
+                ALREADY_SENT.test(reason) ||
+                (lastBroadcastWarning?.reason === reason &&
+                  now - lastBroadcastWarning.at < BROADCAST_WARNING_INTERVAL_MS)
+              ) {
+                return yield* Effect.logDebug(
+                  "Failed settlement broadcast",
+                  error,
+                ).pipe(annotate);
+              }
+              lastBroadcastWarning = { reason, at: now };
+              yield* Effect.logWarning(
+                "Failed settlement broadcast",
+                error,
+              ).pipe(annotate);
+            }),
           ),
           Effect.forkIn(scope),
         );
 
+    /**
+     * Signs the transaction that sends `settlement` from the relayer. Unless
+     * the relayer is the scheduler, the scheduler first signs the settlement
+     * for it.
+     */
     const sign = (settlement: SettlementBase) =>
       Effect.tryPromise({
-        try: () =>
-          app.account.signTransaction({
+        try: async () => {
+          const signature = schedulerRelays
+            ? "0x"
+            : await app.scheduler.signTypedData({
+                domain: {
+                  ...TYPEWRITER_EIP712_DOMAIN,
+                  chainId: app.chainId,
+                  verifyingContract: app.address,
+                },
+                types: EXECUTE_EIP712_TYPES,
+                primaryType: "Execute",
+                message: {
+                  fromExecutionHash: settlement.fromExecutionHash,
+                  toExecutionHash: settlement.toExecutionHash,
+                  timestamp: Number(settlement.timestamp),
+                  relayer: app.relayer.address,
+                },
+              });
+          return (await app.relayer.signTransaction({
             type: "eip1559",
             chainId: app.chainId,
             nonce: settlement.nonce,
             to: app.address,
-            data: settlementCalldata(settlement),
+            data: settlementCalldata(settlement, {
+              credentialID: schedulerCredentialID,
+              signature,
+            }),
             gas: BigInt(settlement.gasLimit),
             accessList: settlement.accessList,
             maxFeePerGas: MAX_FEE_PER_GAS,
             maxPriorityFeePerGas: MAX_PRIORITY_FEE_PER_GAS,
-          }) as Promise<Hex.Hex>,
+          })) as Hex.Hex;
+        },
         catch: (cause) => new SignTransactionError({ cause }),
       });
 
@@ -828,25 +1073,26 @@ export function createTypewriterEffect<
           mutation,
           fromExecutionHash,
           timestamp,
+          schedulerCredentialID,
         );
         yield* checkExpiration(mutation, Number(timestamp) + EXPIRATION_MARGIN);
         const executeResult = yield* evm.execute({
-          from: app.account.address,
+          from: app.scheduler.address,
           to: app.address,
           data: calldata,
           block: toBlockParams(block),
         });
         if (executeResult.status === "revert") {
-          return yield* new MutationRevertedError(
-            decodeRevert(app.abi, executeResult.data),
-          );
+          const revert = decodeRevert(app.abi, executeResult.data);
+          yield* checkSchedulerCredential(revert);
+          return yield* new MutationRevertedError(revert);
         }
         if (executeResult.status === "halt") {
           return yield* new MutationHaltedError({
             reason: executeResult.reason,
           });
         }
-        if (executeResult.gas_used > SETTLEMENT_GAS) {
+        if (executeResult.gas_used > settlementGas(app.hardfork)) {
           yield* evm.revertJournals({
             journal_ids: [executeResult.journal_id],
           });
@@ -864,7 +1110,10 @@ export function createTypewriterEffect<
         };
       });
 
-    /** Force-executes an enqueue, or returns `undefined` if it fails. */
+    /**
+     * Force-executes an enqueue, or returns `undefined` if it fails, unless
+     * it fails on the scheduler's credential, which stops the runtime.
+     */
     const executeEnqueue = (
       queueIndex: bigint,
       newPreimages: Hex.Hex[],
@@ -877,16 +1126,17 @@ export function createTypewriterEffect<
           block.timestamp,
           EMPTY_BATCH,
           [queueIndex],
+          { credentialID: schedulerCredentialID, signature: "0x" },
         );
         const executeResult = yield* evm.execute({
-          from: app.account.address,
+          from: app.scheduler.address,
           to: app.address,
           data: calldata,
           block: toBlockParams(block),
         });
         if (
           executeResult.status === "success" &&
-          executeResult.gas_used <= SETTLEMENT_GAS
+          executeResult.gas_used <= settlementGas(app.hardfork)
         ) {
           recordExecution(executeResult, newPreimages);
           return {
@@ -903,12 +1153,14 @@ export function createTypewriterEffect<
           });
           invalidateStorageCache();
         }
-        yield* Effect.logWarning(
+        const revert =
           executeResult.status === "revert"
-            ? revertMessage(
-                "Discarded enqueued mutation",
-                decodeRevert(app.abi, executeResult.data),
-              )
+            ? decodeRevert(app.abi, executeResult.data)
+            : undefined;
+        if (revert !== undefined) yield* checkSchedulerCredential(revert);
+        yield* Effect.logWarning(
+          revert !== undefined
+            ? revertMessage("Discarded enqueued mutation", revert)
             : "Discarded enqueued mutation",
         ).pipe(Effect.annotateLogs({ queue_index: queueIndex }));
         return undefined;
@@ -944,6 +1196,9 @@ export function createTypewriterEffect<
             executeMutation(mutation, newPreimages, block),
           );
           if (Result.isFailure(result)) {
+            if (result.failure._tag === "SchedulerCredentialError") {
+              return yield* result.failure;
+            }
             outcomes.push(updateMutationToRejected(mutation, result.failure));
             if (reply) yield* Deferred.fail(reply, result.failure);
             continue;
@@ -962,39 +1217,45 @@ export function createTypewriterEffect<
           if (execution === undefined) discardedQueueIndexes.push(queueIndex);
           else forced.push(execution);
         }
+        const toExecutionHash = yield* readExecutionHash;
 
         const events = outcomes.map(emitMutation);
         const executions = [...accepted, ...forced];
-        const groups = groupByGas(app.hardfork, executions).map(
-          (group): SettlementBase => {
-            const mutations = group.flatMap((execution) =>
-              "queueIndex" in execution ? [] : [execution.mutation],
-            );
-            let groupBatch: RuntimeBatch | undefined;
-            if (mutations.length > 0 && batch !== undefined) {
-              groupBatch = Object.assign(batch, { mutations });
-              batch = undefined;
-            } else if (mutations.length > 0) {
-              groupBatch = { status: "accepted", id: nextBatchId++, mutations };
-              events.push(emitBatch(groupBatch));
-            }
-            return {
-              nonce: nextNonce++,
-              timestamp: block.timestamp,
-              fromExecutionHash: group[0]!.fromExecutionHash,
-              fromExecutionIndex: group[0]!.mutation.executionIndex,
-              batch: groupBatch,
-              queueIndexes: group.flatMap((execution) =>
-                "queueIndex" in execution ? [execution.queueIndex] : [],
-              ),
-              journalIds: group.map(
-                ({ executeResult }) => executeResult.journal_id,
-              ),
-              gasLimit: gasLimit(app.hardfork, group),
-              accessList: accessList(app.hardfork, group),
-            };
-          },
+        const executionGroups = groupByGas(
+          app.hardfork,
+          executions,
+          !schedulerRelays,
         );
+        const groups = executionGroups.map((group, i): SettlementBase => {
+          const mutations = group.flatMap((execution) =>
+            "queueIndex" in execution ? [] : [execution.mutation],
+          );
+          let groupBatch: RuntimeBatch | undefined;
+          if (mutations.length > 0 && batch !== undefined) {
+            groupBatch = Object.assign(batch, { mutations });
+            batch = undefined;
+          } else if (mutations.length > 0) {
+            groupBatch = { status: "accepted", id: nextBatchId++, mutations };
+            events.push(emitBatch(groupBatch));
+          }
+          return {
+            nonce: nextNonce++,
+            timestamp: block.timestamp,
+            fromExecutionHash: group[0]!.fromExecutionHash,
+            fromExecutionIndex: group[0]!.mutation.executionIndex,
+            toExecutionHash:
+              executionGroups[i + 1]?.[0]?.fromExecutionHash ?? toExecutionHash,
+            batch: groupBatch,
+            queueIndexes: group.flatMap((execution) =>
+              "queueIndex" in execution ? [execution.queueIndex] : [],
+            ),
+            journalIds: group.map(
+              ({ executeResult }) => executeResult.journal_id,
+            ),
+            gasLimit: gasLimit(app.hardfork, group, !schedulerRelays),
+            accessList: accessList(app.hardfork, group),
+          };
+        });
         const committed = write([
           ...insertMutations(
             app.mutationSchema,
@@ -1141,6 +1402,62 @@ export function createTypewriterEffect<
       );
     };
 
+    /**
+     * Reads the relayer's balance at the final block `finalized`, and checks
+     * it against what the runtime's settlements left: a higher balance is a
+     * top-up, a lower one a spend by another sender.
+     */
+    const checkRelayer = (finalized: { number: bigint; hash: Hex.Hex }) =>
+      Effect.gen(function* () {
+        const [balance, latestBlock] = yield* untilSuccess(
+          Effect.all(
+            [
+              rpc
+                .request({
+                  method: "eth_getBalance",
+                  params: [app.relayer.address, { blockHash: finalized.hash }],
+                })
+                .pipe(Effect.map(Hex.toBigInt)),
+              requestBlock("latest").pipe(Effect.provideService(Rpc, rpc)),
+            ],
+            { concurrency: "unbounded" },
+          ),
+        );
+        const { expected, spent, difference } = relayerLedger.reconcile(
+          balance,
+          finalized.number,
+        );
+        if (difference < 0n) {
+          return yield* new RelayerBalanceError({
+            reason: "spentElsewhere",
+            relayer: app.relayer.address,
+            blockNumber: finalized.number,
+            balance,
+            required: expected,
+          });
+        }
+        if (difference > 0n) {
+          yield* Effect.logInfo("Relayer was topped up").pipe(
+            Effect.annotateLogs({
+              relayer: app.relayer.address,
+              amount_mon: formatEther(difference),
+              amount_wei: difference,
+              block_number: finalized.number,
+            }),
+          );
+        }
+        yield* logRelayerBalance(app.relayer.address, balance, finalized, {
+          spent,
+          averageFee: relayerLedger.averageFee(),
+        });
+        yield* checkRelayerBalance(
+          app.relayer.address,
+          balance,
+          finalized.number,
+          latestBlock.baseFeePerGas ?? 0n,
+        );
+      });
+
     const watchProgram = watchChain({
       fromBlock: startBlock,
       pollIntervalMs: app.blockPollingIntervalMs,
@@ -1204,12 +1521,17 @@ export function createTypewriterEffect<
                 const included: IncludedMutation[] = [];
                 for (const [i, settlement] of landed.entries()) {
                   const receipt = receipts[i]!;
+                  // Reverted or not, it paid for its gas.
+                  const fee = receipt.gasUsed * receipt.effectiveGasPrice;
+                  relayerLedger.landed(block, fee);
                   yield* Effect.logDebug("Landed settlement transaction").pipe(
                     Effect.annotateLogs({
                       transaction_hash: receipt.transactionHash,
                       status: receipt.status,
                       gas_limit: settlement.gasLimit,
                       gas_used: receipt.gasUsed,
+                      effective_gas_price: receipt.effectiveGasPrice,
+                      fee_mon: formatEther(fee),
                     }),
                   );
                   if (receipt.status === "reverted") {
@@ -1304,6 +1626,7 @@ export function createTypewriterEffect<
             // timestamp.
             case "Removed": {
               const { block } = message;
+              relayerLedger.removed(block.hash);
               unfinalizedEnqueues = unfinalizedEnqueues.filter(
                 ({ hash }) => hash !== block.hash,
               );
@@ -1360,6 +1683,11 @@ export function createTypewriterEffect<
               const finalized = message.block;
               for (const [key, { number }] of prefetchedReceipts) {
                 if (number <= finalized.number) prefetchedReceipts.delete(key);
+              }
+              const now = yield* Clock.currentTimeMillis;
+              if (now - relayerCheckedAt >= BALANCE_CHECK_INTERVAL_MS) {
+                relayerCheckedAt = now;
+                yield* checkRelayer(finalized);
               }
               // Requested before taking the evm, which the accept worker waits on.
               const onchain = resyncing()
@@ -1645,6 +1973,8 @@ export function createTypewriterEffect<
       state,
       schema: app.mutationSchema,
       manifest: app.manifest,
+      address: app.address,
+      migration: deployment.migration,
       execute,
       on,
       program,

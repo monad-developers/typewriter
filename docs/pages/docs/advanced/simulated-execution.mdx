@@ -20,7 +20,7 @@ Every [settlement](/docs/production/chain-integration#submitted-transactions) na
 
 So a settlement only ever runs on the exact history of mutations Typewriter executed it after. It can't run out of order, run twice, or run after a mutation Typewriter didn't know about.
 
-Only the [scheduler account](/docs/production/chain-integration#submitted-transactions) can call the contract's `execute`, so no one else can change your app's state and make Typewriter's settlements revert. The one exception is [force inclusion](/docs/production/force-inclusion): anyone can call `forceExecute` on a mutation that has waited in the queue for `FORCE_INCLUSION_DELAY`. With the default delay, Typewriter settles enqueued mutations itself well before that, so in normal operation only the scheduler's settlements change state.
+Only a call authorized by one of the [scheduler's](/docs/production/chain-integration#submitted-transactions) credentials can run the contract's `execute`, so no one else can change your app's state and make Typewriter's settlements revert. The one exception is [force inclusion](/docs/production/force-inclusion): anyone can call `forceExecute` on a mutation that has waited in the queue for `FORCE_INCLUSION_DELAY`. With the default delay, Typewriter settles enqueued mutations itself well before that, so in normal operation only the scheduler's settlements change state.
 
 ### Same environment
 

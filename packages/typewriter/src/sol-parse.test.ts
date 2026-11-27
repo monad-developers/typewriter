@@ -86,7 +86,7 @@ function app(body: string, name = "App"): string {
   return `
 contract ${name} is Typewriter {
     State internal state;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
     ${body}
 }`;
@@ -121,7 +121,7 @@ contract Counter is Typewriter {
         Sub
     }
 
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
 
     function dispatch(uint8 mutation, bytes memory mutationData, bytes32 accountID) internal override {
         if (mutation == uint8(Mutation.Add)) {
@@ -340,7 +340,7 @@ test("parseSolidity errors when the app inherits anything but Typewriter", () =>
 contract Ownable {}
 contract App is Typewriter, Ownable {
     State internal state;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
   ).toThrowErrorMatchingInlineSnapshot(
@@ -358,19 +358,37 @@ test("parseSolidity errors when the constructor doesn't take only the scheduler"
   expect(() =>
     parse(`
 contract App is Typewriter {
-    constructor(address scheduler, uint256) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials, uint256) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
   ).toThrowErrorMatchingInlineSnapshot(
-    `"App must declare \`constructor(address scheduler)\` and pass it to \`Typewriter(scheduler)\`, but its constructor takes (address, uint256)"`,
+    `"App must declare \`constructor(SchedulerCredential[] memory schedulerCredentials)\` and pass it to \`Typewriter(schedulerCredentials)\`, but its constructor takes (struct SchedulerCredential[], uint256)"`,
   );
   expect(() =>
     parse(`
-contract App is Typewriter(address(1)) {
+contract App is Typewriter {
+    constructor(address scheduler) Typewriter(new SchedulerCredential[](uint160(scheduler))) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
   ).toThrowErrorMatchingInlineSnapshot(
-    `"App must declare \`constructor(address scheduler)\` and pass it to \`Typewriter(scheduler)\`, but its constructor takes ()"`,
+    `"App must declare \`constructor(SchedulerCredential[] memory schedulerCredentials)\` and pass it to \`Typewriter(schedulerCredentials)\`, but its constructor takes (address)"`,
+  );
+  expect(() =>
+    parse(`
+contract App is Typewriter {
+    constructor(Credential[] memory credentials) Typewriter(new SchedulerCredential[](credentials.length)) {}
+    function dispatch(uint8, bytes memory, bytes32) internal override {}
+}`),
+  ).toThrowErrorMatchingInlineSnapshot(
+    `"App must declare \`constructor(SchedulerCredential[] memory schedulerCredentials)\` and pass it to \`Typewriter(schedulerCredentials)\`, but its constructor takes (struct Credential[])"`,
+  );
+  expect(() =>
+    parse(`
+contract App is Typewriter(new SchedulerCredential[](1)) {
+    function dispatch(uint8, bytes memory, bytes32) internal override {}
+}`),
+  ).toThrowErrorMatchingInlineSnapshot(
+    `"App must declare \`constructor(SchedulerCredential[] memory schedulerCredentials)\` and pass it to \`Typewriter(schedulerCredentials)\`, but its constructor takes ()"`,
   );
 });
 
@@ -379,7 +397,7 @@ test("parseSolidity errors when state is missing or not a struct", () => {
     parse(`
 contract App is Typewriter {
     uint256 internal state;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
   ).toThrowErrorMatchingInlineSnapshot(
@@ -389,7 +407,7 @@ contract App is Typewriter {
     parse(`
 contract App is Typewriter {
     State internal store;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
   ).toThrowErrorMatchingInlineSnapshot(
@@ -405,7 +423,7 @@ library Math {
 }
 contract App is Typewriter {
     State internal state;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {
         state.total = Math.double(state.total);
     }
@@ -518,7 +536,7 @@ test("parseSolidity errors when the app adds entrypoints or state outside state"
     parse(`
 contract App is Typewriter {
     State public state;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`),
   ).toThrowErrorMatchingInlineSnapshot(
@@ -679,7 +697,7 @@ ${mutation("Add")}
 contract App is Typewriter {
     State internal state;
     enum Mutation { Add }
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32 accountID) internal override { ${dispatch} }
 }`);
     } catch (error) {
@@ -695,10 +713,10 @@ contract App is Typewriter {
     ),
     modifier: error("Helpers.later();"),
     executionIndex: error("state.total = executionIndex;"),
-    accounts: error("state.total = accounts[accountID].activeCredentials;"),
+    accounts: error("state.total = accounts[accountID].rootCredentials;"),
     nestedExecute: error('_execute(0, "", "", 0);'),
     allowed: error(
-      'verifySignature(KeyType.Secp256k1, bytes32(0), "", ""); state.total = uint160(SCHEDULER);',
+      'verifySignature(KeyType.Secp256k1, bytes32(0), "", ""); state.total = uint256(DOMAIN_SEPARATOR);',
     ),
   }).toMatchInlineSnapshot(`
     {
@@ -723,7 +741,7 @@ struct Clock { function () view returns (uint256) read; }
 struct Store { ${fields} }
 contract App is Typewriter {
     Store internal state;
-    constructor(address scheduler) Typewriter(scheduler) {}
+    constructor(SchedulerCredential[] memory schedulerCredentials) Typewriter(schedulerCredentials) {}
     function dispatch(uint8, bytes memory, bytes32) internal override {}
 }`);
     } catch (error) {

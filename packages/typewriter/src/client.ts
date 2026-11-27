@@ -1,6 +1,7 @@
 import type { AbiParameter, AbiParameterToPrimitiveType } from "abitype";
 import { AbiParameters, Address, Bytes, Hash, Hex, TypedData } from "ox";
 import type { TypewriterManifest } from "./config";
+import { encodeSecp256k1Signature } from "./encoding";
 import {
   AUTHORIZATION_ABI_PARAMS,
   AUTHORIZATION_EIP712_TYPES,
@@ -8,7 +9,6 @@ import {
   KeyType,
   P256_SIGNATURE_PARAMS,
   SECP256K1_PUBLIC_KEY_PARAMS,
-  SECP256K1_SIGNATURE_PARAMS,
   TYPEWRITER_EIP712_DOMAIN,
   WEBAUTHN_P256_SIGNATURE_PARAMS,
 } from "./typewriter-constants";
@@ -104,23 +104,6 @@ export function deriveAccountID(params: CreateAccountParams): Hex.Hex {
       params.publicKey,
     ]),
   );
-}
-
-/**
- * Returns the key that identifies one deployment of a Typewriter app on a
- * chain. The runtime uses it in the Postgres schema name. Clients should scope
- * browser storage by `manifest.deploymentKey`, which is this key except in
- * `dev` mode.
- */
-export function deploymentKey(
-  chainId: number,
-  address: Address.Address,
-): string {
-  if (!Number.isSafeInteger(chainId) || chainId < 0) {
-    throw new Error(`Invalid chain id: ${chainId}`);
-  }
-  Address.assert(address, { strict: false });
-  return `${chainId}_${address.toLowerCase()}`;
 }
 
 export function incrementNonce(nonce: bigint): bigint {
@@ -420,11 +403,11 @@ export function createSigner<const manifest extends TypewriterManifest>(
           if (parity !== 0 && parity !== 1) {
             throw new Error(`invalid secp256k1 yParity: ${yParity}`);
           }
-          const signature = AbiParameters.encode(SECP256K1_SIGNATURE_PARAMS, [
-            parity + 27,
-            Hex.fromNumber(BigInt(r), { size: 32 }),
-            Hex.fromNumber(BigInt(s), { size: 32 }),
-          ]);
+          const signature = encodeSecp256k1Signature(
+            BigInt(r),
+            BigInt(s),
+            parity,
+          );
           return { mutation, signature };
         }
       }
